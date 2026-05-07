@@ -1,0 +1,211 @@
+:root {
+  --cp-bg: #f3f6fb;
+  --cp-surface: #ffffff;
+  --cp-surface-2: #eef3fb;
+  --cp-text: #172033;
+  --cp-muted: #5f6f8f;
+  --cp-primary: #115e59;
+  --cp-primary-soft: #d6f5ef;
+  --cp-accent: #0f766e;
+  --cp-warning: #ca8a04;
+  --cp-danger: #b91c1c;
+  --cp-border: #d8e0ef;
+  --cp-shadow: 0 10px 35px rgba(15, 23, 42, 0.08);
+  --cp-radius: 14px;
+}
+
+html, body {
+  background: radial-gradient(circle at top right, #e8f8f5 0%, #f3f6fb 50%, #edf2fb 100%);
+  color: var(--cp-text);
+  font-family: "Segoe UI", "Inter", "Helvetica Neue", sans-serif;
+}
+
+#header {
+  background: linear-gradient(120deg, #0f172a 0%, #115e59 60%, #0f766e 100%);
+  box-shadow: var(--cp-shadow);
+}
+
+#branding h1,
+#branding h1 a:link,
+#branding h1 a:visited {
+  color: #f8fafc;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+#user-tools,
+#user-tools a {
+  color: #e2e8f0;
+}
+
+#content {
+  background: transparent;
+}
+
+div.breadcrumbs {
+  background: transparent;
+  color: var(--cp-muted);
+  border: 0;
+  padding: 12px 0;
+}
+
+div.breadcrumbs a {
+  color: var(--cp-accent);
+}
+
+.module,
+.inline-group,
+#changelist-filter,
+.dashboard #content-main .module {
+  background: var(--cp-surface);
+  border: 1px solid var(--cp-border);
+  border-radius: var(--cp-radius);
+  box-shadow: var(--cp-shadow);
+  overflow: hidden;
+}
+
+.module h2,
+.module caption,
+.inline-group h2 {
+  background: var(--cp-surface-2);
+  color: var(--cp-text);
+  border-bottom: 1px solid var(--cp-border);
+  font-weight: 700;
+}
+
+#changelist .actions {
+  background: var(--cp-surface-2);
+  border: 1px solid var(--cp-border);
+  border-radius: 10px;
+}
+
+#changelist-filter h2 {
+  background: var(--cp-surface-2);
+}
+
+#changelist-filter li.selected a {
+  color: var(--cp-accent);
+  font-weight: 700;
+}
+
+a:link,
+a:visited {
+  color: var(--cp-accent);
+}
+
+a:hover,
+a:focus {
+  color: var(--cp-primary);
+}
+
+.button,
+input[type=submit],
+input[type=button],
+.submit-row input,
+a.button {
+  background: var(--cp-primary);
+  border: 1px solid var(--cp-primary);
+  border-radius: 10px;
+  color: #ffffff;
+  font-weight: 600;
+  padding: 10px 16px;
+  transition: all 0.2s ease;
+}
+
+.button:hover,
+input[type=submit]:hover,
+input[type=button]:hover,
+.submit-row input:hover,
+a.button:hover {
+  background: var(--cp-accent);
+  border-color: var(--cp-accent);
+  transform: translateY(-1px);
+}
+
+.button.default,
+input[type=submit].default,
+.submit-row input.default {
+  background: linear-gradient(90deg, var(--cp-primary) 0%, var(--cp-accent) 100%);
+}
+
+.deletelink,
+.deletelink:link,
+.deletelink:visited {
+  background: var(--cp-danger);
+  border-color: var(--cp-danger);
+  color: #fff;
+}
+
+input,
+textarea,
+select,
+.vTextField {
+  border: 1px solid var(--cp-border);
+  border-radius: 10px;
+  background: #ffffff;
+  color: var(--cp-text);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--cp-accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.18);
+}
+
+thead th {
+  background: #edf2fb;
+  color: var(--cp-text);
+  border-bottom: 1px solid var(--cp-border);
+}
+
+tr:nth-child(even) {
+  background: #fafcff;
+}
+
+tr:hover {
+  background: #eef6ff;
+}
+
+.success {
+  background: var(--cp-primary-soft);
+  color: #0b4b46;
+}
+
+.warning {
+  background: #fff9db;
+  color: #7c5d00;
+}
+
+.errornote,
+.errorlist,
+.errorlist li {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
+.object-tools a,
+.object-tools a:link,
+.object-tools a:visited {
+  background: var(--cp-primary);
+  border-radius: 8px;
+  border: 1px solid var(--cp-primary);
+}
+
+.object-tools a:hover,
+.object-tools a:focus {
+  background: var(--cp-accent);
+}
+
+@media (max-width: 1024px) {
+  #content {
+    padding: 16px;
+  }
+
+  .module,
+  .inline-group,
+  #changelist-filter {
+    border-radius: 10px;
+  }
+}

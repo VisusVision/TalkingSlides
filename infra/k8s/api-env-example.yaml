@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-env
+  namespace: vidlab
+data:
+  DJANGO_SETTINGS_MODULE: "config.settings"
+  PROMETHEUS_METRICS_TOKEN: "replace-with-strong-random-metrics-token"

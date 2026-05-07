@@ -1,0 +1,63 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Queue Depth by Profile",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "vidlab_render_queue_depth", "legendFormat": "{{profile}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+    },
+    {
+      "type": "timeseries",
+      "title": "Estimated Wait (seconds)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "vidlab_render_estimated_wait_seconds", "legendFormat": "{{profile}}"}],
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+    },
+    {
+      "type": "stat",
+      "title": "Oldest Active Job Age (sec)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "vidlab_jobs_oldest_active_age_seconds"}],
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 8}
+    },
+    {
+      "type": "stat",
+      "title": "Latency p95 (sec)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "vidlab_jobs_latency_p95_seconds"}],
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 8}
+    },
+    {
+      "type": "stat",
+      "title": "Latency p99 (sec)",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "vidlab_jobs_latency_p99_seconds"}],
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Jobs by Status",
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"expr": "vidlab_jobs_status_total", "legendFormat": "{{status}}"}],
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 8}
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": ["vidlab", "render"],
+  "templating": {"list": []},
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "VidLab Render Ops",
+  "uid": "vidlab-render-ops",
+  "version": 1,
+  "weekStart": ""
+}

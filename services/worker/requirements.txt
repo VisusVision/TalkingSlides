@@ -1,0 +1,10 @@
+celery>=5.3
+redis>=5.0
+python-pptx>=0.6
+pydub>=0.25
+pillow>=10.0
+ffmpeg-python>=0.2
+requests>=2.31.0
+python-docx>=0.8
+PyMuPDF>=1.23
+opencv-python-headless>=4.10

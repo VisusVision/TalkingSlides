@@ -1,0 +1,40 @@
+# ============================================================
+# Dockerfile.api
+# Purpose: Django REST API service for AI_ACADEMY.
+#          Runs migrations then starts gunicorn.
+#          Build context = repo root  (docker-compose: context: ..)
+# ============================================================
+
+FROM python:3.11-slim
+
+# --- system dependencies ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  gcc \
+  libpq-dev \
+  curl \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# --- Python dependencies (cached layer) ---
+COPY services/api/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# --- copy application source ---
+COPY services/api/ ./
+COPY services/avatar/ /app/avatar/
+
+# PYTHONPATH ensures `import config` and `import core` resolve from /app
+ENV PYTHONPATH=/app
+ENV HOME=/home/appuser
+
+# --- non-root user ---
+RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser \
+  && chown -R appuser:appuser /app /home/appuser
+USER appuser
+
+EXPOSE 8000
+
+# Run migrations, collect static files, then start gunicorn.
+# In dev the source is bind-mounted so live code changes are picked up.
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn --bind 0.0.0.0:8000 --workers 2 config.wsgi:application"]

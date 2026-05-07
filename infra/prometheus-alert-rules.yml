@@ -1,0 +1,29 @@
+groups:
+  - name: vidlab-render-alerts
+    rules:
+      - alert: VidlabRenderQueueDepthHigh
+        expr: max(vidlab_render_queue_depth{profile="balanced"}) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Render queue depth high"
+          description: "Balanced queue depth has been above 50 for 5 minutes."
+
+      - alert: VidlabRenderP95High
+        expr: vidlab_jobs_latency_p95_seconds > 240
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Render p95 latency high"
+          description: "Render p95 latency has been above 240 seconds for 10 minutes."
+
+      - alert: VidlabJobsFailedSpike
+        expr: increase(vidlab_jobs_status_total{status="failed"}[10m]) > 15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Failed jobs spike"
+          description: "More than 15 failed jobs in the last 10 minutes."

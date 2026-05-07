@@ -1,0 +1,163 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: vidlab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+        - name: worker
+          image: ai_academy_worker:local
+          command: ["celery", "-A", "worker.celery_app:app", "worker", "--loglevel=info", "--concurrency=1", "--prefetch-multiplier=1", "-Q", "render"]
+          env:
+            - name: DJANGO_SETTINGS_MODULE
+              value: config.settings
+            - name: PYTHONPATH
+              value: /app/api:/app
+            - name: CELERY_BROKER_URL
+              value: redis://redis.vidlab.svc.cluster.local:6379/0
+            - name: CELERY_RESULT_BACKEND
+              value: redis://redis.vidlab.svc.cluster.local:6379/1
+            - name: AVATAR_BOOTSTRAP_ON_WORKER_STARTUP
+              value: "0"
+            - name: POSTGRES_HOST
+              value: host.docker.internal
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: academy_db
+            - name: POSTGRES_USER
+              value: academy_user
+            - name: POSTGRES_PASSWORD
+              value: replace-with-postgres-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-fast
+  namespace: vidlab
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: worker-fast
+  template:
+    metadata:
+      labels:
+        app: worker-fast
+    spec:
+      containers:
+        - name: worker-fast
+          image: ai_academy_worker:local
+          command: ["celery", "-A", "worker.celery_app:app", "worker", "--loglevel=info", "--concurrency=2", "--prefetch-multiplier=1", "-Q", "render_fast"]
+          env:
+            - name: DJANGO_SETTINGS_MODULE
+              value: config.settings
+            - name: PYTHONPATH
+              value: /app/api:/app
+            - name: CELERY_BROKER_URL
+              value: redis://redis.vidlab.svc.cluster.local:6379/0
+            - name: CELERY_RESULT_BACKEND
+              value: redis://redis.vidlab.svc.cluster.local:6379/1
+            - name: AVATAR_BOOTSTRAP_ON_WORKER_STARTUP
+              value: "0"
+            - name: POSTGRES_HOST
+              value: host.docker.internal
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: academy_db
+            - name: POSTGRES_USER
+              value: academy_user
+            - name: POSTGRES_PASSWORD
+              value: replace-with-postgres-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-quality
+  namespace: vidlab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker-quality
+  template:
+    metadata:
+      labels:
+        app: worker-quality
+    spec:
+      containers:
+        - name: worker-quality
+          image: ai_academy_worker:local
+          command: ["celery", "-A", "worker.celery_app:app", "worker", "--loglevel=info", "--concurrency=1", "--prefetch-multiplier=1", "-Q", "render_quality"]
+          env:
+            - name: DJANGO_SETTINGS_MODULE
+              value: config.settings
+            - name: PYTHONPATH
+              value: /app/api:/app
+            - name: CELERY_BROKER_URL
+              value: redis://redis.vidlab.svc.cluster.local:6379/0
+            - name: CELERY_RESULT_BACKEND
+              value: redis://redis.vidlab.svc.cluster.local:6379/1
+            - name: AVATAR_BOOTSTRAP_ON_WORKER_STARTUP
+              value: "0"
+            - name: POSTGRES_HOST
+              value: host.docker.internal
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: academy_db
+            - name: POSTGRES_USER
+              value: academy_user
+            - name: POSTGRES_PASSWORD
+              value: replace-with-postgres-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-avatar
+  namespace: vidlab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker-avatar
+  template:
+    metadata:
+      labels:
+        app: worker-avatar
+    spec:
+      containers:
+        - name: worker-avatar
+          image: ai_academy_worker:local
+          command: ["celery", "-A", "worker.celery_app:app", "worker", "--loglevel=info", "--concurrency=1", "--prefetch-multiplier=1", "-Q", "avatar"]
+          env:
+            - name: DJANGO_SETTINGS_MODULE
+              value: config.settings
+            - name: PYTHONPATH
+              value: /app/api:/app
+            - name: CELERY_BROKER_URL
+              value: redis://redis.vidlab.svc.cluster.local:6379/0
+            - name: CELERY_RESULT_BACKEND
+              value: redis://redis.vidlab.svc.cluster.local:6379/1
+            - name: AVATAR_BOOTSTRAP_ON_WORKER_STARTUP
+              value: "0"
+            - name: POSTGRES_HOST
+              value: host.docker.internal
+            - name: POSTGRES_PORT
+              value: "5432"
+            - name: POSTGRES_DB
+              value: academy_db
+            - name: POSTGRES_USER
+              value: academy_user
+            - name: POSTGRES_PASSWORD
+              value: replace-with-postgres-password

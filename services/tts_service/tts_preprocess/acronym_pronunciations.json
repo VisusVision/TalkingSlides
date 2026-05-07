@@ -1,0 +1,43 @@
+{
+  "en": {
+    "AI": "A I",
+    "API": "A P I",
+    "ASP": "A S P",
+    "GPU": "G P U",
+    "HTML": "H T M L",
+    "CSS": "C S S",
+    "SQL": "S Q L",
+    "XML": "X M L",
+    "JSON": "jay son",
+    "XTTS": "X T T S",
+    "TTS": "T T S",
+    "DRM": "D R M",
+    "HLS": "H L S",
+    "PPTX": "power point file",
+    "JWT": "J W T",
+    "UI": "U I",
+    "UX": "U X",
+    "DASH": "dash"
+  },
+  "tr": {
+    "AI": "ey ay",
+    "API": "ey pi ay",
+    "ASP": "ey es pi",
+    "GPU": "ci pi yu",
+    "HTML": "eyç ti em el",
+    "CSS": "si es es",
+    "SQL": "es ku el",
+    "XML": "eks em el",
+    "JSON": "cey son",
+    "XTTS": "iks ti ti es",
+    "TTS": "ti ti es",
+    "DRM": "di ar em",
+    "HLS": "eyç el es",
+    "PPTX": "P P T X",
+    "JWT": "J W T",
+    "UI": "U I",
+    "UX": "U X",
+    "DASH": "DASH",
+    "GPT": "Ci Pi Ti"
+  }
+}
