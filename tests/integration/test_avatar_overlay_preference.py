@@ -18,7 +18,7 @@ from django.contrib.auth.models import User
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
-from core.models import Project  # noqa: E402
+from core.models import Job, Project  # noqa: E402
 
 
 def _table_has_column(table_name, column_name):
@@ -28,6 +28,7 @@ def _table_has_column(table_name, column_name):
     return any(row[1] == column_name for row in rows)
 
 
+@pytest.mark.django_db
 def test_avatar_overlay_preference_persists_per_user_and_lesson():
     if not _table_has_column("core_project", "avatar_enabled_override"):
         pytest.skip("Local DB schema is stale; run migrations to execute this test.")
@@ -35,7 +36,14 @@ def test_avatar_overlay_preference_persists_per_user_and_lesson():
     suffix = uuid.uuid4().hex[:8]
     teacher = User.objects.create_user(username=f"owner_{suffix}", password="pass")
     student = User.objects.create_user(username=f"student_{suffix}", password="pass")
-    lesson = Project.objects.create(title="With Avatar", user=teacher)
+    lesson = Project.objects.create(
+        title="With Avatar",
+        user=teacher,
+        is_published=True,
+        status="ready",
+        moderation_status="approved",
+    )
+    Job.objects.create(project=lesson, job_type="video_export", status="done")
 
     factory = APIRequestFactory()
     request = factory.put(

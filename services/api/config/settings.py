@@ -1,8 +1,8 @@
-﻿"""
+"""
 Django settings for AI_ACADEMY API.
 
-Reads configuration from environment variables.
-PostgreSQL is mandatory; SQLite fallback is disabled.
+Reads configuration from environment variables; falls back to SQLite
+for local development when DATABASE_URL is not set.
 """
 
 import os
@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-insecure-secret-key-change-me")
 DEBUG = os.environ.get("DEBUG", "True") == "True"
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,api").split(",")
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
 
 # ---------------------------------------------------------------------------
 # Applications
@@ -37,10 +37,10 @@ INSTALLED_APPS = [
     "corsheaders",
     # Project apps
     "core",
+    "ai_agents",
 ]
 
 MIDDLEWARE = [
-    "core.middleware.StructuredRequestLoggingMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
@@ -77,27 +77,40 @@ WSGI_APPLICATION = "config.wsgi.application"
 CORS_ALLOW_ALL_ORIGINS = True
 
 # ---------------------------------------------------------------------------
-# Database - reads individual POSTGRES_* env vars (Docker env_file does NOT
+# Database – reads individual POSTGRES_* env vars (Docker env_file does NOT
 # expand ${VAR} shell references, so DATABASE_URL construction is done here).
-# PostgreSQL is mandatory in this repository. SQLite is disabled.
+# Falls back to SQLite when POSTGRES_HOST is not set (plain local dev).
 # ---------------------------------------------------------------------------
 _pg_host = os.environ.get("POSTGRES_HOST")
 
-if not _pg_host:
-    raise RuntimeError(
-        "POSTGRES_HOST is required. SQLite fallback is disabled; use Docker Postgres settings."
-    )
-
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.environ.get("POSTGRES_DB", "academy_db"),
-        "USER": os.environ.get("POSTGRES_USER", "academy_user"),
-        "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
-        "HOST": _pg_host,
-        "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+if _pg_host:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.environ.get("POSTGRES_DB", "academy_db"),
+            "USER": os.environ.get("POSTGRES_USER", "academy_user"),
+            "PASSWORD": os.environ.get("POSTGRES_PASSWORD", ""),
+            "HOST": _pg_host,
+            "PORT": os.environ.get("POSTGRES_PORT", "5432"),
+        }
     }
-}
+else:
+    # SQLite fallback – used when running `python manage.py runserver` locally
+    # Docker test runs can mount source read-only, so allow the pytest database
+    # file to live in a writable temp directory without changing runtime DBs.
+    _sqlite_test_name = os.environ.get("SQLITE_TEST_DATABASE_PATH")
+    _sqlite_options = {}
+    if _sqlite_test_name:
+        _sqlite_options["TEST"] = {"NAME": _sqlite_test_name}
+
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+            **_sqlite_options,
+        }
+    }
+
 # ---------------------------------------------------------------------------
 # Cache / Celery
 # ---------------------------------------------------------------------------
@@ -106,47 +119,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", REDIS_URL)
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", REDIS_URL)
 CELERY_RENDER_QUEUE = os.environ.get("CELERY_RENDER_QUEUE", "render")
-CELERY_RENDER_FAST_QUEUE = os.environ.get("CELERY_RENDER_FAST_QUEUE", "render_fast")
-CELERY_RENDER_QUALITY_QUEUE = os.environ.get("CELERY_RENDER_QUALITY_QUEUE", "render_quality")
 CELERY_AVATAR_QUEUE = os.environ.get("CELERY_AVATAR_QUEUE", "avatar")
-RENDER_ADMISSION_QUALITY_QUEUE_LIMIT = int(os.environ.get("RENDER_ADMISSION_QUALITY_QUEUE_LIMIT", "25"))
-RENDER_ADMISSION_FAST_QUEUE_LIMIT = int(os.environ.get("RENDER_ADMISSION_FAST_QUEUE_LIMIT", "80"))
-RENDER_ADMISSION_BALANCED_QUEUE_LIMIT = int(os.environ.get("RENDER_ADMISSION_BALANCED_QUEUE_LIMIT", "120"))
-RENDER_ADMISSION_AVATAR_QUEUE_LIMIT = int(os.environ.get("RENDER_ADMISSION_AVATAR_QUEUE_LIMIT", "20"))
-RENDER_ETA_SECONDS_FAST = int(os.environ.get("RENDER_ETA_SECONDS_FAST", "45"))
-RENDER_ETA_SECONDS_BALANCED = int(os.environ.get("RENDER_ETA_SECONDS_BALANCED", "120"))
-RENDER_ETA_SECONDS_QUALITY = int(os.environ.get("RENDER_ETA_SECONDS_QUALITY", "240"))
-RENDER_ETA_SECONDS_AVATAR = int(os.environ.get("RENDER_ETA_SECONDS_AVATAR", "360"))
-
-# Autoscale policy thresholds (queue depth + p95 latency).
-# These are recommendation thresholds for orchestration layers (KEDA/HPA/worker manager).
-AUTOSCALE_FAST_QUEUE_DEPTH_UP = int(os.environ.get("AUTOSCALE_FAST_QUEUE_DEPTH_UP", "12"))
-AUTOSCALE_FAST_QUEUE_DEPTH_DOWN = int(os.environ.get("AUTOSCALE_FAST_QUEUE_DEPTH_DOWN", "2"))
-AUTOSCALE_FAST_P95_UP_SECONDS = int(os.environ.get("AUTOSCALE_FAST_P95_UP_SECONDS", "90"))
-AUTOSCALE_FAST_P95_DOWN_SECONDS = int(os.environ.get("AUTOSCALE_FAST_P95_DOWN_SECONDS", "35"))
-AUTOSCALE_FAST_MIN_REPLICAS = int(os.environ.get("AUTOSCALE_FAST_MIN_REPLICAS", "2"))
-AUTOSCALE_FAST_MAX_REPLICAS = int(os.environ.get("AUTOSCALE_FAST_MAX_REPLICAS", "24"))
-
-AUTOSCALE_BALANCED_QUEUE_DEPTH_UP = int(os.environ.get("AUTOSCALE_BALANCED_QUEUE_DEPTH_UP", "10"))
-AUTOSCALE_BALANCED_QUEUE_DEPTH_DOWN = int(os.environ.get("AUTOSCALE_BALANCED_QUEUE_DEPTH_DOWN", "2"))
-AUTOSCALE_BALANCED_P95_UP_SECONDS = int(os.environ.get("AUTOSCALE_BALANCED_P95_UP_SECONDS", "180"))
-AUTOSCALE_BALANCED_P95_DOWN_SECONDS = int(os.environ.get("AUTOSCALE_BALANCED_P95_DOWN_SECONDS", "90"))
-AUTOSCALE_BALANCED_MIN_REPLICAS = int(os.environ.get("AUTOSCALE_BALANCED_MIN_REPLICAS", "1"))
-AUTOSCALE_BALANCED_MAX_REPLICAS = int(os.environ.get("AUTOSCALE_BALANCED_MAX_REPLICAS", "16"))
-
-AUTOSCALE_QUALITY_QUEUE_DEPTH_UP = int(os.environ.get("AUTOSCALE_QUALITY_QUEUE_DEPTH_UP", "6"))
-AUTOSCALE_QUALITY_QUEUE_DEPTH_DOWN = int(os.environ.get("AUTOSCALE_QUALITY_QUEUE_DEPTH_DOWN", "1"))
-AUTOSCALE_QUALITY_P95_UP_SECONDS = int(os.environ.get("AUTOSCALE_QUALITY_P95_UP_SECONDS", "320"))
-AUTOSCALE_QUALITY_P95_DOWN_SECONDS = int(os.environ.get("AUTOSCALE_QUALITY_P95_DOWN_SECONDS", "200"))
-AUTOSCALE_QUALITY_MIN_REPLICAS = int(os.environ.get("AUTOSCALE_QUALITY_MIN_REPLICAS", "1"))
-AUTOSCALE_QUALITY_MAX_REPLICAS = int(os.environ.get("AUTOSCALE_QUALITY_MAX_REPLICAS", "10"))
-
-AUTOSCALE_AVATAR_QUEUE_DEPTH_UP = int(os.environ.get("AUTOSCALE_AVATAR_QUEUE_DEPTH_UP", "4"))
-AUTOSCALE_AVATAR_QUEUE_DEPTH_DOWN = int(os.environ.get("AUTOSCALE_AVATAR_QUEUE_DEPTH_DOWN", "0"))
-AUTOSCALE_AVATAR_P95_UP_SECONDS = int(os.environ.get("AUTOSCALE_AVATAR_P95_UP_SECONDS", "600"))
-AUTOSCALE_AVATAR_P95_DOWN_SECONDS = int(os.environ.get("AUTOSCALE_AVATAR_P95_DOWN_SECONDS", "360"))
-AUTOSCALE_AVATAR_MIN_REPLICAS = int(os.environ.get("AUTOSCALE_AVATAR_MIN_REPLICAS", "1"))
-AUTOSCALE_AVATAR_MAX_REPLICAS = int(os.environ.get("AUTOSCALE_AVATAR_MAX_REPLICAS", "8"))
 
 # ---------------------------------------------------------------------------
 # Password validation
@@ -253,7 +226,6 @@ DRM_FAIRPLAY_CONTENT_TYPE = os.environ.get("DRM_FAIRPLAY_CONTENT_TYPE", "applica
 DRM_STREAMING_ENABLED = os.environ.get("DRM_STREAMING_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
 DRM_HLS_ENCRYPTION_ENABLED = os.environ.get("DRM_HLS_ENCRYPTION_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
 DRM_HLS_KEY_ROTATION_SECONDS = int(os.environ.get("DRM_HLS_KEY_ROTATION_SECONDS", "0"))
-PROMETHEUS_METRICS_TOKEN = os.environ.get("PROMETHEUS_METRICS_TOKEN", "").strip()
 
 # Lesson protection policy controls.
 LESSON_PROTECTION_DEFAULT_MODE = os.environ.get("LESSON_PROTECTION_DEFAULT_MODE", "secure_stream")
@@ -299,11 +271,205 @@ TTS_LLM_SUGGESTIONS_ENABLED = os.environ.get("TTS_LLM_SUGGESTIONS_ENABLED", "fal
     "1", "true", "yes", "on"
 }
 TTS_LLM_PROVIDER = os.environ.get("TTS_LLM_PROVIDER", "ollama").strip().lower()
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").strip().rstrip("/")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434").strip().rstrip("/")
 OLLAMA_PRONUNCIATION_MODEL = os.environ.get("OLLAMA_PRONUNCIATION_MODEL", "llama3.1:8b").strip()
 TTS_LLM_SUGGESTION_TIMEOUT_SECONDS = float(os.environ.get("TTS_LLM_SUGGESTION_TIMEOUT_SECONDS", "8"))
 TTS_LLM_MAX_TERMS = int(os.environ.get("TTS_LLM_MAX_TERMS", "20"))
 TTS_LLM_CONTEXT_MAX_CHARS = int(os.environ.get("TTS_LLM_CONTEXT_MAX_CHARS", "1000"))
 
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+# ---------------------------------------------------------------------------
+# Subtitle translation providers. Enabled by default, but paid/external API
+# providers are skipped unless explicit endpoint/key/provider settings are set.
+# ---------------------------------------------------------------------------
+SUBTITLE_TRANSLATION_ENABLED = os.environ.get("SUBTITLE_TRANSLATION_ENABLED", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+SUBTITLE_TRANSLATION_PROVIDER = os.environ.get("SUBTITLE_TRANSLATION_PROVIDER", "auto").strip().lower()
+SUBTITLE_TRANSLATION_PROVIDER_CHAIN = os.environ.get("SUBTITLE_TRANSLATION_PROVIDER_CHAIN", "api,ollama,libretranslate,argos,mock").strip()
+SUBTITLE_TRANSLATION_ALLOW_MOCK_FALLBACK = os.environ.get("SUBTITLE_TRANSLATION_ALLOW_MOCK_FALLBACK", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+SUBTITLE_TRANSLATION_TARGET_LANGUAGES = os.environ.get("SUBTITLE_TRANSLATION_TARGET_LANGUAGES", "").strip()
+SUBTITLE_TRANSLATION_TIMEOUT_SECONDS = float(os.environ.get("SUBTITLE_TRANSLATION_TIMEOUT_SECONDS", "20"))
+SUBTITLE_TRANSLATION_API_PROVIDER = os.environ.get("SUBTITLE_TRANSLATION_API_PROVIDER", "").strip()
+SUBTITLE_TRANSLATION_API_BASE_URL = os.environ.get("SUBTITLE_TRANSLATION_API_BASE_URL", "").strip()
+SUBTITLE_TRANSLATION_API_KEY = os.environ.get("SUBTITLE_TRANSLATION_API_KEY", "").strip()
+SUBTITLE_TRANSLATION_API_MODEL = os.environ.get("SUBTITLE_TRANSLATION_API_MODEL", "").strip()
+SUBTITLE_PUBLIC_REQUESTS_ENABLED = os.environ.get("SUBTITLE_PUBLIC_REQUESTS_ENABLED", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+SUBTITLE_PUBLIC_REQUEST_LANGUAGE_ALLOWLIST = os.environ.get(
+    "SUBTITLE_PUBLIC_REQUEST_LANGUAGE_ALLOWLIST",
+    "en,ar,tr,fr,de,es,it,pt,ru,zh,ja,ko,hi,ur,id,fa",
+).strip()
+SUBTITLE_PUBLIC_REQUEST_RATE_LIMIT_PER_HOUR = int(os.environ.get("SUBTITLE_PUBLIC_REQUEST_RATE_LIMIT_PER_HOUR", "10"))
+SUBTITLE_PUBLIC_REQUEST_RATE_LIMIT_ANON_PER_HOUR = int(
+    os.environ.get("SUBTITLE_PUBLIC_REQUEST_RATE_LIMIT_ANON_PER_HOUR", "5")
+)
+SUBTITLE_PUBLIC_REQUEST_LOCK_SECONDS = int(os.environ.get("SUBTITLE_PUBLIC_REQUEST_LOCK_SECONDS", "300"))
+SUBTITLE_PUBLIC_REQUEST_MAX_ACTIVE_PER_PROJECT = int(os.environ.get("SUBTITLE_PUBLIC_REQUEST_MAX_ACTIVE_PER_PROJECT", "3"))
+SUBTITLE_PRODUCTION_ALLOW_MOCK_FALLBACK = os.environ.get(
+    "SUBTITLE_PRODUCTION_ALLOW_MOCK_FALLBACK",
+    "true" if DEBUG else "false",
+).lower() in {"1", "true", "yes", "on"}
+OLLAMA_TRANSLATION_ENABLED = os.environ.get("OLLAMA_TRANSLATION_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+OLLAMA_TRANSLATION_BASE_URL = os.environ.get(
+    "OLLAMA_TRANSLATION_BASE_URL",
+    os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+).strip().rstrip("/")
+OLLAMA_TRANSLATION_MODEL = os.environ.get("OLLAMA_TRANSLATION_MODEL", "qwen2.5:7b-instruct").strip()
+OLLAMA_TRANSLATION_TIMEOUT_SECONDS = float(os.environ.get("OLLAMA_TRANSLATION_TIMEOUT_SECONDS", "60"))
+OLLAMA_TRANSLATION_MAX_CUES_PER_BATCH = int(os.environ.get("OLLAMA_TRANSLATION_MAX_CUES_PER_BATCH", "40"))
+OLLAMA_TRANSLATION_MAX_CHARS_PER_BATCH = int(os.environ.get("OLLAMA_TRANSLATION_MAX_CHARS_PER_BATCH", "6000"))
+LIBRETRANSLATE_BASE_URL = os.environ.get("LIBRETRANSLATE_BASE_URL", "http://localhost:5000").strip().rstrip("/")
+LIBRETRANSLATE_API_KEY = os.environ.get("LIBRETRANSLATE_API_KEY", "").strip()
+ARGOS_TRANSLATE_ENABLED = os.environ.get("ARGOS_TRANSLATE_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+ARGOS_TRANSLATE_PACKAGES_DIR = os.environ.get("ARGOS_TRANSLATE_PACKAGES_DIR", "").strip()
+ARGOS_TRANSLATE_AUTO_INSTALL = os.environ.get("ARGOS_TRANSLATE_AUTO_INSTALL", "false").lower() in {
+    "1", "true", "yes", "on"
+}
 
+# Optional moderation LLM provider (local Ollama only)
+# ---------------------------------------------------------------------------
+AI_AGENTS_LOCAL_LLM_ENABLED = os.environ.get("AI_AGENTS_LOCAL_LLM_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+AI_AGENTS_OLLAMA_BASE_URL = os.environ.get("AI_AGENTS_OLLAMA_BASE_URL", "http://localhost:11434").strip().rstrip("/")
+AI_AGENTS_TEXT_MODEL = os.environ.get("AI_AGENTS_TEXT_MODEL", "qwen2.5:7b-instruct").strip()
+AI_AGENTS_LLM_TIMEOUT_SECONDS = float(os.environ.get("AI_AGENTS_LLM_TIMEOUT_SECONDS", "8"))
+
+# Optional translation-to-English moderation bridge. Disabled by default and
+# advisory-only; local language rules remain the primary moderation path.
+TRANSLATION_MODERATION_ENABLED = os.environ.get("TRANSLATION_MODERATION_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+TRANSLATION_MODERATION_PROVIDER = os.environ.get("TRANSLATION_MODERATION_PROVIDER", "none").strip().lower()
+TRANSLATION_MODERATION_TIMEOUT_SECONDS = float(os.environ.get("TRANSLATION_MODERATION_TIMEOUT_SECONDS", "20"))
+TRANSLATION_MODERATION_TARGET_LANGUAGE = os.environ.get("TRANSLATION_MODERATION_TARGET_LANGUAGE", "en").strip().lower()
+TRANSLATION_MODERATION_BASE_URL = os.environ.get(
+    "TRANSLATION_MODERATION_BASE_URL",
+    "http://libretranslate:5000",
+).strip().rstrip("/")
+
+# ---------------------------------------------------------------------------
+# Feature-flagged source moderation automation
+# ---------------------------------------------------------------------------
+SOURCE_MODERATION_AUTO_ENABLED = os.environ.get("SOURCE_MODERATION_AUTO_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION = os.environ.get(
+    "SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+SOURCE_MODERATION_PHASE = os.environ.get("SOURCE_MODERATION_PHASE", "source_scan").strip() or "source_scan"
+
+# ---------------------------------------------------------------------------
+# Feature-flagged local visual asset moderation automation
+# ---------------------------------------------------------------------------
+VISUAL_MODERATION_AUTO_ENABLED = os.environ.get("VISUAL_MODERATION_AUTO_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION = os.environ.get(
+    "VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+VISUAL_MODERATION_PHASE = os.environ.get("VISUAL_MODERATION_PHASE", "visual_asset_scan").strip() or "visual_asset_scan"
+VISUAL_MODERATION_SCAN_COVER = os.environ.get("VISUAL_MODERATION_SCAN_COVER", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+VISUAL_MODERATION_SCAN_SLIDES = os.environ.get("VISUAL_MODERATION_SCAN_SLIDES", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION = os.environ.get(
+    "VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+
+VISUAL_SAFETY_PROVIDER = os.environ.get("VISUAL_SAFETY_PROVIDER", "none").strip().lower() or "none"
+VISUAL_SAFETY_CLASSIFIER_ENABLED = os.environ.get("VISUAL_SAFETY_CLASSIFIER_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+VISUAL_SAFETY_TIMEOUT_SECONDS = float(os.environ.get("VISUAL_SAFETY_TIMEOUT_SECONDS", "20") or "20")
+VISUAL_SAFETY_MAX_IMAGE_BYTES = int(os.environ.get("VISUAL_SAFETY_MAX_IMAGE_BYTES", "10485760") or "10485760")
+
+AZURE_CONTENT_SAFETY_ENABLED = os.environ.get("AZURE_CONTENT_SAFETY_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+AZURE_CONTENT_SAFETY_ENDPOINT = os.environ.get("AZURE_CONTENT_SAFETY_ENDPOINT", "").strip().rstrip("/")
+AZURE_CONTENT_SAFETY_KEY = os.environ.get("AZURE_CONTENT_SAFETY_KEY", "").strip()
+AZURE_CONTENT_SAFETY_API_VERSION = os.environ.get("AZURE_CONTENT_SAFETY_API_VERSION", "2024-09-01").strip() or "2024-09-01"
+AZURE_CONTENT_SAFETY_CATEGORIES = os.environ.get(
+    "AZURE_CONTENT_SAFETY_CATEGORIES",
+    "sexual,violence,self_harm,hate",
+).strip() or "sexual,violence,self_harm,hate"
+AZURE_CONTENT_SAFETY_BLOCK_SEVERITY = int(os.environ.get("AZURE_CONTENT_SAFETY_BLOCK_SEVERITY", "4") or "4")
+
+AVATAR_IMAGE_MODERATION_AUTO_ENABLED = os.environ.get(
+    "AVATAR_IMAGE_MODERATION_AUTO_ENABLED",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+AVATAR_IMAGE_MODERATION_BLOCK_ON_REJECTION = os.environ.get(
+    "AVATAR_IMAGE_MODERATION_BLOCK_ON_REJECTION",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL = os.environ.get(
+    "AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+
+# ---------------------------------------------------------------------------
+# Feature-flagged local OCR slide moderation automation
+# ---------------------------------------------------------------------------
+OCR_MODERATION_AUTO_ENABLED = os.environ.get("OCR_MODERATION_AUTO_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+OCR_MODERATION_BLOCK_RENDER_ON_REJECTION = os.environ.get(
+    "OCR_MODERATION_BLOCK_RENDER_ON_REJECTION",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+OCR_MODERATION_PHASE = os.environ.get("OCR_MODERATION_PHASE", "ocr_slide_scan").strip() or "ocr_slide_scan"
+OCR_MODERATION_SCAN_SLIDES = os.environ.get("OCR_MODERATION_SCAN_SLIDES", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+OCR_MODERATION_PROVIDER = os.environ.get("OCR_MODERATION_PROVIDER", "noop").strip().lower() or "noop"
+
+AZURE_OCR_ENABLED = os.environ.get("AZURE_OCR_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+AZURE_OCR_ENDPOINT = os.environ.get("AZURE_OCR_ENDPOINT", "").strip().rstrip("/")
+AZURE_OCR_KEY = os.environ.get("AZURE_OCR_KEY", "").strip()
+AZURE_OCR_API_VERSION = os.environ.get("AZURE_OCR_API_VERSION", "2024-02-29-preview").strip()
+AZURE_OCR_MODEL = os.environ.get("AZURE_OCR_MODEL", "prebuilt-read").strip() or "prebuilt-read"
+AZURE_OCR_TIMEOUT_SECONDS = float(os.environ.get("AZURE_OCR_TIMEOUT_SECONDS", "30"))
+AZURE_OCR_MAX_IMAGE_BYTES = int(os.environ.get("AZURE_OCR_MAX_IMAGE_BYTES", "10485760"))
+AZURE_OCR_LANG_HINTS = os.environ.get("AZURE_OCR_LANG_HINTS", "en,tr,ar").strip()
+
+# ---------------------------------------------------------------------------
+# Feature-flagged post-render video frame moderation audit
+# ---------------------------------------------------------------------------
+VIDEO_FRAME_AUDIT_AUTO_ENABLED = os.environ.get("VIDEO_FRAME_AUDIT_AUTO_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+VIDEO_FRAME_AUDIT_PHASE = os.environ.get("VIDEO_FRAME_AUDIT_PHASE", "video_frame_audit").strip() or "video_frame_audit"
+VIDEO_FRAME_AUDIT_EVERY_SECONDS = float(os.environ.get("VIDEO_FRAME_AUDIT_EVERY_SECONDS", "10"))
+VIDEO_FRAME_AUDIT_MAX_FRAMES = int(os.environ.get("VIDEO_FRAME_AUDIT_MAX_FRAMES", "5"))
+VIDEO_FRAME_AUDIT_RUN_VISUAL_CHECK = os.environ.get("VIDEO_FRAME_AUDIT_RUN_VISUAL_CHECK", "true").lower() in {
+    "1", "true", "yes", "on"
+}
+VIDEO_FRAME_AUDIT_RUN_OCR = os.environ.get("VIDEO_FRAME_AUDIT_RUN_OCR", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION = os.environ.get(
+    "VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+VIDEO_FRAME_AUDIT_RETAIN_FRAMES = os.environ.get("VIDEO_FRAME_AUDIT_RETAIN_FRAMES", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+VIDEO_FRAME_AUDIT_FRAME_RETENTION_DAYS = int(os.environ.get("VIDEO_FRAME_AUDIT_FRAME_RETENTION_DAYS", "7"))
+VIDEO_FRAME_AUDIT_CLEANUP_ON_SUCCESS = os.environ.get(
+    "VIDEO_FRAME_AUDIT_CLEANUP_ON_SUCCESS",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

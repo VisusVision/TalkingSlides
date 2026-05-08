@@ -25,28 +25,16 @@ WORKDIR /app
 RUN pip install --upgrade pip
 
 ARG TORCH_CHANNEL=cu121
-ARG TORCH_VERSION=2.5.1
-ARG TORCHAUDIO_VERSION=2.5.1
 ARG INSTALL_TEST_DEPS=0
 
 COPY services/tts_service/requirements.txt /app/requirements.txt
 COPY requirements-test.txt /tmp/test-requirements.txt
-RUN set -eux; \
-    TORCH_SPEC="torch==${TORCH_VERSION} torchaudio==${TORCHAUDIO_VERSION}"; \
-    install_with_retry() { \
-      INDEX_URL="$1"; \
-      for ATTEMPT in 1 2 3; do \
-        if pip install --no-cache-dir --default-timeout=1200 --retries 5 --index-url "${INDEX_URL}" ${TORCH_SPEC}; then \
-          return 0; \
-        fi; \
-        echo "Torch install failed from ${INDEX_URL} (attempt ${ATTEMPT}/3)"; \
-        sleep 5; \
-      done; \
-      return 1; \
-    }; \
-    install_with_retry "https://download.pytorch.org/whl/${TORCH_CHANNEL}" || \
-    install_with_retry "https://download.pytorch.org/whl/cpu" || \
-    pip install --no-cache-dir --default-timeout=1200 --retries 5 ${TORCH_SPEC}
+RUN pip install --no-cache-dir --default-timeout=1000 \
+    --index-url https://download.pytorch.org/whl/${TORCH_CHANNEL} \
+    torch==2.5.1 torchaudio==2.5.1 || \
+    pip install --no-cache-dir --default-timeout=1000 \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.5.1 torchaudio==2.5.1
 
 RUN pip install --no-cache-dir --default-timeout=1000 \
     -r /app/requirements.txt

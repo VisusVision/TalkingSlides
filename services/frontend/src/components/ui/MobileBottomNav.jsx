@@ -1,12 +1,18 @@
-import { BarChart3, BookOpenText, LayoutDashboard, SlidersHorizontal } from 'lucide-react';
+import { BarChart3, BookOpenText, LayoutDashboard, ShieldCheck, SlidersHorizontal } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
-import { canAccessStudio } from '../../lib/auth';
+import {
+  canAccessAnalytics,
+  canAccessModeration,
+  canAccessStudio,
+  isSignedIn,
+} from '../../lib/auth';
 
 const MOBILE_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard, end: true },
-  { to: '/library', label: 'Lessons', icon: BookOpenText },
+  { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
   { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
-  { to: '/analytics', label: 'Insights', icon: BarChart3 },
+  { to: '/analytics', label: 'Insights', icon: BarChart3, analyticsOnly: true },
+  { to: '/moderation', label: 'Review', icon: ShieldCheck, moderationOnly: true },
 ];
 
 function mobileItemClass(isActive) {
@@ -18,8 +24,17 @@ function mobileItemClass(isActive) {
 }
 
 export default function MobileBottomNav({ user }) {
+  const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
-  const mobileItems = MOBILE_ITEMS.filter((item) => !item.studioOnly || studioAllowed);
+  const analyticsAllowed = canAccessAnalytics(user);
+  const moderationAllowed = canAccessModeration(user);
+  const mobileItems = MOBILE_ITEMS.filter((item) => {
+    if (item.signedInOnly) return signedIn;
+    if (item.studioOnly) return studioAllowed;
+    if (item.analyticsOnly) return analyticsAllowed;
+    if (item.moderationOnly) return moderationAllowed;
+    return true;
+  });
 
   return (
     <nav

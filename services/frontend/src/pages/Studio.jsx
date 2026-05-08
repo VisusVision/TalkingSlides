@@ -120,6 +120,34 @@ function projectProgressPct(project) {
   return Math.min(100, Math.max(0, Math.round(raw)));
 }
 
+function renderProfileLabel(project) {
+  const raw = String(project?.render_profile || 'balanced').trim().toLowerCase();
+  if (raw === 'fast') return 'Fast';
+  if (raw === 'quality') return 'Quality';
+  return 'Balanced';
+}
+
+function projectEtaSeconds(project) {
+  const job = project?.latest_job || {};
+  const direct = Number(
+    job?.eta_seconds_remaining
+    ?? job?.estimated_wait_seconds
+    ?? job?.eta_seconds
+    ?? job?.remaining_seconds
+    ?? 0
+  );
+  if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+
+  const progress = Number(job?.progress || 0);
+  const createdAt = Date.parse(job?.created_at || '');
+  if (Number.isFinite(progress) && progress > 0 && progress < 100 && Number.isFinite(createdAt)) {
+    const elapsedSec = Math.max(1, (Date.now() - createdAt) / 1000);
+    const estimatedTotalSec = elapsedSec / (progress / 100);
+    return Math.max(0, Math.round(estimatedTotalSec - elapsedSec));
+  }
+  return 0;
+}
+
 function safeDateLabel(value) {
   if (!value) return 'Recent';
   return new Date(value).toLocaleDateString('en-US', {
@@ -1245,6 +1273,24 @@ export default function Studio({ user, onLoginRequest }) {
                         <span>Rerender Without Avatar</span>
                       </Button>
                     )}
+                    {selectedLesson && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => handleRerenderProject(selectedLesson, { renderProfile: 'fast' })}
+                      >
+                        <RefreshCcw size={16} />
+                        <span>Rerender Fast</span>
+                      </Button>
+                    )}
+                    {selectedLesson && (
+                      <Button
+                        variant="secondary"
+                        onClick={() => handleRerenderProject(selectedLesson, { renderProfile: 'balanced' })}
+                      >
+                        <RefreshCcw size={16} />
+                        <span>Rerender Balanced</span>
+                      </Button>
+                    )}
                     {selectedLesson && ['processing', 'queued'].includes(projectStatusLabel(selectedLesson).toLowerCase()) && (
                       <Button variant="ghost" onClick={() => handleCancelRender(selectedLesson)}>
                         <span>Cancel Render</span>
@@ -1292,7 +1338,12 @@ export default function Studio({ user, onLoginRequest }) {
                     <div className="rounded-2xl token-surface p-3">
                       {!projectRenderReady(selectedLesson) ? (
                         <div className="space-y-2 text-sm text-[var(--text-secondary)]">
-                          <p className="font-semibold text-[var(--text-primary)]">Render: {projectStatusLabel(selectedLesson)}</p>
+                          <p className="font-semibold text-[var(--text-primary)]">
+                            Render: {projectStatusLabel(selectedLesson)}
+                            <span className="ml-2 rounded-full bg-[color:var(--surface-container-highest)] px-2 py-0.5 text-xs text-[var(--text-secondary)]">
+                              {renderProfileLabel(selectedLesson)}
+                            </span>
+                          </p>
                           {projectStatusLabel(selectedLesson).toLowerCase() === 'processing' && (
                             <>
                               <p>Progress: %{renderProgressPct}</p>
@@ -1302,6 +1353,9 @@ export default function Studio({ user, onLoginRequest }) {
                                   style={{ width: `${Math.max(2, renderProgressPct)}%` }}
                                 />
                               </div>
+                              {projectEtaSeconds(selectedLesson) > 0 && (
+                                <p>ETA: {formatEta(projectEtaSeconds(selectedLesson))}</p>
+                              )}
                             </>
                           )}
                           <p>Video and captions will appear after render completes.</p>
@@ -1533,6 +1587,9 @@ export default function Studio({ user, onLoginRequest }) {
                         <span className={`rounded-full px-2 py-0.5 ${projectStatusTone(project)}`}>
                           {projectStatusLabel(project)}
                         </span>
+                        <span className="rounded-full bg-[color:var(--surface-container-high)] px-2 py-0.5 text-[var(--text-secondary)]">
+                          {renderProfileLabel(project)}
+                        </span>
                         <span className={`rounded-full px-2 py-0.5 ${projectPublicationTone(project)}`}>
                           {projectPublicationLabel(project)}
                         </span>
@@ -1555,9 +1612,13 @@ export default function Studio({ user, onLoginRequest }) {
                           <span>Preview</span>
                         </Button>
                       )}
-                      <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project)}>
+                      <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project, { renderProfile: 'fast' })}>
                         <RefreshCcw size={14} />
-                        <span>Rerender</span>
+                        <span>Rerender Fast</span>
+                      </Button>
+                      <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project, { renderProfile: 'balanced' })}>
+                        <RefreshCcw size={14} />
+                        <span>Rerender Balanced</span>
                       </Button>
                       {projectRetryable(project) && project?.latest_job?.id && (
                         <Button variant="secondary" size="sm" onClick={() => handleRetryJob(project)}>
@@ -1591,6 +1652,18 @@ export default function Studio({ user, onLoginRequest }) {
                         <span>Delete</span>
                       </Button>
                     </div>
+                    {projectStatusLabel(project).toLowerCase() === 'processing' && (
+                      <div className="mt-3 space-y-1 text-xs text-[var(--text-secondary)]">
+                        <p>Progress: %{projectProgressPct(project)}</p>
+                        <div className="h-1.5 w-full overflow-hidden rounded-full bg-[color:var(--surface-container-highest)]">
+                          <div
+                            className="h-full rounded-full bg-[image:var(--accent-gradient)] transition-all duration-500"
+                            style={{ width: `${Math.max(2, projectProgressPct(project))}%` }}
+                          />
+                        </div>
+                        {projectEtaSeconds(project) > 0 && <p>ETA: {formatEta(projectEtaSeconds(project))}</p>}
+                      </div>
+                    )}
                   </article>
                 ))
               )}

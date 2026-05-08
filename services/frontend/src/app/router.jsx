@@ -3,8 +3,12 @@ import Home from '../pages/Home';
 import Watch from '../pages/Watch';
 import Studio from '../pages/Studio';
 import Browse from '../pages/Browse';
+import Channel from '../pages/Channel';
+import Playlist from '../pages/Playlist';
 import Library from '../pages/Library';
+import History from '../pages/History';
 import Analytics from '../pages/Analytics';
+import ModerationDashboard from '../pages/ModerationDashboard';
 import Settings from '../pages/Settings';
 import ProtectedRoute from './ProtectedRoute';
 
@@ -32,11 +36,26 @@ export default function AppRouter({
         )}
       />
       <Route path="/browse" element={<Browse searchQuery={searchQuery} />} />
+      <Route path="/channel/:userId" element={<Channel user={user} searchQuery={searchQuery} onLoginRequest={onLoginRequest} />} />
+      <Route path="/playlist/:playlistId" element={<Playlist />} />
       <Route
         path="/analytics"
         element={(
-          <ProtectedRoute user={user} onLoginRequest={onLoginRequest}>
+          <ProtectedRoute
+            user={user}
+            onLoginRequest={onLoginRequest}
+            requireAnalyticsRole
+            redirectUnauthorizedTo="/"
+          >
             <Analytics user={user} />
+          </ProtectedRoute>
+        )}
+      />
+      <Route
+        path="/history"
+        element={(
+          <ProtectedRoute user={user} onLoginRequest={onLoginRequest}>
+            <History user={user} />
           </ProtectedRoute>
         )}
       />
@@ -53,6 +72,19 @@ export default function AppRouter({
         element={(
           <ProtectedRoute user={user} onLoginRequest={onLoginRequest}>
             <Library user={user} searchQuery={searchQuery} onLoginRequest={onLoginRequest} />
+          </ProtectedRoute>
+        )}
+      />
+      <Route
+        path="/moderation"
+        element={(
+          <ProtectedRoute
+            user={user}
+            onLoginRequest={onLoginRequest}
+            requireStaffRole
+            redirectUnauthorizedTo="/"
+          >
+            <ModerationDashboard user={user} />
           </ProtectedRoute>
         )}
       />

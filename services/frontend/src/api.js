@@ -2,21 +2,6 @@ export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localh
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, "");
 const AUTH_USER_STORAGE_KEY = "auth_user";
 
-function randomRequestId(prefix = "req") {
-  const cryptoApi = globalThis?.crypto;
-  if (cryptoApi?.randomUUID) {
-    return `${prefix}_${cryptoApi.randomUUID()}`;
-  }
-  if (cryptoApi?.getRandomValues) {
-    const bytes = new Uint8Array(16);
-    cryptoApi.getRandomValues(bytes);
-    const hex = Array.from(bytes, (part) => part.toString(16).padStart(2, "0")).join("");
-    return `${prefix}_${hex}`;
-  }
-  const salt = Math.random().toString(36).slice(2, 10);
-  return `${prefix}_${Date.now()}_${salt}`;
-}
-
 function toAbsoluteApiUrl(url) {
   if (!url) return "";
   if (/^https?:\/\//i.test(url)) return url;
@@ -85,6 +70,13 @@ function authHeaders(extra = {}) {
   return token ? { Authorization: `Token ${token}`, ...extra } : { ...extra };
 }
 
+function apiErrorMessage(data, fallback) {
+  const detail = data?.error || data?.detail || data?.message || data?.details;
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (detail && typeof detail === "object") return JSON.stringify(detail);
+  return fallback;
+}
+
 export async function fetchAuthenticatedMediaBlobUrl(relPath) {
   const safeRel = String(relPath || "").replace(/^\/+/, "").trim();
   if (!safeRel) return "";
@@ -99,12 +91,12 @@ export async function fetchAuthenticatedMediaBlobUrl(relPath) {
 }
 
 export async function fetchAuthenticatedObjectUrl(url) {
-  const absoluteUrl = toAbsoluteApiUrl(String(url || "").trim());
-  if (!absoluteUrl) return "";
-  const res = await fetch(absoluteUrl, { headers: authHeaders() });
+  const target = String(url || "").trim();
+  if (!target) return "";
+  const res = await fetch(target, { headers: authHeaders() });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to fetch file (${res.status})`);
+    throw new Error(data.error || `Failed to fetch protected asset (${res.status})`);
   }
   const blob = await res.blob();
   return URL.createObjectURL(blob);
@@ -219,21 +211,14 @@ export async function fetchProjects() {
 }
 
 export async function createProject(formData) {
-  if (formData instanceof FormData && !formData.get("request_id")) {
-    formData.append("request_id", randomRequestId("project_create"));
-  }
   const res = await fetch(`${API_BASE_URL}/projects/`, {
     method: "POST",
     headers: authHeaders(),
     body: formData,
   });
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    const message = data.error || data.detail || "Upload failed";
-    const error = new Error(message);
-    error.payload = data;
-    error.status = res.status;
-    throw error;
+    const text = await res.text();
+    throw new Error(`Upload failed: ${text}`);
   }
   return res.json();
 }
@@ -249,34 +234,18 @@ export async function deleteProject(projectId) {
 
 export async function rerenderProject(projectId, options = {}) {
   const body = {};
-  body.request_id = options.requestId || randomRequestId("project_rerender");
   if (Object.prototype.hasOwnProperty.call(options, "avatarEnabled")) {
     body.avatar_enabled = options.avatarEnabled ? "1" : "0";
   }
-  if (options.renderProfile) {
-    body.render_profile = String(options.renderProfile);
+  if (Object.prototype.hasOwnProperty.call(options, "renderProfile")) {
+    body.render_profile = String(options.renderProfile || "").trim().toLowerCase();
   }
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/rerender/`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    const message = data.error || data.detail || "Failed to rerender project";
-    const error = new Error(message);
-    error.payload = data;
-    error.status = res.status;
-    throw error;
-  }
-  return res.json();
-}
-
-export async function fetchRenderCapacity() {
-  const res = await fetch(`${API_BASE_URL}/system/render-capacity/`, {
-    headers: authHeaders(),
-  });
-  if (!res.ok) throw new Error("Failed to fetch render capacity");
+  if (!res.ok) throw new Error("Failed to rerender project");
   return res.json();
 }
 
@@ -334,22 +303,121 @@ export async function updateProjectPublished(projectId, isPublished) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to update project publication state");
+    throw new Error(apiErrorMessage(data, "Failed to update project publication state"));
   }
   return res.json();
+}
+
+export async function getProjectModeration(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/moderation/`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation status"));
+  }
+  return data;
+}
+
+export async function rescanProjectModeration(projectId, phase = "manual_rescan") {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/moderation/rescan/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ phase }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to resubmit moderation scan"));
+  }
+  return data;
+}
+
+export async function requestProjectAdminReview(projectId, message = "") {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/moderation/request-admin-review/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ message }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to request admin review"));
+  }
+  return data;
+}
+
+export async function listModerationReviewRequests(status = "open") {
+  const params = new URLSearchParams();
+  if (status) params.set("status", String(status));
+  const query = params.toString();
+  const url = query
+    ? `${API_BASE_URL}/admin/moderation/review-requests/?${query}`
+    : `${API_BASE_URL}/admin/moderation/review-requests/`;
+  const res = await fetch(url, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation review requests"));
+  }
+  return data;
+}
+
+export async function getModerationReviewRequest(id) {
+  const res = await fetch(`${API_BASE_URL}/admin/moderation/review-requests/${id}/`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation review request"));
+  }
+  return data;
+}
+
+export async function approveModerationReviewRequest(id, adminResponse = "") {
+  const res = await fetch(`${API_BASE_URL}/admin/moderation/review-requests/${id}/approve/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ admin_response: adminResponse }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to approve moderation review request"));
+  }
+  return data;
+}
+
+export async function rejectModerationReviewRequest(id, adminResponse = "") {
+  const res = await fetch(`${API_BASE_URL}/admin/moderation/review-requests/${id}/reject/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ admin_response: adminResponse }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to reject moderation review request"));
+  }
+  return data;
+}
+
+export async function sendModerationReviewResponse(id, adminResponse = "") {
+  const res = await fetch(`${API_BASE_URL}/admin/moderation/review-requests/${id}/response/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ admin_response: adminResponse }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to send moderation review response"));
+  }
+  return data;
 }
 
 // ---------------------------------------------------------------------------
 // Jobs
 // ---------------------------------------------------------------------------
 
-export async function fetchJobStatus(projectId, jobId, options = {}) {
-  const params = new URLSearchParams();
-  params.set('response_schema', String(options.responseSchema || 'light_v1'));
-  if (options.includeTranscriptPages) params.set('include_transcript_pages', '1');
-  if (options.includeLanguageDetection) params.set('include_language_detection', '1');
-  const qs = params.toString();
-  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/${qs ? `?${qs}` : ''}`, {
+export async function fetchJobStatus(projectId, jobId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/`, {
     headers: authHeaders(),
   });
   if (!res.ok) {
@@ -359,171 +427,99 @@ export async function fetchJobStatus(projectId, jobId, options = {}) {
   return res.json();
 }
 
-export async function cancelJob(projectId, jobId, reason = "") {
-  const body = reason ? { reason: String(reason) } : {};
+export async function cancelJob(projectId, jobId) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/cancel/`, {
     method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
+    headers: authHeaders(),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message = data.error || "Failed to cancel job";
-    const error = new Error(message);
-    error.status = res.status;
-    error.payload = data;
-    throw error;
+    throw new Error(data.error || "Failed to cancel job");
   }
   return data;
 }
 
-export async function retryJob(projectId, jobId, options = {}) {
-  const body = {
-    request_id: options.requestId || randomRequestId("job_retry"),
-  };
-  if (options.renderProfile) body.render_profile = String(options.renderProfile);
-  if (options.langHint) body.lang_hint = String(options.langHint);
-  if (Number.isFinite(Number(options.pauseSec))) body.pause_sec = Number(options.pauseSec);
+export async function retryJob(projectId, jobId) {
+  const requestId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `retry-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/retry/`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify(body),
+    body: JSON.stringify({ request_id: requestId }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message = data.error || "Failed to retry job";
-    const error = new Error(message);
-    error.status = res.status;
-    error.payload = data;
-    throw error;
+    const err = new Error(data.error || "Failed to retry job");
+    err.status = res.status;
+    err.payload = data;
+    throw err;
   }
   return data;
 }
 
-export async function createJobEventsTicket(projectId, jobId) {
-  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/events/ticket/`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({}),
+export async function fetchRenderCapacity() {
+  const res = await fetch(`${API_BASE_URL}/system/render-capacity/`, {
+    headers: authHeaders(),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message = data.error || "Failed to create SSE stream ticket";
-    const error = new Error(message);
-    error.status = res.status;
-    error.payload = data;
-    throw error;
+    const err = new Error(data.error || "Failed to fetch render capacity");
+    err.status = res.status;
+    err.payload = data;
+    throw err;
   }
   return data;
 }
 
 export function subscribeJobStatusEvents(projectId, jobId, handlers = {}) {
-  let reconnectAttempts = 0;
-  let closedByCaller = false;
-  let reconnectTimer = null;
-  let stream = null;
-  let lastEventId = '';
-  let streamTicket = '';
-  let ticketExpiresAtMs = 0;
+  const onStatus = typeof handlers.onStatus === "function" ? handlers.onStatus : () => {};
+  const onError = typeof handlers.onError === "function" ? handlers.onError : () => {};
+  let closed = false;
+  let source = null;
 
-  const onStatus = typeof handlers.onStatus === "function" ? handlers.onStatus : null;
-  const onError = typeof handlers.onError === "function" ? handlers.onError : null;
-  const onClose = typeof handlers.onClose === "function" ? handlers.onClose : null;
-  const maxReconnectAttempts = Number.isFinite(Number(handlers.maxReconnectAttempts))
-    ? Math.max(0, Number(handlers.maxReconnectAttempts))
-    : 5;
-  const reconnectBaseMs = Number.isFinite(Number(handlers.reconnectBaseMs))
-    ? Math.max(500, Number(handlers.reconnectBaseMs))
-    : 1500;
-
-  const buildUrl = () => {
-    const params = new URLSearchParams();
-    if (streamTicket) params.set("stream_ticket", streamTicket);
-    if (lastEventId) params.set("last_event_id", lastEventId);
-    return `${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/events/${params.toString() ? `?${params.toString()}` : ""}`;
-  };
-
-  const ensureTicket = async () => {
-    const now = Date.now();
-    if (streamTicket && now < ticketExpiresAtMs - 5000) {
-      return streamTicket;
-    }
-    const payload = await createJobEventsTicket(projectId, jobId);
-    streamTicket = String(payload?.stream_ticket || '').trim();
-    const ttl = Number(payload?.expires_in || 0);
-    ticketExpiresAtMs = now + Math.max(10, ttl) * 1000;
-    return streamTicket;
-  };
-
-  const closeActiveStream = () => {
-    if (stream) {
-      stream.close();
-      stream = null;
+  const close = () => {
+    closed = true;
+    if (source) {
+      source.close();
+      source = null;
     }
   };
 
-  const scheduleReconnect = () => {
-    if (closedByCaller) return;
-    if (reconnectAttempts >= maxReconnectAttempts) {
-      if (onError) onError();
-      return;
-    }
-    reconnectAttempts += 1;
-    const delayMs = reconnectBaseMs * reconnectAttempts;
-    reconnectTimer = window.setTimeout(() => {
-      reconnectTimer = null;
-      openStream();
-    }, delayMs);
-  };
-
-  const openStream = async () => {
-    closeActiveStream();
+  const bootstrap = async () => {
     try {
-      await ensureTicket();
-    } catch {
-      scheduleReconnect();
-      return;
+      const ticketRes = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/events/ticket/`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      if (!ticketRes.ok) throw new Error("Failed to issue stream ticket");
+      const ticketPayload = await ticketRes.json().catch(() => ({}));
+      const ticket = String(ticketPayload?.stream_ticket || "").trim();
+      if (!ticket || closed) throw new Error("Invalid stream ticket");
+      const streamUrl = `${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/events/?stream_ticket=${encodeURIComponent(ticket)}`;
+      source = new EventSource(streamUrl);
+      source.onmessage = (event) => {
+        if (closed) return;
+        try {
+          const parsed = JSON.parse(String(event.data || "{}"));
+          if (parsed && typeof parsed === "object") {
+            onStatus(parsed);
+          }
+        } catch {
+          // Ignore malformed event payloads.
+        }
+      };
+      source.onerror = () => {
+        if (closed) return;
+        onError(new Error("Job event stream closed"));
+      };
+    } catch (error) {
+      if (!closed) onError(error);
     }
-    stream = new EventSource(buildUrl(), { withCredentials: true });
-
-    stream.addEventListener("job_status", (event) => {
-      lastEventId = event?.lastEventId || lastEventId;
-      reconnectAttempts = 0;
-      if (!onStatus) return;
-      try {
-        const payload = JSON.parse(event.data || "{}");
-        onStatus(payload);
-      } catch {
-        // ignore malformed chunks
-      }
-    });
-
-    stream.addEventListener("heartbeat", (event) => {
-      lastEventId = event?.lastEventId || lastEventId;
-      reconnectAttempts = 0;
-    });
-
-    stream.addEventListener("job_deleted", () => {
-      if (onClose) onClose();
-      closeActiveStream();
-    });
-
-    stream.onerror = () => {
-      closeActiveStream();
-      scheduleReconnect();
-    };
   };
 
-  void openStream();
-
-  return () => {
-    closedByCaller = true;
-    if (reconnectTimer) {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
-    closeActiveStream();
-  };
+  void bootstrap();
+  return close;
 }
 
 // ---------------------------------------------------------------------------
@@ -585,16 +581,6 @@ export async function uploadVoiceSample(userId, file) {
 }
 
 export async function fetchAvatarProfile(userId) {
-  if (!userId) {
-    const resCompat = await fetch(`${API_BASE_URL}/avatar/profile`, {
-      headers: authHeaders(),
-    });
-    if (!resCompat.ok) {
-      const data = await resCompat.json().catch(() => ({}));
-      throw new Error(data.error || "Failed to fetch avatar profile");
-    }
-    return resCompat.json();
-  }
   const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/`, {
     headers: authHeaders(),
   });
@@ -616,8 +602,7 @@ export async function uploadAvatarImage(userId, file, settings = {}) {
     formData.append("composite_fallback_allowed", settings.composite_fallback_allowed ? "1" : "0");
   }
 
-  const targetUrl = userId ? `${API_BASE_URL}/users/${userId}/avatar/` : `${API_BASE_URL}/avatar/upload`;
-  const res = await fetch(targetUrl, {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/`, {
     method: "POST",
     headers: authHeaders(),
     body: formData,
@@ -640,8 +625,7 @@ export async function uploadAvatarVideo(userId, file, settings = {}) {
     formData.append("composite_fallback_allowed", settings.composite_fallback_allowed ? "1" : "0");
   }
 
-  const targetUrl = userId ? `${API_BASE_URL}/users/${userId}/avatar/` : `${API_BASE_URL}/avatar/upload`;
-  const res = await fetch(targetUrl, {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/`, {
     method: "POST",
     headers: authHeaders(),
     body: formData,
@@ -654,8 +638,7 @@ export async function uploadAvatarVideo(userId, file, settings = {}) {
 }
 
 export async function updateAvatarProfile(userId, payload) {
-  const targetUrl = userId ? `${API_BASE_URL}/users/${userId}/avatar/` : `${API_BASE_URL}/avatar/profile`;
-  const res = await fetch(targetUrl, {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/`, {
     method: "PATCH",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload),
@@ -668,8 +651,7 @@ export async function updateAvatarProfile(userId, payload) {
 }
 
 export async function regenerateAvatarPreview(userId) {
-  const targetUrl = userId ? `${API_BASE_URL}/users/${userId}/avatar/preview/` : `${API_BASE_URL}/avatar/preview`;
-  const res = await fetch(targetUrl, {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/preview/`, {
     method: "POST",
     headers: authHeaders(),
   });
@@ -685,10 +667,8 @@ export async function regenerateAvatarPreview(userId) {
 }
 
 export async function prepareAvatarProfile(userId, payload = {}) {
-  const targetUrl = userId ? `${API_BASE_URL}/users/${userId}/avatar/prepare/` : `${API_BASE_URL}/avatar/profile`;
-  const method = userId ? "POST" : "POST";
-  const res = await fetch(targetUrl, {
-    method,
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/prepare/`, {
+    method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(payload || {}),
   });
@@ -704,10 +684,7 @@ export async function prepareAvatarProfile(userId, payload = {}) {
 }
 
 export async function fetchAvatarPreviewStatus(userId, jobId) {
-  const targetUrl = userId
-    ? `${API_BASE_URL}/users/${userId}/avatar/preview/status/${jobId}/`
-    : `${API_BASE_URL}/avatar/preview/${jobId}`;
-  const res = await fetch(targetUrl, {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/preview/status/${jobId}/`, {
     headers: authHeaders(),
   });
   if (!res.ok) {
@@ -718,10 +695,8 @@ export async function fetchAvatarPreviewStatus(userId, jobId) {
 }
 
 export async function deleteAvatarPreview(userId) {
-  const targetUrl = userId ? `${API_BASE_URL}/users/${userId}/avatar/preview/delete/` : `${API_BASE_URL}/avatar/profile`;
-  const method = userId ? "DELETE" : "DELETE";
-  const res = await fetch(targetUrl, {
-    method,
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/preview/delete/`, {
+    method: "DELETE",
     headers: authHeaders(),
   });
   if (!res.ok) {
@@ -957,7 +932,6 @@ export async function fetchProjectTranscript(projectId) {
 
 export async function updateProjectTranscript(projectId, pages, options = {}) {
   const body = {
-    request_id: options.requestId || randomRequestId("transcript_update"),
     pages,
     trigger_rerender: Boolean(options.triggerRerender),
     pause_sec: options.pauseSec ?? 2.2,
@@ -975,15 +949,69 @@ export async function updateProjectTranscript(projectId, pages, options = {}) {
   return res.json();
 }
 
+export async function updateTranscriptPageScene(projectId, pageId, payload = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript-pages/${pageId}/scene/`, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to update scene background settings'));
+  }
+  return data;
+}
+
+export async function uploadTranscriptPageBackground(projectId, pageId, file, options = {}) {
+  const formData = new FormData();
+  formData.append('background_file', file);
+  if (options.backgroundFit) formData.append('background_fit', options.backgroundFit);
+  if (options.textScale !== undefined) formData.append('text_scale', String(options.textScale));
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript-pages/${pageId}/background/`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to upload slide background'));
+  }
+  return data;
+}
+
+export async function applyProjectBackgroundToAll(projectId, payload = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/background/apply-all/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to apply background to all slides'));
+  }
+  return data;
+}
+
+export async function uploadProjectCover(projectId, file) {
+  const formData = new FormData();
+  formData.append('cover_file', file);
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/cover/`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to update lesson cover'));
+  }
+  return data;
+}
+
 export async function transcriptPageAction(projectId, payload = {}) {
-  const bodyPayload = {
-    ...payload,
-    request_id: payload?.request_id || randomRequestId("transcript_action"),
-  };
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript/actions/`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(bodyPayload),
+    body: JSON.stringify(payload || {}),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -1017,6 +1045,190 @@ export async function saveProgress(projectId, progressPct) {
   return res.json();
 }
 
+export async function fetchUserHistory() {
+  const res = await fetch(`${API_BASE_URL}/me/history/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch watch history"));
+  }
+  return res.json();
+}
+
+export async function fetchLikedLessons() {
+  const res = await fetch(`${API_BASE_URL}/me/liked-lessons/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch liked lessons"));
+  }
+  return res.json();
+}
+
+export async function getFollowingPublishers() {
+  const res = await fetch(`${API_BASE_URL}/me/following/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch followed publishers"));
+  }
+  return res.json();
+}
+
+export async function getPublisherProfile(userId) {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/profile/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch publisher profile"));
+  }
+  return res.json();
+}
+
+export async function getPublisherLessons(userId, params = {}) {
+  const query = new URLSearchParams();
+  if (params.sort) query.set("sort", params.sort);
+  if (params.order) query.set("order", params.order);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/lessons/${suffix}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch publisher lessons"));
+  }
+  return res.json();
+}
+
+export async function listPlaylists() {
+  const res = await fetch(`${API_BASE_URL}/playlists/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch playlists"));
+  }
+  return res.json();
+}
+
+export async function createPlaylist(payload = {}) {
+  const res = await fetch(`${API_BASE_URL}/playlists/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to create playlist"));
+  }
+  return data;
+}
+
+export async function updatePlaylist(id, payload = {}) {
+  const res = await fetch(`${API_BASE_URL}/playlists/${id}/`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to update playlist"));
+  }
+  return data;
+}
+
+export async function deletePlaylist(id) {
+  const res = await fetch(`${API_BASE_URL}/playlists/${id}/`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to delete playlist"));
+  }
+  return true;
+}
+
+export async function addPlaylistItem(id, projectId) {
+  const res = await fetch(`${API_BASE_URL}/playlists/${id}/items/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ project_id: projectId }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to add lesson to playlist"));
+  }
+  return data;
+}
+
+export async function removePlaylistItem(id, projectId) {
+  const res = await fetch(`${API_BASE_URL}/playlists/${id}/items/${projectId}/`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to remove lesson from playlist"));
+  }
+  return true;
+}
+
+export async function reorderPlaylistItems(id, projectIds = []) {
+  const res = await fetch(`${API_BASE_URL}/playlists/${id}/items/reorder/`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ project_ids: projectIds }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to reorder playlist"));
+  }
+  return data;
+}
+
+export async function getPublisherPlaylists(userId) {
+  const headers = authHeaders();
+  const res = await fetch(
+    `${API_BASE_URL}/users/${userId}/playlists/`,
+    Object.keys(headers).length ? { headers } : undefined,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch publisher playlists"));
+  }
+  return res.json();
+}
+
+export async function getPlaylist(id) {
+  const headers = authHeaders();
+  const res = await fetch(
+    `${API_BASE_URL}/playlists/${id}/`,
+    Object.keys(headers).length ? { headers } : undefined,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch playlist"));
+  }
+  return res.json();
+}
+
+export async function toggleFollowPublisher(userId) {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/follow/`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to update follow"));
+  }
+  return res.json();
+}
+
 export async function fetchComments(projectId) {
   const res = await fetch(`${API_BASE_URL}/catalog/${projectId}/comments/`);
   if (!res.ok) throw new Error("Failed to fetch comments");
@@ -1034,6 +1246,97 @@ export async function addComment(projectId, text) {
     throw new Error(data.error || "Failed to add comment");
   }
   return res.json();
+}
+
+function normalizeSubtitleTrack(track) {
+  if (!track || typeof track !== 'object') return null;
+
+  const rawCode = String(track.language_code || track.lang || '').trim().toLowerCase();
+  const isOriginal = track.is_original === true
+    || track.type === 'original'
+    || track.id === 'original'
+    || rawCode === 'original';
+  const languageCode = isOriginal ? 'original' : rawCode;
+  const vttUrl = toAbsoluteApiUrl(track.vtt_url || track.subtitle_vtt_url || '');
+  const srtUrl = toAbsoluteApiUrl(track.srt_url || track.subtitle_url || '');
+  const status = String(track.status || '').trim().toLowerCase();
+
+  if (!languageCode) return null;
+
+  return {
+    ...track,
+    language_code: languageCode,
+    language_label: isOriginal
+      ? 'Original'
+      : String(track.language_label || track.label || languageCode.toUpperCase()).trim(),
+    source_language_code: String(track.source_language_code || '').trim().toLowerCase(),
+    status: status || 'ready',
+    is_original: isOriginal,
+    vtt_url: vttUrl,
+    srt_url: srtUrl,
+  };
+}
+
+function normalizeSubtitleRequestLanguage(language) {
+  if (!language || typeof language !== 'object') return null;
+  const code = String(language.language_code || language.code || '').trim().toLowerCase();
+  const label = String(language.language_label || language.label || code.toUpperCase()).trim();
+  if (!code || !label) return null;
+  return { code, label, language_code: code, language_label: label };
+}
+
+export async function fetchSubtitleTrackBundle(projectId) {
+  const safeProjectId = Number(projectId || 0);
+  if (!safeProjectId) {
+    return { tracks: [], requestableLanguages: [] };
+  }
+
+  const headers = authHeaders();
+  const res = await fetch(
+    `${API_BASE_URL}/projects/${safeProjectId}/subtitle-tracks/`,
+    Object.keys(headers).length ? { headers } : undefined
+  );
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    throw new Error(payload.error || 'Failed to fetch subtitle tracks');
+  }
+  const data = await res.json();
+  const tracks = Array.isArray(data) ? data : (Array.isArray(data.tracks) ? data.tracks : []);
+  const requestableLanguages = Array.isArray(data?.requestable_languages)
+    ? data.requestable_languages
+    : [];
+  return {
+    tracks: tracks.map(normalizeSubtitleTrack).filter(Boolean),
+    requestableLanguages: requestableLanguages.map(normalizeSubtitleRequestLanguage).filter(Boolean),
+  };
+}
+
+export async function fetchSubtitleTracks(projectId) {
+  const bundle = await fetchSubtitleTrackBundle(projectId);
+  return bundle.tracks;
+}
+
+export async function generateSubtitleTrack(projectId, payload = {}) {
+  const safeProjectId = Number(projectId || 0);
+  if (!safeProjectId) throw new Error('Project id is required.');
+
+  const res = await fetch(`${API_BASE_URL}/projects/${safeProjectId}/subtitle-tracks/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || 'Failed to generate subtitle track');
+  }
+  const track = normalizeSubtitleTrack(data.track) || data.track || {};
+  return {
+    ...track,
+    request_status: res.status,
+    already_available: Boolean(data.already_available),
+    details: data.details || '',
+    task_id: data.task_id || '',
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -118,75 +118,6 @@ def _ensure_dwpose_checkpoint(
     return target
 
 
-def _sync_liveportrait_weights(*, model_root: Path, runtime_home: Path) -> list[str]:
-    errors: list[str] = []
-    dst_root = runtime_home / "pretrained_weights" / "liveportrait"
-
-    required_rel_paths = [
-        Path("base_models/appearance_feature_extractor.pth"),
-        Path("base_models/motion_extractor.pth"),
-        Path("base_models/spade_generator.pth"),
-        Path("base_models/warping_module.pth"),
-        Path("retargeting_models/stitching_retargeting_module.pth"),
-        Path("landmark.onnx"),
-    ]
-
-    source_candidates = [model_root / "liveportrait", model_root]
-    src_root = next((p for p in source_candidates if (p / "base_models").exists()), None)
-    if src_root is None:
-        return [f"liveportrait source weights directory missing candidates={source_candidates}"]
-
-    for rel in required_rel_paths:
-        src = src_root / rel
-        dst = dst_root / rel
-        if not src.exists():
-            errors.append(f"missing liveportrait source file={src}")
-            continue
-        if src.resolve() == dst.resolve():
-            continue
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        except Exception as exc:
-            errors.append(f"failed to copy liveportrait weight source={src} target={dst} error={exc}")
-
-    src_insightface = model_root / "insightface"
-    dst_insightface = runtime_home / "pretrained_weights" / "insightface"
-    if src_insightface.exists():
-        try:
-            if src_insightface.resolve() == dst_insightface.resolve():
-                return errors
-        except Exception:
-            pass
-        try:
-            shutil.copytree(src_insightface, dst_insightface, dirs_exist_ok=True)
-        except Exception as exc:
-            errors.append(
-                "failed to sync insightface model pack "
-                f"source={src_insightface} target={dst_insightface} error={exc}"
-            )
-
-    return errors
-
-
-def _validate_liveportrait_runtime_weights(*, runtime_home: Path) -> list[str]:
-    missing: list[str] = []
-    runtime_root = runtime_home / "pretrained_weights" / "liveportrait"
-    required_rel_paths = [
-        Path("base_models/appearance_feature_extractor.pth"),
-        Path("base_models/motion_extractor.pth"),
-        Path("base_models/spade_generator.pth"),
-        Path("base_models/warping_module.pth"),
-        Path("retargeting_models/stitching_retargeting_module.pth"),
-        Path("landmark.onnx"),
-    ]
-    for rel in required_rel_paths:
-        path = runtime_root / rel
-        if not path.exists():
-            missing.append(str(path))
-    return missing
-
-
 def _version_matches(actual: str, expected: str) -> bool:
     actual_clean = str(actual or "").strip()
     expected_clean = str(expected or "").strip()
@@ -1073,7 +1004,7 @@ def _start_musetalk_service(*, musetalk_home: Path, model_root: Path) -> bool:
 def main() -> int:
     _configure_logging()
 
-    engine = str(os.environ.get("AVATAR_ENGINE", "liveportrait+musetalk") or "liveportrait+musetalk").strip().lower()
+    engine = "liveportrait+musetalk"
     composite_errors: list[str] = []
     if engine == "liveportrait+musetalk":
         detected_home, detected_entrypoint = _autodetect_liveportrait_runtime()
@@ -1132,20 +1063,6 @@ def main() -> int:
                 "AVATAR_LIVEPORTRAIT_CMD must reference AVATAR_LIVEPORTRAIT_ENTRYPOINT="
                 f"{liveportrait_entrypoint}"
             )
-        if not composite_errors:
-            sync_errors = _sync_liveportrait_weights(
-                model_root=liveportrait_model_root,
-                runtime_home=liveportrait_home,
-            )
-            composite_errors.extend(sync_errors)
-            runtime_missing = _validate_liveportrait_runtime_weights(runtime_home=liveportrait_home)
-            composite_errors.extend([f"missing liveportrait runtime file={p}" for p in runtime_missing])
-            if not sync_errors and not runtime_missing:
-                LOGGER.info(
-                    "Bootstrap: LivePortrait weights synced successfully source=%s target=%s",
-                    liveportrait_model_root / "liveportrait",
-                    liveportrait_home / "pretrained_weights" / "liveportrait",
-                )
 
         if _is_truthy_env("AVATAR_PREVIEW_USE_RESTORATION"):
             restore_cmd = str(os.environ.get("AVATAR_PREVIEW_RESTORE_CMD", "")).strip()

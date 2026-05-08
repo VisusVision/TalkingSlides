@@ -21,6 +21,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from core import views  # noqa: E402
 from core.models import UserProfile  # noqa: E402
 
+pytestmark = pytest.mark.django_db
+
 
 def _table_has_column(table_name, column_name):
     with connection.cursor() as cursor:
@@ -57,7 +59,7 @@ def test_avatar_profile_patch_accepts_json_payload():
     profile = UserProfile.objects.get(user=user)
     assert profile.avatar_enabled is True
     assert profile.avatar_motion_preset == "expressive"
-    assert profile.avatar_lipsync_engine == "musetalk"
+    assert profile.avatar_lipsync_engine == "liveportrait+musetalk"
 
 
 def test_avatar_profile_patch_accepts_text_plain_json_payload():
@@ -84,4 +86,4 @@ def test_avatar_profile_patch_accepts_text_plain_json_payload():
     profile = UserProfile.objects.get(user=user)
     assert profile.avatar_enabled is True
     assert profile.avatar_motion_preset == "natural"
-    assert profile.avatar_lipsync_engine == "musetalk"
+    assert profile.avatar_lipsync_engine == "liveportrait+musetalk"

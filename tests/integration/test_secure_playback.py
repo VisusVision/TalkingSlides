@@ -19,6 +19,7 @@ django.setup()
 from core import views  # noqa: E402
 from core.models import Job, Project, UserProfile  # noqa: E402
 from django.contrib.auth.models import User  # noqa: E402
+from django.core.cache import cache  # noqa: E402
 from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
 
@@ -1163,7 +1164,13 @@ def test_media_stream_view_serves_mp4_hls_manifest_segment_and_key(tmp_path, mon
 @pytest.mark.django_db
 def test_catalog_detail_public_lesson_includes_tokenized_subtitle_url(tmp_path):
     teacher = _make_teacher("public_caption_teacher")
-    project = Project.objects.create(title="Published captions", user=teacher, is_published=True)
+    project = Project.objects.create(
+        title="Published captions",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
     job = Job.objects.create(
         project=project,
         job_type="video_export",
@@ -1200,7 +1207,13 @@ def test_catalog_detail_public_lesson_includes_tokenized_subtitle_url(tmp_path):
 @pytest.mark.django_db
 def test_catalog_detail_old_srt_only_lesson_has_no_vtt_until_rerender(tmp_path):
     teacher = _make_teacher("old_caption_teacher")
-    project = Project.objects.create(title="Old captions", user=teacher, is_published=True)
+    project = Project.objects.create(
+        title="Old captions",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
     Job.objects.create(
         project=project,
         job_type="video_export",
@@ -1234,6 +1247,7 @@ def test_catalog_detail_old_srt_only_lesson_has_no_vtt_until_rerender(tmp_path):
 
 @pytest.mark.django_db
 def test_owner_draft_preview_subtitle_uses_grant_and_blocks_grantless_stream(tmp_path):
+    cache.clear()
     teacher = _make_teacher("draft_caption_teacher")
     project = Project.objects.create(title="Draft captions", user=teacher, is_published=False)
     job = Job.objects.create(

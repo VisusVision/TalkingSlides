@@ -86,6 +86,18 @@ export default function UploadComposer({ categories, submitting, submitError, su
           </datalist>
         </label>
 
+        <label className="block text-sm text-[var(--text-secondary)]">
+          Render profile
+          <select
+            value={renderProfile}
+            onChange={(event) => setRenderProfile(event.target.value)}
+            className="focus-ring mt-1 h-11 w-full rounded-2xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)] px-3 text-[var(--text-primary)]"
+          >
+            <option value="fast">Fast</option>
+            <option value="balanced">Balanced</option>
+          </select>
+        </label>
+
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm text-[var(--text-secondary)]">
             Pause between slides (sec)
@@ -100,18 +112,6 @@ export default function UploadComposer({ categories, submitting, submitError, su
           </label>
 
           <div className="space-y-2 pt-2 text-sm text-[var(--text-secondary)]">
-            <label className="block rounded-2xl bg-[color:var(--surface-muted)] px-3 py-2">
-              <span className="text-xs">Render speed/quality</span>
-              <select
-                value={renderProfile}
-                onChange={(event) => setRenderProfile(event.target.value)}
-                className="focus-ring mt-1 h-9 w-full rounded-xl border border-[var(--border-subtle)] bg-[color:var(--surface-card)] px-2 text-sm text-[var(--text-primary)]"
-              >
-                <option value="fast">Fast</option>
-                <option value="balanced">Balanced</option>
-                <option value="quality">Quality</option>
-              </select>
-            </label>
             <label className="flex items-center gap-2 rounded-2xl bg-[color:var(--surface-muted)] px-3 py-2">
               <input
                 type="checkbox"

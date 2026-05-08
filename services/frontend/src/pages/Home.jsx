@@ -6,7 +6,7 @@ import {
   PlayCircle,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { fetchCatalog, fetchCatalogFeed, fetchProjects } from '../api';
+import { fetchCatalog, fetchCatalogFeed } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { fallbackSections, sectionsFromFeed } from '../lib/content';
@@ -48,21 +48,6 @@ function flattenUniqueLessons(sections) {
   return items;
 }
 
-function projectToLesson(project) {
-  return {
-    id: Number(project?.id || 0),
-    title: String(project?.title || `Project #${project?.id || ''}`),
-    description: String(project?.description || ''),
-    category_name: String(project?.category_name || 'My Draft'),
-    teacher_name: String(project?.user_name || 'You'),
-    cover_url: String(project?.cover_url || project?.thumbnail_url || ''),
-    thumbnail_url: String(project?.thumbnail_url || project?.cover_url || ''),
-    duration_minutes: 8,
-    progress_pct: 0,
-    stream_url: '',
-  };
-}
-
 export default function Home({ searchQuery, user }) {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
@@ -78,45 +63,15 @@ export default function Home({ searchQuery, user }) {
       setError('');
 
       try {
-        let myDraftSection = [];
-        if (user) {
-          try {
-            const ownProjects = await fetchProjects();
-            const ownItems = (Array.isArray(ownProjects) ? ownProjects : [])
-              .map(projectToLesson)
-              .filter((item) => item.id > 0);
-            if (ownItems.length) {
-              myDraftSection = [{ id: 'my-drafts', title: 'My Drafts', items: ownItems }];
-            }
-          } catch {
-            myDraftSection = [];
-          }
-        }
-
         const feed = await fetchCatalogFeed({ query: searchQuery, limit: 14 });
         const mapped = sectionsFromFeed(feed);
         if (!active) return;
-        setSections([...myDraftSection, ...mapped]);
+        setSections(mapped);
       } catch (_feedError) {
         try {
           const catalog = await fetchCatalog();
           if (!active) return;
-          const fallback = fallbackSections(catalog);
-          if (user) {
-            try {
-              const ownProjects = await fetchProjects();
-              const ownItems = (Array.isArray(ownProjects) ? ownProjects : [])
-                .map(projectToLesson)
-                .filter((item) => item.id > 0);
-              if (ownItems.length) {
-                setSections([{ id: 'my-drafts', title: 'My Drafts', items: ownItems }, ...fallback]);
-                return;
-              }
-            } catch {
-              // Ignore and keep catalog-only fallback.
-            }
-          }
-          setSections(fallback);
+          setSections(fallbackSections(catalog));
         } catch (catalogError) {
           if (!active) return;
           setError(catalogError.message || 'Could not load discovery feed.');
@@ -282,7 +237,7 @@ export default function Home({ searchQuery, user }) {
             <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Continue Watching</h2>
             <button
               type="button"
-              onClick={() => navigate('/library')}
+              onClick={() => navigate('/history')}
               className="focus-ring text-sm font-semibold text-[var(--accent-primary)]"
             >
               View History

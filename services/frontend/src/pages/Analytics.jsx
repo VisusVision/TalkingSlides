@@ -5,8 +5,10 @@ import {
   Clock3,
   Eye,
   Filter,
+  ShieldCheck,
   Smile,
 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import {
   createProject,
   fetchAdminStats,
@@ -14,6 +16,7 @@ import {
   fetchProjects,
 } from '../api';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
+import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { canAccessStudio } from '../lib/auth';
 
@@ -61,6 +64,10 @@ function rangeDates(rangeKey) {
 
 function projectTitle(project, fallbackIndex = 0) {
   return String(project?.title || '').trim() || `Lesson ${fallbackIndex + 1}`;
+}
+
+function isStaffUser(user) {
+  return Boolean(user?.is_staff || user?.is_superuser);
 }
 
 function normalizeFromProjects(projects) {
@@ -210,6 +217,7 @@ export default function Analytics({ user }) {
   const [createError, setCreateError] = useState('');
 
   const canCreateLesson = canAccessStudio(user);
+  const canReviewModeration = isStaffUser(user);
 
   useEffect(() => {
     let active = true;
@@ -283,7 +291,6 @@ export default function Analytics({ user }) {
     pauseSec,
     whiteboardModeAll,
     avatarEnabled,
-    renderProfile,
   }) => {
     if (!file) return;
 
@@ -299,7 +306,6 @@ export default function Analytics({ user }) {
     if (pauseSec) formData.append('pause_sec', pauseSec);
     if (whiteboardModeAll) formData.append('whiteboard_mode_all', '1');
     formData.append('avatar_enabled', avatarEnabled ? '1' : '0');
-    formData.append('render_profile', renderProfile || 'balanced');
 
     try {
       await createProject(formData);
@@ -350,6 +356,31 @@ export default function Analytics({ user }) {
       {error && (
         <SurfaceCard className="rounded-2xl bg-[color:var(--feedback-danger-bg)] p-4">
           <p className="text-sm text-[color:var(--feedback-danger-fg)]">{error}</p>
+        </SurfaceCard>
+      )}
+
+      {canReviewModeration && (
+        <SurfaceCard className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-start gap-3">
+            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:rgba(208,188,255,0.14)] text-[var(--accent-primary)]">
+              <ShieldCheck size={20} />
+            </span>
+            <div>
+              <p className="label-sm">Moderation Review</p>
+              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">
+                Staff moderation queue
+              </h2>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                Open review requests now live in the dedicated moderation dashboard.
+              </p>
+            </div>
+          </div>
+          <Link
+            to="/moderation"
+            className="focus-ring inline-flex h-10 items-center justify-center rounded-full bg-[image:var(--accent-gradient)] px-4 text-sm font-bold text-white transition hover:scale-105 active:scale-95"
+          >
+            Open Moderation
+          </Link>
         </SurfaceCard>
       )}
 

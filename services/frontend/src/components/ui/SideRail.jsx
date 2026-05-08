@@ -4,17 +4,24 @@ import {
   CircleHelp,
   LayoutDashboard,
   Settings,
+  ShieldCheck,
   SlidersHorizontal,
   Plus,
 } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { canAccessStudio } from '../../lib/auth';
+import {
+  canAccessAnalytics,
+  canAccessModeration,
+  canAccessStudio,
+  isSignedIn,
+} from '../../lib/auth';
 
 const PRIMARY_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/library', label: 'My Lessons', icon: BookOpenText },
-  { to: '/analytics', label: 'Analytics', icon: BarChart3 },
+  { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
   { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
+  { to: '/analytics', label: 'Analytics', icon: BarChart3, analyticsOnly: true },
+  { to: '/moderation', label: 'Moderation', icon: ShieldCheck, moderationOnly: true },
 ];
 
 function railItemClass(isActive, expanded) {
@@ -91,11 +98,20 @@ export default function SideRail({
   onToggleCollapse,
 }) {
   const location = useLocation();
+  const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
+  const analyticsAllowed = canAccessAnalytics(user);
+  const moderationAllowed = canAccessModeration(user);
   const isStudioRoute = location.pathname === '/studio';
   const isAnalyticsRoute = location.pathname === '/analytics';
   const showCreateLessonAction = studioAllowed && (isStudioRoute || isAnalyticsRoute);
-  const primaryItems = PRIMARY_ITEMS.filter((item) => !item.studioOnly || studioAllowed);
+  const primaryItems = PRIMARY_ITEMS.filter((item) => {
+    if (item.signedInOnly) return signedIn;
+    if (item.studioOnly) return studioAllowed;
+    if (item.analyticsOnly) return analyticsAllowed;
+    if (item.moderationOnly) return moderationAllowed;
+    return true;
+  });
 
   const handleCreateLessonRequest = () => {
     if (typeof window !== 'undefined') {
@@ -112,7 +128,7 @@ export default function SideRail({
           <div className={`flex items-center gap-2 ${expanded ? 'justify-between' : 'justify-center'}`}>
             {expanded ? (
               <div className="hidden md:block">
-                <p className="text-[0.7rem] font-semibold uppercase tracking-[0.19em] text-[var(--text-secondary)]">Teacher Studio</p>
+                <p className="text-[0.7rem] font-semibold uppercase tracking-[0.19em] text-[var(--text-secondary)]">VISUS Workspace</p>
                 <div className="mt-1 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--text-primary)]">
                   <span className="material-symbols-outlined text-base leading-none text-[var(--accent-primary)]">auto_awesome</span>
                   <span>AI-Powered Learning</span>

@@ -1,14 +1,14 @@
-﻿# ============================================================
-# AI_ACADEMY â€“ local development Docker Compose
+# ============================================================
+# AI_ACADEMY – local development Docker Compose
 # ============================================================
 # Services:
-#   api         â€“ Django REST backend
-#   tts_service â€“ FastAPI text-to-speech service
-#   worker      â€“ Celery async task worker
-#   redis       â€“ message broker / cache
-#   postgres    â€“ primary relational database
-#   minio       â€“ S3-compatible local object storage
-#   frontend    â€“ Vite React frontend
+#   api         – Django REST backend
+#   tts_service – FastAPI text-to-speech service
+#   worker      – Celery async task worker
+#   redis       – message broker / cache
+#   postgres    – primary relational database
+#   minio       – S3-compatible local object storage
+#   frontend    – Vite React frontend
 # ============================================================
 
 # Local runtime media is stored in repo-root storage_local/ and
@@ -51,13 +51,12 @@ services:
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
       STORAGE_ROOT: /app/storage_local
-      PROMETHEUS_METRICS_TOKEN: "${PROMETHEUS_METRICS_TOKEN:-}"
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
-      CELERY_RENDER_FAST_QUEUE: "${CELERY_RENDER_FAST_QUEUE:-render_fast}"
-      CELERY_RENDER_QUALITY_QUEUE: "${CELERY_RENDER_QUALITY_QUEUE:-render_quality}"
       CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # ----------------------------------------------------------
   # FastAPI TTS Service
@@ -72,13 +71,7 @@ services:
     image: ai_academy_tts:local
     user: root
     entrypoint: [ "sh", "/usr/local/bin/local-storage-entrypoint.sh" ]
-    command: >
-      sh -lc 'mkdir -p /home/appuser/.local/share/tts &&
-      if [ -d /app/storage_local/tts_cache/xtts_v2 ]; then
-        rm -rf /home/appuser/.local/share/tts/tts_models--multilingual--multi-dataset--xtts_v2;
-        cp -a /app/storage_local/tts_cache/xtts_v2 /home/appuser/.local/share/tts/tts_models--multilingual--multi-dataset--xtts_v2;
-      fi &&
-      exec uvicorn main:app --host 0.0.0.0 --port 8001'
+    command: [ "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001" ]
     gpus: all
     ports:
       - "8001:8001"
@@ -95,9 +88,9 @@ services:
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       COQUI_TOS_AGREED: "1"
-      XTTS_ENABLED: "${XTTS_ENABLED:-0}"
-      XTTS_PRELOAD_ON_STARTUP: "${XTTS_PRELOAD_ON_STARTUP:-0}"
-      XTTS_WARMUP_BLOCKING: "${XTTS_WARMUP_BLOCKING:-0}"
+      XTTS_ENABLED: "0"
+      XTTS_PRELOAD_ON_STARTUP: "1"
+      XTTS_WARMUP_BLOCKING: "0"
       TTS_SERVICE_URL: http://tts_service:8001
       TTS_CACHE_ROOT: /app/storage_local/tts_cache
       HF_HOME: /app/storage_local/tts_cache/hf
@@ -141,7 +134,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-render}'
     volumes:
@@ -170,14 +163,13 @@ services:
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       TORCH_HOME: /app/storage_local/models/torch
-      XDG_CACHE_HOME: /tmp/ai_academy_cache
+      XDG_CACHE_HOME: /app/storage_local/cache
       CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
-      CELERY_RENDER_FAST_QUEUE: "${CELERY_RENDER_FAST_QUEUE:-render_fast}"
-      CELERY_RENDER_QUALITY_QUEUE: "${CELERY_RENDER_QUALITY_QUEUE:-render_quality}"
       CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
-      CELERY_WORKER_QUEUES: "${CELERY_WORKER_QUEUES:-render,render_fast,render_quality}"
+      CELERY_WORKER_QUEUES: "${CELERY_RENDER_QUEUE:-render}"
       CELERY_WORKER_CONCURRENCY: "${CELERY_RENDER_WORKER_CONCURRENCY:-1}"
       AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"
+      AVATAR_ENGINE: "musetalk"
       MUSETALK_USE_FAKE_MMPPOSE: "0"
       MUSETALK_REQUIRE_REAL_POSE: "1"
       TTS_SERVICE_URL: http://tts_service:8001
@@ -186,115 +178,13 @@ services:
       TTS_READY_TIMEOUT: "420"
       TTS_READY_POLL_INTERVAL: "3"
       AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE: "${AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE:-0}"
-      AVATAR_CANONICAL_MUSETALK_ONLY_FALLBACK: "${AVATAR_CANONICAL_MUSETALK_ONLY_FALLBACK:-1}"
       # Expose torch's bundled libnvrtc.so so CuDNN v8 finds it without JIT fallback.
       # Without this LD_LIBRARY_PATH, CuDNN logs "Applied workaround for CuDNN issue,
       # install nvrtc.so" and falls back to a 5-10x slower convolution path.
       LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/torch/lib
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
-  # ----------------------------------------------------------
-  # Celery Beat (periodic janitor + scheduled tasks)
-  # ----------------------------------------------------------
-  worker-beat:
-    <<: *python-common
-    build:
-      context: ..
-      dockerfile: infra/dockerfiles/Dockerfile.worker
-      args:
-        INSTALL_TEST_DEPS: "${INSTALL_TEST_DEPS:-1}"
-    image: ai_academy_worker:local
-    user: root
-    entrypoint: [ "sh", "/usr/local/bin/local-storage-entrypoint.sh" ]
-    command: >
-      sh -lc 'exec celery -A worker beat
-      --loglevel=$${CELERY_LOG_LEVEL:-info}'
-    volumes:
-      - ../services:/app
-      - ../services/worker:/app/worker
-      - ../services/api:/app/api
-      - ../infra/dockerfiles/local-storage-entrypoint.sh:/usr/local/bin/local-storage-entrypoint.sh:ro
-      - ../storage_local:/app/storage_local
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    environment:
-      DJANGO_SETTINGS_MODULE: config.settings
-      PYTHONPATH: /app/api:/app:/app/services/scripts:/app/services/tts_service:/app/services
-      STORAGE_ROOT: /app/storage_local
-      LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
-      LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
-      CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
-      CELERY_RENDER_FAST_QUEUE: "${CELERY_RENDER_FAST_QUEUE:-render_fast}"
-      CELERY_RENDER_QUALITY_QUEUE: "${CELERY_RENDER_QUALITY_QUEUE:-render_quality}"
-      CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
-      CELERY_ORPHAN_CLEANUP_ENABLED: "${CELERY_ORPHAN_CLEANUP_ENABLED:-1}"
-      CELERY_ORPHAN_CLEANUP_INTERVAL_MINUTES: "${CELERY_ORPHAN_CLEANUP_INTERVAL_MINUTES:-30}"
-      CELERY_ORPHAN_CLEANUP_MIN_AGE_HOURS: "${CELERY_ORPHAN_CLEANUP_MIN_AGE_HOURS:-6}"
-
-  # ----------------------------------------------------------
-  # Celery Fast Render Worker
-  # ----------------------------------------------------------
-  worker-fast:
-    <<: *python-common
-    build:
-      context: ..
-      dockerfile: infra/dockerfiles/Dockerfile.worker
-      args:
-        INSTALL_TEST_DEPS: "${INSTALL_TEST_DEPS:-1}"
-    image: ai_academy_worker:local
-    user: root
-    entrypoint: [ "sh", "/usr/local/bin/local-storage-entrypoint.sh" ]
-    command: >
-      sh -lc 'export LD_LIBRARY_PATH="$${AI_ACADEMY_LD_LIBRARY_PATH}:$${LD_LIBRARY_PATH}";
-      echo "Starting fast render worker" &&
-      exec celery -A worker worker
-      --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-2}
-      --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
-      -Q $${CELERY_WORKER_QUEUES:-render_fast}'
-    volumes:
-      - ../services:/app
-      - ../services/worker:/app/worker
-      - ../services/api:/app/api
-      - ../tests:/app/tests:ro
-      - ../services:/app/services:ro
-      - ../infra/dockerfiles/local-storage-entrypoint.sh:/usr/local/bin/local-storage-entrypoint.sh:ro
-      - ../storage_local:/app/storage_local
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      tts_service:
-        condition: service_started
-    environment:
-      DJANGO_SETTINGS_MODULE: config.settings
-      PYTHONPATH: /app/api:/app:/app/services/scripts:/app/services/tts_service:/app/services
-      SQLITE_TEST_DATABASE_PATH: /tmp/ai_academy_worker_test.sqlite3
-      STORAGE_ROOT: /app/storage_local
-      LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
-      LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
-      TORCH_HOME: /app/storage_local/models/torch
-      XDG_CACHE_HOME: /tmp/ai_academy_cache
-      CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
-      CELERY_RENDER_FAST_QUEUE: "${CELERY_RENDER_FAST_QUEUE:-render_fast}"
-      CELERY_RENDER_QUALITY_QUEUE: "${CELERY_RENDER_QUALITY_QUEUE:-render_quality}"
-      CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
-      CELERY_WORKER_QUEUES: "${CELERY_RENDER_FAST_QUEUE:-render_fast}"
-      CELERY_WORKER_CONCURRENCY: "${CELERY_RENDER_FAST_WORKER_CONCURRENCY:-2}"
-      AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"
-      MUSETALK_USE_FAKE_MMPPOSE: "0"
-      MUSETALK_REQUIRE_REAL_POSE: "1"
-      TTS_SERVICE_URL: http://tts_service:8001
-      TTS_SERVICE_TIMEOUT: "420"
-      TTS_SERVICE_CONNECT_TIMEOUT: "10"
-      TTS_READY_TIMEOUT: "420"
-      TTS_READY_POLL_INTERVAL: "3"
-      AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE: "${AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE:-0}"
-      AVATAR_CANONICAL_MUSETALK_ONLY_FALLBACK: "${AVATAR_CANONICAL_MUSETALK_ONLY_FALLBACK:-1}"
-      LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/torch/lib
 
   # ----------------------------------------------------------
   # Celery Avatar/GPU Worker
@@ -319,7 +209,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-avatar}'
     volumes:
@@ -348,14 +238,13 @@ services:
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       TORCH_HOME: /app/storage_local/models/torch
-      XDG_CACHE_HOME: /tmp/ai_academy_cache
+      XDG_CACHE_HOME: /app/storage_local/cache
       CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
-      CELERY_RENDER_FAST_QUEUE: "${CELERY_RENDER_FAST_QUEUE:-render_fast}"
-      CELERY_RENDER_QUALITY_QUEUE: "${CELERY_RENDER_QUALITY_QUEUE:-render_quality}"
       CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
       CELERY_WORKER_QUEUES: "${CELERY_AVATAR_QUEUE:-avatar}"
       CELERY_WORKER_CONCURRENCY: "${CELERY_AVATAR_WORKER_CONCURRENCY:-1}"
-      AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "${AVATAR_BOOTSTRAP_ON_WORKER_STARTUP:-0}"
+      AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"
+      AVATAR_ENGINE: "musetalk"
       MUSETALK_USE_FAKE_MMPPOSE: "0"
       MUSETALK_REQUIRE_REAL_POSE: "1"
       TTS_SERVICE_URL: http://tts_service:8001
@@ -364,13 +253,15 @@ services:
       TTS_READY_TIMEOUT: "420"
       TTS_READY_POLL_INTERVAL: "3"
       AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE: "${AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE:-0}"
-      AVATAR_CANONICAL_MUSETALK_ONLY_FALLBACK: "${AVATAR_CANONICAL_MUSETALK_ONLY_FALLBACK:-1}"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
       # Expose torch's bundled libnvrtc.so so CuDNN v8 finds it without JIT fallback.
       # Without this LD_LIBRARY_PATH, CuDNN logs "Applied workaround for CuDNN issue,
       # install nvrtc.so" and falls back to a 5-10x slower convolution path.
       LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/torch/lib
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     deploy:
       resources:
         reservations:
@@ -380,7 +271,7 @@ services:
               capabilities: [ gpu ]
 
   # ----------------------------------------------------------
-  # Redis â€“ broker & cache
+  # Redis – broker & cache
   # ----------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -394,7 +285,7 @@ services:
       - redis_data:/data
 
   # ----------------------------------------------------------
-  # PostgreSQL â€“ primary database
+  # PostgreSQL – primary database
   # ----------------------------------------------------------
   postgres:
     image: postgres:16-alpine
@@ -416,7 +307,7 @@ services:
       retries: 5
 
   # ----------------------------------------------------------
-  # MinIO â€“ local S3-compatible object storage
+  # MinIO – local S3-compatible object storage
   # ----------------------------------------------------------
   minio:
     image: minio/minio:latest
@@ -435,6 +326,22 @@ services:
     command: server /data --console-address ":9001"
 
   # ----------------------------------------------------------
+  # LibreTranslate – optional translation service
+  # ----------------------------------------------------------
+  libretranslate:
+    image: libretranslate/libretranslate:latest
+    profiles:
+      - translation
+    ports:
+      - "5000:5000"
+    environment:
+      LT_HOST: 0.0.0.0
+      LT_PORT: 5000
+      LT_LOAD_ONLY: en,tr
+    networks:
+      - academy_net
+
+  # ----------------------------------------------------------
   # Vite React frontend
   # ----------------------------------------------------------
   frontend:
@@ -450,46 +357,6 @@ services:
     # Runs Vite dev server for hot reloading in Docker
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 3000"
 
-  # ----------------------------------------------------------
-  # Prometheus
-  # ----------------------------------------------------------
-  prometheus:
-    image: prom/prometheus:latest
-    restart: unless-stopped
-    networks:
-      - academy_net
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./prometheus-alert-rules.yml:/etc/prometheus/prometheus-alert-rules.yml:ro
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-    depends_on:
-      - api
-
-  # ----------------------------------------------------------
-  # Grafana
-  # ----------------------------------------------------------
-  grafana:
-    image: grafana/grafana:latest
-    restart: unless-stopped
-    networks:
-      - academy_net
-    ports:
-      - "3001:3000"
-    environment:
-      GF_SECURITY_ADMIN_USER: "${GRAFANA_ADMIN_USER:-admin}"
-      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:-admin}"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
-    depends_on:
-      - prometheus
-
 # ----------------------------------------------------------
 # Named volumes
 # ----------------------------------------------------------
@@ -497,7 +364,6 @@ volumes:
   postgres_data:
   minio_data:
   redis_data:
-  grafana_data:
 
     # ----------------------------------------------------------
     # Networks

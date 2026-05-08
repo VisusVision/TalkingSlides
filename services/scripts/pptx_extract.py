@@ -115,6 +115,27 @@ def _run(cmd: List[str], check=True, capture=False):
     return proc
 
 
+def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
+    """Convert an office document to PDF in *out_dir* and return the PDF path."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lo_cmd = [
+        "soffice", "--headless",
+        f"-env:UserInstallation=file://{_LO_USER_INSTALLATION}",
+        "--convert-to", "pdf",
+        "--outdir", str(out_dir),
+        source_path,
+    ]
+    _run(lo_cmd)
+
+    candidates = sorted(out_dir.glob("*.pdf")) + sorted(out_dir.glob("*.PDF"))
+    stem_pdf = out_dir / f"{Path(source_path).stem}.pdf"
+    if stem_pdf.exists() and stem_pdf not in candidates:
+        candidates.insert(0, stem_pdf)
+    if not candidates:
+        raise RuntimeError("LibreOffice produced no PDF")
+    return candidates[0]
+
+
 def _write_stub(path: Path) -> None:
     """Write a 1×1 white PNG stub so the pipeline never gets a missing image."""
     if Image is not None:
@@ -201,23 +222,12 @@ def _export_via_libreoffice(source_path: str, out_dir: str, resolution: int = 19
     out_dir_p = Path(out_dir)
     out_dir_p.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmpd:
-        lo_cmd = [
-            "soffice", "--headless",
-            f"-env:UserInstallation=file://{_LO_USER_INSTALLATION}",
-            "--convert-to", "pdf",
-            "--outdir", tmpd,
-            source_path,
-        ]
-        _run(lo_cmd)
-
-        converted = next((str(f) for f in Path(tmpd).iterdir() if f.suffix.lower() == ".pdf"), None)
-        if not converted:
-            raise RuntimeError("LibreOffice produced no PDF")
+        converted = _convert_via_libreoffice_to_pdf(source_path, Path(tmpd))
 
         # Convert resolution (px width) to approximate DPI (assume ~13in wide slide)
         dpi = max(72, resolution // 8)
         png_prefix = str(Path(tmpd) / "slide")
-        _run(["pdftoppm", "-png", "-r", str(dpi), converted, png_prefix])
+        _run(["pdftoppm", "-png", "-r", str(dpi), str(converted), png_prefix])
 
         produced = sorted(Path(tmpd).glob("slide-*.png")) or sorted(Path(tmpd).glob("*.png"))
         if not produced:
@@ -677,7 +687,19 @@ def _docx_split_slides_from_text(full_text: str) -> List[str]:
 
 
 def _extract_docx_text(docx_path: str, notes_dir: Path) -> List[str]:
-    # Try python-docx first
+    # Prefer the same physical page model as the visual DOCX export:
+    # DOCX -> PDF -> page text. This keeps text/page count aligned with
+    # rasterized page images when LibreOffice is available.
+    try:
+        with tempfile.TemporaryDirectory() as tmpd:
+            converted = _convert_via_libreoffice_to_pdf(docx_path, Path(tmpd))
+            pdf_notes = _extract_pdf_text(str(converted), notes_dir)
+            if pdf_notes:
+                return pdf_notes
+    except Exception as e:
+        logger.warning("LibreOffice PDF text extraction failed for DOCX: %s", e)
+
+    # Fallback to python-docx content extraction when page-based extraction is unavailable.
     if _HAVE_DOCX:
         try:
             doc = _DocxDocument(docx_path)

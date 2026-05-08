@@ -151,6 +151,16 @@ class Project(models.Model):
         ("balanced", "Balanced"),
         ("quality", "Quality"),
     ]
+    MODERATION_STATUS_CHOICES = [
+        ("not_scanned", "Not scanned"),
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("revision_required", "Revision required"),
+        ("needs_admin_review", "Needs admin review"),
+        ("admin_approved", "Admin approved"),
+        ("admin_rejected", "Admin rejected"),
+        ("failed", "Failed"),
+    ]
 
     user = models.ForeignKey(
         User,
@@ -178,6 +188,14 @@ class Project(models.Model):
     )
     avatar_enabled_override = models.BooleanField(null=True, blank=True)
     tts_settings = models.JSONField(default=default_project_tts_settings, blank=True)
+    moderation_status = models.CharField(
+        max_length=30,
+        choices=MODERATION_STATUS_CHOICES,
+        default="not_scanned",
+        db_index=True,
+    )
+    moderation_summary = models.JSONField(default=dict, blank=True)
+    last_moderation_run_id = models.PositiveIntegerField(null=True, blank=True)
     # When True the lesson is listed in the public student catalog.
     is_published = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)

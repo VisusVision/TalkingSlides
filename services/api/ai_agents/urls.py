@@ -1,0 +1,55 @@
+from django.urls import path
+
+from .views import (
+    AdminModerationReviewRequestApproveView,
+    AdminModerationReviewRequestDetailView,
+    AdminModerationReviewRequestListView,
+    AdminModerationReviewRequestRejectView,
+    AdminModerationReviewRequestResponseView,
+    ProjectModerationAdminReviewRequestView,
+    ProjectModerationRescanView,
+    ProjectModerationSummaryView,
+)
+
+urlpatterns = [
+    path(
+        "admin/moderation/review-requests/",
+        AdminModerationReviewRequestListView.as_view(),
+        name="admin-moderation-review-request-list",
+    ),
+    path(
+        "admin/moderation/review-requests/<int:review_id>/",
+        AdminModerationReviewRequestDetailView.as_view(),
+        name="admin-moderation-review-request-detail",
+    ),
+    path(
+        "admin/moderation/review-requests/<int:review_id>/approve/",
+        AdminModerationReviewRequestApproveView.as_view(),
+        name="admin-moderation-review-request-approve",
+    ),
+    path(
+        "admin/moderation/review-requests/<int:review_id>/reject/",
+        AdminModerationReviewRequestRejectView.as_view(),
+        name="admin-moderation-review-request-reject",
+    ),
+    path(
+        "admin/moderation/review-requests/<int:review_id>/response/",
+        AdminModerationReviewRequestResponseView.as_view(),
+        name="admin-moderation-review-request-response",
+    ),
+    path(
+        "projects/<int:project_id>/moderation/",
+        ProjectModerationSummaryView.as_view(),
+        name="project-moderation-summary",
+    ),
+    path(
+        "projects/<int:project_id>/moderation/rescan/",
+        ProjectModerationRescanView.as_view(),
+        name="project-moderation-rescan",
+    ),
+    path(
+        "projects/<int:project_id>/moderation/request-admin-review/",
+        ProjectModerationAdminReviewRequestView.as_view(),
+        name="project-moderation-request-admin-review",
+    ),
+]

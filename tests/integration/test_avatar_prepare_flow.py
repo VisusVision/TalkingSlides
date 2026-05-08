@@ -23,6 +23,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from core import views  # noqa: E402
 from core.models import UserProfile, VoiceProfile  # noqa: E402
 
+pytestmark = pytest.mark.django_db
+
 
 def _table_has_column(table_name, column_name):
     with connection.cursor() as cursor:

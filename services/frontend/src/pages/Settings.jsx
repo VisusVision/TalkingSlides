@@ -551,36 +551,6 @@ export default function Settings({ user, onUserRefresh }) {
               </label>
             </div>
 
-            <div className="grid gap-2 md:grid-cols-2">
-              <label className="inline-flex items-center gap-2 rounded-xl token-surface px-3 py-2 text-sm text-[var(--text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={avatarSettings.avatar_enabled}
-                  onChange={(event) => {
-                    setAvatarSettings((prev) => ({
-                      ...prev,
-                      avatar_enabled: event.target.checked,
-                    }));
-                  }}
-                />
-                <span>Enable avatar generation</span>
-              </label>
-
-              <label className="inline-flex items-center gap-2 rounded-xl token-surface px-3 py-2 text-sm text-[var(--text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={avatarSettings.avatar_consent_confirmed}
-                  onChange={(event) => {
-                    setAvatarSettings((prev) => ({
-                      ...prev,
-                      avatar_consent_confirmed: event.target.checked,
-                    }));
-                  }}
-                />
-                <span>Confirm avatar consent</span>
-              </label>
-            </div>
-
             <label className="inline-flex items-center gap-2 rounded-xl token-surface px-3 py-2 text-sm text-[var(--text-secondary)]">
               <input
                 type="checkbox"

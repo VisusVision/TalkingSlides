@@ -31,6 +31,7 @@ Teacher pipeline:
 """
 
 import base64
+import ast
 from datetime import datetime, timedelta
 import html
 import hashlib
@@ -251,6 +252,69 @@ def _audit_job_action(
         )
     except Exception:
         logger.warning("Failed to write job action audit job_id=%s action=%s", getattr(job, "id", None), action, exc_info=True)
+
+
+def _task_matches_project(task_payload: dict[str, Any], project_id: int) -> bool:
+    """Best-effort matcher for Celery inspect active payloads."""
+    target = str(int(project_id))
+    args_value = task_payload.get("args", ())
+    kwargs_value = task_payload.get("kwargs", {})
+
+    try:
+        if isinstance(args_value, str):
+            parsed_args = ast.literal_eval(args_value)
+        else:
+            parsed_args = args_value
+    except Exception:
+        parsed_args = args_value
+
+    try:
+        if isinstance(kwargs_value, str):
+            parsed_kwargs = ast.literal_eval(kwargs_value)
+        else:
+            parsed_kwargs = kwargs_value
+    except Exception:
+        parsed_kwargs = kwargs_value
+
+    if isinstance(parsed_args, (list, tuple)):
+        if any(str(item) == target for item in parsed_args):
+            return True
+    if isinstance(parsed_kwargs, dict):
+        for key in ("project_id", "lesson_id"):
+            if key in parsed_kwargs and str(parsed_kwargs.get(key)) == target:
+                return True
+    return False
+
+
+def _revoke_project_active_tasks(*, project_id: int, include_task_ids: set[str] | None = None) -> list[str]:
+    """Revoke + terminate active tasks belonging to the project across workers."""
+    revoked: set[str] = set()
+    if include_task_ids:
+        revoked.update({str(task_id).strip() for task_id in include_task_ids if str(task_id).strip()})
+
+    try:
+        inspector = _celery_app.control.inspect(timeout=1.0)
+        active_map = inspector.active() or {}
+    except Exception:
+        active_map = {}
+
+    for worker_tasks in active_map.values():
+        for task_payload in worker_tasks or []:
+            if not isinstance(task_payload, dict):
+                continue
+            task_id = str(task_payload.get("id") or "").strip()
+            if not task_id:
+                continue
+            if _task_matches_project(task_payload, int(project_id)):
+                revoked.add(task_id)
+
+    for task_id in sorted(revoked):
+        try:
+            _celery_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
+        except Exception:
+            logger.warning("Failed to revoke active task task_id=%s project_id=%s", task_id, project_id, exc_info=True)
+
+    return sorted(revoked)
 
 
 def _redis_client():
@@ -3188,7 +3252,7 @@ class ProjectUploadView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         voice_id = _get_voice_id(user)
 
-        avatar_enabled_override = False
+        avatar_enabled_override = None
         if "avatar_enabled" in request.data:
             avatar_enabled_override = str(request.data.get("avatar_enabled", "")).strip().lower() in {
                 "1",
@@ -4140,11 +4204,11 @@ class JobCancelView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
-        if str(job.celery_task_id or "").strip():
-            try:
-                _celery_app.control.revoke(job.celery_task_id, terminate=False)
-            except Exception:
-                logger.warning("Failed to revoke celery task job_id=%s task_id=%s", job.id, job.celery_task_id, exc_info=True)
+        root_task_id = str(job.celery_task_id or "").strip()
+        revoked_task_ids = _revoke_project_active_tasks(
+            project_id=int(project_id),
+            include_task_ids={root_task_id} if root_task_id else None,
+        )
 
         cancel_reason = str(request.data.get("reason") or "").strip()[:180]
         message = JOB_CANCELLED_MARKER
@@ -4175,6 +4239,7 @@ class JobCancelView(APIView):
             logger.warning("Failed to dispatch cancelled artifact cleanup for job=%s", job.id, exc_info=True)
         payload = JobSerializer(job).data
         payload["cancelled"] = True
+        payload["revoked_task_ids"] = revoked_task_ids
         _log_with_standard_fields(
             "info",
             "job_cancelled",
@@ -6887,3 +6952,45 @@ class TTSPronunciationSuggestionsView(APIView):
             raw_context=data.get("context") or "",
         )
         return Response(result, status=status.HTTP_200_OK)
+
+
+class _NotImplementedCompatView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, *args, **kwargs):
+        return Response({"error": "Endpoint temporarily unavailable."}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+    def post(self, request, *args, **kwargs):
+        return Response({"error": "Endpoint temporarily unavailable."}, status=status.HTTP_501_NOT_IMPLEMENTED)
+
+
+class ProjectSubtitleTrackListView(_NotImplementedCompatView):
+    pass
+
+
+class ProjectBackgroundApplyAllView(_NotImplementedCompatView):
+    pass
+
+
+class TranscriptPageBackgroundImageView(_NotImplementedCompatView):
+    pass
+
+
+class TranscriptPageBackgroundUploadView(_NotImplementedCompatView):
+    pass
+
+
+class TranscriptPageSceneView(_NotImplementedCompatView):
+    pass
+
+
+class UserFollowingView(_NotImplementedCompatView):
+    pass
+
+
+class UserHistoryView(_NotImplementedCompatView):
+    pass
+
+
+class UserLikedLessonsView(_NotImplementedCompatView):
+    pass

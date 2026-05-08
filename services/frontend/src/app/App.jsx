@@ -105,7 +105,7 @@ function AppWithRouter() {
     await logout();
     setUser(null);
 
-    if (location.pathname === '/studio' || location.pathname === '/library') {
+    if (['/studio', '/analytics', '/moderation', '/library', '/my-lessons', '/history'].includes(location.pathname)) {
       navigate('/', { replace: true });
     }
   };

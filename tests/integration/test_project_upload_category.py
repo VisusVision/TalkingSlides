@@ -275,6 +275,8 @@ def test_catalog_exposes_cover_url_and_project_cover_endpoint_streams_file(tmp_p
         title="Public cover lesson",
         cover_image_original=cover_rel_path,
         cover_image_processed=cover_rel_path,
+        status="ready",
+        moderation_status="approved",
         is_published=True,
     )
     Job.objects.create(project=project, job_type="video_export", status="done")

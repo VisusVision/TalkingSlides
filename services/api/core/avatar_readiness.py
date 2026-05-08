@@ -5,16 +5,15 @@ from pathlib import Path
 from typing import Any
 
 from .models import UserProfile, VoiceProfile
+from .avatar_image_moderation import avatar_image_moderation_gate
 from .avatar_source_validation import stored_avatar_source_state
 
 
 def normalize_avatar_engine(value: str | None) -> str:
     requested = str(value or "").strip().lower()
-    if requested == "liveportrait+musetalk":
+    if requested in {"", "musetalk", "liveportrait+musetalk"}:
         return "liveportrait+musetalk"
-    if requested in {"", "musetalk"}:
-        return "musetalk"
-    return "musetalk"
+    return "liveportrait+musetalk"
 
 
 def engine_config_health(engine: str) -> dict[str, Any]:
@@ -23,9 +22,7 @@ def engine_config_health(engine: str) -> dict[str, Any]:
         "musetalk_command": bool(str(os.environ.get("AVATAR_MUSETALK_CMD", "")).strip()),
         "liveportrait_command": bool(str(os.environ.get("AVATAR_LIVEPORTRAIT_CMD", "")).strip()),
     }
-    valid = bool(checks["musetalk_command"])
-    if selected == "liveportrait+musetalk":
-        valid = bool(checks["musetalk_command"] and checks["liveportrait_command"])
+    valid = bool(checks["musetalk_command"] and checks["liveportrait_command"])
     return {
         "selected_engine": selected,
         "valid": valid,
@@ -48,6 +45,7 @@ def avatar_preview_readiness(
     processed_abs = (storage_root / processed_rel) if processed_rel else None
     processed_exists = bool(processed_abs and processed_abs.exists() and processed_abs.is_file())
     source_state = stored_avatar_source_state(profile, storage_root=storage_root)
+    moderation_gate = avatar_image_moderation_gate(profile)
 
     voice_id = str((voice_profile.voice_id if voice_profile else "") or "").strip()
     checks: dict[str, Any] = {
@@ -66,6 +64,11 @@ def avatar_preview_readiness(
         "avatar_source_reference_type": str(source_state.get("reference_type") or ""),
         "avatar_preview_source_hash": str(source_state.get("preview_source_hash") or ""),
         "avatar_preview_stale": bool(source_state.get("preview_stale")),
+        "avatar_moderation_status": str(getattr(profile, "avatar_moderation_status", "") or "not_scanned"),
+        "avatar_moderation_summary": dict(getattr(profile, "avatar_moderation_summary", {}) or {}),
+        "avatar_moderation_blocked": bool(moderation_gate.get("blocked")),
+        "avatar_moderation_error_code": str(moderation_gate.get("error_code") or ""),
+        "avatar_moderation_error": str(moderation_gate.get("message") or ""),
         "voice_profile_exists": bool(voice_profile),
         "voice_id": voice_id,
         "voice_id_exists": bool(voice_id),
@@ -95,6 +98,8 @@ def avatar_preview_readiness(
         missing.append("avatar_source_validation_stale")
     elif not checks["avatar_source_valid"]:
         missing.append("avatar_source_invalid")
+    if checks["avatar_moderation_blocked"]:
+        missing.append(checks["avatar_moderation_error_code"] or "avatar_image_moderation_blocked")
 
     unique_missing = sorted(set(missing))
     preview_rel = str(profile.avatar_last_preview_path or profile.avatar_preview_video or "").strip()
@@ -126,6 +131,9 @@ def avatar_preview_readiness(
         "invalid_engine_config": "Selected avatar engine configuration is not healthy in the current runtime.",
         "avatar_source_validation_stale": "Active avatar source has changed; re-prepare avatar validation.",
         "avatar_source_invalid": checks["avatar_source_validation_error"] or "Active avatar source does not contain a detectable face.",
+        "avatar_image_moderation_blocked": checks["avatar_moderation_error"] or "Avatar source image needs moderation review.",
+        "avatar_image_moderation_approval_required": checks["avatar_moderation_error"] or "Avatar source image needs moderation approval.",
+        "avatar_image_moderation_pending": checks["avatar_moderation_error"] or "Avatar source image moderation is pending.",
     }
     guidance = [missing_guidance.get(item, item) for item in unique_missing]
     return {
