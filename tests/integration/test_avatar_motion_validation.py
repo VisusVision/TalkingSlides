@@ -813,7 +813,10 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
         Path(output_path).write_bytes(b"liveportrait")
         return EngineResult(True, "liveportrait", output_path, "")
 
-    def fake_musetalk(*, output_path, **_kwargs):
+    musetalk_calls = []
+
+    def fake_musetalk(*, output_path, source_video="", **_kwargs):
+        musetalk_calls.append(str(source_video))
         Path(output_path).write_bytes(b"musetalk")
         return EngineResult(True, "musetalk", output_path, "")
 
@@ -834,7 +837,16 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
 
     assert result["preview_status"] == "ready"
     assert result["engine_used"] == CANONICAL_ENGINE
+    assert result["requested_engine_raw"] == "musetalk"
+    assert result["normalized_engine"] == CANONICAL_ENGINE
     assert result["stage_paths"]["musetalk_stage_state"] == "completed"
+    assert result["stage_paths"]["liveportrait_started"] is True
+    assert result["stage_paths"]["liveportrait_succeeded"] is True
+    assert result["stage_paths"]["musetalk_started"] is True
+    assert result["stage_paths"]["musetalk_succeeded"] is True
+    assert result["stage_paths"]["musetalk_source_video"] == str(output.with_suffix(output.suffix + ".liveportrait.mp4"))
+    assert musetalk_calls == [result["stage_paths"]["musetalk_source_video"]]
+    assert result["final_avatar_engine_chain"] == ["liveportrait", "musetalk"]
     assert result["stage_paths"]["musetalk_handoff_frame_normalization_strategy"] == "normalize_contract_fps"
     assert result["stage_paths"]["final_playable_path"] == str(output)
     assert result["stage_outputs"][-1]["stage"] == "musetalk"
@@ -2077,13 +2089,28 @@ def test_musetalk_failure_always_raises_never_returns_fallback(tmp_path, monkeyp
 # Focused: default MuseTalk preview timeout is large enough for cold start
 # ---------------------------------------------------------------------------
 
-def test_preview_musetalk_timeout_floor_covers_cold_start(tmp_path):
+def test_preview_musetalk_timeout_floor_covers_cold_start(tmp_path, monkeypatch):
     """The default MuseTalk timeout floor must be ≥90 s so that model cold
     start (mmpose + MuseTalk weights) can complete before the budget expires.
 
     Previous defaults (base=8, max=25) caused every preview to time out
     before MuseTalk finished loading its models.
     """
+    for name in [
+        "AVATAR_PREVIEW_STAGE_TIMEOUT_MUSETALK_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_SECONDS",
+        "AVATAR_ORCH_STAGE_TIMEOUT_MUSETALK_SECONDS",
+        "AVATAR_MUSETALK_TIMEOUT_MAX_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_MAX_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_BASE_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_PER_AUDIO_SECOND",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_PER_FRAME_SECOND",
+        "AVATAR_MUSETALK_TIMEOUT_PER_CHUNK_SECONDS",
+        "AVATAR_MUSETALK_TIMEOUT_SAFETY_MULTIPLIER",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AVATAR_MUSETALK_TIMEOUT_HISTORY_ENABLED", "0")
+
     def _budget(audio_seconds: float) -> float:
         req = avatar_pipeline.AvatarRenderRequest(
             source_image_path=str(tmp_path / "face.png"),

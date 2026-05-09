@@ -22,7 +22,8 @@ except Exception:  # pragma: no cover - celery is present in worker runtime.
 logger = logging.getLogger(__name__)
 
 CANONICAL_ENGINE = "liveportrait+musetalk"
-SUPPORTED_ENGINES = (CANONICAL_ENGINE,)
+MUSETALK_ONLY_ENGINE = "musetalk"
+SUPPORTED_ENGINES = (CANONICAL_ENGINE, MUSETALK_ONLY_ENGINE)
 
 
 @dataclass
@@ -37,27 +38,49 @@ class EngineResult:
 
 def normalize_avatar_engine(value: str | None) -> str:
     requested = str(value or "").strip().lower()
-    if requested in {"", "musetalk", CANONICAL_ENGINE}:
+    if requested in {"", CANONICAL_ENGINE}:
+        return CANONICAL_ENGINE
+    if requested == MUSETALK_ONLY_ENGINE:
+        if musetalk_only_fast_mode_enabled():
+            return MUSETALK_ONLY_ENGINE
         return CANONICAL_ENGINE
     logger.warning("Unknown avatar engine=%s; using canonical engine=%s", requested, CANONICAL_ENGINE)
     return CANONICAL_ENGINE
 
 
+def _truthy_env(name: str, default: str = "0") -> bool:
+    raw = str(os.environ.get(name, default)).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def musetalk_only_fast_mode_enabled() -> bool:
+    return _truthy_env("AVATAR_ALLOW_MUSETALK_ONLY_FAST_MODE", "0")
+
+
 def _required_env_vars() -> list[str]:
+    selected = normalize_avatar_engine(os.environ.get("AVATAR_ENGINE"))
+    if selected == MUSETALK_ONLY_ENGINE:
+        return ["AVATAR_MUSETALK_CMD"]
     return ["AVATAR_LIVEPORTRAIT_CMD", "AVATAR_MUSETALK_CMD"]
 
 
 def get_avatar_engine_configuration_report() -> dict[str, object]:
+    selected = normalize_avatar_engine(os.environ.get("AVATAR_ENGINE"))
     missing = [name for name in _required_env_vars() if not str(os.environ.get(name, "")).strip()]
-    configured = {CANONICAL_ENGINE: _required_env_vars()} if not missing else {}
-    missing_map = {CANONICAL_ENGINE: missing} if missing else {}
+    configured = {selected: _required_env_vars()} if not missing else {}
+    missing_map = {selected: missing} if missing else {}
+    active_chain = [MUSETALK_ONLY_ENGINE] if selected == MUSETALK_ONLY_ENGINE else [CANONICAL_ENGINE]
     return {
-        "selected_engine": normalize_avatar_engine(os.environ.get("AVATAR_ENGINE")),
+        "selected_engine": selected,
         "configured": configured,
         "missing": missing_map,
         "real_engine_count": int(bool(configured)),
-        "active_chain": [CANONICAL_ENGINE],
-        "required_env_by_engine": {CANONICAL_ENGINE: _required_env_vars()},
+        "active_chain": active_chain,
+        "required_env_by_engine": {
+            CANONICAL_ENGINE: ["AVATAR_LIVEPORTRAIT_CMD", "AVATAR_MUSETALK_CMD"],
+            MUSETALK_ONLY_ENGINE: ["AVATAR_MUSETALK_CMD"],
+        },
+        "musetalk_only_fast_mode_enabled": musetalk_only_fast_mode_enabled(),
     }
 
 

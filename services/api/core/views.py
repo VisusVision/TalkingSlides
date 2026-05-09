@@ -1412,6 +1412,7 @@ def _playback_payload(
             "stream_url": "",
             "defaults": avatar_overlay_defaults or {},
         }
+    payload.update(_avatar_playback_state_payload(project, avatar_available=bool(avatar_token)))
     payload["mode_debug"] = mode_debug or {}
     return payload
 
@@ -2243,6 +2244,10 @@ class MediaStreamView(APIView):
             if not rel_path:
                 return _stream_error_response(file_type=file_type, status_code=status.HTTP_404_NOT_FOUND, reason="avatar_missing")
             rel_path = rel_path.lstrip("/")
+            if stream_project:
+                avatar_available, avatar_rel_path = _avatar_artifact_available(stream_project, sidecar)
+                if not avatar_available or avatar_rel_path != rel_path or not _avatar_active_for_project(stream_project):
+                    return _stream_error_response(file_type=file_type, status_code=status.HTTP_404_NOT_FOUND, reason="avatar_not_available")
         else:
             return _stream_error_response(file_type=file_type, status_code=status.HTTP_404_NOT_FOUND, reason="unsupported_resource")
 
@@ -2396,12 +2401,12 @@ class PlaybackTokenView(APIView):
                 bind_key=bind_key,
             )
 
-        avatar_payload = sidecar.get("avatar") if isinstance(sidecar, dict) else None
-        if avatar_payload and avatar_payload.get("track_rel_path") and _avatar_active_for_project(project):
+        avatar_available, avatar_rel_path = _avatar_artifact_available(project, sidecar)
+        if avatar_available and avatar_rel_path and _avatar_active_for_project(project):
             avatar_token = generate_media_token(
                 job.id,
                 "avatar",
-                rel_path=str(avatar_payload.get("track_rel_path")),
+                rel_path=avatar_rel_path,
                 ttl_seconds=ttl_seconds,
                 grant_id=grant_id,
                 bind_key=bind_key,
@@ -3517,9 +3522,11 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     composite_fallback_allowed = _composite_fallback_allowed()
 
     return {
+        "requested": bool(avatar_enabled),
         "enabled": bool(avatar_enabled and is_ready and not disable_reason),
         "teacher_id": int(teacher.id),
         "source_image_rel_path": profile.avatar_image_processed or profile.avatar_image_original,
+        "source_image_original_rel_path": profile.avatar_image_original or profile.avatar_image_processed,
         "source_video_rel_path": profile.avatar_video_processed or profile.avatar_video_original,
         "avatar_reference_type": resolved_ref,
         "motion_preset": profile.avatar_motion_preset or "natural",
@@ -3572,6 +3579,46 @@ def _avatar_active_for_project(project: Project) -> bool:
     if project.avatar_enabled_override is None:
         return profile_enabled
     return bool(project.avatar_enabled_override and profile_enabled)
+
+
+def _avatar_artifact_available(project: Project, sidecar: dict | None = None) -> tuple[bool, str]:
+    if not bool(getattr(project, "avatar_visible", True)):
+        return False, ""
+    if str(getattr(project, "avatar_processing_status", "") or "") != "ready":
+        return False, ""
+    avatar_payload = sidecar.get("avatar") if isinstance(sidecar, dict) else None
+    sidecar_rel = _normalize_rel_storage_path(str((avatar_payload or {}).get("track_rel_path") or ""))
+    project_rel = _normalize_rel_storage_path(str(getattr(project, "avatar_output_path", "") or ""))
+    rel_path = project_rel or sidecar_rel
+    if not rel_path:
+        return False, ""
+    if sidecar_rel and project_rel and sidecar_rel != project_rel:
+        return False, ""
+    if not _storage_rel_path_exists(getattr(settings, "STORAGE_ROOT", "storage_local"), rel_path):
+        return False, ""
+    return True, rel_path
+
+
+def _avatar_engine_chain_for_project(project: Project) -> list[str]:
+    latest = project.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+    if latest is None:
+        return []
+    metadata = latest.metadata if isinstance(latest.metadata, dict) else {}
+    chain = metadata.get("final_avatar_engine_chain") or metadata.get("fallback_chain_used") or latest.fallback_chain_used
+    return list(chain or [])
+
+
+def _avatar_playback_state_payload(project: Project, *, avatar_available: bool | None = None) -> dict[str, Any]:
+    available = bool(avatar_available) if avatar_available is not None else _avatar_artifact_available(project)[0]
+    updated_at = getattr(project, "avatar_updated_at", None)
+    return {
+        "avatar_processing_status": str(getattr(project, "avatar_processing_status", "") or "none"),
+        "avatar_processing_message": str(getattr(project, "avatar_processing_message", "") or ""),
+        "avatar_visible": bool(getattr(project, "avatar_visible", True)),
+        "avatar_available": available,
+        "avatar_updated_at": updated_at.isoformat() if updated_at else None,
+        "final_avatar_engine_chain": _avatar_engine_chain_for_project(project),
+    }
 
 
 def _resolve_category_from_upload(request) -> Category | None:
@@ -3775,12 +3822,19 @@ class ProjectUploadView(APIView):
         async_result = _dispatch_celery_task(
             _PROCESS_PROJECT_RENDER_TASK,
             args=task_args,
-            queue=_queue_for_avatar_options(avatar_options),
+            queue=_render_queue_name(),
         )
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
 
-        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+        data = JobSerializer(job).data
+        data["avatar_processing_status"] = "queued" if avatar_options.get("enabled") else "none"
+        data["avatar_processing_message"] = (
+            "Avatar is still processing and will be added when ready."
+            if avatar_options.get("enabled")
+            else str(avatar_options.get("disabled_reason") or "")
+        )
+        return Response(data, status=status.HTTP_202_ACCEPTED)
 
 
 class ProjectDetailView(APIView):
@@ -3817,12 +3871,13 @@ class ProjectDetailView(APIView):
         has_category_id = "category_id" in request.data
         has_category_name = "category_name" in request.data or "category" in request.data
         has_avatar_enabled = "avatar_enabled" in request.data
+        has_avatar_visible = "avatar_visible" in request.data or "show_avatar" in request.data
         has_is_published = "is_published" in request.data
         has_tts_settings = "tts_settings" in request.data
         draft_only = _truthy_request_value(request.data.get("draft_only"))
-        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_is_published and not has_tts_settings:
+        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_avatar_visible and not has_is_published and not has_tts_settings:
             return Response(
-                {"error": "category_id, category_name, avatar_enabled, is_published, or tts_settings is required for updates."},
+                {"error": "category_id, category_name, avatar_enabled, avatar_visible, is_published, or tts_settings is required for updates."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -3856,6 +3911,14 @@ class ProjectDetailView(APIView):
             else:
                 updates["avatar_enabled_override"] = raw in {"1", "true", "yes", "on"}
             update_fields.append("avatar_enabled_override")
+
+        if has_avatar_visible:
+            raw_visible = request.data.get("avatar_visible", request.data.get("show_avatar"))
+            raw = str(raw_visible).strip().lower()
+            if raw not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+                return Response({"error": "avatar_visible must be a boolean."}, status=status.HTTP_400_BAD_REQUEST)
+            updates["avatar_visible"] = raw in {"1", "true", "yes", "on"}
+            update_fields.append("avatar_visible")
 
         if has_is_published:
             raw = str(request.data.get("is_published", "")).strip().lower()
@@ -3942,11 +4005,18 @@ def _queue_transcript_rerender(
         _PROCESS_PROJECT_RENDER_TASK,
         args=task_args,
         kwargs=task_kwargs,
-        queue=_queue_for_avatar_options(avatar_options),
+        queue=_render_queue_name(),
     )
     job.celery_task_id = async_result.id
     job.save(update_fields=["celery_task_id"])
-    return JobSerializer(job).data
+    data = JobSerializer(job).data
+    data["avatar_processing_status"] = "queued" if avatar_options.get("enabled") else "none"
+    data["avatar_processing_message"] = (
+        "Avatar is still processing and will be added when ready."
+        if avatar_options.get("enabled")
+        else str(avatar_options.get("disabled_reason") or "")
+    )
+    return data
 
 
 def _source_moderation_auto_enabled() -> bool:
@@ -5414,12 +5484,19 @@ class ProjectRerenderView(APIView):
             _PROCESS_PROJECT_RENDER_TASK,
             args=task_args,
             kwargs=task_kwargs,
-            queue=_queue_for_avatar_options(avatar_options),
+            queue=_render_queue_name(),
         )
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
 
-        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
+        data = JobSerializer(job).data
+        data["avatar_processing_status"] = "queued" if avatar_options.get("enabled") else "none"
+        data["avatar_processing_message"] = (
+            "Avatar is still processing and will be added when ready."
+            if avatar_options.get("enabled")
+            else str(avatar_options.get("disabled_reason") or "")
+        )
+        return Response(data, status=status.HTTP_202_ACCEPTED)
 
 
 class JobStatusView(APIView):
@@ -5439,6 +5516,8 @@ class JobStatusView(APIView):
         data["transcript_pages"] = _studio_transcript_pages(job.project, request) if job.project else []
         data["has_draft"] = has_project_draft(job.project) if job.project else False
         data["draft_metadata"] = _studio_draft_metadata(job.project) if job.project else {}
+        if job.project:
+            data.update(_avatar_playback_state_payload(job.project))
         return Response(data)
 
 
@@ -6978,12 +7057,12 @@ class CatalogDetailView(APIView):
                 bind_key=bind_key,
             )
 
-        avatar_payload = sidecar.get("avatar") if isinstance(sidecar, dict) else None
-        if avatar_payload and avatar_payload.get("track_rel_path") and _avatar_active_for_project(project):
+        avatar_available, avatar_rel_path = _avatar_artifact_available(project, sidecar)
+        if avatar_available and avatar_rel_path and _avatar_active_for_project(project):
             avatar_token = generate_media_token(
                 job.id,
                 "avatar",
-                rel_path=str(avatar_payload.get("track_rel_path")),
+                rel_path=avatar_rel_path,
                 ttl_seconds=ttl_seconds,
                 grant_id=grant_id,
                 bind_key=bind_key,
@@ -7043,6 +7122,12 @@ class CatalogDetailView(APIView):
         data["drm"] = playback["drm"]
         data["avatar_overlay"] = playback.get("avatar_overlay", {"enabled": False, "stream_url": "", "defaults": {}})
         data["avatar_active_for_lesson"] = _avatar_active_for_project(project)
+        data["avatar_processing_status"] = playback.get("avatar_processing_status", "none")
+        data["avatar_processing_message"] = playback.get("avatar_processing_message", "")
+        data["avatar_visible"] = playback.get("avatar_visible", True)
+        data["avatar_available"] = playback.get("avatar_available", False)
+        data["avatar_updated_at"] = playback.get("avatar_updated_at")
+        data["final_avatar_engine_chain"] = playback.get("final_avatar_engine_chain", [])
         data["playback_status"] = playback.get("playback_status")
         data["mode_debug"] = playback.get("mode_debug")
         data["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})

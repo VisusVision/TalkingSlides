@@ -280,6 +280,13 @@ def _composite_fallback_enabled() -> bool:
     return False
 
 
+def _selected_avatar_engine() -> str:
+    requested = str(os.environ.get("AVATAR_ENGINE", "")).strip().lower()
+    if requested == "musetalk" and _is_truthy_env("AVATAR_ALLOW_MUSETALK_ONLY_FAST_MODE", "0"):
+        return "musetalk"
+    return "liveportrait+musetalk"
+
+
 def _check_runtime_imports() -> dict[str, str]:
     import torch  # type: ignore
     import torchaudio  # type: ignore
@@ -1004,7 +1011,7 @@ def _start_musetalk_service(*, musetalk_home: Path, model_root: Path) -> bool:
 def main() -> int:
     _configure_logging()
 
-    engine = "liveportrait+musetalk"
+    engine = _selected_avatar_engine()
     composite_errors: list[str] = []
     if engine == "liveportrait+musetalk":
         detected_home, detected_entrypoint = _autodetect_liveportrait_runtime()
@@ -1074,6 +1081,11 @@ def main() -> int:
                 composite_errors,
             )
             return 70
+    else:
+        LOGGER.info(
+            "Bootstrap: MuseTalk-only fast mode selected; skipping LivePortrait startup checks selected_engine=%s",
+            engine,
+        )
 
     musetalk_home = Path(str(os.environ.get("MUSETALK_HOME", "")).strip() or "/opt/musetalk").resolve()
     model_root_raw = Path(str(os.environ.get("MUSETALK_MODEL_PATH", "")).strip() or "/app/storage_local/models").resolve()

@@ -184,7 +184,13 @@ def _log_avatar_engine_startup_status(sender=None, **kwargs):
         exit_code = int(bootstrap_musetalk.main())
         if exit_code != 0:
             _fatal_startup(f"Worker bootstrap failed exit_code={exit_code}")
-        logger.info("Worker avatar bootstrap ready selected_engine=%s", "liveportrait+musetalk")
+        try:
+            from avatar.canonical_adapters import normalize_avatar_engine
+
+            selected_engine = normalize_avatar_engine(os.environ.get("AVATAR_ENGINE"))
+        except Exception:
+            selected_engine = "liveportrait+musetalk"
+        logger.info("Worker avatar bootstrap ready selected_engine=%s", selected_engine)
     except SystemExit as exc:
         code = int(exc.code or 70)
         _fatal_startup(f"Worker bootstrap exited during startup exit_code={code}")
@@ -293,6 +299,36 @@ def _mark_project_ready_after_successful_render(project_id: str | int) -> None:
         )
 
 
+def _mark_project_avatar_state(
+    project_id: str | int,
+    *,
+    status: str,
+    message: str = "",
+    job_id: str | int | None = None,
+    output_path: str | None = None,
+    clear_output: bool = False,
+) -> None:
+    try:
+        from django.utils import timezone
+        from core.models import Project
+
+        updates: dict[str, Any] = {
+            "avatar_processing_status": str(status or "none"),
+            "avatar_processing_message": str(message or ""),
+            "avatar_updated_at": timezone.now(),
+            "updated_at": timezone.now(),
+        }
+        if job_id is not None:
+            updates["avatar_last_job_id"] = str(job_id or "")
+        if output_path is not None:
+            updates["avatar_output_path"] = str(output_path or "")
+        elif clear_output:
+            updates["avatar_output_path"] = ""
+        Project.objects.filter(pk=int(project_id)).update(**updates)
+    except Exception:
+        logger.warning("Failed to update avatar state for project=%s", project_id, exc_info=True)
+
+
 def _worker_protection_mode() -> str:
     try:
         from django.conf import settings
@@ -311,6 +347,18 @@ def _write_json_sidecar(project_id: str | int, file_name: str, payload: dict[str
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
     return str(target)
+
+
+def _read_json_sidecar(project_id: str | int, file_name: str) -> dict[str, Any]:
+    path = Path(STORAGE_ROOT) / str(project_id) / str(file_name)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Failed to read sidecar project=%s file=%s", project_id, file_name, exc_info=True)
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _write_language_detection_sidecar(project_id: str | int, payload: dict[str, Any]) -> str:
@@ -808,6 +856,10 @@ def build_subtitle_cues_from_transcript_pages(
 
 def _write_playback_sidecar(project_id: str | int, payload: dict[str, Any]) -> str:
     return _write_json_sidecar(project_id, "playback_assets.json", payload)
+
+
+def _read_playback_sidecar(project_id: str | int) -> dict[str, Any]:
+    return _read_json_sidecar(project_id, "playback_assets.json")
 
 
 def _detect_language_from_slides(slides: list[dict[str, Any]], *, lang_hint: str = "auto") -> dict[str, Any]:
@@ -3382,6 +3434,8 @@ def render_avatar_segment(
             )
     Path(output_abs).parent.mkdir(parents=True, exist_ok=True)
 
+    raw_lipsync_engine = str(lipsync_engine or os.environ.get("AVATAR_ENGINE") or "").strip()
+    normalized_lipsync_engine = normalize_avatar_engine(raw_lipsync_engine)
     request = AvatarRenderRequest(
         source_image_path=(source_image_abs or source_image_original_abs),
         source_image_original_path=(source_image_original_abs or source_image_abs),
@@ -3391,12 +3445,13 @@ def render_avatar_segment(
         output_path=output_abs,
         motion_preset=str(motion_preset or "natural"),
         quality_preset=str(quality_preset or "high"),
-        lipsync_engine=normalize_avatar_engine(lipsync_engine or os.environ.get("AVATAR_ENGINE")),
+        lipsync_engine=normalized_lipsync_engine,
         cache_text_hash=str(cache_text_hash or ""),
     )
+    setattr(request, "_requested_engine_raw", raw_lipsync_engine)
 
     logger.info(
-        "Avatar segment dispatch project_id=%s teacher_id=%s slide_index=%s source_image_path=%s source_image_original_path=%s source_video_path=%s audio_path=%s output_path=%s text_hash=%s requested_engine=%s",
+        "Avatar segment dispatch project_id=%s teacher_id=%s slide_index=%s source_image_path=%s source_image_original_path=%s source_video_path=%s audio_path=%s output_path=%s text_hash=%s requested_engine_raw=%s normalized_engine=%s",
         int(project_id or 0),
         int(teacher_id or 0),
         int(slide_index or 0),
@@ -3406,6 +3461,7 @@ def render_avatar_segment(
         request.audio_path,
         request.output_path,
         request.cache_text_hash,
+        raw_lipsync_engine,
         request.lipsync_engine,
     )
 
@@ -3479,6 +3535,385 @@ def render_avatar_lesson(self, project_id: int, teacher_id: int, segments: list[
         ).result
         outputs.append(result)
     return {"project_id": int(project_id), "teacher_id": int(teacher_id), "segments": outputs, "status": "done"}
+
+
+@app.task(bind=True, name="worker.tasks.render_lesson_avatar_overlay", max_retries=0)
+def render_lesson_avatar_overlay(
+    self,
+    project_id: int,
+    teacher_id: int,
+    render_results: list[dict[str, Any]],
+    avatar_options: dict[str, Any] | None,
+    output_rel_prefix: str,
+    avatar_job_id: int | None = None,
+) -> dict[str, Any]:
+    """Render lesson avatar artifacts after the base lesson video is available."""
+    try:
+        from django.utils import timezone
+        from core.models import Job, Project, UserProfile
+        from avatar.hashing import sha256_file
+        from scripts.ffmpeg_helpers import concat_videos
+    except ImportError as exc:
+        raise RuntimeError(f"Avatar overlay dependencies not importable: {exc}") from exc
+
+    project_id_int = int(project_id)
+    teacher_id_int = int(teacher_id)
+    job_id = int(avatar_job_id or 0) or None
+    avatar_cfg = dict(avatar_options or {})
+    output_rel_prefix = str(output_rel_prefix or str(project_id_int)).strip().replace("\\", "/").strip("/") or str(project_id_int)
+    ordered = sorted(list(render_results or []), key=lambda item: int(item.get("index") or 0))
+
+    def _set_job(**updates: Any) -> None:
+        if job_id:
+            Job.objects.filter(pk=job_id).update(**updates, updated_at=timezone.now())
+
+    def _fail(message: str, failures: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        message = str(message or "Avatar failed. Base video is still published.")
+        _set_job(status="failed", progress=100, error_message=message)
+        _mark_project_avatar_state(
+            project_id_int,
+            status="failed",
+            message=message,
+            job_id=job_id,
+            clear_output=True,
+        )
+        sidecar = _read_playback_sidecar(project_id_int)
+        if sidecar:
+            sidecar["avatar"] = None
+            sidecar["avatar_status"] = "failed"
+            sidecar["avatar_failures"] = list(failures or [])
+            _write_playback_sidecar(project_id_int, sidecar)
+        return {
+            "status": "failed",
+            "project_id": project_id_int,
+            "teacher_id": teacher_id_int,
+            "avatar_failures": list(failures or []),
+            "message": message,
+        }
+
+    logger.info("Lesson avatar overlay START project=%s teacher=%s slides=%d", project_id_int, teacher_id_int, len(ordered))
+    _set_job(status="running", progress=5)
+    _mark_project_avatar_state(
+        project_id_int,
+        status="processing",
+        message="Avatar is still processing and will be added when ready.",
+        job_id=job_id,
+        clear_output=True,
+    )
+    self.update_state(state="PROGRESS", meta={"step": "avatar_processing", "project_id": project_id_int, "progress": 5})
+
+    if not ordered:
+        return _fail("Avatar failed. Base video is still published.", [{"status": "no_segments", "reason": "no_render_segments"}])
+
+    if bool(avatar_cfg.get("avatar_moderation_blocked")):
+        reason = str(avatar_cfg.get("disabled_reason") or avatar_cfg.get("avatar_moderation_error_code") or "avatar_image_moderation_blocked")
+        return _fail("Avatar failed. Base video is still published.", [{"status": "avatar_moderation_blocked", "reason": reason}])
+    if avatar_cfg.get("avatar_source_valid") is False:
+        reason = str(avatar_cfg.get("avatar_source_validation_error") or "avatar_input_face_not_detected")
+        return _fail("Avatar failed. Base video is still published.", [{"status": "avatar_source_invalid", "reason": reason}])
+    if bool(avatar_cfg.get("avatar_preview_stale")):
+        return _fail("Avatar failed. Base video is still published.", [{"status": "avatar_preview_stale", "reason": "avatar_preview_stale"}])
+
+    output_dir = Path(_avatar_storage_root()) / output_rel_prefix
+    segment_dir = output_dir / "avatar_segments"
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    avatar_segments: list[dict[str, Any]] = []
+    avatar_failures: list[dict[str, Any]] = []
+    avatar_slide_metadata: list[dict[str, Any]] = []
+    final_avatar_engine_chain: list[str] = []
+    segment_rel_by_index: dict[int, str] = {}
+
+    source_rel = str(avatar_cfg.get("source_image_rel_path") or "")
+    source_abs = str(Path(_avatar_storage_root()) / source_rel) if source_rel else ""
+    source_hash = sha256_file(source_abs) if source_abs and Path(source_abs).exists() else ""
+
+    for position, item in enumerate(ordered, start=1):
+        index = int(item.get("index") or 0)
+        slide_num = int(item.get("slide_num") or position)
+        audio_path = str(item.get("tts_audio_path") or "")
+        avatar_output = segment_dir / f"avatar_{slide_num:03d}.mp4"
+        metadata_payload: dict[str, Any] = {
+            "index": index,
+            "slide_num": slide_num,
+            "page_key": str(item.get("page_key") or ""),
+            "avatar_attempted": True,
+            "avatar_skipped": False,
+            "avatar_applied": False,
+            "avatar_failed": True,
+            "avatar_status": "failed",
+            "avatar_error": "",
+            "avatar_segment_rel_path": "",
+            "avatar_engine_used": "none",
+            "avatar_fallback_chain": [],
+            "avatar_motion_validation": {},
+        }
+        try:
+            if not audio_path or not Path(audio_path).exists():
+                raise RuntimeError("avatar_render_audio_missing")
+            avatar_result = render_avatar_segment.apply(
+                kwargs={
+                    "project_id": project_id_int,
+                    "teacher_id": teacher_id_int,
+                    "slide_index": slide_num,
+                    "audio_path": audio_path,
+                    "output_path": str(avatar_output),
+                    "source_image_rel_path": str(avatar_cfg.get("source_image_rel_path") or ""),
+                    "source_image_original_rel_path": str(
+                        avatar_cfg.get("source_image_original_rel_path")
+                        or avatar_cfg.get("source_rel_path")
+                        or avatar_cfg.get("source_image_rel_path")
+                        or ""
+                    ),
+                    "source_video_rel_path": str(avatar_cfg.get("source_video_rel_path") or ""),
+                    "avatar_reference_type": str(avatar_cfg.get("avatar_reference_type") or "image"),
+                    "motion_preset": str(avatar_cfg.get("motion_preset") or "natural"),
+                    "quality_preset": str(avatar_cfg.get("quality_preset") or "high"),
+                    "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
+                    "cache_text_hash": hashlib.sha256(str(item.get("text") or "").encode("utf-8")).hexdigest(),
+                }
+            )
+            if avatar_result.failed():
+                raise RuntimeError(_concise_error_text(avatar_result.result, fallback="avatar_segment_failed"))
+            payload = avatar_result.result
+            if not isinstance(payload, dict):
+                raise RuntimeError(f"render_avatar_segment returned unexpected type: {type(payload).__name__}")
+            avatar_output_path = str(payload.get("output_path") or "")
+            if not avatar_output_path or not Path(avatar_output_path).exists():
+                raise RuntimeError("missing_avatar_output")
+            rel_path = _safe_rel_path(_avatar_storage_root(), avatar_output_path)
+            fallback_chain = list(payload.get("fallback_chain_used") or payload.get("final_avatar_engine_chain") or [])
+            engine_used = str(payload.get("engine_used") or "liveportrait+musetalk")
+            if not final_avatar_engine_chain:
+                final_avatar_engine_chain = list(payload.get("final_avatar_engine_chain") or fallback_chain or ["liveportrait", "musetalk"])
+            metadata_payload.update(
+                {
+                    "avatar_applied": True,
+                    "avatar_failed": False,
+                    "avatar_status": "ready",
+                    "avatar_error": "",
+                    "avatar_segment_rel_path": rel_path,
+                    "avatar_engine_used": engine_used,
+                    "avatar_fallback_chain": fallback_chain,
+                    "avatar_motion_validation": dict(payload.get("motion_validation") or {}),
+                }
+            )
+            avatar_segments.append(
+                {
+                    "index": index,
+                    "engine": engine_used,
+                    "fallback_chain": fallback_chain,
+                    "segment_rel_path": rel_path,
+                    "duration": round(float(item.get("duration") or 0.0), 3),
+                }
+            )
+            segment_rel_by_index[index] = rel_path
+            try:
+                _record_avatar_render_job(
+                    lesson_id=project_id_int,
+                    teacher_id=teacher_id_int,
+                    source_image_hash=source_hash,
+                    tts_audio_hash=sha256_file(audio_path),
+                    lesson_text_hash=hashlib.sha256(str(item.get("text") or "").encode("utf-8")).hexdigest(),
+                    slide_hash=sha256_file(str(item.get("slide_path"))) if item.get("slide_path") and Path(str(item.get("slide_path"))).exists() else "",
+                    engine_used=engine_used,
+                    render_status="done",
+                    render_error="",
+                    output_path=rel_path,
+                    fallback_chain_used=fallback_chain,
+                    metadata={
+                        "avatar_version": str(avatar_cfg.get("model_version") or "liveportrait+musetalk:v1"),
+                        "avatar_reference_type": str(avatar_cfg.get("avatar_reference_type") or "image"),
+                        "avatar_status": "ready",
+                        "slide_num": slide_num,
+                        "page_key": str(item.get("page_key") or ""),
+                        "motion_validation": dict(payload.get("motion_validation") or {}),
+                        "final_avatar_engine_chain": final_avatar_engine_chain,
+                        "background_avatar_job_id": job_id,
+                    },
+                )
+            except Exception:
+                logger.warning("Avatar render telemetry failed for project=%s slide=%s", project_id_int, slide_num, exc_info=True)
+        except Exception as exc:  # noqa: BLE001
+            reason = _concise_error_text(exc, fallback="avatar_segment_failed")
+            metadata_payload["avatar_error"] = reason
+            avatar_failures.append(
+                {
+                    "index": index,
+                    "slide_num": slide_num,
+                    "page_key": str(item.get("page_key") or ""),
+                    "status": "failed",
+                    "skipped": False,
+                    "reason": reason,
+                    "validation": {},
+                }
+            )
+            try:
+                _record_avatar_render_job(
+                    lesson_id=project_id_int,
+                    teacher_id=teacher_id_int,
+                    source_image_hash=source_hash,
+                    tts_audio_hash=sha256_file(audio_path) if audio_path and Path(audio_path).exists() else "",
+                    lesson_text_hash=hashlib.sha256(str(item.get("text") or "").encode("utf-8")).hexdigest(),
+                    slide_hash="",
+                    engine_used="none",
+                    render_status="failed",
+                    render_error=reason,
+                    output_path="",
+                    fallback_chain_used=[],
+                    metadata={
+                        "avatar_version": str(avatar_cfg.get("model_version") or "liveportrait+musetalk:v1"),
+                        "avatar_reference_type": str(avatar_cfg.get("avatar_reference_type") or "image"),
+                        "avatar_status": "failed",
+                        "slide_num": slide_num,
+                        "page_key": str(item.get("page_key") or ""),
+                        "background_avatar_job_id": job_id,
+                    },
+                )
+            except Exception:
+                logger.warning("Failed avatar telemetry skipped for project=%s slide=%s", project_id_int, slide_num, exc_info=True)
+            logger.warning("Avatar segment failed project=%s slide=%s reason=%s", project_id_int, slide_num, reason)
+        avatar_slide_metadata.append(metadata_payload)
+        progress = min(90, 5 + int((position / max(len(ordered), 1)) * 75))
+        _set_job(progress=progress)
+        self.update_state(state="PROGRESS", meta={"step": "avatar_processing", "project_id": project_id_int, "progress": progress})
+
+    if avatar_failures or len(avatar_segments) != len(ordered):
+        return _fail("Avatar failed. Base video is still published.", avatar_failures)
+
+    avatar_track_dir = output_dir / "avatar"
+    avatar_track_dir.mkdir(parents=True, exist_ok=True)
+    avatar_track_path = avatar_track_dir / "avatar_track.mp4"
+    segment_paths = [str(Path(_avatar_storage_root()) / segment["segment_rel_path"]) for segment in sorted(avatar_segments, key=lambda seg: seg.get("index", 0))]
+    try:
+        concat_videos(segment_paths, str(avatar_track_path))
+    except Exception as exc:  # noqa: BLE001
+        return _fail("Avatar failed. Base video is still published.", [{"status": "avatar_concat_failed", "reason": _concise_error_text(exc, fallback="avatar_concat_failed")}])
+
+    avatar_track_rel = _safe_rel_path(_avatar_storage_root(), avatar_track_path)
+    sidecar = _read_playback_sidecar(project_id_int)
+    if not sidecar:
+        sidecar = {}
+    sidecar["avatar"] = {
+        "track_rel_path": avatar_track_rel,
+        "default_position": "top-right",
+        "default_size": "medium",
+        "segments": avatar_segments,
+    }
+    sidecar["avatar_status"] = "ready"
+    sidecar["avatar_failures"] = []
+    sidecar["avatar_clips"] = [segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
+    sidecar["avatar_slide_metadata"] = avatar_slide_metadata
+    final_segments = sidecar.get("final_segments")
+    if isinstance(final_segments, list):
+        metadata_by_index = {int(item.get("index") or 0): item for item in avatar_slide_metadata}
+        for final_segment in final_segments:
+            if not isinstance(final_segment, dict):
+                continue
+            index = int(final_segment.get("index") or 0)
+            meta = metadata_by_index.get(index, {})
+            final_segment["avatar_clip"] = str(meta.get("avatar_segment_rel_path") or "")
+            final_segment["avatar_attempted"] = bool(meta.get("avatar_attempted"))
+            final_segment["avatar_skipped"] = bool(meta.get("avatar_skipped"))
+            final_segment["avatar_applied"] = bool(meta.get("avatar_applied"))
+            final_segment["avatar_failed"] = bool(meta.get("avatar_failed"))
+            final_segment["avatar_status"] = str(meta.get("avatar_status") or "none")
+            final_segment["avatar_error"] = str(meta.get("avatar_error") or "")
+            final_segment["avatar_failure_reason"] = str(meta.get("avatar_error") or "")
+    _write_playback_sidecar(project_id_int, sidecar)
+
+    _set_job(status="done", progress=100, result_url=avatar_track_rel, error_message="")
+    _mark_project_avatar_state(
+        project_id_int,
+        status="ready",
+        message="Avatar ready.",
+        job_id=job_id,
+        output_path=avatar_track_rel,
+    )
+    UserProfile.objects.filter(user_id=teacher_id_int).update(avatar_last_rendered_at=timezone.now())
+    Project.objects.filter(pk=project_id_int).update(updated_at=timezone.now())
+    logger.info("Lesson avatar overlay DONE project=%s track=%s", project_id_int, avatar_track_rel)
+    return {
+        "status": "ready",
+        "project_id": project_id_int,
+        "teacher_id": teacher_id_int,
+        "avatar_track_rel_path": avatar_track_rel,
+        "avatar_segments": avatar_segments,
+        "final_avatar_engine_chain": final_avatar_engine_chain,
+    }
+
+
+def _queue_lesson_avatar_overlay_after_base_render(
+    *,
+    project_id: str | int,
+    ordered_results: list[dict[str, Any]],
+    avatar_options: dict[str, Any] | None,
+    output_rel_prefix: str,
+) -> dict[str, Any]:
+    avatar_cfg = dict(avatar_options or {})
+    requested = bool(avatar_cfg.get("requested", avatar_cfg.get("enabled", False)))
+    enabled = bool(avatar_cfg.get("enabled"))
+    teacher_id = int(avatar_cfg.get("teacher_id") or 0)
+    if not requested:
+        _mark_project_avatar_state(
+            project_id,
+            status="none",
+            message="",
+            job_id="",
+            clear_output=True,
+        )
+        return {"status": "none", "queued": False}
+    if not enabled or not teacher_id:
+        reason = str(
+            avatar_cfg.get("disabled_reason")
+            or avatar_cfg.get("avatar_source_validation_error")
+            or avatar_cfg.get("avatar_moderation_error_code")
+            or "avatar_not_available"
+        )
+        _mark_project_avatar_state(
+            project_id,
+            status="failed",
+            message="Avatar failed. Base video is still published.",
+            job_id="",
+            clear_output=True,
+        )
+        return {"status": "failed", "queued": False, "reason": reason}
+
+    try:
+        from django.utils import timezone
+        from core.models import Job, Project
+
+        job = Job.objects.create(project_id=int(project_id), job_type="avatar_render", status="pending", progress=0)
+        _mark_project_avatar_state(
+            project_id,
+            status="queued",
+            message="Avatar is still processing and will be added when ready.",
+            job_id=job.id,
+            clear_output=True,
+        )
+        async_result = render_lesson_avatar_overlay.apply_async(
+            args=[
+                int(project_id),
+                teacher_id,
+                ordered_results,
+                avatar_cfg,
+                str(output_rel_prefix or project_id),
+                int(job.id),
+            ],
+            queue=_avatar_queue_name(),
+        )
+        Job.objects.filter(pk=job.id).update(celery_task_id=str(async_result.id or ""), updated_at=timezone.now())
+        Project.objects.filter(pk=int(project_id)).update(updated_at=timezone.now())
+        return {"status": "queued", "queued": True, "job_id": job.id, "celery_task_id": str(async_result.id or "")}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Failed to queue lesson avatar overlay project=%s", project_id, exc_info=True)
+        _mark_project_avatar_state(
+            project_id,
+            status="failed",
+            message="Avatar failed. Base video is still published.",
+            job_id="",
+            clear_output=True,
+        )
+        return {"status": "failed", "queued": False, "reason": _concise_error_text(exc, fallback="avatar_queue_failed")}
 
 
 @app.task(bind=True, name="worker.tasks.avatar_cache_cleanup")
@@ -4174,6 +4609,7 @@ def concat_and_finalize(
     results: list[dict[str, Any]],
     project_id: str,
     use_draft: bool = False,
+    avatar_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Chord callback: concatenate all per-slide part MP4s into the final video
@@ -4444,6 +4880,14 @@ def concat_and_finalize(
                 raise
 
         _write_playback_sidecar(project_id, playback_assets)
+        background_avatar = {"status": "none", "queued": False}
+        if avatar_options is not None:
+            background_avatar = _queue_lesson_avatar_overlay_after_base_render(
+                project_id=project_id,
+                ordered_results=ordered,
+                avatar_options=avatar_options,
+                output_rel_prefix=output_rel_prefix,
+            )
         avatar_warning_message = ""
         if avatar_failures:
             compact_failures = []
@@ -4504,6 +4948,7 @@ def concat_and_finalize(
             "avatar_segments": avatar_segments,
             "avatar_failures": avatar_failures,
             "avatar_status": playback_assets["avatar_status"],
+            "background_avatar": background_avatar,
             "n_slides":    len(ordered),
         }
 
@@ -4539,6 +4984,7 @@ def merge_and_finalize_segments(
     project_id: str,
     slides: list[dict[str, Any]],
     rerender_page_keys: list[str] | None = None,
+    avatar_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge rerendered segment outputs with unchanged artifacts, then finalize full lesson."""
     try:
@@ -4616,7 +5062,7 @@ def merge_and_finalize_segments(
 
     # Defensive sort keeps deterministic segment order for concatenation.
     full_results = sorted(full_results, key=lambda item: int(item.get("index") or 0))
-    return concat_and_finalize.apply(args=[full_results, project_id]).result
+    return concat_and_finalize.apply(args=[full_results, project_id, False, avatar_options]).result
 
 
 # ---------------------------------------------------------------------------
@@ -4835,6 +5281,7 @@ def process_pptx_to_video(
             teacher_avatar_cfg = _get_teacher_avatar_config(teacher_id)
             avatar_cfg = {
                 "enabled": bool(teacher_avatar_cfg.get("enabled")),
+                "requested": bool(teacher_avatar_cfg.get("enabled")),
                 "teacher_id": teacher_id,
                 "source_image_rel_path": teacher_avatar_cfg.get("processed_rel_path", ""),
                 "source_image_original_rel_path": teacher_avatar_cfg.get("source_rel_path", ""),
@@ -4856,6 +5303,7 @@ def process_pptx_to_video(
             }
         else:
             teacher_id = int(avatar_cfg.get("teacher_id")) if avatar_cfg.get("teacher_id") else None
+            avatar_cfg["requested"] = bool(avatar_cfg.get("requested", avatar_cfg.get("enabled", False)))
         avatar_cfg["composite_fallback_allowed"] = bool(avatar_cfg.get("composite_fallback_allowed", False))
         self.update_state(
             state="PROGRESS",
@@ -4875,12 +5323,14 @@ def process_pptx_to_video(
         if not target_slides:
             target_slides = slides
 
-        pipeline_queue = _queue_for_avatar_options(avatar_cfg)
+        pipeline_queue = _render_queue_name()
+        base_avatar_cfg = dict(avatar_cfg)
+        base_avatar_cfg["enabled"] = False
 
         def _slide_render_signature(slide: dict[str, Any]):
             errback = mark_project_render_failed.s(project_id).set(queue=pipeline_queue)
             return synthesize_and_render_slide.s(
-                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, avatar_cfg, tts_settings
+                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, base_avatar_cfg, tts_settings
             ).set(queue=pipeline_queue, link_error=errback)
 
         slide_tasks = group(
@@ -4888,9 +5338,9 @@ def process_pptx_to_video(
             for slide in target_slides
         )
         if rerender_set:
-            callback = merge_and_finalize_segments.s(project_id, slides, list(rerender_set)).set(queue=pipeline_queue)
+            callback = merge_and_finalize_segments.s(project_id, slides, list(rerender_set), avatar_cfg).set(queue=pipeline_queue)
         else:
-            callback = concat_and_finalize.s(project_id, bool(use_draft)).set(queue=pipeline_queue)
+            callback = concat_and_finalize.s(project_id, bool(use_draft), avatar_cfg).set(queue=pipeline_queue)
 
         pipeline     = chord(slide_tasks, callback)
         async_result = pipeline.apply_async(queue=pipeline_queue)
@@ -4911,6 +5361,13 @@ def process_pptx_to_video(
             "tts_settings": tts_settings_summary,
             "avatar": {
                 "enabled": bool(avatar_cfg.get("enabled")),
+                "requested": bool(avatar_cfg.get("requested", avatar_cfg.get("enabled", False))),
+                "processing_status": "queued" if bool(avatar_cfg.get("enabled")) else "none",
+                "message": (
+                    "Avatar is still processing and will be added when ready."
+                    if bool(avatar_cfg.get("enabled"))
+                    else str(avatar_cfg.get("disabled_reason") or "")
+                ),
                 "teacher_id": teacher_id,
                 "source_image_rel_path": avatar_cfg.get("source_image_rel_path", ""),
                 "source_video_rel_path": avatar_cfg.get("source_video_rel_path", ""),

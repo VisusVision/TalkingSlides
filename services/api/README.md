@@ -135,7 +135,8 @@ Important separation:
 Startup policy:
 
 - If LivePortrait or MuseTalk startup checks fail, worker bootstrap fails fast.
-- The application no longer downgrades to legacy avatar engines or a musetalk-only preview path.
+- The application no longer downgrades to legacy avatar engines or a musetalk-only preview path by default.
+- For local speed experiments only, `AVATAR_ALLOW_MUSETALK_ONLY_FAST_MODE=1` with `AVATAR_ENGINE=musetalk` enables the older MuseTalk-only path. Keep this disabled for production-quality renders because it bypasses LivePortrait motion.
 
 If `AVATAR_PREVIEW_USE_RESTORATION=1`, `AVATAR_PREVIEW_RESTORE_CMD` is also required and worker bootstrap will fail fast when it is missing.
 

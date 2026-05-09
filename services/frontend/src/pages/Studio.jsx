@@ -36,6 +36,7 @@ import {
   fetchSubtitleTracks,
   uploadProjectCover,
   uploadTranscriptPageBackground,
+  updateProjectAvatarVisible,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
 import Button from '../components/ui/Button';
@@ -463,6 +464,24 @@ function findingDisplayLabel(finding) {
 
 function projectAvatarEnabled(project) {
   return Boolean(project?.avatar_active || project?.avatar_enabled_override === true);
+}
+
+function avatarProcessingStatus(project) {
+  return String(project?.avatar_processing_status || 'none').trim().toLowerCase() || 'none';
+}
+
+function avatarVisible(project) {
+  return project?.avatar_visible !== false;
+}
+
+function avatarStatusLabel(project) {
+  if (!projectAvatarEnabled(project)) return 'Avatar disabled.';
+  const status = avatarProcessingStatus(project);
+  if (status === 'queued') return 'Avatar queued.';
+  if (status === 'processing') return 'Avatar is still processing and will be added when ready.';
+  if (status === 'ready') return 'Avatar ready.';
+  if (status === 'failed') return 'Avatar failed. Base video is still published.';
+  return 'Avatar disabled.';
 }
 
 function projectRenderReady(project) {
@@ -996,6 +1015,7 @@ export default function Studio({ user, onLoginRequest }) {
   const [globalEditorActionBusy, setGlobalEditorActionBusy] = useState('');
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
+  const [avatarVisibilitySaving, setAvatarVisibilitySaving] = useState(false);
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -1540,13 +1560,10 @@ export default function Studio({ user, onLoginRequest }) {
 
   const handleRerenderProject = async (project, options = {}) => {
     const hasAvatarOverride = Object.prototype.hasOwnProperty.call(options, 'avatarEnabled');
-    const rerenderWithoutAvatar = hasAvatarOverride && options.avatarEnabled === false;
-    const avatarQueueExpected = projectAvatarEnabled(project) && !rerenderWithoutAvatar;
+    const avatarQueueExpected = projectAvatarEnabled(project) && !(hasAvatarOverride && options.avatarEnabled === false);
     const queueNote = avatarQueueExpected
-      ? ' This uses the avatar queue and can take longer.'
-      : rerenderWithoutAvatar
-        ? ' This bypasses the avatar queue for this rerender.'
-        : '';
+      ? ' Avatar will continue in the background after the base render is ready.'
+      : '';
     if (!window.confirm(`Rerender ${project.title || `project #${project.id}`}?${queueNote}`)) return false;
     try {
       await rerenderProject(project.id, hasAvatarOverride ? { avatarEnabled: options.avatarEnabled } : {});
@@ -1555,6 +1572,22 @@ export default function Studio({ user, onLoginRequest }) {
     } catch (err) {
       window.alert(err.message || 'Rerender failed.');
       return false;
+    }
+  };
+
+  const handleAvatarVisibilityToggle = async (project, nextVisible) => {
+    if (!project?.id || avatarVisibilitySaving) return;
+    setAvatarVisibilitySaving(true);
+    try {
+      const updated = await updateProjectAvatarVisible(project.id, nextVisible);
+      handleProjectUpdated(updated);
+      if (selectedLesson?.id === project.id) {
+        setSelectedLessonId(project.id);
+      }
+    } catch (err) {
+      window.alert(err.message || 'Avatar visibility update failed.');
+    } finally {
+      setAvatarVisibilitySaving(false);
     }
   };
 
@@ -2329,12 +2362,40 @@ export default function Studio({ user, onLoginRequest }) {
                         Moderation: {moderationStatusLabel(projectModerationStatus(selectedLesson, selectedModeration))}
                       </span>
                     )}
-                    {selectedLesson && projectAvatarEnabled(selectedLesson) && (
+                    {selectedLesson && (
                       <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5">
-                        Avatar queue
+                        {avatarStatusLabel(selectedLesson)}
                       </span>
                     )}
                   </div>
+
+                  {selectedLesson && (
+                    <div className="flex flex-col gap-3 border-y border-[var(--border-subtle)] py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-[var(--text-primary)]">Avatar</p>
+                        <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
+                      </div>
+                      <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
+                        <span>{avatarVisible(selectedLesson) ? 'Show avatar' : 'Hide avatar'}</span>
+                        <input
+                          type="checkbox"
+                          className="sr-only"
+                          checked={avatarVisible(selectedLesson)}
+                          disabled={avatarVisibilitySaving}
+                          onChange={(event) => handleAvatarVisibilityToggle(selectedLesson, event.target.checked)}
+                        />
+                        <span className={`relative h-6 w-11 rounded-full transition ${
+                          avatarVisible(selectedLesson)
+                            ? 'bg-[var(--accent-primary)]'
+                            : 'bg-[var(--surface-container-highest)]'
+                        }`}>
+                          <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${
+                            avatarVisible(selectedLesson) ? 'left-6' : 'left-1'
+                          }`} />
+                        </span>
+                      </label>
+                    </div>
+                  )}
 
                   <div className="flex flex-wrap gap-2">
                     <Button onClick={() => selectedLesson && openEditorForProject(selectedLesson)} disabled={!selectedLesson}>
@@ -2357,15 +2418,6 @@ export default function Studio({ user, onLoginRequest }) {
                       >
                         {selectedLesson.is_published ? <EyeOff size={16} /> : <Eye size={16} />}
                         <span>{selectedLesson.is_published ? 'Unpublish' : 'Publish'}</span>
-                      </Button>
-                    )}
-                    {selectedLesson && projectAvatarEnabled(selectedLesson) && (
-                      <Button
-                        variant="secondary"
-                        onClick={() => handleRerenderProject(selectedLesson, { avatarEnabled: false })}
-                      >
-                        <RefreshCcw size={16} />
-                        <span>Rerender Without Avatar</span>
                       </Button>
                     )}
                   </div>
@@ -2725,9 +2777,9 @@ export default function Studio({ user, onLoginRequest }) {
                         <span className={`rounded-full px-2 py-0.5 ${moderationStatusTone(projectModerationStatus(project, projectModeration))}`}>
                           Moderation: {moderationStatusLabel(projectModerationStatus(project, projectModeration))}
                         </span>
-                        {projectAvatarEnabled(project) && (
+                        {(projectAvatarEnabled(project) || avatarProcessingStatus(project) !== 'none') && (
                           <span className="rounded-full bg-[color:var(--surface-muted)] px-2 py-0.5 text-[var(--text-secondary)]">
-                            Avatar
+                            {avatarStatusLabel(project)}
                           </span>
                         )}
                       </div>
@@ -2748,12 +2800,6 @@ export default function Studio({ user, onLoginRequest }) {
                         <RefreshCcw size={14} />
                         <span>Rerender</span>
                       </Button>
-                      {projectAvatarEnabled(project) && (
-                        <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project, { avatarEnabled: false })}>
-                          <RefreshCcw size={14} />
-                          <span>Render Only</span>
-                        </Button>
-                      )}
                       {projectRenderReady(project) && (
                         <Button
                           variant={project.is_published ? 'secondary' : 'primary'}

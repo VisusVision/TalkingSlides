@@ -281,6 +281,19 @@ export async function updateProjectAvatarEnabled(projectId, avatarEnabled) {
   return res.json();
 }
 
+export async function updateProjectAvatarVisible(projectId, avatarVisible) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ avatar_visible: Boolean(avatarVisible) }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to update avatar visibility");
+  }
+  return res.json();
+}
+
 export async function updateProjectPublished(projectId, isPublished) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, {
     method: "PATCH",

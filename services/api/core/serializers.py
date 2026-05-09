@@ -5,6 +5,7 @@ DRF serializers for AI_ACADEMY core models.
 from collections.abc import Mapping
 from copy import deepcopy
 import math
+from pathlib import Path
 
 from django.conf import settings
 from rest_framework import serializers
@@ -106,6 +107,17 @@ def _project_draft_cover_url(project: Project, context: dict | None) -> str:
     if api_public_base_url:
         return f"{api_public_base_url}{url_path}"
     return url_path
+
+
+def _project_avatar_artifact_exists(project: Project) -> bool:
+    rel_path = _normalize_rel_storage_path(getattr(project, "avatar_output_path", ""))
+    if not rel_path:
+        return False
+    try:
+        full_path = Path(getattr(settings, "STORAGE_ROOT", "storage_local")) / rel_path
+        return full_path.exists() and full_path.is_file()
+    except Exception:
+        return False
 
 
 SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom"}
@@ -497,6 +509,8 @@ class ProjectSerializer(serializers.ModelSerializer):
     draft_thumbnail_url = serializers.SerializerMethodField()
     latest_job = serializers.SerializerMethodField()
     avatar_active = serializers.SerializerMethodField()
+    avatar_available = serializers.SerializerMethodField()
+    final_avatar_engine_chain = serializers.SerializerMethodField()
     tts_settings = serializers.SerializerMethodField()
     has_draft = serializers.SerializerMethodField()
     draft_metadata = serializers.SerializerMethodField()
@@ -507,13 +521,19 @@ class ProjectSerializer(serializers.ModelSerializer):
             "id", "user", "user_name", "title", "description",
             "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings",
             "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
-            "is_published", "avatar_enabled_override", "avatar_active", "category_id", "category_name", "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
+            "is_published", "avatar_enabled_override", "avatar_active", "avatar_processing_status",
+            "avatar_processing_message", "avatar_visible", "avatar_available", "avatar_last_job_id",
+            "avatar_updated_at", "final_avatar_engine_chain", "category_id", "category_name",
+            "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
         ]
         read_only_fields = [
             "id", "user", "user_name", "description",
             "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings", "status",
             "moderation_status", "moderation_summary", "last_moderation_run_id",
-            "category_id", "category_name", "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
+            "avatar_processing_status", "avatar_processing_message", "avatar_available",
+            "avatar_last_job_id", "avatar_updated_at", "final_avatar_engine_chain",
+            "category_id", "category_name", "category_slug", "has_draft", "draft_metadata",
+            "created_at", "updated_at", "latest_job",
         ]
 
     def get_latest_job(self, obj):
@@ -535,6 +555,20 @@ class ProjectSerializer(serializers.ModelSerializer):
         if obj.avatar_enabled_override is None:
             return profile_enabled
         return bool(obj.avatar_enabled_override and profile_enabled)
+
+    def get_avatar_available(self, obj):
+        return bool(
+            str(getattr(obj, "avatar_processing_status", "") or "") == "ready"
+            and _project_avatar_artifact_exists(obj)
+        )
+
+    def get_final_avatar_engine_chain(self, obj):
+        latest = obj.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+        if latest is None:
+            return []
+        metadata = latest.metadata if isinstance(latest.metadata, Mapping) else {}
+        chain = metadata.get("final_avatar_engine_chain") or metadata.get("fallback_chain_used") or latest.fallback_chain_used
+        return list(chain or [])
 
     def get_tts_settings(self, obj):
         draft_data = getattr(obj, "draft_data", None)

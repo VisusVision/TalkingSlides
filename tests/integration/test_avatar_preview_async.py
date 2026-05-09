@@ -22,6 +22,8 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from core import views  # noqa: E402
 from core.models import Job, UserProfile, VoiceProfile  # noqa: E402
 
+pytestmark = pytest.mark.django_db
+
 
 def _table_has_column(table_name, column_name):
     with connection.cursor() as cursor:
@@ -52,6 +54,42 @@ def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
     processed_abs.parent.mkdir(parents=True, exist_ok=True)
     processed_abs.write_bytes(b"test")
     VoiceProfile.objects.create(user=user, provider="xtts_v2", voice_id=f"voice_teacher_async_{suffix}")
+
+    def fake_refresh_avatar_source_validation(profile_arg, **kwargs):
+        profile_arg.avatar_source_valid = True
+        profile_arg.avatar_source_validation_error = ""
+        profile_arg.avatar_source_hash = "source-hash"
+        profile_arg.avatar_preview_stale = False
+        profile_arg.avatar_moderation_status = "approved"
+        if kwargs.get("persist", True):
+            profile_arg.save(
+                update_fields=[
+                    "avatar_source_valid",
+                    "avatar_source_validation_error",
+                    "avatar_source_hash",
+                    "avatar_preview_stale",
+                    "avatar_moderation_status",
+                    "updated_at",
+                ]
+            )
+        return {
+            "valid": True,
+            "validation_current": True,
+            "source_hash": "source-hash",
+            "preview_stale": False,
+            "error": "",
+        }
+
+    monkeypatch.setattr(views, "refresh_avatar_source_validation", fake_refresh_avatar_source_validation)
+    monkeypatch.setattr(
+        views,
+        "_avatar_preview_readiness",
+        lambda profile_arg, voice_profile, *, storage_root: {
+            "ready": True,
+            "missing_requirements": [],
+            "checks": {"avatar_source_valid": True},
+        },
+    )
 
     sent = {}
 
