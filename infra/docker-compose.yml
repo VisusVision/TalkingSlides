@@ -50,6 +50,7 @@ services:
         condition: service_started
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
+      DJANGO_DISABLE_STATIC_COMPRESSION: "true"
       STORAGE_ROOT: /app/storage_local
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
