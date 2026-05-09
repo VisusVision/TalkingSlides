@@ -18,11 +18,6 @@ for path in [SERVICES_ROOT, API_ROOT, WORKER_ROOT]:
 
 worker_tasks = importlib.import_module("worker.tasks")  # noqa: E402
 
-_SKIP_SYNTHESIS_ON_WIN_PY314 = pytest.mark.skipif(
-    sys.platform == "win32" and sys.version_info >= (3, 14),
-    reason="Known Windows/Python 3.14 hang in synthesize_and_render_slide integration path.",
-)
-
 
 @pytest.fixture
 def patched_slide_dependencies(tmp_path, monkeypatch):
@@ -54,7 +49,6 @@ def patched_slide_dependencies(tmp_path, monkeypatch):
     monkeypatch.setattr(worker_tasks, "_render_avatar_safe_slide_image", fake_avatar_safe_image)
 
 
-@_SKIP_SYNTHESIS_ON_WIN_PY314
 def test_slide_render_continues_when_avatar_segment_validation_fails(tmp_path, monkeypatch, patched_slide_dependencies):
     slide_image = tmp_path / "slide.png"
     slide_image.write_bytes(b"png")
@@ -110,7 +104,6 @@ def test_slide_render_continues_when_avatar_segment_validation_fails(tmp_path, m
     assert result["avatar_segment_rel_path"] == ""
 
 
-@_SKIP_SYNTHESIS_ON_WIN_PY314
 def test_slide_render_skips_avatar_when_active_source_invalid(tmp_path, monkeypatch, patched_slide_dependencies):
     slide_image = tmp_path / "slide.png"
     slide_image.write_bytes(b"png")
@@ -159,7 +152,6 @@ def test_slide_render_skips_avatar_when_active_source_invalid(tmp_path, monkeypa
     assert result["avatar_motion_validation"]["avatar_source_valid"] is False
 
 
-@_SKIP_SYNTHESIS_ON_WIN_PY314
 def test_slide_render_attaches_avatar_when_segment_succeeds(tmp_path, monkeypatch, patched_slide_dependencies):
     slide_image = tmp_path / "slide.png"
     slide_image.write_bytes(b"png")
@@ -220,7 +212,6 @@ def test_slide_render_attaches_avatar_when_segment_succeeds(tmp_path, monkeypatc
     assert result["avatar_engine_used"] == "liveportrait+musetalk"
 
 
-@_SKIP_SYNTHESIS_ON_WIN_PY314
 def test_slide_render_still_fails_for_core_tts_failure(tmp_path, monkeypatch, patched_slide_dependencies):
     tts_client = importlib.import_module("scripts.tts_client")
     slide_image = tmp_path / "slide.png"

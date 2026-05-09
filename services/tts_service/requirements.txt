@@ -5,7 +5,6 @@ gTTS>=2.4.0
 requests>=2.31.0
 ffmpeg-python>=0.2.0
 soundfile
-prometheus-client>=0.20
 # Pin Coqui XTTS stack for reproducible Docker builds and transformers compatibility.
 TTS==0.22.0
 transformers==4.36.2

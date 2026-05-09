@@ -90,18 +90,6 @@ export async function fetchAuthenticatedMediaBlobUrl(relPath) {
   return URL.createObjectURL(blob);
 }
 
-export async function fetchAuthenticatedObjectUrl(url) {
-  const target = String(url || "").trim();
-  if (!target) return "";
-  const res = await fetch(target, { headers: authHeaders() });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to fetch protected asset (${res.status})`);
-  }
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
-}
-
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
@@ -237,9 +225,6 @@ export async function rerenderProject(projectId, options = {}) {
   if (Object.prototype.hasOwnProperty.call(options, "avatarEnabled")) {
     body.avatar_enabled = options.avatarEnabled ? "1" : "0";
   }
-  if (Object.prototype.hasOwnProperty.call(options, "renderProfile")) {
-    body.render_profile = String(options.renderProfile || "").trim().toLowerCase();
-  }
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/rerender/`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
@@ -249,11 +234,12 @@ export async function rerenderProject(projectId, options = {}) {
   return res.json();
 }
 
-export async function updateProjectTtsSettings(projectId, ttsSettings) {
+export async function updateProjectTtsSettings(projectId, ttsSettings, options = {}) {
+  const draftOnly = options.draftOnly !== false;
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, {
     method: "PATCH",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ tts_settings: ttsSettings }),
+    body: JSON.stringify({ tts_settings: ttsSettings, draft_only: draftOnly }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -425,101 +411,6 @@ export async function fetchJobStatus(projectId, jobId) {
     throw new Error("Failed to fetch job status");
   }
   return res.json();
-}
-
-export async function cancelJob(projectId, jobId) {
-  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/cancel/`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || "Failed to cancel job");
-  }
-  return data;
-}
-
-export async function retryJob(projectId, jobId) {
-  const requestId = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `retry-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/retry/`, {
-    method: "POST",
-    headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ request_id: requestId }),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error || "Failed to retry job");
-    err.status = res.status;
-    err.payload = data;
-    throw err;
-  }
-  return data;
-}
-
-export async function fetchRenderCapacity() {
-  const res = await fetch(`${API_BASE_URL}/system/render-capacity/`, {
-    headers: authHeaders(),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.error || "Failed to fetch render capacity");
-    err.status = res.status;
-    err.payload = data;
-    throw err;
-  }
-  return data;
-}
-
-export function subscribeJobStatusEvents(projectId, jobId, handlers = {}) {
-  const onStatus = typeof handlers.onStatus === "function" ? handlers.onStatus : () => {};
-  const onError = typeof handlers.onError === "function" ? handlers.onError : () => {};
-  let closed = false;
-  let source = null;
-
-  const close = () => {
-    closed = true;
-    if (source) {
-      source.close();
-      source = null;
-    }
-  };
-
-  const bootstrap = async () => {
-    try {
-      const ticketRes = await fetch(`${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/events/ticket/`, {
-        method: "POST",
-        headers: authHeaders(),
-      });
-      if (!ticketRes.ok) throw new Error("Failed to issue stream ticket");
-      const ticketPayload = await ticketRes.json().catch(() => ({}));
-      const ticket = String(ticketPayload?.stream_ticket || "").trim();
-      if (!ticket || closed) throw new Error("Invalid stream ticket");
-      const streamUrl = `${API_BASE_URL}/projects/${projectId}/jobs/${jobId}/events/?stream_ticket=${encodeURIComponent(ticket)}`;
-      source = new EventSource(streamUrl);
-      source.onmessage = (event) => {
-        if (closed) return;
-        try {
-          const parsed = JSON.parse(String(event.data || "{}"));
-          if (parsed && typeof parsed === "object") {
-            onStatus(parsed);
-          }
-        } catch {
-          // Ignore malformed event payloads.
-        }
-      };
-      source.onerror = () => {
-        if (closed) return;
-        onError(new Error("Job event stream closed"));
-      };
-    } catch (error) {
-      if (!closed) onError(error);
-    }
-  };
-
-  void bootstrap();
-  return close;
 }
 
 // ---------------------------------------------------------------------------
@@ -773,6 +664,19 @@ export async function fetchLesson(projectId) {
   };
 }
 
+export async function getPlaylistContext(projectId) {
+  const headers = authHeaders();
+  const res = await fetch(
+    `${API_BASE_URL}/catalog/${projectId}/playlist-context/`,
+    Object.keys(headers).length ? { headers } : undefined,
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch playlist context"));
+  }
+  return res.json();
+}
+
 export async function fetchCategories() {
   const res = await fetch(`${API_BASE_URL}/categories/`);
   if (!res.ok) throw new Error("Failed to fetch categories");
@@ -934,6 +838,7 @@ export async function updateProjectTranscript(projectId, pages, options = {}) {
   const body = {
     pages,
     trigger_rerender: Boolean(options.triggerRerender),
+    draft_only: options.draftOnly ?? true,
     pause_sec: options.pauseSec ?? 2.2,
     lang_hint: options.langHint ?? 'auto',
   };
@@ -949,11 +854,24 @@ export async function updateProjectTranscript(projectId, pages, options = {}) {
   return res.json();
 }
 
+export async function discardProjectDraft(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/draft/discard/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || data.detail || 'Failed to discard draft');
+  }
+  return data;
+}
+
 export async function updateTranscriptPageScene(projectId, pageId, payload = {}) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript-pages/${pageId}/scene/`, {
     method: 'PATCH',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload || {}),
+    body: JSON.stringify({ ...(payload || {}), draft_only: payload?.draft_only ?? true }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -965,6 +883,7 @@ export async function updateTranscriptPageScene(projectId, pageId, payload = {})
 export async function uploadTranscriptPageBackground(projectId, pageId, file, options = {}) {
   const formData = new FormData();
   formData.append('background_file', file);
+  formData.append('draft_only', String(options.draftOnly ?? true));
   if (options.backgroundFit) formData.append('background_fit', options.backgroundFit);
   if (options.textScale !== undefined) formData.append('text_scale', String(options.textScale));
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript-pages/${pageId}/background/`, {
@@ -983,7 +902,7 @@ export async function applyProjectBackgroundToAll(projectId, payload = {}) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/background/apply-all/`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload || {}),
+    body: JSON.stringify({ ...(payload || {}), draft_only: payload?.draft_only ?? true }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -992,9 +911,10 @@ export async function applyProjectBackgroundToAll(projectId, payload = {}) {
   return data;
 }
 
-export async function uploadProjectCover(projectId, file) {
+export async function uploadProjectCover(projectId, file, options = {}) {
   const formData = new FormData();
   formData.append('cover_file', file);
+  formData.append('draft_only', String(options.draftOnly ?? true));
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/cover/`, {
     method: 'POST',
     headers: authHeaders(),
@@ -1008,10 +928,11 @@ export async function uploadProjectCover(projectId, file) {
 }
 
 export async function transcriptPageAction(projectId, payload = {}) {
+  const draftOnly = payload.draft_only ?? true;
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript/actions/`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(payload || {}),
+    body: JSON.stringify({ ...(payload || {}), draft_only: draftOnly }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -1213,6 +1134,29 @@ export async function getPlaylist(id) {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(apiErrorMessage(data, "Failed to fetch playlist"));
+  }
+  return res.json();
+}
+
+export async function toggleSavePlaylist(id) {
+  const res = await fetch(`${API_BASE_URL}/playlists/${id}/save/`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to update saved playlist"));
+  }
+  return data;
+}
+
+export async function getSavedPlaylists() {
+  const res = await fetch(`${API_BASE_URL}/me/saved-playlists/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(apiErrorMessage(data, "Failed to fetch saved playlists"));
   }
   return res.json();
 }

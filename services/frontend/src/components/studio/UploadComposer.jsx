@@ -5,13 +5,12 @@ import SurfaceCard from '../ui/SurfaceCard';
 
 const ACCEPTED_TYPES = ['.pptx', '.pdf', '.docx', '.txt'];
 
-export default function UploadComposer({ categories, submitting, submitError, submitInfo, onSubmit }) {
+export default function UploadComposer({ categories, submitting, submitError, onSubmit }) {
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
   const [pauseSec, setPauseSec] = useState('0.2');
   const [whiteboardModeAll, setWhiteboardModeAll] = useState(false);
   const [avatarEnabled, setAvatarEnabled] = useState(false);
-  const [renderProfile, setRenderProfile] = useState('balanced');
   const [file, setFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
 
@@ -43,7 +42,6 @@ export default function UploadComposer({ categories, submitting, submitError, su
       pauseSec,
       whiteboardModeAll,
       avatarEnabled,
-      renderProfile,
     });
   };
 
@@ -84,18 +82,6 @@ export default function UploadComposer({ categories, submitting, submitError, su
               <option key={name} value={name} />
             ))}
           </datalist>
-        </label>
-
-        <label className="block text-sm text-[var(--text-secondary)]">
-          Render profile
-          <select
-            value={renderProfile}
-            onChange={(event) => setRenderProfile(event.target.value)}
-            className="focus-ring mt-1 h-11 w-full rounded-2xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)] px-3 text-[var(--text-primary)]"
-          >
-            <option value="fast">Fast</option>
-            <option value="balanced">Balanced</option>
-          </select>
         </label>
 
         <div className="grid gap-3 sm:grid-cols-2">
@@ -181,11 +167,6 @@ export default function UploadComposer({ categories, submitting, submitError, su
             {effectiveError}
           </p>
         )}
-        {submitInfo && !effectiveError && (
-          <p className="rounded-2xl bg-[color:var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-            {submitInfo}
-          </p>
-        )}
 
         <div className="flex flex-wrap gap-3">
           <Button type="submit" disabled={!file || submitting || Boolean(localValidationError)}>
@@ -198,7 +179,6 @@ export default function UploadComposer({ categories, submitting, submitError, su
             setPauseSec('0.2');
             setWhiteboardModeAll(false);
             setAvatarEnabled(false);
-            setRenderProfile('balanced');
             setFile(null);
             setCoverFile(null);
           }}>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Check, Eye, Plus, RefreshCcw, Save, Trash2, Volume2, Wand2, X } from 'lucide-react';
 import {
   fetchTtsPronunciationSuggestions,
@@ -253,13 +253,14 @@ function PreviewValue({ label, value }) {
   );
 }
 
-export default function TtsSettingsPanel({
+const TtsSettingsPanel = forwardRef(function TtsSettingsPanel({
   project,
   transcriptPages = [],
   selectedPageKey = '',
+  showLocalActions = true,
   onProjectUpdated,
   onRerender,
-}) {
+}, ref) {
   const replacementInputRefs = useRef({});
   const [draftSettings, setDraftSettings] = useState(() => normalizeSettings(project?.tts_settings));
   const [saving, setSaving] = useState(false);
@@ -584,14 +585,14 @@ export default function TtsSettingsPanel({
     setSuggestionError('');
   };
 
-  const saveDraftSettings = async ({ successMessage = 'TTS settings saved.' } = {}) => {
+  const saveDraftSettings = async ({ successMessage = 'TTS settings saved.', draftOnly = true } = {}) => {
     if (!project?.id) return null;
     setSaving(true);
     setError('');
     setStatusMessage('');
 
     try {
-      const updatedProject = await updateProjectTtsSettings(project.id, cleanedDraftSettings);
+      const updatedProject = await updateProjectTtsSettings(project.id, cleanedDraftSettings, { draftOnly });
       setDraftSettings(normalizeSettings(updatedProject?.tts_settings || cleanedDraftSettings));
       onProjectUpdated?.(updatedProject);
       if (successMessage) {
@@ -693,7 +694,7 @@ export default function TtsSettingsPanel({
     let projectForRerender = project;
 
     if (dirtyBeforeRerender) {
-      const updatedProject = await saveDraftSettings({ successMessage: '' });
+      const updatedProject = await saveDraftSettings({ successMessage: '', draftOnly: true });
       if (!updatedProject) return;
       projectForRerender = updatedProject;
     }
@@ -705,6 +706,16 @@ export default function TtsSettingsPanel({
     }
     setStatusMessage(dirtyBeforeRerender ? 'Settings saved. Rerender started.' : 'Rerender started.');
   };
+
+  useImperativeHandle(ref, () => ({
+    save: async () => {
+      if (!hasUnsavedChanges) return project || null;
+      return saveDraftSettings({ successMessage: 'TTS settings saved.' });
+    },
+    saveAndRerender: handleRerenderWithSavedSettings,
+    hasUnsavedChanges: () => hasUnsavedChanges,
+    isBusy: () => saving,
+  }), [hasUnsavedChanges, handleRerenderWithSavedSettings, project, saving]);
 
   const renderResolverTermSection = (title, description, terms) => {
     if (!terms.length) return null;
@@ -1295,18 +1306,22 @@ export default function TtsSettingsPanel({
         </div>
       )}
 
-      <div className="flex flex-wrap justify-end gap-2">
-        {onRerender && (
-          <Button variant="secondary" onClick={handleRerenderWithSavedSettings} disabled={saving || !project?.id}>
-            <RefreshCcw size={16} />
-            <span>Rerender with saved settings</span>
+      {showLocalActions && (
+        <div className="flex flex-wrap justify-end gap-2">
+          {onRerender && (
+            <Button variant="secondary" onClick={handleRerenderWithSavedSettings} disabled={saving || !project?.id}>
+              <RefreshCcw size={16} />
+              <span>Rerender with saved settings</span>
+            </Button>
+          )}
+          <Button onClick={handleSave} disabled={saving || !project?.id}>
+            <Save size={16} />
+            <span>{saving ? 'Saving...' : 'Save TTS Settings'}</span>
           </Button>
-        )}
-        <Button onClick={handleSave} disabled={saving || !project?.id}>
-          <Save size={16} />
-          <span>{saving ? 'Saving...' : 'Save TTS Settings'}</span>
-        </Button>
-      </div>
+        </div>
+      )}
     </div>
   );
-}
+});
+
+export default TtsSettingsPanel;

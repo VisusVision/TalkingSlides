@@ -9,6 +9,7 @@ import math
 from django.conf import settings
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from core.avatar_image_moderation import avatar_image_moderation_gate
 from core.models import (
     AvatarRenderJob,
     AvatarOverlayPreference,
@@ -16,9 +17,13 @@ from core.models import (
     Job,
     LessonSegment,
     LessonComment,
+    Playlist,
+    PlaylistItem,
     Project,
+    SavedPlaylist,
     Slide,
     TranscriptPage,
+    TranslatedSubtitleTrack,
     UserProfile,
     VoiceProfile,
     default_project_tts_settings,
@@ -57,6 +62,111 @@ def _project_cover_url(project: Project, context: dict | None) -> str:
     if api_public_base_url:
         return f"{api_public_base_url}{url_path}"
     return url_path
+
+
+def _request_can_view_project_draft(project: Project, context: dict | None) -> bool:
+    request = (context or {}).get("request")
+    user = getattr(request, "user", None) if request is not None else None
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if bool(getattr(user, "is_staff", False)) or bool(getattr(user, "is_superuser", False)):
+        return True
+    return bool(getattr(project, "user_id", None) and int(project.user_id) == int(user.id))
+
+
+def _project_draft_cover_rel_path(project: Project, context: dict | None) -> str:
+    if not _request_can_view_project_draft(project, context):
+        return ""
+    draft_data = getattr(project, "draft_data", None)
+    if not isinstance(draft_data, Mapping):
+        return ""
+    metadata = draft_data.get("metadata")
+    project_draft = draft_data.get("project")
+    if not (isinstance(metadata, Mapping) and metadata.get("dirty") and isinstance(project_draft, Mapping)):
+        return ""
+    draft_rel = _normalize_rel_storage_path(
+        str(project_draft.get("cover_image_processed") or project_draft.get("cover_image_original") or "")
+    )
+    return draft_rel if draft_rel and draft_rel != _project_cover_rel_path(project) else ""
+
+
+def _project_draft_cover_url(project: Project, context: dict | None) -> str:
+    if not _project_draft_cover_rel_path(project, context):
+        return ""
+
+    url_path = f"/api/v1/projects/{project.id}/cover/?draft=1"
+    request = (context or {}).get("request")
+    if request is not None:
+        try:
+            return request.build_absolute_uri(url_path)
+        except Exception:
+            pass
+
+    api_public_base_url = str(getattr(settings, "API_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if api_public_base_url:
+        return f"{api_public_base_url}{url_path}"
+    return url_path
+
+
+SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom"}
+SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
+
+
+def _transcript_background_url(page: TranscriptPage, kind: str, context: dict | None) -> str:
+    if kind not in {"original", "custom"}:
+        return ""
+    url_path = f"/api/v1/projects/{page.project_id}/transcript-pages/{page.id}/background/{kind}/"
+    request = (context or {}).get("request")
+    if request is not None:
+        try:
+            return request.build_absolute_uri(url_path)
+        except Exception:
+            pass
+
+    api_public_base_url = str(getattr(settings, "API_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if api_public_base_url:
+        return f"{api_public_base_url}{url_path}"
+    return url_path
+
+
+def _scene_path(scene: Mapping, key: str) -> str:
+    return _normalize_rel_storage_path(str(scene.get(key) or ""))
+
+
+def transcript_page_editor_document_for_response(page: TranscriptPage, context: dict | None = None) -> dict:
+    """Return editor_document with publisher-safe scene URLs instead of storage paths."""
+    raw_document = getattr(page, "editor_document", None)
+    document = deepcopy(raw_document) if isinstance(raw_document, Mapping) else {}
+    raw_scene = document.get("scene")
+    scene = deepcopy(raw_scene) if isinstance(raw_scene, Mapping) else {}
+
+    mode = str(scene.get("background_mode") or "").strip().lower()
+    if mode not in SCENE_BACKGROUND_MODES:
+        mode = "whiteboard" if bool(getattr(page, "whiteboard_mode", False)) else "original"
+
+    fit = str(scene.get("background_fit") or "contain").strip().lower()
+    if fit not in SCENE_BACKGROUND_FITS:
+        fit = "contain"
+
+    try:
+        text_scale = float(scene.get("text_scale", 1.0))
+    except (TypeError, ValueError):
+        text_scale = 1.0
+    text_scale = max(0.75, min(text_scale, 2.0))
+
+    original_path = _scene_path(scene, "original_background_path")
+    custom_path = _scene_path(scene, "custom_background_path")
+    safe_scene = {
+        "background_mode": mode,
+        "background_fit": fit,
+        "text_scale": text_scale,
+        "original_background_url": _transcript_background_url(page, "original", context) if original_path else "",
+        "custom_background_url": _transcript_background_url(page, "custom", context) if custom_path else "",
+        "has_original_background": bool(original_path),
+        "has_custom_background": bool(custom_path),
+    }
+    document["scene"] = safe_scene
+    return document
 
 
 PROJECT_TTS_PROVIDER_PREFERENCES = {"auto", "xtts_v2", "gtts"}
@@ -327,6 +437,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "avatar_source_reference_type",
             "avatar_preview_source_hash",
             "avatar_preview_stale",
+            "avatar_moderation_status",
+            "avatar_moderation_summary",
+            "avatar_last_moderation_run_id",
             "created_at",
             "updated_at",
         ]
@@ -359,7 +472,7 @@ class JobSerializer(serializers.ModelSerializer):
     class Meta:
         model = Job
         fields = [
-            "id", "project_id", "request_id", "status", "progress",
+            "id", "project_id", "status", "progress",
             "result_url", "srt_url", "error_message",
             "created_at", "updated_at",
         ]
@@ -380,20 +493,27 @@ class ProjectSerializer(serializers.ModelSerializer):
     category_slug = serializers.CharField(source="category.slug", read_only=True, default="")
     cover_url = serializers.SerializerMethodField()
     thumbnail_url = serializers.SerializerMethodField()
+    draft_cover_url = serializers.SerializerMethodField()
+    draft_thumbnail_url = serializers.SerializerMethodField()
     latest_job = serializers.SerializerMethodField()
     avatar_active = serializers.SerializerMethodField()
     tts_settings = serializers.SerializerMethodField()
+    has_draft = serializers.SerializerMethodField()
+    draft_metadata = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
         fields = [
             "id", "user", "user_name", "title", "description",
-            "cover_url", "thumbnail_url", "tts_settings",
-            "status", "render_profile", "is_published", "avatar_enabled_override", "avatar_active", "category_id", "category_name", "category_slug", "created_at", "updated_at", "latest_job",
+            "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings",
+            "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
+            "is_published", "avatar_enabled_override", "avatar_active", "category_id", "category_name", "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
         ]
         read_only_fields = [
             "id", "user", "user_name", "description",
-            "cover_url", "thumbnail_url", "tts_settings", "status", "category_id", "category_name", "category_slug", "created_at", "updated_at", "latest_job",
+            "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings", "status",
+            "moderation_status", "moderation_summary", "last_moderation_run_id",
+            "category_id", "category_name", "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
         ]
 
     def get_latest_job(self, obj):
@@ -404,10 +524,12 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     def get_avatar_active(self, obj):
         profile = getattr(obj.user, "profile", None) if obj.user else None
+        moderation_gate = avatar_image_moderation_gate(profile) if profile is not None else {"blocked": False}
         profile_enabled = bool(
             profile
             and profile.avatar_enabled
             and profile.avatar_consent_confirmed
+            and not bool(moderation_gate.get("blocked"))
             and profile.avatar_image_processed
         )
         if obj.avatar_enabled_override is None:
@@ -415,13 +537,38 @@ class ProjectSerializer(serializers.ModelSerializer):
         return bool(obj.avatar_enabled_override and profile_enabled)
 
     def get_tts_settings(self, obj):
+        draft_data = getattr(obj, "draft_data", None)
+        if isinstance(draft_data, Mapping):
+            project_draft = draft_data.get("project")
+            metadata = draft_data.get("metadata")
+            if (
+                isinstance(project_draft, Mapping)
+                and isinstance(metadata, Mapping)
+                and metadata.get("dirty")
+                and isinstance(project_draft.get("tts_settings"), Mapping)
+            ):
+                return canonical_project_tts_settings(project_draft.get("tts_settings"))
         return canonical_project_tts_settings(getattr(obj, "tts_settings", None))
+
+    def get_has_draft(self, obj):
+        metadata = getattr(obj, "draft_data", {}).get("metadata") if isinstance(getattr(obj, "draft_data", None), Mapping) else {}
+        return bool(isinstance(metadata, Mapping) and metadata.get("dirty"))
+
+    def get_draft_metadata(self, obj):
+        metadata = getattr(obj, "draft_data", {}).get("metadata") if isinstance(getattr(obj, "draft_data", None), Mapping) else {}
+        return dict(metadata) if isinstance(metadata, Mapping) and metadata.get("dirty") else {}
 
     def get_cover_url(self, obj):
         return _project_cover_url(obj, self.context)
 
     def get_thumbnail_url(self, obj):
         return _project_cover_url(obj, self.context)
+
+    def get_draft_cover_url(self, obj):
+        return _project_draft_cover_url(obj, self.context)
+
+    def get_draft_thumbnail_url(self, obj):
+        return _project_draft_cover_url(obj, self.context)
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -437,8 +584,12 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source="category.name", read_only=True, default="")
     category_slug = serializers.CharField(source="category.slug", read_only=True, default="")
     teacher_name = serializers.SerializerMethodField()
+    teacher_id = serializers.SerializerMethodField()
+    teacher_username = serializers.SerializerMethodField()
     like_count = serializers.SerializerMethodField()
     comment_count = serializers.SerializerMethodField()
+    follower_count = serializers.SerializerMethodField()
+    is_following_publisher = serializers.SerializerMethodField()
     has_video = serializers.SerializerMethodField()
     cover_url = serializers.SerializerMethodField()
     thumbnail_url = serializers.SerializerMethodField()
@@ -448,8 +599,8 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
         fields = [
             "id", "title", "description",
             "category_name", "category_slug",
-            "teacher_name",
-            "like_count", "comment_count",
+            "teacher_id", "teacher_name", "teacher_username",
+            "like_count", "comment_count", "follower_count", "is_following_publisher",
             "has_video",
             "cover_url", "thumbnail_url",
             "created_at",
@@ -461,11 +612,29 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
             return obj.user.get_full_name() or obj.user.username
         return ""
 
+    def get_teacher_id(self, obj):
+        return obj.user_id
+
+    def get_teacher_username(self, obj):
+        return obj.user.username if obj.user else ""
+
     def get_like_count(self, obj):
         return obj.likes.count()
 
     def get_comment_count(self, obj):
         return obj.comments.count()
+
+    def get_follower_count(self, obj):
+        if not obj.user_id:
+            return 0
+        return obj.user.publisher_followers.count()
+
+    def get_is_following_publisher(self, obj):
+        request = self.context.get("request") if hasattr(self, "context") else None
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated or not obj.user_id:
+            return False
+        return obj.user.publisher_followers.filter(follower=user).exists()
 
     def get_has_video(self, obj):
         return obj.jobs.filter(status="done").exists()
@@ -475,6 +644,125 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
 
     def get_thumbnail_url(self, obj):
         return _project_cover_url(obj, self.context)
+
+
+class PlaylistItemSerializer(serializers.ModelSerializer):
+    project = ProjectSerializer(read_only=True)
+    project_id = serializers.IntegerField(source="project.id", read_only=True)
+
+    class Meta:
+        model = PlaylistItem
+        fields = ["id", "project_id", "project", "order", "created_at"]
+        read_only_fields = fields
+
+
+class PlaylistSerializer(serializers.ModelSerializer):
+    items = PlaylistItemSerializer(many=True, read_only=True)
+    item_count = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
+    save_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Playlist
+        fields = [
+            "id",
+            "user",
+            "title",
+            "description",
+            "is_public",
+            "item_count",
+            "is_saved",
+            "save_count",
+            "items",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "user", "item_count", "is_saved", "save_count", "items", "created_at", "updated_at"]
+
+    def get_item_count(self, obj):
+        return obj.items.count()
+
+    def get_is_saved(self, obj):
+        request = self.context.get("request") if hasattr(self, "context") else None
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        return SavedPlaylist.objects.filter(user=user, playlist=obj).exists()
+
+    def get_save_count(self, obj):
+        return obj.saved_by.count()
+
+
+class PlaylistPublicSerializer(serializers.ModelSerializer):
+    publisher_id = serializers.IntegerField(source="user.id", read_only=True)
+    publisher_name = serializers.SerializerMethodField()
+    publisher_username = serializers.CharField(source="user.username", read_only=True, default="")
+    item_count = serializers.SerializerMethodField()
+    cover_url = serializers.SerializerMethodField()
+    is_saved = serializers.SerializerMethodField()
+    save_count = serializers.SerializerMethodField()
+    items = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Playlist
+        fields = [
+            "id",
+            "title",
+            "description",
+            "is_public",
+            "publisher_id",
+            "publisher_name",
+            "publisher_username",
+            "item_count",
+            "cover_url",
+            "is_saved",
+            "save_count",
+            "items",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def _items(self, obj):
+        if hasattr(obj, "visible_items"):
+            return list(obj.visible_items)
+        return list(obj.items.select_related("project", "project__user", "project__category").all())
+
+    def get_publisher_name(self, obj):
+        if obj.user:
+            return obj.user.get_full_name() or obj.user.username
+        return ""
+
+    def get_item_count(self, obj):
+        return len(self._items(obj))
+
+    def get_cover_url(self, obj):
+        first_item = next((item for item in self._items(obj) if item.project_id), None)
+        if not first_item:
+            return ""
+        return _project_cover_url(first_item.project, self.context)
+
+    def get_is_saved(self, obj):
+        request = self.context.get("request") if hasattr(self, "context") else None
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        return SavedPlaylist.objects.filter(user=user, playlist=obj).exists()
+
+    def get_save_count(self, obj):
+        return obj.saved_by.count()
+
+    def get_items(self, obj):
+        return [
+            {
+                "id": item.id,
+                "project_id": item.project_id,
+                "order": item.order,
+                "created_at": item.created_at,
+                "project": CatalogProjectSerializer(item.project, context=self.context).data,
+            }
+            for item in self._items(obj)
+        ]
 
 
 class LessonCommentSerializer(serializers.ModelSerializer):
@@ -487,6 +775,8 @@ class LessonCommentSerializer(serializers.ModelSerializer):
 
 
 class TranscriptPageSerializer(serializers.ModelSerializer):
+    editor_document = serializers.SerializerMethodField()
+
     class Meta:
         model = TranscriptPage
         fields = [
@@ -512,6 +802,30 @@ class TranscriptPageSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def get_editor_document(self, obj):
+        return transcript_page_editor_document_for_response(obj, self.context)
+
+
+class TranslatedSubtitleTrackSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TranslatedSubtitleTrack
+        fields = [
+            "id",
+            "project",
+            "job",
+            "language_code",
+            "language_label",
+            "source_language_code",
+            "provider",
+            "status",
+            "cue_count",
+            "error_message",
+            "metadata",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
 
 
 class AvatarRenderJobSerializer(serializers.ModelSerializer):

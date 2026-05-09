@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDown,
@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   LoaderCircle,
   Merge,
+  Pencil,
   RefreshCcw,
   RotateCcw,
   Save,
@@ -28,6 +29,13 @@ function narrationValue(page) {
     return textValue(page.narration_text);
   }
   return textValue(page?.original_text);
+}
+
+function displayValue(page) {
+  if (page && Object.prototype.hasOwnProperty.call(page, 'original_text')) {
+    return textValue(page.original_text);
+  }
+  return narrationValue(page);
 }
 
 function escapeHtml(value) {
@@ -54,6 +62,31 @@ function narrationToEditorDocument(value, html) {
     version: 1,
     html,
     paragraphs,
+  };
+}
+
+function editorTextFlags(page) {
+  const flags = page?.editor_document?.text && typeof page.editor_document.text === 'object'
+    ? page.editor_document.text
+    : {};
+  const displayText = displayValue(page).replace(/\s+/g, ' ').trim();
+  const narrationText = narrationValue(page).replace(/\s+/g, ' ').trim();
+  return {
+    narration_customized: Boolean(
+      flags.narration_customized
+        || (narrationText && displayText !== narrationText),
+    ),
+    display_text_customized: Boolean(flags.display_text_customized),
+  };
+}
+
+function displayToEditorDocument(value, html, flags = {}) {
+  return {
+    ...narrationToEditorDocument(value, html),
+    text: {
+      narration_customized: Boolean(flags.narration_customized),
+      display_text_customized: Boolean(flags.display_text_customized),
+    },
   };
 }
 
@@ -96,9 +129,13 @@ function pageDescriptor(page, index) {
 }
 
 function editableSignature(page) {
+  const flags = editorTextFlags(page);
   return JSON.stringify({
+    original_text: textValue(page?.original_text),
     narration_text: textValue(page?.narration_text),
     whiteboard_mode: Boolean(page?.whiteboard_mode),
+    narration_customized: flags.narration_customized,
+    display_text_customized: flags.display_text_customized,
   });
 }
 
@@ -125,11 +162,14 @@ function diffLabelForPage(page, index, dirtyPageIndexes) {
 
 function buildPayloadPage(page) {
   const narrationText = textValue(page?.narration_text);
-  const html = narrationToHtml(narrationText);
+  const displayText = displayValue(page);
+  const html = narrationToHtml(displayText);
+  const flags = editorTextFlags(page);
   const payload = {
+    original_text: displayText,
     narration_text: narrationText,
     rich_text_html: html,
-    editor_document: narrationToEditorDocument(narrationText, html),
+    editor_document: displayToEditorDocument(displayText, html, flags),
     whiteboard_mode: Boolean(page?.whiteboard_mode),
   };
 
@@ -196,19 +236,22 @@ function actionLabel(action) {
   }[action] || 'Page action';
 }
 
-export default function TranscriptEditorPanel({
+const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   project,
   pages,
   loading = false,
   selectedPageKey = '',
   selectedPageIndex = 0,
+  moderationPageWarnings = {},
   focusMode = false,
+  showLocalActions = true,
   onSelectPage,
   onPagesUpdated,
   onProjectRefresh,
+  onModerationUpdated,
   onDraftStatusChange,
   onJobStatusChange,
-}) {
+}, ref) {
   const [draftPages, setDraftPages] = useState([]);
   const [saving, setSaving] = useState(false);
   const [rerendering, setRerendering] = useState(false);
@@ -220,6 +263,7 @@ export default function TranscriptEditorPanel({
   const [rerenderAfterAction, setRerenderAfterAction] = useState(false);
   const [deletedPages, setDeletedPages] = useState([]);
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
+  const [displayEditKeys, setDisplayEditKeys] = useState({});
   const mountedRef = useRef(false);
   const lastProjectIdRef = useRef(null);
   const pageRefs = useRef({});
@@ -251,6 +295,7 @@ export default function TranscriptEditorPanel({
       setPollingStartedAt(null);
       setDeletedPages([]);
       setPendingConfirmation(null);
+      setDisplayEditKeys({});
     }
   }, [project?.id, pages]);
 
@@ -274,6 +319,7 @@ export default function TranscriptEditorPanel({
         index,
         status: diffLabelForPage(page, index, dirtyPageIndexes),
         dirty: dirtyPageIndexes.has(index),
+        display_text: displayValue(page),
         narration_text: textValue(page?.narration_text),
       };
       return acc;
@@ -302,6 +348,58 @@ export default function TranscriptEditorPanel({
     );
   }, []);
 
+  const updateDisplayText = useCallback((index, nextText) => {
+    setDraftPages((current) =>
+      current.map((page, pageIndex) => {
+        if (pageIndex !== index) return page;
+        const previousFlags = editorTextFlags(page);
+        const flags = {
+          ...previousFlags,
+          display_text_customized: true,
+        };
+        const nextPage = {
+          ...page,
+          original_text: nextText,
+          editor_document: {
+            ...(page.editor_document || {}),
+            text: flags,
+          },
+        };
+        if (!previousFlags.narration_customized) {
+          nextPage.narration_text = nextText;
+        }
+        return nextPage;
+      }),
+    );
+  }, []);
+
+  const updateNarrationText = useCallback((index, nextText) => {
+    setDraftPages((current) =>
+      current.map((page, pageIndex) => {
+        if (pageIndex !== index) return page;
+        const flags = {
+          ...editorTextFlags(page),
+          narration_customized: true,
+        };
+        return {
+          ...page,
+          narration_text: nextText,
+          editor_document: {
+            ...(page.editor_document || {}),
+            text: flags,
+          },
+        };
+      }),
+    );
+  }, []);
+
+  const toggleDisplayEdit = useCallback((key) => {
+    setDisplayEditKeys((current) => ({
+      ...current,
+      [key]: !current[key],
+    }));
+  }, []);
+
   const selectFromPages = useCallback(
     (nextPages, selectPage, fallbackIndex = 0) => {
       if (!Array.isArray(nextPages) || !nextPages.length) return;
@@ -318,6 +416,7 @@ export default function TranscriptEditorPanel({
     setStatusMessage('Discarded unsaved transcript edits.');
     setJobStatus(null);
     setPollingStartedAt(null);
+    setDisplayEditKeys({});
   }, [pages]);
 
   const pageDiffLabel = useCallback(
@@ -609,6 +708,7 @@ export default function TranscriptEditorPanel({
         if (Array.isArray(updatedPages)) {
           onPagesUpdated?.(updatedPages);
         }
+        onModerationUpdated?.(response);
         setStatusMessage(triggerRerender ? 'Transcript saved. Rerender queued.' : 'Transcript saved.');
 
         if (onProjectRefresh) {
@@ -623,6 +723,7 @@ export default function TranscriptEditorPanel({
         } else if (triggerRerender) {
           setStatusMessage('Transcript saved. No rerender job was returned.');
         }
+        return response;
       } catch (err) {
         setError(err.message || 'Failed to save transcript edits.');
         setStatusMessage('');
@@ -632,8 +733,16 @@ export default function TranscriptEditorPanel({
         }
       }
     },
-    [dirtyPageIndexes, draftPages, onPagesUpdated, onProjectRefresh, pollRerenderJob, project, rerendering, saving],
+    [dirtyPageIndexes, draftPages, onModerationUpdated, onPagesUpdated, onProjectRefresh, pollRerenderJob, project, rerendering, saving],
   );
+
+  const controlsDisabled = saving || rerendering || actioning;
+
+  useImperativeHandle(ref, () => ({
+    save: saveTranscript,
+    hasUnsavedChanges: () => isDirty,
+    isBusy: () => controlsDisabled,
+  }), [controlsDisabled, isDirty, saveTranscript]);
 
   if (!project) {
     return (
@@ -665,7 +774,6 @@ export default function TranscriptEditorPanel({
     );
   }
 
-  const controlsDisabled = saving || rerendering || actioning;
   const actionControlsDisabled = controlsDisabled || isDirty;
   const selectedHasSplitParts = splitByBlankLines(selectedDraftPage?.narration_text).length >= 2;
   const otherDirtyIndexes = Array.from(dirtyPageIndexes).filter((index) => index !== selectedDraftIndex);
@@ -689,7 +797,7 @@ export default function TranscriptEditorPanel({
         <div>
           <p className="title-lg text-[var(--text-primary)]">Transcript</p>
           <p className="text-xs text-[var(--text-secondary)]">
-            Edit spoken narration. Original extracted text remains read-only for reference.
+            Edit slide display text and spoken narration separately.
           </p>
         </div>
         <span
@@ -703,20 +811,29 @@ export default function TranscriptEditorPanel({
         </span>
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => saveTranscript({ triggerRerender: false })} disabled={controlsDisabled || !isDirty}>
-          {saving && !rerendering ? <LoaderCircle size={14} className="animate-spin" /> : <Save size={14} />}
-          <span>Save</span>
-        </Button>
-        <Button size="sm" variant="secondary" onClick={() => saveTranscript({ triggerRerender: true })} disabled={controlsDisabled}>
-          {rerendering ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
-          <span>Save + Rerender</span>
-        </Button>
-        <Button size="sm" variant="ghost" onClick={resetDraft} disabled={controlsDisabled || !isDirty}>
-          <RotateCcw size={14} />
-          <span>Discard Changes</span>
-        </Button>
-      </div>
+      {showLocalActions ? (
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" onClick={() => saveTranscript({ triggerRerender: false })} disabled={controlsDisabled || !isDirty}>
+            {saving && !rerendering ? <LoaderCircle size={14} className="animate-spin" /> : <Save size={14} />}
+            <span>Save</span>
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => saveTranscript({ triggerRerender: true })} disabled={controlsDisabled}>
+            {rerendering ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCcw size={14} />}
+            <span>Save + Rerender</span>
+          </Button>
+          <Button size="sm" variant="ghost" onClick={resetDraft} disabled={controlsDisabled || !isDirty}>
+            <RotateCcw size={14} />
+            <span>Discard Changes</span>
+          </Button>
+        </div>
+      ) : isDirty ? (
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="ghost" onClick={resetDraft} disabled={controlsDisabled}>
+            <RotateCcw size={14} />
+            <span>Discard Changes</span>
+          </Button>
+        </div>
+      ) : null}
 
       <div className="space-y-3 rounded-2xl token-surface p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
@@ -845,9 +962,16 @@ export default function TranscriptEditorPanel({
             ? `Slide ${Number(page.source_slide_index) + 1}`
             : `Slide ${index + 1}`;
           const narration = textValue(page.narration_text);
+          const displayText = displayValue(page);
           const diffLabel = pageDiffLabel(page, index);
           const key = pageKey(page, index);
           const selected = key === activePageKey;
+          const editingDisplay = Boolean(displayEditKeys[key]);
+          const moderationWarning = moderationPageWarnings[key] || null;
+          const moderationFields = new Set(moderationWarning?.fields || []);
+          const hasModerationWarning = Boolean(moderationWarning);
+          const displayWarned = moderationFields.has('original_text') || moderationFields.has('page');
+          const narrationWarned = moderationFields.has('narration_text') || moderationFields.has('page');
 
           return (
             <article
@@ -862,8 +986,10 @@ export default function TranscriptEditorPanel({
               onClick={() => onSelectPage?.(page, index)}
               className={`space-y-3 rounded-2xl p-3 transition ${
                 selected
-                  ? 'border border-[color:rgba(208,188,255,0.55)] bg-[color:rgba(208,188,255,0.12)]'
-                  : 'token-surface'
+                  ? `border ${hasModerationWarning ? 'border-[color:var(--status-warning-fg)]' : 'border-[color:rgba(208,188,255,0.55)]'} bg-[color:rgba(208,188,255,0.12)]`
+                  : hasModerationWarning
+                    ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)]'
+                    : 'token-surface'
               }`}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -886,20 +1012,66 @@ export default function TranscriptEditorPanel({
                 </span>
               </div>
 
-              {page.original_text && (
-                <div className="rounded-xl bg-[var(--surface-container-high)] p-3">
-                  <p className="label-sm">Original text</p>
-                  <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{page.original_text}</p>
-                </div>
+              {hasModerationWarning && (
+                <p className="inline-flex items-center gap-2 rounded-full bg-[color:var(--status-warning-bg)] px-3 py-1 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+                  <AlertTriangle size={12} />
+                  <span>Moderation finding on this slide</span>
+                </p>
               )}
 
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Narration text
+              <div className={`rounded-xl p-3 ${
+                displayWarned
+                  ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)]'
+                  : 'bg-[var(--surface-container-high)]'
+              }`}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="label-sm">Original / display text</p>
+                    <p className="mt-1 text-xs text-[var(--text-secondary)]">Visible on this scene.</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      toggleDisplayEdit(key);
+                    }}
+                    disabled={controlsDisabled}
+                  >
+                    <Pencil size={14} />
+                    <span>{editingDisplay ? 'Done' : 'Edit'}</span>
+                  </Button>
+                </div>
+                {editingDisplay ? (
+                  <textarea
+                    value={displayText}
+                    onFocus={() => onSelectPage?.(page, index)}
+                    onChange={(event) => updateDisplayText(index, event.target.value)}
+                    className={`focus-ring mt-2 min-h-[130px] w-full resize-y rounded-xl border bg-[var(--surface-elevated)] p-3 text-sm leading-6 text-[var(--text-primary)] ${
+                      displayWarned ? 'border-[color:var(--status-warning-fg)]' : 'border-[var(--border-subtle)]'
+                    }`}
+                    placeholder="Text visible on the slide..."
+                  />
+                ) : (
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">
+                    {displayText || 'No display text yet.'}
+                  </p>
+                )}
+              </div>
+
+              <label className={`block rounded-xl text-sm ${
+                narrationWarned
+                  ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] p-3 text-[color:var(--status-warning-fg)]'
+                  : 'text-[var(--text-secondary)]'
+              }`}>
+                Narration text / captions
                 <textarea
                   value={narration}
                   onFocus={() => onSelectPage?.(page, index)}
-                  onChange={(event) => updateDraftPage(index, { narration_text: event.target.value })}
-                  className={`focus-ring mt-1 w-full resize-y rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-4 text-[var(--text-primary)] ${
+                  onChange={(event) => updateNarrationText(index, event.target.value)}
+                  className={`focus-ring mt-1 w-full resize-y rounded-2xl border bg-[var(--surface-elevated)] p-4 text-[var(--text-primary)] ${
+                    narrationWarned ? 'border-[color:var(--status-warning-fg)]' : 'border-[var(--border-subtle)]'
+                  } ${
                     focusMode ? 'min-h-[280px] text-base leading-7' : 'min-h-[190px] text-[0.95rem] leading-7'
                   }`}
                   placeholder="Edit spoken narration for this slide..."
@@ -937,4 +1109,6 @@ export default function TranscriptEditorPanel({
       </div>
     </div>
   );
-}
+});
+
+export default TranscriptEditorPanel;

@@ -353,46 +353,6 @@ def _convert_audio_to_wav(source: Path, destination: Path) -> None:
         raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "preview_audio_conversion_failed")
 
 
-def _build_static_fallback_preview(*, image_path: str, audio_path: str, output_path: str) -> None:
-    image = Path(str(image_path or "")).resolve()
-    audio = Path(str(audio_path or "")).resolve()
-    output = Path(str(output_path or "")).resolve()
-    if not image.exists() or not image.is_file():
-        raise RuntimeError("fallback_preview_missing_image")
-    if not audio.exists() or not audio.is_file():
-        raise RuntimeError("fallback_preview_missing_audio")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-loop",
-            "1",
-            "-i",
-            str(image),
-            "-i",
-            str(audio),
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-tune",
-            "stillimage",
-            "-pix_fmt",
-            "yuv420p",
-            "-c:a",
-            "aac",
-            "-shortest",
-            str(output),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0 or not output.exists() or output.stat().st_size <= 0:
-        raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or "fallback_preview_ffmpeg_failed")
-
-
 def _build_preview_audio_contract(*, source_mp3: Path, target_wav: Path, fps: int) -> dict[str, Any]:
     if fps <= 0:
         raise RuntimeError(f"preview_audio_contract_invalid_fps:{fps}")
@@ -852,22 +812,7 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
         setattr(request, "_preview_task_context", preview_task_context)
 
         _set_job(status="running", progress=70)
-        try:
-            render_result = render_avatar_segment_local(request)
-        except Exception as render_exc:
-            _build_static_fallback_preview(
-                image_path=(source_image_original_abs or source_image_abs),
-                audio_path=str(audio_wav),
-                output_path=str(output_mp4),
-            )
-            render_result = {
-                "preview_status": "warning",
-                "preview_warning": f"avatar_render_fallback_used:{str(render_exc)}",
-                "preview_usable": True,
-                "stage_paths": {},
-                "stage_outputs": [],
-                "motion_validation": {},
-            }
+        render_result = render_avatar_segment_local(request)
         stage_paths = dict(render_result.get("stage_paths") or {})
         stage_paths["preview_audio_source_path"] = str(source_mp3)
         stage_paths["preview_audio_contract_path"] = str(audio_wav)

@@ -14,7 +14,6 @@ Initialisation order
 import os
 
 import django
-from django.apps import apps as django_apps
 
 # Step 1 — point Django at the project settings (resolved via PYTHONPATH=/app/api)
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
@@ -23,8 +22,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 #   • ORM model imports inside task functions succeed without
 #     "Model … doesn't declare an explicit app_label" errors
 #   • CELERY_* settings can be read from django.conf.settings
-if not django_apps.ready:
-    django.setup()
+django.setup()
 
 from celery import Celery  # noqa: E402  (must follow django.setup())
 from kombu import Queue  # noqa: E402
@@ -64,8 +62,5 @@ app.conf.task_routes = {
     "worker.tasks.cleanup_avatar_cache": {"queue": avatar_queue},
 }
 
-# Step 4 — load task modules.
-# Autodiscovery can miss tasks in some container boot orders, so keep an explicit
-# import list as a stable fallback.
-app.conf.imports = tuple(dict.fromkeys(tuple(app.conf.get("imports", ())) + ("worker.tasks",)))
+# Step 4 — discover tasks.py in the worker package
 app.autodiscover_tasks(["worker"])

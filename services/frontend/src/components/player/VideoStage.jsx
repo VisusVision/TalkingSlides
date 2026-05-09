@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import Hls from 'hls.js';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ShieldCheck } from 'lucide-react';
 import { formatDuration } from '../../lib/content';
 import SurfaceCard from '../ui/SurfaceCard';
@@ -16,20 +15,11 @@ function srtUrlForLesson(lesson) {
     .find(Boolean) || '';
 }
 
-function hlsManifestUrlForLesson(lesson) {
-  return [
-    lesson?.streaming?.hls?.manifest_url,
-    lesson?.drm?.manifest_url,
-  ]
-    .map((value) => String(value || '').trim())
-    .find(Boolean) || '';
-}
-
 function captionTrackSrcForUrl(url) {
   const value = String(url || '').trim();
   if (!value) return '';
   const separator = value.includes('?') ? '&' : '?';
-  return `${value}${separator}kind=vtt&track=original`;
+  return `${value}${separator}kind=vtt`;
 }
 
 function textTracksForVideo(video) {
@@ -38,278 +28,219 @@ function textTracksForVideo(video) {
   return Array.from({ length: tracks.length }, (_, index) => tracks[index]).filter(Boolean);
 }
 
-function findOriginalCaptionTrack(video) {
+function selectionKeyForLanguageCode(value) {
+  const code = String(value || '').trim().toLowerCase();
+  if (!code || code === 'off') return 'off';
+  if (code === 'original') return 'original';
+  if (code.startsWith('translated:')) return code;
+  return `translated:${code}`;
+}
+
+function textTrackMatchesCaptionTrack(textTrack, captionTrack) {
+  if (!textTrack || !captionTrack) return false;
+  const label = String(textTrack.label || '').trim();
+  const language = String(textTrack.language || '').trim().toLowerCase();
+  const captionLabel = String(captionTrack.language_label || '').trim();
+  const captionLanguage = String(captionTrack.language_code || '').trim().toLowerCase();
+
+  if (captionTrack.is_original) {
+    return label === 'Original' || label === captionLabel;
+  }
+
+  if (label === captionLabel) return true;
+  if (label === 'Original') return false;
+  return language === captionLanguage;
+}
+
+function setActiveTextTrack(video, captionTrack) {
   const tracks = textTracksForVideo(video);
-  return tracks.find((track) => track.label === 'Original')
-    || tracks.find((track) => track.kind === 'subtitles' || track.kind === 'captions')
-    || null;
+  for (const textTrack of tracks) {
+    textTrack.mode = 'disabled';
+  }
+
+  if (!captionTrack) return;
+
+  const selectedTextTrack = tracks.find((textTrack) => textTrackMatchesCaptionTrack(textTrack, captionTrack));
+  if (selectedTextTrack) {
+    selectedTextTrack.mode = 'showing';
+  }
+}
+
+function normalizeTrack(track) {
+  if (!track || typeof track !== 'object') return null;
+  const rawCode = String(track.language_code || '').trim().toLowerCase();
+  const isOriginal = track.is_original === true
+    || track.type === 'original'
+    || track.id === 'original'
+    || rawCode === 'original';
+  const languageCode = isOriginal ? 'original' : rawCode;
+  const vttUrl = String(track.vtt_url || track.subtitle_vtt_url || '').trim();
+  const status = String(track.status || 'ready').trim().toLowerCase();
+
+  if (!languageCode || !vttUrl || status !== 'ready') return null;
+
+  return {
+    ...track,
+    key: selectionKeyForLanguageCode(languageCode),
+    language_code: languageCode,
+    language_label: isOriginal
+      ? 'Original'
+      : String(track.language_label || track.label || languageCode.toUpperCase()).trim(),
+    source_language_code: String(track.source_language_code || '').trim().toLowerCase(),
+    is_original: isOriginal,
+    vtt_url: vttUrl,
+  };
 }
 
 export default function VideoStage({
   lesson,
+  subtitleTracks = [],
+  preferredSubtitleLanguage = '',
+  selectedSubtitleKey,
+  onSubtitleKeyChange,
   onPlaybackTimeChange,
   videoRef,
   asSurface = true,
   captionMissingLabel = 'No captions yet',
+  showSubtitleControls = true,
+  showLessonDetails = true,
 }) {
   const internalVideoRef = useRef(null);
   const activeVideoRef = videoRef || internalVideoRef;
-  const avatarOverlayRef = useRef(null);
-  const stageRef = useRef(null);
-  const trackRef = useRef(null);
-  const [captionsAvailable, setCaptionsAvailable] = useState(false);
-  const [captionsEnabled, setCaptionsEnabled] = useState(false);
-  const [captionsStatus, setCaptionsStatus] = useState(captionMissingLabel);
-  const [fullscreenActive, setFullscreenActive] = useState(false);
-  const vttUrl = vttUrlForLesson(lesson);
-  const hlsManifestUrl = hlsManifestUrlForLesson(lesson);
-  const captionTrackSrc = captionTrackSrcForUrl(vttUrl);
+  const [internalSelectedTrackKey, setInternalSelectedTrackKey] = useState('off');
+  const [captionLoadFailed, setCaptionLoadFailed] = useState(false);
+  const selectionControlled = selectedSubtitleKey !== undefined;
+  const selectedTrackKey = selectionControlled ? selectedSubtitleKey : internalSelectedTrackKey;
+  const setSelectedTrackKeyValue = useCallback((nextKey) => {
+    if (!selectionControlled) {
+      setInternalSelectedTrackKey(nextKey);
+    }
+    onSubtitleKeyChange?.(nextKey);
+  }, [onSubtitleKeyChange, selectionControlled]);
+
+  const originalVttUrl = vttUrlForLesson(lesson);
   const srtUrl = srtUrlForLesson(lesson);
-  const hasVideo = Boolean(lesson?.stream_url || hlsManifestUrl);
-  const mediaSrc = String(lesson?.stream_url || '').trim();
-  const avatarOverlaySrc = String(lesson?.avatar_overlay?.stream_url || '').trim();
-  const avatarOverlayEnabled = Boolean(lesson?.avatar_overlay?.enabled && avatarOverlaySrc);
-  const avatarOverlaySize = String(lesson?.avatar_overlay?.size || lesson?.avatar_overlay?.defaults?.size || 'medium').trim().toLowerCase();
-  const avatarOverlaySizeClass = avatarOverlaySize === 'small'
-    ? 'w-24 sm:w-28 md:w-32'
-    : avatarOverlaySize === 'large'
-      ? 'w-36 sm:w-44 md:w-52'
-      : 'w-28 sm:w-36 md:w-44';
+  const hasVideo = Boolean(lesson?.stream_url);
+
+  const availableTracks = useMemo(() => {
+    const byKey = new Map();
+    for (const rawTrack of subtitleTracks || []) {
+      const track = normalizeTrack(rawTrack);
+      if (track) byKey.set(track.key, track);
+    }
+    if (!byKey.has('original') && originalVttUrl) {
+      byKey.set('original', {
+        key: 'original',
+        language_code: 'original',
+        language_label: 'Original',
+        source_language_code: '',
+        status: 'ready',
+        is_original: true,
+        vtt_url: originalVttUrl,
+      });
+    }
+    const original = byKey.get('original');
+    const translated = Array.from(byKey.values())
+      .filter((track) => !track.is_original)
+      .sort((a, b) => a.language_label.localeCompare(b.language_label));
+    return original ? [original, ...translated] : translated;
+  }, [originalVttUrl, subtitleTracks]);
+
+  const selectedTrack = availableTracks.find((track) => track.key === selectedTrackKey) || null;
   const fallbackCaptionStatus = srtUrl
     ? 'Captions generated but WebVTT track is unavailable. Rerender to create WebVTT.'
     : captionMissingLabel;
+  const loadedTrackLabel = availableTracks.map((track) => track.language_label).join(', ');
+  const onlyOriginalTrack = availableTracks.length === 1 && availableTracks[0]?.is_original;
+  const trackAvailabilityLabel = onlyOriginalTrack
+    ? 'Only original captions are available.'
+    : `Caption tracks loaded: ${loadedTrackLabel}.`;
+  const captionStatus = useMemo(() => {
+    if (!hasVideo) return '';
+    if (!availableTracks.length) return fallbackCaptionStatus;
+    if (captionLoadFailed && selectedTrackKey !== 'off') return 'Captions could not be loaded.';
+    if (selectedTrackKey === 'off') return 'CC off';
+    return selectedTrack ? `CC enabled: ${selectedTrack.language_label}` : 'CC off';
+  }, [availableTracks.length, captionLoadFailed, fallbackCaptionStatus, hasVideo, selectedTrack, selectedTrackKey]);
 
-  const setCaptionMode = useCallback((enabled) => {
-    const video = activeVideoRef.current;
-    const selectedTrack = findOriginalCaptionTrack(video);
-
-    if (!selectedTrack) {
-      setCaptionsAvailable(false);
-      setCaptionsEnabled(false);
-      setCaptionsStatus(vttUrl ? 'Captions generated but WebVTT track is unavailable. Rerender to create WebVTT.' : fallbackCaptionStatus);
-      return false;
+  useEffect(() => {
+    if (selectedTrackKey === 'off') return;
+    if (!availableTracks.some((track) => track.key === selectedTrackKey)) {
+      setSelectedTrackKeyValue('off');
     }
+  }, [availableTracks, selectedTrackKey, setSelectedTrackKeyValue]);
 
-    textTracksForVideo(video).forEach((track) => {
-      track.mode = track === selectedTrack && enabled ? 'showing' : 'disabled';
-    });
+  useEffect(() => {
+    const preferredKey = String(preferredSubtitleLanguage || '').trim().toLowerCase();
+    if (!preferredKey) return;
+    const targetKey = selectionKeyForLanguageCode(preferredKey);
+    if (availableTracks.some((track) => track.key === targetKey)) {
+      setSelectedTrackKeyValue(targetKey);
+    }
+  }, [availableTracks, preferredSubtitleLanguage, setSelectedTrackKeyValue]);
 
-    setCaptionsAvailable(true);
-    setCaptionsEnabled(Boolean(enabled));
-    const enabledStatus = import.meta.env.DEV ? 'Caption track loaded from secure stream' : 'CC enabled';
-    setCaptionsStatus(enabled ? enabledStatus : 'CC off');
-    return true;
-  }, [activeVideoRef, fallbackCaptionStatus, vttUrl]);
+  useEffect(() => {
+    setCaptionLoadFailed(false);
+  }, [lesson?.id, selectedTrackKey]);
+
+  useEffect(() => {
+    const video = activeVideoRef.current;
+    if (!video) return;
+
+    setActiveTextTrack(video, selectedTrack);
+  }, [activeVideoRef, selectedTrack]);
 
   const handleCaptionTrackReady = useCallback(() => {
-    if (!vttUrl) return;
-    setCaptionMode(true);
-  }, [setCaptionMode, vttUrl]);
+    setCaptionLoadFailed(false);
+    const video = activeVideoRef.current;
+    if (!video) return;
+    setActiveTextTrack(video, selectedTrack);
+  }, [activeVideoRef, selectedTrack]);
 
   const handleCaptionTrackError = useCallback(() => {
-    setCaptionsAvailable(false);
-    setCaptionsEnabled(false);
-    setCaptionsStatus('Captions could not be loaded.');
-  }, []);
-
-  const handleCaptionToggle = useCallback(() => {
-    if (!vttUrl || !captionsAvailable) return;
-    setCaptionMode(!captionsEnabled);
-  }, [captionsAvailable, captionsEnabled, setCaptionMode, vttUrl]);
-
-  const handleFullscreenToggle = useCallback(() => {
-    const stage = stageRef.current;
-    if (!stage) return;
-    if (document.fullscreenElement) {
-      document.exitFullscreen?.().catch(() => {});
-      return;
+    if (selectedTrackKey !== 'off') {
+      setCaptionLoadFailed(true);
     }
-    stage.requestFullscreen?.().catch(() => {});
-  }, []);
+  }, [selectedTrackKey]);
 
-  useEffect(() => {
-    const video = activeVideoRef.current;
-    if (!video || !hasVideo) return undefined;
-
-    const canUseNativeHls = video.canPlayType('application/vnd.apple.mpegurl') !== '';
-    if (!mediaSrc && hlsManifestUrl && canUseNativeHls) {
-      video.src = hlsManifestUrl;
-      return undefined;
-    }
-
-    if (!mediaSrc && hlsManifestUrl && Hls.isSupported()) {
-      const hls = new Hls();
-      hls.loadSource(hlsManifestUrl);
-      hls.attachMedia(video);
-      return () => hls.destroy();
-    }
-
-    return undefined;
-  }, [activeVideoRef, hasVideo, hlsManifestUrl, mediaSrc, lesson?.id]);
-
-  useEffect(() => {
-    setCaptionsAvailable(false);
-    setCaptionsEnabled(false);
-
-    if (!hasVideo) {
-      setCaptionsStatus('');
-      return undefined;
-    }
-
-    if (!vttUrl) {
-      setCaptionsStatus(fallbackCaptionStatus);
-      return undefined;
-    }
-
-    setCaptionsStatus('Loading captions...');
-    const readyTimer = window.setTimeout(() => {
-      if (!setCaptionMode(true)) {
-        setCaptionsStatus('Loading captions...');
-      }
-    }, 0);
-    const diagnosticsTimer = window.setTimeout(() => {
-      const video = activeVideoRef.current;
-      if (!findOriginalCaptionTrack(video)) {
-        setCaptionsStatus('Captions generated but WebVTT track is unavailable. Rerender to create WebVTT.');
-      }
-    }, 2500);
-
-    return () => {
-      window.clearTimeout(readyTimer);
-      window.clearTimeout(diagnosticsTimer);
-    };
-  }, [activeVideoRef, fallbackCaptionStatus, hasVideo, lesson?.id, setCaptionMode, vttUrl]);
-
-  useEffect(() => {
-    const onFullscreenChange = () => {
-      setFullscreenActive(Boolean(document.fullscreenElement && stageRef.current && document.fullscreenElement === stageRef.current));
-    };
-    document.addEventListener('fullscreenchange', onFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
-  }, []);
-
-  useEffect(() => {
-    const mainVideo = activeVideoRef.current;
-    const avatarVideo = avatarOverlayRef.current;
-    if (!mainVideo || !avatarVideo || !avatarOverlayEnabled) return undefined;
-
-    avatarVideo.muted = true;
-    avatarVideo.defaultMuted = true;
-    avatarVideo.playbackRate = mainVideo.playbackRate || 1;
-
-    const syncTime = () => {
-      if (!Number.isFinite(mainVideo.currentTime)) return;
-      if (Math.abs((avatarVideo.currentTime || 0) - mainVideo.currentTime) > 0.15) {
-        avatarVideo.currentTime = mainVideo.currentTime;
-      }
-    };
-    const syncPlay = () => {
-      syncTime();
-      avatarVideo.play().catch(() => {});
-    };
-    const syncPause = () => avatarVideo.pause();
-    const syncRate = () => {
-      avatarVideo.playbackRate = mainVideo.playbackRate || 1;
-    };
-
-    mainVideo.addEventListener('play', syncPlay);
-    mainVideo.addEventListener('playing', syncPlay);
-    mainVideo.addEventListener('pause', syncPause);
-    mainVideo.addEventListener('seeking', syncTime);
-    mainVideo.addEventListener('seeked', syncTime);
-    mainVideo.addEventListener('timeupdate', syncTime);
-    mainVideo.addEventListener('ratechange', syncRate);
-
-    if (!mainVideo.paused) {
-      syncPlay();
-    } else {
-      syncPause();
-      syncTime();
-    }
-
-    return () => {
-      mainVideo.removeEventListener('play', syncPlay);
-      mainVideo.removeEventListener('playing', syncPlay);
-      mainVideo.removeEventListener('pause', syncPause);
-      mainVideo.removeEventListener('seeking', syncTime);
-      mainVideo.removeEventListener('seeked', syncTime);
-      mainVideo.removeEventListener('timeupdate', syncTime);
-      mainVideo.removeEventListener('ratechange', syncRate);
-    };
-  }, [activeVideoRef, avatarOverlayEnabled, avatarOverlaySrc, lesson?.id]);
+  const handleSubtitleSelectionChange = useCallback((event) => {
+    const nextKey = event.target.value;
+    const nextTrack = availableTracks.find((track) => track.key === nextKey) || null;
+    setActiveTextTrack(activeVideoRef.current, nextTrack);
+    setSelectedTrackKeyValue(nextKey);
+  }, [activeVideoRef, availableTracks, setSelectedTrackKeyValue]);
 
   const content = (
     <>
-      <div ref={stageRef} className="relative overflow-hidden rounded-2xl bg-[color:var(--video-stage-bg)]">
+      <div className="overflow-hidden rounded-xl bg-[color:var(--video-stage-bg)]">
         {hasVideo ? (
-          <>
-            <video
-              key={lesson.id}
-              ref={activeVideoRef}
-              src={mediaSrc || undefined}
-              className="aspect-video w-full"
-              controls
-              controlsList="nofullscreen"
-              playsInline
-              preload="metadata"
-              crossOrigin="anonymous"
-              onLoadedMetadata={handleCaptionTrackReady}
-              onTimeUpdate={(event) => onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0))}
-            >
-              {vttUrl && (
-                <track
-                  key={captionTrackSrc}
-                  ref={trackRef}
-                  kind="subtitles"
-                  src={captionTrackSrc}
-                  srcLang="tr"
-                  label="Original"
-                  default
-                  onLoad={handleCaptionTrackReady}
-                  onError={handleCaptionTrackError}
-                />
-              )}
-            </video>
-            {avatarOverlayEnabled && (
-              <div className="pointer-events-none absolute right-3 top-3 z-20">
-                <video
-                  key={`${lesson?.id || 'lesson'}-${avatarOverlaySrc}`}
-                  ref={avatarOverlayRef}
-                  src={avatarOverlaySrc}
-                  className={`${avatarOverlaySizeClass} block overflow-hidden rounded-xl border-2 border-emerald-300 bg-black shadow-2xl`}
-                  muted
-                  playsInline
-                  autoPlay
-                  preload="metadata"
-                  crossOrigin="anonymous"
-                  onLoadedMetadata={(event) => {
-                    event.currentTarget.play().catch(() => {});
-                  }}
-                />
-                <span className="absolute left-2 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-200">
-                  Avatar
-                </span>
-              </div>
-            )}
-            {vttUrl && (
-              <button
-                type="button"
-                aria-pressed={captionsEnabled}
-                disabled={!captionsAvailable}
-                onClick={handleCaptionToggle}
-                className="focus-ring absolute left-3 top-3 z-30 inline-flex h-9 items-center justify-center rounded-full border border-white/25 bg-black/60 px-3 text-xs font-semibold text-white shadow-sm backdrop-blur transition hover:bg-black/75 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {captionsEnabled ? 'CC On' : 'CC Off'}
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={handleFullscreenToggle}
-              className="focus-ring absolute left-24 top-3 z-30 inline-flex h-9 items-center justify-center rounded-full border border-white/25 bg-black/60 px-3 text-xs font-semibold text-white shadow-sm backdrop-blur transition hover:bg-black/75"
-            >
-              {fullscreenActive ? 'Exit Fullscreen' : 'Fullscreen'}
-            </button>
-          </>
+          <video
+            key={lesson.id}
+            ref={activeVideoRef}
+            src={lesson.stream_url}
+            className="aspect-video w-full bg-black"
+            controls
+            controlsList="nodownload noplaybackrate noremoteplayback"
+            disablePictureInPicture
+            onContextMenu={(event) => event.preventDefault()}
+            playsInline
+            preload="metadata"
+            crossOrigin="anonymous"
+            onLoadedMetadata={handleCaptionTrackReady}
+            onTimeUpdate={(event) => onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0))}
+          >
+            {availableTracks.map((track) => (
+              <track
+                key={track.key}
+                kind="subtitles"
+                src={captionTrackSrcForUrl(track.vtt_url)}
+                srcLang={track.is_original ? (track.source_language_code || 'und') : track.language_code}
+                label={track.language_label}
+                onLoad={handleCaptionTrackReady}
+                onError={handleCaptionTrackError}
+              />
+            ))}
+          </video>
         ) : (
           <div className="flex aspect-video items-center justify-center gap-2 text-sm text-[color:var(--media-text-on-image)] opacity-80">
             <AlertCircle size={16} />
@@ -318,24 +249,56 @@ export default function VideoStage({
         )}
       </div>
 
-      <div className="space-y-2">
-        <h1 className="headline-md text-[var(--text-primary)]">{lesson?.title || 'Select a lesson to start'}</h1>
-        <p className="body-md max-w-3xl">{lesson?.description || 'Choose a lesson from related content to begin playback.'}</p>
-        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-          <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || 'General'}</span>
-          <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatDuration(lesson?.duration_minutes || 8)}</span>
-          <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.teacher_name || 'VISUS Instructor'}</span>
-          <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
-            <ShieldCheck size={12} />
-            Secure stream
-          </span>
-          {hasVideo && (
-            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">
-              {vttUrl ? captionsStatus : fallbackCaptionStatus}
-            </span>
-          )}
+      {hasVideo && showSubtitleControls && (
+        <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <label className="flex min-w-0 items-center gap-2 text-sm text-[var(--text-secondary)]">
+              <span className="shrink-0 font-medium text-[var(--text-primary)]">Subtitles</span>
+              <select
+                value={selectedTrackKey}
+                onChange={handleSubtitleSelectionChange}
+                disabled={availableTracks.length === 0}
+                className="focus-ring h-9 min-w-[9rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
+              >
+                <option value="off">Off</option>
+                {availableTracks.map((track) => (
+                  <option key={track.key} value={track.key}>
+                    {track.language_label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">Use this menu to choose subtitle language.</p>
+          </div>
+          <div className="min-w-0 text-xs text-[var(--text-secondary)]">
+            {availableTracks.length > 0 ? (
+              <>
+                <span>{captionStatus}</span>
+                <span className="mx-2 text-[var(--border-strong)]">|</span>
+                <span>{trackAvailabilityLabel}</span>
+              </>
+            ) : (
+              <span>{captionStatus}</span>
+            )}
+          </div>
         </div>
-      </div>
+      )}
+
+      {showLessonDetails && (
+        <div className="space-y-2">
+          <h1 className="headline-md text-[var(--text-primary)]">{lesson?.title || 'Select a lesson to start'}</h1>
+          <p className="body-md max-w-3xl">{lesson?.description || 'Choose a lesson from related content to begin playback.'}</p>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || 'General'}</span>
+            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatDuration(lesson?.duration_minutes || 8)}</span>
+            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.teacher_name || 'VISUS Instructor'}</span>
+            <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
+              <ShieldCheck size={12} />
+              Secure stream
+            </span>
+          </div>
+        </div>
+      )}
     </>
   );
 

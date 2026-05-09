@@ -1,11 +1,11 @@
-﻿"""
+"""
 services/tts_service/main.py
 =============================
 AI_ACADEMY TTS microservice.
 
-POST /synthesize  â€” accepts JSON body, returns audio URL + metadata (JSON).
-GET  /audio/{fn}  â€” serves a previously synthesised audio file.
-GET  /health      â€” liveness probe.
+POST /synthesize  — accepts JSON body, returns audio URL + metadata (JSON).
+GET  /audio/{fn}  — serves a previously synthesised audio file.
+GET  /health      — liveness probe.
 
 Synthesis chain
 ---------------
@@ -13,7 +13,7 @@ Synthesis chain
 2. gTTS (Google Text-to-Speech, pure-python, requires internet).
 3. ffmpeg silent-audio fallback (always works, produces a short silent MP3).
 
-The endpoint NEVER returns 5xx for normal synthesis failures â€” it always
+The endpoint NEVER returns 5xx for normal synthesis failures — it always
 returns HTTP 200 with ``provider="fallback"`` so the worker pipeline keeps
 running even when Google TTS is unreachable or the text is unsupported.
 """
@@ -21,7 +21,6 @@ running even when Google TTS is unreachable or the text is unsupported.
 from __future__ import annotations
 
 import json
-import contextlib
 import time
 import logging
 import os
@@ -45,13 +44,6 @@ from tts_preprocess import (
     split_sentences as preprocess_split_sentences,
 )
 from tts_preprocess.segmenter import split_oversized_unit as preprocess_split_oversized_unit
-from tts_cache import TTSHashCacheStore, deterministic_cache_key
-
-try:
-    from prometheus_client import Counter, Histogram
-except Exception:  # pragma: no cover
-    Counter = None
-    Histogram = None
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -113,44 +105,6 @@ XTTS_PRELOAD_ON_STARTUP = str(os.environ.get("XTTS_PRELOAD_ON_STARTUP", "1")).lo
 XTTS_WARMUP_BLOCKING = str(os.environ.get("XTTS_WARMUP_BLOCKING", "0")).lower() in ("1", "true", "yes")
 XTTS_LOAD_RECOVERY_ATTEMPTS = _env_int("XTTS_LOAD_RECOVERY_ATTEMPTS", 2)
 XTTS_LOAD_RECOVERY_BACKOFF_SEC = _env_float("XTTS_LOAD_RECOVERY_BACKOFF_SEC", 2.0)
-TTS_CACHE_ENABLED = str(os.environ.get("TTS_CACHE_ENABLED", "1")).lower() in ("1", "true", "yes")
-TTS_CACHE_ROOT = Path(os.environ.get("TTS_CACHE_ROOT", str(STORAGE_ROOT / "tts_cache")))
-TTS_CACHE_TTL_SECONDS = _env_int("TTS_CACHE_TTL_SECONDS", 60 * 60 * 24 * 14, minimum=60)
-TTS_CACHE_LOCK_TIMEOUT_SECONDS = _env_float("TTS_CACHE_LOCK_TIMEOUT_SECONDS", 45.0, minimum=1.0)
-
-TTS_HASH_CACHE = TTSHashCacheStore(
-    TTS_CACHE_ROOT,
-    artifact_ext=".mp3",
-    lock_timeout_seconds=TTS_CACHE_LOCK_TIMEOUT_SECONDS,
-)
-
-
-def _safe_counter(name: str, documentation: str):
-    if not Counter:
-        return None
-    try:
-        return Counter(name, documentation)
-    except ValueError:
-        return None
-
-
-def _safe_histogram(name: str, documentation: str, *, buckets: tuple[int, ...]):
-    if not Histogram:
-        return None
-    try:
-        return Histogram(name, documentation, buckets=buckets)
-    except ValueError:
-        return None
-
-
-_METRIC_CACHE_HIT_TOTAL = _safe_counter("tts_cache_hit_total", "TTS hash cache hits")
-_METRIC_CACHE_MISS_TOTAL = _safe_counter("tts_cache_miss_total", "TTS hash cache misses")
-_METRIC_CACHE_CORRUPTION_TOTAL = _safe_counter("tts_cache_corruption_total", "TTS hash cache corruption detections")
-_METRIC_SYNTH_DURATION_MS = _safe_histogram(
-    "tts_synthesis_duration_ms",
-    "TTS synthesis duration in milliseconds",
-    buckets=(25, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000),
-)
 
 # ---------------------------------------------------------------------------
 # Request model
@@ -206,7 +160,7 @@ class NormalizationPreviewRequest(BaseModel):
     glossary in-memory for this preview request only.  They never modify
     glossary.json.
 
-    Override priority (highest â†’ lowest):
+    Override priority (highest → lowest):
       mixed_word_overrides > abbreviation_overrides > technical_overrides
       > language glossary > default normalization.
     """
@@ -251,34 +205,21 @@ def _new_audio_path() -> Path:
     return TTS_AUDIO_DIR / f"{uuid.uuid4().hex}.mp3"
 
 
-def _request_trace_context(request: Request | None) -> tuple[str, str]:
-    if request is None:
-        return "", ""
-    request_id = str(request.headers.get("X-Request-ID") or request.headers.get("X-Request-Id") or "").strip()
-    traceparent = str(request.headers.get("traceparent") or "").strip()
-    return request_id[:120], traceparent[:128]
-
-
-def _structured_log(level: str, event: str, **fields: Any) -> None:
-    method = getattr(logger, str(level).lower(), logger.info)
-    method("%s | %s", event, json.dumps(fields, ensure_ascii=True, sort_keys=True))
-
-
 def _normalize_lang(lang: str | None) -> str:
     """
     Normalize a language tag to a two-letter code suitable for gTTS.
 
     ``"auto"``, ``None``, and ``""`` all map to ``"auto"`` so callers can
     resolve them from text.
-    ``"en-US"`` â†’ ``"en"``.
+    ``"en-US"`` → ``"en"``.
     """
     if not lang or lang.strip().lower() in ("auto", ""):
         return "auto"
     return lang.strip().split("-")[0].split("_")[0].lower() or "tr"
 
 
-_TURKISH_CHARS = set("Ã§ÄŸÄ±Ã¶ÅŸÃ¼Ã‡ÄÄ°Ã–ÅÃœ")
-_TURKISH_WORDS = {"ve", "bir", "iÃ§in", "olan", "de", "da", "ile", "bu", "Ã§ok", "deÄŸil"}
+_TURKISH_CHARS = set("çğıöşüÇĞİÖŞÜ")
+_TURKISH_WORDS = {"ve", "bir", "için", "olan", "de", "da", "ile", "bu", "çok", "değil"}
 _ENGLISH_WORDS = {"the", "and", "with", "for", "of", "is", "this", "that"}
 
 
@@ -293,7 +234,7 @@ def _detect_tts_language(text: str, hint: str | None = None) -> str:
         return "tr"
 
     tr_char_hits = sum(1 for ch in sample if ch in _TURKISH_CHARS)
-    tokens = re.findall(r"[a-zÃ§ÄŸÄ±Ã¶ÅŸÃ¼]+", sample, flags=re.IGNORECASE)
+    tokens = re.findall(r"[a-zçğıöşü]+", sample, flags=re.IGNORECASE)
     token_set = set(tokens)
     tr_word_hits = sum(1 for token in _TURKISH_WORDS if token in token_set)
     en_word_hits = sum(1 for token in _ENGLISH_WORDS if token in token_set)
@@ -392,7 +333,7 @@ def _chunk_pause_seconds(chunk_text: str) -> float:
     """Short punctuation-aware pauses between chunks for smoother cadence."""
     cfg = get_preprocess_config()
     txt = (chunk_text or "").rstrip()
-    if txt.endswith((".", "!", "?", "â€¦")):
+    if txt.endswith((".", "!", "?", "…")):
         return max(cfg.sentence_pause_ms, 0) / 1000.0
     if txt.endswith((",", ";", ":")):
         return max(int(cfg.sentence_pause_ms * 0.75), 0) / 1000.0
@@ -498,7 +439,7 @@ def _split_text_for_tts(text: str, max_chars: int = 200) -> list[str]:
     """
     Split *text* into chunks of at most *max_chars* at natural boundaries.
 
-    Priority: sentence end (.!?â€¦) â†’ comma â†’ word boundary.
+    Priority: sentence end (.!?…) → comma → word boundary.
     Empty or whitespace-only chunks are discarded.
     """
     prepared = prepare_text_for_tts(
@@ -828,7 +769,7 @@ def _synthesize_xtts_v2(
         for i, chunk_text in enumerate(chunks):
             chunk_wav = Path(tmpd) / f"chunk_{i:03d}.wav"
             logger.info(
-                "XTTS chunk %d/%d  %d chars: %râ€¦",
+                "XTTS chunk %d/%d  %d chars: %r…",
                 i + 1, len(chunks), len(chunk_text), chunk_text[:60],
             )
             try:
@@ -939,9 +880,9 @@ def _synthesize_xtts_v2(
                     concat_items.append(silence_wav)
 
         if not concat_items:
-            raise RuntimeError("All XTTS chunks failed â€” cannot produce audio")
+            raise RuntimeError("All XTTS chunks failed — cannot produce audio")
 
-        # Concatenate chunk WAVs â†’ final MP3 via ffmpeg
+        # Concatenate chunk WAVs → final MP3 via ffmpeg
         concat_list = Path(tmpd) / "concat.txt"
         with open(concat_list, "w", encoding="utf-8") as f:
             for cp in concat_items:
@@ -962,7 +903,7 @@ def _synthesize_xtts_v2(
 
     duration = _audio_duration(out_path)
     logger.info(
-        "XTTS OK  â†’ %s  lang=%s  %.2fs  (%d chunk(s))",
+        "XTTS OK  → %s  lang=%s  %.2fs  (%d chunk(s))",
         out_path.name, lang, duration, len(chunks),
     )
     return duration
@@ -984,7 +925,7 @@ def _synthesize_gtts(text: str, lang: str, out_path: Path) -> float:
     tts = gTTS(text=text, lang=lang, slow=False)
     tts.save(str(out_path))
     duration = _audio_duration(out_path)
-    logger.info("gTTS OK  â†’ %s  lang=%s  %.2fs", out_path.name, lang, duration)
+    logger.info("gTTS OK  → %s  lang=%s  %.2fs", out_path.name, lang, duration)
     return duration
 
 
@@ -1010,7 +951,7 @@ def _synthesize_silent(duration_sec: float, out_path: Path) -> float:
         check=True,
         capture_output=True,
     )
-    logger.info("Silent fallback OK â†’ %s  %.2fs", out_path.name, duration_sec)
+    logger.info("Silent fallback OK → %s  %.2fs", out_path.name, duration_sec)
     return duration_sec
 
 
@@ -1087,55 +1028,6 @@ def _request_override_summary(req: SynthesizeRequest) -> dict[str, int]:
         "mixed_word_count": len(mixed_word),
         "merged_override_count": len({**technical, **abbreviation, **mixed_word}),
     }
-
-
-def _tts_model_version(provider_key: str) -> str:
-    if provider_key == "xtts_v2":
-        return "xtts_v2"
-    if provider_key == "gtts":
-        return "gtts_default"
-    return "fallback_silent_ffmpeg"
-
-
-def _cache_key_payload(
-    *,
-    normalized_text: str,
-    voice_id: str,
-    provider_key: str,
-    language: str,
-    req: SynthesizeRequest,
-) -> dict[str, Any]:
-    return {
-        "normalized_text": normalized_text,
-        "voice_id": str(voice_id or ""),
-        "speaker": str(voice_id or ""),
-        "provider": str(provider_key or "auto"),
-        "language": str(language or ""),
-        "speed": 1.0,
-        "tts_model_version": _tts_model_version(provider_key),
-        "normalization_enabled": bool(req.normalization_enabled is not False),
-        "normalization_mode": str(req.normalization_mode or ""),
-        "unknown_word_strategy": str(req.unknown_word_strategy or ""),
-        "provider_preference": str(req.provider_preference or ""),
-        "optional_synthesis_params": {
-            "technical_overrides": req.technical_overrides or {},
-            "abbreviation_overrides": req.abbreviation_overrides or {},
-            "mixed_word_overrides": req.mixed_word_overrides or {},
-            "service_version": app.version,
-        },
-    }
-
-
-def _select_provider_key(req: SynthesizeRequest) -> str:
-    pref = str(req.provider_preference or "").strip().lower()
-    if pref in {"xtts_v2", "gtts", "fallback"}:
-        return pref
-    return "xtts_v2" if bool(req.voice_id) else "gtts"
-
-
-def cleanup_tts_cache(ttl_seconds: int | None = None) -> dict[str, int]:
-    ttl = int(ttl_seconds or TTS_CACHE_TTL_SECONDS)
-    return TTS_HASH_CACHE.cleanup_expired(ttl)
 
 
 def _format_xtts_fallback_reason(reason: str, transient: bool) -> str:
@@ -1293,217 +1185,143 @@ def on_startup() -> None:
         _start_xtts_warmup_background()
 
 
-def synthesize(req: SynthesizeRequest, request: Request | None = None) -> dict:
+@app.post("/synthesize")
+def synthesize(req: SynthesizeRequest) -> dict:
+    """
+    Synthesize speech for ``req.text``.
+
+    **Always returns HTTP 200** — if gTTS fails the endpoint returns a short
+    silent MP3 as fallback so the worker pipeline is never blocked.
+
+    Response JSON::
+
+        {
+          "audio_url": "http://tts_service:8001/audio/<uuid>.mp3",
+          "duration":  3.14,
+          "provider":  "xtts_v2" | "gTTS" | "fallback",
+          "message":   "optional error description"   # only on fallback
+        }
+
+    The worker (``scripts/tts_client.py``) will:
+    1. See that Content-Type is ``application/json`` (not ``audio/*``).
+    2. Extract ``audio_url`` from the body.
+    3. Download the audio and save it to its own ``out_path``.
+    """
     if not req.text or not req.text.strip():
         raise HTTPException(status_code=422, detail="Text is required")
 
-    request_id, traceparent = _request_trace_context(request)
-    synth_started_at = time.perf_counter()
     lang = _detect_tts_language(req.text, req.language)
     prepared = _prepare_request_for_tts(req, lang)
     tts_text = prepared.spoken_text or prepared.normalized_text
-    provider_key = _select_provider_key(req)
-    cache_key = deterministic_cache_key(
-        _cache_key_payload(
-            normalized_text=tts_text,
-            voice_id=str(req.voice_id or ""),
-            provider_key=provider_key,
-            language=lang,
-            req=req,
-        )
+
+    logger.info(
+        "synthesize  voice=%r  lang=%r  raw_len=%d  spoken_len=%d  chunks=%d  rules=%d",
+        req.voice_id, lang, len(req.text), len(tts_text), len(prepared.chunks),
+        len(prepared.tts_normalization_rules_applied),
     )
-    lookup_started_at = time.perf_counter()
-    first_lookup = TTS_HASH_CACHE.lookup(cache_key) if TTS_CACHE_ENABLED else None
-    cache_lookup_ms = int((time.perf_counter() - lookup_started_at) * 1000)
-
-    if first_lookup is not None and first_lookup.reason.startswith("corrupted:") and _METRIC_CACHE_CORRUPTION_TOTAL:
-        _METRIC_CACHE_CORRUPTION_TOTAL.inc()
-    if first_lookup is not None and first_lookup.hit:
-        if _METRIC_CACHE_HIT_TOTAL:
-            _METRIC_CACHE_HIT_TOTAL.inc()
-        metadata = dict(first_lookup.metadata or {})
-        response = {
-            "audio_url": _audio_url(first_lookup.artifact_path or TTS_HASH_CACHE.artifact_path(cache_key)),
-            "duration": float(metadata.get("duration") or 0.0),
-            "provider": str(metadata.get("provider") or "gTTS"),
-            "fallback_used": bool(metadata.get("fallback_used", False)),
-            "fallback_reason": str(metadata.get("fallback_reason") or ""),
-            "cache_hit": True,
-            "cache_key": cache_key,
-        }
-        if metadata.get("message"):
-            response["message"] = metadata["message"]
-        _structured_log(
-            "info",
-            "tts_cache_lookup",
-            request_id=request_id,
-            traceparent=traceparent,
-            cache_hit=True,
-            cache_key=cache_key,
-            cache_lookup_ms=cache_lookup_ms,
-            synthesis_ms=0,
-            cache_write_ms=0,
-            provider=response.get("provider"),
+    if prepared.tts_normalization_rules_applied:
+        logger.info(
+            "TTS normalization rules applied lang=%s rules=%s",
+            prepared.tts_normalization_language or lang,
+            prepared.tts_normalization_rules_applied,
         )
-        return _attach_request_tts_metadata(response, req, prepared)
-    if _METRIC_CACHE_MISS_TOTAL:
-        _METRIC_CACHE_MISS_TOTAL.inc()
 
-    def _store_cache_and_log(response: dict[str, Any], generated_path: Path) -> dict[str, Any]:
-        if not TTS_CACHE_ENABLED:
-            return response
-        write_started_at = time.perf_counter()
-        sidecar = {
-            "hash": cache_key,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "created_at_epoch": time.time(),
-            "provider": str(response.get("provider") or ""),
-            "model": _tts_model_version(provider_key),
-            "duration": float(response.get("duration") or 0.0),
-            "file_size": int(generated_path.stat().st_size if generated_path.exists() else 0),
-            "fallback_used": bool(response.get("fallback_used", False)),
-            "fallback_reason": str(response.get("fallback_reason") or ""),
-            "message": str(response.get("message") or ""),
-        }
-        TTS_HASH_CACHE.atomic_store_artifact_and_sidecar(cache_key, generated_path, sidecar)
-        cache_write_ms = int((time.perf_counter() - write_started_at) * 1000)
-        synthesis_ms = int((time.perf_counter() - synth_started_at) * 1000)
-        response["cache_hit"] = False
-        response["cache_key"] = cache_key
-        _structured_log(
-            "info",
-            "tts_cache_store",
-            request_id=request_id,
-            traceparent=traceparent,
-            cache_hit=False,
-            cache_key=cache_key,
-            cache_lookup_ms=cache_lookup_ms,
-            synthesis_ms=synthesis_ms,
-            cache_write_ms=cache_write_ms,
-            provider=response.get("provider"),
+    # ---- Attempt 1: XTTS v2 ---------------------------------------------
+    out_path = _new_audio_path()
+    xtts_metadata: dict[str, Any] = {}
+    if req.voice_id:
+        duration, xtts_metadata = _synthesize_xtts_v2_with_recovery(
+            tts_text,
+            req.voice_id,
+            lang,
+            out_path,
+            chunks=prepared.chunks,
+            chunk_pause_ms=prepared.chunk_pause_ms,
         )
-        return response
-
-    lock_context = TTS_HASH_CACHE.keyed_lock(cache_key) if TTS_CACHE_ENABLED else contextlib.nullcontext()
-    with lock_context:
-        if TTS_CACHE_ENABLED:
-            second_lookup = TTS_HASH_CACHE.lookup(cache_key)
-            if second_lookup.hit:
-                if _METRIC_CACHE_HIT_TOTAL:
-                    _METRIC_CACHE_HIT_TOTAL.inc()
-                metadata = dict(second_lookup.metadata or {})
-                response = {
-                    "audio_url": _audio_url(second_lookup.artifact_path or TTS_HASH_CACHE.artifact_path(cache_key)),
-                    "duration": float(metadata.get("duration") or 0.0),
-                    "provider": str(metadata.get("provider") or "gTTS"),
-                    "fallback_used": bool(metadata.get("fallback_used", False)),
-                    "fallback_reason": str(metadata.get("fallback_reason") or ""),
-                    "cache_hit": True,
-                    "cache_key": cache_key,
-                }
-                return _attach_request_tts_metadata(response, req, prepared)
-
-        out_path = _new_audio_path()
-        xtts_metadata: dict[str, Any] = {}
-        if req.voice_id:
-            duration, xtts_metadata = _synthesize_xtts_v2_with_recovery(
-                tts_text,
-                req.voice_id,
-                lang,
-                out_path,
-                chunks=prepared.chunks,
-                chunk_pause_ms=prepared.chunk_pause_ms,
-            )
-            if duration is not None:
-                response = {
-                    "audio_url": _audio_url(out_path),
-                    "duration": duration,
-                    "provider": "xtts_v2",
-                    "xtts_recovery_attempts": int(xtts_metadata.get("xtts_recovery_attempts") or 0),
-                    "xtts_attempts": int(xtts_metadata.get("xtts_attempts") or 1),
-                    "fallback_used": False,
-                    "fallback_reason": "",
-                }
-                if prepared.warnings:
-                    response["preprocessing_warnings"] = prepared.warnings
-                if prepared.tts_normalization_rules_applied:
-                    response["tts_normalization_language"] = prepared.tts_normalization_language or lang
-                    response["tts_normalization_rules_applied"] = prepared.tts_normalization_rules_applied
-                response = _store_cache_and_log(response, out_path)
-                if _METRIC_SYNTH_DURATION_MS:
-                    _METRIC_SYNTH_DURATION_MS.observe(int((time.perf_counter() - synth_started_at) * 1000))
-                return _attach_request_tts_metadata(response, req, prepared)
-            fallback_reason = str(xtts_metadata.get("fallback_reason") or "xtts_v2_failed")
-        else:
-            fallback_reason = _format_xtts_fallback_reason("no voice_id provided", transient=False)
-
-        out_path = _new_audio_path()
-        try:
-            duration = _synthesize_gtts(tts_text, lang, out_path)
+        if duration is not None:
             response = {
                 "audio_url": _audio_url(out_path),
-                "duration": duration,
-                "provider": "gTTS",
-                "fallback_used": bool(fallback_reason),
-                "fallback_reason": fallback_reason if fallback_reason else "",
+                "duration":  duration,
+                "provider":  "xtts_v2",
+                "xtts_recovery_attempts": int(xtts_metadata.get("xtts_recovery_attempts") or 0),
+                "xtts_attempts": int(xtts_metadata.get("xtts_attempts") or 1),
             }
             if prepared.warnings:
                 response["preprocessing_warnings"] = prepared.warnings
             if prepared.tts_normalization_rules_applied:
                 response["tts_normalization_language"] = prepared.tts_normalization_language or lang
                 response["tts_normalization_rules_applied"] = prepared.tts_normalization_rules_applied
-            if fallback_reason:
-                response.update(_public_xtts_failure_metadata(xtts_metadata))
-            response = _store_cache_and_log(response, out_path)
-            if _METRIC_SYNTH_DURATION_MS:
-                _METRIC_SYNTH_DURATION_MS.observe(int((time.perf_counter() - synth_started_at) * 1000))
+            response["fallback_used"] = False
+            response["fallback_reason"] = ""
             return _attach_request_tts_metadata(response, req, prepared)
-        except ImportError:
-            fallback_reason = f"{fallback_reason} | gTTS not installed"
-            logger.warning("gTTS not installed - using silent fallback")
-        except Exception as exc:  # noqa: BLE001
-            fallback_reason = f"{fallback_reason} | gTTS failed: {exc}"
-            logger.warning("gTTS failed (%s) - using silent fallback", exc)
-            out_path.unlink(missing_ok=True)
+        fallback_reason = str(xtts_metadata.get("fallback_reason") or "xtts_v2_failed")
+    else:
+        fallback_reason = _format_xtts_fallback_reason("no voice_id provided", transient=False)
 
-        out_path = _new_audio_path()
-        try:
-            duration = _synthesize_silent(FALLBACK_DURATION_SEC, out_path)
-            response = {
-                "audio_url": _audio_url(out_path),
-                "duration": duration,
-                "provider": "fallback",
-                "message": fallback_reason,
-                "preprocessing_warnings": prepared.warnings,
-                "tts_normalization_language": prepared.tts_normalization_language or lang,
-                "tts_normalization_rules_applied": prepared.tts_normalization_rules_applied,
-                "fallback_used": True,
-                "fallback_reason": fallback_reason,
-            }
+    # ---- Attempt 2: gTTS ------------------------------------------------
+    out_path = _new_audio_path()
+    try:
+        duration = _synthesize_gtts(tts_text, lang, out_path)
+        response = {
+            "audio_url": _audio_url(out_path),
+            "duration":  duration,
+            "provider":  "gTTS",
+        }
+        if prepared.warnings:
+            response["preprocessing_warnings"] = prepared.warnings
+        if prepared.tts_normalization_rules_applied:
+            response["tts_normalization_language"] = prepared.tts_normalization_language or lang
+            response["tts_normalization_rules_applied"] = prepared.tts_normalization_rules_applied
+        if fallback_reason:
+            response["fallback_used"] = True
+            response["fallback_reason"] = fallback_reason
             response.update(_public_xtts_failure_metadata(xtts_metadata))
-            response = _store_cache_and_log(response, out_path)
-            if _METRIC_SYNTH_DURATION_MS:
-                _METRIC_SYNTH_DURATION_MS.observe(int((time.perf_counter() - synth_started_at) * 1000))
-            return _attach_request_tts_metadata(response, req, prepared)
-        except Exception as exc:
-            logger.exception("ffmpeg silent fallback also failed: %s", exc)
-            raise HTTPException(
-                status_code=500,
-                detail=(
-                    f"All TTS strategies failed. "
-                    f"Reasons: {fallback_reason}. "
-                    f"ffmpeg fallback: {exc}"
-                ),
-            )
+        else:
+            response["fallback_used"] = False
+            response["fallback_reason"] = ""
+        return _attach_request_tts_metadata(response, req, prepared)
+    except ImportError:
+        fallback_reason = f"{fallback_reason} | gTTS not installed"
+        logger.warning("gTTS not installed — using silent fallback")
+    except Exception as exc:  # noqa: BLE001
+        fallback_reason = f"{fallback_reason} | gTTS failed: {exc}"
+        logger.warning("gTTS failed (%s) — using silent fallback", exc)
+        # Clean up partial file before trying fallback path
+        out_path.unlink(missing_ok=True)
 
-
-@app.post("/synthesize")
-def synthesize_route(req: SynthesizeRequest, request: Request) -> dict:
-    return synthesize(req, request)
+    # ---- Attempt 3: ffmpeg silent audio ----------------------------------
+    out_path = _new_audio_path()
+    try:
+        duration = _synthesize_silent(FALLBACK_DURATION_SEC, out_path)
+        response = {
+            "audio_url": _audio_url(out_path),
+            "duration":  duration,
+            "provider":  "fallback",
+            "message":   fallback_reason,
+            "preprocessing_warnings": prepared.warnings,
+            "tts_normalization_language": prepared.tts_normalization_language or lang,
+            "tts_normalization_rules_applied": prepared.tts_normalization_rules_applied,
+            "fallback_used": True,
+            "fallback_reason": fallback_reason,
+        }
+        response.update(_public_xtts_failure_metadata(xtts_metadata))
+        return _attach_request_tts_metadata(response, req, prepared)
+    except Exception as exc:
+        # Both strategies failed — ffmpeg must be missing or broken.
+        # Only now do we return a 500.
+        logger.exception("ffmpeg silent fallback also failed: %s", exc)
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"All TTS strategies failed. "
+                f"Reasons: {fallback_reason}. "
+                f"ffmpeg fallback: {exc}"
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------
-# Preview route  (Phase 1 â€” no audio synthesis)
+# Preview route  (Phase 1 — no audio synthesis)
 # ---------------------------------------------------------------------------
 
 def _build_preview_override_glossary(req: NormalizationPreviewRequest) -> dict[str, str]:
@@ -1512,7 +1330,7 @@ def _build_preview_override_glossary(req: NormalizationPreviewRequest) -> dict[s
 
         mixed_word_overrides > abbreviation_overrides > technical_overrides
 
-    Later writes win (technical first â†’ mixed last), so mixed always beats
+    Later writes win (technical first → mixed last), so mixed always beats
     abbreviation, and abbreviation beats technical.
     """
     merged: dict[str, str] = {}
@@ -1542,7 +1360,7 @@ def _apply_pre_normalization_overrides(
 
     This ensures that a raw-input term like "ChatGPT" can be overridden to
     "chat gpt" before the default TR glossary would expand it to
-    "Ã‡et Ci Pi Ti".
+    "Çet Ci Pi Ti".
 
     Returns ``(substituted_text, pre_override_rules, replacement_map)``.
     Rules are tagged with ``source`` so callers can distinguish them from
@@ -1586,7 +1404,7 @@ def _run_preview_normalization(req: NormalizationPreviewRequest) -> Normalizatio
     """
     Execute the tts_preprocess pipeline with highest-priority runtime overrides.
 
-    Override precedence (highest â†’ lowest):
+    Override precedence (highest → lowest):
       1. mixed_word_overrides   )
       2. abbreviation_overrides ) applied as PRE-normalization substitutions
       3. technical_overrides    )   on the raw input text
@@ -1621,7 +1439,7 @@ def _run_preview_normalization(req: NormalizationPreviewRequest) -> Normalizatio
 
     try:
         if not req.normalization_enabled:
-            # Skip ALL normalization â€” return original text as spoken text.
+            # Skip ALL normalization — return original text as spoken text.
             # Overrides are also skipped so the response is exactly the
             # original input (mirrors the "disabled" contract).
             warnings.append("normalization_disabled")
@@ -1752,13 +1570,6 @@ def serve_audio(filename: str) -> FileResponse:
 
     file_path = TTS_AUDIO_DIR / filename
     if not file_path.exists():
-        # Backward-compatible lookup: hash-cache artifacts may live under
-        # STORAGE_ROOT/tts_cache/<prefix>/<hash>.mp3 while the public endpoint
-        # serves /audio/<hash>.mp3. Resolve that location transparently.
-        cache_candidate = TTS_CACHE_ROOT / filename[:2] / filename
-        if cache_candidate.exists() and cache_candidate.is_file():
-            file_path = cache_candidate
-    if not file_path.exists():
         logger.warning("Audio file not found: %s", file_path)
         raise HTTPException(status_code=404, detail=f"Audio file not found: {filename}")
 
@@ -1767,4 +1578,3 @@ def serve_audio(filename: str) -> FileResponse:
         media_type="audio/mpeg",
         filename=filename,
     )
-

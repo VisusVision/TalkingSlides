@@ -16,52 +16,6 @@ The service keeps the pipeline moving by returning a valid audio response for no
 
 Generated files are written under `TTS_AUDIO_DIR` and served by `GET /audio/{filename}`. `TTS_SERVICE_URL` is used to build the returned URL that the worker downloads.
 
-## Deterministic Hash Cache
-
-`/synthesize` now includes a deterministic hash-cache layer before provider synthesis.
-
-Hash input fields:
-- normalized_text (prepared spoken text)
-- voice_id/speaker
-- provider key (`xtts_v2`/`gtts`/`fallback` or provider preference)
-- language
-- speed (fixed `1.0` for now)
-- tts model/version
-- optional synthesis params (normalization mode, override maps, service version)
-
-Cache layout (local FS, storage-adapter-friendly):
-- `${TTS_CACHE_ROOT}/<hash-prefix>/<hash>.mp3`
-- `${TTS_CACHE_ROOT}/<hash-prefix>/<hash>.mp3.json` (sidecar metadata)
-
-Sidecar metadata includes:
-- `hash`
-- `created_at`
-- `provider`
-- `model`
-- `duration`
-- `file_size`
-
-Integrity checks:
-- missing file
-- zero-byte file
-- invalid audio (ffprobe duration <= 0)
-- partial/corrupt sidecar
-
-Corrupt entries are auto-evicted and regenerated on next request.
-
-Concurrency:
-- per-key lock file prevents duplicate synthesis for the same cache key
-- second request waits, then re-checks cache after lock release
-
-TTL cleanup helper:
-- `cleanup_tts_cache(ttl_seconds=...)` exists in service code
-- no automatic destructive scheduler is enabled yet
-
-Future S3 migration:
-- cache logic is isolated in `tts_cache.py` store abstraction
-- pathing/key generation and sidecar contract can be reimplemented by a storage adapter
-- synth route orchestration stays unchanged
-
 ## XTTS Runtime Recovery
 
 Phase TTS-H1 adds resilience around XTTS model load and synthesis startup without changing the normal provider order. Likely transient load/network/runtime errors, such as timeouts, remote disconnects, SSL EOFs, cached model load failures, and recoverable CUDA assert messages, reset the cached XTTS model state and retry XTTS before falling through to gTTS. Permanent errors, such as a missing reference voice or invalid request/configuration, do not loop through repeated retries.
@@ -224,10 +178,6 @@ Keep replacement values as literal spoken text for the TTS model.
 |---|---:|---|
 | `TTS_SERVICE_URL` | `http://tts_service:8001` | Base URL used in returned `audio_url` values |
 | `TTS_AUDIO_DIR` | `storage_local/tts` | Directory for generated MP3 files |
-| `TTS_CACHE_ENABLED` | `1` | Enable deterministic synthesis hash-cache |
-| `TTS_CACHE_ROOT` | `${STORAGE_ROOT}/tts_cache` | Root directory for deterministic cache artifacts |
-| `TTS_CACHE_TTL_SECONDS` | `1209600` | TTL for cleanup helper (14 days) |
-| `TTS_CACHE_LOCK_TIMEOUT_SECONDS` | `45` | Max wait for per-key synthesis lock |
 | `STORAGE_ROOT` | `storage_local` | Root for voice references and storage |
 | `TTS_FALLBACK_DURATION` | `3.0` | Silent fallback duration in seconds |
 | `XTTS_ENABLED` | `1` | Enable XTTS v2 attempts |

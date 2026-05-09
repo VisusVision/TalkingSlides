@@ -8,7 +8,11 @@ from .models import (
     LessonComment,
     LessonLike,
     LessonProgress,
+    Playlist,
+    PlaylistItem,
     Project,
+    PublisherFollow,
+    SavedPlaylist,
     Slide,
     UserProfile,
     VoiceProfile,
@@ -76,6 +80,38 @@ class ProjectAdmin(admin.ModelAdmin):
     raw_id_fields = ("user",)
 
 
+class PlaylistItemInline(admin.TabularInline):
+    model = PlaylistItem
+    extra = 0
+    raw_id_fields = ("project",)
+    fields = ("project", "order", "created_at")
+    readonly_fields = ("created_at",)
+
+
+@admin.register(Playlist)
+class PlaylistAdmin(admin.ModelAdmin):
+    list_display = ("title", "user", "is_public", "created_at", "updated_at")
+    list_filter = ("is_public", "created_at")
+    search_fields = ("title", "description", "user__username")
+    raw_id_fields = ("user",)
+    inlines = (PlaylistItemInline,)
+
+
+@admin.register(PlaylistItem)
+class PlaylistItemAdmin(admin.ModelAdmin):
+    list_display = ("playlist", "project", "order", "created_at")
+    raw_id_fields = ("playlist", "project")
+    search_fields = ("playlist__title", "project__title")
+
+
+@admin.register(SavedPlaylist)
+class SavedPlaylistAdmin(admin.ModelAdmin):
+    list_display = ("user", "playlist", "created_at")
+    raw_id_fields = ("user", "playlist")
+    search_fields = ("user__username", "playlist__title")
+    list_filter = ("created_at",)
+
+
 @admin.register(Slide)
 class SlideAdmin(admin.ModelAdmin):
     list_display = ("project", "order", "title", "duration_seconds")
@@ -112,6 +148,14 @@ class LessonProgressAdmin(admin.ModelAdmin):
 class LessonCommentAdmin(admin.ModelAdmin):
     list_display = ("user", "project", "text", "created_at")
     raw_id_fields = ("user", "project")
+
+
+@admin.register(PublisherFollow)
+class PublisherFollowAdmin(admin.ModelAdmin):
+    list_display = ("follower", "publisher", "created_at")
+    raw_id_fields = ("follower", "publisher")
+    search_fields = ("follower__username", "publisher__username")
+    list_filter = ("created_at",)
 
 
 @admin.register(AvatarRenderJob)

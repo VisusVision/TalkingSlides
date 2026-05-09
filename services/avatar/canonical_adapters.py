@@ -22,7 +22,7 @@ except Exception:  # pragma: no cover - celery is present in worker runtime.
 logger = logging.getLogger(__name__)
 
 CANONICAL_ENGINE = "liveportrait+musetalk"
-SUPPORTED_ENGINES = (CANONICAL_ENGINE, "musetalk")
+SUPPORTED_ENGINES = (CANONICAL_ENGINE,)
 
 
 @dataclass
@@ -37,18 +37,13 @@ class EngineResult:
 
 def normalize_avatar_engine(value: str | None) -> str:
     requested = str(value or "").strip().lower()
-    if requested == "musetalk":
-        return "musetalk"
-    if requested in {"", CANONICAL_ENGINE}:
+    if requested in {"", "musetalk", CANONICAL_ENGINE}:
         return CANONICAL_ENGINE
     logger.warning("Unknown avatar engine=%s; using canonical engine=%s", requested, CANONICAL_ENGINE)
     return CANONICAL_ENGINE
 
 
 def _required_env_vars() -> list[str]:
-    selected = normalize_avatar_engine(os.environ.get("AVATAR_ENGINE"))
-    if selected == "musetalk":
-        return ["AVATAR_MUSETALK_CMD"]
     return ["AVATAR_LIVEPORTRAIT_CMD", "AVATAR_MUSETALK_CMD"]
 
 
@@ -414,7 +409,7 @@ def _musetalk_service_enabled() -> bool:
 
 
 def _musetalk_standalone_fallback_enabled() -> bool:
-    return _env_flag("AVATAR_MUSETALK_STANDALONE_FALLBACK", "1")
+    return _env_flag("AVATAR_MUSETALK_STANDALONE_FALLBACK", "0")
 
 
 def _musetalk_service_url() -> str | None:

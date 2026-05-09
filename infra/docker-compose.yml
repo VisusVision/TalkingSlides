@@ -32,7 +32,7 @@ services:
     image: ai_academy_api:local
     user: root
     entrypoint: [ "sh", "/usr/local/bin/local-storage-entrypoint.sh" ]
-    command: [ "sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput --no-post-process && gunicorn --bind 0.0.0.0:8000 --workers 2 config.wsgi:application" ]
+    command: [ "sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn --bind 0.0.0.0:8000 --workers 2 config.wsgi:application" ]
     ports:
       - "8000:8000"
     volumes:
@@ -88,7 +88,7 @@ services:
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       COQUI_TOS_AGREED: "1"
-      XTTS_ENABLED: "0"
+      XTTS_ENABLED: "1"
       XTTS_PRELOAD_ON_STARTUP: "1"
       XTTS_WARMUP_BLOCKING: "0"
       TTS_SERVICE_URL: http://tts_service:8001
@@ -134,7 +134,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-render}'
     volumes:
@@ -169,7 +169,6 @@ services:
       CELERY_WORKER_QUEUES: "${CELERY_RENDER_QUEUE:-render}"
       CELERY_WORKER_CONCURRENCY: "${CELERY_RENDER_WORKER_CONCURRENCY:-1}"
       AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"
-      AVATAR_ENGINE: "musetalk"
       MUSETALK_USE_FAKE_MMPPOSE: "0"
       MUSETALK_REQUIRE_REAL_POSE: "1"
       TTS_SERVICE_URL: http://tts_service:8001
@@ -209,7 +208,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-avatar}'
     volumes:
@@ -243,8 +242,7 @@ services:
       CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
       CELERY_WORKER_QUEUES: "${CELERY_AVATAR_QUEUE:-avatar}"
       CELERY_WORKER_CONCURRENCY: "${CELERY_AVATAR_WORKER_CONCURRENCY:-1}"
-      AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"
-      AVATAR_ENGINE: "musetalk"
+      AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "1"
       MUSETALK_USE_FAKE_MMPPOSE: "0"
       MUSETALK_REQUIRE_REAL_POSE: "1"
       TTS_SERVICE_URL: http://tts_service:8001

@@ -22,8 +22,6 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from core import views  # noqa: E402
 from core.models import Job, UserProfile, VoiceProfile  # noqa: E402
 
-pytestmark = pytest.mark.django_db
-
 
 def _table_has_column(table_name, column_name):
     with connection.cursor() as cursor:
@@ -63,11 +61,6 @@ def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
         return SimpleNamespace(id="celery-preview-123")
 
     monkeypatch.setattr(views, "_celery_app", SimpleNamespace(send_task=fake_send_task))
-    monkeypatch.setattr(
-        views,
-        "_avatar_preview_readiness",
-        lambda *_args, **_kwargs: {"ready": True, "error": "", "missing_requirements": []},
-    )
 
     factory = APIRequestFactory()
     request = factory.post(f"/api/v1/users/{user.id}/avatar/preview/")

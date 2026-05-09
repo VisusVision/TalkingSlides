@@ -1142,15 +1142,7 @@ def _failure_reason_set(metrics: dict[str, Any]) -> set[str]:
 
 def _lesson_segment_validation_is_warning_only(metrics: dict[str, Any]) -> bool:
     reasons = _failure_reason_set(metrics)
-    warning_reasons = {
-        "whole_frame_drift",
-        "landmark_instability",
-        "face_roi_artifact",
-        "face_warp",
-        "glitch_artifact",
-        "eye_artifact",
-        "mouth_artifact",
-    }
+    warning_reasons = {"whole_frame_drift", "landmark_instability", "face_roi_artifact"}
     if not reasons or not reasons.issubset(warning_reasons):
         return False
 
@@ -1166,7 +1158,15 @@ def _lesson_segment_validation_is_warning_only(metrics: dict[str, Any]) -> bool:
         and int(quality.get("unique_frames") or 0) > 0
         and bool(metrics.get("audio_match"))
         and not bool(metrics.get("duration_mismatch"))
+        and bool(metrics.get("lip_motion_valid"))
+        and bool(metrics.get("eye_motion_valid"))
         and not bool(quality.get("loop_detected"))
+        and not bool(quality.get("glitch_detected"))
+        and not bool(quality.get("mouth_artifact_detected"))
+        and not bool(quality.get("eye_artifact_detected"))
+        and not bool(quality.get("face_warp_detected"))
+        and float(quality.get("mouth_openness_change") or 0.0) >= float(quality.get("min_mouth_open_change") or 0.0)
+        and float(quality.get("eye_blink_change") or 0.0) >= float(quality.get("min_eye_blink_change") or 0.0)
     )
 
 
