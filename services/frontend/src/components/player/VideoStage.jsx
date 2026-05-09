@@ -66,6 +66,21 @@ function setActiveTextTrack(video, captionTrack) {
   }
 }
 
+function avatarSizeClass(size) {
+  const normalized = String(size || 'medium').trim().toLowerCase();
+  if (normalized === 'small') return 'w-[18%] min-w-[110px] max-w-[180px]';
+  if (normalized === 'large') return 'w-[30%] min-w-[170px] max-w-[320px]';
+  return 'w-[24%] min-w-[140px] max-w-[240px]';
+}
+
+function avatarPositionClass(position) {
+  const normalized = String(position || 'top-right').trim().toLowerCase();
+  if (normalized === 'top-left') return 'left-4 top-4';
+  if (normalized === 'bottom-left') return 'bottom-4 left-4';
+  if (normalized === 'bottom-right') return 'bottom-4 right-4';
+  return 'right-4 top-4';
+}
+
 function normalizeTrack(track) {
   if (!track || typeof track !== 'object') return null;
   const rawCode = String(track.language_code || '').trim().toLowerCase();
@@ -106,6 +121,7 @@ export default function VideoStage({
   showLessonDetails = true,
 }) {
   const internalVideoRef = useRef(null);
+  const avatarVideoRef = useRef(null);
   const activeVideoRef = videoRef || internalVideoRef;
   const [internalSelectedTrackKey, setInternalSelectedTrackKey] = useState('off');
   const [captionLoadFailed, setCaptionLoadFailed] = useState(false);
@@ -121,6 +137,12 @@ export default function VideoStage({
   const originalVttUrl = vttUrlForLesson(lesson);
   const srtUrl = srtUrlForLesson(lesson);
   const hasVideo = Boolean(lesson?.stream_url);
+  const avatarOverlay = lesson?.avatar_overlay || {};
+  const avatarDefaults = avatarOverlay?.defaults || {};
+  const avatarStreamUrl = String(avatarOverlay?.stream_url || '').trim();
+  const avatarOverlayEnabled = Boolean(avatarOverlay?.enabled && avatarStreamUrl);
+  const avatarStatus = String(lesson?.avatar_processing_status || 'none').trim().toLowerCase();
+  const avatarProcessing = !avatarOverlayEnabled && ['queued', 'processing'].includes(avatarStatus);
 
   const availableTracks = useMemo(() => {
     const byKey = new Map();
@@ -210,37 +232,95 @@ export default function VideoStage({
     setSelectedTrackKeyValue(nextKey);
   }, [activeVideoRef, availableTracks, setSelectedTrackKeyValue]);
 
+  const syncAvatarPlayback = useCallback((video) => {
+    const avatarVideo = avatarVideoRef.current;
+    if (!video || !avatarVideo || !avatarOverlayEnabled) return;
+    if (Number.isFinite(video.currentTime) && Math.abs((avatarVideo.currentTime || 0) - video.currentTime) > 0.25) {
+      try {
+        avatarVideo.currentTime = video.currentTime;
+      } catch {
+        // Some browsers reject seeks before avatar metadata is ready.
+      }
+    }
+    avatarVideo.playbackRate = video.playbackRate || 1;
+    if (video.paused || video.ended) {
+      avatarVideo.pause();
+      return;
+    }
+    avatarVideo.play().catch(() => {});
+  }, [avatarOverlayEnabled]);
+
+  const handleVideoPlay = useCallback((event) => {
+    syncAvatarPlayback(event.currentTarget);
+  }, [syncAvatarPlayback]);
+
+  const handleVideoPause = useCallback(() => {
+    avatarVideoRef.current?.pause();
+  }, []);
+
+  const handleVideoSeeked = useCallback((event) => {
+    syncAvatarPlayback(event.currentTarget);
+  }, [syncAvatarPlayback]);
+
+  const handleVideoRateChange = useCallback((event) => {
+    const avatarVideo = avatarVideoRef.current;
+    if (avatarVideo) avatarVideo.playbackRate = event.currentTarget.playbackRate || 1;
+  }, []);
+
+  const handleVideoTimeUpdate = useCallback((event) => {
+    onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0));
+    syncAvatarPlayback(event.currentTarget);
+  }, [onPlaybackTimeChange, syncAvatarPlayback]);
+
   const content = (
     <>
-      <div className="overflow-hidden rounded-xl bg-[color:var(--video-stage-bg)]">
+      <div className="relative overflow-hidden rounded-xl bg-[color:var(--video-stage-bg)]">
         {hasVideo ? (
-          <video
-            key={lesson.id}
-            ref={activeVideoRef}
-            src={lesson.stream_url}
-            className="aspect-video w-full bg-black"
-            controls
-            controlsList="nodownload noplaybackrate noremoteplayback"
-            disablePictureInPicture
-            onContextMenu={(event) => event.preventDefault()}
-            playsInline
-            preload="metadata"
-            crossOrigin="anonymous"
-            onLoadedMetadata={handleCaptionTrackReady}
-            onTimeUpdate={(event) => onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0))}
-          >
-            {availableTracks.map((track) => (
-              <track
-                key={track.key}
-                kind="subtitles"
-                src={captionTrackSrcForUrl(track.vtt_url)}
-                srcLang={track.is_original ? (track.source_language_code || 'und') : track.language_code}
-                label={track.language_label}
-                onLoad={handleCaptionTrackReady}
-                onError={handleCaptionTrackError}
+          <>
+            <video
+              key={lesson.id}
+              ref={activeVideoRef}
+              src={lesson.stream_url}
+              className="aspect-video w-full bg-black"
+              controls
+              controlsList="nodownload noplaybackrate noremoteplayback"
+              disablePictureInPicture
+              onContextMenu={(event) => event.preventDefault()}
+              playsInline
+              preload="metadata"
+              crossOrigin="anonymous"
+              onLoadedMetadata={handleCaptionTrackReady}
+              onPlay={handleVideoPlay}
+              onPause={handleVideoPause}
+              onSeeked={handleVideoSeeked}
+              onRateChange={handleVideoRateChange}
+              onTimeUpdate={handleVideoTimeUpdate}
+            >
+              {availableTracks.map((track) => (
+                <track
+                  key={track.key}
+                  kind="subtitles"
+                  src={captionTrackSrcForUrl(track.vtt_url)}
+                  srcLang={track.is_original ? (track.source_language_code || 'und') : track.language_code}
+                  label={track.language_label}
+                  onLoad={handleCaptionTrackReady}
+                  onError={handleCaptionTrackError}
+                />
+              ))}
+            </video>
+            {avatarOverlayEnabled && (
+              <video
+                ref={avatarVideoRef}
+                src={avatarStreamUrl}
+                className={`pointer-events-none absolute aspect-video rounded-lg border border-black/30 bg-black object-cover shadow-xl ${avatarSizeClass(avatarDefaults.size)} ${avatarPositionClass(avatarDefaults.position)}`}
+                muted
+                playsInline
+                preload="metadata"
+                crossOrigin="anonymous"
+                onLoadedMetadata={() => syncAvatarPlayback(activeVideoRef.current)}
               />
-            ))}
-          </video>
+            )}
+          </>
         ) : (
           <div className="flex aspect-video items-center justify-center gap-2 text-sm text-[color:var(--media-text-on-image)] opacity-80">
             <AlertCircle size={16} />
@@ -248,6 +328,10 @@ export default function VideoStage({
           </div>
         )}
       </div>
+
+      {hasVideo && avatarProcessing && (
+        <p className="text-xs text-[var(--text-secondary)]">Avatar is being prepared.</p>
+      )}
 
       {hasVideo && showSubtitleControls && (
         <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">

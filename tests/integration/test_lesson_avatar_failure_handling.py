@@ -33,6 +33,16 @@ def patched_slide_dependencies(tmp_path, monkeypatch):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"audio")
 
+    def fake_synthesize_text_with_metadata(voice_id, text, output_path, **kwargs):
+        fake_synthesize_text(voice_id, text, output_path, **kwargs)
+        return {
+            "spoken_text": text,
+            "provider": "test",
+            "provider_preference": "test",
+            "tts_normalization_language": kwargs.get("lang") or "en",
+            "tts_normalization_rules_applied": [],
+        }
+
     def fake_create_slide_video(_image_path, _audio_path, output_path, **_kwargs):
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"slide-video")
@@ -43,6 +53,7 @@ def patched_slide_dependencies(tmp_path, monkeypatch):
         return output_path
 
     monkeypatch.setattr(tts_client, "synthesize_text", fake_synthesize_text)
+    monkeypatch.setattr(tts_client, "synthesize_text_with_metadata", fake_synthesize_text_with_metadata)
     monkeypatch.setattr(ffmpeg_helpers, "create_slide_video", fake_create_slide_video)
     monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 1.25)
     monkeypatch.setattr(ffmpeg_helpers, "trim_trailing_silence", lambda _path: None)
@@ -221,6 +232,7 @@ def test_slide_render_still_fails_for_core_tts_failure(tmp_path, monkeypatch, pa
         raise RuntimeError("tts_service_failed")
 
     monkeypatch.setattr(tts_client, "synthesize_text", fail_tts)
+    monkeypatch.setattr(tts_client, "synthesize_text_with_metadata", fail_tts)
 
     with pytest.raises(RuntimeError, match="tts_service_failed"):
         worker_tasks.synthesize_and_render_slide.run(
@@ -316,6 +328,90 @@ def test_concat_finalize_records_avatar_warning_without_failure(tmp_path, monkey
     assert sidecar_payload["avatar_slide_metadata"][0]["avatar_status"] == "avatar_source_invalid"
     assert sidecar_payload["avatar_slide_metadata"][0]["avatar_error"] == "avatar_input_face_not_detected"
     assert sidecar_payload["final_segments"][0]["avatar_clip"] == ""
+
+
+def test_concat_finalize_queues_avatar_after_base_video_without_blocking(tmp_path, monkeypatch):
+    ffmpeg_helpers = importlib.import_module("scripts.ffmpeg_helpers")
+    updates: list[dict] = []
+    queued: list[dict] = []
+
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "DRM_STREAMING_ENABLED", False)
+    monkeypatch.setattr(worker_tasks, "_update_job", lambda _project_id, **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(worker_tasks, "_sync_lesson_segments", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_update_transcript_timeline", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_queue_lesson_avatar_overlay_after_base_render",
+        lambda **kwargs: queued.append(kwargs) or {"status": "queued", "queued": True, "job_id": 77},
+    )
+
+    def fake_concat_videos(_part_paths, output_path):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"base-video")
+
+    def fake_generate_srt_from_cues(_cues, output_path):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("1\n00:00:00,000 --> 00:00:01,000\nSlide\n", encoding="utf-8")
+
+    monkeypatch.setattr(ffmpeg_helpers, "concat_videos", fake_concat_videos)
+    monkeypatch.setattr(ffmpeg_helpers, "generate_srt_from_cues", fake_generate_srt_from_cues)
+    monkeypatch.setattr(ffmpeg_helpers, "generate_vtt_from_cues", fake_generate_srt_from_cues)
+
+    part = tmp_path / "129" / "parts" / "part_001.mp4"
+    slide = tmp_path / "129" / "images" / "slide_001.png"
+    audio = tmp_path / "129" / "audio" / "slide_001.mp3"
+    for path in [part, slide, audio]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    result = worker_tasks.concat_and_finalize.run(
+        [
+            {
+                "index": 0,
+                "slide_num": 1,
+                "page_key": "p1",
+                "part_path": str(part),
+                "duration": 1.0,
+                "pause_seconds": 0.0,
+                "text": "Slide",
+                "slide_path": str(slide),
+                "tts_audio_path": str(audio),
+                "subtitle_chunks": ["Slide"],
+                "avatar_applied": False,
+                "avatar_attempted": False,
+                "avatar_skipped": False,
+                "avatar_failed": False,
+                "avatar_status": "none",
+                "avatar_error": "",
+                "avatar_failure_reason": "",
+                "avatar_motion_validation": {},
+                "avatar_segment_rel_path": "",
+                "avatar_engine_used": "none",
+                "avatar_fallback_chain": [],
+            }
+        ],
+        project_id="129",
+        avatar_options={
+            "requested": True,
+            "enabled": True,
+            "teacher_id": 2,
+            "source_image_rel_path": "avatars/teacher.png",
+            "avatar_source_valid": True,
+            "avatar_preview_stale": False,
+            "lipsync_engine": "liveportrait+musetalk",
+        },
+    )
+
+    assert updates[-1]["status"] == "done"
+    assert result["background_avatar"]["status"] == "queued"
+    assert queued[0]["output_rel_prefix"] == "129"
+    assert queued[0]["avatar_options"]["lipsync_engine"] == "liveportrait+musetalk"
+
+    sidecar_payload = json.loads((tmp_path / "129" / "playback_assets.json").read_text(encoding="utf-8"))
+    assert sidecar_payload["mp4_rel_path"] == "129/129.mp4"
+    assert sidecar_payload["avatar"] is None
+    assert sidecar_payload["avatar_status"] == "none"
 
 
 def test_render_chord_errback_marks_job_failed(monkeypatch):

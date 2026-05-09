@@ -57,6 +57,7 @@ app.conf.task_routes = {
     "worker.tasks.render_avatar_preview": {"queue": avatar_queue},
     "worker.tasks.render_avatar_segment": {"queue": avatar_queue},
     "worker.tasks.render_avatar_lesson": {"queue": avatar_queue},
+    "worker.tasks.render_lesson_avatar_overlay": {"queue": avatar_queue},
     "worker.tasks.fallback_avatar_render": {"queue": avatar_queue},
     "worker.tasks.avatar_cache_cleanup": {"queue": avatar_queue},
     "worker.tasks.cleanup_avatar_cache": {"queue": avatar_queue},

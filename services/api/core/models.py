@@ -160,6 +160,13 @@ class Project(models.Model):
         ("admin_rejected", "Admin rejected"),
         ("failed", "Failed"),
     ]
+    AVATAR_PROCESSING_STATUS_CHOICES = [
+        ("none", "None"),
+        ("queued", "Queued"),
+        ("processing", "Processing"),
+        ("ready", "Ready"),
+        ("failed", "Failed"),
+    ]
 
     user = models.ForeignKey(
         User,
@@ -189,6 +196,16 @@ class Project(models.Model):
     moderation_summary = models.JSONField(default=dict, blank=True)
     last_moderation_run_id = models.PositiveIntegerField(null=True, blank=True)
     avatar_enabled_override = models.BooleanField(null=True, blank=True)
+    avatar_processing_status = models.CharField(
+        max_length=20,
+        choices=AVATAR_PROCESSING_STATUS_CHOICES,
+        default="none",
+    )
+    avatar_processing_message = models.TextField(blank=True)
+    avatar_last_job_id = models.CharField(max_length=255, blank=True)
+    avatar_visible = models.BooleanField(default=True)
+    avatar_output_path = models.CharField(max_length=500, blank=True)
+    avatar_updated_at = models.DateTimeField(null=True, blank=True)
     tts_settings = models.JSONField(default=default_project_tts_settings, blank=True)
     draft_data = models.JSONField(default=dict, blank=True)
     # When True the lesson is listed in the public student catalog.
