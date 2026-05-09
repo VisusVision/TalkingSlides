@@ -2089,13 +2089,28 @@ def test_musetalk_failure_always_raises_never_returns_fallback(tmp_path, monkeyp
 # Focused: default MuseTalk preview timeout is large enough for cold start
 # ---------------------------------------------------------------------------
 
-def test_preview_musetalk_timeout_floor_covers_cold_start(tmp_path):
+def test_preview_musetalk_timeout_floor_covers_cold_start(tmp_path, monkeypatch):
     """The default MuseTalk timeout floor must be ≥90 s so that model cold
     start (mmpose + MuseTalk weights) can complete before the budget expires.
 
     Previous defaults (base=8, max=25) caused every preview to time out
     before MuseTalk finished loading its models.
     """
+    for name in [
+        "AVATAR_PREVIEW_STAGE_TIMEOUT_MUSETALK_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_SECONDS",
+        "AVATAR_ORCH_STAGE_TIMEOUT_MUSETALK_SECONDS",
+        "AVATAR_MUSETALK_TIMEOUT_MAX_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_MAX_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_BASE_SECONDS",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_PER_AUDIO_SECOND",
+        "AVATAR_PREVIEW_MUSETALK_TIMEOUT_PER_FRAME_SECOND",
+        "AVATAR_MUSETALK_TIMEOUT_PER_CHUNK_SECONDS",
+        "AVATAR_MUSETALK_TIMEOUT_SAFETY_MULTIPLIER",
+    ]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("AVATAR_MUSETALK_TIMEOUT_HISTORY_ENABLED", "0")
+
     def _budget(audio_seconds: float) -> float:
         req = avatar_pipeline.AvatarRenderRequest(
             source_image_path=str(tmp_path / "face.png"),

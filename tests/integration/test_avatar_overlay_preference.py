@@ -18,7 +18,7 @@ from django.contrib.auth.models import User
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
-from core.models import Project  # noqa: E402
+from core.models import Job, Project  # noqa: E402
 
 pytestmark = pytest.mark.django_db
 
@@ -37,7 +37,14 @@ def test_avatar_overlay_preference_persists_per_user_and_lesson():
     suffix = uuid.uuid4().hex[:8]
     teacher = User.objects.create_user(username=f"owner_{suffix}", password="pass")
     student = User.objects.create_user(username=f"student_{suffix}", password="pass")
-    lesson = Project.objects.create(title="With Avatar", user=teacher)
+    lesson = Project.objects.create(
+        title="With Avatar",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    Job.objects.create(project=lesson, job_type="video_export", status="done", progress=100)
 
     factory = APIRequestFactory()
     request = factory.put(

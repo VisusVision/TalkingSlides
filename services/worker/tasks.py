@@ -184,7 +184,13 @@ def _log_avatar_engine_startup_status(sender=None, **kwargs):
         exit_code = int(bootstrap_musetalk.main())
         if exit_code != 0:
             _fatal_startup(f"Worker bootstrap failed exit_code={exit_code}")
-        logger.info("Worker avatar bootstrap ready selected_engine=%s", "liveportrait+musetalk")
+        try:
+            from avatar.canonical_adapters import normalize_avatar_engine
+
+            selected_engine = normalize_avatar_engine(os.environ.get("AVATAR_ENGINE"))
+        except Exception:
+            selected_engine = "liveportrait+musetalk"
+        logger.info("Worker avatar bootstrap ready selected_engine=%s", selected_engine)
     except SystemExit as exc:
         code = int(exc.code or 70)
         _fatal_startup(f"Worker bootstrap exited during startup exit_code={code}")
