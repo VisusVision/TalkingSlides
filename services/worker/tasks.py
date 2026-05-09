@@ -3382,6 +3382,8 @@ def render_avatar_segment(
             )
     Path(output_abs).parent.mkdir(parents=True, exist_ok=True)
 
+    raw_lipsync_engine = str(lipsync_engine or os.environ.get("AVATAR_ENGINE") or "").strip()
+    normalized_lipsync_engine = normalize_avatar_engine(raw_lipsync_engine)
     request = AvatarRenderRequest(
         source_image_path=(source_image_abs or source_image_original_abs),
         source_image_original_path=(source_image_original_abs or source_image_abs),
@@ -3391,12 +3393,13 @@ def render_avatar_segment(
         output_path=output_abs,
         motion_preset=str(motion_preset or "natural"),
         quality_preset=str(quality_preset or "high"),
-        lipsync_engine=normalize_avatar_engine(lipsync_engine or os.environ.get("AVATAR_ENGINE")),
+        lipsync_engine=normalized_lipsync_engine,
         cache_text_hash=str(cache_text_hash or ""),
     )
+    setattr(request, "_requested_engine_raw", raw_lipsync_engine)
 
     logger.info(
-        "Avatar segment dispatch project_id=%s teacher_id=%s slide_index=%s source_image_path=%s source_image_original_path=%s source_video_path=%s audio_path=%s output_path=%s text_hash=%s requested_engine=%s",
+        "Avatar segment dispatch project_id=%s teacher_id=%s slide_index=%s source_image_path=%s source_image_original_path=%s source_video_path=%s audio_path=%s output_path=%s text_hash=%s requested_engine_raw=%s normalized_engine=%s",
         int(project_id or 0),
         int(teacher_id or 0),
         int(slide_index or 0),
@@ -3406,6 +3409,7 @@ def render_avatar_segment(
         request.audio_path,
         request.output_path,
         request.cache_text_hash,
+        raw_lipsync_engine,
         request.lipsync_engine,
     )
 

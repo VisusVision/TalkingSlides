@@ -783,9 +783,8 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
             str(output_mp4),
         )
 
-        requested_engine = normalize_avatar_engine(
-            str(getattr(profile, "avatar_lipsync_engine", "") or os.environ.get("AVATAR_ENGINE"))
-        )
+        requested_engine_raw = str(getattr(profile, "avatar_lipsync_engine", "") or os.environ.get("AVATAR_ENGINE") or "").strip()
+        requested_engine = normalize_avatar_engine(requested_engine_raw)
         request = AvatarRenderRequest(
             source_image_path=(source_image_abs or source_image_original_abs),
             source_image_original_path=(source_image_original_abs or source_image_abs),
@@ -805,10 +804,13 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
             preview_source_meta={
                 "source_key": source_key,
                 "reference_type": reference_type,
+                "requested_engine_raw": requested_engine_raw,
+                "normalized_engine": requested_engine,
                 "source_candidates": list(preview_source_candidates),
                 "current_run_normalized_source_path": str(source_image_abs or ""),
             },
         )
+        setattr(request, "_requested_engine_raw", requested_engine_raw)
         setattr(request, "_preview_task_context", preview_task_context)
 
         _set_job(status="running", progress=70)

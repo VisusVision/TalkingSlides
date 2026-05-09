@@ -813,7 +813,10 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
         Path(output_path).write_bytes(b"liveportrait")
         return EngineResult(True, "liveportrait", output_path, "")
 
-    def fake_musetalk(*, output_path, **_kwargs):
+    musetalk_calls = []
+
+    def fake_musetalk(*, output_path, source_video="", **_kwargs):
+        musetalk_calls.append(str(source_video))
         Path(output_path).write_bytes(b"musetalk")
         return EngineResult(True, "musetalk", output_path, "")
 
@@ -834,7 +837,16 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
 
     assert result["preview_status"] == "ready"
     assert result["engine_used"] == CANONICAL_ENGINE
+    assert result["requested_engine_raw"] == "musetalk"
+    assert result["normalized_engine"] == CANONICAL_ENGINE
     assert result["stage_paths"]["musetalk_stage_state"] == "completed"
+    assert result["stage_paths"]["liveportrait_started"] is True
+    assert result["stage_paths"]["liveportrait_succeeded"] is True
+    assert result["stage_paths"]["musetalk_started"] is True
+    assert result["stage_paths"]["musetalk_succeeded"] is True
+    assert result["stage_paths"]["musetalk_source_video"] == str(output.with_suffix(output.suffix + ".liveportrait.mp4"))
+    assert musetalk_calls == [result["stage_paths"]["musetalk_source_video"]]
+    assert result["final_avatar_engine_chain"] == ["liveportrait", "musetalk"]
     assert result["stage_paths"]["musetalk_handoff_frame_normalization_strategy"] == "normalize_contract_fps"
     assert result["stage_paths"]["final_playable_path"] == str(output)
     assert result["stage_outputs"][-1]["stage"] == "musetalk"

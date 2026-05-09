@@ -395,7 +395,7 @@ def _path_hash(path_value: str) -> str:
     return sha256_file(path)
 
 
-def _request_trace(request: Any, requested_engine: str) -> dict[str, str]:
+def _request_trace(request: Any, requested_engine: str, raw_requested_engine: str = "") -> dict[str, str]:
     source_image_path = str(getattr(request, "source_image_path", "") or "")
     source_image_original_path = str(getattr(request, "source_image_original_path", "") or "")
     source_video_path = str(getattr(request, "source_video_path", "") or "")
@@ -413,7 +413,9 @@ def _request_trace(request: Any, requested_engine: str) -> dict[str, str]:
         "request_source_video_hash": _path_hash(source_video_path),
         "request_audio_hash": _path_hash(audio_path),
         "request_text_hash": str(getattr(request, "cache_text_hash", "") or ""),
+        "requested_engine_raw": str(raw_requested_engine or ""),
         "requested_engine": str(requested_engine or CANONICAL_ENGINE),
+        "normalized_engine": str(requested_engine or CANONICAL_ENGINE),
         "pipeline_engine": CANONICAL_ENGINE,
     }
 
@@ -1781,12 +1783,16 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
 
     preview_warning = str(meta_payload.get("preview_warning") or "").strip()
     preview_status = "warning" if (is_preview_request and preview_warning) else ("ready" if is_preview_request else "ok")
+    cached_stage_paths = dict(meta_payload.get("stage_paths") or {})
     return {
         "output_path": str(output_path),
         "engine_used": str(meta_payload.get("engine_used") or CANONICAL_ENGINE),
         "pipeline_engine": CANONICAL_ENGINE,
+        "requested_engine_raw": str(cached_stage_paths.get("requested_engine_raw") or requested_engine),
         "requested_engine": requested_engine,
+        "normalized_engine": requested_engine,
         "fallback_chain_used": ["cache"],
+        "final_avatar_engine_chain": list(cached_stage_paths.get("final_avatar_engine_chain") or ["cache"]),
         "audio_hash": expected_cache["audio_hash"],
         "video_hash": str(meta_payload.get("video_hash") or sha256_file(str(output_path))),
         "motion_validation": validation,
@@ -1795,9 +1801,9 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "preview_status": preview_status,
         "unstable_output_accepted": bool(is_preview_request and preview_warning and not strict_pass),
         "failure_category": ("validation_warning" if is_preview_request and preview_warning and not strict_pass else ""),
-        "stage_paths": dict(meta_payload.get("stage_paths") or {}),
+        "stage_paths": cached_stage_paths,
         "stage_outputs": list(meta_payload.get("stage_outputs") or []),
-        "frame_trace": {"paths": dict(meta_payload.get("stage_paths") or {})},
+        "frame_trace": {"paths": cached_stage_paths},
         "canonical_input": dict(meta_payload.get("canonical_input") or {}),
     }
 
@@ -1865,8 +1871,14 @@ def _final_payload(
         "output_path": str(output_path),
         "engine_used": engine_used,
         "pipeline_engine": CANONICAL_ENGINE,
+        "requested_engine_raw": str(stage_paths.get("requested_engine_raw") or ""),
         "requested_engine": requested_engine,
+        "normalized_engine": requested_engine,
         "fallback_chain_used": [record.get("stage") for record in stage_outputs],
+        "final_avatar_engine_chain": list(
+            stage_paths.get("final_avatar_engine_chain")
+            or [record.get("stage") for record in stage_outputs]
+        ),
         "audio_hash": _expected_cache_keys(request, requested_engine).get("audio_hash") or "",
         "video_hash": video_hash,
         "motion_validation": validation,
@@ -1894,7 +1906,14 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path = output_path.with_suffix(output_path.suffix + ".meta.json")
     is_preview_request = _is_preview_request(request)
-    requested_engine = normalize_avatar_engine(getattr(request, "lipsync_engine", None))
+    preview_source_meta = dict(getattr(request, "preview_source_meta", {}) or {})
+    raw_requested_engine = str(
+        getattr(request, "_requested_engine_raw", "")
+        or preview_source_meta.get("requested_engine_raw")
+        or getattr(request, "lipsync_engine", "")
+        or ""
+    ).strip()
+    requested_engine = normalize_avatar_engine(raw_requested_engine)
 
     if is_preview_request:
         removed_artifacts = _clear_preview_stage_artifacts(output_path)
@@ -1905,7 +1924,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 json.dumps(removed_artifacts, ensure_ascii=True),
             )
 
-    request_trace = _request_trace(request, requested_engine)
+    request_trace = _request_trace(request, requested_engine, raw_requested_engine)
     logger.info(
         "Avatar canonical request binding %s",
         json.dumps(request_trace, ensure_ascii=True, sort_keys=True),
@@ -1989,11 +2008,17 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_output_path": str(liveportrait_output),
         "liveportrait_raw_output_path": str(liveportrait_output),
         "liveportrait_reconciled_output_path": str(liveportrait_reconciled_output),
+        "liveportrait_started": False,
+        "liveportrait_succeeded": False,
         "musetalk_handoff_video_path": str(musetalk_handoff_output),
+        "musetalk_source_video": "",
         "musetalk_output_path": str(musetalk_output),
+        "musetalk_started": False,
+        "musetalk_succeeded": False,
         "musetalk_timeout_budget_seconds": 0.0,
         "restoration_output_path": str(restoration_output),
         "final_output_path": str(output_path),
+        "final_avatar_engine_chain": [],
     }
     canonical_input_payload = {
         "request_trace": dict(request_trace),
@@ -2088,8 +2113,16 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "final_output_playable_motion": stage_paths.get("final_output_playable_motion"),
                     "preview_status": preview_status,
                     "reason": str(reason or ""),
+                    "requested_engine_raw": stage_paths.get("requested_engine_raw"),
                     "requested_engine": requested_engine,
+                    "normalized_engine": requested_engine,
                     "pipeline_engine": CANONICAL_ENGINE,
+                    "liveportrait_started": stage_paths.get("liveportrait_started"),
+                    "liveportrait_succeeded": stage_paths.get("liveportrait_succeeded"),
+                    "musetalk_started": stage_paths.get("musetalk_started"),
+                    "musetalk_source_video": stage_paths.get("musetalk_source_video"),
+                    "musetalk_succeeded": stage_paths.get("musetalk_succeeded"),
+                    "final_avatar_engine_chain": stage_paths.get("final_avatar_engine_chain"),
                 },
                 ensure_ascii=True,
                 sort_keys=True,
@@ -2170,6 +2203,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
 
             liveportrait_resources_before = probe_runtime_resources()
             stage_paths["liveportrait_resources_before"] = liveportrait_resources_before
+            stage_paths["liveportrait_started"] = True
             liveportrait_started_at = time.monotonic()
             _update_preview_task_context(
                 request,
@@ -2314,6 +2348,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             stage_paths["liveportrait_selected_attempt"] = int(attempt_index)
             stage_paths["liveportrait_selected_source_key"] = str(source_key_for_canonical)
             stage_paths["liveportrait_selected_source_image_path"] = str(source_image_primary)
+            stage_paths["liveportrait_succeeded"] = True
             _update_preview_task_context(
                 request,
                 current_stage="after_liveportrait",
@@ -2510,6 +2545,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         restoration_warning = ""
         stage_paths["musetalk_stage_state"] = "running"
         stage_paths["musetalk_ran"] = True
+        stage_paths["musetalk_started"] = True
         stage_paths["musetalk_timed_out"] = False
         stage_paths["musetalk_fallback_used"] = False
 
@@ -2598,6 +2634,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         stage_paths["musetalk_effective_svc_timeout_seconds"] = round(_effective_svc_timeout, 1)
 
         musetalk_started_at = time.monotonic()
+        stage_paths["musetalk_source_video"] = str(musetalk_handoff_video)
         _update_preview_task_context(
             request,
             current_stage=("preview_musetalk" if is_preview_request else "musetalk"),
@@ -2667,6 +2704,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         )
         if not musetalk_result.success:
             stage_paths["musetalk_stage_state"] = "failed"
+            stage_paths["musetalk_succeeded"] = False
             musetalk_error_text = str(musetalk_result.error or musetalk_details.get("stderr") or "").lower()
             stage_paths["musetalk_timed_out"] = bool(
                 (musetalk_details.get("return_code") is None and str(musetalk_details.get("stderr") or "").lower() == "timeout")
@@ -2687,6 +2725,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             raise RuntimeError(f"musetalk_failed:{musetalk_result.error or 'command_failed'}")
         if musetalk_result.success:
             stage_paths["musetalk_stage_state"] = "completed"
+            stage_paths["musetalk_succeeded"] = True
             musetalk_contract = legacy_pipeline._assert_video_contract(str(musetalk_output), stage_name="musetalk")
             stage_outputs[-1]["duration_seconds"] = round(float(musetalk_contract.get("duration_seconds") or 0.0), 4)
             
@@ -2753,6 +2792,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         stage_paths["final_playable_path"] = str(output_path)
         stage_paths["ui_returned_playable_file"] = str(final_stage_path)
         stage_paths["preview_file_exists"] = bool(_video_is_playable(final_stage_path, stage_name="ui_returned_playable_file"))
+        stage_paths["final_avatar_engine_chain"] = [
+            str(record.get("stage") or "")
+            for record in stage_outputs
+            if str(record.get("stage") or "")
+        ]
         logger.info(
             "Avatar preview final playable output teacher_id=%s job_id=%s output_path=%s ui_returned_playable_file=%s",
             int(getattr(request, "preview_teacher_id", 0) or 0),
