@@ -35,6 +35,8 @@ ENV/
 
 # Project specific
 storage_local/
+services/api/staticfiles/
+staticfiles/
 outputs/
 *.mp4
 *.wav
