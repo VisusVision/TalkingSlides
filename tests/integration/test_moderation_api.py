@@ -20,8 +20,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
-from django.test.utils import override_settings  # noqa: E402
-from rest_framework.test import APIClient, APIRequestFactory, force_authenticate  # noqa: E402
+from rest_framework.test import APIClient  # noqa: E402
 
 from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun  # noqa: E402
 from ai_agents import views as moderation_views  # noqa: E402
@@ -290,7 +289,6 @@ def test_rescan_dispatch_respects_celery_render_queue(monkeypatch):
 
 
 @pytest.mark.django_db
-@override_settings(DEBUG=False)
 def test_rescan_dispatch_failure_marks_project_failed(monkeypatch):
     monkeypatch.delenv("CELERY_RENDER_QUEUE", raising=False)
     owner = _make_user("mod_api_rescan_failure_owner")
@@ -301,9 +299,7 @@ def test_rescan_dispatch_failure_marks_project_failed(monkeypatch):
 
     monkeypatch.setattr(moderation_views, "_dispatch_moderation_task", failing_dispatch)
 
-    request = APIRequestFactory().post(_rescan_url(project), {"phase": "manual_rescan"}, format="json")
-    force_authenticate(request, user=owner)
-    response = moderation_views.ProjectModerationRescanView.as_view()(request, project_id=project.id)
+    response = _client(owner).post(_rescan_url(project), {"phase": "manual_rescan"}, format="json")
 
     project.refresh_from_db()
     assert response.status_code == 503

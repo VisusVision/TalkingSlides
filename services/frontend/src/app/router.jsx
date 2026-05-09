@@ -37,7 +37,7 @@ export default function AppRouter({
       />
       <Route path="/browse" element={<Browse searchQuery={searchQuery} />} />
       <Route path="/channel/:userId" element={<Channel user={user} searchQuery={searchQuery} onLoginRequest={onLoginRequest} />} />
-      <Route path="/playlist/:playlistId" element={<Playlist />} />
+      <Route path="/playlist/:playlistId" element={<Playlist user={user} onLoginRequest={onLoginRequest} />} />
       <Route
         path="/analytics"
         element={(

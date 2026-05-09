@@ -31,7 +31,7 @@ Teacher pipeline:
 """
 
 import base64
-import ast
+from copy import deepcopy
 from datetime import datetime, timedelta
 import html
 import hashlib
@@ -51,14 +51,13 @@ from pathlib import Path
 from typing import Any
 
 from celery import Celery
-from redis import Redis
 from django.conf import settings
-from django.db import IntegrityError, transaction
-from django.db.models import Avg, Count
+from django.db import transaction
+from django.db.models import Avg, Count, Max, Prefetch
 from django.core.cache import cache
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
-from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect, StreamingHttpResponse
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseRedirect
 from django.utils import timezone
 from rest_framework import permissions, status, viewsets
 from rest_framework.exceptions import UnsupportedMediaType, ValidationError
@@ -66,30 +65,23 @@ from rest_framework.authtoken.models import Token
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
-try:
-    from prometheus_client import CollectorRegistry, Gauge, Counter, generate_latest, CONTENT_TYPE_LATEST
-    _PROMETHEUS_AVAILABLE = True
-except Exception:
-    CollectorRegistry = None
-    Gauge = None
-    Counter = None
-    generate_latest = None
-    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4"
-    _PROMETHEUS_AVAILABLE = False
 
 from core.models import (
     AvatarRenderJob,
     AvatarOverlayPreference,
     Category,
     Job,
-    JobActionAudit,
-    JobCheckpoint,
     LessonComment,
     LessonLike,
     LessonProgress,
+    Playlist,
+    PlaylistItem,
     Project,
+    PublisherFollow,
+    SavedPlaylist,
     Slide,
     TranscriptPage,
+    TranslatedSubtitleTrack,
     UserProfile,
     VoiceProfile,
 )
@@ -100,6 +92,8 @@ from core.serializers import (
     CategorySerializer,
     JobSerializer,
     LessonCommentSerializer,
+    PlaylistPublicSerializer,
+    PlaylistSerializer,
     ProjectCreateSerializer,  # noqa: F401
     ProjectSerializer,
     SlideSerializer,
@@ -108,14 +102,32 @@ from core.serializers import (
     canonical_project_tts_settings,
     merge_project_tts_settings_patch,
 )
+from core.drafts import (
+    ensure_project_draft_data,
+    get_draft_project_fields,
+    get_project_draft_data,
+    get_studio_transcript_pages,
+    has_dirty_draft,
+    has_project_draft,
+    save_project_draft_data,
+)
 from core.tts_llm_suggestions import pronunciation_suggestion_response
 from core.avatar_readiness import avatar_preview_readiness, normalize_avatar_engine
+from core.avatar_image_moderation import (
+    avatar_image_moderation_auto_enabled,
+    avatar_image_moderation_gate,
+    run_avatar_image_moderation,
+)
 from core.avatar_source_validation import (
     refresh_avatar_source_validation,
     stored_avatar_source_state,
 )
-from core.trace import outbound_trace_headers
-from core.internal_http import open_bytes, open_json
+from ai_agents.policies import (
+    APPROVED_MODERATION_STATUSES,
+    moderation_is_approved_for_catalog,
+    publication_block_payload,
+    project_can_publish,
+)
 
 try:
     from avatar.pipeline import AvatarValidationError, preprocess_teacher_avatar_image
@@ -143,12 +155,9 @@ _BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
 _celery_app = Celery(broker=_BROKER_URL)
 
 _PROCESS_PROJECT_RENDER_TASK = "worker.tasks.process_pptx_to_video"
+_RUN_PROJECT_MODERATION_TASK = "worker.tasks.run_project_moderation"
 _AVATAR_PREVIEW_TASK = "worker.tasks.render_avatar_preview"
-_CANCELLED_CLEANUP_TASK = "worker.tasks.cleanup_cancelled_project_artifacts"
-JOB_CANCELLED_MARKER = "__cancelled_by_user__"
-SSE_TICKET_PREFIX = "sse:job_events:ticket"
-SSE_TICKET_TTL_SECONDS = 120
-JOB_CANCEL_RATE_LIMIT_PER_MINUTE = 12
+_SUBTITLE_TRANSLATION_TASK = "worker.tasks.generate_translated_subtitle_track_task"
 
 
 def _celery_queue_setting(setting_name: str, env_name: str, default: str) -> str:
@@ -160,29 +169,12 @@ def _render_queue_name() -> str:
     return _celery_queue_setting("CELERY_RENDER_QUEUE", "CELERY_RENDER_QUEUE", "render")
 
 
-def _render_fast_queue_name() -> str:
-    return _celery_queue_setting("CELERY_RENDER_FAST_QUEUE", "CELERY_RENDER_FAST_QUEUE", "render_fast")
-
-
-def _render_quality_queue_name() -> str:
-    return _celery_queue_setting("CELERY_RENDER_QUALITY_QUEUE", "CELERY_RENDER_QUALITY_QUEUE", "render_quality")
-
-
 def _avatar_queue_name() -> str:
     return _celery_queue_setting("CELERY_AVATAR_QUEUE", "CELERY_AVATAR_QUEUE", "avatar")
 
 
-def _queue_for_render_profile(render_profile: str | None) -> str:
-    profile = str(render_profile or "balanced").strip().lower()
-    if profile == "fast":
-        return _render_fast_queue_name()
-    if profile == "quality":
-        return _render_quality_queue_name()
-    return _render_queue_name()
-
-
-def _queue_for_pipeline(avatar_options: dict | None, render_profile: str | None) -> str:
-    return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _queue_for_render_profile(render_profile)
+def _queue_for_avatar_options(avatar_options: dict | None) -> str:
+    return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _render_queue_name()
 
 
 def _dispatch_celery_task(task_name: str, *, args: list | None = None, kwargs: dict | None = None, queue: str | None = None):
@@ -200,427 +192,11 @@ def _dispatch_celery_task(task_name: str, *, args: list | None = None, kwargs: d
         # Older tests and thin fakes may not accept Celery's queue kwarg.
         return _celery_app.send_task(task_name, args=task_args, kwargs=task_kwargs)
 
-
-def _issue_job_events_ticket(*, user_id: int, project_id: int, job_id: int) -> tuple[str, int]:
-    ticket = uuid.uuid4().hex
-    cache.set(
-        f"{SSE_TICKET_PREFIX}:{ticket}",
-        {
-            "user_id": int(user_id),
-            "project_id": int(project_id),
-            "job_id": int(job_id),
-        },
-        timeout=SSE_TICKET_TTL_SECONDS,
-    )
-    return ticket, SSE_TICKET_TTL_SECONDS
-
-
-def _resolve_job_events_ticket(ticket: str) -> dict[str, Any] | None:
-    value = cache.get(f"{SSE_TICKET_PREFIX}:{ticket}")
-    return value if isinstance(value, dict) else None
-
-
-def _job_cancel_rate_limit_key(user_id: int) -> str:
-    bucket = int(time.time() // 60)
-    return f"rate:job_cancel:{int(user_id)}:{bucket}"
-
-
-def _is_job_cancel_rate_limited(user_id: int) -> tuple[bool, int]:
-    key = _job_cancel_rate_limit_key(user_id)
-    try:
-        count = int(cache.get(key) or 0) + 1
-        cache.set(key, count, timeout=75)
-    except Exception:
-        return False, 0
-    return count > JOB_CANCEL_RATE_LIMIT_PER_MINUTE, count
-
-
-def _audit_job_action(
-    *,
-    job: Job,
-    actor,
-    action: str,
-    metadata: dict[str, Any] | None = None,
-) -> None:
-    try:
-        JobActionAudit.objects.create(
-            job=job,
-            project=job.project,
-            actor=actor if getattr(actor, "id", None) else None,
-            action=str(action),
-            metadata=dict(metadata or {}),
-        )
-    except Exception:
-        logger.warning("Failed to write job action audit job_id=%s action=%s", getattr(job, "id", None), action, exc_info=True)
-
-
-def _task_matches_project(task_payload: dict[str, Any], project_id: int) -> bool:
-    """Best-effort matcher for Celery inspect active payloads."""
-    target = str(int(project_id))
-    args_value = task_payload.get("args", ())
-    kwargs_value = task_payload.get("kwargs", {})
-
-    try:
-        if isinstance(args_value, str):
-            parsed_args = ast.literal_eval(args_value)
-        else:
-            parsed_args = args_value
-    except Exception:
-        parsed_args = args_value
-
-    try:
-        if isinstance(kwargs_value, str):
-            parsed_kwargs = ast.literal_eval(kwargs_value)
-        else:
-            parsed_kwargs = kwargs_value
-    except Exception:
-        parsed_kwargs = kwargs_value
-
-    if isinstance(parsed_args, (list, tuple)):
-        if any(str(item) == target for item in parsed_args):
-            return True
-    if isinstance(parsed_kwargs, dict):
-        for key in ("project_id", "lesson_id"):
-            if key in parsed_kwargs and str(parsed_kwargs.get(key)) == target:
-                return True
-    return False
-
-
-def _revoke_project_active_tasks(*, project_id: int, include_task_ids: set[str] | None = None) -> list[str]:
-    """Revoke + terminate active tasks belonging to the project across workers."""
-    revoked: set[str] = set()
-    if include_task_ids:
-        revoked.update({str(task_id).strip() for task_id in include_task_ids if str(task_id).strip()})
-
-    try:
-        inspector = _celery_app.control.inspect(timeout=1.0)
-        active_map = inspector.active() or {}
-    except Exception:
-        active_map = {}
-
-    for worker_tasks in active_map.values():
-        for task_payload in worker_tasks or []:
-            if not isinstance(task_payload, dict):
-                continue
-            task_id = str(task_payload.get("id") or "").strip()
-            if not task_id:
-                continue
-            if _task_matches_project(task_payload, int(project_id)):
-                revoked.add(task_id)
-
-    for task_id in sorted(revoked):
-        try:
-            _celery_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
-        except Exception:
-            logger.warning("Failed to revoke active task task_id=%s project_id=%s", task_id, project_id, exc_info=True)
-
-    return sorted(revoked)
-
-
-def _redis_client():
-    redis_url = str(getattr(settings, "CELERY_BROKER_URL", _BROKER_URL) or _BROKER_URL)
-    return Redis.from_url(redis_url)
-
-
-def _queue_depth(queue_name: str) -> int:
-    try:
-        return int(_redis_client().llen(queue_name))
-    except Exception:
-        logger.warning("Queue depth lookup failed queue=%s", queue_name, exc_info=True)
-        return 0
-
-
-def _queue_profile_eta_seconds(render_profile: str, *, avatar_enabled: bool) -> int:
-    if avatar_enabled:
-        return int(getattr(settings, "RENDER_ETA_SECONDS_AVATAR", 360))
-    profile = str(render_profile or "balanced").strip().lower()
-    if profile == "fast":
-        return int(getattr(settings, "RENDER_ETA_SECONDS_FAST", 45))
-    if profile == "quality":
-        return int(getattr(settings, "RENDER_ETA_SECONDS_QUALITY", 240))
-    return int(getattr(settings, "RENDER_ETA_SECONDS_BALANCED", 120))
-
-
-def _estimate_queue_wait_seconds(queue_name: str, render_profile: str, *, avatar_enabled: bool) -> int:
-    depth = max(0, _queue_depth(queue_name))
-    service_seconds = max(1, _queue_profile_eta_seconds(render_profile, avatar_enabled=avatar_enabled))
-    return int(depth * service_seconds)
-
-
-def _admission_guard_for_render_profile(render_profile: str, queue_name: str) -> tuple[bool, dict[str, Any] | None]:
-    profile = str(render_profile or "balanced").strip().lower()
-    limit_map = {
-        "fast": int(getattr(settings, "RENDER_ADMISSION_FAST_QUEUE_LIMIT", 250)),
-        "balanced": int(getattr(settings, "RENDER_ADMISSION_BALANCED_QUEUE_LIMIT", 120)),
-        "quality": int(getattr(settings, "RENDER_ADMISSION_QUALITY_QUEUE_LIMIT", 25)),
-        "avatar": int(getattr(settings, "RENDER_ADMISSION_AVATAR_QUEUE_LIMIT", 20)),
-    }
-    limit = int(limit_map.get(profile, limit_map["balanced"]))
-    depth = _queue_depth(queue_name)
-    if depth <= limit:
-        return True, None
-    retry_after_seconds = max(30, _queue_profile_eta_seconds(profile, avatar_enabled=(profile == "avatar")))
-    if profile == "quality":
-        message = "System busy for quality renders right now. Choose fast/balanced or retry shortly."
-        suggested_profiles = ["fast", "balanced"]
-    elif profile == "avatar":
-        message = "Avatar render queue is busy right now. Retry shortly or render without avatar."
-        suggested_profiles = ["fast", "balanced"]
-    elif profile == "fast":
-        message = "Fast render queue is temporarily saturated. Retry shortly."
-        suggested_profiles = ["balanced"]
-    else:
-        message = "Render queue is busy right now. Retry shortly or choose fast profile."
-        suggested_profiles = ["fast"]
-    return False, {
-        "error": message,
-        "profile": profile,
-        "queue": queue_name,
-        "queue_depth": depth,
-        "queue_limit": limit,
-        "retry_after_seconds": retry_after_seconds,
-        "suggested_profiles": suggested_profiles,
-    }
-
-
-def _job_status_counts() -> dict[str, int]:
-    rows = Job.objects.values("status").annotate(count=Count("id"))
-    result: dict[str, int] = {"pending": 0, "running": 0, "done": 0, "failed": 0}
-    for row in rows:
-        status_name = str(row.get("status") or "")
-        result[status_name] = int(row.get("count") or 0)
-    return result
-
-
-def _oldest_active_job_age_seconds() -> float:
-    oldest = Job.objects.filter(status__in=["pending", "running"]).order_by("created_at").first()
-    if oldest is None:
-        return 0.0
-    age = timezone.now() - oldest.created_at
-    return max(0.0, age.total_seconds())
-
-
-def _recent_done_job_latencies_seconds(limit: int = 200) -> list[float]:
-    rows = Job.objects.filter(status="done").order_by("-updated_at")[:limit]
-    values: list[float] = []
-    for row in rows:
-        delta = row.updated_at - row.created_at
-        values.append(max(0.0, delta.total_seconds()))
-    return values
-
-
-def _percentile(values: list[float], q: float) -> float:
-    if not values:
-        return 0.0
-    sorted_vals = sorted(values)
-    idx = int(round((len(sorted_vals) - 1) * q))
-    idx = max(0, min(idx, len(sorted_vals) - 1))
-    return float(sorted_vals[idx])
-
-
-def _render_capacity_snapshot() -> dict[str, Any]:
-    queue_map = {
-        "fast": _render_fast_queue_name(),
-        "balanced": _render_queue_name(),
-        "quality": _render_quality_queue_name(),
-        "avatar": _avatar_queue_name(),
-    }
-    snapshot: dict[str, Any] = {"queues": {}}
-    for profile_name, queue_name in queue_map.items():
-        avatar_enabled = profile_name == "avatar"
-        eta_per_job = _queue_profile_eta_seconds(profile_name, avatar_enabled=avatar_enabled)
-        depth = _queue_depth(queue_name)
-        snapshot["queues"][profile_name] = {
-            "queue": queue_name,
-            "depth": depth,
-            "eta_per_job_seconds": eta_per_job,
-            "estimated_wait_seconds": int(depth * eta_per_job),
-        }
-    quality_depth = int(snapshot["queues"]["quality"]["depth"])
-    quality_limit = int(getattr(settings, "RENDER_ADMISSION_QUALITY_QUEUE_LIMIT", 25))
-    fast_depth = int(snapshot["queues"]["fast"]["depth"])
-    balanced_depth = int(snapshot["queues"]["balanced"]["depth"])
-    avatar_depth = int(snapshot["queues"]["avatar"]["depth"])
-    fast_limit = int(getattr(settings, "RENDER_ADMISSION_FAST_QUEUE_LIMIT", 80))
-    balanced_limit = int(getattr(settings, "RENDER_ADMISSION_BALANCED_QUEUE_LIMIT", 120))
-    avatar_limit = int(getattr(settings, "RENDER_ADMISSION_AVATAR_QUEUE_LIMIT", 20))
-    snapshot["admission"] = {
-        "quality_limit": quality_limit,
-        "quality_allowed": quality_depth <= quality_limit,
-        "fast_limit": fast_limit,
-        "fast_allowed": fast_depth <= fast_limit,
-        "balanced_limit": balanced_limit,
-        "balanced_allowed": balanced_depth <= balanced_limit,
-        "avatar_limit": avatar_limit,
-        "avatar_allowed": avatar_depth <= avatar_limit,
-    }
-    snapshot["generated_at"] = timezone.now().isoformat()
-    return snapshot
-
-
-def _render_metrics_snapshot() -> dict[str, Any]:
-    capacity = _render_capacity_snapshot()
-    statuses = _job_status_counts()
-    latencies = _recent_done_job_latencies_seconds(limit=200)
-    return {
-        "capacity": capacity,
-        "jobs": {
-            "status_counts": statuses,
-            "oldest_active_age_seconds": _oldest_active_job_age_seconds(),
-            "recent_done_count": len(latencies),
-            "latency_seconds_p50": _percentile(latencies, 0.50),
-            "latency_seconds_p95": _percentile(latencies, 0.95),
-            "latency_seconds_p99": _percentile(latencies, 0.99),
-        },
-        "generated_at": timezone.now().isoformat(),
-    }
-
-
-def _autoscale_thresholds_for_profile(profile: str) -> dict[str, int]:
-    profile_key = str(profile or "").strip().lower()
-    if profile_key == "fast":
-        return {
-            "queue_depth_up": int(getattr(settings, "AUTOSCALE_FAST_QUEUE_DEPTH_UP", 12)),
-            "queue_depth_down": int(getattr(settings, "AUTOSCALE_FAST_QUEUE_DEPTH_DOWN", 2)),
-            "p95_up_seconds": int(getattr(settings, "AUTOSCALE_FAST_P95_UP_SECONDS", 90)),
-            "p95_down_seconds": int(getattr(settings, "AUTOSCALE_FAST_P95_DOWN_SECONDS", 35)),
-            "min_replicas": int(getattr(settings, "AUTOSCALE_FAST_MIN_REPLICAS", 2)),
-            "max_replicas": int(getattr(settings, "AUTOSCALE_FAST_MAX_REPLICAS", 24)),
-        }
-    if profile_key == "quality":
-        return {
-            "queue_depth_up": int(getattr(settings, "AUTOSCALE_QUALITY_QUEUE_DEPTH_UP", 6)),
-            "queue_depth_down": int(getattr(settings, "AUTOSCALE_QUALITY_QUEUE_DEPTH_DOWN", 1)),
-            "p95_up_seconds": int(getattr(settings, "AUTOSCALE_QUALITY_P95_UP_SECONDS", 320)),
-            "p95_down_seconds": int(getattr(settings, "AUTOSCALE_QUALITY_P95_DOWN_SECONDS", 200)),
-            "min_replicas": int(getattr(settings, "AUTOSCALE_QUALITY_MIN_REPLICAS", 1)),
-            "max_replicas": int(getattr(settings, "AUTOSCALE_QUALITY_MAX_REPLICAS", 10)),
-        }
-    if profile_key == "avatar":
-        return {
-            "queue_depth_up": int(getattr(settings, "AUTOSCALE_AVATAR_QUEUE_DEPTH_UP", 4)),
-            "queue_depth_down": int(getattr(settings, "AUTOSCALE_AVATAR_QUEUE_DEPTH_DOWN", 0)),
-            "p95_up_seconds": int(getattr(settings, "AUTOSCALE_AVATAR_P95_UP_SECONDS", 600)),
-            "p95_down_seconds": int(getattr(settings, "AUTOSCALE_AVATAR_P95_DOWN_SECONDS", 360)),
-            "min_replicas": int(getattr(settings, "AUTOSCALE_AVATAR_MIN_REPLICAS", 1)),
-            "max_replicas": int(getattr(settings, "AUTOSCALE_AVATAR_MAX_REPLICAS", 8)),
-        }
-    return {
-        "queue_depth_up": int(getattr(settings, "AUTOSCALE_BALANCED_QUEUE_DEPTH_UP", 10)),
-        "queue_depth_down": int(getattr(settings, "AUTOSCALE_BALANCED_QUEUE_DEPTH_DOWN", 2)),
-        "p95_up_seconds": int(getattr(settings, "AUTOSCALE_BALANCED_P95_UP_SECONDS", 180)),
-        "p95_down_seconds": int(getattr(settings, "AUTOSCALE_BALANCED_P95_DOWN_SECONDS", 90)),
-        "min_replicas": int(getattr(settings, "AUTOSCALE_BALANCED_MIN_REPLICAS", 1)),
-        "max_replicas": int(getattr(settings, "AUTOSCALE_BALANCED_MAX_REPLICAS", 16)),
-    }
-
-
-def _autoscale_action_for_profile(profile: str, depth: int, p95_seconds: float, thresholds: dict[str, int]) -> str:
-    if depth >= thresholds["queue_depth_up"] or p95_seconds >= thresholds["p95_up_seconds"]:
-        return "scale_up"
-    if depth <= thresholds["queue_depth_down"] and p95_seconds <= thresholds["p95_down_seconds"]:
-        return "scale_down"
-    return "hold"
-
-
-def _autoscale_policy_snapshot() -> dict[str, Any]:
-    metrics = _render_metrics_snapshot()
-    queues = metrics.get("capacity", {}).get("queues", {})
-    global_p95 = float(metrics.get("jobs", {}).get("latency_seconds_p95") or 0.0)
-    profiles: dict[str, Any] = {}
-    for profile in ("fast", "balanced", "quality", "avatar"):
-        queue_info = queues.get(profile, {})
-        depth = int(queue_info.get("depth") or 0)
-        thresholds = _autoscale_thresholds_for_profile(profile)
-        action = _autoscale_action_for_profile(profile, depth, global_p95, thresholds)
-        profiles[profile] = {
-            "queue": queue_info.get("queue"),
-            "queue_depth": depth,
-            "observed_p95_seconds": global_p95,
-            "thresholds": thresholds,
-            "action": action,
-            "suggested_replica_delta": 1 if action == "scale_up" else (-1 if action == "scale_down" else 0),
-            "reason": (
-                f"queue_depth={depth} p95={global_p95:.1f}s "
-                f"(up if depth>={thresholds['queue_depth_up']} or p95>={thresholds['p95_up_seconds']}s)"
-            ),
-        }
-    return {
-        "generated_at": timezone.now().isoformat(),
-        "profiles": profiles,
-        "global": {
-            "latency_p95_seconds": global_p95,
-            "oldest_active_age_seconds": float(metrics.get("jobs", {}).get("oldest_active_age_seconds") or 0.0),
-            "status_counts": metrics.get("jobs", {}).get("status_counts", {}),
-        },
-    }
-
 _MAX_LESSON_BYTES = 100 * 1024 * 1024  # 100 MB
 _ALLOWED_EXTENSIONS = {".pptx", ".pdf", ".docx", ".txt"}
 _MAX_COVER_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
-_RENDER_PROFILE_CHOICES = {"fast", "balanced", "quality"}
 logger = logging.getLogger(__name__)
-
-
-def _request_id_from_request(request) -> str:
-    attr_value = str(getattr(request, "request_id", "") or "").strip()
-    if attr_value:
-        return attr_value[:120]
-    for header_name in ("X-Request-Id", "X-Request-ID", "Idempotency-Key"):
-        value = str(request.headers.get(header_name) or "").strip()
-        if value:
-            return value[:120]
-    return ""
-
-
-def _trace_id_from_request(request) -> str:
-    attr_value = str(getattr(request, "trace_id", "") or "").strip()
-    if attr_value:
-        return attr_value[:64]
-    traceparent = str(request.headers.get("traceparent") or "").strip()
-    if traceparent:
-        parts = traceparent.split("-")
-        if len(parts) >= 4 and parts[1]:
-            return parts[1][:64]
-    header_trace = str(request.headers.get("X-Trace-Id") or request.headers.get("X-Trace-ID") or "").strip()
-    return header_trace[:64] if header_trace else ""
-
-
-def _log_with_standard_fields(
-    level: str,
-    message: str,
-    *,
-    request=None,
-    user_id: int | None = None,
-    project_id: int | None = None,
-    job_id: int | None = None,
-    queue: str | None = None,
-    stage: str | None = None,
-    started_at: float | None = None,
-    request_id: str | None = None,
-    trace_id: str | None = None,
-    **extra_fields: Any,
-) -> None:
-    record = {
-        "request_id": str(request_id or (_request_id_from_request(request) if request is not None else "") or ""),
-        "trace_id": str(trace_id or (_trace_id_from_request(request) if request is not None else "") or ""),
-        "user_id": int(user_id) if user_id is not None else None,
-        "project_id": int(project_id) if project_id is not None else None,
-        "job_id": int(job_id) if job_id is not None else None,
-        "queue": str(queue or ""),
-        "stage": str(stage or ""),
-        "duration_ms": int(max(0.0, (time.perf_counter() - started_at) * 1000)) if started_at is not None else None,
-    }
-    for key, value in extra_fields.items():
-        record[key] = value
-    method = getattr(logger, str(level).lower(), logger.info)
-    method("%s | %s", message, json.dumps(record, ensure_ascii=True, sort_keys=True))
-
-
-def _trace_forward_headers_for_request(request) -> dict[str, str]:
-    """Prepare outbound headers for internal service calls."""
-    return outbound_trace_headers(request)
 
 
 # ---------------------------------------------------------------------------
@@ -656,9 +232,8 @@ def _stream_url(request, token: str) -> str:
 
 
 def _playback_identity(request) -> str:
-    # Media element requests do not reliably include API auth headers.
-    # Use session identity so token issuance, stream access and heartbeat
-    # resolve the same grant scope.
+    if request.user and request.user.is_authenticated:
+        return f"user:{request.user.id}"
     if not request.session.session_key:
         request.session.save()
     return f"session:{request.session.session_key}"
@@ -915,10 +490,10 @@ def _risk_policy_decision(*, mode: str, file_type: str, risk_score: int) -> str:
 
 def _grant_usage_limit(file_type: str, mode: str) -> int:
     if mode == "drm_protected":
-        limits = {"hls_manifest": 8, "hls_key": 24, "hls_segment": 800, "video": 0, "avatar": 600, "srt": 80}
+        limits = {"hls_manifest": 8, "hls_key": 24, "hls_segment": 800, "video": 0, "avatar": 600, "srt": 80, "vtt": 80}
         return limits.get(file_type, 60)
     if mode == "secure_stream":
-        limits = {"hls_manifest": 20, "hls_key": 60, "hls_segment": 2000, "video": 200, "avatar": 1200, "srt": 150}
+        limits = {"hls_manifest": 20, "hls_key": 60, "hls_segment": 2000, "video": 200, "avatar": 1200, "srt": 150, "vtt": 150}
         return limits.get(file_type, 120)
     return 10_000
 
@@ -1074,7 +649,7 @@ def _resolve_effective_protection_mode(sidecar: dict | None) -> tuple[str, dict]
 
 def _resolve_playback_mode_for_project(project: Project, sidecar: dict | None) -> tuple[str, dict, bool]:
     protection_mode, mode_debug = _resolve_effective_protection_mode(sidecar)
-    lesson_is_public = _is_public_lesson(project)
+    lesson_is_public = _is_public_lesson(project) or _is_published_playable_lesson(project)
     if not lesson_is_public and protection_mode == "public":
         return "secure_stream", {
             **mode_debug,
@@ -1163,11 +738,31 @@ def _chunk_transcript_text(text: str, max_chars: int = 120) -> list[str]:
     return [c for c in chunks if c]
 
 
-def _build_editor_document(narration_text: str, rich_text_html: str) -> dict:
-    raw = str(narration_text or "").replace("\r\n", "\n").replace("\r", "\n")
+def _text_flags_from_editor_document(editor_document: Any, *, original_text: str = "", narration_text: str = "") -> dict:
+    text_flags = {}
+    if isinstance(editor_document, dict) and isinstance(editor_document.get("text"), dict):
+        text_flags = dict(editor_document.get("text") or {})
+    narration_customized = bool(text_flags.get("narration_customized"))
+    display_text_customized = bool(text_flags.get("display_text_customized"))
+    if not text_flags:
+        original_normalized = re.sub(r"\s+", " ", str(original_text or "")).strip()
+        narration_normalized = re.sub(r"\s+", " ", str(narration_text or "")).strip()
+        narration_customized = bool(narration_normalized and original_normalized != narration_normalized)
+    return {
+        "narration_customized": narration_customized,
+        "display_text_customized": display_text_customized,
+    }
+
+
+def _build_editor_document(display_text: str, rich_text_html: str, *, text_flags: dict | None = None) -> dict:
+    raw = str(display_text or "").replace("\r\n", "\n").replace("\r", "\n")
     paragraphs = [line for line in raw.split("\n")]
     return {
         "version": 1,
+        "text": {
+            "narration_customized": bool((text_flags or {}).get("narration_customized")),
+            "display_text_customized": bool((text_flags or {}).get("display_text_customized")),
+        },
         "paragraphs": [
             {
                 "index": idx,
@@ -1177,6 +772,226 @@ def _build_editor_document(narration_text: str, rich_text_html: str) -> dict:
         ],
         "html": str(rich_text_html or ""),
     }
+
+
+SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom"}
+SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
+SCENE_TEXT_SCALE_MIN = 0.75
+SCENE_TEXT_SCALE_MAX = 2.0
+
+
+def _raw_scene_from_document(editor_document: Any) -> dict:
+    if not isinstance(editor_document, dict):
+        return {}
+    scene = editor_document.get("scene")
+    return dict(scene) if isinstance(scene, dict) else {}
+
+
+def _merge_editor_document_preserving_scene(next_document: dict, current_document: Any) -> dict:
+    document = dict(next_document or {})
+    current_scene = _raw_scene_from_document(current_document)
+    if current_scene:
+        incoming_scene = _raw_scene_from_document(document)
+        merged_scene = {**current_scene, **incoming_scene}
+        for unsafe_key in (
+            "original_background_path",
+            "custom_background_path",
+        ):
+            if not incoming_scene.get(unsafe_key) and current_scene.get(unsafe_key):
+                merged_scene[unsafe_key] = current_scene[unsafe_key]
+        document["scene"] = merged_scene
+    return document
+
+
+def _editor_document_with_scene(page: TranscriptPage, display_text: str, rich_text_html: str, *, text_flags: dict | None = None) -> dict:
+    if text_flags is None:
+        text_flags = _text_flags_from_editor_document(
+            getattr(page, "editor_document", None),
+            original_text=getattr(page, "original_text", ""),
+            narration_text=getattr(page, "narration_text", ""),
+        )
+    return _merge_editor_document_preserving_scene(
+        _build_editor_document(display_text, rich_text_html, text_flags=text_flags),
+        getattr(page, "editor_document", None),
+    )
+
+
+def _clean_scene_mode(value: Any, *, fallback: str = "original") -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in SCENE_BACKGROUND_MODES else fallback
+
+
+def _clean_scene_fit(value: Any, *, fallback: str = "contain") -> str:
+    fit = str(value or "").strip().lower()
+    return fit if fit in SCENE_BACKGROUND_FITS else fallback
+
+
+def _clean_scene_text_scale(value: Any, *, fallback: float = 1.0) -> float:
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        scale = fallback
+    return max(SCENE_TEXT_SCALE_MIN, min(scale, SCENE_TEXT_SCALE_MAX))
+
+
+def _page_scene_for_storage(page: TranscriptPage) -> dict:
+    scene = _raw_scene_from_document(getattr(page, "editor_document", None))
+    mode = _clean_scene_mode(
+        scene.get("background_mode"),
+        fallback="whiteboard" if bool(getattr(page, "whiteboard_mode", False)) else "original",
+    )
+    return {
+        **scene,
+        "background_mode": mode,
+        "background_fit": _clean_scene_fit(scene.get("background_fit"), fallback="contain"),
+        "text_scale": _clean_scene_text_scale(scene.get("text_scale"), fallback=1.0),
+    }
+
+
+def _set_page_scene(page: TranscriptPage, scene: dict) -> None:
+    editor_document = dict(page.editor_document or {})
+    editor_document["scene"] = dict(scene or {})
+    page.editor_document = editor_document
+
+
+def _page_scene_path(page: TranscriptPage, kind: str) -> str:
+    if kind not in {"original", "custom"}:
+        return ""
+    scene = _page_scene_for_storage(page)
+    return _normalize_rel_storage_path(str(scene.get(f"{kind}_background_path") or ""))
+
+
+def _page_scene_response(page: TranscriptPage, request) -> dict:
+    return TranscriptPageSerializer(page, context={"request": request}).data
+
+
+def _draft_page_for_active_page(draft_data: dict, page: TranscriptPage) -> dict | None:
+    pages = draft_data.get("transcript_pages")
+    if not isinstance(pages, list):
+        return None
+    page_id = int(getattr(page, "id", 0) or 0)
+    page_key = str(getattr(page, "page_key", "") or "")
+    for draft_page in pages:
+        if not isinstance(draft_page, dict):
+            continue
+        try:
+            if page_id and int(draft_page.get("id") or 0) == page_id:
+                return draft_page
+        except (TypeError, ValueError):
+            pass
+        if page_key and str(draft_page.get("page_key") or "") == page_key:
+            return draft_page
+    return None
+
+
+def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPage) -> dict:
+    scene = _raw_scene_from_document(draft_page.get("editor_document"))
+    mode = _clean_scene_mode(
+        scene.get("background_mode"),
+        fallback="whiteboard"
+        if bool(draft_page.get("whiteboard_mode", getattr(fallback_page, "whiteboard_mode", False)))
+        else "original",
+    )
+    return {
+        **scene,
+        "background_mode": mode,
+        "background_fit": _clean_scene_fit(scene.get("background_fit"), fallback="contain"),
+        "text_scale": _clean_scene_text_scale(scene.get("text_scale"), fallback=1.0),
+    }
+
+
+def _set_draft_page_scene(draft_page: dict, scene: dict) -> None:
+    editor_document = deepcopy(draft_page.get("editor_document")) if isinstance(draft_page.get("editor_document"), dict) else {}
+    editor_document["scene"] = dict(scene or {})
+    draft_page["editor_document"] = editor_document
+    draft_page["whiteboard_mode"] = scene.get("background_mode") == "whiteboard"
+
+
+def _draft_page_scene_path(project: Project, page: TranscriptPage, kind: str) -> str:
+    if kind not in {"original", "custom"}:
+        return ""
+    draft_data = get_project_draft_data(project)
+    if not has_project_draft(project):
+        return ""
+    draft_page = _draft_page_for_active_page(draft_data, page)
+    if draft_page is None:
+        return ""
+    scene = _draft_page_scene_for_storage(draft_page, page)
+    return _normalize_rel_storage_path(str(scene.get(f"{kind}_background_path") or ""))
+
+
+def _draft_url(url: str) -> str:
+    if not url:
+        return ""
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}draft=1"
+
+
+def _draft_scene_differs(active_page: TranscriptPage | None, draft_page: dict) -> bool:
+    if active_page is None:
+        return True
+    active_scene = _page_scene_for_storage(active_page)
+    draft_scene = _draft_page_scene_for_storage(draft_page, active_page)
+    keys = {
+        "background_mode",
+        "background_fit",
+        "text_scale",
+        "original_background_path",
+        "custom_background_path",
+    }
+    for key in keys:
+        active_value = active_scene.get(key)
+        draft_value = draft_scene.get(key)
+        if key.endswith("_path"):
+            active_value = _normalize_rel_storage_path(str(active_value or ""))
+            draft_value = _normalize_rel_storage_path(str(draft_value or ""))
+        if active_value != draft_value:
+            return True
+    return bool(draft_page.get("whiteboard_mode")) != bool(getattr(active_page, "whiteboard_mode", False))
+
+
+def _draft_page_response(project: Project, draft_page: dict, request) -> dict:
+    page = TranscriptPage(project=project)
+    for field in (
+        "id",
+        "order",
+        "source_slide_index",
+        "split_index",
+        "page_key",
+        "original_text",
+        "narration_text",
+        "rich_text_html",
+        "editor_document",
+        "subtitle_chunks",
+        "whiteboard_mode",
+        "is_active",
+        "start_seconds",
+        "end_seconds",
+        "duration_seconds",
+    ):
+        if field in draft_page:
+            setattr(page, field, deepcopy(draft_page.get(field)))
+    page.is_active = True
+    active_page = None
+    try:
+        draft_id = int(draft_page.get("id") or 0)
+    except (TypeError, ValueError):
+        draft_id = 0
+    if draft_id > 0:
+        active_page = project.transcript_pages.filter(pk=draft_id).first()
+    if active_page is None and draft_page.get("page_key"):
+        active_page = project.transcript_pages.filter(page_key=str(draft_page.get("page_key"))).first()
+
+    data = TranscriptPageSerializer(page, context={"request": request}).data
+    scene = data.get("editor_document", {}).get("scene")
+    if isinstance(scene, dict) and draft_id > 0:
+        for kind in ("original", "custom"):
+            url_key = f"{kind}_background_url"
+            if scene.get(url_key):
+                scene[url_key] = _draft_url(scene[url_key])
+    data["draft_scene_dirty"] = _draft_scene_differs(active_page, draft_page)
+    data["draft_background_dirty"] = bool(data["draft_scene_dirty"])
+    return data
 
 
 def _active_transcript_pages(project: Project):
@@ -1193,12 +1008,7 @@ def _deleted_transcript_pages(project: Project):
     return transcript_rel.filter(is_active=False).order_by("deleted_at", "order", "id")
 
 
-def _project_transcript_timeline(
-    project: Project,
-    *,
-    include_deleted: bool = False,
-    request=None,
-) -> list[dict]:
+def _project_transcript_timeline(project: Project, *, include_deleted: bool = False, context: dict | None = None) -> list[dict]:
     if include_deleted:
         transcript_rel = getattr(project, "transcript_pages", None)
         if transcript_rel is None:
@@ -1206,19 +1016,11 @@ def _project_transcript_timeline(
         pages = transcript_rel.all().order_by("order", "id")
     else:
         pages = _active_transcript_pages(project)
-    serialized = TranscriptPageSerializer(pages, many=True).data
-    for page in serialized:
-        slide_index = page.get("source_slide_index")
-        thumbnail_url = ""
-        if slide_index is not None:
-            rel_path = f"/api/v1/projects/{project.id}/slides/{int(slide_index)}/image/"
-            thumbnail_url = request.build_absolute_uri(rel_path) if request is not None else rel_path
-        page["thumbnail_url"] = thumbnail_url
-    return serialized
+    return TranscriptPageSerializer(pages, many=True, context=context or {}).data
 
 
-def _project_deleted_transcript_timeline(project: Project) -> list[dict]:
-    return TranscriptPageSerializer(_deleted_transcript_pages(project), many=True).data
+def _project_deleted_transcript_timeline(project: Project, *, context: dict | None = None) -> list[dict]:
+    return TranscriptPageSerializer(_deleted_transcript_pages(project), many=True, context=context or {}).data
 
 
 def _rich_text_html_from_narration(text: str) -> str:
@@ -1227,8 +1029,18 @@ def _rich_text_html_from_narration(text: str) -> str:
 
 def _set_page_narration_artifacts(page: TranscriptPage, narration_text: str) -> None:
     page.narration_text = str(narration_text or "")
-    page.rich_text_html = _rich_text_html_from_narration(page.narration_text)
-    page.editor_document = _build_editor_document(page.narration_text, page.rich_text_html)
+    page.rich_text_html = _rich_text_html_from_narration(page.original_text)
+    text_flags = _text_flags_from_editor_document(
+        getattr(page, "editor_document", None),
+        original_text=getattr(page, "original_text", ""),
+        narration_text=page.narration_text,
+    )
+    text_flags["narration_customized"] = bool(
+        re.sub(r"\s+", " ", page.narration_text).strip()
+        and re.sub(r"\s+", " ", str(page.original_text or "")).strip()
+        != re.sub(r"\s+", " ", page.narration_text).strip()
+    )
+    page.editor_document = _editor_document_with_scene(page, page.original_text, page.rich_text_html, text_flags=text_flags)
     page.subtitle_chunks = _chunk_transcript_text(page.narration_text)
 
 
@@ -1301,7 +1113,10 @@ def _split_pages_on_double_newline(project: Project) -> None:
                 original_text=part,
                 narration_text=part,
                 rich_text_html=part.replace("\n", "<br />"),
-                editor_document=_build_editor_document(part, part.replace("\n", "<br />")),
+                editor_document=_merge_editor_document_preserving_scene(
+                    _build_editor_document(part, part.replace("\n", "<br />")),
+                    page.editor_document,
+                ),
                 subtitle_chunks=_chunk_transcript_text(part),
                 whiteboard_mode=page.whiteboard_mode,
             )
@@ -2223,6 +2038,7 @@ class ProjectCoverImageView(APIView):
     - Draft/private lesson covers are visible to the owner or staff only.
     """
 
+    parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.AllowAny]
 
     def _can_view_private_cover(self, request, project: Project) -> bool:
@@ -2239,11 +2055,20 @@ class ProjectCoverImageView(APIView):
         except Project.DoesNotExist:
             raise Http404
 
-        rel_path = _normalize_rel_storage_path(project.cover_image_processed or project.cover_image_original)
+        use_draft = _truthy_request_value(request.query_params.get("draft"))
+        if use_draft:
+            if not self._can_view_private_cover(request, project):
+                raise Http404
+            draft_fields = get_draft_project_fields(project) if has_project_draft(project) else {}
+            rel_path = _normalize_rel_storage_path(
+                draft_fields.get("cover_image_processed") or draft_fields.get("cover_image_original")
+            )
+        else:
+            rel_path = _normalize_rel_storage_path(project.cover_image_processed or project.cover_image_original)
         if not rel_path:
             raise Http404
 
-        if not _is_public_lesson(project) and not self._can_view_private_cover(request, project):
+        if not use_draft and not _is_public_lesson(project) and not self._can_view_private_cover(request, project):
             raise Http404
 
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
@@ -2255,6 +2080,58 @@ class ProjectCoverImageView(APIView):
         response = _media_file_response(request, full_path, content_type)
         response["Cache-Control"] = "public, max-age=300"
         return response
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        cover_file = request.FILES.get("cover_file") or request.FILES.get("image") or request.FILES.get("file")
+        if cover_file is None:
+            return Response({"error": "cover_file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            cover_ext = _validate_cover_upload(cover_file)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        upload_dir = storage_root / "uploads" / str(project.id)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        saved_cover_path = upload_dir / f"cover_{uuid.uuid4().hex[:10]}{cover_ext}"
+        _write_uploaded_file(cover_file, saved_cover_path)
+        cover_rel_path = str(saved_cover_path.relative_to(storage_root)).replace("\\", "/")
+
+        if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
+            draft_data = ensure_project_draft_data(project)
+            project_fields = draft_data.setdefault("project", {})
+            project_fields["cover_image_original"] = cover_rel_path
+            project_fields["cover_image_processed"] = cover_rel_path
+            metadata = draft_data.setdefault("metadata", {})
+            metadata["cover_dirty"] = True
+            metadata["visual_assets_dirty"] = True
+            save_project_draft_data(project, draft_data, dirty=True)
+            project.refresh_from_db()
+            return Response(ProjectSerializer(project, context={"request": request}).data, status=status.HTTP_200_OK)
+
+        project.cover_image_original = cover_rel_path
+        project.cover_image_processed = cover_rel_path
+        project.save(update_fields=["cover_image_original", "cover_image_processed", "updated_at"])
+        _mark_project_visual_moderation_stale(
+            project,
+            reason="studio_cover_changed",
+            asset_type="cover",
+            asset_path=cover_rel_path,
+        )
+        _run_auto_visual_moderation_for_changed_asset(
+            project,
+            asset_type="cover",
+            asset_path=cover_rel_path,
+        )
+        project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+        return Response(ProjectSerializer(project, context={"request": request}).data, status=status.HTTP_200_OK)
 
 
 class MediaStreamView(APIView):
@@ -2345,7 +2222,9 @@ class MediaStreamView(APIView):
         elif file_type == "srt":
             if not job.srt_url:
                 return _stream_error_response(file_type=file_type, status_code=status.HTTP_200_OK, reason="subtitle_missing")
-            rel_path = job.srt_url.lstrip("/")
+            rel_path = rel_path.lstrip("/") if rel_path else job.srt_url.lstrip("/")
+            if rel_path != job.srt_url.lstrip("/") and not rel_path.startswith(f"{job.project_id}/"):
+                return _stream_error_response(file_type=file_type, status_code=status.HTTP_404_NOT_FOUND, reason="resource_outside_project")
         elif file_type == "vtt":
             if not job.srt_url:
                 return _stream_error_response(file_type=file_type, status_code=status.HTTP_200_OK, reason="subtitle_missing")
@@ -2492,18 +2371,15 @@ class PlaybackTokenView(APIView):
         playback_session_id = None
         session_binding_active = bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True))
         if protection_mode != "public":
-            # Studio owners/managers should be able to preview their own lesson
-            # without being blocked by learner-focused concurrency guards.
-            if not _can_manage_project(request.user, project):
-                allowed, deny_reason = _enforce_playback_concurrency(lesson_id, request, protection_mode)
-                if not allowed:
-                    return Response(
-                        {
-                            "error": "This lesson is already active in another browser session.",
-                            "reason": deny_reason,
-                        },
-                        status=status.HTTP_409_CONFLICT,
-                    )
+            allowed, deny_reason = _enforce_playback_concurrency(lesson_id, request, protection_mode)
+            if not allowed:
+                return Response(
+                    {
+                        "error": "This lesson is already active in another browser session.",
+                        "reason": deny_reason,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             grant_id, _scope_key = _issue_playback_grant(lesson_id, request, protection_mode, ttl_seconds)
             bind_key = _bind_key_for_request(request) if session_binding_active else None
             playback_session_id = _playback_session_id(job.id, grant_id)
@@ -2553,11 +2429,10 @@ class PlaybackTokenView(APIView):
             bind_key=bind_key,
         ) if job.srt_url else None
         logger.info(
-            "Playback token issued: project_id=%s job_id=%s mode=%s has_grant=%s has_hls=%s mp4_fallback=%s",
+            "Playback token issued: project_id=%s job_id=%s mode=%s has_hls=%s mp4_fallback=%s",
             project.id,
             job.id,
             protection_mode,
-            bool(grant_id),
             bool(hls_manifest_token),
             bool(video_token),
         )
@@ -2580,8 +2455,354 @@ class PlaybackTokenView(APIView):
             avatar_token=avatar_token,
             avatar_overlay_defaults=_avatar_overlay_defaults_for_project(project),
         )
-        payload["transcript_pages"] = _project_transcript_timeline(project)
+        payload["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})
         return Response(payload)
+
+
+class ProjectSubtitleTrackListView(APIView):
+    """
+    GET/POST /api/v1/projects/<project_id>/subtitle-tracks/
+
+    GET returns original subtitle track metadata plus translated track metadata.
+    POST synchronously generates a translated subtitle sidecar through the
+    configured provider chain when subtitle translation is enabled.
+
+    Ready track URLs are short-lived stream tokens and never raw storage paths.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, project_id):
+        try:
+            project = Project.objects.select_related("user").get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_access_subtitle_tracks(request, project):
+            return Response({"error": "Lesson not available."}, status=status.HTTP_404_NOT_FOUND)
+
+        latest_job = project.jobs.filter(status="done").order_by("-created_at").first()
+        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+        language_payload = _language_detection_sidecar_for_job(storage_root, project.id)
+        source_language = str(
+            language_payload.get("resolved_language")
+            or language_payload.get("detected_language")
+            or ""
+        ).strip().lower()
+
+        protection_mode = "public"
+        ttl_seconds = _token_ttl_for_mode(protection_mode)
+        grant_id = None
+        bind_key = None
+        if latest_job is not None:
+            protection_mode, ttl_seconds, grant_id, bind_key = _subtitle_playback_token_context(request, project, latest_job, sidecar)
+
+        original_vtt_url = None
+        if latest_job is not None and latest_job.srt_url:
+            vtt_token = _generate_vtt_media_token_for_job(
+                latest_job,
+                storage_root=storage_root,
+                ttl_seconds=ttl_seconds,
+                grant_id=grant_id,
+                bind_key=bind_key,
+            )
+            original_vtt_url = _stream_url(request, vtt_token) if vtt_token else None
+
+        tracks = [
+            {
+                "id": "original",
+                "type": "original",
+                "language_code": "original",
+                "language_label": "Original",
+                "source_language_code": source_language,
+                "provider": "original",
+                "status": "ready" if original_vtt_url else ("srt_only" if latest_job and latest_job.srt_url else "missing"),
+                "cue_count": None,
+                "vtt_url": original_vtt_url,
+                "has_vtt": bool(original_vtt_url),
+                "is_original": True,
+                "requires_rerender": bool(latest_job and latest_job.srt_url and not original_vtt_url),
+                "metadata": {"source": "original"},
+            }
+        ]
+
+        can_manage = _can_manage_project(getattr(request, "user", None), project)
+        translated_tracks = TranslatedSubtitleTrack.objects.filter(project=project).select_related("job").order_by("language_code", "id")
+        if not can_manage:
+            translated_tracks = translated_tracks.filter(status__in=["pending", "processing", "ready", "failed"])
+
+        for track in translated_tracks:
+            stream_job = track.job if track.job_id and track.job and track.job.srt_url else latest_job
+            tracks.append(
+                _translated_track_payload(
+                    request,
+                    track=track,
+                    stream_job=stream_job,
+                    ttl_seconds=ttl_seconds,
+                    grant_id=grant_id,
+                    bind_key=bind_key,
+                )
+            )
+
+        return Response(
+            {
+                "project_id": project.id,
+                "translation_enabled": bool(getattr(settings, "SUBTITLE_TRANSLATION_ENABLED", False)),
+                "translation_provider": str(getattr(settings, "SUBTITLE_TRANSLATION_PROVIDER", "auto") or "auto"),
+                "target_languages": _translation_target_languages(),
+                "requestable_languages": _public_subtitle_request_languages(),
+                "tracks": tracks,
+            }
+        )
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.select_related("user").get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        can_manage = _can_manage_project(getattr(request, "user", None), project)
+        is_public_request = not can_manage
+        if is_public_request and not _is_published_playable_lesson(project):
+            return Response({"error": "Lesson not available."}, status=status.HTTP_404_NOT_FOUND)
+        if is_public_request and not bool(getattr(settings, "SUBTITLE_PUBLIC_REQUESTS_ENABLED", True)):
+            return Response(
+                {
+                    "error": "public_requests_disabled",
+                    "details": "Public subtitle generation requests are disabled.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not bool(getattr(settings, "SUBTITLE_TRANSLATION_ENABLED", False)):
+            return Response(
+                {
+                    "error": "Subtitle translation generation is disabled.",
+                    "translation_enabled": False,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        language_code = str(request.data.get("language_code") or "").strip()
+        if not language_code:
+            return Response({"error": "language_code is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            normalized_language_code = _normalize_subtitle_request_language_code(language_code)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if is_public_request and normalized_language_code not in _public_subtitle_request_language_allowlist():
+            return Response(
+                {
+                    "error": "unsupported_language",
+                    "details": "This subtitle language is not available for public requests.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        language_label = str(request.data.get("language_label") or "").strip()
+        if is_public_request:
+            language_label = _public_subtitle_request_language_label(normalized_language_code)
+        provider = str(request.data.get("provider") or getattr(settings, "SUBTITLE_TRANSLATION_PROVIDER", "auto") or "auto").strip().lower()
+        if is_public_request:
+            provider = str(getattr(settings, "SUBTITLE_TRANSLATION_PROVIDER", "auto") or "auto").strip().lower()
+
+        latest_job = project.jobs.filter(status="done").order_by("-created_at").first()
+        existing_track = (
+            TranslatedSubtitleTrack.objects.filter(
+                project=project,
+                language_code=normalized_language_code,
+                status="ready",
+            )
+            .exclude(vtt_path="")
+            .select_related("job")
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if existing_track is not None:
+            sidecar = _playback_sidecar_for_job(getattr(settings, "STORAGE_ROOT", "storage_local"), project.id)
+            stream_job = existing_track.job if existing_track.job_id and existing_track.job and existing_track.job.srt_url else latest_job
+            _protection_mode, ttl_seconds, grant_id, bind_key = (
+                _subtitle_playback_token_context(request, project, stream_job, sidecar)
+                if stream_job
+                else ("public", _token_ttl_for_mode("public"), None, None)
+            )
+            return Response(
+                {
+                    "already_available": True,
+                    "track": _translated_track_payload(
+                        request,
+                        track=existing_track,
+                        stream_job=stream_job,
+                        ttl_seconds=ttl_seconds,
+                        grant_id=grant_id,
+                        bind_key=bind_key,
+                    ),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        processing_track = (
+            TranslatedSubtitleTrack.objects.filter(
+                project=project,
+                language_code=normalized_language_code,
+                status__in=["pending", "processing"],
+            )
+            .select_related("job")
+            .order_by("-updated_at", "-id")
+            .first()
+        )
+        if processing_track is not None:
+            sidecar = _playback_sidecar_for_job(getattr(settings, "STORAGE_ROOT", "storage_local"), project.id)
+            stream_job = processing_track.job if processing_track.job_id and processing_track.job and processing_track.job.srt_url else latest_job
+            _protection_mode, ttl_seconds, grant_id, bind_key = (
+                _subtitle_playback_token_context(request, project, stream_job, sidecar)
+                if stream_job
+                else ("public", _token_ttl_for_mode("public"), None, None)
+            )
+            return Response(
+                {
+                    "status": "processing",
+                    "details": "Subtitle generation for this language is already in progress.",
+                    "track": _translated_track_payload(
+                        request,
+                        track=processing_track,
+                        stream_job=stream_job,
+                        ttl_seconds=ttl_seconds,
+                        grant_id=grant_id,
+                        bind_key=bind_key,
+                    ),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+
+        if is_public_request:
+            rate_limit_response = _public_subtitle_rate_limit_response(request, project.id)
+            if rate_limit_response is not None:
+                return rate_limit_response
+            if provider == "mock" and not _public_subtitle_mock_fallback_allowed():
+                return Response(
+                    {
+                        "error": "provider_unavailable",
+                        "details": "Mock subtitle translation fallback is disabled for public requests.",
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+
+        lock_key = _subtitle_generation_lock_key(project.id, normalized_language_code)
+        lock_seconds = int(getattr(settings, "SUBTITLE_PUBLIC_REQUEST_LOCK_SECONDS", 300) or 300)
+        if not cache.add(lock_key, "1", timeout=max(lock_seconds, 1)):
+            return Response(
+                {
+                    "error": "generation_in_progress",
+                    "details": "Subtitle generation for this language is already in progress.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        active_reserved = False
+        try:
+            if is_public_request:
+                active_reserved = _reserve_public_subtitle_active_slot(project.id)
+                if not active_reserved:
+                    cache.delete(lock_key)
+                    return Response(
+                        {
+                            "error": "generation_in_progress",
+                            "details": "Too many subtitle generations are already running for this lesson.",
+                        },
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+            existing_for_update = TranslatedSubtitleTrack.objects.filter(
+                project=project,
+                language_code=normalized_language_code,
+            ).first()
+            metadata = dict(existing_for_update.metadata or {}) if existing_for_update else {}
+            metadata.update(
+                {
+                    "provider_requested": provider,
+                    "generation_mode": "async",
+                    "request_source": "public" if is_public_request else "owner",
+                    "queued_at": timezone.now().isoformat(),
+                }
+            )
+            track, _created = TranslatedSubtitleTrack.objects.update_or_create(
+                project=project,
+                language_code=normalized_language_code,
+                defaults={
+                    "job": latest_job,
+                    "language_label": language_label or _public_subtitle_request_language_label(normalized_language_code),
+                    "provider": provider,
+                    "status": "processing",
+                    "srt_path": "",
+                    "vtt_path": "",
+                    "cue_count": 0,
+                    "error_message": "",
+                    "metadata": metadata,
+                },
+            )
+            async_result = _dispatch_celery_task(
+                _SUBTITLE_TRANSLATION_TASK,
+                kwargs={
+                    "project_id": project.id,
+                    "language_code": normalized_language_code,
+                    "language_label": track.language_label,
+                    "provider": provider,
+                    "storage_root": getattr(settings, "STORAGE_ROOT", "storage_local"),
+                    "allow_mock_fallback": _public_subtitle_mock_fallback_allowed() if is_public_request else None,
+                    "lock_key": lock_key,
+                    "release_public_active_slot": bool(active_reserved),
+                },
+                queue=_render_queue_name(),
+            )
+            task_id = str(getattr(async_result, "id", "") or "")
+            if task_id:
+                task_metadata = dict(track.metadata or {})
+                task_metadata["celery_task_id"] = task_id
+                track.metadata = task_metadata
+                track.save(update_fields=["metadata", "updated_at"])
+        except Exception as exc:  # noqa: BLE001
+            if active_reserved:
+                _release_public_subtitle_active_slot(project.id)
+            cache.delete(lock_key)
+            failed_track = TranslatedSubtitleTrack.objects.filter(
+                project=project,
+                language_code=normalized_language_code,
+            ).first()
+            if failed_track is not None:
+                failed_track.status = "failed"
+                failed_track.error_message = "Subtitle generation could not be queued."
+                failed_track.save(update_fields=["status", "error_message", "updated_at"])
+            logger.exception("Subtitle generation enqueue failed for project_id=%s language=%s", project.id, normalized_language_code)
+            return Response(
+                {
+                    "error": "enqueue_failed",
+                    "details": "Subtitle generation could not be queued. Try again later.",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+        stream_job = track.job if track.job_id and track.job and track.job.srt_url else latest_job
+        _protection_mode, ttl_seconds, grant_id, bind_key = (
+            _subtitle_playback_token_context(request, project, stream_job, sidecar)
+            if stream_job
+            else ("public", _token_ttl_for_mode("public"), None, None)
+        )
+        return Response(
+            {
+                "status": "processing",
+                "details": "Subtitle generation has started.",
+                "task_id": task_id,
+                "track": _translated_track_payload(
+                    request,
+                    track=track,
+                    stream_job=stream_job,
+                    ttl_seconds=ttl_seconds,
+                    grant_id=grant_id,
+                    bind_key=bind_key,
+                ),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
 
 
 class PlaybackSessionHeartbeatView(APIView):
@@ -2783,31 +3004,26 @@ def _project_tts_settings(project: Project) -> dict[str, Any]:
     return canonical_project_tts_settings(getattr(project, "tts_settings", None))
 
 
-def _normalize_render_profile(raw_value: Any, *, default: str = "balanced") -> str:
-    value = str(raw_value or "").strip().lower()
-    if not value:
-        return default
-    if value not in _RENDER_PROFILE_CHOICES:
-        raise ValueError("render_profile must be one of: fast, balanced, quality.")
-    return value
-
-
-def _apply_render_profile_to_avatar_options(avatar_options: dict[str, Any], render_profile: str) -> dict[str, Any]:
-    options = dict(avatar_options or {})
-    if not options:
-        return options
-    if "quality_preset" not in options or not options.get("quality_preset"):
-        if render_profile == "fast":
-            options["quality_preset"] = "low"
-        elif render_profile == "quality":
-            options["quality_preset"] = "high"
-        else:
-            options["quality_preset"] = "medium"
-    return options
+def _project_render_tts_settings(project: Project, *, use_draft: bool = False) -> dict[str, Any]:
+    if use_draft:
+        draft_fields = get_draft_project_fields(project)
+        if isinstance(draft_fields.get("tts_settings"), dict):
+            return canonical_project_tts_settings(draft_fields.get("tts_settings"))
+    return _project_tts_settings(project)
 
 
 def _is_public_lesson(project: Project) -> bool:
+    """True only for catalog-visible lessons: published + render done + moderation approved.
+
+    This governs public/anonymous access (catalog, social endpoints, playback token).
+    Owner/staff access is always gated by _can_manage_project(), not this function.
+    """
     if hasattr(project, "is_published") and not bool(getattr(project, "is_published", False)):
+        return False
+    if hasattr(project, "moderation_status") and not moderation_is_approved_for_catalog(project):
+        return False
+    # Render must also be complete for a fully public lesson.
+    if hasattr(project, "status") and str(getattr(project, "status", "") or "") != "ready":
         return False
     try:
         return bool(project.jobs.filter(status="done").exists())
@@ -2816,10 +3032,304 @@ def _is_public_lesson(project: Project) -> bool:
         return bool(latest_job)
 
 
+def _project_has_completed_render(project: Project) -> bool:
+    try:
+        return bool(project.jobs.filter(status="done").exists())
+    except AttributeError:
+        latest_job = project.jobs.filter(status="done").order_by("-created_at").first()
+        return bool(latest_job)
+
+
+def _is_published_playable_lesson(project: Project) -> bool:
+    """Published, moderation-allowed, and backed by a completed render.
+
+    Some existing lessons have a stale Project.status="draft" even though their
+    latest render job is done. Subtitle track metadata should follow playable
+    render state without changing catalog/dashboard status semantics.
+    """
+    if hasattr(project, "is_published") and not bool(getattr(project, "is_published", False)):
+        return False
+    if hasattr(project, "moderation_status") and not moderation_is_approved_for_catalog(project):
+        return False
+    return _project_has_completed_render(project)
+
+
+def _can_access_subtitle_tracks(request, project: Project) -> bool:
+    if _can_access_lesson_playback(request, project):
+        return True
+    if _is_published_playable_lesson(project):
+        return True
+    return False
+
+
 def _can_access_lesson_playback(request, project: Project) -> bool:
     if _is_public_lesson(project):
         return True
     return _can_manage_project(getattr(request, "user", None), project)
+
+
+def _translation_target_languages() -> list[str]:
+    raw = str(getattr(settings, "SUBTITLE_TRANSLATION_TARGET_LANGUAGES", "") or "")
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+_DEFAULT_PUBLIC_SUBTITLE_LANGUAGE_ALLOWLIST = "en,ar,tr,fr,de,es,it,pt,ru,zh,ja,ko,hi,ur,id,fa"
+
+_DEFAULT_PUBLIC_SUBTITLE_LANGUAGE_LABELS = {
+    "en": "English",
+    "ar": "Arabic",
+    "tr": "Turkish",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "hi": "Hindi",
+    "ur": "Urdu",
+    "id": "Indonesian",
+    "fa": "Persian",
+}
+
+
+def _normalize_subtitle_request_language_code(value: str) -> str:
+    code = str(value or "").strip().lower().replace("_", "-")
+    if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", code):
+        raise ValueError("language_code must be a supported BCP-47 style language code.")
+    return code
+
+
+def _public_subtitle_request_language_allowlist() -> set[str]:
+    return set(_public_subtitle_request_language_codes())
+
+
+def _public_subtitle_request_language_codes() -> list[str]:
+    raw = str(
+        getattr(
+            settings,
+            "SUBTITLE_PUBLIC_REQUEST_LANGUAGE_ALLOWLIST",
+            _DEFAULT_PUBLIC_SUBTITLE_LANGUAGE_ALLOWLIST,
+        )
+        or ""
+    )
+    codes = []
+    seen = set()
+    for item in raw.split(","):
+        if not str(item or "").strip():
+            continue
+        code = _normalize_subtitle_request_language_code(item)
+        if code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes
+
+
+def _public_subtitle_request_languages() -> list[dict]:
+    return [
+        {
+            "language_code": code,
+            "language_label": _public_subtitle_request_language_label(code),
+        }
+        for code in _public_subtitle_request_language_codes()
+    ]
+
+
+def _public_subtitle_request_language_label(language_code: str) -> str:
+    code = _normalize_subtitle_request_language_code(language_code)
+    return _DEFAULT_PUBLIC_SUBTITLE_LANGUAGE_LABELS.get(code, code.upper())
+
+
+def _subtitle_request_actor_key(request) -> tuple[str, str]:
+    user = getattr(request, "user", None)
+    if _is_authenticated_user(user):
+        return "user", str(user.id)
+    forwarded_for = str(request.META.get("HTTP_X_FORWARDED_FOR") or "").split(",", 1)[0].strip()
+    remote_addr = str(request.META.get("REMOTE_ADDR") or "").strip()
+    ip_address = forwarded_for or remote_addr or "unknown"
+    return "ip", ip_address
+
+
+def _public_subtitle_rate_limit_response(request, project_id: int) -> Response | None:
+    actor_type, actor_value = _subtitle_request_actor_key(request)
+    limit_setting = (
+        "SUBTITLE_PUBLIC_REQUEST_RATE_LIMIT_PER_HOUR"
+        if actor_type == "user"
+        else "SUBTITLE_PUBLIC_REQUEST_RATE_LIMIT_ANON_PER_HOUR"
+    )
+    limit = int(getattr(settings, limit_setting, 10 if actor_type == "user" else 5) or 0)
+    if limit <= 0:
+        return Response(
+            {
+                "error": "rate_limited",
+                "details": "Too many subtitle generation requests. Try again later.",
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+    actor_hash = hashlib.sha256(actor_value.encode("utf-8")).hexdigest()[:24]
+    key = f"subtitle-request-rate:{actor_type}:{actor_hash}:project:{int(project_id)}"
+    cache.add(key, 0, timeout=3600)
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=3600)
+        count = 1
+    if count > limit:
+        return Response(
+            {
+                "error": "rate_limited",
+                "details": "Too many subtitle generation requests. Try again later.",
+            },
+            status=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+    return None
+
+
+def _subtitle_generation_lock_key(project_id: int, language_code: str) -> str:
+    return f"subtitle-generate:{int(project_id)}:{_normalize_subtitle_request_language_code(language_code)}"
+
+
+def _public_subtitle_active_key(project_id: int) -> str:
+    return f"subtitle-generate-active:{int(project_id)}"
+
+
+def _reserve_public_subtitle_active_slot(project_id: int) -> bool:
+    max_active = int(getattr(settings, "SUBTITLE_PUBLIC_REQUEST_MAX_ACTIVE_PER_PROJECT", 3) or 0)
+    if max_active <= 0:
+        return False
+    timeout = max(int(getattr(settings, "SUBTITLE_PUBLIC_REQUEST_LOCK_SECONDS", 300) or 300), 1)
+    key = _public_subtitle_active_key(project_id)
+    cache.add(key, 0, timeout=timeout)
+    try:
+        count = cache.incr(key)
+    except ValueError:
+        cache.set(key, 1, timeout=timeout)
+        count = 1
+    if count > max_active:
+        try:
+            cache.decr(key)
+        except ValueError:
+            cache.set(key, 0, timeout=timeout)
+        return False
+    return True
+
+
+def _release_public_subtitle_active_slot(project_id: int) -> None:
+    key = _public_subtitle_active_key(project_id)
+    try:
+        cache.decr(key)
+    except ValueError:
+        cache.delete(key)
+
+
+def _public_subtitle_mock_fallback_allowed() -> bool:
+    return bool(
+        getattr(settings, "SUBTITLE_TRANSLATION_ALLOW_MOCK_FALLBACK", True)
+        and getattr(settings, "SUBTITLE_PRODUCTION_ALLOW_MOCK_FALLBACK", bool(getattr(settings, "DEBUG", False)))
+    )
+
+
+def _safe_project_subtitle_rel_path(project_id: int, rel_path: str) -> str:
+    normalized = str(rel_path or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized or ".." in normalized.split("/"):
+        return ""
+    if not normalized.startswith(f"{int(project_id)}/"):
+        return ""
+    return normalized
+
+
+def _subtitle_stream_url_for_rel_path(
+    request,
+    *,
+    job: Job | None,
+    rel_path: str,
+    file_type: str,
+    ttl_seconds: int,
+    grant_id: str | None,
+    bind_key: str | None,
+) -> str | None:
+    if job is None:
+        return None
+    safe_rel = _safe_project_subtitle_rel_path(int(job.project_id or 0), rel_path)
+    if not safe_rel:
+        return None
+    storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+    if not _storage_rel_path_exists(storage_root, safe_rel):
+        return None
+    token = generate_media_token(
+        job.id,
+        file_type,
+        rel_path=safe_rel,
+        ttl_seconds=ttl_seconds,
+        grant_id=grant_id,
+        bind_key=bind_key,
+    )
+    return _stream_url(request, token)
+
+
+def _subtitle_playback_token_context(request, project: Project, job: Job, sidecar: dict | None) -> tuple[str, int, str | None, str | None]:
+    protection_mode, _mode_debug, lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
+    ttl_seconds = _token_ttl_for_mode(protection_mode)
+    grant_id = None
+    bind_key = None
+    if not lesson_is_public or protection_mode == "drm_protected":
+        grant_id, _scope_key = _issue_playback_grant(project.id, request, protection_mode, ttl_seconds)
+        bind_key = _bind_key_for_request(request) if bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True)) else None
+    return protection_mode, ttl_seconds, grant_id, bind_key
+
+
+def _translated_track_payload(
+    request,
+    *,
+    track: TranslatedSubtitleTrack,
+    stream_job: Job | None,
+    ttl_seconds: int,
+    grant_id: str | None,
+    bind_key: str | None,
+) -> dict:
+    srt_url = None
+    vtt_url = None
+    if track.status == "ready" and track.srt_path:
+        srt_url = _subtitle_stream_url_for_rel_path(
+            request,
+            job=stream_job,
+            rel_path=track.srt_path,
+            file_type="srt",
+            ttl_seconds=ttl_seconds,
+            grant_id=grant_id,
+            bind_key=bind_key,
+        )
+    if track.status == "ready" and track.vtt_path:
+        vtt_url = _subtitle_stream_url_for_rel_path(
+            request,
+            job=stream_job,
+            rel_path=track.vtt_path,
+            file_type="vtt",
+            ttl_seconds=ttl_seconds,
+            grant_id=grant_id,
+            bind_key=bind_key,
+        )
+    return {
+        "id": track.id,
+        "type": "translated",
+        "language_code": track.language_code,
+        "language_label": track.language_label or track.language_code,
+        "source_language_code": track.source_language_code or "",
+        "provider": track.provider,
+        "status": track.status,
+        "cue_count": int(track.cue_count or 0),
+        "srt_url": srt_url,
+        "vtt_url": vtt_url,
+        "has_vtt": bool(vtt_url),
+        "is_original": False,
+        "created_at": track.created_at,
+        "updated_at": track.updated_at,
+        "metadata": track.metadata or {},
+        "error_message": track.error_message if track.status == "failed" else "",
+    }
 
 
 def _composite_engine_configured() -> bool:
@@ -2923,6 +3433,23 @@ def _avatar_preview_readiness(profile: UserProfile, voice_profile: VoiceProfile 
     return avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
 
 
+def _avatar_moderation_block_response(profile: UserProfile, gate: dict, *, status_label: str = "avatar_not_prepared"):
+    profile.avatar_image_status = "rejected"
+    profile.avatar_preview_error = str(gate.get("message") or "Avatar source image needs moderation review.")
+    profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+    return Response(
+        {
+            "status": status_label,
+            "error_code": gate.get("error_code") or "avatar_image_moderation_blocked",
+            "error": profile.avatar_preview_error,
+            "avatar_moderation_status": gate.get("status") or profile.avatar_moderation_status,
+            "avatar_moderation_summary": gate.get("summary") or profile.avatar_moderation_summary,
+            "missing_requirements": [gate.get("error_code") or "avatar_image_moderation_blocked"],
+        },
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 def _preview_error_code_for_status(status_value: str, error_text: str | None) -> str:
     stage = _normalize_preview_stage(status_value)
     if stage == "warning":
@@ -2982,6 +3509,9 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     if selected_engine == "liveportrait+musetalk" and not composite_ready:
         engine_resolution = "composite_unconfigured"
         disable_reason = "liveportrait+musetalk requested but composite runtime is not configured"
+    moderation_gate = avatar_image_moderation_gate(profile)
+    if moderation_gate.get("blocked"):
+        disable_reason = str(moderation_gate.get("message") or "Avatar source image needs moderation review.")
 
     lesson_engine = selected_engine
     composite_fallback_allowed = _composite_fallback_allowed()
@@ -3004,6 +3534,10 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
         "avatar_source_hash": str(source_state.get("source_hash") or profile.avatar_source_hash or ""),
         "avatar_preview_stale": bool(source_state.get("preview_stale")),
         "avatar_preview_source_hash": str(source_state.get("preview_source_hash") or profile.avatar_preview_source_hash or ""),
+        "avatar_moderation_status": str(profile.avatar_moderation_status or "not_scanned"),
+        "avatar_moderation_blocked": bool(moderation_gate.get("blocked")),
+        "avatar_moderation_error_code": str(moderation_gate.get("error_code") or ""),
+        "avatar_moderation_summary": dict(profile.avatar_moderation_summary or {}),
         "composite_configured": composite_ready,
         "composite_lesson_enabled": _composite_lesson_enabled(),
         "composite_fallback_allowed": composite_fallback_allowed,
@@ -3025,10 +3559,12 @@ def _avatar_overlay_defaults_for_project(project: Project) -> dict:
 def _avatar_active_for_project(project: Project) -> bool:
     project_user = getattr(project, "user", None)
     teacher_profile = getattr(project_user, "profile", None) if project_user else None
+    moderation_gate = avatar_image_moderation_gate(teacher_profile) if teacher_profile is not None else {"blocked": False}
     profile_enabled = bool(
         teacher_profile
         and teacher_profile.avatar_enabled
         and teacher_profile.avatar_consent_confirmed
+        and not bool(moderation_gate.get("blocked"))
         and bool(getattr(teacher_profile, "avatar_source_valid", False))
         and not bool(getattr(teacher_profile, "avatar_preview_stale", False))
         and (teacher_profile.avatar_image_processed or teacher_profile.avatar_video_original)
@@ -3111,65 +3647,6 @@ def _resolve_storage_file(storage_root: Path, rel_path: str) -> Path | None:
     return full_path
 
 
-def _normalize_request_id(raw_value: Any) -> str:
-    value = str(raw_value or "").strip()
-    if not value:
-        return ""
-    cleaned = re.sub(r"[^A-Za-z0-9._:-]", "", value)[:120]
-    return cleaned
-
-
-def _client_request_id(request) -> str:
-    data_value = ""
-    try:
-        if hasattr(request, "data"):
-            data_value = request.data.get("request_id", "")
-    except Exception:
-        data_value = ""
-    header_value = request.headers.get("Idempotency-Key") or request.headers.get("X-Request-Id") or ""
-    return _normalize_request_id(data_value or header_value)
-
-
-def _idempotency_cache_ttl_seconds() -> int:
-    try:
-        return max(60, int(getattr(settings, "IDEMPOTENCY_CACHE_TTL_SECONDS", 24 * 60 * 60)))
-    except Exception:
-        return 24 * 60 * 60
-
-
-def _idempotency_cache_key(*, project_id: int, job_type: str, request_id: str) -> str:
-    return f"idem:job:{int(project_id)}:{str(job_type or '').strip()}:{_normalize_request_id(request_id)}"
-
-
-def _remember_idempotent_job(project: Project, job_type: str, request_id: str, job_id: int) -> None:
-    safe_request_id = _normalize_request_id(request_id)
-    if not safe_request_id:
-        return
-    cache.set(
-        _idempotency_cache_key(project_id=int(project.id), job_type=job_type, request_id=safe_request_id),
-        int(job_id),
-        timeout=_idempotency_cache_ttl_seconds(),
-    )
-
-
-def _find_existing_idempotent_job(project: Project, job_type: str, request_id: str) -> Job | None:
-    safe_request_id = _normalize_request_id(request_id)
-    if not safe_request_id:
-        return None
-    cached_job_id = cache.get(
-        _idempotency_cache_key(project_id=int(project.id), job_type=job_type, request_id=safe_request_id)
-    )
-    if cached_job_id:
-        cached_job = Job.objects.filter(id=int(cached_job_id), project=project, job_type=job_type).first()
-        if cached_job is not None:
-            return cached_job
-    return (
-        Job.objects.filter(project=project, job_type=job_type, request_id=safe_request_id)
-        .order_by("-created_at")
-        .first()
-    )
-
-
 # ---------------------------------------------------------------------------
 # Pipeline views
 # ---------------------------------------------------------------------------
@@ -3242,7 +3719,6 @@ class ProjectUploadView(APIView):
             return Response({"error": "pause_sec must be a number."}, status=status.HTTP_400_BAD_REQUEST)
 
         user = request.user
-        request_id = _client_request_id(request)
         whiteboard_mode_all = str(request.data.get("whiteboard_mode_all", "0")).strip().lower() in {
             "1", "true", "yes", "on"
         }
@@ -3252,7 +3728,7 @@ class ProjectUploadView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         voice_id = _get_voice_id(user)
 
-        avatar_enabled_override = None
+        avatar_enabled_override = False
         if "avatar_enabled" in request.data:
             avatar_enabled_override = str(request.data.get("avatar_enabled", "")).strip().lower() in {
                 "1",
@@ -3261,20 +3737,13 @@ class ProjectUploadView(APIView):
                 "on",
             }
 
-        try:
-            render_profile = _normalize_render_profile(request.data.get("render_profile"), default="balanced")
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
         project = Project.objects.create(
             title=title,
             user=user,
             category=category,
             avatar_enabled_override=avatar_enabled_override,
-            render_profile=render_profile,
         )
         avatar_options = _resolve_avatar_options_for_project(project, request)
-        avatar_options = _apply_render_profile_to_avatar_options(avatar_options, render_profile)
 
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
         upload_dir = storage_root / "uploads" / str(project.id)
@@ -3290,27 +3759,7 @@ class ProjectUploadView(APIView):
             project.cover_image_processed = cover_rel_path
             project.save(update_fields=["cover_image_original", "cover_image_processed"])
 
-        existing_job = _find_existing_idempotent_job(project, "video_export", request_id)
-        if existing_job is not None:
-            response = Response(JobSerializer(existing_job).data, status=status.HTTP_200_OK)
-            response["X-Idempotent-Replay"] = "1"
-            return response
-
-        try:
-            job = Job.objects.create(
-                project=project,
-                job_type="video_export",
-                status="pending",
-                request_id=request_id,
-            )
-        except IntegrityError:
-            existing_job = _find_existing_idempotent_job(project, "video_export", request_id)
-            if existing_job is not None:
-                response = Response(JobSerializer(existing_job).data, status=status.HTTP_200_OK)
-                response["X-Idempotent-Replay"] = "1"
-                return response
-            raise
-        _remember_idempotent_job(project, "video_export", request_id, int(job.id))
+        job = Job.objects.create(project=project, job_type="video_export", status="pending")
         task_args = [
             str(project.id),
             str(saved_path),
@@ -3322,28 +3771,16 @@ class ProjectUploadView(APIView):
             avatar_options,
             None,
             _project_tts_settings(project),
-            render_profile,
         ]
-        target_queue = _queue_for_pipeline(avatar_options, render_profile)
-        admission_profile = "avatar" if bool((avatar_options or {}).get("enabled")) else render_profile
-        admitted, admission_payload = _admission_guard_for_render_profile(admission_profile, target_queue)
-        if not admitted:
-            return Response(admission_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
         async_result = _dispatch_celery_task(
             _PROCESS_PROJECT_RENDER_TASK,
             args=task_args,
-            queue=target_queue,
+            queue=_queue_for_avatar_options(avatar_options),
         )
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
-        payload = JobSerializer(job).data
-        payload["queue"] = target_queue
-        payload["estimated_wait_seconds"] = _estimate_queue_wait_seconds(
-            target_queue,
-            render_profile,
-            avatar_enabled=bool((avatar_options or {}).get("enabled")),
-        )
-        return Response(payload, status=status.HTTP_202_ACCEPTED)
+
+        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
 
 class ProjectDetailView(APIView):
@@ -3382,10 +3819,10 @@ class ProjectDetailView(APIView):
         has_avatar_enabled = "avatar_enabled" in request.data
         has_is_published = "is_published" in request.data
         has_tts_settings = "tts_settings" in request.data
-        has_render_profile = "render_profile" in request.data
-        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_is_published and not has_tts_settings and not has_render_profile:
+        draft_only = _truthy_request_value(request.data.get("draft_only"))
+        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_is_published and not has_tts_settings:
             return Response(
-                {"error": "category_id, category_name, avatar_enabled, is_published, tts_settings, or render_profile is required for updates."},
+                {"error": "category_id, category_name, avatar_enabled, is_published, or tts_settings is required for updates."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -3404,6 +3841,12 @@ class ProjectDetailView(APIView):
                     {"error": "Invalid tts_settings.", "details": exc.detail},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_is_published):
+                draft_data = ensure_project_draft_data(project)
+                draft_data.setdefault("project", {})["tts_settings"] = updates["tts_settings"]
+                save_project_draft_data(project, draft_data, dirty=True)
+                project.refresh_from_db()
+                return Response(ProjectSerializer(project, context={"request": request}).data)
             update_fields.append("tts_settings")
 
         if has_avatar_enabled:
@@ -3418,15 +3861,11 @@ class ProjectDetailView(APIView):
             raw = str(request.data.get("is_published", "")).strip().lower()
             if raw not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
                 return Response({"error": "is_published must be a boolean."}, status=status.HTTP_400_BAD_REQUEST)
-            updates["is_published"] = raw in {"1", "true", "yes", "on"}
+            publish_requested = raw in {"1", "true", "yes", "on"}
+            if publish_requested and not project_can_publish(project):
+                return Response(publication_block_payload(project), status=status.HTTP_400_BAD_REQUEST)
+            updates["is_published"] = publish_requested
             update_fields.append("is_published")
-
-        if has_render_profile:
-            try:
-                updates["render_profile"] = _normalize_render_profile(request.data.get("render_profile"))
-            except ValueError as exc:
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-            update_fields.append("render_profile")
 
         if has_category_id or has_category_name:
             category_name = (request.data.get("category_name") or request.data.get("category") or "").strip()
@@ -3473,6 +3912,7 @@ def _queue_transcript_rerender(
     pause_sec: float,
     lang_hint: str,
     full_rerender: bool = False,
+    use_draft: bool = False,
 ) -> dict | None:
     voice_id = _get_voice_id(project.user)
     storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
@@ -3482,27 +3922,9 @@ def _queue_transcript_rerender(
         return None
 
     saved_path = str(lesson_files[0])
-    request_id = _client_request_id(request)
-    existing_job = _find_existing_idempotent_job(project, "video_export", request_id)
-    if existing_job is not None:
-        return JobSerializer(existing_job).data
-
-    try:
-        job = Job.objects.create(
-            project=project,
-            job_type="video_export",
-            status="pending",
-            request_id=request_id,
-        )
-    except IntegrityError:
-        existing_job = _find_existing_idempotent_job(project, "video_export", request_id)
-        if existing_job is not None:
-            return JobSerializer(existing_job).data
-        raise
-    _remember_idempotent_job(project, "video_export", request_id, int(job.id))
+    job = Job.objects.create(project=project, job_type="video_export", status="pending")
     avatar_options = _resolve_avatar_options_for_project(project, request)
-    avatar_options = _apply_render_profile_to_avatar_options(avatar_options, project.render_profile)
-    rerender_keys = [] if full_rerender else sorted({str(key) for key in changed_page_keys if str(key)})
+    rerender_keys = [] if full_rerender or use_draft else sorted({str(key) for key in changed_page_keys if str(key)})
     task_args = [
         str(project.id),
         saved_path,
@@ -3513,28 +3935,415 @@ def _queue_transcript_rerender(
         False,
         avatar_options,
         rerender_keys,
-        _project_tts_settings(project),
-        project.render_profile,
+        _project_render_tts_settings(project, use_draft=use_draft),
     ]
-    target_queue = _queue_for_pipeline(avatar_options, project.render_profile)
-    admitted, admission_payload = _admission_guard_for_render_profile(project.render_profile, target_queue)
-    if not admitted:
-        return admission_payload
+    task_kwargs = {"use_draft": True} if use_draft else {}
     async_result = _dispatch_celery_task(
         _PROCESS_PROJECT_RENDER_TASK,
         args=task_args,
-        queue=target_queue,
+        kwargs=task_kwargs,
+        queue=_queue_for_avatar_options(avatar_options),
     )
     job.celery_task_id = async_result.id
     job.save(update_fields=["celery_task_id"])
-    payload = JobSerializer(job).data
-    payload["queue"] = target_queue
-    payload["estimated_wait_seconds"] = _estimate_queue_wait_seconds(
-        target_queue,
-        project.render_profile,
-        avatar_enabled=bool((avatar_options or {}).get("enabled")),
+    return JobSerializer(job).data
+
+
+def _source_moderation_auto_enabled() -> bool:
+    return bool(getattr(settings, "SOURCE_MODERATION_AUTO_ENABLED", False))
+
+
+def _dispatch_project_moderation_rescan(project: Project, request, *, phase: str):
+    return _dispatch_celery_task(
+        _RUN_PROJECT_MODERATION_TASK,
+        args=[int(project.id)],
+        kwargs={
+            "triggered_by_user_id": request.user.id if request.user and request.user.is_authenticated else None,
+            "phase": phase,
+        },
+        queue=_render_queue_name(),
     )
-    return payload
+
+
+def _mark_project_text_moderation_stale(project: Project, request, *, changed_fields: set[str]) -> None:
+    if not changed_fields:
+        return
+    phase = "studio_text_edit"
+    changed_at = timezone.now().isoformat()
+    summary = dict(project.moderation_summary or {})
+    auto_enabled = _source_moderation_auto_enabled()
+    next_status = "pending" if auto_enabled else "not_scanned"
+    summary.update(
+        {
+            "moderation_status": next_status,
+            "message": (
+                "Moderation scan is running for updated Studio text."
+                if auto_enabled
+                else "Studio text changed. Moderation needs to run again."
+            ),
+            "phase": phase,
+            "editor_text_changed": {
+                "status": "pending" if auto_enabled else "needs_rescan",
+                "stale": True,
+                "needs_rescan": not auto_enabled,
+                "reason": "studio_text_changed",
+                "changed_fields": sorted(changed_fields),
+                "changed_at": changed_at,
+            },
+        }
+    )
+    project.moderation_status = next_status
+    project.moderation_summary = summary
+    project.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
+
+    if not auto_enabled:
+        return
+
+    try:
+        task_result = _dispatch_project_moderation_rescan(project, request, phase=phase)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Studio text moderation rescan dispatch failed project=%s", project.id, exc_info=True)
+        summary = dict(project.moderation_summary or {})
+        editor_text_changed = dict(summary.get("editor_text_changed") or {})
+        editor_text_changed.update(
+            {
+                "status": "needs_rescan",
+                "needs_rescan": True,
+                "dispatch_error": str(exc)[:240],
+            }
+        )
+        summary["editor_text_changed"] = editor_text_changed
+        summary["message"] = "Studio text changed. Moderation needs to run again."
+        project.moderation_status = "not_scanned"
+        project.moderation_summary = summary
+        project.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
+        return
+
+    summary = dict(project.moderation_summary or {})
+    editor_text_changed = dict(summary.get("editor_text_changed") or {})
+    editor_text_changed["task_id"] = str(getattr(task_result, "id", "") or "")
+    summary["editor_text_changed"] = editor_text_changed
+    project.moderation_summary = summary
+    project.save(update_fields=["moderation_summary", "updated_at"])
+
+
+def _mark_project_visual_moderation_stale(
+    project: Project,
+    *,
+    reason: str,
+    asset_type: str,
+    page: TranscriptPage | None = None,
+    asset_path: str = "",
+) -> None:
+    summary = dict(project.moderation_summary or {})
+    previous_scan = summary.get("visual_asset_scan")
+    if not isinstance(previous_scan, dict):
+        previous_scan = {}
+    stale_payload = {
+        **previous_scan,
+        "status": "needs_rescan",
+        "stale": True,
+        "needs_rescan": True,
+        "reason": reason,
+        "asset_type": asset_type,
+        "message": "Visual asset changed in Studio. Visual moderation needs to run again.",
+        "changed_at": timezone.now().isoformat(),
+    }
+    if asset_path:
+        stale_payload["asset_path"] = asset_path
+    if page is not None:
+        stale_payload.update(
+            {
+                "transcript_page_id": int(page.id),
+                "page_key": str(page.page_key or ""),
+                "slide_order": int(page.order or 0),
+            }
+        )
+    summary["visual_asset_scan"] = stale_payload
+    project.moderation_summary = summary
+    project.save(update_fields=["moderation_summary", "updated_at"])
+
+
+def _run_auto_visual_moderation_for_changed_asset(
+    project: Project,
+    *,
+    asset_type: str,
+    asset_path: str,
+    page: TranscriptPage | None = None,
+) -> dict | None:
+    if not bool(getattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", False)):
+        return None
+    try:
+        services_root = Path(__file__).resolve().parents[2]
+        if str(services_root) not in sys.path:
+            sys.path.insert(0, str(services_root))
+        from worker import tasks as worker_tasks
+
+        export_result: list[dict[str, Any]] = []
+        if asset_type != "cover":
+            storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+            resolved_path = _resolve_storage_file(storage_root, asset_path)
+            export_result.append(
+                {
+                    "index": int(page.order or 0) if page is not None else 0,
+                    "source_slide_index": int(page.source_slide_index or page.order or 0) if page is not None else 0,
+                    "page_key": str(page.page_key or "") if page is not None else "",
+                    "image_path": str(resolved_path or asset_path),
+                }
+            )
+        result = worker_tasks._run_auto_visual_asset_moderation_after_export(project.id, export_result)
+        return result if isinstance(result, dict) else None
+    except Exception:
+        logger.warning(
+            "Auto visual moderation scan after asset change failed project=%s asset_type=%s",
+            project.id,
+            asset_type,
+            exc_info=True,
+        )
+        return None
+
+
+def _project_moderation_state_payload(project: Project) -> dict:
+    summary = project.moderation_summary if isinstance(project.moderation_summary, dict) else {}
+    return {
+        "moderation_status": project.moderation_status,
+        "moderation_summary": summary,
+    }
+
+
+def _truthy_request_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _studio_draft_metadata(project: Project) -> dict:
+    draft_data = get_project_draft_data(project)
+    metadata = draft_data.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("dirty"):
+        return dict(metadata)
+    return {}
+
+
+def _studio_transcript_pages(project: Project, request) -> list[dict]:
+    if has_project_draft(project):
+        return [_draft_page_response(project, page, request) for page in get_studio_transcript_pages(project)]
+    return _project_transcript_timeline(project, context={"request": request})
+
+
+def _studio_deleted_transcript_pages(project: Project, request) -> list[dict]:
+    draft_data = get_project_draft_data(project)
+    deleted_pages = draft_data.get("deleted_transcript_pages")
+    if has_project_draft(project) and isinstance(deleted_pages, list):
+        return deleted_pages
+    return _project_deleted_transcript_timeline(project, context={"request": request})
+
+
+def _studio_transcript_response_payload(project: Project, request) -> dict:
+    return {
+        "project_id": project.id,
+        "pages": _studio_transcript_pages(project, request),
+        "has_draft": has_project_draft(project),
+        "draft_metadata": _studio_draft_metadata(project),
+    }
+
+
+def _draft_moderation_run_id(project: Project) -> int | None:
+    draft_data = get_project_draft_data(project)
+    metadata = draft_data.get("metadata") if isinstance(draft_data.get("metadata"), dict) else {}
+    draft_summary = metadata.get("moderation") if isinstance(metadata.get("moderation"), dict) else {}
+    summary = project.moderation_summary if isinstance(project.moderation_summary, dict) else {}
+    summary_draft = summary.get("draft_moderation") if isinstance(summary.get("draft_moderation"), dict) else {}
+    for value in (draft_summary.get("run_id"), summary_draft.get("run_id")):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _latest_non_draft_moderation_run_id(project: Project) -> int | None:
+    try:
+        from ai_agents.models import AgentRun
+    except Exception:
+        return None
+    run = (
+        AgentRun.objects.filter(project=project, purpose="moderation")
+        .exclude(phase__iendswith="_draft")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    return int(run.id) if run else None
+
+
+def _last_moderation_run_is_draft(project: Project, draft_run_id: int | None) -> bool:
+    current_run_id = getattr(project, "last_moderation_run_id", None)
+    if not current_run_id:
+        return False
+    if draft_run_id and int(current_run_id) == int(draft_run_id):
+        return True
+    try:
+        from ai_agents.models import AgentRun
+    except Exception:
+        return False
+    run = AgentRun.objects.filter(pk=int(current_run_id), project=project, purpose="moderation").first()
+    return bool(run and str(run.phase or "").lower().endswith("_draft"))
+
+
+def _discard_project_draft(project: Project) -> Project:
+    with transaction.atomic():
+        locked_project = Project.objects.select_for_update().get(pk=project.pk)
+        draft_data = get_project_draft_data(locked_project)
+        draft_run_id = _draft_moderation_run_id(locked_project)
+        summary = dict(locked_project.moderation_summary or {})
+        update_fields: list[str] = []
+
+        if draft_data:
+            locked_project.draft_data = {}
+            update_fields.append("draft_data")
+
+        if "draft_moderation" in summary:
+            summary.pop("draft_moderation", None)
+            locked_project.moderation_summary = summary
+            update_fields.append("moderation_summary")
+
+        if _last_moderation_run_is_draft(locked_project, draft_run_id):
+            locked_project.last_moderation_run_id = _latest_non_draft_moderation_run_id(locked_project)
+            update_fields.append("last_moderation_run_id")
+
+        if update_fields:
+            locked_project.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
+
+    locked_project.refresh_from_db()
+    return locked_project
+
+
+def _draft_page_lookup(pages: list[dict], payload: dict) -> dict | None:
+    page_id = payload.get("id") or payload.get("page_id")
+    page_key_value = payload.get("page_key")
+    for page in pages:
+        if page_id and page.get("id") and int(page["id"]) == int(page_id):
+            return page
+        if page_key_value and str(page.get("page_key") or "") == str(page_key_value):
+            return page
+    return None
+
+
+def _normalize_draft_page_order(pages: list[dict]) -> None:
+    for index, page in enumerate(pages):
+        page["order"] = index
+
+
+def _draft_text_flags(page: dict) -> dict:
+    return _text_flags_from_editor_document(
+        page.get("editor_document"),
+        original_text=page.get("original_text", ""),
+        narration_text=page.get("narration_text", ""),
+    )
+
+
+def _set_draft_narration(page: dict, narration_text: str) -> None:
+    page["narration_text"] = str(narration_text or "")
+    page["subtitle_chunks"] = _chunk_transcript_text(page["narration_text"])
+
+
+def _draft_page_key(existing_keys: set[str], base_key: str, split_index: int) -> str:
+    safe_base = str(base_key or "page").strip() or "page"
+    suffix = f"-x{split_index}"
+    candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
+    while candidate in existing_keys:
+        random_suffix = f"-x{split_index}-{uuid.uuid4().hex[:4]}"
+        candidate = f"{safe_base[: max(1, 64 - len(random_suffix))]}{random_suffix}"
+    existing_keys.add(candidate)
+    return candidate
+
+
+def _next_draft_temp_page_id(draft_data: dict) -> int:
+    ids = []
+    for collection_key in ("transcript_pages", "deleted_transcript_pages"):
+        for page in draft_data.get(collection_key) or []:
+            try:
+                ids.append(int(page.get("id")))
+            except (TypeError, ValueError):
+                continue
+    negative_ids = [value for value in ids if value < 0]
+    return (min(negative_ids) - 1) if negative_ids else -1
+
+
+def _apply_transcript_draft_updates(project: Project, updates: list[dict]) -> tuple[dict, set[str]]:
+    draft_data = ensure_project_draft_data(project)
+    pages = draft_data.setdefault("transcript_pages", [])
+    changed_page_keys: set[str] = set()
+
+    for item in updates:
+        if not isinstance(item, dict):
+            continue
+        page = _draft_page_lookup(pages, item)
+        if page is None:
+            continue
+
+        changed = False
+        text_flags = _draft_text_flags(page)
+        narration_was_customized = bool(text_flags.get("narration_customized"))
+        has_display_text = "original_text" in item or "display_text" in item
+
+        if has_display_text:
+            raw_display_text = item.get("original_text") if "original_text" in item else item.get("display_text")
+            display_text = str(raw_display_text or "")
+            if page.get("original_text", "") != display_text:
+                page["original_text"] = display_text
+                changed = True
+            page["rich_text_html"] = str(item.get("rich_text_html") or _rich_text_html_from_narration(display_text))
+            text_flags["display_text_customized"] = True
+            if not narration_was_customized and "narration_text" not in item:
+                if page.get("narration_text", "") != display_text:
+                    _set_draft_narration(page, display_text)
+                    changed = True
+                text_flags["narration_customized"] = False
+
+        if "narration_text" in item:
+            narration_text = str(item.get("narration_text") or "")
+            if page.get("narration_text", "") != narration_text:
+                _set_draft_narration(page, narration_text)
+                changed = True
+            original_normalized = re.sub(r"\s+", " ", str(page.get("original_text") or "")).strip()
+            narration_normalized = re.sub(r"\s+", " ", narration_text).strip()
+            text_flags["narration_customized"] = bool(narration_normalized and narration_normalized != original_normalized)
+
+        if "editor_document" in item and isinstance(item.get("editor_document"), dict):
+            incoming_document = dict(item.get("editor_document") or {})
+            incoming_document.setdefault("text", {})
+            if isinstance(incoming_document["text"], dict):
+                incoming_document["text"].update({
+                    "narration_customized": bool(text_flags.get("narration_customized")),
+                    "display_text_customized": bool(text_flags.get("display_text_customized")),
+                })
+            page["editor_document"] = _merge_editor_document_preserving_scene(
+                incoming_document,
+                page.get("editor_document") or {},
+            )
+            changed = True
+        elif has_display_text or "narration_text" in item:
+            document = dict(page.get("editor_document") or {})
+            document["html"] = page.get("rich_text_html", "")
+            document["text"] = {
+                "narration_customized": bool(text_flags.get("narration_customized")),
+                "display_text_customized": bool(text_flags.get("display_text_customized")),
+            }
+            page["editor_document"] = document
+            changed = True
+
+        if "whiteboard_mode" in item:
+            next_whiteboard = bool(item.get("whiteboard_mode"))
+            if bool(page.get("whiteboard_mode")) != next_whiteboard:
+                page["whiteboard_mode"] = next_whiteboard
+                changed = True
+
+        if changed:
+            changed_page_keys.add(str(page.get("page_key") or page.get("id") or ""))
+
+    _normalize_draft_page_order(pages)
+    return draft_data, {key for key in changed_page_keys if key}
 
 
 class TranscriptActionError(ValueError):
@@ -3605,6 +4414,7 @@ def _split_transcript_page(project: Project, payload: dict) -> list[str]:
             deleted_at=None,
         )
         _set_page_narration_artifacts(new_page, part)
+        new_page.editor_document = _merge_editor_document_preserving_scene(new_page.editor_document, page.editor_document)
         new_page.save()
         created_pages.append(new_page)
 
@@ -3637,8 +4447,8 @@ def _merge_transcript_pages(project: Project, payload: dict, *, direction: str) 
 
     merged_narration = _combine_text_with_separator(survivor.narration_text, merged_away.narration_text, separator)
     merged_original = _combine_text_with_separator(survivor.original_text, merged_away.original_text, separator)
-    _set_page_narration_artifacts(survivor, merged_narration)
     survivor.original_text = merged_original
+    _set_page_narration_artifacts(survivor, merged_narration)
     survivor.save(
         update_fields=[
             "original_text",
@@ -3719,6 +4529,163 @@ def _restore_transcript_page(project: Project, payload: dict) -> list[str]:
     return [str(page.page_key)]
 
 
+def _draft_split_transcript_page(draft_data: dict, payload: dict) -> list[str]:
+    pages = draft_data.setdefault("transcript_pages", [])
+    page = _draft_page_lookup(pages, payload)
+    if page is None:
+        raise TranscriptActionError("page_id must reference an active page in this project.")
+    parts_payload = payload.get("parts")
+    if not isinstance(parts_payload, list) or len(parts_payload) < 2:
+        raise TranscriptActionError("parts must contain at least two transcript parts.")
+    if len(parts_payload) > 20:
+        raise TranscriptActionError("parts may not contain more than 20 entries.")
+
+    parts = []
+    for item in parts_payload:
+        if not isinstance(item, dict):
+            raise TranscriptActionError("each part must be an object.")
+        parts.append(str(item.get("narration_text") or ""))
+    if not any(part.strip() for part in parts):
+        raise TranscriptActionError("at least one split part must contain narration text.")
+
+    insert_at = pages.index(page)
+    existing_keys = {str(candidate.get("page_key") or "") for candidate in pages if candidate.get("page_key")}
+    _set_draft_narration(page, parts[0])
+    page["rich_text_html"] = page.get("rich_text_html") or _rich_text_html_from_narration(page.get("original_text", ""))
+    changed_keys = [str(page.get("page_key") or page.get("id") or "")]
+
+    created_pages = []
+    for offset, part in enumerate(parts[1:], start=1):
+        new_page = {
+            "id": _next_draft_temp_page_id(draft_data),
+            "order": int(page.get("order") or 0) + offset,
+            "source_slide_index": page.get("source_slide_index"),
+            "split_index": int(page.get("split_index") or 0) + offset,
+            "page_key": _draft_page_key(existing_keys, str(page.get("page_key") or "page"), offset),
+            "original_text": "",
+            "narration_text": str(part or ""),
+            "rich_text_html": "",
+            "editor_document": _merge_editor_document_preserving_scene(
+                {
+                    "version": 1,
+                    "html": "",
+                    "text": {"narration_customized": True, "display_text_customized": False},
+                },
+                page.get("editor_document") or {},
+            ),
+            "whiteboard_mode": bool(page.get("whiteboard_mode")),
+            "subtitle_chunks": _chunk_transcript_text(part),
+        }
+        created_pages.append(new_page)
+        changed_keys.append(new_page["page_key"])
+
+    pages[insert_at + 1:insert_at + 1] = created_pages
+    _normalize_draft_page_order(pages)
+    return [key for key in changed_keys if key]
+
+
+def _draft_merge_transcript_pages(draft_data: dict, payload: dict, *, direction: str) -> list[str]:
+    pages = draft_data.setdefault("transcript_pages", [])
+    page = _draft_page_lookup(pages, payload)
+    if page is None:
+        raise TranscriptActionError("page_id must reference an active page in this project.")
+    separator, separator_error = _safe_merge_separator(payload.get("separator"))
+    if separator_error:
+        raise TranscriptActionError(separator_error)
+
+    current_index = pages.index(page)
+    if direction == "next":
+        if current_index >= len(pages) - 1:
+            raise TranscriptActionError("page has no active next page to merge.")
+        survivor = page
+        merged_away = pages[current_index + 1]
+    else:
+        if current_index <= 0:
+            raise TranscriptActionError("page has no active previous page to merge.")
+        survivor = pages[current_index - 1]
+        merged_away = page
+
+    survivor["original_text"] = _combine_text_with_separator(
+        survivor.get("original_text", ""),
+        merged_away.get("original_text", ""),
+        separator,
+    )
+    _set_draft_narration(
+        survivor,
+        _combine_text_with_separator(survivor.get("narration_text", ""), merged_away.get("narration_text", ""), separator),
+    )
+    survivor["rich_text_html"] = _rich_text_html_from_narration(survivor.get("original_text", ""))
+    draft_data.setdefault("deleted_transcript_pages", []).append({**merged_away, "deleted_at": timezone.now().isoformat()})
+    pages.remove(merged_away)
+    _normalize_draft_page_order(pages)
+    return [str(survivor.get("page_key") or survivor.get("id") or "")]
+
+
+def _draft_reorder_transcript_pages(draft_data: dict, payload: dict) -> list[str]:
+    page_ids = payload.get("page_ids")
+    if not isinstance(page_ids, list) or not page_ids:
+        raise TranscriptActionError("page_ids must be a non-empty list.")
+    try:
+        normalized_ids = [int(item) for item in page_ids]
+    except (TypeError, ValueError):
+        raise TranscriptActionError("page_ids must contain only page IDs.") from None
+    if len(normalized_ids) != len(set(normalized_ids)):
+        raise TranscriptActionError("page_ids must not contain duplicates.")
+
+    pages = draft_data.setdefault("transcript_pages", [])
+    active_by_id = {int(page["id"]): page for page in pages if page.get("id")}
+    if set(normalized_ids) != set(active_by_id):
+        raise TranscriptActionError("page_ids must contain every active page exactly once.")
+
+    draft_data["transcript_pages"] = [active_by_id[page_id] for page_id in normalized_ids]
+    _normalize_draft_page_order(draft_data["transcript_pages"])
+    return []
+
+
+def _draft_delete_transcript_page(draft_data: dict, payload: dict) -> list[str]:
+    pages = draft_data.setdefault("transcript_pages", [])
+    page = _draft_page_lookup(pages, payload)
+    if page is None:
+        raise TranscriptActionError("page_id must reference an active page in this project.")
+    if len(pages) <= 1:
+        raise TranscriptActionError("cannot delete the last active transcript page.")
+
+    draft_data.setdefault("deleted_transcript_pages", []).append({**page, "deleted_at": timezone.now().isoformat()})
+    pages.remove(page)
+    _normalize_draft_page_order(pages)
+    return [str(page.get("page_key") or page.get("id") or "")]
+
+
+def _draft_restore_transcript_page(draft_data: dict, payload: dict) -> list[str]:
+    deleted_pages = draft_data.setdefault("deleted_transcript_pages", [])
+    page = _draft_page_lookup(deleted_pages, payload)
+    if page is None:
+        raise TranscriptActionError("page_id must reference a deleted page in this project.")
+
+    restored = {key: value for key, value in page.items() if key != "deleted_at"}
+    draft_data.setdefault("transcript_pages", []).append(restored)
+    deleted_pages.remove(page)
+    _normalize_draft_page_order(draft_data["transcript_pages"])
+    return [str(restored.get("page_key") or restored.get("id") or "")]
+
+
+def _apply_transcript_draft_action(project: Project, action: str, payload: dict) -> tuple[dict, list[str]]:
+    draft_data = ensure_project_draft_data(project)
+    if action == "split_page":
+        changed_page_keys = _draft_split_transcript_page(draft_data, payload)
+    elif action == "merge_with_next":
+        changed_page_keys = _draft_merge_transcript_pages(draft_data, payload, direction="next")
+    elif action == "merge_with_previous":
+        changed_page_keys = _draft_merge_transcript_pages(draft_data, payload, direction="previous")
+    elif action == "reorder_pages":
+        changed_page_keys = _draft_reorder_transcript_pages(draft_data, payload)
+    elif action == "delete_page":
+        changed_page_keys = _draft_delete_transcript_page(draft_data, payload)
+    else:
+        changed_page_keys = _draft_restore_transcript_page(draft_data, payload)
+    return draft_data, changed_page_keys
+
+
 class ProjectTranscriptView(APIView):
     """GET/PATCH /api/v1/projects/<project_id>/transcript/"""
     permission_classes = [permissions.IsAuthenticated]
@@ -3731,12 +4698,7 @@ class ProjectTranscriptView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        return Response(
-            {
-                "project_id": project.id,
-                "pages": _project_transcript_timeline(project, request=request),
-            }
-        )
+        return Response(_studio_transcript_response_payload(project, request))
 
     def patch(self, request, project_id):
         try:
@@ -3751,17 +4713,46 @@ class ProjectTranscriptView(APIView):
             return Response({"error": "pages must be a list."}, status=status.HTTP_400_BAD_REQUEST)
 
         trigger_rerender = bool(request.data.get("trigger_rerender"))
+        requested_draft = _truthy_request_value(request.data.get("draft_only"))
+        draft_rerender = trigger_rerender and (requested_draft or has_dirty_draft(project))
+        draft_only = requested_draft and not trigger_rerender
         lang_hint = request.data.get("lang_hint", "auto")
         try:
             pause_sec = max(0.0, float(request.data.get("pause_sec", 2.2)))
         except (TypeError, ValueError):
             pause_sec = 2.2
 
+        if draft_only or draft_rerender:
+            draft_data, changed_page_keys = _apply_transcript_draft_updates(project, updates)
+            save_project_draft_data(project, draft_data, dirty=True)
+            project.refresh_from_db()
+            rerender_job = None
+            if draft_rerender:
+                rerender_job = _queue_transcript_rerender(
+                    project=project,
+                    request=request,
+                    changed_page_keys=changed_page_keys,
+                    pause_sec=pause_sec,
+                    lang_hint=lang_hint,
+                    full_rerender=True,
+                    use_draft=True,
+                )
+            payload = {
+                **_studio_transcript_response_payload(project, request),
+                **_project_moderation_state_payload(project),
+                "changed_page_keys": sorted(changed_page_keys),
+            }
+            if rerender_job:
+                payload["rerender_job"] = rerender_job
+                payload["rerender_strategy"] = "draft_full"
+            return Response(payload)
+
         page_map = {
             p.id: p
             for p in _active_transcript_pages(project)
         }
         changed_page_keys: set[str] = set()
+        moderation_changed_fields: set[str] = set()
 
         for item in updates:
             if not isinstance(item, dict):
@@ -3772,22 +4763,83 @@ class ProjectTranscriptView(APIView):
 
             page = page_map[page_id]
             dirty_fields: list[str] = []
+            text_flags = _text_flags_from_editor_document(
+                page.editor_document,
+                original_text=page.original_text,
+                narration_text=page.narration_text,
+            )
+            narration_was_customized = bool(text_flags.get("narration_customized"))
+            display_text_changed = False
+            narration_text_changed = False
+
+            has_display_text = "original_text" in item or "display_text" in item
+            if has_display_text:
+                raw_display_text = item.get("original_text") if "original_text" in item else item.get("display_text")
+                display_text = str(raw_display_text or "")
+                if page.original_text != display_text:
+                    page.original_text = display_text
+                    dirty_fields.append("original_text")
+                    changed_page_keys.add(str(page.page_key))
+                    moderation_changed_fields.add("original_text")
+                    display_text_changed = True
+                display_html = _rich_text_html_from_narration(display_text)
+                if page.rich_text_html != display_html:
+                    page.rich_text_html = display_html
+                    dirty_fields.append("rich_text_html")
+                text_flags["display_text_customized"] = True
+                if display_text_changed and not narration_was_customized and "narration_text" not in item:
+                    if page.narration_text != display_text:
+                        page.narration_text = display_text
+                        page.subtitle_chunks = _chunk_transcript_text(display_text)
+                        dirty_fields.extend(["narration_text", "subtitle_chunks"])
+                        moderation_changed_fields.add("narration_text")
+                    text_flags["narration_customized"] = False
 
             if "narration_text" in item:
                 narration_text = str(item.get("narration_text") or "")
-                page.narration_text = narration_text
-                page.subtitle_chunks = _chunk_transcript_text(narration_text)
-                dirty_fields.extend(["narration_text", "subtitle_chunks"])
-
-            if "rich_text_html" in item:
-                page.rich_text_html = str(item.get("rich_text_html") or "")
-                dirty_fields.append("rich_text_html")
+                if page.narration_text != narration_text:
+                    page.narration_text = narration_text
+                    page.subtitle_chunks = _chunk_transcript_text(narration_text)
+                    dirty_fields.extend(["narration_text", "subtitle_chunks"])
+                    changed_page_keys.add(str(page.page_key))
+                    moderation_changed_fields.add("narration_text")
+                    narration_text_changed = True
+                original_normalized = re.sub(r"\s+", " ", str(page.original_text or "")).strip()
+                narration_normalized = re.sub(r"\s+", " ", narration_text).strip()
+                text_flags["narration_customized"] = bool(narration_normalized and narration_normalized != original_normalized)
 
             if "editor_document" in item and isinstance(item.get("editor_document"), dict):
-                page.editor_document = item.get("editor_document")
+                incoming_document = dict(item.get("editor_document") or {})
+                if not has_display_text:
+                    current_document = _editor_document_with_scene(
+                        page,
+                        page.original_text,
+                        page.rich_text_html or _rich_text_html_from_narration(page.original_text),
+                        text_flags=text_flags,
+                    )
+                    incoming_scene = _raw_scene_from_document(incoming_document)
+                    if isinstance(incoming_document.get("text"), dict):
+                        incoming_text_flags = _text_flags_from_editor_document(
+                            incoming_document,
+                            original_text=page.original_text,
+                            narration_text=page.narration_text,
+                        )
+                        text_flags.update(incoming_text_flags)
+                    incoming_document = {
+                        **current_document,
+                        "text": {
+                            "narration_customized": bool(text_flags.get("narration_customized")),
+                            "display_text_customized": bool(text_flags.get("display_text_customized")),
+                        },
+                    }
+                    if incoming_scene:
+                        incoming_document["scene"] = incoming_scene
+                page.editor_document = _merge_editor_document_preserving_scene(incoming_document, page.editor_document)
                 dirty_fields.append("editor_document")
-            elif "narration_text" in item or "rich_text_html" in item:
-                page.editor_document = _build_editor_document(page.narration_text, page.rich_text_html)
+            elif "narration_text" in item or has_display_text:
+                display_text = page.original_text
+                display_html = page.rich_text_html or _rich_text_html_from_narration(display_text)
+                page.editor_document = _editor_document_with_scene(page, display_text, display_html, text_flags=text_flags)
                 dirty_fields.append("editor_document")
 
             if "whiteboard_mode" in item:
@@ -3799,6 +4851,9 @@ class ProjectTranscriptView(APIView):
                 page.save(update_fields=dirty_fields)
                 changed_page_keys.add(str(page.page_key))
 
+            if display_text_changed or narration_text_changed:
+                page_map[page_id] = page
+
         rerender_job = None
         if trigger_rerender:
             rerender_job = _queue_transcript_rerender(
@@ -3809,13 +4864,43 @@ class ProjectTranscriptView(APIView):
                 lang_hint=lang_hint,
             )
 
+        if moderation_changed_fields:
+            project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+            _mark_project_text_moderation_stale(project, request, changed_fields=moderation_changed_fields)
+            project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+
         payload = {
             "project_id": project.id,
-            "pages": _project_transcript_timeline(project, request=request),
+            "pages": _project_transcript_timeline(project, context={"request": request}),
+            **_project_moderation_state_payload(project),
         }
         if rerender_job:
             payload["rerender_job"] = rerender_job
         return Response(payload)
+
+
+class ProjectDraftDiscardView(APIView):
+    """POST /api/v1/projects/<project_id>/draft/discard/"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        had_draft = has_project_draft(project)
+        project = _discard_project_draft(project)
+        payload = {
+            **_studio_transcript_response_payload(project, request),
+            **_project_moderation_state_payload(project),
+            "project": ProjectSerializer(project, context={"request": request}).data,
+            "discarded": had_draft,
+        }
+        return Response(payload, status=status.HTTP_200_OK)
 
 
 class ProjectTranscriptActionView(APIView):
@@ -3843,11 +4928,51 @@ class ProjectTranscriptActionView(APIView):
             return Response({"error": "Unsupported transcript action."}, status=status.HTTP_400_BAD_REQUEST)
 
         trigger_rerender = bool(request.data.get("trigger_rerender"))
+        requested_draft = _truthy_request_value(request.data.get("draft_only"))
+        draft_rerender = trigger_rerender and (requested_draft or has_dirty_draft(project))
+        draft_only = requested_draft and not trigger_rerender
         lang_hint = request.data.get("lang_hint", "auto")
         try:
             pause_sec = max(0.0, float(request.data.get("pause_sec", 2.2)))
         except (TypeError, ValueError):
             pause_sec = 2.2
+
+        if draft_only or draft_rerender:
+            try:
+                with transaction.atomic():
+                    project = Project.objects.select_for_update().get(pk=project.id)
+                    draft_data, changed_page_keys = _apply_transcript_draft_action(project, action, request.data)
+                    save_project_draft_data(project, draft_data, dirty=True)
+            except TranscriptActionError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+            project.refresh_from_db()
+            rerender_job = None
+            rerender_strategy = "none"
+            if draft_rerender:
+                rerender_job = _queue_transcript_rerender(
+                    project=project,
+                    request=request,
+                    changed_page_keys=changed_page_keys,
+                    pause_sec=pause_sec,
+                    lang_hint=lang_hint,
+                    full_rerender=True,
+                    use_draft=True,
+                )
+                if rerender_job:
+                    rerender_strategy = "draft_full"
+            payload = {
+                "project_id": project.id,
+                "action": action,
+                "pages": _studio_transcript_pages(project, request),
+                "deleted_pages": _studio_deleted_transcript_pages(project, request),
+                "changed_page_keys": changed_page_keys,
+                "rerender_job": rerender_job,
+                "rerender_strategy": rerender_strategy,
+                "has_draft": has_project_draft(project),
+                "draft_metadata": _studio_draft_metadata(project),
+            }
+            return Response(payload)
 
         try:
             with transaction.atomic():
@@ -3866,6 +4991,14 @@ class ProjectTranscriptActionView(APIView):
                     changed_page_keys = _restore_transcript_page(project, request.data)
         except TranscriptActionError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if changed_page_keys and action in {"split_page", "merge_with_next", "merge_with_previous"}:
+            project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+            _mark_project_text_moderation_stale(
+                project,
+                request,
+                changed_fields={"original_text", "narration_text"} if action.startswith("merge") else {"narration_text"},
+            )
 
         # Structural actions can change sequence membership/order, so action-triggered rerender is full-project.
         # The response still returns changed_page_keys for UI status and later targeted-render refinement.
@@ -3886,8 +5019,8 @@ class ProjectTranscriptActionView(APIView):
         payload = {
             "project_id": project.id,
             "action": action,
-            "pages": _project_transcript_timeline(project, request=request),
-            "deleted_pages": _project_deleted_transcript_timeline(project),
+            "pages": _project_transcript_timeline(project, context={"request": request}),
+            "deleted_pages": _project_deleted_transcript_timeline(project, context={"request": request}),
             "changed_page_keys": changed_page_keys,
             "rerender_job": rerender_job,
             "rerender_strategy": rerender_strategy,
@@ -3895,56 +5028,340 @@ class ProjectTranscriptActionView(APIView):
         return Response(payload)
 
 
-class ProjectSlideImageView(APIView):
-    """GET /api/v1/projects/<project_id>/slides/<slide_index>/image/"""
+class TranscriptPageBackgroundImageView(APIView):
+    """Owner/staff image endpoint for transcript page scene backgrounds."""
 
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request, project_id, slide_index):
+    def get(self, request, project_id, page_id, kind):
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
-            raise Http404
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        can_manage = _can_manage_project(request.user, project)
-        if not can_manage:
-            token_key = str(request.GET.get("token") or "").strip()
-            if token_key:
-                token = Token.objects.filter(key=token_key).select_related("user").first()
-                can_manage = _can_manage_project(getattr(token, "user", None), project)
-        if not can_manage:
-            raise Http404
-
-        try:
-            slide_idx = int(slide_index)
-        except (TypeError, ValueError):
-            raise Http404
-        if slide_idx < 0:
-            raise Http404
-
-        slide = (
-            Slide.objects.filter(project=project, order=slide_idx).first()
-            or Slide.objects.filter(project=project, order=slide_idx + 1).first()
+        page = project.transcript_pages.filter(pk=page_id, is_active=True).first()
+        if page is None:
+            return Response({"error": "Transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+        clean_kind = str(kind or "").strip().lower()
+        rel_path = (
+            _draft_page_scene_path(project, page, clean_kind)
+            if _truthy_request_value(request.query_params.get("draft"))
+            else _page_scene_path(page, clean_kind)
         )
+        if not rel_path:
+            raise Http404
+
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
-        full_path = None
-
-        if slide and slide.image_file:
-            rel_path = _normalize_rel_storage_path(str(slide.image_file.name))
-            full_path = _resolve_storage_file(storage_root, rel_path)
-
-        if full_path is None:
-            # Fallback for worker-exported slide images.
-            fallback_rel = f"{project.id}/images/slide-{slide_idx + 1}.png"
-            full_path = _resolve_storage_file(storage_root, fallback_rel)
-
+        full_path = _resolve_storage_file(storage_root, rel_path)
         if full_path is None:
             raise Http404
 
         content_type, _ = mimetypes.guess_type(str(full_path))
         response = _media_file_response(request, full_path, content_type)
-        response["Cache-Control"] = "private, max-age=300"
+        response["Cache-Control"] = "private, max-age=120"
         return response
+
+
+class TranscriptPageSceneView(APIView):
+    """PATCH scene settings for one transcript page."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, project_id, page_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            page = _get_project_page(project, page_id, active=True, field_name="page_id")
+        except TranscriptActionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+        if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
+            draft_data = ensure_project_draft_data(project)
+            draft_page = _draft_page_for_active_page(draft_data, page)
+            if draft_page is None:
+                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            scene = _draft_page_scene_for_storage(draft_page, page)
+            if "background_mode" in request.data:
+                mode = str(request.data.get("background_mode") or "").strip().lower()
+                if mode not in SCENE_BACKGROUND_MODES:
+                    return Response(
+                        {"error": "background_mode must be original, whiteboard, or custom."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                scene["background_mode"] = mode
+            if "background_fit" in request.data:
+                fit = str(request.data.get("background_fit") or "").strip().lower()
+                if fit not in SCENE_BACKGROUND_FITS:
+                    return Response(
+                        {"error": "background_fit must be contain, cover, or stretch."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                scene["background_fit"] = fit
+            if "text_scale" in request.data:
+                scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+            _set_draft_page_scene(draft_page, scene)
+            metadata = draft_data.setdefault("metadata", {})
+            metadata["background_dirty"] = True
+            metadata["visual_assets_dirty"] = True
+            save_project_draft_data(project, draft_data, dirty=True)
+            project.refresh_from_db()
+            return Response(
+                {
+                    "project_id": project.id,
+                    "page": _draft_page_response(project, draft_page, request),
+                    "has_draft": has_project_draft(project),
+                    "draft_metadata": _studio_draft_metadata(project),
+                }
+            )
+
+        scene = _page_scene_for_storage(page)
+        if "background_mode" in request.data:
+            mode = str(request.data.get("background_mode") or "").strip().lower()
+            if mode not in SCENE_BACKGROUND_MODES:
+                return Response(
+                    {"error": "background_mode must be original, whiteboard, or custom."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            scene["background_mode"] = mode
+        if "background_fit" in request.data:
+            fit = str(request.data.get("background_fit") or "").strip().lower()
+            if fit not in SCENE_BACKGROUND_FITS:
+                return Response(
+                    {"error": "background_fit must be contain, cover, or stretch."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            scene["background_fit"] = fit
+        if "text_scale" in request.data:
+            scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+
+        _set_page_scene(page, scene)
+        page.whiteboard_mode = scene["background_mode"] == "whiteboard"
+        page.save(update_fields=["editor_document", "whiteboard_mode", "updated_at"])
+        return Response({"project_id": project.id, "page": _page_scene_response(page, request)})
+
+
+class TranscriptPageBackgroundUploadView(APIView):
+    """Upload a custom background image for one transcript page."""
+
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id, page_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            page = _get_project_page(project, page_id, active=True, field_name="page_id")
+        except TranscriptActionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+        background_file = request.FILES.get("background_file") or request.FILES.get("image") or request.FILES.get("file")
+        if background_file is None:
+            return Response({"error": "background_file is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            ext = _validate_cover_upload(background_file)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        background_dir = storage_root / "uploads" / str(project.id) / "backgrounds"
+        background_dir.mkdir(parents=True, exist_ok=True)
+        saved_path = background_dir / f"page_{page.id}_{uuid.uuid4().hex[:10]}{ext}"
+        _write_uploaded_file(background_file, saved_path)
+
+        if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
+            draft_data = ensure_project_draft_data(project)
+            draft_page = _draft_page_for_active_page(draft_data, page)
+            if draft_page is None:
+                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            scene = _draft_page_scene_for_storage(draft_page, page)
+            scene["custom_background_path"] = str(saved_path.relative_to(storage_root)).replace("\\", "/")
+            scene["background_mode"] = "custom"
+            scene["background_fit"] = _clean_scene_fit(request.data.get("background_fit"), fallback=scene.get("background_fit", "contain"))
+            scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+            _set_draft_page_scene(draft_page, scene)
+            metadata = draft_data.setdefault("metadata", {})
+            metadata["background_dirty"] = True
+            metadata["visual_assets_dirty"] = True
+            save_project_draft_data(project, draft_data, dirty=True)
+            project.refresh_from_db()
+            return Response(
+                {
+                    "project_id": project.id,
+                    "page": _draft_page_response(project, draft_page, request),
+                    "has_draft": has_project_draft(project),
+                    "draft_metadata": _studio_draft_metadata(project),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        scene = _page_scene_for_storage(page)
+        scene["custom_background_path"] = str(saved_path.relative_to(storage_root)).replace("\\", "/")
+        scene["background_mode"] = "custom"
+        scene["background_fit"] = _clean_scene_fit(request.data.get("background_fit"), fallback=scene.get("background_fit", "contain"))
+        scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+        _set_page_scene(page, scene)
+        page.whiteboard_mode = False
+        page.save(update_fields=["editor_document", "whiteboard_mode", "updated_at"])
+        _mark_project_visual_moderation_stale(
+            project,
+            reason="studio_custom_background_changed",
+            asset_type="custom_background",
+            page=page,
+            asset_path=scene["custom_background_path"],
+        )
+        _run_auto_visual_moderation_for_changed_asset(
+            project,
+            asset_type="custom_background",
+            asset_path=scene["custom_background_path"],
+            page=page,
+        )
+        project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+        return Response(
+            {
+                "project_id": project.id,
+                "page": _page_scene_response(page, request),
+                **_project_moderation_state_payload(project),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ProjectBackgroundApplyAllView(APIView):
+    """Apply selected scene background settings or an uploaded background to every active page."""
+
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        draft_only = _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only"))
+        custom_path = ""
+        background_file = request.FILES.get("background_file") or request.FILES.get("image") or request.FILES.get("file")
+        if background_file is not None:
+            try:
+                ext = _validate_cover_upload(background_file)
+            except ValueError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+            background_dir = storage_root / "uploads" / str(project.id) / "backgrounds"
+            background_dir.mkdir(parents=True, exist_ok=True)
+            saved_path = background_dir / f"all_{uuid.uuid4().hex[:10]}{ext}"
+            _write_uploaded_file(background_file, saved_path)
+            custom_path = str(saved_path.relative_to(storage_root)).replace("\\", "/")
+        elif request.data.get("source_page_id"):
+            try:
+                source_page = _get_project_page(project, request.data.get("source_page_id"), active=True, field_name="source_page_id")
+            except TranscriptActionError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            custom_path = (
+                _draft_page_scene_path(project, source_page, "custom")
+                if draft_only
+                else _page_scene_path(source_page, "custom")
+            )
+
+        requested_mode = str(request.data.get("background_mode") or ("custom" if custom_path else "")).strip().lower()
+        if requested_mode and requested_mode not in SCENE_BACKGROUND_MODES:
+            return Response(
+                {"error": "background_mode must be original, whiteboard, or custom."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if requested_mode == "custom" and not custom_path:
+            return Response(
+                {"error": "A custom background image is required before applying custom mode to all pages."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        requested_fit = str(request.data.get("background_fit") or "").strip().lower()
+        if requested_fit and requested_fit not in SCENE_BACKGROUND_FITS:
+            return Response(
+                {"error": "background_fit must be contain, cover, or stretch."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        pages = list(_active_transcript_pages(project))
+        if draft_only:
+            draft_data = ensure_project_draft_data(project)
+            for page in pages:
+                draft_page = _draft_page_for_active_page(draft_data, page)
+                if draft_page is None:
+                    continue
+                scene = _draft_page_scene_for_storage(draft_page, page)
+                if custom_path:
+                    scene["custom_background_path"] = custom_path
+                if requested_mode:
+                    scene["background_mode"] = requested_mode
+                if requested_fit:
+                    scene["background_fit"] = requested_fit
+                if "text_scale" in request.data:
+                    scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+                _set_draft_page_scene(draft_page, scene)
+            metadata = draft_data.setdefault("metadata", {})
+            metadata["background_dirty"] = True
+            metadata["visual_assets_dirty"] = True
+            save_project_draft_data(project, draft_data, dirty=True)
+            project.refresh_from_db()
+            return Response(
+                {
+                    "project_id": project.id,
+                    "pages": _studio_transcript_pages(project, request),
+                    "has_draft": has_project_draft(project),
+                    "draft_metadata": _studio_draft_metadata(project),
+                }
+            )
+
+        for page in pages:
+            scene = _page_scene_for_storage(page)
+            if custom_path:
+                scene["custom_background_path"] = custom_path
+            if requested_mode:
+                scene["background_mode"] = requested_mode
+            if requested_fit:
+                scene["background_fit"] = requested_fit
+            if "text_scale" in request.data:
+                scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+            _set_page_scene(page, scene)
+            page.whiteboard_mode = scene["background_mode"] == "whiteboard"
+            page.save(update_fields=["editor_document", "whiteboard_mode", "updated_at"])
+
+        if custom_path:
+            _mark_project_visual_moderation_stale(
+                project,
+                reason="studio_custom_background_applied",
+                asset_type="custom_background",
+                asset_path=custom_path,
+            )
+            _run_auto_visual_moderation_for_changed_asset(
+                project,
+                asset_type="custom_background",
+                asset_path=custom_path,
+                page=pages[0] if pages else None,
+            )
+            project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+
+        return Response(
+            {
+                "project_id": project.id,
+                "pages": _project_transcript_timeline(project, context={"request": request}),
+                **_project_moderation_state_payload(project),
+            }
+        )
 
 
 class ProjectRerenderView(APIView):
@@ -3977,36 +5394,9 @@ class ProjectRerenderView(APIView):
         except (TypeError, ValueError):
             pause_sec = 2.2
 
-        request_id = _client_request_id(request)
-        existing_job = _find_existing_idempotent_job(project, "video_export", request_id)
-        if existing_job is not None:
-            response = Response(JobSerializer(existing_job).data, status=status.HTTP_200_OK)
-            response["X-Idempotent-Replay"] = "1"
-            return response
-
-        try:
-            job = Job.objects.create(
-                project=project,
-                job_type="video_export",
-                status="pending",
-                request_id=request_id,
-            )
-        except IntegrityError:
-            existing_job = _find_existing_idempotent_job(project, "video_export", request_id)
-            if existing_job is not None:
-                response = Response(JobSerializer(existing_job).data, status=status.HTTP_200_OK)
-                response["X-Idempotent-Replay"] = "1"
-                return response
-            raise
-        _remember_idempotent_job(project, "video_export", request_id, int(job.id))
+        use_draft = has_dirty_draft(project)
+        job = Job.objects.create(project=project, job_type="video_export", status="pending")
         avatar_options = _resolve_avatar_options_for_project(project, request)
-        render_profile = project.render_profile
-        if "render_profile" in request.data:
-            try:
-                render_profile = _normalize_render_profile(request.data.get("render_profile"))
-            except ValueError as exc:
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-        avatar_options = _apply_render_profile_to_avatar_options(avatar_options, render_profile)
         task_args = [
             str(project.id),
             saved_path,
@@ -4017,39 +5407,19 @@ class ProjectRerenderView(APIView):
             whiteboard_mode_all,
             avatar_options,
             None,
-            _project_tts_settings(project),
-            render_profile,
+            _project_render_tts_settings(project, use_draft=use_draft),
         ]
-        target_queue = _queue_for_pipeline(avatar_options, render_profile)
-        admission_profile = "avatar" if bool((avatar_options or {}).get("enabled")) else render_profile
-        admitted, admission_payload = _admission_guard_for_render_profile(admission_profile, target_queue)
-        if not admitted:
-            return Response(admission_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
+        task_kwargs = {"use_draft": True} if use_draft else {}
         async_result = _dispatch_celery_task(
             _PROCESS_PROJECT_RENDER_TASK,
             args=task_args,
-            queue=target_queue,
+            kwargs=task_kwargs,
+            queue=_queue_for_avatar_options(avatar_options),
         )
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
-        payload = JobSerializer(job).data
-        payload["queue"] = target_queue
-        payload["estimated_wait_seconds"] = _estimate_queue_wait_seconds(
-            target_queue,
-            render_profile,
-            avatar_enabled=bool((avatar_options or {}).get("enabled")),
-        )
-        _log_with_standard_fields(
-            "info",
-            "project_rerender_dispatched",
-            request=request,
-            user_id=int(request.user.id),
-            project_id=int(project.id),
-            job_id=int(job.id),
-            queue=target_queue,
-            stage="dispatch",
-        )
-        return Response(payload, status=status.HTTP_202_ACCEPTED)
+
+        return Response(JobSerializer(job).data, status=status.HTTP_202_ACCEPTED)
 
 
 class JobStatusView(APIView):
@@ -4057,20 +5427,6 @@ class JobStatusView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, project_id, job_id):
-        started_at = time.perf_counter()
-        response_schema = str(request.query_params.get("response_schema", "light_v1") or "light_v1").strip().lower()
-        include_transcript = str(request.query_params.get("include_transcript_pages", "0")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        include_language_detection = str(request.query_params.get("include_language_detection", "0")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
         try:
             job = Job.objects.get(pk=job_id, project_id=project_id)
         except Job.DoesNotExist:
@@ -4078,590 +5434,12 @@ class JobStatusView(APIView):
         if job.project and not _can_manage_project(request.user, job.project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
         data = JobSerializer(job).data
-        if include_language_detection:
-            storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-            data["language_detection"] = _language_detection_sidecar_for_job(storage_root, int(project_id))
-        if include_transcript:
-            data["transcript_pages"] = _project_transcript_timeline(job.project) if job.project else []
-        status_name = str(getattr(job, "status", "") or "").strip().lower()
-        data["cancelled"] = (
-            status_name == "cancelled"
-            or JOB_CANCELLED_MARKER in str(getattr(job, "error_message", "") or "")
-        )
-        checkpoint_rows = [
-            {
-                "stage_name": row.stage_name,
-                "stage_status": row.stage_status,
-                "payload": row.payload,
-                "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-            }
-            for row in JobCheckpoint.objects.filter(job_id=job.id).order_by("updated_at", "id")
-        ]
-        data["checkpoints"] = checkpoint_rows
-        concat_row = next((row for row in checkpoint_rows if row.get("stage_name") == "concat_finalize"), None)
-        concat_payload = concat_row.get("payload", {}) if isinstance(concat_row, dict) else {}
-        resume_source = str(concat_payload.get("source") or "")
-        recovered_parts_count = int(concat_payload.get("recovered_parts_count") or 0)
-        if not resume_source:
-            render_dispatch = next((row for row in checkpoint_rows if row.get("stage_name") == "render_dispatch"), None)
-            dispatch_payload = render_dispatch.get("payload", {}) if isinstance(render_dispatch, dict) else {}
-            resume_source = str(dispatch_payload.get("source") or "")
-        data["resume_source"] = resume_source
-        data["recovered_parts_count"] = recovered_parts_count
-        if response_schema in {"light_v1", "light-v1"}:
-            light = {
-                "id": data.get("id"),
-                "project": data.get("project"),
-                "job_type": data.get("job_type"),
-                "status": data.get("status"),
-                "progress": data.get("progress"),
-                "request_id": data.get("request_id"),
-                "created_at": data.get("created_at"),
-                "updated_at": data.get("updated_at"),
-                "result_url": data.get("result_url"),
-                "srt_url": data.get("srt_url"),
-                "error_message": data.get("error_message"),
-                "cancelled": data.get("cancelled"),
-                "resume_source": data.get("resume_source"),
-                "recovered_parts_count": data.get("recovered_parts_count"),
-                "checkpoints": data.get("checkpoints", []),
-                "response_schema": "light_v1",
-            }
-            if include_language_detection and "language_detection" in data:
-                light["language_detection"] = data["language_detection"]
-            if include_transcript and "transcript_pages" in data:
-                light["transcript_pages"] = data["transcript_pages"]
-            _log_with_standard_fields(
-                "info",
-                "job_status_read",
-                request=request,
-                user_id=int(request.user.id),
-                project_id=int(project_id),
-                job_id=int(job_id),
-                stage="read",
-                started_at=started_at,
-                response_schema="light_v1",
-            )
-            return Response(light)
-        data["response_schema"] = "full_v1"
-        _log_with_standard_fields(
-            "info",
-            "job_status_read",
-            request=request,
-            user_id=int(request.user.id),
-            project_id=int(project_id),
-            job_id=int(job_id),
-            stage="read",
-            started_at=started_at,
-            response_schema="full_v1",
-        )
-        return Response(data)
-
-
-class JobCancelView(APIView):
-    """POST /api/v1/projects/<project_id>/jobs/<job_id>/cancel/"""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, project_id, job_id):
-        started_at = time.perf_counter()
-        try:
-            job = Job.objects.select_related("project").get(pk=job_id, project_id=project_id)
-        except Job.DoesNotExist:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-        if job.project and not _can_manage_project(request.user, job.project):
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-
-        limited, attempt_count = _is_job_cancel_rate_limited(int(request.user.id))
-        if limited:
-            _audit_job_action(
-                job=job,
-                actor=request.user,
-                action="cancel_rejected",
-                metadata={
-                    "reason": "rate_limited",
-                    "attempt_count": int(attempt_count),
-                    "limit_per_minute": int(JOB_CANCEL_RATE_LIMIT_PER_MINUTE),
-                },
-            )
-            return Response(
-                {
-                    "error": "Too many cancel requests. Please retry shortly.",
-                    "rate_limited": True,
-                    "limit_per_minute": int(JOB_CANCEL_RATE_LIMIT_PER_MINUTE),
-                },
-                status=status.HTTP_429_TOO_MANY_REQUESTS,
-            )
-
-        status_name = str(job.status or "").strip().lower()
-        if status_name in {"done", "failed", "cancelled"}:
-            return Response(
-                {
-                    "error": "Job is already finalized.",
-                    "status": job.status,
-                    "cancelled": JOB_CANCELLED_MARKER in str(job.error_message or ""),
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        root_task_id = str(job.celery_task_id or "").strip()
-        revoked_task_ids = _revoke_project_active_tasks(
-            project_id=int(project_id),
-            include_task_ids={root_task_id} if root_task_id else None,
-        )
-
-        cancel_reason = str(request.data.get("reason") or "").strip()[:180]
-        message = JOB_CANCELLED_MARKER
-        if cancel_reason:
-            message = f"{message}: {cancel_reason}"
-        Job.objects.filter(id=job.id).update(status="cancelled", error_message=message)
-        job.refresh_from_db()
-        _audit_job_action(
-            job=job,
-            actor=request.user,
-            action="cancel_requested",
-            metadata={
-                "reason": cancel_reason,
-                "attempt_count": int(attempt_count),
-            },
-        )
-        try:
-            cleanup_queue = _queue_for_pipeline(
-                _resolve_avatar_options_for_project(job.project, request) if job.project else {},
-                getattr(job.project, "render_profile", "balanced") if job.project else "balanced",
-            )
-            _dispatch_celery_task(
-                _CANCELLED_CLEANUP_TASK,
-                kwargs={"project_id": int(project_id), "job_id": int(job.id)},
-                queue=cleanup_queue,
-            )
-        except Exception:
-            logger.warning("Failed to dispatch cancelled artifact cleanup for job=%s", job.id, exc_info=True)
-        payload = JobSerializer(job).data
-        payload["cancelled"] = True
-        payload["revoked_task_ids"] = revoked_task_ids
-        _log_with_standard_fields(
-            "info",
-            "job_cancelled",
-            request=request,
-            user_id=int(request.user.id),
-            project_id=int(project_id),
-            job_id=int(job.id),
-            stage="cancel",
-            started_at=started_at,
-        )
-        return Response(payload, status=status.HTTP_200_OK)
-
-
-class JobRetryView(APIView):
-    """POST /api/v1/projects/<project_id>/jobs/<job_id>/retry/"""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, project_id, job_id):
-        started_at = time.perf_counter()
-        try:
-            original = Job.objects.select_related("project").get(pk=job_id, project_id=project_id)
-        except Job.DoesNotExist:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-        if original.project and not _can_manage_project(request.user, original.project):
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        if original.project is None:
-            return Response({"error": "Project context is missing for this job."}, status=status.HTTP_409_CONFLICT)
-
-        original_status = str(original.status or "").strip().lower()
-        if original_status in {"pending", "running"}:
-            return Response(
-                {"error": "Running or queued jobs cannot be retried.", "status": original.status},
-                status=status.HTTP_409_CONFLICT,
-            )
-        if original_status == "done":
-            return Response(
-                {"error": "Completed jobs cannot be retried.", "status": original.status},
-                status=status.HTTP_409_CONFLICT,
-            )
-
-        retry_request_id_raw = (
-            request.data.get("request_id")
-            or request.data.get("retry_request_id")
-            or request.headers.get("Idempotency-Key")
-            or request.headers.get("X-Request-Id")
-            or ""
-        )
-        retry_request_id = _normalize_request_id(retry_request_id_raw)
-        if not retry_request_id:
-            return Response({"error": "request_id is required for safe idempotent retry."}, status=status.HTTP_400_BAD_REQUEST)
-
-        existing_job = _find_existing_idempotent_job(original.project, "video_export", retry_request_id)
-        if existing_job is not None:
-            payload = JobSerializer(existing_job).data
-            payload["idempotent_replay"] = True
-            payload["retried_from_job_id"] = int(original.id)
-            _log_with_standard_fields(
-                "info",
-                "job_retry_idempotent_replay",
-                request=request,
-                user_id=int(request.user.id),
-                project_id=int(project_id),
-                job_id=int(existing_job.id),
-                stage="retry",
-                started_at=started_at,
-            )
-            response = Response(payload, status=status.HTTP_200_OK)
-            response["X-Idempotent-Replay"] = "1"
-            return response
-
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        upload_dir = Path(storage_root) / "uploads" / str(original.project.id)
-        lesson_files = sorted(upload_dir.glob("lesson.*")) if upload_dir.exists() else []
-        if not lesson_files:
-            return Response({"error": "Original lesson file not found."}, status=status.HTTP_400_BAD_REQUEST)
-        saved_path = str(lesson_files[0])
-
-        voice_id = _get_voice_id(original.project.user)
-        lang_hint = request.data.get("lang_hint", "auto")
-        try:
-            pause_sec = max(0.0, float(request.data.get("pause_sec", 2.2)))
-        except (TypeError, ValueError):
-            pause_sec = 2.2
-
-        render_profile = getattr(original.project, "render_profile", "balanced")
-        if "render_profile" in request.data:
-            try:
-                render_profile = _normalize_render_profile(request.data.get("render_profile"))
-            except ValueError as exc:
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
-
-        avatar_options = _apply_render_profile_to_avatar_options(
-            _resolve_avatar_options_for_project(original.project, request),
-            render_profile,
-        )
-        target_queue = _queue_for_pipeline(avatar_options, render_profile)
-        admission_profile = "avatar" if bool((avatar_options or {}).get("enabled")) else render_profile
-        admitted, admission_payload = _admission_guard_for_render_profile(admission_profile, target_queue)
-        if not admitted:
-            return Response(admission_payload, status=status.HTTP_429_TOO_MANY_REQUESTS)
-
-        try:
-            retry_job = Job.objects.create(
-                project=original.project,
-                job_type="video_export",
-                status="pending",
-                request_id=retry_request_id,
-            )
-        except IntegrityError:
-            existing_job = _find_existing_idempotent_job(original.project, "video_export", retry_request_id)
-            if existing_job is not None:
-                payload = JobSerializer(existing_job).data
-                payload["idempotent_replay"] = True
-                payload["retried_from_job_id"] = int(original.id)
-                response = Response(payload, status=status.HTTP_200_OK)
-                response["X-Idempotent-Replay"] = "1"
-                return response
-            raise
-
-        _remember_idempotent_job(original.project, "video_export", retry_request_id, int(retry_job.id))
-        task_args = [
-            str(original.project.id),
-            saved_path,
-            voice_id,
-            pause_sec,
-            lang_hint,
-            "service",
-            False,
-            avatar_options,
-            None,
-            _project_tts_settings(original.project),
-            render_profile,
-        ]
-        async_result = _dispatch_celery_task(
-            _PROCESS_PROJECT_RENDER_TASK,
-            args=task_args,
-            queue=target_queue,
-        )
-        retry_job.celery_task_id = async_result.id
-        retry_job.save(update_fields=["celery_task_id"])
-        payload = JobSerializer(retry_job).data
-        payload["retried_from_job_id"] = int(original.id)
-        payload["queue"] = target_queue
-        payload["idempotent_replay"] = False
-        _log_with_standard_fields(
-            "info",
-            "job_retry_dispatched",
-            request=request,
-            user_id=int(request.user.id),
-            project_id=int(project_id),
-            job_id=int(retry_job.id),
-            queue=target_queue,
-            stage="retry",
-            started_at=started_at,
-        )
-        return Response(payload, status=status.HTTP_202_ACCEPTED)
-
-
-class JobEventsStreamView(APIView):
-    """GET /api/v1/projects/<project_id>/jobs/<job_id>/events/ (SSE job status stream)."""
-
-    permission_classes = [permissions.AllowAny]
-    authentication_classes: list = []
-
-    @staticmethod
-    def _resolve_user(request, *, project_id: int, job_id: int):
-        if getattr(request, "user", None) and getattr(request.user, "is_authenticated", False):
-            return request.user
-        ticket = str(request.GET.get("stream_ticket") or "").strip()
-        if ticket:
-            payload = _resolve_job_events_ticket(ticket)
-            if payload:
-                if int(payload.get("project_id") or -1) != int(project_id):
-                    return None
-                if int(payload.get("job_id") or -1) != int(job_id):
-                    return None
-                user_id = int(payload.get("user_id") or 0)
-                if user_id:
-                    return User.objects.filter(pk=user_id).first()
-        # Backward compatibility fallback: legacy token query support.
-        token_key = str(request.GET.get("token") or "").strip()
-        if token_key:
-            token = Token.objects.filter(key=token_key).select_related("user").first()
-            return getattr(token, "user", None) if token else None
-        return None
-
-    def get(self, request, project_id, job_id):
-        user = self._resolve_user(request, project_id=int(project_id), job_id=int(job_id))
-        if user is None:
-            return Response({"error": "Unauthorized."}, status=status.HTTP_401_UNAUTHORIZED)
-        try:
-            job = Job.objects.select_related("project").get(pk=job_id, project_id=project_id)
-        except Job.DoesNotExist:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-        if job.project and not _can_manage_project(user, job.project):
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-
-        resume_raw = str(request.GET.get("last_event_id") or request.headers.get("Last-Event-ID") or "").strip()
-        try:
-            event_seq = max(0, int(resume_raw))
-        except ValueError:
-            event_seq = 0
-
-        def _event_stream():
-            nonlocal event_seq
-            # Let EventSource know how long to wait before reconnect attempts.
-            yield "retry: 3000\n\n"
-            last_fingerprint = ""
-            for i in range(120):
-                current = Job.objects.filter(pk=job.id).first()
-                if current is None:
-                    event_seq += 1
-                    yield f"id: {event_seq}\nevent: job_deleted\ndata: {{}}\n\n"
-                    return
-                payload = JobSerializer(current).data
-                fingerprint = f"{payload.get('status')}|{payload.get('progress')}|{payload.get('updated_at')}"
-                if fingerprint != last_fingerprint:
-                    last_fingerprint = fingerprint
-                    event_seq += 1
-                    yield f"id: {event_seq}\nevent: job_status\ndata: {json.dumps(payload, ensure_ascii=True)}\n\n"
-                elif i % 5 == 0:
-                    event_seq += 1
-                    yield f"id: {event_seq}\nevent: heartbeat\ndata: {{\"job_id\": {int(job.id)}}}\n\n"
-                if str(current.status or "").lower() in {"done", "failed", "cancelled"}:
-                    return
-                time.sleep(2)
-
-        response = StreamingHttpResponse(_event_stream(), content_type="text/event-stream")
-        response["Cache-Control"] = "no-cache"
-        response["Connection"] = "keep-alive"
-        response["X-Accel-Buffering"] = "no"
-        return response
-
-
-class JobEventsAuthTicketView(APIView):
-    """POST /api/v1/projects/<project_id>/jobs/<job_id>/events/ticket/"""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, project_id, job_id):
-        try:
-            job = Job.objects.select_related("project").get(pk=job_id, project_id=project_id)
-        except Job.DoesNotExist:
-            return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
-        if job.project and not _can_manage_project(request.user, job.project):
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        ticket, ttl = _issue_job_events_ticket(
-            user_id=int(request.user.id),
-            project_id=int(project_id),
-            job_id=int(job_id),
-        )
-        return Response({"stream_ticket": ticket, "expires_in": int(ttl)})
-
-
-class RenderCapacityView(APIView):
-    """GET /api/v1/system/render-capacity/"""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        if not (_is_staff_user(request.user) or _is_verified_teacher(request.user)):
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        return Response(_render_capacity_snapshot())
-
-
-class RenderMetricsView(APIView):
-    """GET /api/v1/system/render-metrics/"""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        if not (_is_staff_user(request.user) or _is_verified_teacher(request.user)):
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        return Response(_render_metrics_snapshot())
-
-
-class AutoscalePolicyView(APIView):
-    """GET /api/v1/system/autoscale-policy/"""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        if not (_is_staff_user(request.user) or _is_verified_teacher(request.user)):
-            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        return Response(_autoscale_policy_snapshot())
-
-
-class PrometheusMetricsView(APIView):
-    """GET /api/v1/system/metrics/prometheus/"""
-
-    permission_classes = [permissions.AllowAny]
-    authentication_classes: list = []
-
-    @staticmethod
-    def _authorized(request) -> bool:
-        configured_token = str(getattr(settings, "PROMETHEUS_METRICS_TOKEN", "") or "").strip()
-        if configured_token:
-            provided_token = str(request.headers.get("X-Metrics-Token") or request.GET.get("token") or "").strip()
-            if provided_token and _hmac.compare_digest(provided_token, configured_token):
-                return True
-        return bool(getattr(request, "user", None) and request.user.is_authenticated and _is_staff_user(request.user))
-
-    def get(self, request):
-        started_at = time.perf_counter()
-        if not self._authorized(request):
-            _log_with_standard_fields(
-                "warning",
-                "prometheus_metrics_denied",
-                request=request,
-                user_id=int(request.user.id) if getattr(request, "user", None) and request.user.is_authenticated else None,
-                stage="metrics_auth",
-                started_at=started_at,
-            )
-            return Response({"error": "Unauthorized."}, status=status.HTTP_401_UNAUTHORIZED)
-        if not _PROMETHEUS_AVAILABLE:
-            return Response(
-                {"error": "prometheus_client dependency is unavailable in this runtime."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        snapshot = _render_metrics_snapshot()
-        registry = CollectorRegistry()
-
-        queue_depth = Gauge(
-            "vidlab_render_queue_depth",
-            "Queue depth by render profile",
-            ["profile", "queue"],
-            registry=registry,
-        )
-        queue_wait = Gauge(
-            "vidlab_render_estimated_wait_seconds",
-            "Estimated wait time by render profile",
-            ["profile", "queue"],
-            registry=registry,
-        )
-        status_count = Gauge(
-            "vidlab_jobs_status_total",
-            "Job status counts",
-            ["status"],
-            registry=registry,
-        )
-        oldest_age = Gauge(
-            "vidlab_jobs_oldest_active_age_seconds",
-            "Age of the oldest pending/running job in seconds",
-            registry=registry,
-        )
-        latency_p50 = Gauge("vidlab_jobs_latency_p50_seconds", "P50 latency for recent done jobs", registry=registry)
-        latency_p95 = Gauge("vidlab_jobs_latency_p95_seconds", "P95 latency for recent done jobs", registry=registry)
-        latency_p99 = Gauge("vidlab_jobs_latency_p99_seconds", "P99 latency for recent done jobs", registry=registry)
-        recent_done = Counter(
-            "vidlab_jobs_recent_done_observations_total",
-            "Number of recent done jobs used for latency snapshots",
-            registry=registry,
-        )
-        autoscale_signal = Gauge(
-            "vidlab_autoscale_signal",
-            "Autoscale recommendation signal (-1 scale_down, 0 hold, 1 scale_up)",
-            ["profile", "action"],
-            registry=registry,
-        )
-
-        queues = snapshot.get("capacity", {}).get("queues", {})
-        for profile, info in queues.items():
-            qname = str(info.get("queue") or "")
-            queue_depth.labels(profile=profile, queue=qname).set(float(info.get("depth") or 0))
-            queue_wait.labels(profile=profile, queue=qname).set(float(info.get("estimated_wait_seconds") or 0))
-
-        status_counts = snapshot.get("jobs", {}).get("status_counts", {})
-        for status_name, value in status_counts.items():
-            status_count.labels(status=status_name).set(float(value or 0))
-
-        oldest_age.set(float(snapshot.get("jobs", {}).get("oldest_active_age_seconds") or 0))
-        latency_p50.set(float(snapshot.get("jobs", {}).get("latency_seconds_p50") or 0))
-        latency_p95.set(float(snapshot.get("jobs", {}).get("latency_seconds_p95") or 0))
-        latency_p99.set(float(snapshot.get("jobs", {}).get("latency_seconds_p99") or 0))
-        for _ in range(int(snapshot.get("jobs", {}).get("recent_done_count") or 0)):
-            recent_done.inc()
-
-        autoscale = _autoscale_policy_snapshot().get("profiles", {})
-        for profile, decision in autoscale.items():
-            action = str(decision.get("action") or "hold")
-            signal = 1.0 if action == "scale_up" else (-1.0 if action == "scale_down" else 0.0)
-            autoscale_signal.labels(profile=profile, action=action).set(signal)
-
-        _log_with_standard_fields(
-            "info",
-            "prometheus_metrics_served",
-            request=request,
-            user_id=int(request.user.id) if getattr(request, "user", None) and request.user.is_authenticated else None,
-            stage="metrics_serve",
-            started_at=started_at,
-        )
-        return HttpResponse(generate_latest(registry), content_type=CONTENT_TYPE_LATEST)
-
-
-class SystemOrphanCleanupRunView(APIView):
-    """POST /api/v1/system/orphan-cleanup/run/"""
-
-    permission_classes = [permissions.IsAdminUser]
-
-    def post(self, request):
-        try:
-            min_age_hours = max(1, int(request.data.get("min_age_hours", 6)))
-        except (TypeError, ValueError):
-            min_age_hours = 6
-        try:
-            async_result = _dispatch_celery_task(
-                "worker.tasks.cleanup_orphan_render_artifacts",
-                kwargs={"min_age_hours": int(min_age_hours)},
-                queue=_render_queue_name(),
-            )
-        except Exception:
-            logger.exception("Failed to dispatch orphan cleanup janitor task")
-            return Response({"error": "Failed to dispatch janitor task."}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        return Response(
-            {
-                "status": "accepted",
-                "task_id": str(getattr(async_result, "id", "")),
-                "min_age_hours": int(min_age_hours),
-            },
-            status=status.HTTP_202_ACCEPTED,
-        )
+        data["language_detection"] = _language_detection_sidecar_for_job(storage_root, int(project_id))
+        data["transcript_pages"] = _studio_transcript_pages(job.project, request) if job.project else []
+        data["has_draft"] = has_project_draft(job.project) if job.project else False
+        data["draft_metadata"] = _studio_draft_metadata(job.project) if job.project else {}
+        return Response(data)
 
 
 class VoiceUploadView(APIView):
@@ -4767,6 +5545,9 @@ class AvatarProfileView(APIView):
                 "avatar_source_video_hash": profile.avatar_source_video_hash,
                 "avatar_preview_stale": bool(profile.avatar_preview_stale or readiness.get("avatar_preview_stale")),
                 "avatar_preview_source_hash": profile.avatar_preview_source_hash,
+                "avatar_moderation_status": profile.avatar_moderation_status,
+                "avatar_moderation_summary": profile.avatar_moderation_summary if isinstance(profile.avatar_moderation_summary, dict) else {},
+                "avatar_last_moderation_run_id": profile.avatar_last_moderation_run_id,
                 "missing_requirements": readiness.get("missing_requirements") or [],
                 "readiness_checks": readiness.get("checks") or {},
                 "composite_configured": _composite_engine_configured(),
@@ -4847,6 +5628,12 @@ class AvatarProfileView(APIView):
                     handle.write(chunk)
 
             rel_original = str(saved_original.relative_to(Path(storage_root))).replace("\\", "/")
+            profile.avatar_image_original = rel_original
+            profile.save(update_fields=["avatar_image_original", "updated_at"])
+            run_avatar_image_moderation(profile, saved_original, persist=True)
+            moderation_gate = avatar_image_moderation_gate(profile)
+            if moderation_gate.get("blocked"):
+                return _avatar_moderation_block_response(profile, moderation_gate, status_label="avatar_not_prepared")
 
             try:
                 result = preprocess_teacher_avatar_image(
@@ -4862,7 +5649,6 @@ class AvatarProfileView(APIView):
                 profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
                 return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-            profile.avatar_image_original = rel_original
             if avatar_video_file is None:
                 # Image-only mode: use processed image as primary identity source.
                 profile.avatar_image_processed = result.processed_rel_path
@@ -5184,6 +5970,13 @@ class AvatarPrepareView(APIView):
 
         original_rel = str(profile.avatar_image_original or "").strip()
         original_abs = (storage_root / original_rel) if original_rel else None
+        if original_abs is not None and original_abs.exists() and original_abs.is_file():
+            current_moderation_status = str(profile.avatar_moderation_status or "not_scanned").strip().lower()
+            if avatar_image_moderation_auto_enabled() and (force_reprocess or current_moderation_status in {"not_scanned", "skipped", "failed"}):
+                run_avatar_image_moderation(profile, original_abs, persist=True)
+            moderation_gate = avatar_image_moderation_gate(profile)
+            if moderation_gate.get("blocked"):
+                return _avatar_moderation_block_response(profile, moderation_gate, status_label="avatar_not_prepared")
         if should_reprocess:
             if original_abs is None or (not original_abs.exists()) or (not original_abs.is_file()):
                 warnings.append("missing_avatar_image_original")
@@ -5287,7 +6080,7 @@ class AvatarPreviewStatusView(APIView):
         payload["preview_status"] = _normalize_preview_stage(profile.avatar_last_preview_status, job_status=payload.get("status"))
         preview_rel_path = ""
         ui_returned_playable_file = ""
-        if str(profile.avatar_last_preview_job_id or "") == str(job.id) and payload["preview_status"] in {"ready", "warning", "done"}:
+        if str(profile.avatar_last_preview_job_id or "") == str(job.id) and payload["preview_status"] in {"ready", "warning"}:
             preview_rel_path = str(profile.avatar_last_preview_path or profile.avatar_preview_video or "")
             ui_returned_playable_file = str(payload.get("result_url") or "").strip() or preview_rel_path
         payload["preview_rel_path"] = preview_rel_path
@@ -5444,139 +6237,6 @@ class AvatarOverlayPreferenceView(APIView):
         return Response(AvatarOverlayPreferenceSerializer(pref).data)
 
 
-def _compat_avatar_profile_payload(user: User, profile: UserProfile) -> dict:
-    avatar_asset_path = str(profile.avatar_image_processed or profile.avatar_image_original or "")
-    return {
-        "user_id": int(user.id),
-        "avatar_enabled": bool(profile.avatar_enabled),
-        "avatar_asset_path": avatar_asset_path,
-        "avatar_image_original": str(profile.avatar_image_original or ""),
-        "avatar_image_processed": str(profile.avatar_image_processed or ""),
-        "avatar_preview_video": str(profile.avatar_preview_video or profile.avatar_last_preview_path or ""),
-        "overlay_position": str(profile.avatar_overlay_default_position or "top-right"),
-        "overlay_size": str(profile.avatar_overlay_size or "medium"),
-        "overlay_visible": bool(profile.avatar_overlay_visible),
-        "avatar_lipsync_engine": _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary),
-        "avatar_quality_preset": str(profile.avatar_quality_preset or "high"),
-        "avatar_motion_preset": str(profile.avatar_motion_preset or "natural"),
-        "avatar_status": str(profile.avatar_image_status or ""),
-        "avatar_preview_error": str(profile.avatar_preview_error or ""),
-    }
-
-
-class AvatarCompatProfileView(APIView):
-    """GET/POST/DELETE /api/v1/avatar/profile (Engincan compatibility)."""
-
-    permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
-
-    def get(self, request):
-        if not _is_verified_teacher(request.user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
-        profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"role": "teacher"})
-        return Response(_compat_avatar_profile_payload(request.user, profile))
-
-    def post(self, request):
-        user_id = int(request.user.id)
-        if request.FILES.get("avatar_file") or request.FILES.get("avatar_video_file"):
-            upload_resp = AvatarProfileView().post(request, user_id)
-            if upload_resp.status_code >= 400:
-                return upload_resp
-        patch_resp = AvatarProfileView().patch(request, user_id)
-        if patch_resp.status_code >= 400:
-            return patch_resp
-        profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"role": "teacher"})
-        return Response(_compat_avatar_profile_payload(request.user, profile))
-
-    def patch(self, request):
-        patch_resp = AvatarProfileView().patch(request, int(request.user.id))
-        if patch_resp.status_code >= 400:
-            return patch_resp
-        profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"role": "teacher"})
-        return Response(_compat_avatar_profile_payload(request.user, profile))
-
-    def delete(self, request):
-        if not _is_verified_teacher(request.user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
-        profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"role": "teacher"})
-        profile.avatar_enabled = False
-        profile.avatar_image_original = ""
-        profile.avatar_image_processed = ""
-        profile.avatar_video_original = ""
-        profile.avatar_video_processed = ""
-        profile.avatar_preview_video = ""
-        profile.avatar_last_preview_path = ""
-        profile.avatar_preview_error = ""
-        profile.avatar_image_status = "idle"
-        profile.save(update_fields=[
-            "avatar_enabled",
-            "avatar_image_original",
-            "avatar_image_processed",
-            "avatar_video_original",
-            "avatar_video_processed",
-            "avatar_preview_video",
-            "avatar_last_preview_path",
-            "avatar_preview_error",
-            "avatar_image_status",
-            "updated_at",
-        ])
-        return Response({"status": "deleted"})
-
-
-class AvatarCompatUploadView(APIView):
-    """POST /api/v1/avatar/upload (Engincan compatibility)."""
-
-    permission_classes = [permissions.IsAuthenticated]
-    parser_classes = [MultiPartParser, FormParser, JSONParser]
-
-    def post(self, request):
-        resp = AvatarProfileView().post(request, int(request.user.id))
-        if resp.status_code >= 400:
-            return resp
-        profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"role": "teacher"})
-        return Response({
-            "status": "ready",
-            "avatar_asset_path": str(profile.avatar_image_processed or profile.avatar_image_original or ""),
-            "profile": _compat_avatar_profile_payload(request.user, profile),
-        })
-
-
-class AvatarCompatPreviewView(APIView):
-    """POST /api/v1/avatar/preview (Engincan compatibility)."""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        return AvatarPreviewRegenerateView().post(request, int(request.user.id))
-
-
-class AvatarCompatPreviewStatusView(APIView):
-    """GET /api/v1/avatar/preview/<job_id> (Engincan compatibility)."""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, job_id):
-        return AvatarPreviewStatusView().get(request, int(request.user.id), int(job_id))
-
-
-class AvatarCompatReadinessView(APIView):
-    """GET /api/v1/avatar/readiness (Engincan compatibility)."""
-
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request):
-        if not _is_verified_teacher(request.user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
-        profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"role": "teacher"})
-        voice_profile = VoiceProfile.objects.filter(user=request.user).first()
-        readiness = _avatar_preview_readiness(
-            profile,
-            voice_profile,
-            storage_root=Path(getattr(settings, "STORAGE_ROOT", "storage_local")),
-        )
-        return Response(readiness)
-
-
 # ---------------------------------------------------------------------------
 # Student catalog (public browsing)
 # ---------------------------------------------------------------------------
@@ -5600,8 +6260,18 @@ class CatalogListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
+        # Public catalog: published + render done + moderation approved/not_scanned.
+        # Lessons that are unscanned (not_scanned) are also shown so that projects
+        # without auto-moderation enabled are not silently hidden from the catalog.
+        # Explicitly rejected/blocked lessons are excluded via moderation_status__in.
         projects = (
-            Project.objects.filter(is_published=True, jobs__status="done")
+            Project.objects.filter(
+                is_published=True,
+                status="ready",
+                moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+                jobs__status="done",
+            )
+            .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
             .prefetch_related("jobs", "likes", "comments")
             .distinct()
@@ -5698,7 +6368,13 @@ class CatalogFeedView(APIView):
         limit = max(4, min(24, limit))
 
         projects = (
-            Project.objects.filter(is_published=True, jobs__status="done")
+            Project.objects.filter(
+                is_published=True,
+                status="ready",
+                moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+                jobs__status="done",
+            )
+            .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
             .prefetch_related("jobs", "likes", "comments", "slides")
             .distinct()
@@ -6277,16 +6953,15 @@ class CatalogDetailView(APIView):
         playback_session_id = None
         session_binding_active = bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True))
         if protection_mode != "public":
-            if not (_is_authenticated_user(request.user) and _can_manage_project(request.user, project)):
-                allowed, deny_reason = _enforce_playback_concurrency(project.id, request, protection_mode)
-                if not allowed:
-                    return Response(
-                        {
-                            "error": "This lesson is already active in another browser session.",
-                            "reason": deny_reason,
-                        },
-                        status=status.HTTP_409_CONFLICT,
-                    )
+            allowed, deny_reason = _enforce_playback_concurrency(project.id, request, protection_mode)
+            if not allowed:
+                return Response(
+                    {
+                        "error": "This lesson is already active in another browser session.",
+                        "reason": deny_reason,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
             grant_id, _scope_key = _issue_playback_grant(project.id, request, protection_mode, ttl_seconds)
             bind_key = _bind_key_for_request(request) if session_binding_active else None
             playback_session_id = _playback_session_id(job.id, grant_id)
@@ -6370,27 +7045,31 @@ class CatalogDetailView(APIView):
         data["avatar_active_for_lesson"] = _avatar_active_for_project(project)
         data["playback_status"] = playback.get("playback_status")
         data["mode_debug"] = playback.get("mode_debug")
-        data["transcript_pages"] = _project_transcript_timeline(project)
+        data["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})
         data["like_count"] = project.likes.count()
         data["comment_count"] = project.comments.count()
+        data["publisher_id"] = project.user_id
+        data["publisher_username"] = project.user.username if project.user else ""
+        data["publisher_display_name"] = _publisher_display_name(project.user) if project.user else ""
+        data["publisher_follower_count"] = (
+            PublisherFollow.objects.filter(publisher=project.user).count()
+            if project.user_id
+            else 0
+        )
 
         if request.user and request.user.is_authenticated:
             data["user_liked"] = project.likes.filter(user=request.user).exists()
+            data["publisher_is_following"] = (
+                PublisherFollow.objects.filter(follower=request.user, publisher=project.user).exists()
+                if project.user_id
+                else False
+            )
             progress = project.progress_records.filter(user=request.user).first()
             data["user_progress"] = progress.progress_pct if progress else 0
         else:
             data["user_liked"] = False
-        data["user_progress"] = 0
-
-        logger.info(
-            "Catalog playback payload issued: project_id=%s job_id=%s mode=%s has_grant=%s has_hls=%s mp4_fallback=%s",
-            project.id,
-            job.id,
-            protection_mode,
-            bool(grant_id),
-            bool(hls_manifest_token),
-            bool(video_token),
-        )
+            data["publisher_is_following"] = False
+            data["user_progress"] = 0
 
         return Response(data)
 
@@ -6441,6 +7120,627 @@ class LessonProgressView(APIView):
             defaults={"progress_pct": pct},
         )
         return Response({"progress_pct": pct})
+
+
+def _public_learning_item_queryset(queryset):
+    return (
+        queryset.select_related("project", "project__user", "project__category")
+        .filter(
+            project__is_published=True,
+            project__status="ready",
+            project__moderation_status__in=APPROVED_MODERATION_STATUSES,
+            project__jobs__status="done",
+        )
+        .distinct()
+    )
+
+
+def _learning_project_payload(project: Project, request) -> dict[str, Any]:
+    data = dict(CatalogProjectSerializer(project, context={"request": request}).data)
+    progress = project.progress_records.filter(user=request.user).first()
+    data["user_progress"] = int(progress.progress_pct) if progress else 0
+    data["user_liked"] = project.likes.filter(user=request.user).exists()
+    return data
+
+
+PUBLISHER_PROFILE_ROLES = frozenset({"publisher", "teacher"})
+
+
+def _safe_user_profile(user):
+    try:
+        return getattr(user, "profile", None)
+    except UserProfile.DoesNotExist:
+        return None
+
+
+def _publisher_role(user) -> str:
+    profile = _safe_user_profile(user)
+    role = str(getattr(profile, "role", "") or "").strip().lower()
+    if role in PUBLISHER_PROFILE_ROLES:
+        return role
+    if _is_staff_user(user):
+        return "publisher"
+    return role or "student"
+
+
+def _is_public_publisher_user(user) -> bool:
+    if not user:
+        return False
+    return _is_staff_user(user) or _publisher_role(user) in PUBLISHER_PROFILE_ROLES
+
+
+def _publisher_display_name(user) -> str:
+    return user.get_full_name() or user.username
+
+
+def _public_publisher_projects(publisher):
+    return (
+        Project.objects.filter(
+            user=publisher,
+            is_published=True,
+            status="ready",
+            moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+            jobs__status="done",
+        )
+        .exclude(moderation_status__in=["admin_rejected", "revision_required"])
+        .select_related("user", "category")
+        .prefetch_related("jobs", "likes", "comments")
+        .distinct()
+    )
+
+
+def _public_playlist_items_queryset(queryset=None):
+    base = queryset if queryset is not None else PlaylistItem.objects.all()
+    return (
+        base.filter(
+            project__is_published=True,
+            project__status="ready",
+            project__moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+            project__jobs__status="done",
+        )
+        .exclude(project__moderation_status__in=["admin_rejected", "revision_required"])
+        .select_related("project", "project__user", "project__category")
+        .prefetch_related("project__jobs", "project__likes", "project__comments")
+        .distinct()
+        .order_by("order", "created_at")
+    )
+
+
+def _playlist_items_queryset(queryset=None):
+    base = queryset if queryset is not None else PlaylistItem.objects.all()
+    return (
+        base.select_related("project", "project__user", "project__category")
+        .prefetch_related("project__jobs", "project__likes", "project__comments")
+        .order_by("order", "created_at")
+    )
+
+
+def _playlist_payload_for_public(playlist, request):
+    playlist.visible_items = list(_public_playlist_items_queryset(PlaylistItem.objects.filter(playlist=playlist)))
+    return PlaylistPublicSerializer(playlist, context={"request": request}).data
+
+
+def _playlist_context_publisher_payload(user) -> dict[str, Any] | None:
+    if not user:
+        return None
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": _publisher_display_name(user),
+    }
+
+
+def _playlist_context_playlist_payload(playlist) -> dict[str, Any]:
+    return {
+        "id": playlist.id,
+        "title": playlist.title,
+        "publisher": _playlist_context_publisher_payload(playlist.user),
+    }
+
+
+def _playlist_context_item_payload(item, request, current_project_id: int) -> dict[str, Any]:
+    return {
+        "project": CatalogProjectSerializer(item.project, context={"request": request}).data,
+        "order": item.order,
+        "is_current": int(item.project_id) == int(current_project_id),
+    }
+
+
+def _publisher_context_projects(project: Project, *, include_private: bool):
+    base = (
+        Project.objects.filter(user=project.user)
+        .exclude(pk=project.pk)
+        .select_related("user", "category")
+        .prefetch_related("jobs", "likes", "comments")
+        .distinct()
+    )
+    if not include_private:
+        base = _public_publisher_projects(project.user).exclude(pk=project.pk)
+    else:
+        base = base.filter(jobs__status="done").distinct()
+
+    same_category = base.none()
+    other_projects = base
+    if project.category_id:
+        same_category = base.filter(category_id=project.category_id)
+        other_projects = base.exclude(category_id=project.category_id)
+
+    same_category_projects = list(same_category.order_by("-created_at", "-id")[:8])
+    if len(same_category_projects) >= 8:
+        return same_category_projects
+    remaining = 8 - len(same_category_projects)
+    return same_category_projects + list(other_projects.order_by("-created_at", "-id")[:remaining])
+
+
+class CatalogPlaylistContextView(APIView):
+    """GET /api/v1/catalog/<project_id>/playlist-context/ - Watch page context."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, project_id):
+        try:
+            project = Project.objects.select_related("user", "category").prefetch_related("jobs").get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Lesson not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        lesson_is_public = _is_public_lesson(project)
+        can_manage = _can_manage_project(getattr(request, "user", None), project)
+        if not lesson_is_public and not can_manage:
+            return Response({"error": "Lesson not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not lesson_is_public and not _project_has_completed_render(project):
+            return Response({"error": "Lesson not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not project.user_id:
+            return Response({"mode": "publisher", "playlist": None, "items": []})
+
+        if lesson_is_public:
+            playlist_item = (
+                PlaylistItem.objects.filter(
+                    project=project,
+                    playlist__is_public=True,
+                    playlist__user=project.user,
+                )
+                .select_related("playlist", "playlist__user")
+                .order_by("order", "-playlist__updated_at", "-playlist__created_at", "playlist_id")
+                .first()
+            )
+            if playlist_item:
+                playlist = playlist_item.playlist
+                visible_items = list(_public_playlist_items_queryset(PlaylistItem.objects.filter(playlist=playlist)))
+                if any(int(item.project_id) == int(project.id) for item in visible_items):
+                    return Response({
+                        "mode": "playlist",
+                        "playlist": _playlist_context_playlist_payload(playlist),
+                        "items": [
+                            _playlist_context_item_payload(item, request, project.id)
+                            for item in visible_items
+                        ],
+                    })
+
+        fallback_projects = _publisher_context_projects(project, include_private=can_manage)
+        return Response({
+            "mode": "publisher",
+            "playlist": None,
+            "items": CatalogProjectSerializer(fallback_projects, many=True, context={"request": request}).data,
+        })
+
+
+def _publisher_profile_payload(publisher, request, *, latest_limit: int = 0) -> dict[str, Any]:
+    profile = _safe_user_profile(publisher)
+    public_lessons = _public_publisher_projects(publisher)
+    is_following = False
+    if request.user and request.user.is_authenticated:
+        is_following = PublisherFollow.objects.filter(follower=request.user, publisher=publisher).exists()
+    payload = {
+        "id": publisher.id,
+        "username": publisher.username,
+        "display_name": _publisher_display_name(publisher),
+        "bio": getattr(profile, "bio", "") or "",
+        "avatar_url": "",
+        "role": _publisher_role(publisher),
+        "follower_count": PublisherFollow.objects.filter(publisher=publisher).count(),
+        "lesson_count": public_lessons.count(),
+        "is_following": is_following,
+        "stats": {
+            "total_views": LessonProgress.objects.filter(project__in=public_lessons).count(),
+            "total_likes": LessonLike.objects.filter(project__in=public_lessons).count(),
+        },
+    }
+    if latest_limit:
+        payload["latest_lessons"] = CatalogProjectSerializer(
+            public_lessons.order_by("-created_at")[:latest_limit],
+            many=True,
+            context={"request": request},
+        ).data
+    return payload
+
+
+class PublisherFollowToggleView(APIView):
+    """POST /api/v1/users/<user_id>/follow/ - toggle a publisher follow."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, user_id):
+        try:
+            publisher = User.objects.select_related("profile").get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _is_public_publisher_user(publisher):
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+        if int(request.user.id) == int(publisher.id):
+            return Response({"error": "You cannot follow yourself."}, status=status.HTTP_400_BAD_REQUEST)
+
+        follow, created = PublisherFollow.objects.get_or_create(follower=request.user, publisher=publisher)
+        if created:
+            is_following = True
+        else:
+            follow.delete()
+            is_following = False
+        return Response({
+            "is_following": is_following,
+            "follower_count": PublisherFollow.objects.filter(publisher=publisher).count(),
+        })
+
+
+class PublisherProfileView(APIView):
+    """GET /api/v1/users/<user_id>/profile/ - public publisher profile."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, user_id):
+        try:
+            publisher = User.objects.select_related("profile").get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _is_public_publisher_user(publisher):
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_publisher_profile_payload(publisher, request, latest_limit=3))
+
+
+class PublisherLessonsView(APIView):
+    """GET /api/v1/users/<user_id>/lessons/ - public publisher lessons."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, user_id):
+        try:
+            publisher = User.objects.select_related("profile").get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _is_public_publisher_user(publisher):
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        can_view_private = bool(
+            request.user
+            and request.user.is_authenticated
+            and (_is_staff_user(request.user) or int(request.user.id) == int(publisher.id))
+        )
+        if can_view_private:
+            projects = (
+                Project.objects.filter(user=publisher)
+                .select_related("user", "category")
+                .prefetch_related("jobs", "likes", "comments")
+                .distinct()
+            )
+        else:
+            projects = _public_publisher_projects(publisher)
+
+        sort = str(request.query_params.get("sort") or "date").strip().lower()
+        order = str(request.query_params.get("order") or "").strip().lower()
+        if sort not in {"date", "name"}:
+            sort = "date"
+        if order not in {"asc", "desc"}:
+            order = "asc" if sort == "name" else "desc"
+        order_field = "title" if sort == "name" else "created_at"
+        if order == "desc":
+            order_field = f"-{order_field}"
+        projects = projects.order_by(order_field, "id" if order == "asc" else "-id")
+        return Response({
+            "results": CatalogProjectSerializer(projects, many=True, context={"request": request}).data
+        })
+
+
+class PlaylistListCreateView(APIView):
+    """GET/POST /api/v1/playlists/ - current publisher's Studio playlists."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        if not _is_verified_teacher(request.user):
+            return Response({"error": "Only teacher or publisher accounts can manage playlists."}, status=status.HTTP_403_FORBIDDEN)
+        playlists = (
+            Playlist.objects.filter(user=request.user)
+            .select_related("user")
+            .prefetch_related(Prefetch("items", queryset=_playlist_items_queryset()))
+            .order_by("-updated_at", "-created_at")
+        )
+        return Response({"results": PlaylistSerializer(playlists, many=True, context={"request": request}).data})
+
+    def post(self, request):
+        if not _is_verified_teacher(request.user):
+            return Response({"error": "Only teacher or publisher accounts can create playlists."}, status=status.HTTP_403_FORBIDDEN)
+        serializer = PlaylistSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        playlist = serializer.save(user=request.user)
+        return Response(PlaylistSerializer(playlist, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
+class PlaylistSaveToggleView(APIView):
+    """POST /api/v1/playlists/<id>/save/ - toggle a saved public playlist."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, playlist_id):
+        try:
+            playlist = Playlist.objects.get(pk=playlist_id, is_public=True)
+        except Playlist.DoesNotExist:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        saved, created = SavedPlaylist.objects.get_or_create(user=request.user, playlist=playlist)
+        if created:
+            is_saved = True
+        else:
+            saved.delete()
+            is_saved = False
+
+        return Response({
+            "is_saved": is_saved,
+            "save_count": SavedPlaylist.objects.filter(playlist=playlist).count(),
+        })
+
+
+class UserSavedPlaylistsView(APIView):
+    """GET /api/v1/me/saved-playlists/ - current user's saved public playlists."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        saved_rows = list(
+            SavedPlaylist.objects.filter(user=request.user, playlist__is_public=True)
+            .select_related("playlist")
+            .order_by("-created_at", "-id")
+        )
+        playlist_ids = [row.playlist_id for row in saved_rows]
+        playlists = (
+            Playlist.objects.filter(id__in=playlist_ids, is_public=True)
+            .select_related("user")
+            .prefetch_related(Prefetch("items", queryset=_public_playlist_items_queryset(), to_attr="visible_items"))
+        )
+        playlists_by_id = {playlist.id: playlist for playlist in playlists}
+        results = []
+        for saved_row in saved_rows:
+            playlist = playlists_by_id.get(saved_row.playlist_id)
+            if not playlist:
+                continue
+            row = PlaylistPublicSerializer(playlist, context={"request": request}).data
+            row["saved_at"] = saved_row.created_at
+            results.append(row)
+        return Response({"results": results})
+
+
+class PlaylistDetailView(APIView):
+    """GET public playlist detail; PATCH/DELETE current owner's Studio playlist."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, playlist_id):
+        try:
+            playlist = Playlist.objects.select_related("user", "user__profile").get(pk=playlist_id)
+        except Playlist.DoesNotExist:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        can_view_private = bool(
+            request.user
+            and request.user.is_authenticated
+            and (_is_staff_user(request.user) or int(request.user.id) == int(playlist.user_id))
+        )
+        if not playlist.is_public and not can_view_private:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+        if can_view_private:
+            playlist = (
+                Playlist.objects.filter(pk=playlist.pk)
+                .select_related("user")
+                .prefetch_related(Prefetch("items", queryset=_playlist_items_queryset()))
+                .first()
+            )
+            return Response(PlaylistSerializer(playlist, context={"request": request}).data)
+        return Response(_playlist_payload_for_public(playlist, request))
+
+    def patch(self, request, playlist_id):
+        if not _is_verified_teacher(request.user):
+            return Response({"error": "Only teacher or publisher accounts can update playlists."}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            playlist = Playlist.objects.get(pk=playlist_id, user=request.user)
+        except Playlist.DoesNotExist:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+        serializer = PlaylistSerializer(playlist, data=request.data, partial=True, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        playlist = serializer.save()
+        return Response(PlaylistSerializer(playlist, context={"request": request}).data)
+
+    def delete(self, request, playlist_id):
+        if not _is_verified_teacher(request.user):
+            return Response({"error": "Only teacher or publisher accounts can delete playlists."}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            playlist = Playlist.objects.get(pk=playlist_id, user=request.user)
+        except Playlist.DoesNotExist:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+        playlist.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PlaylistItemCreateView(APIView):
+    """POST /api/v1/playlists/<id>/items/ - add an owned lesson to a playlist."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, playlist_id):
+        if not _is_verified_teacher(request.user):
+            return Response({"error": "Only teacher or publisher accounts can update playlists."}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            playlist = Playlist.objects.get(pk=playlist_id, user=request.user)
+        except Playlist.DoesNotExist:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            project_id = int(request.data.get("project_id") or 0)
+        except (TypeError, ValueError):
+            project_id = 0
+        if not project_id:
+            return Response({"error": "project_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Lesson not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _is_staff_user(request.user) and int(project.user_id or 0) != int(request.user.id):
+            return Response({"error": "You can only add your own lessons to playlists."}, status=status.HTTP_403_FORBIDDEN)
+
+        existing = PlaylistItem.objects.filter(playlist=playlist, project=project).first()
+        if existing:
+            playlist = (
+                Playlist.objects.filter(pk=playlist.pk)
+                .select_related("user")
+                .prefetch_related(Prefetch("items", queryset=_playlist_items_queryset()))
+                .first()
+            )
+            return Response(PlaylistSerializer(playlist, context={"request": request}).data)
+
+        max_order = PlaylistItem.objects.filter(playlist=playlist).aggregate(Max("order")).get("order__max")
+        PlaylistItem.objects.create(playlist=playlist, project=project, order=(max_order or 0) + 1)
+        playlist = (
+            Playlist.objects.filter(pk=playlist.pk)
+            .select_related("user")
+            .prefetch_related(Prefetch("items", queryset=_playlist_items_queryset()))
+            .first()
+        )
+        return Response(PlaylistSerializer(playlist, context={"request": request}).data, status=status.HTTP_201_CREATED)
+
+
+class PlaylistItemDeleteView(APIView):
+    """DELETE /api/v1/playlists/<id>/items/<project_id>/ - remove a lesson."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, playlist_id, project_id):
+        if not _is_verified_teacher(request.user):
+            return Response({"error": "Only teacher or publisher accounts can update playlists."}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            playlist = Playlist.objects.get(pk=playlist_id, user=request.user)
+        except Playlist.DoesNotExist:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+        PlaylistItem.objects.filter(playlist=playlist, project_id=project_id).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PlaylistItemReorderView(APIView):
+    """PATCH /api/v1/playlists/<id>/items/reorder/ - set simple numeric order."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, playlist_id):
+        if not _is_verified_teacher(request.user):
+            return Response({"error": "Only teacher or publisher accounts can update playlists."}, status=status.HTTP_403_FORBIDDEN)
+        try:
+            playlist = Playlist.objects.get(pk=playlist_id, user=request.user)
+        except Playlist.DoesNotExist:
+            return Response({"error": "Playlist not found."}, status=status.HTTP_404_NOT_FOUND)
+        project_ids = request.data.get("project_ids")
+        if not isinstance(project_ids, list):
+            return Response({"error": "project_ids must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            requested_ids = [int(project_id) for project_id in project_ids]
+        except (TypeError, ValueError):
+            return Response({"error": "project_ids must contain numeric lesson ids."}, status=status.HTTP_400_BAD_REQUEST)
+
+        current_items = list(PlaylistItem.objects.filter(playlist=playlist).order_by("order", "created_at"))
+        current_ids = [item.project_id for item in current_items]
+        if set(requested_ids) != set(current_ids) or len(requested_ids) != len(current_ids):
+            return Response({"error": "project_ids must include each playlist lesson exactly once."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            items_by_project = {item.project_id: item for item in current_items}
+            for index, project_id in enumerate(requested_ids):
+                item = items_by_project[project_id]
+                if item.order != index:
+                    item.order = index
+                    item.save(update_fields=["order"])
+        playlist = (
+            Playlist.objects.filter(pk=playlist.pk)
+            .select_related("user")
+            .prefetch_related(Prefetch("items", queryset=_playlist_items_queryset()))
+            .first()
+        )
+        return Response(PlaylistSerializer(playlist, context={"request": request}).data)
+
+
+class PublisherPlaylistsView(APIView):
+    """GET /api/v1/users/<user_id>/playlists/ - public channel playlists."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, user_id):
+        try:
+            publisher = User.objects.select_related("profile").get(pk=user_id)
+        except User.DoesNotExist:
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _is_public_publisher_user(publisher):
+            return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
+        playlists = (
+            Playlist.objects.filter(user=publisher, is_public=True)
+            .select_related("user")
+            .prefetch_related(Prefetch("items", queryset=_public_playlist_items_queryset(), to_attr="visible_items"))
+            .order_by("-updated_at", "-created_at")
+        )
+        return Response({"results": PlaylistPublicSerializer(playlists, many=True, context={"request": request}).data})
+
+
+class UserFollowingView(APIView):
+    """GET /api/v1/me/following/ - current user's followed publishers."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        follows = (
+            PublisherFollow.objects.filter(follower=request.user)
+            .select_related("publisher", "publisher__profile")
+            .order_by("-created_at")
+        )
+        results = []
+        for follow in follows:
+            publisher = follow.publisher
+            if not _is_public_publisher_user(publisher):
+                continue
+            row = _publisher_profile_payload(publisher, request, latest_limit=3)
+            row["followed_at"] = follow.created_at
+            results.append(row)
+        return Response({"results": results})
+
+
+class UserHistoryView(APIView):
+    """GET /api/v1/me/history/ — current user's watched public lessons."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        progress_rows = _public_learning_item_queryset(
+            LessonProgress.objects.filter(user=request.user)
+        ).order_by("-updated_at")
+        results = [
+            {
+                "id": row.id,
+                "project_id": row.project_id,
+                "progress_pct": int(row.progress_pct or 0),
+                "updated_at": row.updated_at,
+                "last_watched_at": row.updated_at,
+                "lesson": _learning_project_payload(row.project, request),
+            }
+            for row in progress_rows
+        ]
+        return Response({"results": results})
+
+
+class UserLikedLessonsView(APIView):
+    """GET /api/v1/me/liked-lessons/ — current user's liked public lessons."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        like_rows = _public_learning_item_queryset(
+            LessonLike.objects.filter(user=request.user)
+        ).order_by("-created_at")
+        results = [
+            {
+                "id": row.id,
+                "project_id": row.project_id,
+                "liked_at": row.created_at,
+                "lesson": _learning_project_payload(row.project, request),
+            }
+            for row in like_rows
+        ]
+        return Response({"results": results})
 
 
 class LessonCommentsView(APIView):
@@ -6773,13 +8073,15 @@ class TTSPreviewView(APIView):
             payload["mixed_word_overrides"] = mixed_word_overrides
 
         try:
-            result = open_json(
+            req = Request(
                 endpoint,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
-                body=payload,
-                timeout=5.0,
-                request=request,
             )
+            with urlopen(req, timeout=5.0) as resp:
+                body = resp.read().decode("utf-8")
+            result = json.loads(body)
             if not isinstance(result, dict):
                 raise ValueError("invalid_json_payload")
             result.setdefault("fallback_used", False)
@@ -6863,28 +8165,25 @@ class TTSPreviewAudioView(APIView):
         )
 
         try:
-            synth_result = open_json(
+            synth_req = Request(
                 f"{service_url}/synthesize",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
                 method="POST",
-                body=payload,
-                timeout=20.0,
-                request=request,
             )
+            with urlopen(synth_req, timeout=20.0) as resp:
+                synth_body = resp.read().decode("utf-8")
+            synth_result = json.loads(synth_body)
             if not isinstance(synth_result, dict):
                 raise ValueError("invalid_synthesize_payload")
             audio_url = str(synth_result.get("audio_url") or "").strip()
             if not audio_url:
                 raise ValueError("missing_audio_url")
 
-            audio_bytes, audio_headers = open_bytes(
-                audio_url,
-                method="GET",
-                headers={"Accept": "audio/mpeg"},
-                timeout=20.0,
-                max_bytes=self.MAX_AUDIO_BYTES,
-                request=request,
-            )
-            content_type = str(audio_headers.get("Content-Type") or "audio/mpeg").split(";", 1)[0]
+            audio_req = Request(audio_url, headers={"Accept": "audio/mpeg"}, method="GET")
+            with urlopen(audio_req, timeout=20.0) as audio_resp:
+                audio_bytes = audio_resp.read(self.MAX_AUDIO_BYTES + 1)
+                content_type = str(audio_resp.headers.get("Content-Type") or "audio/mpeg").split(";", 1)[0]
             if len(audio_bytes) > self.MAX_AUDIO_BYTES:
                 raise ValueError("audio_preview_too_large")
             if not audio_bytes:
@@ -6952,45 +8251,3 @@ class TTSPronunciationSuggestionsView(APIView):
             raw_context=data.get("context") or "",
         )
         return Response(result, status=status.HTTP_200_OK)
-
-
-class _NotImplementedCompatView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, *args, **kwargs):
-        return Response({"error": "Endpoint temporarily unavailable."}, status=status.HTTP_501_NOT_IMPLEMENTED)
-
-    def post(self, request, *args, **kwargs):
-        return Response({"error": "Endpoint temporarily unavailable."}, status=status.HTTP_501_NOT_IMPLEMENTED)
-
-
-class ProjectSubtitleTrackListView(_NotImplementedCompatView):
-    pass
-
-
-class ProjectBackgroundApplyAllView(_NotImplementedCompatView):
-    pass
-
-
-class TranscriptPageBackgroundImageView(_NotImplementedCompatView):
-    pass
-
-
-class TranscriptPageBackgroundUploadView(_NotImplementedCompatView):
-    pass
-
-
-class TranscriptPageSceneView(_NotImplementedCompatView):
-    pass
-
-
-class UserFollowingView(_NotImplementedCompatView):
-    pass
-
-
-class UserHistoryView(_NotImplementedCompatView):
-    pass
-
-
-class UserLikedLessonsView(_NotImplementedCompatView):
-    pass

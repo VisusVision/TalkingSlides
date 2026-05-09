@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, BookOpenText, Heart, History, ListPlus, PlayCircle, Users } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { fetchLikedLessons, fetchUserHistory, getFollowingPublishers } from '../api';
+import { fetchLikedLessons, fetchUserHistory, getFollowingPublishers, getSavedPlaylists } from '../api';
 import LearningLessonCard, { normalizeLearningRows } from '../components/library/LearningLessonCard';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { normalizeLesson } from '../lib/content';
@@ -31,12 +31,48 @@ function normalizeFollowingRows(payload = {}) {
   }));
 }
 
+function normalizeSavedPlaylistRows(payload = {}) {
+  const rows = Array.isArray(payload) ? payload : payload?.results || [];
+  return rows.map((row) => {
+    const items = Array.isArray(row?.items) ? row.items : [];
+    const lessons = items
+      .map((item) => normalizeLesson(item?.project || item))
+      .filter((lesson) => lesson.id);
+    return {
+      id: row.id,
+      title: row.title || `Playlist #${row.id || ''}`,
+      description: row.description || '',
+      publisherId: row.publisher_id || lessons[0]?.teacherId || null,
+      publisherName: row.publisher_name || lessons[0]?.teacherName || 'Publisher',
+      publisherUsername: row.publisher_username || '',
+      itemCount: Number(row.item_count ?? lessons.length ?? 0),
+      coverUrl: row.cover_url || lessons[0]?.imageUrl || '',
+      saveCount: Number(row.save_count || 0),
+      lessons,
+    };
+  }).filter((playlist) => playlist.id);
+}
+
 function filterPublishers(items, query) {
   const needle = String(query || '').trim().toLowerCase();
   if (!needle) return items;
   return items.filter((item) => (
     [item.display_name, item.username, item.bio]
       .some((value) => String(value || '').toLowerCase().includes(needle))
+  ));
+}
+
+function filterPlaylists(items, query) {
+  const needle = String(query || '').trim().toLowerCase();
+  if (!needle) return items;
+  return items.filter((item) => (
+    [
+      item.title,
+      item.description,
+      item.publisherName,
+      item.publisherUsername,
+      ...item.lessons.map((lesson) => lesson.title),
+    ].some((value) => String(value || '').toLowerCase().includes(needle))
   ));
 }
 
@@ -50,9 +86,62 @@ function EmptyPanel({ icon: Icon, title, body }) {
   );
 }
 
+function playlistCoverStyle(playlist) {
+  if (!playlist?.coverUrl) {
+    return { backgroundImage: 'var(--hero-fallback)' };
+  }
+  return {
+    backgroundImage: `var(--card-image-overlay), url(${playlist.coverUrl})`,
+    backgroundPosition: 'center',
+    backgroundSize: 'cover',
+  };
+}
+
 function compactCount(value, noun) {
   const count = Math.max(0, Number(value || 0));
   return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+function SavedPlaylistCard({ playlist }) {
+  return (
+    <Link
+      to={`/playlist/${playlist.id}`}
+      className="focus-ring group grid gap-3 rounded-xl token-surface-elevated p-3 transition hover:-translate-y-0.5 sm:grid-cols-[12rem_minmax(0,1fr)]"
+    >
+      <div className="relative aspect-video overflow-hidden rounded-lg bg-[var(--surface-container-high)]" style={playlistCoverStyle(playlist)}>
+        <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/45 px-2.5 py-1 text-xs font-semibold text-white">
+          <ListPlus size={13} />
+          {compactCount(playlist.itemCount, 'video')}
+        </span>
+      </div>
+      <div className="min-w-0 space-y-2">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="line-clamp-2 text-sm font-semibold text-[var(--text-primary)]">{playlist.title}</p>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">
+              {playlist.publisherName}{playlist.publisherUsername ? ` @${playlist.publisherUsername}` : ''}
+            </p>
+          </div>
+          <span className="w-fit shrink-0 rounded-full bg-[var(--surface-container-highest)] px-2.5 py-1 text-xs font-semibold text-[var(--accent-primary)]">
+            {compactCount(playlist.saveCount, 'save')}
+          </span>
+        </div>
+        <p className="line-clamp-2 text-xs text-[var(--text-secondary)]">{playlist.description || 'No description yet.'}</p>
+        {playlist.lessons.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {playlist.lessons.slice(0, 3).map((lesson) => (
+              <span key={lesson.id} className="inline-flex min-w-0 items-center gap-1.5 rounded-full bg-[var(--surface-container-high)] px-2.5 py-1 text-xs text-[var(--text-secondary)]">
+                <PlayCircle size={12} className="shrink-0 text-[var(--accent-primary)]" />
+                <span className="line-clamp-1">{lesson.title}</span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-[var(--text-secondary)]">No public videos in this playlist yet.</p>
+        )}
+      </div>
+    </Link>
+  );
 }
 
 function PublisherCard({ publisher }) {
@@ -111,6 +200,7 @@ export default function Library({ searchQuery }) {
   const [historyRows, setHistoryRows] = useState([]);
   const [likedRows, setLikedRows] = useState([]);
   const [followingRows, setFollowingRows] = useState([]);
+  const [savedPlaylistRows, setSavedPlaylistRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
@@ -121,21 +211,24 @@ export default function Library({ searchQuery }) {
       setLoading(true);
       setError('');
       try {
-        const [historyPayload, likedPayload, followingPayload] = await Promise.all([
+        const [historyPayload, likedPayload, followingPayload, savedPlaylistsPayload] = await Promise.all([
           fetchUserHistory(),
           fetchLikedLessons(),
           getFollowingPublishers(),
+          getSavedPlaylists(),
         ]);
         if (!active) return;
         setHistoryRows(normalizeLearningRows(historyPayload, 'history'));
         setLikedRows(normalizeLearningRows(likedPayload, 'liked'));
         setFollowingRows(normalizeFollowingRows(followingPayload));
+        setSavedPlaylistRows(normalizeSavedPlaylistRows(savedPlaylistsPayload));
       } catch (libraryError) {
         if (!active) return;
         setError(libraryError.message || 'Unable to load your library.');
         setHistoryRows([]);
         setLikedRows([]);
         setFollowingRows([]);
+        setSavedPlaylistRows([]);
       } finally {
         if (active) setLoading(false);
       }
@@ -150,6 +243,10 @@ export default function Library({ searchQuery }) {
   const visibleHistory = useMemo(() => filterItems(historyRows, searchQuery), [historyRows, searchQuery]);
   const visibleLiked = useMemo(() => filterItems(likedRows, searchQuery), [likedRows, searchQuery]);
   const visibleFollowing = useMemo(() => filterPublishers(followingRows, searchQuery), [followingRows, searchQuery]);
+  const visibleSavedPlaylists = useMemo(
+    () => filterPlaylists(savedPlaylistRows, searchQuery),
+    [savedPlaylistRows, searchQuery],
+  );
 
   const renderActivePanel = () => {
     if (activeTab === 'history') {
@@ -191,7 +288,16 @@ export default function Library({ searchQuery }) {
       );
     }
 
-    return <EmptyPanel icon={ListPlus} title="Saved playlists will appear here." />;
+    if (!visibleSavedPlaylists.length) {
+      return <EmptyPanel icon={ListPlus} title="No saved playlists yet." />;
+    }
+    return (
+      <div className="grid gap-3">
+        {visibleSavedPlaylists.map((playlist) => (
+          <SavedPlaylistCard key={playlist.id} playlist={playlist} />
+        ))}
+      </div>
+    );
   };
 
   return (

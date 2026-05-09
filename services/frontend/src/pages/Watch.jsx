@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Focus, Layers3 } from 'lucide-react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Check, Focus, Heart, Layers3, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  addComment,
   fetchCatalog,
+  fetchComments,
   fetchLesson,
   fetchPlaybackToken,
   fetchProjectTranscript,
+  generateSubtitleTrack,
+  getPlaylistContext,
   saveProgress,
+  fetchSubtitleTrackBundle,
+  fetchSubtitleTracks,
+  toggleLike,
+  toggleFollowPublisher,
 } from '../api';
 import VideoStage from '../components/player/VideoStage';
 import ChapterList from '../components/player/ChapterList';
@@ -15,8 +23,10 @@ import NotesPanel from '../components/player/NotesPanel';
 import RelatedLessonsRow from '../components/player/RelatedLessonsRow';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
-import { normalizeLesson } from '../lib/content';
+import { formatDuration, normalizeLesson } from '../lib/content';
 import { buildChapters, buildTranscriptLines } from '../lib/watch';
+
+const COMMENT_PREVIEW_LIMIT = 5;
 
 function normalizeCatalogList(payload) {
   const list = Array.isArray(payload) ? payload : payload.results || [];
@@ -41,6 +51,191 @@ function draftNoteKey(lessonId) {
   return `visus-notes-draft-${lessonId || 'none'}`;
 }
 
+function subtitleTrackCode(track) {
+  const raw = String(track?.language_code || '').trim().toLowerCase();
+  if (!raw || raw === 'original' || track?.is_original === true) return '';
+  return raw;
+}
+
+function subtitleSelectionKeyForCode(value) {
+  const code = String(value || '').trim().toLowerCase();
+  if (!code || code === 'off') return 'off';
+  if (code === 'original') return 'original';
+  if (code.startsWith('translated:')) return code;
+  return `translated:${code}`;
+}
+
+function lessonOriginalSubtitleUrl(lesson) {
+  return [lesson?.vtt_url, lesson?.subtitle_vtt_url]
+    .map((value) => String(value || '').trim())
+    .find(Boolean) || '';
+}
+
+function isReadySubtitleTrack(track) {
+  return String(track?.status || '').trim().toLowerCase() === 'ready' && Boolean(track?.vtt_url);
+}
+
+function subtitleProviderMessage(track) {
+  const providerUsed = String(track?.metadata?.provider_used || track?.provider || '').trim().toLowerCase();
+  return providerUsed === 'mock' ? ' Mock provider used; this is not a real translation.' : '';
+}
+
+function normalizeSubtitleOptions(lesson, subtitleTracks) {
+  const byKey = new Map();
+  const originalUrl = lessonOriginalSubtitleUrl(lesson);
+  if (originalUrl) {
+    byKey.set('original', { key: 'original', label: 'Original' });
+  }
+  for (const track of subtitleTracks || []) {
+    if (!isReadySubtitleTrack(track)) continue;
+    const isOriginal = track?.is_original === true
+      || String(track?.language_code || '').trim().toLowerCase() === 'original'
+      || String(track?.type || '').trim().toLowerCase() === 'original';
+    const code = isOriginal ? 'original' : String(track?.language_code || '').trim().toLowerCase();
+    if (!code) continue;
+    const key = subtitleSelectionKeyForCode(code);
+    byKey.set(key, {
+      key,
+      label: isOriginal
+        ? 'Original'
+        : String(track?.language_label || track?.label || code.toUpperCase()).trim(),
+    });
+  }
+  const options = Array.from(byKey.values());
+  return options.sort((a, b) => {
+    if (a.key === 'original') return -1;
+    if (b.key === 'original') return 1;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function formatCommentDate(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function compactCount(value, noun) {
+  const count = Math.max(0, Number(value || 0));
+  return `${count} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, followerCount }) {
+  const initial = String(publisherName || 'V').trim().charAt(0).toUpperCase() || 'V';
+  const avatar = publisherAvatarUrl ? (
+    <img
+      src={publisherAvatarUrl}
+      alt=""
+      className="h-9 w-9 shrink-0 rounded-full border border-[var(--border-subtle)] object-cover"
+    />
+  ) : (
+    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--border-subtle)] bg-[var(--surface-container-highest)] text-xs font-bold text-[var(--accent-primary)]">
+      {initial}
+    </span>
+  );
+
+  const content = (
+    <>
+      {avatar}
+      <span className="min-w-0">
+        <span className="block truncate font-semibold text-[var(--text-primary)]">{publisherName}</span>
+        {followerCount > 0 ? (
+          <span className="block text-xs text-[var(--text-secondary)]">{compactCount(followerCount, 'follower')}</span>
+        ) : null}
+      </span>
+    </>
+  );
+
+  if (!publisherId) {
+    return <span className="inline-flex min-w-0 items-center gap-2 text-sm">{content}</span>;
+  }
+
+  return (
+    <Link
+      to={`/channel/${publisherId}`}
+      className="focus-ring inline-flex min-w-0 max-w-full items-center gap-2 rounded-full bg-[var(--surface-container-high)] py-1 pl-1 pr-3 text-sm transition hover:bg-[color:var(--hover-surface-strong)]"
+    >
+      {content}
+    </Link>
+  );
+}
+
+function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+  const rawItems = Array.isArray(context?.items) ? context.items : [];
+  const rows = rawItems
+    .map((item, index) => {
+      const project = item?.project || item;
+      const contextLesson = normalizeLesson(project);
+      return {
+        key: `${contextLesson.id || index}-${index}`,
+        lesson: contextLesson,
+        isCurrent: Boolean(item?.is_current) || Number(contextLesson.id) === Number(currentLessonId),
+      };
+    })
+    .filter((row) => row.lesson.id);
+
+  if (!rows.length) return null;
+
+  const isPlaylistMode = context?.mode === 'playlist';
+  const title = isPlaylistMode ? 'More from this playlist' : 'More from this publisher';
+  const subtitle = isPlaylistMode ? context?.playlist?.title || '' : rows[0]?.lesson?.teacherName || '';
+
+  return (
+    <SurfaceCard className="space-y-3 p-4">
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
+        {subtitle && (
+          <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{subtitle}</p>
+        )}
+      </div>
+      <div className="space-y-2">
+        {rows.map((row) => {
+          const { lesson: contextLesson, isCurrent } = row;
+          return (
+            <button
+              key={row.key}
+              type="button"
+              disabled={isCurrent}
+              onClick={() => onOpenLesson(contextLesson.id)}
+              className={[
+                'focus-ring flex w-full items-center gap-3 rounded-xl border p-2 text-left transition',
+                isCurrent
+                  ? 'border-[color:var(--accent-primary)] bg-[color:color-mix(in_srgb,var(--accent-primary),transparent_86%)]'
+                  : 'border-[var(--border-subtle)] bg-[var(--surface-container-high)] hover:bg-[color:var(--hover-surface-strong)]',
+              ].join(' ')}
+            >
+              {contextLesson.imageUrl ? (
+                <img
+                  src={contextLesson.imageUrl}
+                  alt=""
+                  className="h-12 w-16 shrink-0 rounded-lg object-cover"
+                />
+              ) : (
+                <span className="flex h-12 w-16 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-container-highest)] text-xs font-semibold text-[var(--accent-primary)]">
+                  {String(contextLesson.title || 'L').charAt(0).toUpperCase()}
+                </span>
+              )}
+              <span className="min-w-0 flex-1">
+                <span className="line-clamp-2 text-sm font-semibold leading-snug text-[var(--text-primary)]">
+                  {contextLesson.title}
+                </span>
+                <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">
+                  {isCurrent ? 'Now playing' : contextLesson.categoryName || 'Lesson'}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </SurfaceCard>
+  );
+}
+
 export default function Watch({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
   const videoRef = useRef(null);
@@ -53,6 +248,14 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
   const [lesson, setLesson] = useState(null);
   const [transcriptPayload, setTranscriptPayload] = useState(null);
+  const [subtitleTracks, setSubtitleTracks] = useState([]);
+  const [requestableSubtitleLanguages, setRequestableSubtitleLanguages] = useState([]);
+  const [requestLanguageCode, setRequestLanguageCode] = useState('en');
+  const [subtitleRequestMessage, setSubtitleRequestMessage] = useState('');
+  const [requestingSubtitleLanguage, setRequestingSubtitleLanguage] = useState(false);
+  const [preferredSubtitleLanguage, setPreferredSubtitleLanguage] = useState('');
+  const [selectedSubtitleKey, setSelectedSubtitleKey] = useState('off');
+  const [pendingSubtitleRequest, setPendingSubtitleRequest] = useState(null);
   const [playbackTime, setPlaybackTime] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
   const [notesCollapsed, setNotesCollapsed] = useState(false);
@@ -62,9 +265,23 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [savedNotes, setSavedNotes] = useState('');
   const [savedAtLabel, setSavedAtLabel] = useState('Auto-saved locally');
   const [saveHint, setSaveHint] = useState('');
+  const [comments, setComments] = useState([]);
+  const [commentsLoading, setCommentsLoading] = useState(false);
+  const [commentText, setCommentText] = useState('');
+  const [commentError, setCommentError] = useState('');
+  const [commentSubmitting, setCommentSubmitting] = useState(false);
+  const [commentsExpanded, setCommentsExpanded] = useState(false);
+  const [likeBusy, setLikeBusy] = useState(false);
+  const [likeError, setLikeError] = useState('');
+  const [followBusy, setFollowBusy] = useState(false);
+  const [followError, setFollowError] = useState('');
+  const [playlistContext, setPlaylistContext] = useState(null);
   const progressSavedAtRef = useRef(0);
+  const resumeAppliedKeyRef = useRef('');
+  const commentsSectionRef = useRef(null);
 
   const activeLessonId = Number(searchParams.get('lesson') || 0) || null;
+  const resumeRequested = searchParams.get('resume') === '1';
 
   useEffect(() => {
     let active = true;
@@ -105,22 +322,15 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     async function loadLessonData() {
       setLoadingLesson(true);
       setLessonError('');
+      setPlaylistContext(null);
 
       try {
-        const [lessonData, transcriptData] = await Promise.all([
+        const [lessonData, transcriptData, playbackData, tracksData] = await Promise.all([
           fetchLesson(activeLessonId),
           fetchProjectTranscript(activeLessonId).catch(() => null),
+          fetchPlaybackToken(activeLessonId).catch(() => null),
+          fetchSubtitleTrackBundle(activeLessonId).catch(() => ({ tracks: [], requestableLanguages: [] })),
         ]);
-
-        let playbackData = null;
-        try {
-          playbackData = await fetchPlaybackToken(activeLessonId);
-        } catch (playbackError) {
-          const protectionMode = String(lessonData?.protection?.mode || '').trim().toLowerCase();
-          if (protectionMode && protectionMode !== 'public') {
-            throw playbackError;
-          }
-        }
 
         if (!active) return;
 
@@ -141,8 +351,17 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
         setLesson(integratedLesson);
         setTranscriptPayload(transcriptData);
+        setSubtitleTracks(tracksData?.tracks || []);
+        setRequestableSubtitleLanguages(tracksData?.requestableLanguages || []);
+        setSubtitleRequestMessage('');
+        setRequestingSubtitleLanguage(false);
+        setPreferredSubtitleLanguage('');
+        setSelectedSubtitleKey('off');
+        setPendingSubtitleRequest(null);
         setPlaybackTime(0);
         progressSavedAtRef.current = 0;
+        setLikeError('');
+        setFollowError('');
       } catch (err) {
         if (!active) return;
         setLessonError(err.message || 'Failed to load lesson.');
@@ -155,6 +374,63 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
     loadLessonData();
 
+    return () => {
+      active = false;
+    };
+  }, [activeLessonId]);
+
+  useEffect(() => {
+    if (!activeLessonId || loadingLesson || !lesson || Number(lesson.id) !== Number(activeLessonId)) {
+      setPlaylistContext(null);
+      return undefined;
+    }
+
+    let active = true;
+    setPlaylistContext(null);
+
+    getPlaylistContext(activeLessonId)
+      .then((payload) => {
+        if (active) setPlaylistContext(payload);
+      })
+      .catch(() => {
+        if (active) setPlaylistContext(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeLessonId, lesson?.id, loadingLesson]);
+
+  useEffect(() => {
+    if (!activeLessonId) {
+      setComments([]);
+      setCommentText('');
+      setCommentError('');
+      setCommentsExpanded(false);
+      return undefined;
+    }
+
+    let active = true;
+
+    async function loadComments() {
+      setCommentsLoading(true);
+      setCommentError('');
+      try {
+        const payload = await fetchComments(activeLessonId);
+        if (!active) return;
+        setComments(Array.isArray(payload) ? payload : payload?.results || []);
+        setCommentsExpanded(false);
+      } catch (err) {
+        if (!active) return;
+        setCommentError(err.message || 'Could not load comments.');
+        setComments([]);
+      } finally {
+        if (active) setCommentsLoading(false);
+      }
+    }
+
+    setCommentText('');
+    loadComments();
     return () => {
       active = false;
     };
@@ -236,6 +512,142 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     () => buildTranscriptLines(transcriptPayload, lesson),
     [transcriptPayload, lesson],
   );
+  const readySubtitleCodes = useMemo(() => {
+    const codes = new Set();
+    for (const track of subtitleTracks || []) {
+      const code = subtitleTrackCode(track);
+      if (code && isReadySubtitleTrack(track)) codes.add(code);
+    }
+    return codes;
+  }, [subtitleTracks]);
+  const activeSubtitleCodes = useMemo(() => {
+    const codes = new Set();
+    for (const track of subtitleTracks || []) {
+      const code = subtitleTrackCode(track);
+      const status = String(track?.status || '').trim().toLowerCase();
+      if (code && ['pending', 'processing', 'ready'].includes(status)) codes.add(code);
+    }
+    return codes;
+  }, [subtitleTracks]);
+  const missingSubtitleLanguages = useMemo(
+    () => requestableSubtitleLanguages.filter((language) => !activeSubtitleCodes.has(language.code)),
+    [activeSubtitleCodes, requestableSubtitleLanguages],
+  );
+  const selectedRequestLanguage = useMemo(
+    () => (
+      pendingSubtitleRequest
+      || missingSubtitleLanguages.find((language) => language.code === requestLanguageCode)
+      || missingSubtitleLanguages[0]
+      || requestableSubtitleLanguages.find((language) => language.code === requestLanguageCode)
+      || requestableSubtitleLanguages[0]
+    ),
+    [missingSubtitleLanguages, pendingSubtitleRequest, requestLanguageCode, requestableSubtitleLanguages],
+  );
+  const subtitleOptions = useMemo(
+    () => normalizeSubtitleOptions(lesson, subtitleTracks),
+    [lesson, subtitleTracks],
+  );
+  const selectedSubtitleOption = subtitleOptions.find((option) => option.key === selectedSubtitleKey) || null;
+
+  const userProgressPct = Math.max(0, Math.min(100, Number(lesson?.user_progress || 0)));
+  const likedByMe = Boolean(lesson?.user_liked || lesson?.liked_by_me);
+  const likeCount = Math.max(0, Number(lesson?.like_count || 0));
+  const commentCount = Math.max(0, Number(lesson?.comment_count || 0), comments.length);
+  const publisherId = Number(lesson?.publisher_id || lesson?.teacher_id || lesson?.teacherId || 0) || null;
+  const publisherName = lesson?.publisher_display_name || lesson?.teacher_name || lesson?.teacherName || 'VISUS Instructor';
+  const publisherAvatarUrl = lesson?.publisher_avatar_url || lesson?.teacher_avatar_url || lesson?.avatar_url || '';
+  const publisherFollowerCount = Math.max(0, Number(lesson?.publisher_follower_count ?? lesson?.follower_count ?? 0));
+  const isFollowingPublisher = Boolean(lesson?.publisher_is_following ?? lesson?.is_following_publisher);
+  const isOwnPublisher = Boolean(user?.id && publisherId && Number(user.id) === Number(publisherId));
+  const visibleComments = commentsExpanded ? comments : comments.slice(0, COMMENT_PREVIEW_LIMIT);
+  const hiddenCommentCount = Math.max(0, comments.length - COMMENT_PREVIEW_LIMIT);
+  const progressLabel = userProgressPct > 0 ? `${Math.round(userProgressPct)}%` : '';
+
+  useEffect(() => {
+    if (!preferredSubtitleLanguage) return;
+    const targetKey = subtitleSelectionKeyForCode(preferredSubtitleLanguage);
+    if (subtitleOptions.some((option) => option.key === targetKey)) {
+      setSelectedSubtitleKey(targetKey);
+    }
+  }, [preferredSubtitleLanguage, subtitleOptions]);
+
+  useEffect(() => {
+    if (!resumeRequested || !user || !activeLessonId || loadingLesson || !lesson?.stream_url) return undefined;
+    if (userProgressPct <= 0 || userProgressPct >= 95) return undefined;
+
+    const resumeKey = `${activeLessonId}:${userProgressPct}`;
+    if (resumeAppliedKeyRef.current === resumeKey) return undefined;
+
+    const video = videoRef.current;
+    if (!video) return undefined;
+
+    const applyResume = () => {
+      const duration = Number(video.duration || 0);
+      if (!Number.isFinite(duration) || duration <= 0 || resumeAppliedKeyRef.current === resumeKey) return;
+      const nextTime = duration * (userProgressPct / 100);
+      video.currentTime = Math.max(0, Math.min(duration - 1, nextTime));
+      setPlaybackTime(video.currentTime);
+      progressSavedAtRef.current = userProgressPct;
+      resumeAppliedKeyRef.current = resumeKey;
+    };
+
+    if (Number.isFinite(Number(video.duration)) && Number(video.duration) > 0) {
+      applyResume();
+      return undefined;
+    }
+
+    video.addEventListener('loadedmetadata', applyResume, { once: true });
+    return () => {
+      video.removeEventListener('loadedmetadata', applyResume);
+    };
+  }, [activeLessonId, lesson?.stream_url, loadingLesson, resumeRequested, user, userProgressPct]);
+
+  useEffect(() => {
+    if (pendingSubtitleRequest) return;
+    if (missingSubtitleLanguages.length && !missingSubtitleLanguages.some((language) => language.code === requestLanguageCode)) {
+      setRequestLanguageCode(missingSubtitleLanguages[0].code);
+    }
+  }, [missingSubtitleLanguages, pendingSubtitleRequest, requestLanguageCode]);
+
+  useEffect(() => {
+    if (!activeLessonId || !pendingSubtitleRequest?.code) return undefined;
+
+    let active = true;
+    let timeoutId;
+
+    const pollSubtitleTracks = async () => {
+      try {
+        const tracks = await fetchSubtitleTracks(activeLessonId);
+        if (!active) return;
+        setSubtitleTracks(tracks || []);
+        const track = (tracks || []).find((item) => subtitleTrackCode(item) === pendingSubtitleRequest.code);
+        const status = String(track?.status || '').trim().toLowerCase();
+        if (track && isReadySubtitleTrack(track)) {
+          setPreferredSubtitleLanguage(pendingSubtitleRequest.code);
+          setSubtitleRequestMessage(`${pendingSubtitleRequest.label} subtitles are ready. Select them from the subtitle menu.${subtitleProviderMessage(track)}`);
+          setPendingSubtitleRequest(null);
+          setRequestingSubtitleLanguage(false);
+          return;
+        }
+        if (status === 'failed') {
+          setSubtitleRequestMessage(track?.error_message || `Could not generate ${pendingSubtitleRequest.label} subtitles.`);
+          setPendingSubtitleRequest(null);
+          setRequestingSubtitleLanguage(false);
+        }
+      } catch (err) {
+        if (!active) return;
+        setSubtitleRequestMessage(err.message || `Could not refresh ${pendingSubtitleRequest.label} subtitle status.`);
+      }
+    };
+
+    pollSubtitleTracks();
+    timeoutId = window.setInterval(pollSubtitleTracks, 3000);
+
+    return () => {
+      active = false;
+      if (timeoutId) window.clearInterval(timeoutId);
+    };
+  }, [activeLessonId, pendingSubtitleRequest]);
 
   const activeChapterId = useMemo(() => {
     const activeChapter = chapters.find(
@@ -268,6 +680,135 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     if (Math.abs(percent - progressSavedAtRef.current) >= 5) {
       progressSavedAtRef.current = percent;
       saveProgress(activeLessonId, Math.max(0, Math.min(100, percent))).catch(() => {});
+    }
+  };
+
+  const handleRequestSubtitleLanguage = async () => {
+    const language = selectedRequestLanguage;
+    if (!activeLessonId || !language || requestingSubtitleLanguage) return;
+
+    if (readySubtitleCodes.has(language.code)) {
+      setPreferredSubtitleLanguage(language.code);
+      setSubtitleRequestMessage(`${language.label} subtitles are already available in the player menu.`);
+      return;
+    }
+
+    setRequestingSubtitleLanguage(true);
+    setSubtitleRequestMessage(`Generating ${language.label} subtitles...`);
+
+    try {
+      const track = await generateSubtitleTrack(activeLessonId, {
+        language_code: language.code,
+        language_label: language.label,
+        provider: 'auto',
+      });
+      if (isReadySubtitleTrack(track)) {
+        const refreshedTracks = await fetchSubtitleTracks(activeLessonId);
+        setSubtitleTracks(refreshedTracks || []);
+        setPreferredSubtitleLanguage(language.code);
+        setPendingSubtitleRequest(null);
+        setSubtitleRequestMessage(`${language.label} subtitles are ready. Select them from the subtitle menu.${subtitleProviderMessage(track)}`);
+        setRequestingSubtitleLanguage(false);
+        return;
+      }
+      if (String(track?.status || '').trim().toLowerCase() === 'failed') {
+        setPendingSubtitleRequest(null);
+        setSubtitleRequestMessage(track?.error_message || `Could not generate ${language.label} subtitles.`);
+        setRequestingSubtitleLanguage(false);
+        return;
+      }
+      setPendingSubtitleRequest(language);
+      setSubtitleRequestMessage(`Generating ${language.label} subtitles...`);
+    } catch (err) {
+      setSubtitleRequestMessage(err.message || `Could not generate ${language.label} subtitles.`);
+      setRequestingSubtitleLanguage(false);
+    }
+  };
+
+  const loginRedirectPath = activeLessonId ? `/watch?lesson=${activeLessonId}` : '/watch';
+
+  const handleToggleLike = async () => {
+    if (!activeLessonId || likeBusy) return;
+    if (!user) {
+      setLikeError('Sign in to like this lesson.');
+      if (typeof onLoginRequest === 'function') {
+        onLoginRequest(loginRedirectPath);
+      }
+      return;
+    }
+    setLikeBusy(true);
+    setLikeError('');
+    try {
+      const payload = await toggleLike(activeLessonId);
+      setLesson((current) => current ? {
+        ...current,
+        user_liked: Boolean(payload?.liked),
+        liked_by_me: Boolean(payload?.liked),
+        like_count: Number(payload?.like_count ?? current.like_count ?? 0),
+      } : current);
+    } catch (err) {
+      setLikeError(err.message || 'Could not update like.');
+    } finally {
+      setLikeBusy(false);
+    }
+  };
+
+  const handleToggleFollow = async () => {
+    if (!publisherId || followBusy || isOwnPublisher) return;
+    if (!user) {
+      setFollowError('Sign in to follow this publisher.');
+      if (typeof onLoginRequest === 'function') {
+        onLoginRequest(loginRedirectPath);
+      }
+      return;
+    }
+    setFollowBusy(true);
+    setFollowError('');
+    try {
+      const payload = await toggleFollowPublisher(publisherId);
+      setLesson((current) => current ? {
+        ...current,
+        publisher_is_following: Boolean(payload?.is_following),
+        is_following_publisher: Boolean(payload?.is_following),
+        publisher_follower_count: Number(payload?.follower_count ?? current.publisher_follower_count ?? 0),
+        follower_count: Number(payload?.follower_count ?? current.follower_count ?? 0),
+      } : current);
+    } catch (err) {
+      setFollowError(err.message || 'Could not update follow.');
+    } finally {
+      setFollowBusy(false);
+    }
+  };
+
+  const handleSubmitComment = async (event) => {
+    event.preventDefault();
+    if (!activeLessonId || commentSubmitting) return;
+    if (!user) {
+      setCommentError('Sign in to post a comment.');
+      if (typeof onLoginRequest === 'function') {
+        onLoginRequest(loginRedirectPath);
+      }
+      return;
+    }
+    const trimmed = commentText.trim();
+    if (!trimmed) {
+      setCommentError('Comment text is required.');
+      return;
+    }
+    setCommentSubmitting(true);
+    setCommentError('');
+    try {
+      const created = await addComment(activeLessonId, trimmed);
+      setComments((current) => [created, ...current]);
+      setLesson((current) => current ? {
+        ...current,
+        comment_count: Math.max(Number(current.comment_count || 0) + 1, comments.length + 1),
+      } : current);
+      setCommentText('');
+    } catch (err) {
+      setCommentError(err.message || 'Could not post comment.');
+    } finally {
+      setCommentSubmitting(false);
     }
   };
 
@@ -339,11 +880,250 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                 <p className="body-md">Loading lesson player...</p>
               </SurfaceCard>
             ) : (
-              <VideoStage
-                lesson={lesson}
-                onPlaybackTimeChange={handlePlaybackTimeChange}
-                videoRef={videoRef}
-              />
+              <>
+                <VideoStage
+                  lesson={lesson}
+                  subtitleTracks={subtitleTracks}
+                  preferredSubtitleLanguage={preferredSubtitleLanguage}
+                  selectedSubtitleKey={selectedSubtitleKey}
+                  onSubtitleKeyChange={setSelectedSubtitleKey}
+                  onPlaybackTimeChange={handlePlaybackTimeChange}
+                  videoRef={videoRef}
+                  showSubtitleControls={false}
+                  showLessonDetails={false}
+                />
+
+                <SurfaceCard className="space-y-3 p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="min-w-0 space-y-2">
+                      <div>
+                        <h1 className="text-xl font-semibold leading-tight text-[var(--text-primary)]">
+                          {lesson?.title || 'Untitled lesson'}
+                        </h1>
+                        <div className="mt-3">
+                          <PublisherIdentity
+                            publisherId={publisherId}
+                            publisherName={publisherName}
+                            publisherAvatarUrl={publisherAvatarUrl}
+                            followerCount={publisherFollowerCount}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+                        <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || lesson?.categoryName || 'General'}</span>
+                        <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatDuration(lesson?.duration_minutes || lesson?.durationMinutes || 8)}</span>
+                        <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
+                          <ShieldCheck size={12} />
+                          Secure stream
+                        </span>
+                        {progressLabel && userProgressPct < 95 && (
+                          <span className="rounded-full bg-[var(--surface-container-highest)] px-2.5 py-1 font-semibold text-[var(--accent-primary)]">
+                            Continue from {progressLabel}
+                          </span>
+                        )}
+                      </div>
+                      {lesson?.description && (
+                        <p className="line-clamp-2 max-w-3xl text-sm text-[var(--text-secondary)]">{lesson.description}</p>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant={likedByMe ? 'primary' : 'secondary'}
+                        onClick={handleToggleLike}
+                        disabled={likeBusy}
+                      >
+                        <Heart size={14} className={likedByMe ? 'fill-current' : ''} />
+                        <span>{likeBusy ? 'Saving...' : likedByMe ? 'Liked' : 'Like'}</span>
+                        <span className="text-xs opacity-80">{likeCount}</span>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        type="button"
+                        onClick={() => commentsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                      >
+                        <MessageSquare size={14} />
+                        <span>{commentCount}</span>
+                        <span>Comments</span>
+                      </Button>
+                      {publisherId && !isOwnPublisher && (
+                        <Button
+                          size="sm"
+                          variant={isFollowingPublisher ? 'primary' : 'secondary'}
+                          type="button"
+                          onClick={handleToggleFollow}
+                          disabled={followBusy}
+                        >
+                          {isFollowingPublisher ? <Check size={14} /> : <UserPlus size={14} />}
+                          <span>{followBusy ? 'Saving...' : isFollowingPublisher ? 'Following' : 'Follow'}</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                  {likeError && (
+                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{likeError}</p>
+                  )}
+                  {followError && (
+                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{followError}</p>
+                  )}
+                </SurfaceCard>
+
+                <SurfaceCard className="space-y-3 p-4">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">CC</p>
+                      <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <label className="sr-only" htmlFor="watch-subtitle-track">Subtitle track</label>
+                        <select
+                          id="watch-subtitle-track"
+                          value={selectedSubtitleKey}
+                          onChange={(event) => setSelectedSubtitleKey(event.target.value)}
+                          disabled={subtitleOptions.length === 0}
+                          className="focus-ring h-10 min-w-[12rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                          <option value="off">Off</option>
+                          {subtitleOptions.map((option) => (
+                            <option key={option.key} value={option.key}>{option.label}</option>
+                          ))}
+                        </select>
+                        {selectedSubtitleOption && (
+                          <span className="text-xs text-[var(--text-secondary)]">
+                            Showing {selectedSubtitleOption.label}
+                          </span>
+                        )}
+                        {!selectedSubtitleOption && subtitleOptions.length === 0 && (
+                          <span className="text-xs text-[var(--text-secondary)]">No subtitle tracks available yet.</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-col gap-2 lg:min-w-[22rem]">
+                      <span className="text-xs font-medium text-[var(--text-secondary)]">Need another subtitle?</span>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <label className="sr-only" htmlFor="watch-subtitle-language">Language</label>
+                        <select
+                          id="watch-subtitle-language"
+                          value={selectedRequestLanguage?.code || ''}
+                          onChange={(event) => setRequestLanguageCode(event.target.value)}
+                          disabled={requestingSubtitleLanguage || Boolean(pendingSubtitleRequest) || missingSubtitleLanguages.length === 0}
+                          className="focus-ring h-10 min-w-0 flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
+                        >
+                          {missingSubtitleLanguages.length > 0 ? (
+                            missingSubtitleLanguages.map((language) => (
+                              <option key={language.code} value={language.code}>
+                                {language.label}
+                              </option>
+                            ))
+                          ) : (
+                            <option value="">All listed languages available</option>
+                          )}
+                        </select>
+                        <Button
+                          size="sm"
+                          onClick={handleRequestSubtitleLanguage}
+                          disabled={requestingSubtitleLanguage || Boolean(pendingSubtitleRequest) || missingSubtitleLanguages.length === 0}
+                          className="shrink-0"
+                        >
+                          <Sparkles size={14} />
+                          <span>{requestingSubtitleLanguage ? 'Generating...' : 'Generate CC with AI'}</span>
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                  {subtitleRequestMessage && (
+                    <p className="text-xs text-[var(--text-secondary)]">{subtitleRequestMessage}</p>
+                  )}
+                </SurfaceCard>
+
+                <div ref={commentsSectionRef}>
+                  <SurfaceCard className="space-y-3 p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--text-primary)]">Comments</p>
+                        <p className="mt-1 text-xs text-[var(--text-secondary)]">Share a note about this lesson.</p>
+                      </div>
+                      <span className="rounded-full bg-[var(--surface-container-highest)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                        {commentCount} comment{commentCount === 1 ? '' : 's'}
+                      </span>
+                    </div>
+
+                    <form className="space-y-2" onSubmit={handleSubmitComment}>
+                    <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                      Add comment
+                      <textarea
+                        value={commentText}
+                        onChange={(event) => setCommentText(event.target.value)}
+                        maxLength={2000}
+                        placeholder={user ? 'Write a comment...' : 'Sign in to post a comment.'}
+                        disabled={!user || commentSubmitting}
+                        className="focus-ring mt-1 min-h-[72px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-65"
+                      />
+                    </label>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs text-[var(--text-secondary)]">
+                        {user ? `${commentText.length}/2000` : 'You can read comments without signing in.'}
+                      </p>
+                      {user ? (
+                        <Button size="sm" type="submit" disabled={commentSubmitting || !commentText.trim()}>
+                          <Send size={14} />
+                          <span>{commentSubmitting ? 'Posting...' : 'Post comment'}</span>
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          type="button"
+                          onClick={() => {
+                            if (typeof onLoginRequest === 'function') onLoginRequest(loginRedirectPath);
+                          }}
+                        >
+                          Sign in to comment
+                        </Button>
+                      )}
+                    </div>
+                    </form>
+
+                    {commentError && (
+                      <p className="rounded-xl bg-[color:var(--feedback-danger-bg)] px-3 py-2 text-xs font-medium text-[color:var(--feedback-danger-fg)]">
+                        {commentError}
+                      </p>
+                    )}
+
+                  <div className="space-y-2">
+                    {commentsLoading ? (
+                      <p className="text-sm text-[var(--text-secondary)]">Loading comments...</p>
+                    ) : comments.length === 0 ? (
+                      <p className="text-sm text-[var(--text-secondary)]">No comments yet.</p>
+                    ) : (
+                      visibleComments.map((comment) => (
+                        <article key={comment.id} className="rounded-xl bg-[var(--surface-container-high)] p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-sm font-semibold text-[var(--text-primary)]">{comment.username || 'Viewer'}</p>
+                            {comment.created_at && (
+                              <span className="text-xs text-[var(--text-secondary)]">{formatCommentDate(comment.created_at)}</span>
+                            )}
+                          </div>
+                          <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{comment.text}</p>
+                        </article>
+                      ))
+                    )}
+                  </div>
+
+                    {hiddenCommentCount > 0 && (
+                      <div>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          type="button"
+                          onClick={() => setCommentsExpanded((previous) => !previous)}
+                        >
+                          {commentsExpanded ? 'Show fewer comments' : `Show ${hiddenCommentCount} more comment${hiddenCommentCount === 1 ? '' : 's'}`}
+                        </Button>
+                      </div>
+                    )}
+                  </SurfaceCard>
+                </div>
+              </>
             )}
 
             {!focusMode && (
@@ -355,6 +1135,11 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           </div>
 
           <aside className={`${focusMode ? 'lg:col-span-5' : 'lg:col-span-4'} space-y-5`}>
+            <WatchContextPanel
+              context={playlistContext}
+              currentLessonId={activeLessonId}
+              onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
+            />
             <NotesPanel
               notes={notes}
               onNotesChange={setNotes}

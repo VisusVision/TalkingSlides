@@ -17,8 +17,9 @@ After updating this file run:
     python manage.py makemigrations && python manage.py migrate
 """
 
+from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
 from django.contrib.auth.models import User
 from django.utils.text import slugify
 
@@ -67,6 +68,9 @@ class UserProfile(models.Model):
     avatar_source_reference_type = models.CharField(max_length=20, blank=True)
     avatar_preview_source_hash = models.CharField(max_length=64, blank=True)
     avatar_preview_stale = models.BooleanField(default=False)
+    avatar_moderation_status = models.CharField(max_length=30, default="not_scanned")
+    avatar_moderation_summary = models.JSONField(default=dict, blank=True)
+    avatar_last_moderation_run_id = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -146,11 +150,6 @@ class Project(models.Model):
         ("ready", "Ready"),
         ("archived", "Archived"),
     ]
-    RENDER_PROFILE_CHOICES = [
-        ("fast", "Fast"),
-        ("balanced", "Balanced"),
-        ("quality", "Quality"),
-    ]
     MODERATION_STATUS_CHOICES = [
         ("not_scanned", "Not scanned"),
         ("pending", "Pending"),
@@ -181,13 +180,6 @@ class Project(models.Model):
     cover_image_original = models.CharField(max_length=500, blank=True)
     cover_image_processed = models.CharField(max_length=500, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="draft")
-    render_profile = models.CharField(
-        max_length=20,
-        choices=RENDER_PROFILE_CHOICES,
-        default="balanced",
-    )
-    avatar_enabled_override = models.BooleanField(null=True, blank=True)
-    tts_settings = models.JSONField(default=default_project_tts_settings, blank=True)
     moderation_status = models.CharField(
         max_length=30,
         choices=MODERATION_STATUS_CHOICES,
@@ -196,6 +188,9 @@ class Project(models.Model):
     )
     moderation_summary = models.JSONField(default=dict, blank=True)
     last_moderation_run_id = models.PositiveIntegerField(null=True, blank=True)
+    avatar_enabled_override = models.BooleanField(null=True, blank=True)
+    tts_settings = models.JSONField(default=default_project_tts_settings, blank=True)
+    draft_data = models.JSONField(default=dict, blank=True)
     # When True the lesson is listed in the public student catalog.
     is_published = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -206,6 +201,110 @@ class Project(models.Model):
 
     def __str__(self):
         return self.title
+
+
+def _user_can_own_playlist(user) -> bool:
+    if not user:
+        return False
+    if user.is_staff or user.is_superuser:
+        return True
+    try:
+        profile = user.profile
+    except UserProfile.DoesNotExist:
+        return False
+    return str(getattr(profile, "role", "") or "").lower() in {"publisher", "teacher"}
+
+
+class Playlist(models.Model):
+    """Publisher-owned grouping of lessons for channel presentation."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="playlists")
+    title = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    is_public = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-created_at"]
+        indexes = [
+            models.Index(fields=["user", "is_public"]),
+            models.Index(fields=["user", "updated_at"]),
+        ]
+
+    def clean(self):
+        if self.user_id and not _user_can_own_playlist(self.user):
+            raise ValidationError("Only teacher, publisher, staff, or admin accounts can own playlists.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return self.title
+
+
+class PlaylistItem(models.Model):
+    """Ordered lesson membership within a publisher playlist."""
+
+    playlist = models.ForeignKey(Playlist, on_delete=models.CASCADE, related_name="items")
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="playlist_items")
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["playlist", "order", "created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["playlist", "project"], name="unique_playlist_project"),
+        ]
+        indexes = [
+            models.Index(fields=["playlist", "order"]),
+        ]
+
+    def clean(self):
+        if not self.playlist_id or not self.project_id:
+            return
+        owner = self.playlist.user
+        if owner and (owner.is_staff or owner.is_superuser):
+            return
+        if not self.project.user_id or int(self.project.user_id) != int(self.playlist.user_id):
+            raise ValidationError("Playlist items must belong to the playlist owner.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.playlist_id}:{self.order}:{self.project_id}"
+
+
+class SavedPlaylist(models.Model):
+    """Student/library save for a public publisher playlist."""
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="saved_playlists")
+    playlist = models.ForeignKey(Playlist, on_delete=models.CASCADE, related_name="saved_by")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["user", "playlist"], name="unique_saved_playlist"),
+        ]
+        indexes = [
+            models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["playlist", "created_at"]),
+        ]
+
+    def clean(self):
+        if self.playlist_id and not self.playlist.is_public:
+            raise ValidationError("Only public playlists can be saved.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.user_id}:{self.playlist_id}"
 
 
 class Slide(models.Model):
@@ -249,7 +348,6 @@ class Job(models.Model):
     project = models.ForeignKey(
         Project, on_delete=models.SET_NULL, null=True, blank=True, related_name="jobs"
     )
-    request_id = models.CharField(max_length=120, blank=True, db_index=True)
     job_type = models.CharField(max_length=50, choices=JOB_TYPE_CHOICES)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
     celery_task_id = models.CharField(max_length=255, blank=True)
@@ -262,74 +360,9 @@ class Job(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["project", "job_type", "request_id"],
-                condition=Q(request_id__gt=""),
-                name="uq_job_project_type_request_id_nonempty",
-            ),
-        ]
 
     def __str__(self):
         return f"{self.job_type} [{self.status}] - {self.pk}"
-
-
-class JobCheckpoint(models.Model):
-    """Persist pipeline stage checkpoints for resumable/recoverable render flows."""
-
-    STATUS_CHOICES = [
-        ("pending", "Pending"),
-        ("running", "Running"),
-        ("done", "Done"),
-        ("cancelled", "Cancelled"),
-        ("failed", "Failed"),
-    ]
-
-    job = models.ForeignKey(Job, on_delete=models.CASCADE, related_name="checkpoints")
-    stage_name = models.CharField(max_length=80)
-    stage_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
-    payload = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["job", "created_at", "id"]
-        constraints = [
-            models.UniqueConstraint(fields=["job", "stage_name"], name="uq_job_checkpoint_stage"),
-        ]
-        indexes = [
-            models.Index(fields=["job", "stage_status"]),
-            models.Index(fields=["updated_at"]),
-        ]
-
-    def __str__(self):
-        return f"JobCheckpoint job={self.job_id} stage={self.stage_name} status={self.stage_status}"
-
-
-class JobActionAudit(models.Model):
-    """Immutable audit trail for sensitive job actions (cancel/retry/admin ops)."""
-
-    ACTION_CHOICES = [
-        ("cancel_requested", "Cancel Requested"),
-        ("cancel_rejected", "Cancel Rejected"),
-    ]
-
-    job = models.ForeignKey(Job, on_delete=models.CASCADE, related_name="action_audits")
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="job_action_audits")
-    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name="job_action_audits")
-    action = models.CharField(max_length=40, choices=ACTION_CHOICES)
-    metadata = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        ordering = ["-created_at", "-id"]
-        indexes = [
-            models.Index(fields=["project", "action", "created_at"]),
-            models.Index(fields=["actor", "created_at"]),
-        ]
-
-    def __str__(self):
-        return f"JobActionAudit job={self.job_id} action={self.action}"
 
 
 class LessonProgress(models.Model):
@@ -376,6 +409,45 @@ class LessonComment(models.Model):
         return f"{self.user.username} on {self.project.title}"
 
 
+class PublisherFollow(models.Model):
+    """Follower relationship between a learner and a publisher/teacher account."""
+
+    follower = models.ForeignKey(User, on_delete=models.CASCADE, related_name="following_publishers")
+    publisher = models.ForeignKey(User, on_delete=models.CASCADE, related_name="publisher_followers")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = [("follower", "publisher")]
+        constraints = [
+            models.CheckConstraint(
+                check=~Q(follower_id=F("publisher_id")),
+                name="publisherfollow_no_self_follow",
+            )
+        ]
+        ordering = ["-created_at"]
+
+    def clean(self):
+        if self.follower_id and self.publisher_id and self.follower_id == self.publisher_id:
+            raise ValidationError("Users cannot follow themselves.")
+        if not self.publisher_id:
+            return
+        publisher = self.publisher
+        try:
+            profile = publisher.profile
+        except UserProfile.DoesNotExist:
+            profile = None
+        role = str(getattr(profile, "role", "") or "").lower()
+        if not (publisher.is_staff or publisher.is_superuser or role in {"publisher", "teacher"}):
+            raise ValidationError("Target user is not a publisher.")
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.follower.username} follows {self.publisher.username}"
+
+
 class TranscriptPage(models.Model):
     """Per-project transcript page used by render and manage/editor workflows."""
 
@@ -405,6 +477,59 @@ class TranscriptPage(models.Model):
 
     def __str__(self):
         return f"{self.project.title} [{self.page_key}]"
+
+
+class TranslatedSubtitleTrack(models.Model):
+    """Metadata for translated subtitle sidecar files derived from original display cues."""
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("processing", "Processing"),
+        ("ready", "Ready"),
+        ("failed", "Failed"),
+    ]
+
+    PROVIDER_CHOICES = [
+        ("mock", "Mock"),
+        ("deepl", "DeepL"),
+        ("google", "Google"),
+        ("openai", "OpenAI"),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="translated_subtitle_tracks")
+    job = models.ForeignKey(Job, on_delete=models.SET_NULL, null=True, blank=True, related_name="translated_subtitle_tracks")
+    language_code = models.CharField(max_length=16)
+    language_label = models.CharField(max_length=80, blank=True)
+    source_language_code = models.CharField(max_length=16, blank=True)
+    provider = models.CharField(max_length=40, choices=PROVIDER_CHOICES, default="mock")
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending")
+    srt_path = models.CharField(max_length=500, blank=True)
+    vtt_path = models.CharField(max_length=500, blank=True)
+    cue_count = models.PositiveIntegerField(default=0)
+    error_message = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["project", "language_code"]
+        constraints = [
+            models.UniqueConstraint(fields=["project", "language_code"], name="unique_subtitle_track_language_per_project"),
+        ]
+        indexes = [
+            models.Index(fields=["project", "status"]),
+            models.Index(fields=["language_code"]),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.language_code = str(self.language_code or "").strip().lower()
+        self.source_language_code = str(self.source_language_code or "").strip().lower()
+        self.provider = str(self.provider or "mock").strip().lower()
+        self.status = str(self.status or "pending").strip().lower()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"TranslatedSubtitleTrack project={self.project_id} lang={self.language_code} status={self.status}"
 
 
 class AvatarRenderJob(models.Model):

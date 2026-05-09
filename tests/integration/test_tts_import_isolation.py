@@ -23,8 +23,6 @@ from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E
 
 from core import views  # noqa: E402
 
-pytestmark = pytest.mark.django_db
-
 def test_tts_client_import_isolation(monkeypatch):
     """
     Ensure that importing scripts.tts_client uses the isolated `tts_preprocess`

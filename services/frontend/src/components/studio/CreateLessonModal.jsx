@@ -7,7 +7,6 @@ export default function CreateLessonModal({
   categories,
   submitting,
   submitError,
-  submitInfo,
   onSubmit,
 }) {
   if (!open) return null;
@@ -38,7 +37,6 @@ export default function CreateLessonModal({
           categories={categories}
           submitting={submitting}
           submitError={submitError}
-          submitInfo={submitInfo}
           onSubmit={onSubmit}
         />
       </div>

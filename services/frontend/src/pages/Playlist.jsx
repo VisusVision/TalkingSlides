@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Clock3, ListVideo, PlayCircle, UserCircle } from 'lucide-react';
+import { Bookmark, Check, Clock3, ListVideo, PlayCircle, UserCircle } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
-import { getPlaylist } from '../api';
+import { getPlaylist, toggleSavePlaylist } from '../api';
+import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
 
@@ -46,6 +47,8 @@ function normalizePlaylist(payload) {
     publisherName: payload?.publisher_name || lessons[0]?.teacherName || 'Publisher',
     publisherUsername: payload?.publisher_username || '',
     itemCount: Number(payload?.item_count ?? lessons.length ?? 0),
+    isSaved: Boolean(payload?.is_saved),
+    saveCount: Number(payload?.save_count || 0),
     lessons,
   };
 }
@@ -95,16 +98,19 @@ function PlaylistLessonCard({ lesson, index }) {
   );
 }
 
-export default function Playlist() {
+export default function Playlist({ user, onLoginRequest }) {
   const { playlistId } = useParams();
   const [playlist, setPlaylist] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
     let active = true;
     setLoading(true);
     setError('');
+    setSaveError('');
 
     getPlaylist(playlistId)
       .then((payload) => {
@@ -128,6 +134,29 @@ export default function Playlist() {
   const publisherLink = useMemo(() => (
     playlist?.publisherId ? `/channel/${playlist.publisherId}` : ''
   ), [playlist?.publisherId]);
+
+  const handleToggleSave = async () => {
+    if (!playlist?.id || !playlist.isPublic || saveBusy) return;
+    if (!user) {
+      if (typeof onLoginRequest === 'function') onLoginRequest(`/playlist/${playlist.id}`);
+      return;
+    }
+
+    setSaveBusy(true);
+    setSaveError('');
+    try {
+      const payload = await toggleSavePlaylist(playlist.id);
+      setPlaylist((current) => current ? {
+        ...current,
+        isSaved: Boolean(payload?.is_saved),
+        saveCount: Number(payload?.save_count ?? current.saveCount ?? 0),
+      } : current);
+    } catch (err) {
+      setSaveError(err.message || 'Could not update saved playlist.');
+    } finally {
+      setSaveBusy(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -157,11 +186,29 @@ export default function Playlist() {
               <p className="body-md mt-2 max-w-3xl whitespace-pre-wrap">{playlist.description}</p>
             ) : null}
           </div>
-          <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-sm font-semibold text-[var(--accent-primary)]">
-            <ListVideo size={15} />
-            {compactCount(playlist.itemCount, 'video')}
-          </span>
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <span className="inline-flex w-fit items-center gap-1.5 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-sm font-semibold text-[var(--accent-primary)]">
+              <ListVideo size={15} />
+              {compactCount(playlist.itemCount, 'video')}
+            </span>
+            {playlist.isPublic ? (
+              <Button
+                size="sm"
+                variant={playlist.isSaved ? 'primary' : 'secondary'}
+                type="button"
+                onClick={handleToggleSave}
+                disabled={saveBusy}
+              >
+                {playlist.isSaved ? <Check size={14} /> : <Bookmark size={14} />}
+                <span>{saveBusy ? 'Saving...' : playlist.isSaved ? 'Saved' : 'Save'}</span>
+                <span className="text-xs opacity-80">{compactCount(playlist.saveCount, 'save')}</span>
+              </Button>
+            ) : null}
+          </div>
         </div>
+        {saveError ? (
+          <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{saveError}</p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-2 text-sm text-[var(--text-secondary)]">
           <UserCircle size={16} />
           {publisherLink ? (

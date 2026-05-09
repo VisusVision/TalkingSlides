@@ -71,7 +71,8 @@ DRM_HLS_KEY_HEX = os.environ.get("DRM_HLS_KEY_HEX", "").strip() or None
 DRM_ASSET_ID_PREFIX = os.environ.get("DRM_ASSET_ID_PREFIX", "lesson-")
 DRM_CONTENT_ID_PREFIX = os.environ.get("DRM_CONTENT_ID_PREFIX", "project-")
 WORKER_TRIM_TRAILING_SILENCE = os.environ.get("WORKER_TRIM_TRAILING_SILENCE", "0").lower() in {"1", "true", "yes", "on"}
-JOB_CANCELLED_MARKER = "__cancelled_by_user__"
+SCENE_RENDER_CANVAS_SIZE = (1600, 900)
+SCENE_RENDER_TEXT_FONT_SIZE = 60
 
 _PREVIEW_TASK_TIME_LIMITS = resolve_preview_task_time_limits(logger=logger)
 _PREVIEW_TASK_SOFT_TIMEOUT_SECONDS = _PREVIEW_TASK_TIME_LIMITS.soft_seconds
@@ -82,29 +83,12 @@ def _render_queue_name() -> str:
     return str(os.environ.get("CELERY_RENDER_QUEUE", "render") or "render").strip() or "render"
 
 
-def _render_fast_queue_name() -> str:
-    return str(os.environ.get("CELERY_RENDER_FAST_QUEUE", "render_fast") or "render_fast").strip() or "render_fast"
-
-
-def _render_quality_queue_name() -> str:
-    return str(os.environ.get("CELERY_RENDER_QUALITY_QUEUE", "render_quality") or "render_quality").strip() or "render_quality"
-
-
 def _avatar_queue_name() -> str:
     return str(os.environ.get("CELERY_AVATAR_QUEUE", "avatar") or "avatar").strip() or "avatar"
 
 
-def _queue_for_render_profile(render_profile: str | None) -> str:
-    profile = str(render_profile or "balanced").strip().lower()
-    if profile == "fast":
-        return _render_fast_queue_name()
-    if profile == "quality":
-        return _render_quality_queue_name()
-    return _render_queue_name()
-
-
-def _queue_for_pipeline(avatar_options: dict[str, Any] | None, render_profile: str | None) -> str:
-    return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _queue_for_render_profile(render_profile)
+def _queue_for_avatar_options(avatar_options: dict[str, Any] | None) -> str:
+    return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _render_queue_name()
 
 
 def _env_enabled(name: str, default: bool = False) -> bool:
@@ -112,6 +96,29 @@ def _env_enabled(name: str, default: bool = False) -> bool:
     if not raw:
         return bool(default)
     return raw in {"1", "true", "yes", "on"}
+
+
+def _settings_bool(name: str, default: bool = False) -> bool:
+    try:
+        from django.conf import settings
+
+        if hasattr(settings, name):
+            return bool(getattr(settings, name))
+    except Exception:
+        pass
+    return _env_enabled(name, default)
+
+
+def _settings_str(name: str, default: str = "") -> str:
+    try:
+        from django.conf import settings
+
+        if hasattr(settings, name):
+            value = str(getattr(settings, name) or "").strip()
+            return value or default
+    except Exception:
+        pass
+    return str(os.environ.get(name, default) or default).strip() or default
 
 
 def _avatar_gpu_lock_path() -> Path:
@@ -268,114 +275,22 @@ def _update_job(
         Job.objects.filter(id=job.id).update(**updates)
 
 
-def _update_job_progress_floor(project_id: str | int, target_progress: int) -> None:
-    """Monotonic progress update helper (never decreases current progress)."""
+def _mark_project_ready_after_successful_render(project_id: str | int) -> None:
     try:
-        from core.models import Job
+        from django.utils import timezone
+        from core.models import Project
+
+        Project.objects.filter(pk=int(project_id)).update(
+            status="ready",
+            updated_at=timezone.now(),
+        )
+        logger.info("Project status set to ready for project=%s", project_id)
     except Exception:
-        return
-
-    job = Job.objects.filter(project_id=int(project_id)).order_by("-created_at", "-id").first()
-    if job is None:
-        return
-
-    target = max(0, min(int(target_progress), 100))
-    current = int(getattr(job, "progress", 0) or 0)
-    if target <= current:
-        return
-    Job.objects.filter(id=job.id).update(progress=target)
-
-
-def _is_job_cancelled(project_id: str | int) -> bool:
-    try:
-        from core.models import Job
-    except Exception:
-        return False
-    job = Job.objects.filter(project_id=int(project_id)).order_by("-created_at", "-id").first()
-    if job is None:
-        return False
-    status_name = str(getattr(job, "status", "") or "").strip().lower()
-    if status_name == "cancelled":
-        return True
-    if status_name != "failed":
-        return False
-    return JOB_CANCELLED_MARKER in str(getattr(job, "error_message", "") or "")
-
-
-def _is_specific_job_cancelled(project_id: str | int, job_id: str | int | None = None) -> bool:
-    try:
-        from core.models import Job
-    except Exception:
-        return False
-    query = Job.objects.filter(project_id=int(project_id))
-    if job_id is not None:
-        query = query.filter(id=int(job_id))
-    job = query.order_by("-created_at", "-id").first()
-    if job is None:
-        return False
-    status_name = str(getattr(job, "status", "") or "").strip().lower()
-    if status_name == "cancelled":
-        return True
-    if status_name != "failed":
-        return False
-    return JOB_CANCELLED_MARKER in str(getattr(job, "error_message", "") or "")
-
-
-def _upsert_job_checkpoint(
-    project_id: str | int,
-    *,
-    stage_name: str,
-    stage_status: str,
-    payload: dict[str, Any] | None = None,
-) -> None:
-    """Upsert a named stage checkpoint for the latest job of the project."""
-    try:
-        from core.models import Job, JobCheckpoint
-    except Exception:
-        return
-
-    job = Job.objects.filter(project_id=int(project_id)).order_by("-created_at", "-id").first()
-    if job is None:
-        return
-
-    clean_stage = str(stage_name or "").strip()[:80]
-    clean_status = str(stage_status or "").strip().lower()
-    if not clean_stage or clean_status not in {"pending", "running", "done", "failed"}:
-        return
-
-    JobCheckpoint.objects.update_or_create(
-        job=job,
-        stage_name=clean_stage,
-        defaults={
-            "stage_status": clean_status,
-            "payload": dict(payload or {}),
-        },
-    )
-
-
-def _checkpoint_status(project_id: str | int, stage_name: str) -> str:
-    try:
-        from core.models import Job, JobCheckpoint
-    except Exception:
-        return ""
-    job = Job.objects.filter(project_id=int(project_id)).order_by("-created_at", "-id").first()
-    if job is None:
-        return ""
-    row = JobCheckpoint.objects.filter(job=job, stage_name=str(stage_name)).first()
-    return str(getattr(row, "stage_status", "") or "").strip().lower()
-
-
-def _checkpoint_payload(project_id: str | int, stage_name: str) -> dict[str, Any]:
-    try:
-        from core.models import Job, JobCheckpoint
-    except Exception:
-        return {}
-    job = Job.objects.filter(project_id=int(project_id)).order_by("-created_at", "-id").first()
-    if job is None:
-        return {}
-    row = JobCheckpoint.objects.filter(job=job, stage_name=str(stage_name)).first()
-    payload = getattr(row, "payload", {}) if row is not None else {}
-    return dict(payload) if isinstance(payload, dict) else {}
+        logger.warning(
+            "Failed to update Project.status to ready for project=%s",
+            project_id,
+            exc_info=True,
+        )
 
 
 def _worker_protection_mode() -> str:
@@ -400,41 +315,6 @@ def _write_json_sidecar(project_id: str | int, file_name: str, payload: dict[str
 
 def _write_language_detection_sidecar(project_id: str | int, payload: dict[str, Any]) -> str:
     return _write_json_sidecar(project_id, "language_detection.json", payload)
-
-
-def _export_manifest_path(project_id: str | int) -> Path:
-    return Path(STORAGE_ROOT) / str(project_id) / "export_manifest.json"
-
-
-def _write_export_manifest(project_id: str | int, *, slides: list[dict[str, Any]], source_path: str) -> str:
-    payload = {
-        "project_id": str(project_id),
-        "source_path": str(source_path),
-        "slides": slides,
-        "saved_at": time.time(),
-    }
-    target = _export_manifest_path(project_id)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
-    return str(target)
-
-
-def _read_export_manifest(project_id: str | int) -> list[dict[str, Any]] | None:
-    target = _export_manifest_path(project_id)
-    if not target.exists():
-        return None
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    slides = payload.get("slides")
-    if not isinstance(slides, list):
-        return None
-    normalized: list[dict[str, Any]] = []
-    for row in slides:
-        if isinstance(row, dict):
-            normalized.append(dict(row))
-    return normalized or None
 
 
 def _summarize_tts_settings(tts_settings: dict[str, Any] | None) -> dict[str, Any]:
@@ -482,6 +362,9 @@ def _normalize_caption_compare(value: Any) -> str:
 
 
 def _page_display_text(page: Any) -> str:
+    original_text = _clean_caption_text(getattr(page, "original_text", ""))
+    if original_text:
+        return original_text
     editor_document = getattr(page, "editor_document", None)
     if isinstance(editor_document, dict):
         paragraphs = editor_document.get("paragraphs")
@@ -493,17 +376,25 @@ def _page_display_text(page: Any) -> str:
             )
             if paragraph_text.strip():
                 return paragraph_text.strip()
-        html_text = _clean_caption_text(editor_document.get("text") or editor_document.get("plain_text"))
+        raw_text_value = editor_document.get("text")
+        html_text = _clean_caption_text(
+            editor_document.get("plain_text")
+            or (raw_text_value if isinstance(raw_text_value, str) else "")
+        )
         if html_text:
             return html_text
     return _clean_caption_text(getattr(page, "narration_text", ""))
 
 
-def _caption_chunks_match_display(chunks: list[str], display_text: str) -> bool:
-    if not display_text:
+def _page_caption_text(page: Any) -> str:
+    return _clean_caption_text(getattr(page, "narration_text", "") or getattr(page, "original_text", ""))
+
+
+def _caption_chunks_match_text(chunks: list[str], caption_text: str) -> bool:
+    if not caption_text:
         return True
     joined = _normalize_caption_compare(" ".join(chunks))
-    return joined == _normalize_caption_compare(display_text)
+    return joined == _normalize_caption_compare(caption_text)
 
 
 def _safe_subtitle_chunks_for_page(page: Any) -> list[str]:
@@ -518,14 +409,14 @@ def _safe_subtitle_chunks_for_page(page: Any) -> list[str]:
         )
         if cleaned
     ]
-    display_text = _page_display_text(page)
-    if chunks and _caption_chunks_match_display(chunks, display_text):
+    caption_text = _page_caption_text(page)
+    if chunks and _caption_chunks_match_text(chunks, caption_text):
         return chunks
-    if chunks and not display_text:
+    if chunks and not caption_text:
         return chunks
     if chunks:
         logger.warning(
-            "Subtitle chunks ignored because they do not match display text: project=%s page_key=%s",
+            "Subtitle chunks ignored because they do not match narration text: project=%s page_key=%s",
             getattr(page, "project_id", None),
             getattr(page, "page_key", ""),
         )
@@ -702,9 +593,9 @@ def _distributed_subtitle_cues(
 
     page_key = str(getattr(page, "page_key", "") or "")
     chunks = _safe_subtitle_chunks_for_page(page)
-    display_text = _page_display_text(page)
-    if not chunks and display_text:
-        chunks = [display_text]
+    caption_text = _page_caption_text(page)
+    if not chunks and caption_text:
+        chunks = [caption_text]
         source = "page_fallback"
     if not chunks:
         return []
@@ -734,7 +625,7 @@ def _validated_chunk_timeline_cues(page: Any, page_start: float, page_end: float
 
     page_key = str(getattr(page, "page_key", "") or "")
     safe_chunks = _safe_subtitle_chunks_for_page(page)
-    display_text = _page_display_text(page)
+    caption_text = _page_caption_text(page)
     if safe_chunks and len(safe_chunks) != len(raw_timeline):
         return None
     cues: list[dict[str, Any]] = []
@@ -766,8 +657,8 @@ def _validated_chunk_timeline_cues(page: Any, page_start: float, page_end: float
             text = safe_chunks[position]
         elif timeline_text:
             text = timeline_text
-        elif display_text and len(raw_timeline) == 1:
-            text = display_text
+        elif caption_text and len(raw_timeline) == 1:
+            text = caption_text
         else:
             return None
 
@@ -784,9 +675,9 @@ def _validated_chunk_timeline_cues(page: Any, page_start: float, page_end: float
         cues.append(cue)
         previous_end = end
 
-    if display_text and not safe_chunks:
+    if caption_text and not safe_chunks:
         joined = _normalize_caption_compare(" ".join(cue["text"] for cue in cues))
-        if joined != _normalize_caption_compare(display_text):
+        if joined != _normalize_caption_compare(caption_text):
             return None
     return cues
 
@@ -1010,28 +901,263 @@ def _wrap_text_lines(text: str, width: int = 48) -> list[str]:
     return lines
 
 
-def _make_whiteboard_image(text: str, output_path: str) -> str:
+def _text_is_probably_rtl(text: str) -> bool:
+    return bool(re.search(r"[\u0591-\u07FF\uFB1D-\uFDFD\uFE70-\uFEFC]", str(text or "")))
+
+
+def _text_width(draw: Any, text: str, font: Any) -> int:
+    try:
+        bbox = draw.textbbox((0, 0), text, font=font)
+        return max(0, int(bbox[2] - bbox[0]))
+    except Exception:
+        return max(0, len(text) * 18)
+
+
+def _split_word_for_width(draw: Any, word: str, font: Any, max_width: int) -> list[str]:
+    if _text_width(draw, word, font) <= max_width:
+        return [word]
+    chunks: list[str] = []
+    current = ""
+    for char in word:
+        candidate = f"{current}{char}"
+        if current and _text_width(draw, candidate, font) > max_width:
+            chunks.append(current)
+            current = char
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [word]
+
+
+def _wrap_text_lines_for_width(draw: Any, text: str, font: Any, max_width: int) -> list[str]:
+    normalized = _prepare_narration_for_tts(text)
+    if not normalized:
+        return []
+    lines: list[str] = []
+    for paragraph in normalized.split("\n"):
+        words = paragraph.split()
+        if not words:
+            lines.append("")
+            continue
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}".strip() if current else word
+            if _text_width(draw, candidate, font) <= max_width or not current:
+                if not current and _text_width(draw, word, font) > max_width:
+                    chunks = _split_word_for_width(draw, word, font, max_width)
+                    lines.extend(chunks[:-1])
+                    current = chunks[-1]
+                    continue
+                current = candidate
+                continue
+            lines.append(current)
+            if _text_width(draw, word, font) > max_width:
+                chunks = _split_word_for_width(draw, word, font, max_width)
+                lines.extend(chunks[:-1])
+                current = chunks[-1]
+            else:
+                current = word
+        if current:
+            lines.append(current)
+    return lines
+
+
+def _scene_text_scale(text_scale: float) -> float:
+    try:
+        scale = float(text_scale)
+    except (TypeError, ValueError):
+        scale = 1.0
+    return max(0.75, min(scale, 2.0))
+
+
+def _font_size_value(font: Any, fallback: int) -> int:
+    return int(getattr(font, "size", fallback) or fallback)
+
+
+def _compute_scene_text_overlay_layout(
+    draw: Any,
+    text: str,
+    canvas_size: tuple[int, int],
+    text_scale: float = 1.0,
+    *,
+    boxed: bool = False,
+    min_font_size: int = 24,
+) -> dict[str, Any]:
+    canvas_width, canvas_height = canvas_size
+    normalized = _prepare_narration_for_tts(text)
+    rtl = _text_is_probably_rtl(normalized)
+    scale = _scene_text_scale(text_scale)
+    preferred_font_size = max(36, min(120, int(SCENE_RENDER_TEXT_FONT_SIZE * scale)))
+    safe_top = int(canvas_height * 0.1)
+    safe_bottom = canvas_height - safe_top
+    safe_height = max(1, safe_bottom - safe_top)
+    min_box_width = int(canvas_width * (0.34 if boxed else 0.18))
+    best_layout: dict[str, Any] | None = None
+    density = max(len(normalized) / 520, len(normalized.split()) / 85, 1.0)
+    if density > 1.8:
+        font_size = max(min_font_size, int(preferred_font_size / math.sqrt(density / 1.45)))
+    else:
+        font_size = preferred_font_size
+    profile_options = (
+        ((0.1, 0.035, 0.75, 1.26), (0.075, 0.025, 0.58, 1.18), (0.05, 0.015, 0.42, 1.1), (0.025, 0.0, 0.2, 1.04), (0.0, 0.0, 0.0, 1.02))
+        if boxed
+        else ((0.15, 0.0, 0.0, 1.26), (0.1, 0.0, 0.0, 1.18), (0.05, 0.0, 0.0, 1.1), (0.0, 0.0, 0.0, 1.04))
+    )
+
+    while font_size >= min_font_size:
+        for outer_ratio, inner_x_ratio, inner_y_factor, line_factor in profile_options:
+            outer_margin = int(canvas_width * outer_ratio)
+            max_box_width = max(1, canvas_width - (outer_margin * 2))
+            padding_x = int(canvas_width * inner_x_ratio) if boxed else 0
+            padding_y = max(0, int(font_size * inner_y_factor)) if boxed else 0
+            text_width = max(1, max_box_width - (padding_x * 2))
+            font = _load_font(font_size)
+            line_height = max(24, int(_font_size_value(font, font_size) * line_factor))
+            lines = _wrap_text_lines_for_width(draw, normalized, font, text_width)
+            if not lines:
+                lines = [""]
+            text_total_height = len(lines) * line_height
+            box_height = text_total_height + (padding_y * 2)
+            max_line_width = max((_text_width(draw, line, font) for line in lines), default=0)
+            box_width = min(max_box_width, max(min_box_width, max_line_width + (padding_x * 2)))
+            box_left = int((canvas_width - box_width) / 2)
+            box_top = int(safe_top + max(0, (safe_height - box_height) / 2))
+            layout = {
+                "font": font,
+                "font_size": font_size,
+                "preferred_font_size": preferred_font_size,
+                "line_height": line_height,
+                "lines": lines,
+                "rtl": rtl,
+                "text_scale": scale,
+                "padding_x": padding_x,
+                "padding_y": padding_y,
+                "box_left": box_left,
+                "box_top": box_top,
+                "box_right": box_left + box_width,
+                "box_bottom": box_top + box_height,
+                "box_width": box_width,
+                "box_height": box_height,
+                "content_left": box_left + padding_x,
+                "content_right": box_left + box_width - padding_x,
+                "content_top": box_top + padding_y,
+                "safe_top": safe_top,
+                "safe_bottom": safe_bottom,
+                "truncated": False,
+            }
+            best_layout = layout
+            if box_height <= safe_height:
+                return layout
+        font_size = int(font_size * 0.9)
+
+    layout = best_layout or {
+        "font": _load_font(min_font_size),
+        "font_size": min_font_size,
+        "preferred_font_size": preferred_font_size,
+        "line_height": max(24, int(min_font_size * 1.04)),
+        "lines": [normalized] if normalized else [""],
+        "rtl": rtl,
+        "text_scale": scale,
+        "padding_x": 0,
+        "padding_y": 0,
+        "box_left": 0,
+        "box_top": safe_top,
+        "box_right": canvas_width,
+        "box_bottom": safe_bottom,
+        "box_width": canvas_width,
+        "box_height": safe_height,
+        "content_left": 0,
+        "content_right": canvas_width,
+        "content_top": safe_top,
+        "safe_top": safe_top,
+        "safe_bottom": safe_bottom,
+        "truncated": True,
+    }
+    max_lines = max(1, int((safe_height - (layout["padding_y"] * 2)) / max(1, layout["line_height"])))
+    layout["lines"] = list(layout["lines"])[:max_lines]
+    text_total_height = len(layout["lines"]) * layout["line_height"]
+    layout["box_height"] = min(safe_height, text_total_height + (layout["padding_y"] * 2))
+    layout["box_top"] = int(safe_top + max(0, (safe_height - layout["box_height"]) / 2))
+    layout["box_bottom"] = layout["box_top"] + layout["box_height"]
+    layout["content_top"] = layout["box_top"] + layout["padding_y"]
+    layout["truncated"] = True
+    return layout
+
+
+def _make_whiteboard_image(text: str, output_path: str, text_scale: float = 1.0) -> str:
     if Image is None or ImageDraw is None:
         raise RuntimeError("whiteboard_render_requires_pillow")
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.new("RGB", (1600, 900), color="white")
+    image = Image.new("RGB", SCENE_RENDER_CANVAS_SIZE, color="white")
     draw = ImageDraw.Draw(image)
-    title_font = _load_font(42)
-    body_font = _load_font(32)
-    draw.text((80, 60), "Whiteboard", fill="black", font=title_font)
-    y = 150
-    for line in _wrap_text_lines(text, width=52):
-        draw.text((90, y), line, fill="black", font=body_font)
-        y += 44
-        if y > 820:
-            break
+    layout = _compute_scene_text_overlay_layout(draw, text, image.size, text_scale, boxed=False)
+    if layout["truncated"]:
+        logger.warning("Whiteboard text truncated to fit scene canvas")
+    y = layout["content_top"]
+    for line in layout["lines"]:
+        line_width = min(layout["box_width"], _text_width(draw, line, layout["font"]))
+        x = layout["content_right"] - line_width if layout["rtl"] else layout["content_left"]
+        draw.text((x, y), line, fill="black", font=layout["font"])
+        y += layout["line_height"]
     image.save(output, format="PNG")
     return str(output)
 
 
-def _render_transcript_overlay_image(base_image_path: str, narration_text: str, rich_text_html: str, output_path: str) -> str:
+def _image_resample_lanczos() -> Any:
+    resampling = getattr(Image, "Resampling", Image)
+    return getattr(resampling, "LANCZOS", 1)
+
+
+def _fit_image_to_scene_canvas(image: Any, fit: str = "contain") -> Any:
+    if Image is None:
+        return image
+    target_width, target_height = SCENE_RENDER_CANVAS_SIZE
+    fit_mode = str(fit or "contain").strip().lower()
+    if fit_mode not in {"contain", "cover", "stretch"}:
+        fit_mode = "contain"
+    if fit_mode == "stretch":
+        return image.resize(SCENE_RENDER_CANVAS_SIZE, _image_resample_lanczos())
+
+    source_width, source_height = image.size
+    if source_width <= 0 or source_height <= 0:
+        return Image.new("RGBA", SCENE_RENDER_CANVAS_SIZE, (5, 8, 14, 255))
+
+    scale = (
+        max(target_width / source_width, target_height / source_height)
+        if fit_mode == "cover"
+        else min(target_width / source_width, target_height / source_height)
+    )
+    if fit_mode == "cover":
+        resized_width = max(1, int(math.ceil(source_width * scale)))
+        resized_height = max(1, int(math.ceil(source_height * scale)))
+    else:
+        resized_width = max(1, int(round(source_width * scale)))
+        resized_height = max(1, int(round(source_height * scale)))
+    resized = image.resize((resized_width, resized_height), _image_resample_lanczos())
+
+    if fit_mode == "cover":
+        left = max(0, int((resized_width - target_width) / 2))
+        top = max(0, int((resized_height - target_height) / 2))
+        return resized.crop((left, top, left + target_width, top + target_height))
+
+    canvas = Image.new("RGBA", SCENE_RENDER_CANVAS_SIZE, (5, 8, 14, 255))
+    left = int((target_width - resized_width) / 2)
+    top = int((target_height - resized_height) / 2)
+    canvas.alpha_composite(resized, (left, top))
+    return canvas
+
+
+def _render_transcript_overlay_image(
+    base_image_path: str,
+    display_text: str,
+    rich_text_html: str,
+    output_path: str,
+    text_scale: float = 1.0,
+    background_fit: str = "contain",
+) -> str:
     source = Path(base_image_path)
     if not source.exists() or not source.is_file():
         raise RuntimeError(f"transcript_overlay_source_missing:{source}")
@@ -1042,29 +1168,31 @@ def _render_transcript_overlay_image(base_image_path: str, narration_text: str, 
         shutil.copy2(str(source), str(output))
         return str(output)
 
-    text = _prepare_narration_for_tts(narration_text)
+    text = _prepare_narration_for_tts(display_text)
     if not text and rich_text_html:
         text = _prepare_narration_for_tts(re.sub(r"<[^>]+>", " ", rich_text_html))
     if not text:
         shutil.copy2(str(source), str(output))
         return str(output)
 
-    image = Image.open(source).convert("RGBA")
+    image = _fit_image_to_scene_canvas(Image.open(source).convert("RGBA"), background_fit)
     overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    font = _load_font(28)
-    lines = _wrap_text_lines(text, width=58)[:6]
-    box_height = 80 + (len(lines) * 40)
-    box_top = max(image.size[1] - box_height - 40, 20)
+    layout = _compute_scene_text_overlay_layout(draw, text, image.size, text_scale, boxed=True)
+    if layout["truncated"]:
+        logger.warning("Custom background overlay text truncated to fit scene canvas")
     draw.rounded_rectangle(
-        [(40, box_top), (image.size[0] - 40, image.size[1] - 30)],
-        radius=24,
-        fill=(0, 0, 0, 170),
+        [(layout["box_left"], layout["box_top"]), (layout["box_right"], layout["box_bottom"])],
+        radius=max(18, int(layout["font_size"] * 0.45)),
+        fill=(0, 0, 0, 175),
     )
-    y = box_top + 24
-    for line in lines:
-        draw.text((70, y), line, fill=(255, 255, 255, 255), font=font)
-        y += 36
+    text_total_height = len(layout["lines"]) * layout["line_height"]
+    y = layout["box_top"] + max(layout["padding_y"], int((layout["box_height"] - text_total_height) / 2))
+    for line in layout["lines"]:
+        line_width = _text_width(draw, line, layout["font"])
+        x = layout["content_right"] - line_width if layout["rtl"] else layout["content_left"]
+        draw.text((x, y), line, fill=(255, 255, 255, 255), font=layout["font"])
+        y += layout["line_height"]
 
     combined = Image.alpha_composite(image, overlay).convert("RGB")
     combined.save(output, format="PNG")
@@ -1079,6 +1207,94 @@ def _render_avatar_safe_slide_image(source_image_path: str, output_path: str) ->
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(str(source), str(output))
     return str(output)
+
+
+_SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom"}
+_SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
+
+
+def _scene_storage_rel_path(path_value: Any) -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return ""
+    normalized = raw.replace("\\", "/").lstrip("/")
+    if normalized == ".." or normalized.startswith("../") or "/../" in normalized:
+        return ""
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        return normalized
+    try:
+        resolved = candidate.resolve()
+        relative = resolved.relative_to(Path(STORAGE_ROOT).resolve())
+        return str(relative).replace("\\", "/")
+    except Exception:
+        return ""
+
+
+def _scene_mode_from_value(value: Any, *, fallback: str) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in _SCENE_BACKGROUND_MODES else fallback
+
+
+def _scene_fit_from_value(value: Any) -> str:
+    fit = str(value or "").strip().lower()
+    return fit if fit in _SCENE_BACKGROUND_FITS else "contain"
+
+
+def _scene_text_scale_from_value(value: Any, *, fallback: float = 1.0) -> float:
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        scale = fallback
+    return max(0.75, min(scale, 2.0))
+
+
+def _source_type_from_value(value: Any) -> str:
+    return str(value or "").strip().lower().lstrip(".")
+
+
+def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
+    editor_document = dict(getattr(page, "editor_document", None) or {})
+    scene = dict(editor_document.get("scene") or {})
+    source_type = _source_type_from_value(slide_payload.get("source_type") or slide_payload.get("source_ext"))
+    is_text_only_source = source_type == "txt"
+    original_background_path = _scene_storage_rel_path(
+        slide_payload.get("original_background_path")
+        or slide_payload.get("image_path")
+        or slide_payload.get("slide_path")
+    )
+    if is_text_only_source:
+        scene.pop("original_background_path", None)
+        if str(scene.get("background_mode") or "").strip().lower() == "original":
+            scene.pop("background_mode", None)
+    elif original_background_path:
+        scene["original_background_path"] = original_background_path
+
+    fallback_mode = "whiteboard" if bool(is_text_only_source or getattr(page, "whiteboard_mode", False) or slide_payload.get("whiteboard_mode")) else "original"
+    mode = _scene_mode_from_value(scene.get("background_mode"), fallback=fallback_mode)
+    scene["background_mode"] = mode
+    scene["background_fit"] = _scene_fit_from_value(scene.get("background_fit"))
+    scene["text_scale"] = _scene_text_scale_from_value(
+        scene.get("text_scale"),
+        fallback=1.0,
+    )
+    editor_document["scene"] = scene
+    page.editor_document = editor_document
+
+
+def _scene_background_image_for_render(scene: dict[str, Any], fallback_image_path: Any) -> str:
+    mode = _scene_mode_from_value(scene.get("background_mode"), fallback="original")
+    if mode == "whiteboard":
+        return str(fallback_image_path or "")
+    key = "custom_background_path" if mode == "custom" else "original_background_path"
+    raw = str(scene.get(key) or "").strip()
+    if raw:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = Path(STORAGE_ROOT) / raw.lstrip("/\\")
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
+    return str(fallback_image_path or "")
 
 
 def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1141,12 +1357,18 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
             page.rich_text_html = str(slide_payload.get("rich_text_html") or "")
         if not dict(page.editor_document or {}):
             page.editor_document = dict(slide_payload.get("editor_document") or {})
+        _merge_scene_from_export(page, slide_payload)
         subtitle_source = str(page.narration_text or page.original_text or original_text)
         subtitle_chunks = list(slide_payload.get("subtitle_chunks") or ([subtitle_source] if subtitle_source else []))
         if not list(page.subtitle_chunks or []):
             page.subtitle_chunks = subtitle_chunks
         if is_new_page and not bool(page.whiteboard_mode):
-            page.whiteboard_mode = bool(slide_payload.get("whiteboard_mode"))
+            stored_scene = dict(page.editor_document or {}).get("scene")
+            stored_scene = stored_scene if isinstance(stored_scene, dict) else {}
+            page.whiteboard_mode = _scene_mode_from_value(
+                stored_scene.get("background_mode"),
+                fallback="whiteboard" if bool(slide_payload.get("whiteboard_mode")) else "original",
+            ) == "whiteboard"
         page.save()
 
         payload_by_key[page_key] = slide_payload
@@ -1163,6 +1385,15 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
         if template is None:
             template = source_templates.get(int(page.source_slide_index), first_template)
         slide_payload = dict(template or {})
+        editor_document = dict(page.editor_document or {})
+        scene = dict(editor_document.get("scene") or {})
+        scene_mode = _scene_mode_from_value(
+            scene.get("background_mode"),
+            fallback="whiteboard" if bool(page.whiteboard_mode) else "original",
+        )
+        render_image_path = _scene_background_image_for_render(scene, slide_payload.get("image_path") or slide_payload.get("slide_path") or "")
+        effective_whiteboard_mode = scene_mode == "whiteboard"
+        display_text = str(page.original_text or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
         subtitle_source = str(page.narration_text or page.original_text or slide_payload.get("notes_text") or "")
         slide_payload.update(
             {
@@ -1172,13 +1403,22 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
                 "source_slide_num": int(page.source_slide_index or 0) + 1,
                 "split_index": int(page.split_index or 0),
                 "page_key": str(page.page_key or ""),
-                "notes_text": str(page.original_text or slide_payload.get("notes_text") or subtitle_source),
-                "original_text": str(page.original_text or slide_payload.get("original_text") or ""),
+                "notes_text": display_text or subtitle_source,
+                "original_text": display_text,
+                "display_text": display_text,
                 "narration_text": str(page.narration_text or subtitle_source),
                 "rich_text_html": str(page.rich_text_html or ""),
-                "editor_document": dict(page.editor_document or {}),
+                "editor_document": editor_document,
                 "subtitle_chunks": list(page.subtitle_chunks or ([subtitle_source] if subtitle_source else [])),
-                "whiteboard_mode": bool(page.whiteboard_mode),
+                "source_type": str(slide_payload.get("source_type") or ""),
+                "whiteboard_mode": effective_whiteboard_mode,
+                "scene_background_mode": scene_mode,
+                "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
+                "scene_text_scale": _scene_text_scale_from_value(
+                    scene.get("text_scale"),
+                    fallback=1.0,
+                ),
+                "image_path": render_image_path,
                 "audio_out": str(ws["audio"] / f"slide_{display_index + 1:03d}.mp3"),
                 "part_out": str(ws["parts"] / f"part_{display_index + 1:03d}.mp4"),
             }
@@ -1186,6 +1426,1730 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
         updated_slides.append(slide_payload)
 
     return updated_slides
+
+
+def _draft_render_tts_settings(project_id: str | int, fallback: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    try:
+        from core.models import Project
+        from core.drafts import get_draft_project_fields
+        from core.serializers import canonical_project_tts_settings
+    except Exception:
+        logger.warning("Draft TTS settings unavailable for project=%s", project_id, exc_info=True)
+        return fallback
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is None:
+        return fallback
+    draft_fields = get_draft_project_fields(project)
+    if isinstance(draft_fields.get("tts_settings"), dict):
+        return canonical_project_tts_settings(draft_fields.get("tts_settings"))
+    return fallback
+
+
+def _build_render_slides_from_draft(project_id: str | int, exported_slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        from core.models import Project
+        from core.drafts import get_draft_transcript_pages, has_dirty_draft
+    except Exception as exc:
+        raise RuntimeError(f"draft_render_helpers_unavailable:{exc}") from exc
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is None:
+        raise RuntimeError("draft_render_project_missing")
+    if not has_dirty_draft(project):
+        raise RuntimeError("draft_render_missing_dirty_draft")
+
+    draft_pages = get_draft_transcript_pages(project)
+    if not draft_pages:
+        raise RuntimeError("draft_render_no_pages")
+
+    source_templates: dict[int, dict[str, Any]] = {}
+    first_template: dict[str, Any] = {}
+    for order, slide in enumerate(exported_slides or []):
+        slide_payload = dict(slide)
+        source_index = int(slide_payload.get("source_slide_index") or slide_payload.get("index") or order)
+        source_templates.setdefault(source_index, slide_payload)
+        if not first_template:
+            first_template = slide_payload
+
+    ws = _workspace(project_id)
+    rendered: list[dict[str, Any]] = []
+    for display_index, page in enumerate(draft_pages):
+        source_index = int(page.get("source_slide_index") or display_index)
+        slide_payload = dict(source_templates.get(source_index) or first_template or {})
+        editor_document = dict(page.get("editor_document") or {})
+        scene = dict(editor_document.get("scene") or {})
+        scene_mode = _scene_mode_from_value(
+            scene.get("background_mode"),
+            fallback="whiteboard" if bool(page.get("whiteboard_mode")) else "original",
+        )
+        render_image_path = _scene_background_image_for_render(
+            scene,
+            slide_payload.get("image_path") or slide_payload.get("slide_path") or "",
+        )
+        effective_whiteboard_mode = scene_mode == "whiteboard"
+        display_text = str(page.get("original_text") or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
+        narration_text = str(page.get("narration_text") or display_text)
+        subtitle_chunks = list(page.get("subtitle_chunks") or ([narration_text] if narration_text else []))
+        slide_payload.update(
+            {
+                "index": display_index,
+                "slide_num": display_index + 1,
+                "source_slide_index": source_index,
+                "source_slide_num": source_index + 1,
+                "split_index": int(page.get("split_index") or 0),
+                "page_key": str(page.get("page_key") or f"draft-page-{display_index + 1}"),
+                "notes_text": display_text or narration_text,
+                "original_text": display_text,
+                "display_text": display_text,
+                "narration_text": narration_text,
+                "rich_text_html": str(page.get("rich_text_html") or ""),
+                "editor_document": editor_document,
+                "subtitle_chunks": subtitle_chunks,
+                "source_type": str(slide_payload.get("source_type") or ""),
+                "whiteboard_mode": effective_whiteboard_mode,
+                "scene_background_mode": scene_mode,
+                "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
+                "scene_text_scale": _scene_text_scale_from_value(scene.get("text_scale"), fallback=1.0),
+                "image_path": render_image_path,
+                "audio_out": str(ws["audio"] / f"slide_{display_index + 1:03d}.mp3"),
+                "part_out": str(ws["parts"] / f"part_{display_index + 1:03d}.mp4"),
+                "draft_page_id": page.get("id"),
+            }
+        )
+        rendered.append(slide_payload)
+    return rendered
+
+
+class _DraftPageList(list):
+    def all(self):
+        return self
+
+    def filter(self, **_kwargs):
+        return self
+
+    def order_by(self, *_fields):
+        return self
+
+
+class _DraftProjectProxy:
+    def __init__(self, project, *, title: str, description: str, pages: list[dict[str, Any]]) -> None:
+        self.id = project.id
+        self.title = title
+        self.description = description
+        self.transcript_pages = _DraftPageList(
+            [
+                type(
+                    "DraftTranscriptPage",
+                    (),
+                    {
+                        "id": int(page.get("id") or 0),
+                        "page_key": str(page.get("page_key") or ""),
+                        "order": int(page.get("order") or index),
+                        "original_text": str(page.get("original_text") or ""),
+                        "narration_text": str(page.get("narration_text") or ""),
+                    },
+                )()
+                for index, page in enumerate(pages)
+            ]
+        )
+
+
+def _run_auto_source_moderation_for_draft(
+    project_id: str | int,
+    *,
+    triggered_by_user_id: int | None = None,
+) -> dict[str, Any]:
+    if not _source_moderation_auto_enabled():
+        return {
+            "enabled": False,
+            "status": "skipped_disabled",
+            "project_id": int(project_id),
+            "block_render": False,
+        }
+
+    try:
+        from django.contrib.auth.models import User
+        from django.utils import timezone
+        from ai_agents.models import AgentRun
+        from core.models import Project
+        from core.drafts import get_draft_project_fields, get_draft_transcript_pages
+        from .ai_agents.orchestrator import ModerationOrchestrator
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Draft source moderation unavailable for project=%s", project_id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project_id),
+            "moderation_status": "failed",
+            "error_message": _concise_error_text(exc, fallback="draft_source_moderation_import_failed"),
+            "block_render": False,
+        }
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is None:
+        return {
+            "enabled": True,
+            "status": "skipped_missing_project",
+            "project_id": int(project_id),
+            "block_render": False,
+        }
+    if triggered_by_user_id is None:
+        triggered_by_user_id = int(project.user_id) if project.user_id else None
+
+    draft_fields = get_draft_project_fields(project)
+    draft_pages = get_draft_transcript_pages(project)
+    draft_project = _DraftProjectProxy(
+        project,
+        title=str(draft_fields.get("title") or project.title or ""),
+        description=str(draft_fields.get("description") or project.description or ""),
+        pages=draft_pages,
+    )
+    orchestrator = ModerationOrchestrator()
+    triggered_by = User.objects.filter(pk=triggered_by_user_id).first() if triggered_by_user_id else None
+    phase = f"{_source_moderation_phase()}_draft"
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=triggered_by,
+        purpose="moderation",
+        phase=phase,
+        status="running",
+    )
+
+    try:
+        result = orchestrator.text_agent.scan_project(draft_project)
+        final_decision = orchestrator.policy_engine.combine_results([result])
+        project_status = orchestrator.policy_engine.project_status_for_decision(final_decision)
+        persisted_count = orchestrator._persist_findings(run, result)
+        summary = orchestrator._frontend_safe_summary(
+            run_id=run.id,
+            moderation_status=project_status,
+            final_decision=final_decision,
+            result=result,
+        )
+        run.status = "done"
+        run.final_decision = final_decision
+        run.input_hash = str(result.metadata.get("input_hash") or "")
+        run.summary = summary
+        run.completed_at = timezone.now()
+        run.save(update_fields=["status", "final_decision", "input_hash", "summary", "completed_at"])
+
+        summary_payload = dict(project.moderation_summary or {})
+        summary_payload["draft_moderation"] = summary
+        Project.objects.filter(pk=project.id).update(
+            moderation_summary=summary_payload,
+            last_moderation_run_id=run.id,
+        )
+
+        block_render = project_status in SOURCE_MODERATION_REVIEW_STATUSES
+        return {
+            "enabled": True,
+            "status": "done",
+            "phase": phase,
+            "project_id": project.id,
+            "run_id": run.id,
+            "final_decision": final_decision,
+            "moderation_status": project_status,
+            "finding_count": persisted_count,
+            "input_hash": run.input_hash,
+            "block_render": block_render,
+            "message": _source_moderation_message(project_status),
+            "moderation_summary": summary,
+            "findings": summary.get("findings") or [],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Draft source moderation failed for project=%s run=%s", project.id, run.id)
+        error_text = _concise_error_text(exc, fallback="draft_source_moderation_failed")
+        failure_summary = {
+            "moderation_status": "failed",
+            "message": "Draft moderation scan failed. Please try again or contact support.",
+            "run_id": run.id,
+        }
+        run.status = "failed"
+        run.final_decision = "needs_admin_review"
+        run.error_message = error_text
+        run.summary = failure_summary
+        run.completed_at = timezone.now()
+        run.save(update_fields=["status", "final_decision", "error_message", "summary", "completed_at"])
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": project.id,
+            "run_id": run.id,
+            "moderation_status": "failed",
+            "error_message": error_text,
+            "block_render": False,
+            "moderation_summary": failure_summary,
+        }
+
+
+def _mark_draft_render_blocked(project_id: str | int, moderation_result: dict[str, Any]) -> None:
+    try:
+        from core.models import Project
+        from core.drafts import mark_draft_moderation_failed
+    except Exception:
+        logger.warning("Draft moderation-block update skipped project=%s", project_id, exc_info=True)
+        return
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is not None:
+        mark_draft_moderation_failed(project, moderation_result)
+    message = str(moderation_result.get("message") or "Draft blocked by moderation.")
+    _update_job(project_id, status="failed", progress=100, error_message=message)
+
+
+SOURCE_MODERATION_REVIEW_STATUSES = {"revision_required", "needs_admin_review"}
+SOURCE_MODERATION_APPROVED_STATUSES = {"approved", "admin_approved"}
+
+
+def _source_moderation_auto_enabled() -> bool:
+    return _settings_bool("SOURCE_MODERATION_AUTO_ENABLED", False)
+
+
+def _source_moderation_block_render_on_rejection() -> bool:
+    return _settings_bool("SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION", True)
+
+
+def _source_moderation_phase() -> str:
+    return _settings_str("SOURCE_MODERATION_PHASE", "source_scan")
+
+
+def _run_auto_source_moderation_after_transcript_sync(
+    project_id: str | int,
+    *,
+    triggered_by_user_id: int | None = None,
+) -> dict[str, Any]:
+    if not _source_moderation_auto_enabled():
+        return {
+            "enabled": False,
+            "status": "skipped_disabled",
+            "project_id": int(project_id),
+        }
+
+    try:
+        from ai_agents.models import AgentRun
+        from core.models import Project
+        from .ai_agents.orchestrator import ModerationOrchestrator
+        from .ai_agents.text_moderation import project_text_input_hash
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto source moderation unavailable for project=%s", project_id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project_id),
+            "moderation_status": "failed",
+            "error_message": _concise_error_text(exc, fallback="auto_source_moderation_import_failed"),
+            "block_render": False,
+        }
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is None:
+        return {
+            "enabled": True,
+            "status": "skipped_missing_project",
+            "project_id": int(project_id),
+            "block_render": False,
+        }
+
+    if triggered_by_user_id is None:
+        triggered_by_user_id = int(project.user_id) if project.user_id else None
+
+    current_hash = project_text_input_hash(project)
+    if project.moderation_status in SOURCE_MODERATION_APPROVED_STATUSES and project.last_moderation_run_id:
+        latest_run = AgentRun.objects.filter(pk=project.last_moderation_run_id, project=project).first()
+        if latest_run is not None and str(latest_run.input_hash or "") == current_hash:
+            return {
+                "enabled": True,
+                "status": "skipped_unchanged_approved",
+                "project_id": project.id,
+                "moderation_status": project.moderation_status,
+                "run_id": latest_run.id,
+                "input_hash": current_hash,
+                "block_render": False,
+            }
+
+    phase = _source_moderation_phase()
+    try:
+        result = ModerationOrchestrator().run(
+            project_id=project.id,
+            triggered_by_user_id=triggered_by_user_id,
+            phase=phase,
+        )
+        moderation_status = str(result.get("moderation_status") or "")
+        block_render = (
+            _source_moderation_block_render_on_rejection()
+            and moderation_status in SOURCE_MODERATION_REVIEW_STATUSES
+        )
+        result.update(
+            {
+                "enabled": True,
+                "phase": phase,
+                "input_hash": current_hash,
+                "block_render": block_render,
+                "message": _source_moderation_message(moderation_status),
+            }
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto source moderation failed for project=%s", project.id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": project.id,
+            "moderation_status": "failed",
+            "error_message": _concise_error_text(exc, fallback="auto_source_moderation_failed"),
+            "block_render": False,
+        }
+
+
+def _source_moderation_message(moderation_status: str) -> str:
+    if moderation_status == "revision_required":
+        return "Source moderation requires revisions before rendering."
+    if moderation_status == "needs_admin_review":
+        return "Source moderation requires admin review before rendering."
+    if moderation_status == "approved":
+        return "Source moderation approved this lesson."
+    if moderation_status == "failed":
+        return "Source moderation failed. Rendering was not blocked by the source moderation gate."
+    return f"Source moderation status: {moderation_status or 'unknown'}."
+
+
+VISUAL_MODERATION_REVIEW_DECISIONS = {"block", "needs_admin_review"}
+
+
+def _visual_moderation_auto_enabled() -> bool:
+    return _settings_bool("VISUAL_MODERATION_AUTO_ENABLED", False)
+
+
+def _visual_moderation_block_render_on_rejection() -> bool:
+    return _settings_bool("VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION", False)
+
+
+def _visual_moderation_phase() -> str:
+    return _settings_str("VISUAL_MODERATION_PHASE", "visual_asset_scan")
+
+
+def _visual_moderation_scan_cover() -> bool:
+    return _settings_bool("VISUAL_MODERATION_SCAN_COVER", True)
+
+
+def _visual_moderation_scan_slides() -> bool:
+    return _settings_bool("VISUAL_MODERATION_SCAN_SLIDES", True)
+
+
+def _run_auto_visual_asset_moderation_after_export(
+    project_id: str | int,
+    export_result: list[dict[str, Any]] | None,
+    job_id: str | int | None = None,
+    use_draft: bool = False,
+) -> dict[str, Any]:
+    if not _visual_moderation_auto_enabled():
+        return {
+            "enabled": False,
+            "status": "skipped_disabled",
+            "project_id": int(project_id),
+            "block_render": False,
+        }
+
+    try:
+        from core.models import Project
+        from .ai_agents.policy_engine import PolicyEngine
+        from .ai_agents.providers.local_image_rules_provider import LocalImageRulesProvider
+        from .ai_agents.providers.visual_safety_provider import (
+            build_visual_safety_provider,
+            visual_safety_classifier_should_run,
+        )
+        from .ai_agents.visual_moderation import VisualModerationAgent
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto visual moderation unavailable for project=%s", project_id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project_id),
+            "phase": _visual_moderation_phase(),
+            "final_decision": "allow",
+            "error_message": _concise_error_text(exc, fallback="auto_visual_moderation_import_failed"),
+            "block_render": False,
+        }
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is None:
+        return {
+            "enabled": True,
+            "status": "skipped_missing_project",
+            "project_id": int(project_id),
+            "phase": _visual_moderation_phase(),
+            "block_render": False,
+        }
+
+    phase = _visual_moderation_phase()
+    agent = VisualModerationAgent(provider=LocalImageRulesProvider())
+    safety_agent = (
+        VisualModerationAgent(provider=build_visual_safety_provider())
+        if visual_safety_classifier_should_run()
+        else None
+    )
+    results = []
+
+    try:
+        if _visual_moderation_scan_cover():
+            cover_rel_path = getattr(project, "cover_image_processed", "") or getattr(project, "cover_image_original", "")
+            if use_draft:
+                try:
+                    from core.drafts import get_draft_project_fields
+
+                    draft_fields = get_draft_project_fields(project)
+                    cover_rel_path = (
+                        draft_fields.get("cover_image_processed")
+                        or draft_fields.get("cover_image_original")
+                        or cover_rel_path
+                    )
+                except Exception:
+                    logger.warning("Could not load draft cover path for project=%s", project.id, exc_info=True)
+            cover_path = _visual_asset_path(cover_rel_path)
+            results.append(agent.scan_cover_image(project, image_path=cover_path))
+            if safety_agent is not None:
+                results.append(safety_agent.scan_cover_image(project, image_path=cover_path))
+
+        if _visual_moderation_scan_slides():
+            for asset in _visual_slide_assets_from_export(export_result or []):
+                results.append(
+                    agent.scan_slide_image(
+                        project_id=int(project.id),
+                        image_path=asset["image_path"],
+                        slide_order=asset["slide_order"],
+                        page_key=asset["page_key"],
+                        ui_anchor=asset["ui_anchor"],
+                    )
+                )
+                if safety_agent is not None:
+                    results.append(
+                        safety_agent.scan_slide_image(
+                            project_id=int(project.id),
+                            image_path=asset["image_path"],
+                            slide_order=asset["slide_order"],
+                            page_key=asset["page_key"],
+                            ui_anchor=asset["ui_anchor"],
+                        )
+                    )
+
+        if not results:
+            return {
+                "enabled": True,
+                "status": "skipped_no_assets",
+                "project_id": int(project.id),
+                "phase": phase,
+                "block_render": False,
+            }
+
+        final_decision = PolicyEngine().combine_results(results)
+        run = _persist_auto_visual_moderation_results(
+            project=project,
+            results=results,
+            final_decision=final_decision,
+            phase=phase,
+            job_id=job_id,
+        )
+        finding_count = sum(len(result.findings) for result in results)
+        block_render = (
+            _visual_moderation_block_render_on_rejection()
+            and final_decision in VISUAL_MODERATION_REVIEW_DECISIONS
+        )
+        return {
+            "enabled": True,
+            "status": "done",
+            "project_id": int(project.id),
+            "phase": phase,
+            "run_id": run.id,
+            "final_decision": final_decision,
+            "finding_count": finding_count,
+            "scanned_asset_count": len(results),
+            "block_render": block_render,
+            "message": _visual_moderation_message(final_decision),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto visual moderation failed for project=%s", project.id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project.id),
+            "phase": phase,
+            "final_decision": "allow",
+            "error_message": _concise_error_text(exc, fallback="auto_visual_moderation_failed"),
+            "block_render": False,
+        }
+
+
+def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    assets: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for order, slide in enumerate(slides or []):
+        if not isinstance(slide, dict):
+            continue
+        image_path = _visual_asset_path(slide.get("image_path") or slide.get("slide_path") or "")
+        if image_path and image_path in seen_paths:
+            continue
+        if image_path:
+            seen_paths.add(image_path)
+        slide_order = _safe_int_value(slide.get("source_slide_index"), fallback=_safe_int_value(slide.get("index"), fallback=order))
+        assets.append(
+            {
+                "image_path": image_path,
+                "slide_order": slide_order,
+                "page_key": str(slide.get("page_key") or ""),
+                "ui_anchor": f"export-slide-{slide_order}-image",
+            }
+        )
+    return assets
+
+
+def _visual_asset_path(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    direct = Path(raw)
+    if direct.is_file():
+        return str(direct)
+    if ".." in raw.replace("\\", "/").split("/"):
+        return raw
+    storage_path = Path(STORAGE_ROOT) / raw.lstrip("/\\")
+    if storage_path.is_file():
+        return str(storage_path)
+    return raw
+
+
+def _safe_int_value(value: Any, *, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def _persist_auto_visual_moderation_results(
+    *,
+    project,
+    results: list,
+    final_decision: str,
+    phase: str,
+    job_id: str | int | None = None,
+):
+    from ai_agents.models import AgentFinding, AgentRun
+    from django.utils import timezone
+
+    finding_count = sum(len(result.findings) for result in results)
+    summary = _visual_moderation_summary(
+        final_decision=final_decision,
+        results=results,
+        finding_count=finding_count,
+        job_id=job_id,
+    )
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=project.user if getattr(project, "user_id", None) else None,
+        purpose="moderation",
+        phase=phase,
+        status="done",
+        final_decision=final_decision,
+        summary=summary,
+        completed_at=timezone.now(),
+    )
+
+    rows = []
+    for result in results:
+        provider_raw = _visual_provider_raw(result.metadata or {})
+        for finding in result.findings:
+            location = finding.location.model_dump(exclude_none=True)
+            rows.append(
+                AgentFinding(
+                    run=run,
+                    agent_slug=result.agent_slug,
+                    agent_version=result.agent_version,
+                    content_type="image",
+                    object_type=str(location.get("asset_type") or ""),
+                    object_id=_visual_object_id(location),
+                    location=location,
+                    category=finding.category,
+                    severity=finding.severity,
+                    confidence=finding.confidence,
+                    decision=finding.decision,
+                    user_message=finding.user_message,
+                    admin_message=finding.admin_message,
+                    evidence_excerpt=finding.evidence_excerpt,
+                    provider=result.provider,
+                    provider_raw=provider_raw,
+                )
+            )
+    if rows:
+        AgentFinding.objects.bulk_create(rows)
+
+    try:
+        project.refresh_from_db(fields=["moderation_summary"])
+        existing_summary = dict(project.moderation_summary or {})
+        existing_summary["visual_asset_scan"] = {
+            **summary,
+            "run_id": run.id,
+            "phase": phase,
+        }
+        project.moderation_summary = existing_summary
+        project.save(update_fields=["moderation_summary", "updated_at"])
+    except Exception:
+        logger.warning("Visual moderation summary update failed for project=%s", project.id, exc_info=True)
+
+    return run
+
+
+def _visual_moderation_summary(*, final_decision: str, results: list, finding_count: int, job_id: str | int | None) -> dict[str, Any]:
+    categories = sorted({finding.category for result in results for finding in result.findings})
+    severities = sorted({finding.severity for result in results for finding in result.findings})
+    provider_errors = _provider_error_metadata(results)
+    return {
+        "final_decision": final_decision,
+        "message": _visual_moderation_message(final_decision),
+        "finding_count": finding_count,
+        "scanned_asset_count": len(results),
+        "categories": categories,
+        "severities": severities,
+        "job_id": int(job_id) if job_id is not None else None,
+        "providers": sorted({str(getattr(result, "provider", "") or "") for result in results if getattr(result, "provider", "")}),
+        "provider_skipped_count": sum(1 for result in results if bool((result.metadata or {}).get("skipped"))),
+        "provider_errors": provider_errors,
+    }
+
+
+def _visual_provider_raw(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: metadata[key]
+        for key in (
+            "width",
+            "height",
+            "format",
+            "mode",
+            "file_size_bytes",
+            "missing",
+            "error",
+            "provider",
+            "reason",
+            "provider_error",
+            "response_category_count",
+            "block_severity",
+        )
+        if key in metadata
+    }
+
+
+def _provider_error_metadata(results: list) -> list[dict[str, Any]]:
+    errors: list[dict[str, Any]] = []
+    for result in results or []:
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        if not metadata.get("provider_error"):
+            continue
+        errors.append(
+            {
+                "provider": str(getattr(result, "provider", "") or metadata.get("provider") or ""),
+                "reason": str(metadata.get("reason") or ""),
+                "error": str(metadata.get("error") or "")[:240],
+            }
+        )
+    return errors
+
+
+def _visual_object_id(location: dict[str, Any]) -> str:
+    if location.get("slide_order") is not None:
+        return str(location["slide_order"])
+    return str(location.get("project_id") or "")
+
+
+def _visual_moderation_message(final_decision: str) -> str:
+    if final_decision == "allow":
+        return "Visual asset validation passed."
+    if final_decision == "warn":
+        return "Visual asset validation completed with warnings."
+    if final_decision == "needs_admin_review":
+        return "Visual asset validation found assets that should be reviewed."
+    if final_decision == "block":
+        return "Visual asset validation blocked rendering."
+    return f"Visual asset validation status: {final_decision or 'unknown'}."
+
+
+def _mark_project_visual_moderation_blocked(project_id: str | int, moderation_result: dict[str, Any]) -> None:
+    try:
+        from core.models import Project
+    except Exception:
+        logger.warning("Project visual moderation-block status update skipped project=%s", project_id, exc_info=True)
+        return
+
+    message = str(moderation_result.get("message") or "Visual asset moderation blocked rendering.")
+    Project.objects.filter(pk=int(project_id)).update(
+        status="draft",
+        is_published=False,
+    )
+    _update_job(
+        project_id,
+        status="failed",
+        progress=100,
+        error_message=message,
+    )
+
+
+OCR_MODERATION_REVIEW_DECISIONS = {"block", "needs_admin_review"}
+OCR_TEXT_AGENT_SLUG = "ocr_slide_text_local_rules"
+OCR_TEXT_AGENT_VERSION = "local-rules:v1"
+
+
+def _ocr_moderation_auto_enabled() -> bool:
+    return _settings_bool("OCR_MODERATION_AUTO_ENABLED", False)
+
+
+def _ocr_moderation_block_render_on_rejection() -> bool:
+    return _settings_bool("OCR_MODERATION_BLOCK_RENDER_ON_REJECTION", False)
+
+
+def _ocr_moderation_phase() -> str:
+    return _settings_str("OCR_MODERATION_PHASE", "ocr_slide_scan")
+
+
+def _ocr_moderation_scan_slides() -> bool:
+    return _settings_bool("OCR_MODERATION_SCAN_SLIDES", True)
+
+
+def _ocr_moderation_provider_name() -> str:
+    return _settings_str("OCR_MODERATION_PROVIDER", "noop").strip().lower() or "noop"
+
+
+def _run_auto_ocr_slide_moderation_after_export(
+    project_id: str | int,
+    export_result: list[dict[str, Any]] | None,
+    job_id: str | int | None = None,
+) -> dict[str, Any]:
+    if not _ocr_moderation_auto_enabled():
+        return {
+            "enabled": False,
+            "status": "skipped_disabled",
+            "project_id": int(project_id),
+            "block_render": False,
+        }
+
+    try:
+        from core.models import Project
+        from .ai_agents.ocr_bridge import OCRBridge, OCRTextResult, build_ocr_provider
+        from .ai_agents.policy_engine import PolicyEngine
+        from .ai_agents.providers.local_rules_provider import LocalRulesProvider
+        from .ai_agents.schemas import FindingLocation
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto OCR moderation unavailable for project=%s", project_id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project_id),
+            "phase": _ocr_moderation_phase(),
+            "final_decision": "allow",
+            "error_message": _concise_error_text(exc, fallback="auto_ocr_moderation_import_failed"),
+            "block_render": False,
+        }
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is None:
+        return {
+            "enabled": True,
+            "status": "skipped_missing_project",
+            "project_id": int(project_id),
+            "phase": _ocr_moderation_phase(),
+            "block_render": False,
+        }
+
+    phase = _ocr_moderation_phase()
+    if not _ocr_moderation_scan_slides():
+        return {
+            "enabled": True,
+            "status": "skipped_no_assets",
+            "project_id": int(project.id),
+            "phase": phase,
+            "block_render": False,
+        }
+
+    assets = _visual_slide_assets_from_export(export_result or [])
+    if not assets:
+        return {
+            "enabled": True,
+            "status": "skipped_no_assets",
+            "project_id": int(project.id),
+            "phase": phase,
+            "block_render": False,
+        }
+
+    provider_name = _ocr_moderation_provider_name()
+    ocr_bridge = OCRBridge(provider=build_ocr_provider(provider_name))
+    text_provider = LocalRulesProvider()
+    policy_engine = PolicyEngine()
+    ocr_results = []
+    findings = []
+
+    try:
+        for asset in assets:
+            location = FindingLocation(
+                project_id=int(project.id),
+                page_key=asset["page_key"],
+                slide_order=asset["slide_order"],
+                asset_type="ocr_text",
+                image_path=asset["image_path"],
+                field_name="ocr_text",
+                ui_anchor=f"export-slide-{asset['slide_order']}-ocr",
+            )
+            try:
+                ocr_result = ocr_bridge.extract(
+                    image_path=asset["image_path"],
+                    location=location,
+                    asset_type="ocr_text",
+                    slide_order=asset["slide_order"],
+                    project_id=int(project.id),
+                    ui_anchor=location.ui_anchor,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Auto OCR extraction failed project=%s slide_order=%s image=%s",
+                    project.id,
+                    asset["slide_order"],
+                    asset["image_path"],
+                    exc_info=True,
+                )
+                ocr_result = OCRTextResult(
+                    text="",
+                    location=location,
+                    provider=provider_name or "noop_ocr",
+                    success=False,
+                    error_message=_concise_error_text(exc, fallback="auto_ocr_extract_failed"),
+                    image_path=asset["image_path"],
+                    asset_type="ocr_text",
+                    slide_order=asset["slide_order"],
+                    metadata={"error": exc.__class__.__name__},
+                )
+            ocr_results.append(ocr_result)
+
+            text = str(getattr(ocr_result, "text", "") or "").strip()
+            if not text:
+                continue
+            findings.extend(text_provider.scan_text(text, ocr_result.location))
+
+        final_decision = policy_engine.combine_findings(findings)
+        run = _persist_auto_ocr_moderation_results(
+            project=project,
+            ocr_results=ocr_results,
+            findings=findings,
+            final_decision=final_decision,
+            phase=phase,
+            job_id=job_id,
+        )
+        text_asset_count = sum(1 for result in ocr_results if str(getattr(result, "text", "") or "").strip())
+        block_render = (
+            _ocr_moderation_block_render_on_rejection()
+            and final_decision in OCR_MODERATION_REVIEW_DECISIONS
+        )
+        return {
+            "enabled": True,
+            "status": "done",
+            "project_id": int(project.id),
+            "phase": phase,
+            "run_id": run.id,
+            "final_decision": final_decision,
+            "finding_count": len(findings),
+            "scanned_asset_count": len(ocr_results),
+            "text_asset_count": text_asset_count,
+            "block_render": block_render,
+            "message": _ocr_moderation_message(final_decision),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto OCR moderation failed for project=%s", project.id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project.id),
+            "phase": phase,
+            "final_decision": "allow",
+            "error_message": _concise_error_text(exc, fallback="auto_ocr_moderation_failed"),
+            "block_render": False,
+        }
+
+
+def _persist_auto_ocr_moderation_results(
+    *,
+    project,
+    ocr_results: list,
+    findings: list,
+    final_decision: str,
+    phase: str,
+    job_id: str | int | None = None,
+):
+    from ai_agents.models import AgentFinding, AgentRun
+    from django.utils import timezone
+
+    summary = _ocr_moderation_summary(
+        final_decision=final_decision,
+        ocr_results=ocr_results,
+        findings=findings,
+        job_id=job_id,
+    )
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=project.user if getattr(project, "user_id", None) else None,
+        purpose="moderation",
+        phase=phase,
+        status="done",
+        final_decision=final_decision,
+        summary=summary,
+        completed_at=timezone.now(),
+    )
+
+    rows = []
+    for finding in findings:
+        location = finding.location.model_dump(exclude_none=True)
+        rows.append(
+            AgentFinding(
+                run=run,
+                agent_slug=OCR_TEXT_AGENT_SLUG,
+                agent_version=OCR_TEXT_AGENT_VERSION,
+                content_type="ocr",
+                object_type="slide_image_ocr",
+                object_id=_visual_object_id(location),
+                location=location,
+                category=finding.category,
+                severity=finding.severity,
+                confidence=finding.confidence,
+                decision=finding.decision,
+                user_message=finding.user_message,
+                admin_message=finding.admin_message,
+                evidence_excerpt=str(finding.evidence_excerpt or "")[:220],
+                provider="ocr_slide_moderation:local_rules",
+                provider_raw=_ocr_provider_raw_for_location(ocr_results, location),
+            )
+        )
+    if rows:
+        AgentFinding.objects.bulk_create(rows)
+
+    try:
+        project.refresh_from_db(fields=["moderation_summary"])
+        existing_summary = dict(project.moderation_summary or {})
+        existing_summary["ocr_slide_scan"] = {
+            **summary,
+            "run_id": run.id,
+            "phase": phase,
+        }
+        project.moderation_summary = existing_summary
+        project.save(update_fields=["moderation_summary", "updated_at"])
+    except Exception:
+        logger.warning("OCR moderation summary update failed for project=%s", project.id, exc_info=True)
+
+    return run
+
+
+def _ocr_moderation_summary(*, final_decision: str, ocr_results: list, findings: list, job_id: str | int | None) -> dict[str, Any]:
+    categories = sorted({finding.category for finding in findings})
+    severities = sorted({finding.severity for finding in findings})
+    text_asset_count = sum(1 for result in ocr_results if str(getattr(result, "text", "") or "").strip())
+    failed_asset_count = sum(1 for result in ocr_results if not bool(getattr(result, "success", False)))
+    return {
+        "final_decision": final_decision,
+        "message": _ocr_moderation_message(final_decision),
+        "finding_count": len(findings),
+        "scanned_asset_count": len(ocr_results),
+        "text_asset_count": text_asset_count,
+        "failed_asset_count": failed_asset_count,
+        "categories": categories,
+        "severities": severities,
+        "provider": _ocr_moderation_provider_name(),
+        "job_id": int(job_id) if job_id is not None else None,
+    }
+
+
+def _ocr_provider_raw_for_location(ocr_results: list, location: dict[str, Any]) -> dict[str, Any]:
+    slide_order = location.get("slide_order")
+    image_path = str(location.get("image_path") or "")
+    for result in ocr_results:
+        result_location = getattr(result, "location", None)
+        if result_location is None:
+            continue
+        if result_location.slide_order == slide_order and str(result_location.image_path or "") == image_path:
+            metadata = dict(getattr(result, "metadata", {}) or {})
+            return {
+                "ocr_provider": str(getattr(result, "provider", "") or ""),
+                "ocr_success": bool(getattr(result, "success", False)),
+                "ocr_error_message": str(getattr(result, "error_message", "") or "")[:240],
+                "ocr_text_length": len(str(getattr(result, "text", "") or "")),
+                "ocr_metadata": {
+                    key: metadata[key]
+                    for key in ("noop", "asset_missing", "error")
+                    if key in metadata
+                },
+            }
+    return {}
+
+
+def _ocr_moderation_message(final_decision: str) -> str:
+    if final_decision == "allow":
+        return "OCR slide text validation passed."
+    if final_decision == "warn":
+        return "OCR slide text validation completed with warnings."
+    if final_decision == "needs_admin_review":
+        return "OCR slide text validation found text that should be reviewed."
+    if final_decision == "block":
+        return "OCR slide text validation blocked rendering."
+    return f"OCR slide text validation status: {final_decision or 'unknown'}."
+
+
+def _mark_project_ocr_moderation_blocked(project_id: str | int, moderation_result: dict[str, Any]) -> None:
+    try:
+        from core.models import Project
+    except Exception:
+        logger.warning("Project OCR moderation-block status update skipped project=%s", project_id, exc_info=True)
+        return
+
+    message = str(moderation_result.get("message") or "OCR slide text moderation blocked rendering.")
+    Project.objects.filter(pk=int(project_id)).update(
+        status="draft",
+        is_published=False,
+    )
+    _update_job(
+        project_id,
+        status="failed",
+        progress=100,
+        error_message=message,
+    )
+
+
+VIDEO_FRAME_OCR_AGENT_SLUG = "video_frame_ocr_local_rules"
+VIDEO_FRAME_OCR_AGENT_VERSION = "local-rules:v1"
+VIDEO_FRAME_AUDIT_SUMMARY_KEY = "video_frame_audit"
+
+
+def _video_frame_audit_auto_enabled() -> bool:
+    return _settings_bool("VIDEO_FRAME_AUDIT_AUTO_ENABLED", False)
+
+
+def _video_frame_audit_phase() -> str:
+    return _settings_str("VIDEO_FRAME_AUDIT_PHASE", "video_frame_audit")
+
+
+def _video_frame_audit_every_seconds() -> float:
+    try:
+        from django.conf import settings
+
+        return float(getattr(settings, "VIDEO_FRAME_AUDIT_EVERY_SECONDS", 10) or 10)
+    except Exception:
+        return float(os.environ.get("VIDEO_FRAME_AUDIT_EVERY_SECONDS", "10") or 10)
+
+
+def _video_frame_audit_max_frames() -> int:
+    try:
+        from django.conf import settings
+
+        return int(getattr(settings, "VIDEO_FRAME_AUDIT_MAX_FRAMES", 5) or 5)
+    except Exception:
+        return int(os.environ.get("VIDEO_FRAME_AUDIT_MAX_FRAMES", "5") or 5)
+
+
+def _video_frame_audit_run_visual_check() -> bool:
+    return _settings_bool("VIDEO_FRAME_AUDIT_RUN_VISUAL_CHECK", True)
+
+
+def _video_frame_audit_run_ocr() -> bool:
+    return _settings_bool("VIDEO_FRAME_AUDIT_RUN_OCR", False)
+
+
+def _video_frame_audit_retain_frames() -> bool:
+    return _settings_bool("VIDEO_FRAME_AUDIT_RETAIN_FRAMES", False)
+
+
+def _video_frame_audit_cleanup_on_success() -> bool:
+    return _settings_bool("VIDEO_FRAME_AUDIT_CLEANUP_ON_SUCCESS", True)
+
+
+def _run_auto_video_frame_audit_after_render(
+    project_id: str | int,
+    job_id: str | int | None,
+    video_path: str | Path,
+) -> dict[str, Any]:
+    if not _video_frame_audit_auto_enabled():
+        return {
+            "enabled": False,
+            "status": "skipped_disabled",
+            "project_id": int(project_id),
+            "block_render": False,
+        }
+
+    phase = _video_frame_audit_phase()
+    try:
+        from core.models import Project
+        from .ai_agents.ocr_bridge import OCRBridge, build_ocr_provider
+        from .ai_agents.policy_engine import PolicyEngine
+        from .ai_agents.providers.local_image_rules_provider import LocalImageRulesProvider
+        from .ai_agents.providers.local_rules_provider import LocalRulesProvider
+        from .ai_agents.providers.visual_safety_provider import (
+            build_visual_safety_provider,
+            visual_safety_classifier_should_run,
+        )
+        from .ai_agents.schemas import FindingLocation
+        from .ai_agents.video_frame_moderation import VideoFrameModerationAgent, sample_video_frames
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto video frame audit unavailable for project=%s", project_id)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project_id),
+            "phase": phase,
+            "final_decision": "allow",
+            "error_message": _concise_error_text(exc, fallback="auto_video_frame_audit_import_failed"),
+            "block_render": False,
+        }
+
+    project = Project.objects.filter(pk=int(project_id)).first()
+    if project is None:
+        return {
+            "enabled": True,
+            "status": "skipped_missing_project",
+            "project_id": int(project_id),
+            "phase": phase,
+            "block_render": False,
+        }
+
+    sampling_result = None
+    try:
+        output_dir = _video_frame_audit_output_dir(project_id=project.id, job_id=job_id)
+        sampling_result = sample_video_frames(
+            video_path=video_path,
+            output_dir=output_dir,
+            every_seconds=_video_frame_audit_every_seconds(),
+            max_frames=_video_frame_audit_max_frames(),
+            include_first_frame=True,
+        )
+        if not sampling_result.success:
+            run = _persist_auto_video_frame_audit_results(
+                project=project,
+                sampling_result=sampling_result,
+                visual_results=[],
+                ocr_results=[],
+                ocr_findings=[],
+                final_decision="allow",
+                phase=phase,
+                run_status="failed",
+                job_id=job_id,
+                error_message=sampling_result.error_message,
+            )
+            return {
+                "enabled": True,
+                "status": "failed",
+                "project_id": int(project.id),
+                "phase": phase,
+                "run_id": run.id,
+                "final_decision": "allow",
+                "finding_count": 0,
+                "sampled_frame_count": 0,
+                "error_message": sampling_result.error_message,
+                "block_render": False,
+            }
+
+        visual_results = []
+        if _video_frame_audit_run_visual_check():
+            visual_agents = [VideoFrameModerationAgent(provider=LocalImageRulesProvider())]
+            if visual_safety_classifier_should_run():
+                visual_agents.append(VideoFrameModerationAgent(provider=build_visual_safety_provider()))
+            for index, frame in enumerate(sampling_result.sampled_frames):
+                for visual_agent in visual_agents:
+                    visual_results.append(
+                        visual_agent.scan_frame(
+                            project_id=int(project.id),
+                            frame_path=frame.frame_path,
+                            timestamp_seconds=frame.timestamp_seconds,
+                            timestamp_label=frame.timestamp_label,
+                            ui_anchor=f"auto-video-frame-{index}",
+                        )
+                    )
+
+        ocr_results = []
+        ocr_findings = []
+        if _video_frame_audit_run_ocr():
+            ocr_bridge = OCRBridge(provider=build_ocr_provider())
+            text_provider = LocalRulesProvider()
+            for index, frame in enumerate(sampling_result.sampled_frames):
+                location = FindingLocation(
+                    project_id=int(project.id),
+                    asset_type="ocr_text",
+                    frame_path=frame.frame_path,
+                    timestamp_seconds=frame.timestamp_seconds,
+                    timestamp_label=frame.timestamp_label,
+                    field_name="ocr_text",
+                    ui_anchor=f"auto-video-frame-{index}-ocr",
+                )
+                try:
+                    ocr_result = ocr_bridge.extract(
+                        image_path=frame.frame_path,
+                        location=location,
+                        asset_type="ocr_text",
+                        project_id=int(project.id),
+                        ui_anchor=location.ui_anchor,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "Auto video frame OCR failed project=%s frame=%s",
+                        project.id,
+                        frame.frame_path,
+                        exc_info=True,
+                    )
+                    from .ai_agents.ocr_bridge import OCRTextResult
+
+                    ocr_result = OCRTextResult(
+                        text="",
+                        location=location,
+                        provider="video_frame_ocr",
+                        success=False,
+                        error_message=_concise_error_text(exc, fallback="auto_video_frame_ocr_failed"),
+                        image_path=frame.frame_path,
+                        asset_type="ocr_text",
+                        metadata={"error": exc.__class__.__name__},
+                    )
+                ocr_results.append(ocr_result)
+                text = str(getattr(ocr_result, "text", "") or "").strip()
+                if text:
+                    ocr_findings.extend(text_provider.scan_text(text, ocr_result.location))
+
+        policy_engine = PolicyEngine()
+        findings = [finding for result in visual_results for finding in result.findings] + list(ocr_findings)
+        final_decision = policy_engine.combine_findings(findings)
+        run = _persist_auto_video_frame_audit_results(
+            project=project,
+            sampling_result=sampling_result,
+            visual_results=visual_results,
+            ocr_results=ocr_results,
+            ocr_findings=ocr_findings,
+            final_decision=final_decision,
+            phase=phase,
+            run_status="done",
+            job_id=job_id,
+        )
+        cleanup_result = _cleanup_successful_video_frame_audit(sampling_result)
+        return {
+            "enabled": True,
+            "status": "done",
+            "project_id": int(project.id),
+            "phase": phase,
+            "run_id": run.id,
+            "final_decision": final_decision,
+            "finding_count": len(findings),
+            "sampled_frame_count": len(sampling_result.sampled_frames),
+            "ocr_frame_count": len(ocr_results),
+            "cleanup": cleanup_result,
+            "block_render": False,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Auto video frame audit failed for project=%s", project.id)
+        cleanup_result = None
+        if sampling_result is not None and getattr(sampling_result, "sampled_frames", None):
+            cleanup_result = _cleanup_successful_video_frame_audit(sampling_result)
+        try:
+            from .ai_agents.video_frame_moderation import VideoFrameSamplingResult
+
+            failed_sampling_result = VideoFrameSamplingResult(
+                video_path=str(video_path or ""),
+                output_dir=str(_video_frame_audit_output_dir(project_id=project.id, job_id=job_id)),
+                sampled_frames=[],
+                success=False,
+                error_message=_concise_error_text(exc, fallback="auto_video_frame_audit_failed"),
+            )
+            run = _persist_auto_video_frame_audit_results(
+                project=project,
+                sampling_result=failed_sampling_result,
+                visual_results=[],
+                ocr_results=[],
+                ocr_findings=[],
+                final_decision="allow",
+                phase=phase,
+                run_status="failed",
+                job_id=job_id,
+                error_message=failed_sampling_result.error_message,
+            )
+            run_id = run.id
+        except Exception:
+            logger.warning("Auto video frame audit failure summary could not be persisted project=%s", project.id, exc_info=True)
+            run_id = None
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project.id),
+            "phase": phase,
+            "run_id": run_id,
+            "final_decision": "allow",
+            "error_message": _concise_error_text(exc, fallback="auto_video_frame_audit_failed"),
+            "cleanup": cleanup_result,
+            "block_render": False,
+        }
+
+
+def _video_frame_audit_output_dir(*, project_id: str | int, job_id: str | int | None) -> Path:
+    job_part = str(job_id or "latest")
+    return Path(STORAGE_ROOT) / "moderation" / "video_frames" / str(project_id) / job_part
+
+
+def _video_frame_audit_storage_base() -> Path:
+    return Path(STORAGE_ROOT) / "moderation" / "video_frames"
+
+
+def _cleanup_successful_video_frame_audit(sampling_result) -> dict[str, Any]:
+    if _video_frame_audit_retain_frames() or not _video_frame_audit_cleanup_on_success():
+        return {
+            "enabled": False,
+            "reason": "retained" if _video_frame_audit_retain_frames() else "cleanup_disabled",
+            "deleted_files": 0,
+            "deleted_dirs": 0,
+            "skipped": 0,
+        }
+    try:
+        frame_paths = [frame.frame_path for frame in getattr(sampling_result, "sampled_frames", []) or []]
+        output_dir = str(getattr(sampling_result, "output_dir", "") or "")
+        targets: list[Any] = list(frame_paths)
+        if output_dir:
+            targets.append(output_dir)
+        return _cleanup_video_frame_audit_files(targets, reason="success")
+    except Exception:
+        logger.warning("Video frame audit cleanup failed after successful audit", exc_info=True)
+        return {
+            "enabled": True,
+            "reason": "cleanup_failed",
+            "deleted_files": 0,
+            "deleted_dirs": 0,
+            "skipped": 0,
+        }
+
+
+def _cleanup_video_frame_audit_files(frame_paths_or_dir: Any, reason: str = "success") -> dict[str, Any]:
+    base = _video_frame_audit_storage_base().resolve()
+    targets = _normalize_cleanup_targets(frame_paths_or_dir)
+    deleted_files = 0
+    deleted_dirs = 0
+    skipped = 0
+    errors: list[str] = []
+
+    for target in targets:
+        path = Path(str(target or "")).expanduser()
+        try:
+            resolved = path.resolve()
+        except OSError:
+            skipped += 1
+            continue
+
+        if not _path_is_within(resolved, base):
+            skipped += 1
+            continue
+        if not resolved.exists():
+            skipped += 1
+            continue
+
+        try:
+            if resolved.is_dir():
+                file_count, dir_count = _delete_directory_tree(resolved)
+                deleted_files += file_count
+                deleted_dirs += dir_count
+            else:
+                resolved.unlink()
+                deleted_files += 1
+                deleted_dirs += _remove_empty_audit_parents(resolved.parent, base)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to cleanup video frame audit path=%s reason=%s", resolved, reason, exc_info=True)
+            errors.append(f"{resolved}: {exc.__class__.__name__}")
+            skipped += 1
+
+    return {
+        "enabled": True,
+        "reason": reason,
+        "deleted_files": deleted_files,
+        "deleted_dirs": deleted_dirs,
+        "skipped": skipped,
+        "errors": errors,
+    }
+
+
+def _normalize_cleanup_targets(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (str, Path)):
+        return [value]
+    try:
+        return list(value)
+    except TypeError:
+        return [value]
+
+
+def _path_is_within(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
+def _delete_directory_tree(path: Path) -> tuple[int, int]:
+    file_count = sum(1 for item in path.rglob("*") if item.is_file())
+    dir_count = sum(1 for item in path.rglob("*") if item.is_dir()) + 1
+    shutil.rmtree(path)
+    return file_count, dir_count
+
+
+def _remove_empty_audit_parents(start: Path, base: Path) -> int:
+    removed = 0
+    current = start
+    while current != base and _path_is_within(current, base):
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        removed += 1
+        current = current.parent
+    return removed
+
+
+def _latest_video_export_job_id(project_id: str | int) -> int | None:
+    try:
+        from core.models import Job
+
+        row = (
+            Job.objects.filter(project_id=int(project_id), job_type="video_export", status="done")
+            .order_by("-updated_at", "-id")
+            .values("id")
+            .first()
+        )
+        return int(row["id"]) if row else None
+    except Exception:
+        logger.warning("Latest video export job lookup failed for project=%s", project_id, exc_info=True)
+        return None
+
+
+def _persist_auto_video_frame_audit_results(
+    *,
+    project,
+    sampling_result,
+    visual_results: list,
+    ocr_results: list,
+    ocr_findings: list,
+    final_decision: str,
+    phase: str,
+    run_status: str,
+    job_id: str | int | None = None,
+    error_message: str = "",
+):
+    from ai_agents.models import AgentFinding, AgentRun
+    from django.utils import timezone
+
+    summary = _video_frame_audit_summary(
+        final_decision=final_decision,
+        sampling_result=sampling_result,
+        visual_results=visual_results,
+        ocr_results=ocr_results,
+        ocr_findings=ocr_findings,
+        job_id=job_id,
+        status=run_status,
+        error_message=error_message,
+    )
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=project.user if getattr(project, "user_id", None) else None,
+        purpose="moderation",
+        phase=phase,
+        status=run_status,
+        final_decision=final_decision,
+        summary=summary,
+        error_message=str(error_message or ""),
+        completed_at=timezone.now(),
+    )
+
+    rows = []
+    for result in visual_results:
+        provider_raw = _video_frame_provider_raw(result.metadata or {})
+        for finding in result.findings:
+            location = finding.location.model_dump(exclude_none=True)
+            rows.append(
+                AgentFinding(
+                    run=run,
+                    agent_slug=result.agent_slug,
+                    agent_version=result.agent_version,
+                    content_type="video_frame",
+                    object_type="video_frame",
+                    object_id=_video_frame_object_id(location),
+                    location=location,
+                    category=finding.category,
+                    severity=finding.severity,
+                    confidence=finding.confidence,
+                    decision=finding.decision,
+                    user_message=finding.user_message,
+                    admin_message=finding.admin_message,
+                    evidence_excerpt=finding.evidence_excerpt,
+                    provider=result.provider,
+                    provider_raw=provider_raw,
+                )
+            )
+
+    for finding in ocr_findings:
+        location = finding.location.model_dump(exclude_none=True)
+        rows.append(
+            AgentFinding(
+                run=run,
+                agent_slug=VIDEO_FRAME_OCR_AGENT_SLUG,
+                agent_version=VIDEO_FRAME_OCR_AGENT_VERSION,
+                content_type="ocr",
+                object_type="video_frame_ocr",
+                object_id=_video_frame_object_id(location),
+                location=location,
+                category=finding.category,
+                severity=finding.severity,
+                confidence=finding.confidence,
+                decision=finding.decision,
+                user_message=finding.user_message,
+                admin_message=finding.admin_message,
+                evidence_excerpt=str(finding.evidence_excerpt or "")[:220],
+                provider="video_frame_ocr:local_rules",
+                provider_raw=_video_frame_ocr_provider_raw_for_location(ocr_results, location),
+            )
+        )
+
+    if rows:
+        AgentFinding.objects.bulk_create(rows)
+
+    try:
+        project.refresh_from_db(fields=["moderation_summary"])
+        existing_summary = dict(project.moderation_summary or {})
+        existing_summary[VIDEO_FRAME_AUDIT_SUMMARY_KEY] = {
+            **summary,
+            "run_id": run.id,
+            "phase": phase,
+        }
+        project.moderation_summary = existing_summary
+        project.save(update_fields=["moderation_summary", "updated_at"])
+    except Exception:
+        logger.warning("Video frame audit summary update failed for project=%s", project.id, exc_info=True)
+
+    return run
+
+
+def _video_frame_audit_summary(
+    *,
+    final_decision: str,
+    sampling_result,
+    visual_results: list,
+    ocr_results: list,
+    ocr_findings: list,
+    job_id: str | int | None,
+    status: str,
+    error_message: str,
+) -> dict[str, Any]:
+    visual_findings = [finding for result in visual_results for finding in result.findings]
+    findings = visual_findings + list(ocr_findings)
+    text_frame_count = sum(1 for result in ocr_results if str(getattr(result, "text", "") or "").strip())
+    return {
+        "status": status,
+        "final_decision": final_decision,
+        "message": _video_frame_audit_message(final_decision, status=status),
+        "finding_count": len(findings),
+        "visual_finding_count": len(visual_findings),
+        "ocr_finding_count": len(ocr_findings),
+        "sampled_frame_count": len(getattr(sampling_result, "sampled_frames", []) or []),
+        "ocr_frame_count": len(ocr_results),
+        "ocr_text_frame_count": text_frame_count,
+        "categories": sorted({finding.category for finding in findings}),
+        "severities": sorted({finding.severity for finding in findings}),
+        "video_path": str(getattr(sampling_result, "video_path", "") or ""),
+        "output_dir": str(getattr(sampling_result, "output_dir", "") or ""),
+        "ffmpeg_path": str(getattr(sampling_result, "ffmpeg_path", "") or ""),
+        "error_message": str(error_message or getattr(sampling_result, "error_message", "") or "")[:240],
+        "run_visual_check": _video_frame_audit_run_visual_check(),
+        "run_ocr": _video_frame_audit_run_ocr(),
+        "every_seconds": _video_frame_audit_every_seconds(),
+        "max_frames": _video_frame_audit_max_frames(),
+        "job_id": int(job_id) if job_id is not None else None,
+        "visual_providers": sorted({str(getattr(result, "provider", "") or "") for result in visual_results if getattr(result, "provider", "")}),
+        "provider_skipped_count": sum(1 for result in visual_results if bool((result.metadata or {}).get("skipped"))),
+        "provider_errors": _provider_error_metadata(visual_results),
+    }
+
+
+def _video_frame_provider_raw(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: metadata[key]
+        for key in (
+            "width",
+            "height",
+            "format",
+            "mode",
+            "file_size_bytes",
+            "missing",
+            "error",
+            "provider",
+            "reason",
+            "provider_error",
+            "response_category_count",
+            "block_severity",
+        )
+        if key in metadata
+    }
+
+
+def _video_frame_ocr_provider_raw_for_location(ocr_results: list, location: dict[str, Any]) -> dict[str, Any]:
+    frame_path = str(location.get("frame_path") or "")
+    timestamp_seconds = location.get("timestamp_seconds")
+    for result in ocr_results:
+        result_location = getattr(result, "location", None)
+        if result_location is None:
+            continue
+        if str(result_location.frame_path or "") == frame_path and result_location.timestamp_seconds == timestamp_seconds:
+            metadata = dict(getattr(result, "metadata", {}) or {})
+            return {
+                "ocr_provider": str(getattr(result, "provider", "") or ""),
+                "ocr_success": bool(getattr(result, "success", False)),
+                "ocr_error_message": str(getattr(result, "error_message", "") or "")[:240],
+                "ocr_text_length": len(str(getattr(result, "text", "") or "")),
+                "ocr_metadata": {
+                    key: metadata[key]
+                    for key in ("noop", "asset_missing", "error", "model", "text_length")
+                    if key in metadata
+                },
+            }
+    return {}
+
+
+def _video_frame_object_id(location: dict[str, Any]) -> str:
+    timestamp = location.get("timestamp_seconds")
+    if timestamp is not None:
+        return f"{float(timestamp):.3f}"
+    return str(location.get("project_id") or "")
+
+
+def _video_frame_audit_message(final_decision: str, *, status: str) -> str:
+    if status == "failed":
+        return "Video frame audit could not complete. Rendering was not blocked."
+    if final_decision == "allow":
+        return "Video frame audit completed without findings."
+    if final_decision == "warn":
+        return "Video frame audit completed with warnings."
+    if final_decision == "needs_admin_review":
+        return "Video frame audit found frames that should be reviewed."
+    if final_decision == "block":
+        return "Video frame audit found blocking frame findings."
+    return f"Video frame audit status: {final_decision or 'unknown'}."
+
+
+def _mark_project_source_moderation_blocked(project_id: str | int, moderation_result: dict[str, Any]) -> None:
+    try:
+        from core.models import Project
+    except Exception:
+        logger.warning("Project moderation-block status update skipped project=%s", project_id, exc_info=True)
+        return
+
+    message = str(moderation_result.get("message") or "Source moderation blocked rendering.")
+    Project.objects.filter(pk=int(project_id)).update(
+        status="draft",
+        is_published=False,
+    )
+    _update_job(
+        project_id,
+        status="failed",
+        progress=100,
+        error_message=message,
+    )
 
 
 def _update_transcript_timeline(project_id: str | int, page_timeline: list[dict[str, Any]]) -> None:
@@ -1310,6 +3274,7 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
 
     try:
         from avatar.canonical_adapters import normalize_avatar_engine
+        from core.avatar_image_moderation import avatar_image_moderation_gate
         from core.avatar_source_validation import refresh_avatar_source_validation, stored_avatar_source_state
         from core.models import UserProfile
     except Exception:
@@ -1341,9 +3306,11 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
             "preview_stale": False,
         }
 
+    moderation_gate = avatar_image_moderation_gate(profile)
     enabled = bool(
         profile.avatar_enabled
         and profile.avatar_consent_confirmed
+        and not bool(moderation_gate.get("blocked"))
         and (processed_rel_path or original_rel_path or video_rel_path)
     )
 
@@ -1356,9 +3323,7 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
         "motion_preset": str(profile.avatar_motion_preset or "natural"),
         "quality_preset": str(profile.avatar_quality_preset or "high"),
         "lipsync_engine": normalize_avatar_engine(
-            os.environ.get("AVATAR_ENGINE")
-            or profile.avatar_lipsync_engine
-            or profile.avatar_engine_primary
+            profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE")
         ),
         "model_version": str(profile.avatar_model_version or "liveportrait+musetalk:v1"),
         "avatar_source_valid": bool(source_state.get("valid")),
@@ -1366,6 +3331,10 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
         "avatar_source_hash": str(source_state.get("source_hash") or profile.avatar_source_hash or ""),
         "avatar_preview_stale": bool(source_state.get("preview_stale")),
         "avatar_preview_source_hash": str(source_state.get("preview_source_hash") or profile.avatar_preview_source_hash or ""),
+        "avatar_moderation_status": str(profile.avatar_moderation_status or "not_scanned"),
+        "avatar_moderation_blocked": bool(moderation_gate.get("blocked")),
+        "avatar_moderation_error_code": str(moderation_gate.get("error_code") or ""),
+        "avatar_moderation_summary": dict(profile.avatar_moderation_summary or {}),
     }
 
 
@@ -1544,166 +3513,6 @@ def cleanup_avatar_cache(self, days: int = 30) -> dict[str, Any]:
     return avatar_cache_cleanup.apply(args=[days]).result
 
 
-@app.task(bind=True, name="worker.tasks.cleanup_cancelled_project_artifacts")
-def cleanup_cancelled_project_artifacts(
-    self,
-    project_id: str | int,
-    job_id: str | int | None = None,
-) -> dict[str, Any]:
-    """
-    Best-effort cleanup for cancelled render jobs.
-
-    Deletes transient per-render artifacts while preserving stable export/cache
-    assets that can accelerate future rerenders.
-    """
-    if not _is_specific_job_cancelled(project_id, job_id):
-        return {"status": "skipped", "project_id": int(project_id), "reason": "job_not_cancelled"}
-
-    ws = _workspace(project_id)
-    removed_files = 0
-    removed_dirs = 0
-
-    # Safe deletion scope: generated audio + part clips + temporary overlay artifacts.
-    candidate_dirs = [ws["audio"], ws["parts"], ws["root"] / "avatar_segments"]
-    for directory in candidate_dirs:
-        if not directory.exists() or not directory.is_dir():
-            continue
-        if directory.name in {"audio", "parts", "avatar_segments"}:
-            try:
-                shutil.rmtree(directory)
-                removed_dirs += 1
-            except Exception:
-                logger.warning("cleanup_cancelled_project_artifacts failed to remove dir=%s", directory, exc_info=True)
-
-    # Remove known temp manifests from cancelled run only.
-    for file_name in ["export_manifest.json"]:
-        target = ws["root"] / file_name
-        if target.exists() and target.is_file():
-            try:
-                target.unlink()
-                removed_files += 1
-            except Exception:
-                logger.warning("cleanup_cancelled_project_artifacts failed to remove file=%s", target, exc_info=True)
-
-    _upsert_job_checkpoint(
-        project_id,
-        stage_name="cleanup_cancelled",
-        stage_status="done",
-        payload={
-            "removed_dirs": removed_dirs,
-            "removed_files": removed_files,
-            "job_id": int(job_id) if job_id is not None else None,
-        },
-    )
-    return {
-        "status": "done",
-        "project_id": int(project_id),
-        "removed_dirs": removed_dirs,
-        "removed_files": removed_files,
-    }
-
-
-@app.task(bind=True, name="worker.tasks.cleanup_orphan_render_artifacts")
-def cleanup_orphan_render_artifacts(
-    self,
-    *,
-    min_age_hours: int = 6,
-) -> dict[str, Any]:
-    """
-    Periodic janitor for orphaned render artifacts left by crashes/restarts.
-
-    Safety rules:
-    - never touches projects with active jobs (pending/running)
-    - only removes known transient files under project work dirs
-    """
-    threshold_seconds = max(int(min_age_hours), 1) * 3600
-    now = time.time()
-    removed_files = 0
-    scanned_projects = 0
-    skipped_active_projects = 0
-
-    try:
-        from core.models import Job
-    except Exception:
-        Job = None
-
-    active_project_ids: set[int] = set()
-    if Job is not None:
-        try:
-            active_project_ids = set(
-                int(pid)
-                for pid in Job.objects.filter(status__in=["pending", "running"]).values_list("project_id", flat=True)
-                if pid is not None
-            )
-        except Exception:
-            active_project_ids = set()
-
-    root = Path(STORAGE_ROOT)
-    if not root.exists() or not root.is_dir():
-        return {
-            "status": "noop",
-            "reason": "storage_root_missing",
-            "removed_files": 0,
-            "scanned_projects": 0,
-            "skipped_active_projects": 0,
-        }
-
-    transient_suffixes = (
-        ".overlay.png",
-        ".whiteboard.png",
-        ".avatar-safe.png",
-    )
-
-    for project_dir in root.iterdir():
-        if not project_dir.is_dir():
-            continue
-        project_id_raw = str(project_dir.name).strip()
-        if not project_id_raw.isdigit():
-            continue
-        scanned_projects += 1
-        project_id = int(project_id_raw)
-        if project_id in active_project_ids:
-            skipped_active_projects += 1
-            continue
-
-        candidate_files: list[Path] = []
-        parts_dir = project_dir / "parts"
-        audio_dir = project_dir / "audio"
-        avatar_segments_dir = project_dir / "avatar_segments"
-
-        if parts_dir.exists() and parts_dir.is_dir():
-            candidate_files.extend(parts_dir.glob("part_*.mp4"))
-            candidate_files.extend(parts_dir.glob("*.overlay.png"))
-            candidate_files.extend(parts_dir.glob("*.whiteboard.png"))
-            candidate_files.extend(parts_dir.glob("*.avatar-safe.png"))
-        if audio_dir.exists() and audio_dir.is_dir():
-            candidate_files.extend(audio_dir.glob("slide_*.mp3"))
-        if avatar_segments_dir.exists() and avatar_segments_dir.is_dir():
-            candidate_files.extend(avatar_segments_dir.glob("avatar_*.mp4"))
-
-        for file_path in candidate_files:
-            try:
-                if not file_path.exists() or not file_path.is_file():
-                    continue
-                if not str(file_path).endswith(transient_suffixes) and file_path.suffix.lower() not in {".mp3", ".mp4"}:
-                    continue
-                age_seconds = max(0.0, now - float(file_path.stat().st_mtime))
-                if age_seconds < threshold_seconds:
-                    continue
-                file_path.unlink()
-                removed_files += 1
-            except Exception:
-                logger.warning("cleanup_orphan_render_artifacts failed for file=%s", file_path, exc_info=True)
-
-    return {
-        "status": "done",
-        "removed_files": removed_files,
-        "scanned_projects": scanned_projects,
-        "skipped_active_projects": skipped_active_projects,
-        "min_age_hours": int(min_age_hours),
-    }
-
-
 # ---------------------------------------------------------------------------
 # Smoke-test tasks
 # ---------------------------------------------------------------------------
@@ -1712,6 +3521,154 @@ def cleanup_orphan_render_artifacts(
 def ping(message: str = "ping") -> str:
     """Smoke-test task. Send 'ping', get 'pong'."""
     return "pong" if message == "ping" else f"echo: {message}"
+
+
+def _subtitle_task_active_key(project_id: int) -> str:
+    return f"subtitle-generate-active:{int(project_id)}"
+
+
+def _release_subtitle_task_active_slot(project_id: int) -> None:
+    try:
+        from django.core.cache import cache
+
+        cache.decr(_subtitle_task_active_key(project_id))
+    except Exception:
+        try:
+            from django.core.cache import cache
+
+            cache.delete(_subtitle_task_active_key(project_id))
+        except Exception:
+            return
+
+
+def _safe_subtitle_task_error(error: Exception | str, *, limit: int = 500) -> str:
+    text = str(error or "").strip() or "subtitle translation failed"
+    text = re.sub(r"\s+", " ", text)
+    return text[:limit]
+
+
+@app.task(bind=True, name="worker.tasks.generate_translated_subtitle_track_task", max_retries=0)
+def generate_translated_subtitle_track_task(
+    self,
+    project_id: int,
+    language_code: str,
+    language_label: str = "",
+    provider: str = "auto",
+    storage_root: str | None = None,
+    allow_mock_fallback: bool | None = None,
+    lock_key: str = "",
+    release_public_active_slot: bool = False,
+) -> dict[str, Any]:
+    """
+    Generate a translated subtitle sidecar outside the API request path.
+
+    The API creates a pending/processing TranslatedSubtitleTrack and returns 202;
+    this task performs provider I/O, writes SRT/VTT, and releases request locks.
+    """
+    from django.core.cache import cache
+    from django.utils import timezone
+
+    from core.models import TranslatedSubtitleTrack
+    from core.subtitle_translation import SubtitleTranslationError, generate_translated_subtitle_track
+
+    project_id = int(project_id)
+    language_code = str(language_code or "").strip().lower().replace("_", "-")
+    provider = str(provider or "auto").strip().lower() or "auto"
+    task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+
+    try:
+        track = generate_translated_subtitle_track(
+            project_id,
+            language_code,
+            provider=provider,
+            language_label=language_label,
+            storage_root=storage_root,
+            allow_mock_fallback=allow_mock_fallback,
+        )
+        metadata = dict(track.metadata or {})
+        if task_id:
+            metadata["celery_task_id"] = task_id
+        metadata["completed_at"] = timezone.now().isoformat()
+        track.metadata = metadata
+        track.save(update_fields=["metadata", "updated_at"])
+        return {
+            "project_id": project_id,
+            "language_code": track.language_code,
+            "status": track.status,
+            "track_id": track.id,
+            "provider": track.provider,
+        }
+    except SubtitleTranslationError as exc:
+        track = exc.track or TranslatedSubtitleTrack.objects.filter(
+            project_id=project_id,
+            language_code=language_code,
+        ).first()
+        if track is not None:
+            metadata = dict(track.metadata or {})
+            if task_id:
+                metadata["celery_task_id"] = task_id
+            metadata["completed_at"] = timezone.now().isoformat()
+            track.metadata = metadata
+            track.save(update_fields=["metadata", "updated_at"])
+            return {
+                "project_id": project_id,
+                "language_code": track.language_code,
+                "status": track.status,
+                "track_id": track.id,
+                "error": _safe_subtitle_task_error(exc),
+            }
+        return {
+            "project_id": project_id,
+            "language_code": language_code,
+            "status": "failed",
+            "error": _safe_subtitle_task_error(exc),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Translated subtitle task failed: project_id=%s language=%s", project_id, language_code)
+        safe_error = _safe_subtitle_task_error(exc)
+        track = TranslatedSubtitleTrack.objects.filter(project_id=project_id, language_code=language_code).first()
+        if track is not None:
+            metadata = dict(track.metadata or {})
+            if task_id:
+                metadata["celery_task_id"] = task_id
+            metadata["completed_at"] = timezone.now().isoformat()
+            track.status = "failed"
+            track.error_message = safe_error
+            track.srt_path = ""
+            track.vtt_path = ""
+            track.metadata = metadata
+            track.save(update_fields=["status", "error_message", "srt_path", "vtt_path", "metadata", "updated_at"])
+            track_id = track.id
+        else:
+            track_id = None
+        return {
+            "project_id": project_id,
+            "language_code": language_code,
+            "status": "failed",
+            "track_id": track_id,
+            "error": safe_error,
+        }
+    finally:
+        if lock_key:
+            cache.delete(lock_key)
+        if release_public_active_slot:
+            _release_subtitle_task_active_slot(project_id)
+
+
+@app.task(name="worker.tasks.run_project_moderation", max_retries=0)
+def run_project_moderation(
+    project_id: int,
+    triggered_by_user_id: int | None = None,
+    phase: str = "source_scan",
+) -> dict[str, Any]:
+    """Run the text-only local moderation orchestrator for a project."""
+    from .ai_agents.orchestrator import ModerationOrchestrator
+
+    return ModerationOrchestrator().run(
+        project_id=int(project_id),
+        triggered_by_user_id=triggered_by_user_id,
+        phase=phase,
+    )
 
 
 @app.task(bind=True, name="worker.tasks.tts_render")
@@ -1769,6 +3726,8 @@ def export_project(
     self.update_state(state="PROGRESS", meta={"step": "export_start", "progress": 2})
 
     ws = _workspace(project_id)
+    source_type = _source_type_from_value(Path(pptx_path).suffix) or "pptx"
+    text_only_source = source_type == "txt"
 
     # Export slide images (PNG)
     image_paths = export_slide_images(pptx_path, str(ws["images"]))
@@ -1794,12 +3753,24 @@ def export_project(
             txt_file = Path(note_paths[idx])
             if txt_file.exists():
                 notes_text = txt_file.read_text(encoding="utf-8").strip()
-        if not notes_text:
-            notes_text = f"Slide {slide_num}."  # minimal fallback narration
 
-        page_items = build_slide_page_structure(idx, notes_text)
+        if notes_text:
+            page_items = build_slide_page_structure(idx, notes_text)
+        else:
+            page_items = [
+                {
+                    "source_slide_index": idx,
+                    "split_index": 0,
+                    "page_key": f"s{slide_num}-p1",
+                    "original_text": "",
+                    "narration_text": "",
+                    "subtitle_chunks": [],
+                }
+            ]
         for page in page_items:
             display_index += 1
+            page_text = str(page.get("original_text") or "")
+            narration_text = str(page.get("narration_text") or notes_text or "")
             slides.append({
                 "index": display_index - 1,
                 "slide_num": display_index,
@@ -1808,11 +3779,14 @@ def export_project(
                 "split_index": int(page.get("split_index") or 0),
                 "page_key": page.get("page_key") or f"s{slide_num}-p1",
                 "image_path": image_paths[idx],
+                "original_background_path": "" if text_only_source else image_paths[idx],
+                "source_type": source_type,
                 "notes_text": notes_text,
-                "original_text": page.get("original_text") or notes_text,
-                "narration_text": page.get("narration_text") or notes_text,
-                "subtitle_chunks": page.get("subtitle_chunks") or [notes_text],
-                "whiteboard_mode": bool(whiteboard_mode_all),
+                "original_text": page_text,
+                "display_text": page_text,
+                "narration_text": narration_text,
+                "subtitle_chunks": page.get("subtitle_chunks") or ([narration_text] if narration_text else []),
+                "whiteboard_mode": bool(whiteboard_mode_all or text_only_source),
                 "audio_out": str(ws["audio"] / f"slide_{display_index:03d}.mp3"),
                 "part_out": str(ws["parts"] / f"part_{display_index:03d}.mp4"),
             })
@@ -1841,8 +3815,6 @@ def synthesize_and_render_slide(
     tts_mode: str = "service",
     avatar_options: dict[str, Any] | None = None,
     tts_settings: dict[str, Any] | None = None,
-    render_progress_index: int | None = None,
-    render_progress_total: int | None = None,
 ) -> dict[str, Any]:
     """
     Synthesize TTS audio and render one slide to a part MP4.
@@ -1881,10 +3853,26 @@ def synthesize_and_render_slide(
     notes_text = slide_meta["notes_text"]
     narration_text = slide_meta.get("narration_text") or notes_text
     original_text = slide_meta.get("original_text") or notes_text
+    display_text = slide_meta.get("display_text") or original_text
     subtitle_chunks = list(slide_meta.get("subtitle_chunks") or [])
     whiteboard_mode = bool(slide_meta.get("whiteboard_mode"))
+    editor_document = slide_meta.get("editor_document") if isinstance(slide_meta.get("editor_document"), dict) else {}
+    editor_scene = editor_document.get("scene") if isinstance(editor_document.get("scene"), dict) else {}
+    scene_background_mode = _scene_mode_from_value(
+        slide_meta.get("scene_background_mode") or editor_scene.get("background_mode"),
+        fallback="whiteboard" if whiteboard_mode else "original",
+    )
+    scene_background_fit = _scene_fit_from_value(
+        slide_meta.get("scene_background_fit") or editor_scene.get("background_fit")
+    )
+    raw_scene_text_scale = slide_meta.get("scene_text_scale")
+    if raw_scene_text_scale is None or raw_scene_text_scale == "":
+        raw_scene_text_scale = editor_scene.get("text_scale")
+    scene_text_scale = _scene_text_scale_from_value(
+        raw_scene_text_scale,
+        fallback=1.0,
+    )
     rich_text_html = str(slide_meta.get("rich_text_html") or "")
-    editor_document = slide_meta.get("editor_document") or {}
     if isinstance(editor_document, dict) and not narration_text:
         para_lines = [str(p.get("text") or "") for p in editor_document.get("paragraphs", []) if isinstance(p, dict)]
         if para_lines:
@@ -1898,8 +3886,6 @@ def synthesize_and_render_slide(
     logger.info(
         "synthesize_and_render_slide START slide=%d project=%s", slide_num, project_id
     )
-    if _is_job_cancelled(project_id):
-        raise RuntimeError(JOB_CANCELLED_MARKER)
     self.update_state(
         state="PROGRESS",
         meta={"step": "tts", "slide": slide_num, "project_id": project_id},
@@ -1930,24 +3916,22 @@ def synthesize_and_render_slide(
         render_image_path = image_path
         avatar_state = dict(avatar_options or {})
         avatar_state["composite_fallback_allowed"] = bool(avatar_state.get("composite_fallback_allowed", False))
-        avatar_state["lipsync_engine"] = (
-            str(os.environ.get("AVATAR_ENGINE") or avatar_state.get("lipsync_engine") or "musetalk")
-            .strip()
-            .lower()
-        )
         avatar_required = bool(avatar_state.get("enabled"))
 
         if whiteboard_mode:
             render_image_path = _make_whiteboard_image(
-                narration_text or original_text,
+                display_text or original_text,
                 str(Path(part_out).with_suffix(".whiteboard.png")),
+                text_scale=scene_text_scale,
             )
-        elif rich_text_html or (str(narration_text or "").strip() and str(narration_text).strip() != str(notes_text).strip()):
+        elif scene_background_mode == "custom":
             render_image_path = _render_transcript_overlay_image(
                 image_path,
-                narration_text,
+                display_text,
                 rich_text_html,
                 str(Path(part_out).with_suffix(".overlay.png")),
+                text_scale=scene_text_scale,
+                background_fit=scene_background_fit,
             )
 
         if avatar_required:
@@ -1978,8 +3962,6 @@ def synthesize_and_render_slide(
             state="PROGRESS",
             meta={"step": "render", "slide": slide_num, "project_id": project_id},
         )
-        if _is_job_cancelled(project_id):
-            raise RuntimeError(JOB_CANCELLED_MARKER)
 
         # Avatar path: render local talking-head clip separately (never burn into slide video).
         avatar_applied = False
@@ -1991,7 +3973,6 @@ def synthesize_and_render_slide(
         avatar_attempted = False
         avatar_skipped = False
         avatar_status_override = ""
-        avatar_segment_path: Path | None = None
 
         try:
             avatar_has_source = bool(
@@ -2074,63 +4055,6 @@ def synthesize_and_render_slide(
                 avatar_failure_reason,
                 exc_info=True,
             )
-            # Fallback: build a static avatar clip from teacher portrait + slide audio.
-            # This keeps "render with avatar" usable when LivePortrait runtime fails.
-            try:
-                if avatar_required and avatar_segment_path is not None:
-                    source_rel = str(
-                        avatar_state.get("source_image_original_rel_path")
-                        or avatar_state.get("source_image_rel_path")
-                        or ""
-                    ).strip()
-                    source_abs = _resolve_storage_path(source_rel, _avatar_storage_root()) if source_rel else ""
-                    if source_abs and Path(source_abs).exists():
-                        subprocess.run(
-                            [
-                                "ffmpeg",
-                                "-y",
-                                "-loop",
-                                "1",
-                                "-i",
-                                str(source_abs),
-                                "-i",
-                                str(audio_out),
-                                "-c:v",
-                                "libx264",
-                                "-preset",
-                                "veryfast",
-                                "-tune",
-                                "stillimage",
-                                "-pix_fmt",
-                                "yuv420p",
-                                "-c:a",
-                                "aac",
-                                "-shortest",
-                                str(avatar_segment_path),
-                            ],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                        )
-                        if avatar_segment_path.exists() and avatar_segment_path.stat().st_size > 0:
-                            avatar_applied = True
-                            avatar_engine_used = "static_fallback"
-                            avatar_rel_path = _safe_rel_path(_avatar_storage_root(), str(avatar_segment_path))
-                            avatar_fallback_chain = list(avatar_fallback_chain or []) + ["static_avatar_fallback"]
-                            avatar_status_override = "warning"
-                            avatar_validation = dict(avatar_validation or {})
-                            avatar_validation["fallback_used"] = True
-                            avatar_validation["fallback_reason"] = avatar_failure_reason
-                            avatar_failure_reason = (
-                                f"avatar_warning_fallback_used:{avatar_failure_reason}"
-                            )
-            except Exception:
-                logger.warning(
-                    "Avatar fallback segment build failed for project=%s slide=%s",
-                    project_id,
-                    slide_num,
-                    exc_info=True,
-                )
 
         if avatar_required and not avatar_applied and not avatar_failure_reason:
             avatar_failure_reason = "validation_rejected_or_no_usable_avatar"
@@ -2182,12 +4106,6 @@ def synthesize_and_render_slide(
             logger.warning("Avatar render job telemetry failed for project=%s slide=%s", project_id, slide_num, exc_info=True)
 
         logger.info("  Slide %d: part video → %s", slide_num, part_out)
-        if render_progress_index is not None and render_progress_total:
-            completed = max(0, min(int(render_progress_index), int(render_progress_total)))
-            total = max(1, int(render_progress_total))
-            synth_progress = 10 + int((completed * 79) / total)
-            _update_job_progress_floor(project_id, synth_progress)
-
 
         return {
             "index":     index,
@@ -2200,6 +4118,7 @@ def synthesize_and_render_slide(
             "pause_seconds": max(float(pause_sec), 0.0),
             "text":      notes_text_prepared,
             "original_text": original_text,
+            "display_text": display_text,
             "spoken_text": spoken_text,
             "tts_normalization_language": str(tts_meta.get("tts_normalization_language") or lang_hint),
             "tts_normalization_rules_applied": tts_rules_applied,
@@ -2254,6 +4173,7 @@ def synthesize_and_render_slide(
 def concat_and_finalize(
     results: list[dict[str, Any]],
     project_id: str,
+    use_draft: bool = False,
 ) -> dict[str, Any]:
     """
     Chord callback: concatenate all per-slide part MP4s into the final video
@@ -2292,15 +4212,7 @@ def concat_and_finalize(
     logger.info(
         "concat_and_finalize START project=%s slides=%d", project_id, len(results)
     )
-    if _is_job_cancelled(project_id):
-        raise RuntimeError(JOB_CANCELLED_MARKER)
     _update_job(project_id, progress=90)
-    _upsert_job_checkpoint(
-        project_id,
-        stage_name="concat_finalize",
-        stage_status="running",
-        payload={"slides": len(results)},
-    )
 
     try:
         # Sort by index — Celery preserves group order since v4, but defensive
@@ -2310,19 +4222,34 @@ def concat_and_finalize(
         _sync_lesson_segments(project_id, ordered)
 
         ws = _workspace(project_id)
+        output_dir = ws["final"]
+        output_rel_prefix = str(project_id)
+        if use_draft:
+            draft_output_token = f"draft-{time.time_ns()}"
+            output_dir = ws["final"] / "draft_renders" / draft_output_token
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_rel_prefix = f"{project_id}/draft_renders/{draft_output_token}"
 
         # Concatenate part MP4s → final video
-        final_video = str(ws["final"] / f"{project_id}.mp4")
+        final_video = str(output_dir / f"{project_id}.mp4")
         logger.info("Concatenating %d clips → %s", len(part_paths), final_video)
         concat_videos(part_paths, final_video)
         _update_job(project_id, progress=95)
 
         # Persist the render timeline, then build canonical cue text from active
         # transcript rows so captions never consume provider-normalized TTS text.
-        srt_path = str(ws["final"] / f"{project_id}.srt")
+        # Draft renders promote into active rows only after output files are prepared.
+        srt_path = str(output_dir / f"{project_id}.srt")
+        vtt_path = str(output_dir / f"{project_id}.vtt")
+        result_url_rel = f"{output_rel_prefix}/{project_id}.mp4"
+        srt_url_rel = f"{output_rel_prefix}/{project_id}.srt"
+        vtt_url_rel = f"{output_rel_prefix}/{project_id}.vtt"
         page_timeline = _build_page_timeline_from_render_results(ordered)
-        _update_transcript_timeline(project_id, page_timeline)
-        subtitle_cues = build_subtitle_cues_from_transcript_pages(project_id, ordered, slide_durations)
+        if use_draft:
+            subtitle_cues = _fallback_cues_from_render_results(ordered, slide_durations)
+        else:
+            _update_transcript_timeline(project_id, page_timeline)
+            subtitle_cues = build_subtitle_cues_from_transcript_pages(project_id, ordered, slide_durations)
         avatar_segments: list[dict[str, Any]] = []
         avatar_failures: list[dict[str, Any]] = []
         for result in ordered:
@@ -2353,15 +4280,14 @@ def concat_and_finalize(
         generate_srt_from_cues(subtitle_cues, srt_path)
         logger.info("SRT written → %s", srt_path)
 
-        vtt_path = str(ws["final"] / f"{project_id}.vtt")
         generate_vtt_from_cues(subtitle_cues, vtt_path)
         logger.info("WebVTT written → %s", vtt_path)
         playback_assets: dict[str, Any] = {
             "asset_id": f"{DRM_ASSET_ID_PREFIX}{project_id}",
             "content_id": f"{DRM_CONTENT_ID_PREFIX}{project_id}",
-            "mp4_rel_path": f"{project_id}/{project_id}.mp4",
-            "srt_rel_path": f"{project_id}/{project_id}.srt",
-            "vtt_rel_path": f"{project_id}/{project_id}.vtt",
+            "mp4_rel_path": result_url_rel,
+            "srt_rel_path": srt_url_rel,
+            "vtt_rel_path": vtt_url_rel,
             "protection_mode": _worker_protection_mode(),
             "timeline": page_timeline,
             "hls": None,
@@ -2457,7 +4383,7 @@ def concat_and_finalize(
 
         if avatar_segments:
             try:
-                avatar_track_dir = ws["final"] / "avatar"
+                avatar_track_dir = output_dir / "avatar"
                 avatar_track_dir.mkdir(parents=True, exist_ok=True)
                 avatar_track_path = avatar_track_dir / "avatar_track.mp4"
                 avatar_segment_paths: list[str] = []
@@ -2471,7 +4397,7 @@ def concat_and_finalize(
                 if avatar_segment_paths:
                     concat_videos(avatar_segment_paths, str(avatar_track_path))
                     playback_assets["avatar"] = {
-                        "track_rel_path": f"{project_id}/avatar/avatar_track.mp4",
+                        "track_rel_path": f"{output_rel_prefix}/avatar/avatar_track.mp4",
                         "default_position": "top-right",
                         "default_size": "medium",
                         "segments": avatar_segments,
@@ -2481,8 +4407,8 @@ def concat_and_finalize(
 
         if DRM_STREAMING_ENABLED:
             try:
-                hls_dir = ws["final"] / "drm" / "hls"
-                hls_rel_dir = f"{project_id}/drm/hls"
+                hls_dir = output_dir / "drm" / "hls"
+                hls_rel_dir = f"{output_rel_prefix}/drm/hls"
                 package_result = package_hls_stream(
                     final_video,
                     str(hls_dir),
@@ -2505,6 +4431,18 @@ def concat_and_finalize(
             except Exception as hls_exc:
                 logger.warning("HLS packaging skipped for project=%s: %s", project_id, hls_exc)
 
+        if use_draft:
+            try:
+                from core.models import Project
+                from core.drafts import promote_project_draft
+
+                project = Project.objects.get(pk=int(project_id))
+                promote_project_draft(project, render_outputs={"page_timeline": page_timeline})
+            except Exception:
+                logger.exception("Draft promotion failed after render project=%s", project_id)
+                _update_job(project_id, status="failed", progress=100, error_message="Draft promotion failed after render.")
+                raise
+
         _write_playback_sidecar(project_id, playback_assets)
         avatar_warning_message = ""
         if avatar_failures:
@@ -2522,12 +4460,6 @@ def concat_and_finalize(
                 json.dumps(avatar_failures, ensure_ascii=True, sort_keys=True),
             )
 
-        # Store relative paths (not HTTP URLs) so MediaStreamView can find them in storage_root
-        # result_url = "{project_id}/{project_id}.mp4" (relative path relative to STORAGE_ROOT)
-        result_url_rel = f"{project_id}/{project_id}.mp4"
-        srt_url_rel = f"{project_id}/{project_id}.srt"
-        vtt_url_rel = f"{project_id}/{project_id}.vtt"
-
         # Mark the Job as done and record relative file paths
         _update_job(
             project_id,
@@ -2537,26 +4469,26 @@ def concat_and_finalize(
             srt_url=srt_url_rel,
             error_message=avatar_warning_message,
         )
-        existing_concat_payload = _checkpoint_payload(project_id, "concat_finalize")
-        resume_source = str(existing_concat_payload.get("source") or "").strip().lower()
-        _upsert_job_checkpoint(
-            project_id,
-            stage_name="concat_finalize",
-            stage_status="done",
-            payload={
-                "result_url": result_url_rel,
-                "srt_url": srt_url_rel,
-                "parts_count": len(part_paths),
-                "source": resume_source or "normal",
-                "recovered_parts_count": len(part_paths) if resume_source == "resume_shortcut" else 0,
-            },
-        )
-        _upsert_job_checkpoint(
-            project_id,
-            stage_name="pipeline",
-            stage_status="done",
-            payload={"status": "completed"},
-        )
+        _mark_project_ready_after_successful_render(project_id)
+        try:
+            video_frame_audit = _run_auto_video_frame_audit_after_render(
+                project_id,
+                _latest_video_export_job_id(project_id),
+                final_video,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Auto video frame audit raised after successful render project=%s", project_id, exc_info=True)
+            video_frame_audit = {"enabled": True, "status": "failed", "block_render": False}
+        if video_frame_audit.get("enabled"):
+            logger.info(
+                "Auto video frame audit project=%s status=%s final_decision=%s run_id=%s findings=%s frames=%s",
+                project_id,
+                video_frame_audit.get("status"),
+                video_frame_audit.get("final_decision"),
+                video_frame_audit.get("run_id"),
+                video_frame_audit.get("finding_count"),
+                video_frame_audit.get("sampled_frame_count"),
+            )
 
         result = {
             "final_video": final_video,
@@ -2594,16 +4526,7 @@ def concat_and_finalize(
     except Exception:
         error_trace = tb.format_exc()
         logger.exception("concat_and_finalize FAILED project=%s", project_id)
-        if JOB_CANCELLED_MARKER in str(error_trace):
-            _update_job(project_id, status="cancelled", error_message=JOB_CANCELLED_MARKER)
-        else:
-            _update_job(project_id, status="failed", error_message=error_trace)
-        _upsert_job_checkpoint(
-            project_id,
-            stage_name="concat_finalize",
-            stage_status="failed",
-            payload={"error": _concise_error_text(error_trace, fallback="concat_failed", limit=800)},
-        )
+        _update_job(project_id, status="failed", error_message=error_trace)
         raise
 
 
@@ -2660,6 +4583,7 @@ def merge_and_finalize_segments(
                 "pause_seconds": pause_seconds,
                 "text": str(slide.get("narration_text") or slide.get("notes_text") or ""),
                 "original_text": str(slide.get("original_text") or slide.get("notes_text") or ""),
+                "display_text": str(slide.get("display_text") or slide.get("original_text") or slide.get("notes_text") or ""),
                 "spoken_text": "",
                 "tts_normalization_language": "",
                 "tts_normalization_rules_applied": [],
@@ -2715,10 +4639,7 @@ def mark_project_render_failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
         error_message = f"{error_message}: {'; '.join(error_parts[:3])}"
     if project_id is not None:
         logger.error("Render pipeline failed for project=%s errback_args=%s", project_id, args[:-1])
-        if _is_job_cancelled(project_id):
-            _update_job(project_id, status="cancelled", progress=100, error_message=JOB_CANCELLED_MARKER)
-        else:
-            _update_job(project_id, status="failed", progress=100, error_message=error_message)
+        _update_job(project_id, status="failed", progress=100, error_message=error_message)
     return {"status": "failed", "project_id": project_id, "error_message": error_message}
 
 
@@ -2739,7 +4660,7 @@ def process_pptx_to_video(
     avatar_options: dict[str, Any] | None = None,
     rerender_page_keys: list[str] | None = None,
     tts_settings: dict[str, Any] | None = None,
-    render_profile: str = "balanced",
+    use_draft: bool = False,
 ) -> dict[str, Any]:
     """
     Orchestrate the full PPTX → lesson MP4 pipeline.
@@ -2766,49 +4687,125 @@ def process_pptx_to_video(
     (updated by :func:`concat_and_finalize`).
     """
     logger.info("=== process_pptx_to_video START project=%s ===", project_id)
-    if _is_job_cancelled(project_id):
-        raise RuntimeError(JOB_CANCELLED_MARKER)
     _update_job(project_id, status="running", progress=0)
-    _upsert_job_checkpoint(
-        project_id,
-        stage_name="pipeline",
-        stage_status="running",
-        payload={"step": "start"},
-    )
-    _upsert_job_checkpoint(
-        project_id,
-        stage_name="export",
-        stage_status="running",
-        payload={"step": "export_start"},
-    )
     self.update_state(state="PROGRESS", meta={"step": "start", "progress": 0})
 
     try:
         # ------------------------------------------------------------------
         # Step 1: Export slides inline
         # ------------------------------------------------------------------
-        export_status = _checkpoint_status(project_id, "export")
-        manifest_slides = _read_export_manifest(project_id) if export_status == "done" else None
-        if manifest_slides:
-            logger.info("Step 1 resume: using export manifest for project=%s", project_id)
-            slides = _sync_transcript_pages_from_export(project_id, manifest_slides)
+        logger.info("Step 1: exporting slides for project=%s …", project_id)
+        export_result = export_project.apply(args=[project_id, pptx_path, whiteboard_mode_all])
+        if export_result.failed():
+            raise RuntimeError(f"export_project raised: {export_result.result}")
+
+        slides: list[dict[str, Any]] = export_result.result
+        if use_draft:
+            slides = _build_render_slides_from_draft(project_id, slides)
+            tts_settings = _draft_render_tts_settings(project_id, tts_settings)
         else:
-            if _is_job_cancelled(project_id):
-                raise RuntimeError(JOB_CANCELLED_MARKER)
-            logger.info("Step 1: exporting slides for project=%s ...", project_id)
-            export_result = export_project.apply(args=[project_id, pptx_path, whiteboard_mode_all])
-            if export_result.failed():
-                raise RuntimeError(f"export_project raised: {export_result.result}")
-            slides = _sync_transcript_pages_from_export(project_id, export_result.result)
-            _write_export_manifest(project_id, slides=slides, source_path=str(pptx_path))
+            slides = _sync_transcript_pages_from_export(project_id, slides)
         n_slides = len(slides)
         logger.info("Step 1 done: %d slides ready for parallel rendering", n_slides)
-        _upsert_job_checkpoint(
-            project_id,
-            stage_name="export",
-            stage_status="done",
-            payload={"slides": n_slides, "source_path": str(pptx_path)},
+
+        source_moderation = (
+            _run_auto_source_moderation_for_draft(project_id)
+            if use_draft
+            else _run_auto_source_moderation_after_transcript_sync(project_id)
         )
+        if source_moderation.get("enabled"):
+            logger.info(
+                "Auto source moderation project=%s status=%s moderation_status=%s block_render=%s run_id=%s",
+                project_id,
+                source_moderation.get("status"),
+                source_moderation.get("moderation_status"),
+                source_moderation.get("block_render"),
+                source_moderation.get("run_id"),
+            )
+        if source_moderation.get("block_render"):
+            if use_draft:
+                _mark_draft_render_blocked(project_id, source_moderation)
+            else:
+                _mark_project_source_moderation_blocked(project_id, source_moderation)
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "step": "source_moderation_blocked",
+                    "progress": 100,
+                    "project_id": project_id,
+                    "moderation_status": source_moderation.get("moderation_status"),
+                },
+            )
+            return {
+                "status": "moderation_blocked",
+                "project_id": project_id,
+                "n_slides": n_slides,
+                "moderation": source_moderation,
+            }
+
+        visual_moderation = _run_auto_visual_asset_moderation_after_export(project_id, slides, use_draft=use_draft)
+        if visual_moderation.get("enabled"):
+            logger.info(
+                "Auto visual moderation project=%s status=%s final_decision=%s block_render=%s run_id=%s findings=%s",
+                project_id,
+                visual_moderation.get("status"),
+                visual_moderation.get("final_decision"),
+                visual_moderation.get("block_render"),
+                visual_moderation.get("run_id"),
+                visual_moderation.get("finding_count"),
+            )
+        if visual_moderation.get("block_render"):
+            if use_draft:
+                _mark_draft_render_blocked(project_id, visual_moderation)
+            else:
+                _mark_project_visual_moderation_blocked(project_id, visual_moderation)
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "step": "visual_moderation_blocked",
+                    "progress": 100,
+                    "project_id": project_id,
+                    "visual_decision": visual_moderation.get("final_decision"),
+                },
+            )
+            return {
+                "status": "visual_moderation_blocked",
+                "project_id": project_id,
+                "n_slides": n_slides,
+                "moderation": visual_moderation,
+            }
+
+        ocr_moderation = _run_auto_ocr_slide_moderation_after_export(project_id, slides)
+        if ocr_moderation.get("enabled"):
+            logger.info(
+                "Auto OCR moderation project=%s status=%s final_decision=%s block_render=%s run_id=%s findings=%s",
+                project_id,
+                ocr_moderation.get("status"),
+                ocr_moderation.get("final_decision"),
+                ocr_moderation.get("block_render"),
+                ocr_moderation.get("run_id"),
+                ocr_moderation.get("finding_count"),
+            )
+        if ocr_moderation.get("block_render"):
+            if use_draft:
+                _mark_draft_render_blocked(project_id, ocr_moderation)
+            else:
+                _mark_project_ocr_moderation_blocked(project_id, ocr_moderation)
+            self.update_state(
+                state="PROGRESS",
+                meta={
+                    "step": "ocr_moderation_blocked",
+                    "progress": 100,
+                    "project_id": project_id,
+                    "ocr_decision": ocr_moderation.get("final_decision"),
+                },
+            )
+            return {
+                "status": "ocr_moderation_blocked",
+                "project_id": project_id,
+                "n_slides": n_slides,
+                "moderation": ocr_moderation,
+            }
 
         language_detection = _detect_language_from_slides(slides, lang_hint=lang_hint)
         resolved_lang = language_detection.get("resolved_language") or "tr"
@@ -2823,10 +4820,6 @@ def process_pptx_to_video(
 
         _update_job(project_id, progress=10)
         tts_settings_summary = _summarize_tts_settings(tts_settings)
-
-        profile_name = str(render_profile or "balanced").strip().lower()
-        if profile_name not in {"fast", "balanced", "quality"}:
-            profile_name = "balanced"
 
         teacher_id: int | None = None
         avatar_cfg = dict(avatar_options or {})
@@ -2856,16 +4849,13 @@ def process_pptx_to_video(
                 "avatar_source_hash": str(teacher_avatar_cfg.get("avatar_source_hash") or ""),
                 "avatar_preview_stale": bool(teacher_avatar_cfg.get("avatar_preview_stale")),
                 "avatar_preview_source_hash": str(teacher_avatar_cfg.get("avatar_preview_source_hash") or ""),
+                "avatar_moderation_status": str(teacher_avatar_cfg.get("avatar_moderation_status") or "not_scanned"),
+                "avatar_moderation_blocked": bool(teacher_avatar_cfg.get("avatar_moderation_blocked")),
+                "avatar_moderation_error_code": str(teacher_avatar_cfg.get("avatar_moderation_error_code") or ""),
                 "composite_fallback_allowed": False,
             }
         else:
             teacher_id = int(avatar_cfg.get("teacher_id")) if avatar_cfg.get("teacher_id") else None
-        if profile_name == "fast":
-            avatar_cfg["quality_preset"] = "low"
-        elif profile_name == "quality":
-            avatar_cfg["quality_preset"] = "high"
-        elif not avatar_cfg.get("quality_preset"):
-            avatar_cfg["quality_preset"] = "medium"
         avatar_cfg["composite_fallback_allowed"] = bool(avatar_cfg.get("composite_fallback_allowed", False))
         self.update_state(
             state="PROGRESS",
@@ -2880,166 +4870,34 @@ def process_pptx_to_video(
         # ------------------------------------------------------------------
         # Step 2: Build and dispatch parallel chord
         # ------------------------------------------------------------------
-        rerender_set = {str(key) for key in (rerender_page_keys or []) if str(key)}
+        rerender_set = set() if use_draft else {str(key) for key in (rerender_page_keys or []) if str(key)}
         target_slides = [slide for slide in slides if not rerender_set or str(slide.get("page_key") or "") in rerender_set]
         if not target_slides:
             target_slides = slides
 
-        pipeline_queue = _queue_for_pipeline(avatar_cfg, profile_name)
-        render_dispatch_status = _checkpoint_status(project_id, "render_dispatch")
-        recovered_results: list[dict[str, Any]] = []
-        missing_page_keys: list[str] = []
+        pipeline_queue = _queue_for_avatar_options(avatar_cfg)
 
-        # Resume shortcut: if a previous attempt already dispatched render tasks and all
-        # part artifacts exist, skip redispatch and finalize directly.
-        if not rerender_set and render_dispatch_status == "done":
-            try:
-                from scripts.ffmpeg_helpers import get_audio_duration
-            except Exception:
-                get_audio_duration = None
-            missing_parts = 0
-            for slide in slides:
-                part_path = str(slide.get("part_out") or "")
-                audio_path = str(slide.get("audio_out") or "")
-                if not part_path or not Path(part_path).exists():
-                    missing_parts += 1
-                    missing_page_keys.append(str(slide.get("page_key") or ""))
-                    continue
-                pause_seconds = max(float(slide.get("pause_seconds") or pause_sec), 0.0)
-                duration = 0.0
-                if audio_path and Path(audio_path).exists() and callable(get_audio_duration):
-                    try:
-                        duration = float(get_audio_duration(audio_path)) + pause_seconds
-                    except Exception:
-                        duration = 0.0
-                recovered_results.append(
-                    {
-                        "index": int(slide.get("index") or 0),
-                        "slide_num": int(slide.get("slide_num") or 0),
-                        "page_key": slide.get("page_key"),
-                        "source_slide_index": slide.get("source_slide_index", slide.get("index", 0)),
-                        "split_index": slide.get("split_index", 0),
-                        "part_path": part_path,
-                        "duration": duration,
-                        "pause_seconds": pause_seconds,
-                        "text": str(slide.get("narration_text") or slide.get("notes_text") or ""),
-                        "original_text": str(slide.get("original_text") or slide.get("notes_text") or ""),
-                        "spoken_text": "",
-                        "tts_normalization_language": "",
-                        "tts_normalization_rules_applied": [],
-                        "tts_provider": "",
-                        "tts_provider_preference": "",
-                        "tts_normalization_enabled": True,
-                        "tts_normalization_mode": "",
-                        "tts_unknown_word_strategy": "",
-                        "tts_applied_overrides": {},
-                        "tts_fallback_used": False,
-                        "tts_fallback_reason": "",
-                        "tts_settings": tts_settings_summary,
-                        "tts_preprocessing_warnings": [],
-                        "slide_path": str(slide.get("image_path") or ""),
-                        "tts_audio_path": audio_path,
-                        "subtitle_chunks": list(slide.get("subtitle_chunks") or []),
-                        "whiteboard_mode": bool(slide.get("whiteboard_mode")),
-                        "avatar_applied": False,
-                        "avatar_engine_used": "none",
-                        "avatar_fallback_chain": [],
-                        "avatar_segment_rel_path": "",
-                        "avatar_attempted": False,
-                        "avatar_skipped": False,
-                        "avatar_failed": False,
-                        "avatar_status": "none",
-                        "avatar_error": "",
-                        "avatar_warning": "",
-                        "avatar_failure_reason": "",
-                        "avatar_motion_validation": {},
-                    }
-                )
-            if recovered_results and missing_parts == 0 and len(recovered_results) == len(slides):
-                logger.info(
-                    "Resume shortcut: finalizing from recovered part artifacts project=%s count=%s",
-                    project_id,
-                    len(recovered_results),
-                )
-                _upsert_job_checkpoint(
-                    project_id,
-                    stage_name="concat_finalize",
-                    stage_status="running",
-                    payload={"source": "resume_shortcut", "parts_count": len(recovered_results)},
-                )
-                finalized = concat_and_finalize.apply(args=[recovered_results, project_id]).result
-                return {
-                    "status": "resumed_finalized",
-                    "project_id": project_id,
-                    "n_slides": len(slides),
-                    "resume_source": "render_dispatch_checkpoint+part_artifacts",
-                    "finalize_result": finalized,
-                    "language_detection": language_detection,
-                    "render_profile": profile_name,
-                }
-            if missing_page_keys:
-                rerender_set = {key for key in missing_page_keys if key}
-                target_slides = [slide for slide in slides if str(slide.get("page_key") or "") in rerender_set]
-                logger.info(
-                    "Resume partial rerender: project=%s missing_parts=%s total_slides=%s",
-                    project_id,
-                    len(target_slides),
-                    len(slides),
-                )
-
-        target_total = len(target_slides)
-        if _is_job_cancelled(project_id):
-            raise RuntimeError(JOB_CANCELLED_MARKER)
-
-        def _slide_render_signature(slide: dict[str, Any], render_index: int):
+        def _slide_render_signature(slide: dict[str, Any]):
             errback = mark_project_render_failed.s(project_id).set(queue=pipeline_queue)
             return synthesize_and_render_slide.s(
-                slide,
-                project_id,
-                voice_id,
-                pause_sec,
-                resolved_lang,
-                tts_mode,
-                avatar_cfg,
-                tts_settings,
-                render_index,
-                target_total,
+                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, avatar_cfg, tts_settings
             ).set(queue=pipeline_queue, link_error=errback)
 
         slide_tasks = group(
-            _slide_render_signature(slide, i)
-            for i, slide in enumerate(target_slides, start=1)
+            _slide_render_signature(slide)
+            for slide in target_slides
         )
         if rerender_set:
             callback = merge_and_finalize_segments.s(project_id, slides, list(rerender_set)).set(queue=pipeline_queue)
         else:
-            callback = concat_and_finalize.s(project_id).set(queue=pipeline_queue)
+            callback = concat_and_finalize.s(project_id, bool(use_draft)).set(queue=pipeline_queue)
 
-        _upsert_job_checkpoint(
-            project_id,
-            stage_name="render_dispatch",
-            stage_status="running",
-            payload={"queue": pipeline_queue, "target_slides": len(target_slides)},
-        )
         pipeline     = chord(slide_tasks, callback)
         async_result = pipeline.apply_async(queue=pipeline_queue)
 
         logger.info(
             "Chord dispatched: chord_id=%s n_slides=%d project=%s queue=%s",
             async_result.id, n_slides, project_id, pipeline_queue,
-        )
-        _upsert_job_checkpoint(
-            project_id,
-            stage_name="render_dispatch",
-            stage_status="done",
-            payload={
-                "queue": pipeline_queue,
-                "chord_id": str(async_result.id),
-                "target_slides": len(target_slides),
-                "render_profile": profile_name,
-                "source": "resume_partial" if missing_page_keys else "normal",
-                "missing_parts_count": len(missing_page_keys),
-            },
         )
 
         return {
@@ -3049,8 +4907,8 @@ def process_pptx_to_video(
             "project_id": project_id,
             "language_detection": language_detection,
             "rerender_page_keys": list(rerender_set),
+            "use_draft": bool(use_draft),
             "tts_settings": tts_settings_summary,
-            "render_profile": profile_name,
             "avatar": {
                 "enabled": bool(avatar_cfg.get("enabled")),
                 "teacher_id": teacher_id,
@@ -3060,6 +4918,8 @@ def process_pptx_to_video(
                 "avatar_source_valid": bool(avatar_cfg.get("avatar_source_valid")),
                 "avatar_source_validation_error": str(avatar_cfg.get("avatar_source_validation_error") or ""),
                 "avatar_preview_stale": bool(avatar_cfg.get("avatar_preview_stale")),
+                "avatar_moderation_status": str(avatar_cfg.get("avatar_moderation_status") or "not_scanned"),
+                "avatar_moderation_blocked": bool(avatar_cfg.get("avatar_moderation_blocked")),
                 "composite_fallback_allowed": bool(avatar_cfg.get("composite_fallback_allowed")),
             },
         }
@@ -3067,19 +4927,7 @@ def process_pptx_to_video(
     except Exception as exc:
         error_trace = tb.format_exc()
         logger.exception("process_pptx_to_video FAILED for project=%s", project_id)
-        if JOB_CANCELLED_MARKER in str(error_trace):
-            _update_job(project_id, status="cancelled", error_message=JOB_CANCELLED_MARKER)
-        else:
-            _update_job(project_id, status="failed", error_message=error_trace)
-        _upsert_job_checkpoint(
-            project_id,
-            stage_name="pipeline",
-            stage_status="failed",
-            payload={
-                "error": _concise_error_text(error_trace, fallback="pipeline_failed", limit=800),
-                "exc_type": type(exc).__name__,
-            },
-        )
+        _update_job(project_id, status="failed", error_message=error_trace)
         self.update_state(
             state="FAILURE",
             meta={
