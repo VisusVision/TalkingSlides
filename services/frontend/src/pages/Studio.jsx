@@ -726,7 +726,7 @@ function firstAvailableUrl(...values) {
   return values.map(textValue).find(Boolean) || '';
 }
 
-const SCENE_BACKGROUND_MODES = new Set(['original', 'whiteboard', 'custom']);
+const SCENE_BACKGROUND_MODES = new Set(['original', 'whiteboard', 'custom', 'source_background']);
 const SCENE_BACKGROUND_FITS = new Set(['contain', 'cover', 'stretch']);
 const SCENE_TEXT_SCALE_MIN = 0.75;
 const SCENE_TEXT_SCALE_MAX = 2;
@@ -752,8 +752,11 @@ function pageSceneSettings(page) {
     textScale,
     originalUrl: textValue(scene.original_background_url),
     customUrl: textValue(scene.custom_background_url),
+    sourceUrl: textValue(scene.source_background_url),
     hasOriginal: Boolean(scene.has_original_background || scene.original_background_url),
     hasCustom: Boolean(scene.has_custom_background || scene.custom_background_url),
+    hasSource: Boolean(scene.has_source_background || scene.source_background_url),
+    sourceWarnings: Array.isArray(scene.source_background_warnings) ? scene.source_background_warnings : [],
   };
 }
 
@@ -779,6 +782,7 @@ function sceneBackgroundUrl(page) {
   const settings = pageSceneSettings(page);
   if (settings.backgroundMode === 'whiteboard') return '';
   if (settings.backgroundMode === 'custom') return settings.customUrl || settings.originalUrl;
+  if (settings.backgroundMode === 'source_background') return settings.sourceUrl;
   return settings.originalUrl || settings.customUrl;
 }
 
@@ -791,6 +795,7 @@ function backgroundObjectFit(fit) {
 function sceneModeLabel(mode) {
   if (mode === 'whiteboard') return 'Whiteboard';
   if (mode === 'custom') return 'Custom';
+  if (mode === 'source_background') return 'Source Background';
   return 'Original';
 }
 
@@ -1877,6 +1882,8 @@ export default function Studio({ user, onLoginRequest }) {
           textScale: sceneSettings.textScale,
           hasOriginalBackground: sceneSettings.hasOriginal,
           hasCustomBackground: sceneSettings.hasCustom,
+          hasSourceBackground: sceneSettings.hasSource,
+          sourceBackgroundWarnings: sceneSettings.sourceWarnings,
           draftBackgroundDirty: Boolean(page?.draft_background_dirty || page?.draft_scene_dirty),
           moderationWarning: moderationPageWarnings[key] || null,
           page,
@@ -1955,6 +1962,16 @@ export default function Studio({ user, onLoginRequest }) {
   const selectedSceneFit = selectedScene?.backgroundFit || 'contain';
   const selectedSceneTextScale = selectedScene?.textScale ?? 1;
   const selectedSceneBackgroundUrl = selectedScene?.backgroundUrl || '';
+  const selectedSceneSourceWarnings = Array.isArray(selectedScene?.sourceBackgroundWarnings)
+    ? selectedScene.sourceBackgroundWarnings
+    : [];
+  const selectedSceneHasRenderDependencyWarning = selectedSceneSourceWarnings.some((warning) => (
+    warning === 'slide_render_dependency_missing_libreoffice'
+    || warning === 'slide_render_dependency_missing_pdftoppm'
+    || warning === 'original_fidelity_reconstructed'
+    || warning === 'source_background_reconstructed'
+    || warning === 'source_background_generation_failed'
+  ));
   const selectedSceneTextDirection = isProbablyRtlText(selectedSceneFullText) ? 'rtl' : 'ltr';
   const selectedSceneTextLayout = useMemo(
     () => scenePreviewTextLayout(selectedSceneTextScale, selectedSceneFullText),
@@ -2974,7 +2991,7 @@ export default function Studio({ user, onLoginRequest }) {
                   ) : (
                     <div className="absolute inset-x-5 bottom-14 flex justify-center">
                       <span className="max-w-[92%] rounded-full bg-black/55 px-3 py-1.5 text-center text-xs font-medium text-white shadow-sm backdrop-blur-sm">
-                        Original mode displays the source screenshot. Use Whiteboard or Custom to display edited text.
+                        Original mode displays the source screenshot. Source Background keeps slide design but replaces source text with editable text.
                       </span>
                     </div>
                   )}
@@ -3007,7 +3024,7 @@ export default function Studio({ user, onLoginRequest }) {
                       const hasModerationWarning = Boolean(scene.moderationWarning);
                       const modeTone = isWhiteboard
                         ? 'bg-white text-slate-800'
-                        : scene.backgroundMode === 'custom'
+                        : scene.backgroundMode === 'custom' || scene.backgroundMode === 'source_background'
                           ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
                           : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]';
                       return (
@@ -3331,7 +3348,7 @@ export default function Studio({ user, onLoginRequest }) {
                           <div>
                             <p className="text-sm font-semibold text-[var(--text-primary)]">Scene background</p>
                             <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                              Use the exported source slide, a whiteboard, or a custom image for this page.
+                              Use the exported source slide, a source background, a whiteboard, or a custom image for this page.
                             </p>
                             {selectedScene?.draftBackgroundDirty && (
                               <span className="mt-2 inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
@@ -3355,10 +3372,21 @@ export default function Studio({ user, onLoginRequest }) {
                               className="focus-ring mt-1 h-10 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
                             >
                               <option value="original">Original</option>
+                              <option value="source_background">Source Background</option>
                               <option value="whiteboard">Whiteboard</option>
                               <option value="custom">Custom background</option>
                             </select>
                           </label>
+                          {selectedSceneMode === 'source_background' && (
+                            <p className="rounded-xl bg-[color:var(--status-info-bg)] px-3 py-2 text-xs text-[color:var(--status-info-fg)]">
+                              Source Background keeps slide design but replaces source text with editable text.
+                            </p>
+                          )}
+                          {selectedSceneHasRenderDependencyWarning && (
+                            <p className="rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-medium text-[color:var(--status-warning-fg)]">
+                              High-fidelity slide rendering requires LibreOffice/Poppler. Current output may use fallback reconstruction.
+                            </p>
+                          )}
 
                           <label className="block text-xs font-medium text-[var(--text-secondary)]">
                             Background fit

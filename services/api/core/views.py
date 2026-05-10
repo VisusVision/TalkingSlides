@@ -774,7 +774,7 @@ def _build_editor_document(display_text: str, rich_text_html: str, *, text_flags
     }
 
 
-SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom"}
+SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom", "source_background"}
 SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
 SCENE_TEXT_SCALE_MIN = 0.75
 SCENE_TEXT_SCALE_MAX = 2.0
@@ -796,6 +796,7 @@ def _merge_editor_document_preserving_scene(next_document: dict, current_documen
         for unsafe_key in (
             "original_background_path",
             "custom_background_path",
+            "source_background_path",
         ):
             if not incoming_scene.get(unsafe_key) and current_scene.get(unsafe_key):
                 merged_scene[unsafe_key] = current_scene[unsafe_key]
@@ -855,10 +856,11 @@ def _set_page_scene(page: TranscriptPage, scene: dict) -> None:
 
 
 def _page_scene_path(page: TranscriptPage, kind: str) -> str:
-    if kind not in {"original", "custom"}:
+    if kind not in {"original", "custom", "source", "source_background"}:
         return ""
     scene = _page_scene_for_storage(page)
-    return _normalize_rel_storage_path(str(scene.get(f"{kind}_background_path") or ""))
+    key = "source_background_path" if kind in {"source", "source_background"} else f"{kind}_background_path"
+    return _normalize_rel_storage_path(str(scene.get(key) or ""))
 
 
 def _page_scene_response(page: TranscriptPage, request) -> dict:
@@ -908,7 +910,7 @@ def _set_draft_page_scene(draft_page: dict, scene: dict) -> None:
 
 
 def _draft_page_scene_path(project: Project, page: TranscriptPage, kind: str) -> str:
-    if kind not in {"original", "custom"}:
+    if kind not in {"original", "custom", "source", "source_background"}:
         return ""
     draft_data = get_project_draft_data(project)
     if not has_project_draft(project):
@@ -917,7 +919,8 @@ def _draft_page_scene_path(project: Project, page: TranscriptPage, kind: str) ->
     if draft_page is None:
         return ""
     scene = _draft_page_scene_for_storage(draft_page, page)
-    return _normalize_rel_storage_path(str(scene.get(f"{kind}_background_path") or ""))
+    key = "source_background_path" if kind in {"source", "source_background"} else f"{kind}_background_path"
+    return _normalize_rel_storage_path(str(scene.get(key) or ""))
 
 
 def _draft_url(url: str) -> str:
@@ -938,6 +941,7 @@ def _draft_scene_differs(active_page: TranscriptPage | None, draft_page: dict) -
         "text_scale",
         "original_background_path",
         "custom_background_path",
+        "source_background_path",
     }
     for key in keys:
         active_value = active_scene.get(key)
@@ -5164,7 +5168,7 @@ class TranscriptPageSceneView(APIView):
                 mode = str(request.data.get("background_mode") or "").strip().lower()
                 if mode not in SCENE_BACKGROUND_MODES:
                     return Response(
-                        {"error": "background_mode must be original, whiteboard, or custom."},
+                        {"error": "background_mode must be original, source_background, whiteboard, or custom."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 scene["background_mode"] = mode
@@ -5198,7 +5202,7 @@ class TranscriptPageSceneView(APIView):
             mode = str(request.data.get("background_mode") or "").strip().lower()
             if mode not in SCENE_BACKGROUND_MODES:
                 return Response(
-                    {"error": "background_mode must be original, whiteboard, or custom."},
+                    {"error": "background_mode must be original, source_background, whiteboard, or custom."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             scene["background_mode"] = mode
@@ -5326,6 +5330,7 @@ class ProjectBackgroundApplyAllView(APIView):
 
         draft_only = _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only"))
         custom_path = ""
+        requested_mode = str(request.data.get("background_mode") or "").strip().lower()
         background_file = request.FILES.get("background_file") or request.FILES.get("image") or request.FILES.get("file")
         if background_file is not None:
             try:
@@ -5338,7 +5343,7 @@ class ProjectBackgroundApplyAllView(APIView):
             saved_path = background_dir / f"all_{uuid.uuid4().hex[:10]}{ext}"
             _write_uploaded_file(background_file, saved_path)
             custom_path = str(saved_path.relative_to(storage_root)).replace("\\", "/")
-        elif request.data.get("source_page_id"):
+        elif request.data.get("source_page_id") and requested_mode != "source_background":
             try:
                 source_page = _get_project_page(project, request.data.get("source_page_id"), active=True, field_name="source_page_id")
             except TranscriptActionError as exc:
@@ -5349,10 +5354,10 @@ class ProjectBackgroundApplyAllView(APIView):
                 else _page_scene_path(source_page, "custom")
             )
 
-        requested_mode = str(request.data.get("background_mode") or ("custom" if custom_path else "")).strip().lower()
+        requested_mode = requested_mode or ("custom" if custom_path else "")
         if requested_mode and requested_mode not in SCENE_BACKGROUND_MODES:
             return Response(
-                {"error": "background_mode must be original, whiteboard, or custom."},
+                {"error": "background_mode must be original, source_background, whiteboard, or custom."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if requested_mode == "custom" and not custom_path:

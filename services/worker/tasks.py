@@ -237,6 +237,7 @@ def _workspace(project_id: str | int) -> dict[str, Path]:
     ws = {
         "root": root,
         "images": root / "images",
+        "source_backgrounds": root / "source_backgrounds",
         "notes": root / "notes",
         "audio": root / "audio",
         "parts": root / "parts",
@@ -1305,6 +1306,33 @@ def _render_transcript_overlay_image(
     return str(output)
 
 
+def _source_background_overflow_warnings(
+    base_image_path: str,
+    display_text: str,
+    rich_text_html: str,
+    *,
+    text_scale: float,
+    background_fit: str,
+) -> list[str]:
+    if Image is None or ImageDraw is None:
+        return []
+    source = Path(base_image_path)
+    if not source.exists() or not source.is_file():
+        return []
+    text = _prepare_narration_for_tts(display_text)
+    if not text and rich_text_html:
+        text = _prepare_narration_for_tts(re.sub(r"<[^>]+>", " ", rich_text_html))
+    if not text:
+        return []
+    try:
+        image = _fit_image_to_scene_canvas(Image.open(source).convert("RGBA"), background_fit)
+        draw = ImageDraw.Draw(Image.new("RGBA", image.size, (0, 0, 0, 0)))
+        layout = _compute_scene_text_overlay_layout(draw, text, image.size, text_scale, boxed=True)
+    except Exception:
+        return []
+    return ["source_background_text_overflow"] if layout.get("truncated") else []
+
+
 def _render_avatar_safe_slide_image(source_image_path: str, output_path: str) -> str:
     source = Path(source_image_path)
     if not source.exists() or not source.is_file():
@@ -1315,7 +1343,7 @@ def _render_avatar_safe_slide_image(source_image_path: str, output_path: str) ->
     return str(output)
 
 
-_SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom"}
+_SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom", "source_background"}
 _SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
 
 
@@ -1359,6 +1387,72 @@ def _source_type_from_value(value: Any) -> str:
     return str(value or "").strip().lower().lstrip(".")
 
 
+def _source_type_uses_visual_mapping(source_type: Any) -> bool:
+    normalized = _source_type_from_value(source_type)
+    return bool(normalized and normalized != "txt")
+
+
+def _warning_list_from_value(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    elif value:
+        items = [value]
+    else:
+        items = []
+    return list(dict.fromkeys(str(item).strip() for item in items if str(item or "").strip()))
+
+
+def _details_list_from_value(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    elif value:
+        items = [{"message": str(value)}]
+    else:
+        items = []
+
+    details: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, dict):
+            cleaned = {str(key): item[key] for key in item if str(key or "").strip()}
+        else:
+            cleaned = {"message": str(item)}
+        if not cleaned:
+            continue
+        try:
+            dedupe_key = json.dumps(cleaned, sort_keys=True, ensure_ascii=True, default=str)
+        except TypeError:
+            cleaned = {key: str(val) for key, val in cleaned.items()}
+            dedupe_key = json.dumps(cleaned, sort_keys=True, ensure_ascii=True)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        details.append(cleaned)
+    return details
+
+
+def _single_source_page_structure(source_slide_index: int, text: str) -> dict[str, Any]:
+    from scripts.text_segmentation import SegmentationConfig, normalize_source_text, split_narration_chunks
+
+    cfg = SegmentationConfig()
+    display_text = normalize_source_text(text)
+    chunks = split_narration_chunks(
+        display_text,
+        max_chars=cfg.max_chunk_chars,
+        min_chars=cfg.min_chunk_chars,
+    ) if display_text else []
+    return {
+        "source_slide_index": source_slide_index,
+        "split_index": 0,
+        "page_key": f"s{source_slide_index + 1}-p1",
+        "original_text": display_text,
+        "narration_text": display_text,
+        "subtitle_chunks": chunks,
+    }
+
+
 def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
     editor_document = dict(getattr(page, "editor_document", None) or {})
     scene = dict(editor_document.get("scene") or {})
@@ -1376,6 +1470,19 @@ def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
             scene.pop("background_mode", None)
     elif original_background_path:
         scene["original_background_path"] = original_background_path
+
+    source_background_path = _scene_storage_rel_path(slide_payload.get("source_background_path"))
+    source_background_warnings = _warning_list_from_value(slide_payload.get("source_background_warnings"))
+    if source_type == "pptx" and source_background_path:
+        scene["source_background_path"] = source_background_path
+        scene["source_background_generated"] = True
+    else:
+        scene.pop("source_background_path", None)
+        scene["source_background_generated"] = False
+    if source_background_warnings:
+        scene["source_background_warnings"] = source_background_warnings
+    elif source_type != "pptx":
+        scene.pop("source_background_warnings", None)
 
     fallback_mode = (
         "whiteboard"
@@ -1397,7 +1504,12 @@ def _scene_background_image_for_render(scene: dict[str, Any], fallback_image_pat
     mode = _scene_mode_from_value(scene.get("background_mode"), fallback="original")
     if mode == "whiteboard":
         return str(fallback_image_path or "")
-    key = "custom_background_path" if mode == "custom" else "original_background_path"
+    if mode == "custom":
+        key = "custom_background_path"
+    elif mode == "source_background":
+        key = "source_background_path"
+    else:
+        key = "original_background_path"
     raw = str(scene.get(key) or "").strip()
     if raw:
         candidate = Path(raw)
@@ -1405,6 +1517,8 @@ def _scene_background_image_for_render(scene: dict[str, Any], fallback_image_pat
             candidate = Path(STORAGE_ROOT) / raw.lstrip("/\\")
         if candidate.exists() and candidate.is_file():
             return str(candidate)
+    if mode == "source_background":
+        return ""
     return str(fallback_image_path or "")
 
 
@@ -1502,8 +1616,25 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
             scene.get("background_mode"),
             fallback="whiteboard" if bool(page.whiteboard_mode) else "original",
         )
+        if scene_mode == "source_background" and not scene.get("source_background_path"):
+            payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
+            if payload_source_background:
+                scene["source_background_path"] = payload_source_background
         render_image_path = _scene_background_image_for_render(scene, slide_payload.get("image_path") or slide_payload.get("slide_path") or "")
-        effective_whiteboard_mode = scene_mode == "whiteboard"
+        source_background_missing = scene_mode == "source_background" and not str(render_image_path or "").strip()
+        effective_whiteboard_mode = scene_mode == "whiteboard" or source_background_missing
+        source_background_warnings = list(
+            dict.fromkeys(
+                [
+                    *_warning_list_from_value(slide_payload.get("source_background_warnings")),
+                    *_warning_list_from_value(scene.get("source_background_warnings")),
+                ]
+            )
+        )
+        if source_background_missing:
+            source_background_warnings = list(
+                dict.fromkeys([*source_background_warnings, "source_background_missing_fallback_whiteboard"])
+            )
         display_text = str(page.original_text or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
         subtitle_source = str(page.narration_text or page.original_text or slide_payload.get("notes_text") or "")
         slide_payload.update(
@@ -1524,6 +1655,7 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
                 "source_type": str(slide_payload.get("source_type") or ""),
                 "whiteboard_mode": effective_whiteboard_mode,
                 "scene_background_mode": scene_mode,
+                "source_background_warnings": source_background_warnings,
                 "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
                 "scene_text_scale": _scene_text_scale_from_value(
                     scene.get("text_scale"),
@@ -1594,11 +1726,28 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
             scene.get("background_mode"),
             fallback="whiteboard" if bool(page.get("whiteboard_mode")) else "original",
         )
+        if scene_mode == "source_background" and not scene.get("source_background_path"):
+            payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
+            if payload_source_background:
+                scene["source_background_path"] = payload_source_background
         render_image_path = _scene_background_image_for_render(
             scene,
             slide_payload.get("image_path") or slide_payload.get("slide_path") or "",
         )
-        effective_whiteboard_mode = scene_mode == "whiteboard"
+        source_background_missing = scene_mode == "source_background" and not str(render_image_path or "").strip()
+        effective_whiteboard_mode = scene_mode == "whiteboard" or source_background_missing
+        source_background_warnings = list(
+            dict.fromkeys(
+                [
+                    *_warning_list_from_value(slide_payload.get("source_background_warnings")),
+                    *_warning_list_from_value(scene.get("source_background_warnings")),
+                ]
+            )
+        )
+        if source_background_missing:
+            source_background_warnings = list(
+                dict.fromkeys([*source_background_warnings, "source_background_missing_fallback_whiteboard"])
+            )
         display_text = str(page.get("original_text") or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
         narration_text = str(page.get("narration_text") or display_text)
         subtitle_chunks = list(page.get("subtitle_chunks") or ([narration_text] if narration_text else []))
@@ -1620,6 +1769,7 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
                 "source_type": str(slide_payload.get("source_type") or ""),
                 "whiteboard_mode": effective_whiteboard_mode,
                 "scene_background_mode": scene_mode,
+                "source_background_warnings": source_background_warnings,
                 "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
                 "scene_text_scale": _scene_text_scale_from_value(scene.get("text_scale"), fallback=1.0),
                 "image_path": render_image_path,
@@ -4302,7 +4452,11 @@ def export_project(
     pptx_path:  Absolute path to the source .pptx file.
     """
     try:
-        from scripts.pptx_extract import export_slide_images_with_metadata, extract_speaker_notes
+        from scripts.pptx_extract import (
+            export_pptx_source_backgrounds,
+            export_slide_images_with_metadata,
+            extract_speaker_notes,
+        )
         from scripts.text_segmentation import build_slide_page_structure
     except ImportError as exc:
         raise RuntimeError(
@@ -4321,20 +4475,45 @@ def export_project(
     image_paths = list(export_metadata.get("image_paths") or [])
     source_render_method = str(export_metadata.get("source_render_method") or "")
     source_render_warnings = list(export_metadata.get("source_render_warnings") or [])
+    source_render_details = _details_list_from_value(export_metadata.get("source_render_details"))
+    source_render_dependency_report = dict(export_metadata.get("source_render_dependency_report") or {})
     n_slides = len(image_paths)
     if n_slides == 0:
         raise ValueError(f"No slide images exported from {pptx_path!r}")
     logger.info("export_project: %d slide images exported", n_slides)
     self.update_state(state="PROGRESS", meta={"step": "images_done", "progress": 6})
 
+    source_background_paths: list[str] = []
+    source_background_warnings: list[str] = []
+    source_background_slide_warnings: list[list[str]] = []
+    source_background_details: list[dict[str, Any]] = []
+    if source_type == "pptx":
+        source_background_metadata = export_pptx_source_backgrounds(
+            pptx_path,
+            str(ws["source_backgrounds"]),
+        )
+        source_background_paths = list(source_background_metadata.get("source_background_paths") or [])
+        source_background_warnings = _warning_list_from_value(
+            source_background_metadata.get("source_background_warnings")
+        )
+        source_background_slide_warnings = [
+            _warning_list_from_value(item)
+            for item in list(source_background_metadata.get("source_background_slide_warnings") or [])
+        ]
+        source_background_details = _details_list_from_value(
+            source_background_metadata.get("source_background_details")
+        )
+
     # Extract speaker notes (one .txt per slide)
     note_paths = extract_speaker_notes(pptx_path, str(ws["notes"]))
     logger.info("export_project: %d note files extracted", len(note_paths))
     self.update_state(state="PROGRESS", meta={"step": "notes_done", "progress": 10})
 
-    # Build render descriptors with reusable long-slide splitting.
+    # Build render descriptors. Source-based visuals preserve the original
+    # slide/page count; whiteboard/text-only sources retain long-text splitting.
     slides: list[dict[str, Any]] = []
     display_index = 0
+    split_visual_pages = bool(whiteboard_mode_all or not _source_type_uses_visual_mapping(source_type))
     for idx in range(n_slides):
         slide_num = idx + 1
 
@@ -4344,8 +4523,10 @@ def export_project(
             if txt_file.exists():
                 notes_text = txt_file.read_text(encoding="utf-8").strip()
 
-        if notes_text:
+        if notes_text and split_visual_pages:
             page_items = build_slide_page_structure(idx, notes_text)
+        elif notes_text:
+            page_items = [_single_source_page_structure(idx, notes_text)]
         else:
             page_items = [
                 {
@@ -4361,6 +4542,14 @@ def export_project(
             display_index += 1
             page_text = str(page.get("original_text") or "")
             narration_text = str(page.get("narration_text") or notes_text or "")
+            clean_background_path = source_background_paths[idx] if idx < len(source_background_paths) else ""
+            clean_background_warnings = list(source_background_warnings)
+            clean_source_render_details = list(source_render_details)
+            clean_background_details = list(source_background_details)
+            if idx < len(source_background_slide_warnings):
+                clean_background_warnings = list(
+                    dict.fromkeys([*clean_background_warnings, *source_background_slide_warnings[idx]])
+                )
             slides.append({
                 "index": display_index - 1,
                 "slide_num": display_index,
@@ -4370,9 +4559,14 @@ def export_project(
                 "page_key": page.get("page_key") or f"s{slide_num}-p1",
                 "image_path": image_paths[idx],
                 "original_background_path": "" if text_only_source else image_paths[idx],
+                "source_background_path": clean_background_path,
+                "source_background_warnings": clean_background_warnings,
                 "source_type": source_type,
                 "source_render_method": source_render_method,
                 "source_render_warnings": source_render_warnings,
+                "source_render_details": clean_source_render_details,
+                "source_render_dependency_report": source_render_dependency_report,
+                "source_background_details": clean_background_details,
                 "notes_text": notes_text,
                 "original_text": page_text,
                 "display_text": page_text,
@@ -4454,7 +4648,16 @@ def synthesize_and_render_slide(
         slide_meta.get("scene_background_mode") or editor_scene.get("background_mode"),
         fallback="whiteboard" if whiteboard_mode else "original",
     )
-    effective_whiteboard_mode = scene_background_mode == "whiteboard"
+    source_background_warnings = _warning_list_from_value(
+        slide_meta.get("source_background_warnings") or editor_scene.get("source_background_warnings")
+    )
+    source_background_details = _details_list_from_value(slide_meta.get("source_background_details"))
+    source_background_missing = scene_background_mode == "source_background" and not str(image_path or "").strip()
+    if source_background_missing:
+        source_background_warnings = list(
+            dict.fromkeys([*source_background_warnings, "source_background_missing_fallback_whiteboard"])
+        )
+    effective_whiteboard_mode = scene_background_mode == "whiteboard" or source_background_missing
     scene_background_fit = _scene_fit_from_value(
         slide_meta.get("scene_background_fit") or editor_scene.get("background_fit")
     )
@@ -4517,7 +4720,22 @@ def synthesize_and_render_slide(
                 str(Path(part_out).with_suffix(".whiteboard.png")),
                 text_scale=scene_text_scale,
             )
-        elif scene_background_mode == "custom":
+        elif scene_background_mode in {"custom", "source_background"}:
+            if scene_background_mode == "source_background":
+                source_background_warnings = list(
+                    dict.fromkeys(
+                        [
+                            *source_background_warnings,
+                            *_source_background_overflow_warnings(
+                                image_path,
+                                display_text,
+                                rich_text_html,
+                                text_scale=scene_text_scale,
+                                background_fit=scene_background_fit,
+                            ),
+                        ]
+                    )
+                )
             render_image_path = _render_transcript_overlay_image(
                 image_path,
                 display_text,
@@ -4700,6 +4918,21 @@ def synthesize_and_render_slide(
 
         logger.info("  Slide %d: part video → %s", slide_num, part_out)
 
+        combined_source_render_warnings = list(
+            dict.fromkeys(
+                [
+                    *_warning_list_from_value(slide_meta.get("source_render_warnings")),
+                    *source_background_warnings,
+                ]
+            )
+        )
+        combined_source_render_details = _details_list_from_value(
+            [
+                *_details_list_from_value(slide_meta.get("source_render_details")),
+                *source_background_details,
+            ]
+        )
+
         return {
             "index":     index,
             "slide_num": slide_num,
@@ -4731,7 +4964,11 @@ def synthesize_and_render_slide(
             "whiteboard_mode": effective_whiteboard_mode,
             "scene_background_mode": scene_background_mode,
             "source_render_method": str(slide_meta.get("source_render_method") or ""),
-            "source_render_warnings": list(slide_meta.get("source_render_warnings") or []),
+            "source_render_warnings": combined_source_render_warnings,
+            "source_render_details": combined_source_render_details,
+            "source_render_dependency_report": dict(slide_meta.get("source_render_dependency_report") or {}),
+            "source_background_warnings": source_background_warnings,
+            "source_background_details": source_background_details,
             "avatar_applied": avatar_applied,
             "avatar_engine_used": avatar_engine_used,
             "avatar_fallback_chain": avatar_fallback_chain,
@@ -4886,9 +5123,11 @@ def concat_and_finalize(
                 "page_key": str(item.get("page_key") or ""),
                 "method": str(item.get("source_render_method") or ""),
                 "warnings": list(item.get("source_render_warnings") or []),
+                "details": _details_list_from_value(item.get("source_render_details")),
+                "dependency_report": dict(item.get("source_render_dependency_report") or {}),
             }
             for item in ordered
-            if item.get("source_render_method") or item.get("source_render_warnings")
+            if item.get("source_render_method") or item.get("source_render_warnings") or item.get("source_render_details")
         ]
         source_render_warnings = list(
             dict.fromkeys(
@@ -4897,6 +5136,13 @@ def concat_and_finalize(
                 for warning in list(item.get("warnings") or [])
                 if str(warning or "").strip()
             )
+        )
+        source_render_details = _details_list_from_value(
+            [
+                detail
+                for item in source_render_metadata
+                for detail in list(item.get("details") or [])
+            ]
         )
         playback_assets: dict[str, Any] = {
             "asset_id": f"{DRM_ASSET_ID_PREFIX}{project_id}",
@@ -4910,6 +5156,7 @@ def concat_and_finalize(
             "avatar": None,
             "source_render_metadata": source_render_metadata,
             "source_render_warnings": source_render_warnings,
+            "source_render_details": source_render_details,
             "slides": [
                 _safe_rel_path(STORAGE_ROOT, str(item.get("slide_path"))) if item.get("slide_path") else ""
                 for item in ordered
@@ -4994,6 +5241,8 @@ def concat_and_finalize(
                 "avatar_failure_reason": str(item.get("avatar_failure_reason") or item.get("avatar_error") or ""),
                 "source_render_method": str(item.get("source_render_method") or ""),
                 "source_render_warnings": list(item.get("source_render_warnings") or []),
+                "source_render_details": _details_list_from_value(item.get("source_render_details")),
+                "source_render_dependency_report": dict(item.get("source_render_dependency_report") or {}),
                 "pause_seconds": playback_assets["pause_durations"][idx],
                 "part_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("part_path"))),
                 "duration": float(item.get("duration") or 0.0),
