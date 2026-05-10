@@ -130,6 +130,26 @@ def test_original_mode_does_not_overlay_rich_or_edited_text(tmp_path, monkeypatc
     assert result["slide_path"] == original_image_path
 
 
+def test_original_scene_mode_wins_over_legacy_whiteboard_flag(tmp_path, monkeypatch):
+    calls = _patch_render_dependencies(monkeypatch)
+    slide_meta = _base_slide_meta(tmp_path, mode="original", whiteboard_mode=True)
+    original_image_path = slide_meta["image_path"]
+
+    result = worker_tasks.synthesize_and_render_slide.run(
+        slide_meta,
+        project_id="1",
+        voice_id="test-voice",
+        pause_sec=0.2,
+        lang_hint="auto",
+    )
+
+    assert calls["overlay"] == []
+    assert calls["whiteboard"] == []
+    assert calls["create"][0]["image_path"] == original_image_path
+    assert result["slide_path"] == original_image_path
+    assert result["whiteboard_mode"] is False
+
+
 def test_custom_mode_still_renders_transcript_overlay(tmp_path, monkeypatch):
     overlay_path = str(tmp_path / "custom-overlay.png")
     calls = _patch_render_dependencies(monkeypatch, overlay_result=overlay_path)
@@ -180,7 +200,15 @@ def test_txt_exports_default_to_whiteboard_without_original_background(tmp_path,
 
     monkeypatch.setattr(worker_tasks.export_project, "update_state", lambda *args, **kwargs: None)
     monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path / "storage"))
-    monkeypatch.setattr(pptx_extract, "export_slide_images", lambda *_args, **_kwargs: [str(slide_path)])
+    monkeypatch.setattr(
+        pptx_extract,
+        "export_slide_images_with_metadata",
+        lambda *_args, **_kwargs: {
+            "image_paths": [str(slide_path)],
+            "source_render_method": "txt_whiteboard",
+            "source_render_warnings": [],
+        },
+    )
     monkeypatch.setattr(pptx_extract, "extract_speaker_notes", lambda *_args, **_kwargs: [str(note_path)])
 
     slides = worker_tasks.export_project.run("42", str(source_path), whiteboard_mode_all=False)

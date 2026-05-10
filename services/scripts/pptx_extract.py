@@ -7,10 +7,12 @@ Supported input formats:
   - PDF   (.pdf)    — page images via pdftoppm or PyMuPDF
   - DOCX  (.docx)   — page images via LibreOffice or python-docx + Pillow
   - TXT   (.txt)    — text paragraphs rendered as images via Pillow
+  - Image (.png/.jpg/.jpeg/.webp/.gif) — single-slide image sources
 
-Public API (unchanged for backward compatibility):
-  export_slide_images(path, out_dir, resolution=1920) -> list[str]
-  extract_speaker_notes(path, out_dir)               -> list[str]
+Public API (compatible with existing callers):
+  export_slide_images(path, out_dir, resolution=1920)               -> list[str]
+  export_slide_images_with_metadata(path, out_dir, resolution=1920) -> dict
+  extract_speaker_notes(path, out_dir)                              -> list[str]
 
 Both functions dispatch on file extension so the pipeline worker can pass
 any supported file without changes.
@@ -26,7 +28,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +43,12 @@ except Exception:
     MSO_SHAPE_TYPE = None
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
 except Exception:
     Image = None
     ImageDraw = None
     ImageFont = None
+    ImageOps = None
 
 try:
     import fitz as _pymupdf  # PyMuPDF
@@ -74,7 +77,8 @@ _WHITE_1X1_PNG = (
 )
 
 # Supported file extensions
-_SUPPORTED_EXTS = {".pptx", ".pdf", ".docx", ".txt"}
+_IMAGE_SOURCE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_SUPPORTED_EXTS = {".pptx", ".pdf", ".docx", ".txt", *_IMAGE_SOURCE_EXTS}
 
 
 # ---------------------------------------------------------------------------
@@ -532,12 +536,7 @@ def _docx_split_slides(doc) -> List[str]:
 
     return slides or ["(empty document)"]
 
-def _export_docx_images(docx_path: str, out_dir: str, resolution: int = 1920) -> List[str]:
-    # LibreOffice handles DOCX the same way as PPTX
-    try:
-        return _export_via_libreoffice(docx_path, out_dir, resolution)
-    except Exception as e:
-        logger.warning("LibreOffice failed for DOCX: %s", e)
+def _export_docx_images_reconstructed(docx_path: str, out_dir: str, resolution: int = 1920) -> List[str]:
     # Attempt a richer Python-based rendering: prefer embedding any images
     # found in the DOCX; otherwise render the text onto a page-like canvas
     # (paper background + margin) instead of a bare whiteboard.
@@ -661,6 +660,15 @@ def _export_docx_images(docx_path: str, out_dir: str, resolution: int = 1920) ->
             out_paths.append(str(dst))
 
     return out_paths or [str(out_dir_p / "slide-1.png")]
+
+
+def _export_docx_images(docx_path: str, out_dir: str, resolution: int = 1920) -> List[str]:
+    # LibreOffice handles DOCX the same way as PPTX.
+    try:
+        return _export_via_libreoffice(docx_path, out_dir, resolution)
+    except Exception as e:
+        logger.warning("LibreOffice failed for DOCX: %s", e)
+    return _export_docx_images_reconstructed(docx_path, out_dir, resolution)
 
 
 def _docx_split_slides_from_text(full_text: str) -> List[str]:
@@ -787,54 +795,146 @@ def _extract_txt_text(txt_path: str, notes_dir: Path) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Image sources: one uploaded image becomes one slide
+# ---------------------------------------------------------------------------
+
+def _flatten_image_to_rgb(image) -> Any:
+    if Image is None:
+        return image
+    if ImageOps is not None:
+        try:
+            image = ImageOps.exif_transpose(image)
+        except Exception:
+            pass
+    if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in getattr(image, "info", {})):
+        rgba = image.convert("RGBA")
+        canvas = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        canvas.alpha_composite(rgba)
+        return canvas.convert("RGB")
+    return image.convert("RGB")
+
+
+def _export_image_source(source_path: str, out_dir: str) -> tuple[List[str], List[str]]:
+    if Image is None:
+        raise RuntimeError("Pillow is required for image source export")
+
+    warnings: List[str] = []
+    out_dir_p = Path(out_dir)
+    out_dir_p.mkdir(parents=True, exist_ok=True)
+    dst = out_dir_p / "slide-1.png"
+    ext = Path(source_path).suffix.lower()
+    with Image.open(source_path) as img:
+        if ext == ".gif" and bool(getattr(img, "is_animated", False)):
+            warnings.append("animated_gif_first_frame_only")
+            try:
+                img.seek(0)
+            except Exception:
+                pass
+        frame = _flatten_image_to_rgb(img.copy())
+        frame.save(dst, format="PNG")
+    return [str(dst)], warnings
+
+
+def _extract_image_text(image_path: str, notes_dir: Path) -> List[str]:
+    notes_dir.mkdir(parents=True, exist_ok=True)
+    out_path = notes_dir / "slide-1.txt"
+    text = ""
+    try:
+        from worker.ai_agents.ocr_bridge import OCRBridge
+
+        text = OCRBridge().extract_text(image_path=image_path) or ""
+    except Exception as exc:
+        logger.warning("Image OCR extraction skipped for %s: %s", image_path, exc)
+    out_path.write_text(str(text or ""), encoding="utf-8")
+    return [str(out_path)]
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def export_slide_images(source_path: str, out_dir: str, resolution: int = 1920) -> List[str]:
-    """
-    Export slide/page images from *source_path* to *out_dir*.
+def _fallback_stub_paths(source_path: str, out_dir: str, ext: str) -> List[str]:
+    try:
+        if ext == ".pptx" and Presentation is not None:
+            n = len(Presentation(source_path).slides)
+        else:
+            n = 1
+    except Exception:
+        n = 1
+    out_dir_p = Path(out_dir)
+    out_dir_p.mkdir(parents=True, exist_ok=True)
+    fallback_paths = []
+    for i in range(1, n + 1):
+        dst = out_dir_p / f"slide-{i}.png"
+        _write_stub(dst)
+        fallback_paths.append(str(dst))
+    return fallback_paths
 
-    Dispatches on file extension (.pptx/.pdf/.docx/.txt).
-    Returns list of image paths. Never raises — always returns at least one stub.
-    """
+
+def _export_metadata_payload(image_paths: List[str], *, method: str, warnings: List[str] | None = None) -> dict:
+    return {
+        "image_paths": image_paths,
+        "source_render_method": method,
+        "source_render_warnings": list(dict.fromkeys(warnings or [])),
+    }
+
+
+def export_slide_images_with_metadata(source_path: str, out_dir: str, resolution: int = 1920) -> dict:
+    """Export slide/page images and include source-render fidelity metadata."""
     _ensure_dir(out_dir)
     ext = Path(source_path).suffix.lower()
 
     try:
+        if ext in _IMAGE_SOURCE_EXTS:
+            paths, warnings = _export_image_source(source_path, out_dir)
+            return _export_metadata_payload(paths, method="image_first_frame_png", warnings=warnings)
+
         if ext == ".pdf":
-            return _export_pdf_images(source_path, out_dir, resolution)
+            return _export_metadata_payload(_export_pdf_images(source_path, out_dir, resolution), method="pdf_raster")
 
-        elif ext == ".docx":
-            return _export_docx_images(source_path, out_dir, resolution)
-
-        elif ext == ".txt":
-            return _export_txt_images(source_path, out_dir, resolution)
-
-        else:
-            # PPTX (default) — try LibreOffice first, then python-pptx
+        if ext == ".docx":
             try:
-                return _export_via_libreoffice(source_path, out_dir, resolution)
+                return _export_metadata_payload(
+                    _export_via_libreoffice(source_path, out_dir, resolution),
+                    method="libreoffice_pdf_raster",
+                )
             except Exception as e:
-                logger.warning("LibreOffice export failed, falling back to python-pptx: %s", e)
-                return _export_via_python_pptx(source_path, out_dir, resolution)
+                logger.warning("LibreOffice failed for DOCX, using reconstructed fallback: %s", e)
+                return _export_metadata_payload(
+                    _export_docx_images_reconstructed(source_path, out_dir, resolution),
+                    method="python_docx_reconstructed",
+                    warnings=["original_fidelity_reconstructed"],
+                )
+
+        if ext == ".txt":
+            return _export_metadata_payload(_export_txt_images(source_path, out_dir, resolution), method="txt_whiteboard")
+
+        try:
+            return _export_metadata_payload(
+                _export_via_libreoffice(source_path, out_dir, resolution),
+                method="libreoffice_pdf_raster",
+            )
+        except Exception as e:
+            logger.warning("LibreOffice export failed, falling back to reconstructed python-pptx: %s", e)
+            return _export_metadata_payload(
+                _export_via_python_pptx(source_path, out_dir, resolution),
+                method="python_pptx_reconstructed",
+                warnings=["original_fidelity_reconstructed"],
+            )
 
     except Exception as exc:
         logger.exception("export_slide_images failed for %s: %s", source_path, exc)
-        # Last resort: determine slide count and write white stubs
-        try:
-            if ext == ".pptx" and Presentation is not None:
-                n = len(Presentation(source_path).slides)
-            else:
-                n = 1
-        except Exception:
-            n = 1
-        out_dir_p = Path(out_dir)
-        fallback_paths = []
-        for i in range(1, n + 1):
-            dst = out_dir_p / f"slide-{i}.png"
-            _write_stub(dst)
-            fallback_paths.append(str(dst))
-        return fallback_paths
+        return _export_metadata_payload(
+            _fallback_stub_paths(source_path, out_dir, ext),
+            method="stub",
+            warnings=["source_render_stub"],
+        )
+
+
+def export_slide_images(source_path: str, out_dir: str, resolution: int = 1920) -> List[str]:
+    """Backward-compatible wrapper returning only exported image paths."""
+    metadata = export_slide_images_with_metadata(source_path, out_dir, resolution)
+    return list(metadata.get("image_paths") or [])
 
 
 def extract_speaker_notes(source_path: str, out_dir: str) -> List[str]:
@@ -849,6 +949,9 @@ def extract_speaker_notes(source_path: str, out_dir: str) -> List[str]:
     ext = Path(source_path).suffix.lower()
 
     try:
+        if ext in _IMAGE_SOURCE_EXTS:
+            return _extract_image_text(source_path, notes_dir)
+
         if ext == ".pdf":
             return _extract_pdf_text(source_path, notes_dir)
 

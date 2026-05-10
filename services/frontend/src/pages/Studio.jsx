@@ -49,7 +49,7 @@ import VideoStage from '../components/player/VideoStage';
 
 const LESSON_TABS = ['overview'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'notes', 'tts'];
-const SOURCE_TYPES_ACCEPT = '.pptx,.pdf,.docx,.txt';
+const SOURCE_TYPES_ACCEPT = '.pptx,.pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,.gif';
 const STUDIO_POLL_INTERVAL_MS = 4000;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
 const STABLE_MODERATION_STATUSES = new Set(['approved', 'admin_approved', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed']);

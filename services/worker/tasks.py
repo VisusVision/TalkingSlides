@@ -1369,6 +1369,7 @@ def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
         or slide_payload.get("image_path")
         or slide_payload.get("slide_path")
     )
+    has_original_background = bool(original_background_path)
     if is_text_only_source:
         scene.pop("original_background_path", None)
         if str(scene.get("background_mode") or "").strip().lower() == "original":
@@ -1376,7 +1377,11 @@ def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
     elif original_background_path:
         scene["original_background_path"] = original_background_path
 
-    fallback_mode = "whiteboard" if bool(is_text_only_source or getattr(page, "whiteboard_mode", False) or slide_payload.get("whiteboard_mode")) else "original"
+    fallback_mode = (
+        "whiteboard"
+        if bool(is_text_only_source or getattr(page, "whiteboard_mode", False) or slide_payload.get("whiteboard_mode"))
+        else ("original" if has_original_background else "whiteboard")
+    )
     mode = _scene_mode_from_value(scene.get("background_mode"), fallback=fallback_mode)
     scene["background_mode"] = mode
     scene["background_fit"] = _scene_fit_from_value(scene.get("background_fit"))
@@ -4297,7 +4302,7 @@ def export_project(
     pptx_path:  Absolute path to the source .pptx file.
     """
     try:
-        from scripts.pptx_extract import export_slide_images, extract_speaker_notes
+        from scripts.pptx_extract import export_slide_images_with_metadata, extract_speaker_notes
         from scripts.text_segmentation import build_slide_page_structure
     except ImportError as exc:
         raise RuntimeError(
@@ -4312,7 +4317,10 @@ def export_project(
     text_only_source = source_type == "txt"
 
     # Export slide images (PNG)
-    image_paths = export_slide_images(pptx_path, str(ws["images"]))
+    export_metadata = export_slide_images_with_metadata(pptx_path, str(ws["images"]))
+    image_paths = list(export_metadata.get("image_paths") or [])
+    source_render_method = str(export_metadata.get("source_render_method") or "")
+    source_render_warnings = list(export_metadata.get("source_render_warnings") or [])
     n_slides = len(image_paths)
     if n_slides == 0:
         raise ValueError(f"No slide images exported from {pptx_path!r}")
@@ -4363,6 +4371,8 @@ def export_project(
                 "image_path": image_paths[idx],
                 "original_background_path": "" if text_only_source else image_paths[idx],
                 "source_type": source_type,
+                "source_render_method": source_render_method,
+                "source_render_warnings": source_render_warnings,
                 "notes_text": notes_text,
                 "original_text": page_text,
                 "display_text": page_text,
@@ -4444,6 +4454,7 @@ def synthesize_and_render_slide(
         slide_meta.get("scene_background_mode") or editor_scene.get("background_mode"),
         fallback="whiteboard" if whiteboard_mode else "original",
     )
+    effective_whiteboard_mode = scene_background_mode == "whiteboard"
     scene_background_fit = _scene_fit_from_value(
         slide_meta.get("scene_background_fit") or editor_scene.get("background_fit")
     )
@@ -4500,7 +4511,7 @@ def synthesize_and_render_slide(
         avatar_state["composite_fallback_allowed"] = bool(avatar_state.get("composite_fallback_allowed", False))
         avatar_required = bool(avatar_state.get("enabled"))
 
-        if whiteboard_mode:
+        if effective_whiteboard_mode:
             render_image_path = _make_whiteboard_image(
                 display_text or original_text,
                 str(Path(part_out).with_suffix(".whiteboard.png")),
@@ -4717,7 +4728,10 @@ def synthesize_and_render_slide(
             "slide_path": render_image_path,
             "tts_audio_path": audio_out,
             "subtitle_chunks": subtitle_chunks or [notes_text_prepared],
-            "whiteboard_mode": whiteboard_mode,
+            "whiteboard_mode": effective_whiteboard_mode,
+            "scene_background_mode": scene_background_mode,
+            "source_render_method": str(slide_meta.get("source_render_method") or ""),
+            "source_render_warnings": list(slide_meta.get("source_render_warnings") or []),
             "avatar_applied": avatar_applied,
             "avatar_engine_used": avatar_engine_used,
             "avatar_fallback_chain": avatar_fallback_chain,
@@ -4865,6 +4879,25 @@ def concat_and_finalize(
 
         generate_vtt_from_cues(subtitle_cues, vtt_path)
         logger.info("WebVTT written → %s", vtt_path)
+        source_render_metadata = [
+            {
+                "index": int(item.get("index") or 0),
+                "slide_num": int(item.get("slide_num") or 0),
+                "page_key": str(item.get("page_key") or ""),
+                "method": str(item.get("source_render_method") or ""),
+                "warnings": list(item.get("source_render_warnings") or []),
+            }
+            for item in ordered
+            if item.get("source_render_method") or item.get("source_render_warnings")
+        ]
+        source_render_warnings = list(
+            dict.fromkeys(
+                warning
+                for item in source_render_metadata
+                for warning in list(item.get("warnings") or [])
+                if str(warning or "").strip()
+            )
+        )
         playback_assets: dict[str, Any] = {
             "asset_id": f"{DRM_ASSET_ID_PREFIX}{project_id}",
             "content_id": f"{DRM_CONTENT_ID_PREFIX}{project_id}",
@@ -4875,6 +4908,8 @@ def concat_and_finalize(
             "timeline": page_timeline,
             "hls": None,
             "avatar": None,
+            "source_render_metadata": source_render_metadata,
+            "source_render_warnings": source_render_warnings,
             "slides": [
                 _safe_rel_path(STORAGE_ROOT, str(item.get("slide_path"))) if item.get("slide_path") else ""
                 for item in ordered
@@ -4957,6 +4992,8 @@ def concat_and_finalize(
                 "avatar_status": str(item.get("avatar_status") or ("avatar_failed" if item.get("avatar_failed") else ("ready" if item.get("avatar_applied") else "none"))),
                 "avatar_error": str(item.get("avatar_error") or item.get("avatar_failure_reason") or ""),
                 "avatar_failure_reason": str(item.get("avatar_failure_reason") or item.get("avatar_error") or ""),
+                "source_render_method": str(item.get("source_render_method") or ""),
+                "source_render_warnings": list(item.get("source_render_warnings") or []),
                 "pause_seconds": playback_assets["pause_durations"][idx],
                 "part_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("part_path"))),
                 "duration": float(item.get("duration") or 0.0),
@@ -5035,6 +5072,14 @@ def concat_and_finalize(
                 avatar_options=avatar_options,
                 output_rel_prefix=output_rel_prefix,
             )
+        render_warning_message = ""
+        if source_render_warnings:
+            render_warning_message = "source_render_warnings:" + ";".join(source_render_warnings)
+            logger.warning(
+                "Lesson finalized with source render warnings project=%s warnings=%s",
+                project_id,
+                json.dumps(source_render_warnings, ensure_ascii=True),
+            )
         avatar_warning_message = ""
         if avatar_failures:
             compact_failures = []
@@ -5050,6 +5095,9 @@ def concat_and_finalize(
                 playback_assets["avatar_status"],
                 json.dumps(avatar_failures, ensure_ascii=True, sort_keys=True),
             )
+        completion_warning_message = "; ".join(
+            warning for warning in [render_warning_message, avatar_warning_message] if warning
+        )
 
         # Mark the Job as done and record relative file paths
         _update_job(
@@ -5058,7 +5106,7 @@ def concat_and_finalize(
             progress=100,
             result_url=result_url_rel,
             srt_url=srt_url_rel,
-            error_message=avatar_warning_message,
+            error_message=completion_warning_message,
         )
         _mark_project_ready_after_successful_render(project_id)
         try:
@@ -5096,6 +5144,7 @@ def concat_and_finalize(
             "avatar_failures": avatar_failures,
             "avatar_status": playback_assets["avatar_status"],
             "background_avatar": background_avatar,
+            "source_render_warnings": source_render_warnings,
             "n_slides":    len(ordered),
         }
 
