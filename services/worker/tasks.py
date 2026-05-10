@@ -1402,6 +1402,37 @@ def _warning_list_from_value(value: Any) -> list[str]:
     return list(dict.fromkeys(str(item).strip() for item in items if str(item or "").strip()))
 
 
+def _details_list_from_value(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    elif value:
+        items = [{"message": str(value)}]
+    else:
+        items = []
+
+    details: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if isinstance(item, dict):
+            cleaned = {str(key): item[key] for key in item if str(key or "").strip()}
+        else:
+            cleaned = {"message": str(item)}
+        if not cleaned:
+            continue
+        try:
+            dedupe_key = json.dumps(cleaned, sort_keys=True, ensure_ascii=True, default=str)
+        except TypeError:
+            cleaned = {key: str(val) for key, val in cleaned.items()}
+            dedupe_key = json.dumps(cleaned, sort_keys=True, ensure_ascii=True)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        details.append(cleaned)
+    return details
+
+
 def _single_source_page_structure(source_slide_index: int, text: str) -> dict[str, Any]:
     from scripts.text_segmentation import SegmentationConfig, normalize_source_text, split_narration_chunks
 
@@ -4444,6 +4475,7 @@ def export_project(
     image_paths = list(export_metadata.get("image_paths") or [])
     source_render_method = str(export_metadata.get("source_render_method") or "")
     source_render_warnings = list(export_metadata.get("source_render_warnings") or [])
+    source_render_details = _details_list_from_value(export_metadata.get("source_render_details"))
     source_render_dependency_report = dict(export_metadata.get("source_render_dependency_report") or {})
     n_slides = len(image_paths)
     if n_slides == 0:
@@ -4454,6 +4486,7 @@ def export_project(
     source_background_paths: list[str] = []
     source_background_warnings: list[str] = []
     source_background_slide_warnings: list[list[str]] = []
+    source_background_details: list[dict[str, Any]] = []
     if source_type == "pptx":
         source_background_metadata = export_pptx_source_backgrounds(
             pptx_path,
@@ -4467,6 +4500,9 @@ def export_project(
             _warning_list_from_value(item)
             for item in list(source_background_metadata.get("source_background_slide_warnings") or [])
         ]
+        source_background_details = _details_list_from_value(
+            source_background_metadata.get("source_background_details")
+        )
 
     # Extract speaker notes (one .txt per slide)
     note_paths = extract_speaker_notes(pptx_path, str(ws["notes"]))
@@ -4508,6 +4544,8 @@ def export_project(
             narration_text = str(page.get("narration_text") or notes_text or "")
             clean_background_path = source_background_paths[idx] if idx < len(source_background_paths) else ""
             clean_background_warnings = list(source_background_warnings)
+            clean_source_render_details = list(source_render_details)
+            clean_background_details = list(source_background_details)
             if idx < len(source_background_slide_warnings):
                 clean_background_warnings = list(
                     dict.fromkeys([*clean_background_warnings, *source_background_slide_warnings[idx]])
@@ -4526,7 +4564,9 @@ def export_project(
                 "source_type": source_type,
                 "source_render_method": source_render_method,
                 "source_render_warnings": source_render_warnings,
+                "source_render_details": clean_source_render_details,
                 "source_render_dependency_report": source_render_dependency_report,
+                "source_background_details": clean_background_details,
                 "notes_text": notes_text,
                 "original_text": page_text,
                 "display_text": page_text,
@@ -4611,6 +4651,7 @@ def synthesize_and_render_slide(
     source_background_warnings = _warning_list_from_value(
         slide_meta.get("source_background_warnings") or editor_scene.get("source_background_warnings")
     )
+    source_background_details = _details_list_from_value(slide_meta.get("source_background_details"))
     source_background_missing = scene_background_mode == "source_background" and not str(image_path or "").strip()
     if source_background_missing:
         source_background_warnings = list(
@@ -4885,6 +4926,12 @@ def synthesize_and_render_slide(
                 ]
             )
         )
+        combined_source_render_details = _details_list_from_value(
+            [
+                *_details_list_from_value(slide_meta.get("source_render_details")),
+                *source_background_details,
+            ]
+        )
 
         return {
             "index":     index,
@@ -4918,8 +4965,10 @@ def synthesize_and_render_slide(
             "scene_background_mode": scene_background_mode,
             "source_render_method": str(slide_meta.get("source_render_method") or ""),
             "source_render_warnings": combined_source_render_warnings,
+            "source_render_details": combined_source_render_details,
             "source_render_dependency_report": dict(slide_meta.get("source_render_dependency_report") or {}),
             "source_background_warnings": source_background_warnings,
+            "source_background_details": source_background_details,
             "avatar_applied": avatar_applied,
             "avatar_engine_used": avatar_engine_used,
             "avatar_fallback_chain": avatar_fallback_chain,
@@ -5074,10 +5123,11 @@ def concat_and_finalize(
                 "page_key": str(item.get("page_key") or ""),
                 "method": str(item.get("source_render_method") or ""),
                 "warnings": list(item.get("source_render_warnings") or []),
+                "details": _details_list_from_value(item.get("source_render_details")),
                 "dependency_report": dict(item.get("source_render_dependency_report") or {}),
             }
             for item in ordered
-            if item.get("source_render_method") or item.get("source_render_warnings")
+            if item.get("source_render_method") or item.get("source_render_warnings") or item.get("source_render_details")
         ]
         source_render_warnings = list(
             dict.fromkeys(
@@ -5086,6 +5136,13 @@ def concat_and_finalize(
                 for warning in list(item.get("warnings") or [])
                 if str(warning or "").strip()
             )
+        )
+        source_render_details = _details_list_from_value(
+            [
+                detail
+                for item in source_render_metadata
+                for detail in list(item.get("details") or [])
+            ]
         )
         playback_assets: dict[str, Any] = {
             "asset_id": f"{DRM_ASSET_ID_PREFIX}{project_id}",
@@ -5099,6 +5156,7 @@ def concat_and_finalize(
             "avatar": None,
             "source_render_metadata": source_render_metadata,
             "source_render_warnings": source_render_warnings,
+            "source_render_details": source_render_details,
             "slides": [
                 _safe_rel_path(STORAGE_ROOT, str(item.get("slide_path"))) if item.get("slide_path") else ""
                 for item in ordered
@@ -5183,6 +5241,7 @@ def concat_and_finalize(
                 "avatar_failure_reason": str(item.get("avatar_failure_reason") or item.get("avatar_error") or ""),
                 "source_render_method": str(item.get("source_render_method") or ""),
                 "source_render_warnings": list(item.get("source_render_warnings") or []),
+                "source_render_details": _details_list_from_value(item.get("source_render_details")),
                 "source_render_dependency_report": dict(item.get("source_render_dependency_report") or {}),
                 "pause_seconds": playback_assets["pause_durations"][idx],
                 "part_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("part_path"))),

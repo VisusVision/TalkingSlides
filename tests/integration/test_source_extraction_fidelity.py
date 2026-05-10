@@ -393,7 +393,14 @@ def test_reconstructed_office_export_records_fidelity_warning(tmp_path, monkeypa
     source_path.write_bytes(b"fake pptx")
 
     def fail_libreoffice(*_args, **_kwargs):
-        raise RuntimeError("libreoffice unavailable")
+        raise pptx_extract.LibreOfficeExportError(
+            "libreoffice unavailable",
+            warning_code="libreoffice_export_no_output_pdf",
+            details={
+                "warning_code": "libreoffice_export_no_output_pdf",
+                "actual_output_files": ["conversion.log (12 bytes)"],
+            },
+        )
 
     def fake_python_pptx(_source_path: str, out_dir: str, _resolution: int = 1920) -> list[str]:
         return [str(_write_png(Path(out_dir) / "slide-1.png"))]
@@ -404,7 +411,10 @@ def test_reconstructed_office_export_records_fidelity_warning(tmp_path, monkeypa
     metadata = pptx_extract.export_slide_images_with_metadata(str(source_path), str(tmp_path / "images"))
 
     assert metadata["source_render_method"] == "python_pptx_reconstructed"
+    assert "libreoffice_export_failed" in metadata["source_render_warnings"]
+    assert "libreoffice_export_no_output_pdf" in metadata["source_render_warnings"]
     assert "original_fidelity_reconstructed" in metadata["source_render_warnings"]
+    assert metadata["source_render_details"][0]["actual_output_files"] == ["conversion.log (12 bytes)"]
     assert metadata["image_paths"][0].endswith("slide-1.png")
 
 
@@ -549,6 +559,10 @@ def test_pptx_source_background_text_hiding_preserves_pictures_and_original(tmp_
 
 
 def test_source_render_dependency_warnings_surface_missing_tools(monkeypatch):
+    for env_name in pptx_extract._LIBREOFFICE_CONFIG_ENV_VARS:
+        monkeypatch.delenv(env_name, raising=False)
+    monkeypatch.delenv("PROGRAMFILES", raising=False)
+    monkeypatch.delenv("PROGRAMFILES(X86)", raising=False)
     monkeypatch.setattr(pptx_extract.shutil, "which", lambda _name: None)
 
     warnings = pptx_extract.source_render_dependency_warnings(".pptx")
@@ -560,6 +574,93 @@ def test_source_render_dependency_warnings_surface_missing_tools(monkeypatch):
     assert report["pdftoppm_available"] is False
     assert "pymupdf_available" in report
     assert "python_pptx_available" in report
+
+
+def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+    out_dir = tmp_path / "lo-out"
+    out_dir.mkdir()
+    (out_dir / "conversion.log").write_text("debug", encoding="utf-8")
+
+    def fake_run(cmd, **_kwargs):
+        return pptx_extract.subprocess.CompletedProcess(
+            cmd,
+            23,
+            stdout="stdout-prefix-" + ("o" * 1400),
+            stderr="stderr-prefix-" + ("e" * 1400),
+        )
+
+    monkeypatch.setattr(
+        pptx_extract,
+        "_find_soffice_executable",
+        lambda: r"C:\Program Files\LibreOffice\program\soffice.exe",
+    )
+    monkeypatch.setattr(pptx_extract.subprocess, "run", fake_run)
+
+    with pytest.raises(pptx_extract.LibreOfficeExportError) as raised:
+        pptx_extract._convert_via_libreoffice_to_pdf(str(source_path), out_dir)
+
+    exc = raised.value
+    assert exc.warnings == ["libreoffice_export_failed", "libreoffice_export_return_code_nonzero"]
+    details = exc.details
+    assert details["warning_code"] == "libreoffice_export_return_code_nonzero"
+    assert details["return_code"] == 23
+    assert "soffice.exe" in details["command"]
+    assert "--headless" in details["command"]
+    assert "-env:UserInstallation=file:" in details["command"]
+    assert details["stdout_tail"].endswith("o" * 1200)
+    assert details["stderr_tail"].endswith("e" * 1200)
+    assert details["expected_output_path"].endswith("lesson.pdf")
+    assert any("conversion.log" in item for item in details["actual_output_files"])
+    assert details["input_path"] == str(source_path.resolve())
+    assert details["output_directory"] == str(out_dir.resolve())
+    assert details["working_directory"] == str(tmp_path.resolve())
+
+
+def test_libreoffice_missing_output_pdf_records_outdir_files(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+    out_dir = tmp_path / "lo-out"
+    out_dir.mkdir()
+    (out_dir / "notes.txt").write_text("not a pdf", encoding="utf-8")
+
+    def fake_run(cmd, **_kwargs):
+        return pptx_extract.subprocess.CompletedProcess(cmd, 0, stdout="converted", stderr="")
+
+    monkeypatch.setattr(pptx_extract, "_find_soffice_executable", lambda: "soffice")
+    monkeypatch.setattr(pptx_extract.subprocess, "run", fake_run)
+
+    with pytest.raises(pptx_extract.LibreOfficeExportError) as raised:
+        pptx_extract._convert_via_libreoffice_to_pdf(str(source_path), out_dir)
+
+    exc = raised.value
+    assert "libreoffice_export_no_output_pdf" in exc.warnings
+    assert exc.details["warning_code"] == "libreoffice_export_no_output_pdf"
+    assert exc.details["return_code"] == 0
+    assert any("notes.txt" in item for item in exc.details["actual_output_files"])
+
+
+def test_libreoffice_empty_output_pdf_records_output_not_found(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+    out_dir = tmp_path / "lo-out"
+    out_dir.mkdir()
+
+    def fake_run(cmd, **_kwargs):
+        (out_dir / "lesson.pdf").write_bytes(b"")
+        return pptx_extract.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(pptx_extract, "_find_soffice_executable", lambda: "soffice")
+    monkeypatch.setattr(pptx_extract.subprocess, "run", fake_run)
+
+    with pytest.raises(pptx_extract.LibreOfficeExportError) as raised:
+        pptx_extract._convert_via_libreoffice_to_pdf(str(source_path), out_dir)
+
+    exc = raised.value
+    assert "libreoffice_export_output_not_found" in exc.warnings
+    assert exc.details["warning_code"] == "libreoffice_export_output_not_found"
+    assert any("lesson.pdf (0 bytes)" in item for item in exc.details["actual_output_files"])
 
 
 def test_pptx_source_background_uses_reconstructed_fallback_when_libreoffice_fails(tmp_path, monkeypatch):
@@ -576,7 +677,14 @@ def test_pptx_source_background_uses_reconstructed_fallback_when_libreoffice_fai
     prs.save(source_path)
 
     def fail_libreoffice(*_args, **_kwargs):
-        raise RuntimeError("libreoffice missing")
+        raise pptx_extract.LibreOfficeExportError(
+            "libreoffice missing",
+            warning_code="libreoffice_export_no_output_pdf",
+            details={
+                "warning_code": "libreoffice_export_no_output_pdf",
+                "actual_output_files": ["notes.txt (9 bytes)"],
+            },
+        )
 
     def fake_python_pptx(_source_path: str, output_dir: str, _resolution: int = 1920) -> list[str]:
         return [str(_write_png(Path(output_dir) / "slide-1.png"))]
@@ -588,7 +696,10 @@ def test_pptx_source_background_uses_reconstructed_fallback_when_libreoffice_fai
 
     assert len(metadata["source_background_paths"]) == 1
     assert metadata["source_background_render_method"] == "python_pptx_reconstructed"
+    assert "libreoffice_export_failed" in metadata["source_background_warnings"]
+    assert "libreoffice_export_no_output_pdf" in metadata["source_background_warnings"]
     assert "source_background_reconstructed" in metadata["source_background_warnings"]
+    assert metadata["source_background_details"][0]["actual_output_files"] == ["notes.txt (9 bytes)"]
     assert "source_background_generation_failed" not in metadata["source_background_warnings"]
 
 
@@ -621,6 +732,7 @@ def test_export_project_includes_pptx_source_background_metadata(tmp_path, monke
             "image_paths": [str(_write_png(Path(out_dir) / "slide-1.png"))],
             "source_render_method": "libreoffice_pdf_raster",
             "source_render_warnings": [],
+            "source_render_details": [{"warning_code": "original_detail"}],
         }
 
     def fake_source_backgrounds(_source_path: str, out_dir: str) -> dict:
@@ -628,6 +740,7 @@ def test_export_project_includes_pptx_source_background_metadata(tmp_path, monke
             "source_background_paths": [str(_write_png(Path(out_dir) / "slide-1.png"))],
             "source_background_warnings": ["source_background_text_removed"],
             "source_background_slide_warnings": [["source_background_table_text_skipped"]],
+            "source_background_details": [{"warning_code": "source_background_detail"}],
         }
 
     def fake_extract_speaker_notes(_source_path: str, out_dir: str) -> list[str]:
@@ -649,4 +762,6 @@ def test_export_project_includes_pptx_source_background_metadata(tmp_path, monke
         "source_background_text_removed",
         "source_background_table_text_skipped",
     ]
+    assert slides[0]["source_render_details"] == [{"warning_code": "original_detail"}]
+    assert slides[0]["source_background_details"] == [{"warning_code": "source_background_detail"}]
     assert slides[0]["whiteboard_mode"] is False

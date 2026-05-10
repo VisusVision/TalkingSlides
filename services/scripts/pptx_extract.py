@@ -64,8 +64,31 @@ except Exception:
     _DocxDocument = None
     _HAVE_DOCX = False
 
-# Path for LibreOffice per-process user profile.
-_LO_USER_INSTALLATION = os.environ.get("LO_USER_INSTALLATION", "/tmp/lo_user")
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+_LIBREOFFICE_EXPORT_TIMEOUT_SECONDS = _env_int("LIBREOFFICE_EXPORT_TIMEOUT_SECONDS", 120)
+_LIBREOFFICE_STDIO_TAIL_CHARS = 1200
+_LIBREOFFICE_MAX_LISTED_OUTPUT_FILES = 50
+_LIBREOFFICE_CONFIG_ENV_VARS = ("SOFFICE_PATH", "LIBREOFFICE_PATH", "LIBREOFFICE_EXECUTABLE")
+
+
+class LibreOfficeExportError(RuntimeError):
+    """Raised when the LibreOffice conversion step fails with diagnostic metadata."""
+
+    def __init__(self, message: str, *, warning_code: str, details: dict[str, Any] | None = None):
+        warnings = ["libreoffice_export_failed"]
+        if warning_code and warning_code not in warnings:
+            warnings.append(warning_code)
+        self.warning_code = warning_code
+        self.warnings = warnings
+        self.details = dict(details or {})
+        self.details.setdefault("warning_code", warning_code)
+        super().__init__(message)
 
 # Minimal 1×1 white PNG bytes (used as last-resort stub)
 _WHITE_1X1_PNG = (
@@ -103,14 +126,144 @@ def _safe_replace(src: Path, dst: Path) -> None:
             pass
 
 
-def _run(cmd: List[str], check=True, capture=False):
+def _tail_text(value: Any, limit: int = _LIBREOFFICE_STDIO_TAIL_CHARS) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        text = value.decode("utf-8", errors="replace")
+    else:
+        text = str(value)
+    return text[-limit:] if len(text) > limit else text
+
+
+def _command_text(cmd: List[str]) -> str:
+    return subprocess.list2cmdline([str(part) for part in cmd])
+
+
+def _find_soffice_executable() -> str | None:
+    for env_name in _LIBREOFFICE_CONFIG_ENV_VARS:
+        configured = os.environ.get(env_name)
+        if configured and Path(configured).exists():
+            return configured
+    for name in ("soffice", "libreoffice"):
+        found = shutil.which(name)
+        if found:
+            return found
+    if os.name == "nt":
+        for root in (os.environ.get("PROGRAMFILES"), os.environ.get("PROGRAMFILES(X86)")):
+            if not root:
+                continue
+            candidate = Path(root) / "LibreOffice" / "program" / "soffice.exe"
+            if candidate.exists():
+                return str(candidate)
+    return None
+
+
+def _listed_output_files(out_dir: Path) -> list[str]:
+    if not out_dir.exists():
+        return []
+    files: list[str] = []
+    try:
+        entries = sorted(out_dir.iterdir(), key=lambda p: p.name.lower())
+    except OSError:
+        return []
+    for path in entries[:_LIBREOFFICE_MAX_LISTED_OUTPUT_FILES]:
+        try:
+            if path.is_file():
+                files.append(f"{path.name} ({path.stat().st_size} bytes)")
+            elif path.is_dir():
+                files.append(f"{path.name}/")
+            else:
+                files.append(path.name)
+        except OSError:
+            files.append(path.name)
+    if len(entries) > _LIBREOFFICE_MAX_LISTED_OUTPUT_FILES:
+        files.append(f"... {len(entries) - _LIBREOFFICE_MAX_LISTED_OUTPUT_FILES} more")
+    return files
+
+
+def _libreoffice_details(
+    *,
+    cmd: List[str],
+    source_path: Path,
+    out_dir: Path,
+    expected_pdf: Path,
+    cwd: Path,
+    profile_dir: Path | None = None,
+    return_code: int | None = None,
+    stdout: Any = "",
+    stderr: Any = "",
+) -> dict[str, Any]:
+    details = {
+        "command": _command_text(cmd),
+        "return_code": return_code,
+        "stdout_tail": _tail_text(stdout),
+        "stderr_tail": _tail_text(stderr),
+        "expected_output_path": str(expected_pdf),
+        "actual_output_files": _listed_output_files(out_dir),
+        "working_directory": str(cwd),
+        "input_path": str(source_path),
+        "output_directory": str(out_dir),
+    }
+    if profile_dir is not None:
+        details["user_profile_path"] = str(profile_dir)
+    return details
+
+
+def _pdf_output_candidates(out_dir: Path) -> list[Path]:
+    if not out_dir.exists():
+        return []
+    try:
+        return [path for path in out_dir.iterdir() if path.is_file() and path.suffix.lower() == ".pdf"]
+    except OSError:
+        return []
+
+
+def _select_libreoffice_pdf_output(source_path: Path, out_dir: Path) -> Path | None:
+    candidates = _pdf_output_candidates(out_dir)
+    valid = [path for path in candidates if path.exists() and path.stat().st_size > 0]
+    if not valid:
+        return None
+    matching = [path for path in valid if path.stem.lower() == source_path.stem.lower()]
+    selected_pool = matching or valid
+    return max(selected_pool, key=lambda path: path.stat().st_mtime)
+
+
+def _libreoffice_failure_warnings(exc: Exception) -> List[str]:
+    warnings = getattr(exc, "warnings", None)
+    if isinstance(warnings, list) and warnings:
+        return list(dict.fromkeys(str(item) for item in warnings if str(item or "").strip()))
+    return ["libreoffice_export_failed"]
+
+
+def _libreoffice_failure_details(exc: Exception) -> list[dict[str, Any]]:
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict) and details:
+        return [details]
+    return [
+        {
+            "warning_code": "libreoffice_export_failed",
+            "message": _tail_text(str(exc), 500),
+        }
+    ]
+
+
+def _run(cmd: List[str], check=True, capture=False, timeout: int | None = None, cwd: str | Path | None = None):
     logger.debug("Running: %s", " ".join(cmd))
-    proc = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
-        text=True,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd) if cwd is not None else None,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Command timed out: {' '.join(cmd)}\n"
+            f"stdout: {_tail_text(exc.stdout)}\nstderr: {_tail_text(exc.stderr)}"
+        ) from exc
     if check and proc.returncode != 0:
         raise RuntimeError(
             f"Command failed ({proc.returncode}): {' '.join(cmd)}\n"
@@ -121,7 +274,7 @@ def _run(cmd: List[str], check=True, capture=False):
 
 def source_render_dependency_report() -> dict:
     return {
-        "libreoffice_available": bool(shutil.which("soffice") or shutil.which("libreoffice")),
+        "libreoffice_available": bool(_find_soffice_executable()),
         "pdftoppm_available": bool(shutil.which("pdftoppm")),
         "pymupdf_available": bool(_HAVE_PYMUPDF),
         "python_pptx_available": bool(Presentation is not None),
@@ -143,23 +296,133 @@ def source_render_dependency_warnings(source_ext: str | None = None) -> List[str
 
 def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
     """Convert an office document to PDF in *out_dir* and return the PDF path."""
+    source = Path(source_path).resolve()
+    out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
-    lo_cmd = [
-        "soffice", "--headless",
-        f"-env:UserInstallation=file://{_LO_USER_INSTALLATION}",
-        "--convert-to", "pdf",
-        "--outdir", str(out_dir),
-        source_path,
-    ]
-    _run(lo_cmd)
+    expected_pdf = out_dir / f"{source.stem}.pdf"
+    cwd = source.parent if source.parent.exists() else Path.cwd()
+    soffice = _find_soffice_executable()
+    if not soffice:
+        cmd = [
+            "soffice", "--headless", "--nologo", "--nofirststartwizard",
+            "--nolockcheck", "--nodefault", "--convert-to", "pdf",
+            "--outdir", str(out_dir), str(source),
+        ]
+        details = _libreoffice_details(
+            cmd=cmd,
+            source_path=source,
+            out_dir=out_dir,
+            expected_pdf=expected_pdf,
+            cwd=cwd,
+            stderr="LibreOffice executable was not found.",
+        )
+        raise LibreOfficeExportError(
+            "LibreOffice executable was not found",
+            warning_code="libreoffice_export_failed",
+            details=details,
+        )
 
-    candidates = sorted(out_dir.glob("*.pdf")) + sorted(out_dir.glob("*.PDF"))
-    stem_pdf = out_dir / f"{Path(source_path).stem}.pdf"
-    if stem_pdf.exists() and stem_pdf not in candidates:
-        candidates.insert(0, stem_pdf)
-    if not candidates:
-        raise RuntimeError("LibreOffice produced no PDF")
-    return candidates[0]
+    with tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_tmp:
+        profile_dir = Path(profile_tmp).resolve()
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        lo_cmd = [
+            soffice,
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--nolockcheck",
+            "--nodefault",
+            f"-env:UserInstallation={profile_dir.as_uri()}",
+            "--convert-to",
+            "pdf",
+            "--outdir",
+            str(out_dir),
+            str(source),
+        ]
+        try:
+            proc = subprocess.run(
+                lo_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=_LIBREOFFICE_EXPORT_TIMEOUT_SECONDS,
+                cwd=str(cwd),
+            )
+        except subprocess.TimeoutExpired as exc:
+            details = _libreoffice_details(
+                cmd=lo_cmd,
+                source_path=source,
+                out_dir=out_dir,
+                expected_pdf=expected_pdf,
+                cwd=cwd,
+                profile_dir=profile_dir,
+                stdout=exc.stdout,
+                stderr=exc.stderr,
+            )
+            raise LibreOfficeExportError(
+                "LibreOffice export timed out",
+                warning_code="libreoffice_export_timeout",
+                details=details,
+            ) from exc
+        except OSError as exc:
+            details = _libreoffice_details(
+                cmd=lo_cmd,
+                source_path=source,
+                out_dir=out_dir,
+                expected_pdf=expected_pdf,
+                cwd=cwd,
+                profile_dir=profile_dir,
+                stderr=str(exc),
+            )
+            raise LibreOfficeExportError(
+                "LibreOffice export failed before conversion completed",
+                warning_code="libreoffice_export_failed",
+                details=details,
+            ) from exc
+
+        if proc.returncode != 0:
+            details = _libreoffice_details(
+                cmd=lo_cmd,
+                source_path=source,
+                out_dir=out_dir,
+                expected_pdf=expected_pdf,
+                cwd=cwd,
+                profile_dir=profile_dir,
+                return_code=proc.returncode,
+                stdout=proc.stdout,
+                stderr=proc.stderr,
+            )
+            raise LibreOfficeExportError(
+                "LibreOffice export returned a non-zero exit code",
+                warning_code="libreoffice_export_return_code_nonzero",
+                details=details,
+            )
+
+        selected_pdf = _select_libreoffice_pdf_output(source, out_dir)
+        if selected_pdf and selected_pdf.exists() and selected_pdf.stat().st_size > 0:
+            return selected_pdf
+
+        warning_code = (
+            "libreoffice_export_no_output_pdf"
+            if not _pdf_output_candidates(out_dir)
+            else "libreoffice_export_output_not_found"
+        )
+        details = _libreoffice_details(
+            cmd=lo_cmd,
+            source_path=source,
+            out_dir=out_dir,
+            expected_pdf=expected_pdf,
+            cwd=cwd,
+            profile_dir=profile_dir,
+            return_code=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+        raise LibreOfficeExportError(
+            "LibreOffice export did not produce a usable PDF",
+            warning_code=warning_code,
+            details=details,
+        )
 
 
 def _write_stub(path: Path) -> None:
@@ -535,6 +798,7 @@ def export_pptx_source_backgrounds(source_path: str, out_dir: str, resolution: i
             "source_background_paths": [],
             "source_background_warnings": [],
             "source_background_slide_warnings": [],
+            "source_background_details": [],
             "source_background_dependency_report": dependency_report,
         }
 
@@ -545,6 +809,7 @@ def export_pptx_source_backgrounds(source_path: str, out_dir: str, resolution: i
             strip_result = _strip_text_from_pptx_copy(source_path, str(cleaned_path))
             slide_warnings = list(strip_result.get("slide_warnings") or [])
             warnings = list(dict.fromkeys([*dependency_warnings, *list(strip_result.get("warnings") or [])]))
+            details: list[dict[str, Any]] = []
             try:
                 paths = _export_via_libreoffice(str(cleaned_path), out_dir, resolution)
                 render_method = "libreoffice_pdf_raster"
@@ -556,12 +821,22 @@ def export_pptx_source_backgrounds(source_path: str, out_dir: str, resolution: i
                 )
                 paths = _export_via_python_pptx(str(cleaned_path), out_dir, resolution)
                 render_method = "python_pptx_reconstructed"
-                warnings = list(dict.fromkeys([*warnings, "source_background_reconstructed"]))
+                details.extend(_libreoffice_failure_details(exc))
+                warnings = list(
+                    dict.fromkeys(
+                        [
+                            *warnings,
+                            *_libreoffice_failure_warnings(exc),
+                            "source_background_reconstructed",
+                        ]
+                    )
+                )
             return {
                 "source_background_paths": paths,
                 "source_background_render_method": render_method,
                 "source_background_warnings": warnings,
                 "source_background_slide_warnings": slide_warnings,
+                "source_background_details": details,
                 "source_background_dependency_report": dependency_report,
             }
     except Exception as exc:
@@ -571,6 +846,7 @@ def export_pptx_source_backgrounds(source_path: str, out_dir: str, resolution: i
             "source_background_render_method": "failed",
             "source_background_warnings": list(dict.fromkeys([*dependency_warnings, "source_background_generation_failed"])),
             "source_background_slide_warnings": [],
+            "source_background_details": [],
             "source_background_dependency_report": dependency_report,
         }
 
@@ -932,10 +1208,11 @@ def _extract_docx_text(docx_path: str, notes_dir: Path) -> List[str]:
 
     # Fallback: try LibreOffice to convert to txt
     try:
-        with tempfile.TemporaryDirectory() as tmpd:
+        with tempfile.TemporaryDirectory() as tmpd, tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_tmp:
+            soffice = _find_soffice_executable() or "soffice"
             _run([
-                "soffice", "--headless",
-                f"-env:UserInstallation=file://{_LO_USER_INSTALLATION}",
+                soffice, "--headless", "--nologo", "--nofirststartwizard", "--nolockcheck", "--nodefault",
+                f"-env:UserInstallation={Path(profile_tmp).resolve().as_uri()}",
                 "--convert-to", "txt:Text",
                 "--outdir", tmpd,
                 docx_path,
@@ -1085,12 +1362,14 @@ def _export_metadata_payload(
     *,
     method: str,
     warnings: List[str] | None = None,
+    details: list[dict[str, Any]] | None = None,
     dependency_report: dict | None = None,
 ) -> dict:
     return {
         "image_paths": image_paths,
         "source_render_method": method,
         "source_render_warnings": list(dict.fromkeys(warnings or [])),
+        "source_render_details": list(details or []),
         "source_render_dependency_report": dict(dependency_report or source_render_dependency_report()),
     }
 
@@ -1133,7 +1412,12 @@ def export_slide_images_with_metadata(source_path: str, out_dir: str, resolution
                 return _export_metadata_payload(
                     _export_docx_images_reconstructed(source_path, out_dir, resolution),
                     method="python_docx_reconstructed",
-                    warnings=[*dependency_warnings, "original_fidelity_reconstructed"],
+                    warnings=[
+                        *dependency_warnings,
+                        *_libreoffice_failure_warnings(e),
+                        "original_fidelity_reconstructed",
+                    ],
+                    details=_libreoffice_failure_details(e),
                     dependency_report=dependency_report,
                 )
 
@@ -1156,7 +1440,12 @@ def export_slide_images_with_metadata(source_path: str, out_dir: str, resolution
             return _export_metadata_payload(
                 _export_via_python_pptx(source_path, out_dir, resolution),
                 method="python_pptx_reconstructed",
-                warnings=[*dependency_warnings, "original_fidelity_reconstructed"],
+                warnings=[
+                    *dependency_warnings,
+                    *_libreoffice_failure_warnings(e),
+                    "original_fidelity_reconstructed",
+                ],
+                details=_libreoffice_failure_details(e),
                 dependency_report=dependency_report,
             )
 
