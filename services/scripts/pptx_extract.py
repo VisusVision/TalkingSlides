@@ -366,6 +366,174 @@ def _export_via_python_pptx(pptx_path: str, out_dir: str, resolution: int = 1920
     return exported
 
 
+def _shape_enum_value(name: str) -> Any:
+    return getattr(MSO_SHAPE_TYPE, name, None) if MSO_SHAPE_TYPE is not None else None
+
+
+def _shape_has_nonempty_text(shape: Any) -> bool:
+    try:
+        if not bool(getattr(shape, "has_text_frame", False)):
+            return False
+        text_frame = getattr(shape, "text_frame", None)
+        if text_frame is None:
+            return False
+        return bool(str(getattr(text_frame, "text", "") or "").strip())
+    except Exception:
+        return False
+
+
+def _shape_or_children_have_nonempty_text(shape: Any) -> bool:
+    if _shape_has_nonempty_text(shape):
+        return True
+    try:
+        return any(_shape_or_children_have_nonempty_text(child) for child in getattr(shape, "shapes", []) or [])
+    except Exception:
+        return False
+
+
+def _shape_has_visible_fill_or_line(shape: Any) -> bool:
+    try:
+        fill = getattr(shape, "fill", None)
+        fill_type = getattr(fill, "type", None)
+        if fill_type is not None and str(fill_type).upper().find("BACKGROUND") < 0:
+            return True
+    except Exception:
+        pass
+    try:
+        line = getattr(shape, "line", None)
+        line_width = int(getattr(line, "width", 0) or 0)
+        line_fill = getattr(line, "fill", None)
+        if line_width > 0 or getattr(line_fill, "type", None) is not None:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _remove_shape_from_slide(shape: Any) -> bool:
+    try:
+        element = getattr(shape, "_element", None)
+        parent = element.getparent() if element is not None else None
+        if parent is None:
+            return False
+        parent.remove(element)
+        return True
+    except Exception:
+        return False
+
+
+def _clear_shape_text(shape: Any) -> bool:
+    try:
+        text_frame = getattr(shape, "text_frame", None)
+        if text_frame is None:
+            return False
+        text_frame.clear()
+        return True
+    except Exception:
+        try:
+            shape.text = ""
+            return True
+        except Exception:
+            return False
+
+
+def _strip_text_from_pptx_copy(source_path: str, target_path: str) -> dict:
+    """Best-effort PPTX text removal for source-background rendering."""
+    if Presentation is None:
+        raise RuntimeError("python-pptx is required for source background generation")
+
+    target = Path(target_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target)
+
+    prs = Presentation(str(target))
+    slide_warnings: list[list[str]] = [[] for _ in prs.slides]
+    global_warnings: list[str] = []
+
+    for slide_idx, slide in enumerate(prs.slides):
+        shapes = list(getattr(slide, "shapes", []) or [])
+        for shape in shapes:
+            shape_type = getattr(shape, "shape_type", None)
+            if shape_type == _shape_enum_value("GROUP") or hasattr(shape, "shapes"):
+                if _shape_or_children_have_nonempty_text(shape):
+                    slide_warnings[slide_idx].append("source_background_grouped_shape_skipped")
+                continue
+            if bool(getattr(shape, "has_table", False)) or shape_type == _shape_enum_value("TABLE"):
+                if _shape_has_nonempty_text(shape) or bool(getattr(shape, "has_table", False)):
+                    slide_warnings[slide_idx].append("source_background_table_text_skipped")
+                continue
+            if shape_type in {
+                _shape_enum_value("CHART"),
+                _shape_enum_value("DIAGRAM"),
+                _shape_enum_value("IGX_GRAPHIC"),
+            }:
+                slide_warnings[slide_idx].append("source_background_chart_or_smartart_skipped")
+                continue
+            if not _shape_has_nonempty_text(shape):
+                continue
+
+            is_pure_text_box = (
+                shape_type == _shape_enum_value("TEXT_BOX")
+                and not _shape_has_visible_fill_or_line(shape)
+            )
+            if is_pure_text_box:
+                if _remove_shape_from_slide(shape):
+                    slide_warnings[slide_idx].append("source_background_text_removed")
+                else:
+                    slide_warnings[slide_idx].append("source_background_text_clear_failed")
+                continue
+
+            if _clear_shape_text(shape):
+                slide_warnings[slide_idx].append("source_background_text_removed")
+            else:
+                slide_warnings[slide_idx].append("source_background_text_clear_failed")
+
+    for warnings in slide_warnings:
+        unique_slide_warnings = list(dict.fromkeys(warnings))
+        warnings[:] = unique_slide_warnings
+        global_warnings.extend(unique_slide_warnings)
+        if any(warning.endswith("_skipped") for warning in unique_slide_warnings):
+            warnings.append("source_background_partial_text_removal")
+            global_warnings.append("source_background_partial_text_removal")
+
+    prs.save(str(target))
+    return {
+        "pptx_path": str(target),
+        "warnings": list(dict.fromkeys(global_warnings)),
+        "slide_warnings": slide_warnings,
+    }
+
+
+def export_pptx_source_backgrounds(source_path: str, out_dir: str, resolution: int = 1920) -> dict:
+    """Create cleaned PPTX slide backgrounds for the optional Source Background mode."""
+    if Path(source_path).suffix.lower() != ".pptx":
+        return {
+            "source_background_paths": [],
+            "source_background_warnings": [],
+            "source_background_slide_warnings": [],
+        }
+
+    _ensure_dir(out_dir)
+    try:
+        with tempfile.TemporaryDirectory(prefix="source-background-") as tmp:
+            cleaned_path = Path(tmp) / Path(source_path).name
+            strip_result = _strip_text_from_pptx_copy(source_path, str(cleaned_path))
+            paths = _export_via_libreoffice(str(cleaned_path), out_dir, resolution)
+            slide_warnings = list(strip_result.get("slide_warnings") or [])
+            return {
+                "source_background_paths": paths,
+                "source_background_warnings": list(dict.fromkeys(strip_result.get("warnings") or [])),
+                "source_background_slide_warnings": slide_warnings,
+            }
+    except Exception as exc:
+        logger.warning("PPTX source background generation failed for %s: %s", source_path, exc)
+        return {
+            "source_background_paths": [],
+            "source_background_warnings": ["source_background_generation_failed"],
+            "source_background_slide_warnings": [],
+        }
+
+
 # ---------------------------------------------------------------------------
 # PDF: pdftoppm or PyMuPDF
 # ---------------------------------------------------------------------------

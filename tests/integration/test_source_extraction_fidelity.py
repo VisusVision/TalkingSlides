@@ -230,6 +230,45 @@ def test_transcript_resync_preserves_existing_whiteboard_mode(tmp_path, monkeypa
 
 
 @pytest.mark.django_db
+def test_pptx_sync_stores_source_background_without_defaulting_to_it(tmp_path, monkeypatch):
+    project = _make_project("pptx_source_background")
+    storage_root = tmp_path / "storage"
+    original_path = _write_png(storage_root / str(project.id) / "images" / "slide-1.png")
+    source_background_path = _write_png(storage_root / str(project.id) / "source_backgrounds" / "slide-1.png")
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(storage_root))
+
+    worker_tasks._sync_transcript_pages_from_export(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "page_key": "s1-p1",
+                "source_type": "pptx",
+                "image_path": str(original_path),
+                "original_background_path": str(original_path),
+                "source_background_path": str(source_background_path),
+                "source_background_warnings": ["source_background_text_removed"],
+                "original_text": "Extracted text remains editable",
+                "narration_text": "Extracted text remains editable",
+                "whiteboard_mode": False,
+            }
+        ],
+    )
+
+    page = TranscriptPage.objects.get(project=project, page_key="s1-p1")
+    scene = page.editor_document["scene"]
+    assert scene["background_mode"] == "original"
+    assert scene["source_background_path"] == f"{project.id}/source_backgrounds/slide-1.png"
+    assert scene["source_background_warnings"] == ["source_background_text_removed"]
+    serialized_scene = TranscriptPageSerializer(page).data["editor_document"]["scene"]
+    assert serialized_scene["background_mode"] == "original"
+    assert serialized_scene["has_source_background"] is True
+    assert serialized_scene["source_background_url"]
+    assert "source_background_path" not in serialized_scene
+
+
+@pytest.mark.django_db
 def test_txt_source_defaults_to_whiteboard_without_original_background(tmp_path, monkeypatch):
     project = _make_project("txt_whiteboard")
     storage_root = tmp_path / "storage"
@@ -342,3 +381,100 @@ def test_animated_gif_source_normalizes_first_frame_with_warning(tmp_path):
     assert metadata["source_render_warnings"] == ["animated_gif_first_frame_only"]
     assert len(metadata["image_paths"]) == 1
     assert metadata["image_paths"][0].endswith("slide-1.png")
+
+
+def test_pptx_source_background_text_hiding_is_best_effort(tmp_path):
+    if pptx_extract.Presentation is None:
+        pytest.skip("python-pptx is not available")
+
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Inches
+
+    source_path = tmp_path / "source.pptx"
+    cleaned_path = tmp_path / "cleaned.pptx"
+    prs = pptx_extract.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    text_box = slide.shapes.add_textbox(Inches(0.5), Inches(0.5), Inches(2), Inches(0.5))
+    text_box.text = "Pure text box"
+    filled_shape = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.5), Inches(1.25), Inches(2), Inches(0.75))
+    filled_shape.text = "Text in visible shape"
+    filled_shape.fill.solid()
+    filled_shape.fill.fore_color.rgb = RGBColor(230, 240, 255)
+    table_shape = slide.shapes.add_table(1, 1, Inches(0.5), Inches(2.25), Inches(2), Inches(0.6))
+    table_shape.table.cell(0, 0).text = "Table text"
+    prs.save(source_path)
+
+    result = pptx_extract._strip_text_from_pptx_copy(str(source_path), str(cleaned_path))
+    cleaned = pptx_extract.Presentation(str(cleaned_path))
+    cleaned_text = "\n".join(
+        str(getattr(shape, "text", "") or "")
+        for shape in cleaned.slides[0].shapes
+        if bool(getattr(shape, "has_text_frame", False))
+    )
+
+    assert "Pure text box" not in cleaned_text
+    assert "Text in visible shape" not in cleaned_text
+    assert "source_background_text_removed" in result["warnings"]
+    assert "source_background_table_text_skipped" in result["warnings"]
+    assert "source_background_partial_text_removal" in result["warnings"]
+
+
+def test_pptx_source_background_generation_failure_records_warning(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+
+    def fail_strip(*_args, **_kwargs):
+        raise RuntimeError("unsupported deck")
+
+    monkeypatch.setattr(pptx_extract, "_strip_text_from_pptx_copy", fail_strip)
+
+    metadata = pptx_extract.export_pptx_source_backgrounds(str(source_path), str(tmp_path / "source_backgrounds"))
+
+    assert metadata["source_background_paths"] == []
+    assert metadata["source_background_warnings"] == ["source_background_generation_failed"]
+
+
+@pytest.mark.django_db
+def test_export_project_includes_pptx_source_background_metadata(tmp_path, monkeypatch):
+    project = _make_project("pptx_source_background_export")
+    storage_root = tmp_path / "storage"
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(storage_root))
+    monkeypatch.setattr(worker_tasks.export_project, "update_state", lambda *args, **kwargs: None)
+
+    def fake_export_slide_images_with_metadata(_source_path: str, out_dir: str) -> dict:
+        return {
+            "image_paths": [str(_write_png(Path(out_dir) / "slide-1.png"))],
+            "source_render_method": "libreoffice_pdf_raster",
+            "source_render_warnings": [],
+        }
+
+    def fake_source_backgrounds(_source_path: str, out_dir: str) -> dict:
+        return {
+            "source_background_paths": [str(_write_png(Path(out_dir) / "slide-1.png"))],
+            "source_background_warnings": ["source_background_text_removed"],
+            "source_background_slide_warnings": [["source_background_table_text_skipped"]],
+        }
+
+    def fake_extract_speaker_notes(_source_path: str, out_dir: str) -> list[str]:
+        note_path = Path(out_dir) / "notes" / "slide-1.txt"
+        note_path.parent.mkdir(parents=True, exist_ok=True)
+        note_path.write_text("Extracted narration", encoding="utf-8")
+        return [str(note_path)]
+
+    monkeypatch.setattr(pptx_extract, "export_slide_images_with_metadata", fake_export_slide_images_with_metadata)
+    monkeypatch.setattr(pptx_extract, "export_pptx_source_backgrounds", fake_source_backgrounds)
+    monkeypatch.setattr(pptx_extract, "extract_speaker_notes", fake_extract_speaker_notes)
+
+    slides = worker_tasks.export_project.run(str(project.id), str(source_path), False)
+
+    assert len(slides) == 1
+    assert slides[0]["source_type"] == "pptx"
+    assert slides[0]["source_background_path"].replace("\\", "/").endswith("source_backgrounds/slide-1.png")
+    assert slides[0]["source_background_warnings"] == [
+        "source_background_text_removed",
+        "source_background_table_text_skipped",
+    ]
+    assert slides[0]["whiteboard_mode"] is False

@@ -170,6 +170,50 @@ def test_custom_mode_still_renders_transcript_overlay(tmp_path, monkeypatch):
     assert result["slide_path"] == overlay_path
 
 
+def test_source_background_mode_renders_transcript_overlay(tmp_path, monkeypatch):
+    overlay_path = str(tmp_path / "source-background-overlay.png")
+    calls = _patch_render_dependencies(monkeypatch, overlay_result=overlay_path)
+    slide_meta = _base_slide_meta(tmp_path, mode="source_background", whiteboard_mode=False)
+
+    result = worker_tasks.synthesize_and_render_slide.run(
+        slide_meta,
+        project_id="1",
+        voice_id="test-voice",
+        pause_sec=0.2,
+        lang_hint="auto",
+    )
+
+    assert len(calls["overlay"]) == 1
+    assert calls["overlay"][0]["base_image_path"] == slide_meta["image_path"]
+    assert calls["overlay"][0]["display_text"] == "Edited display text"
+    assert calls["whiteboard"] == []
+    assert calls["create"][0]["image_path"] == overlay_path
+    assert result["slide_path"] == overlay_path
+    assert result["scene_background_mode"] == "source_background"
+
+
+def test_source_background_missing_falls_back_to_whiteboard_with_warning(tmp_path, monkeypatch):
+    whiteboard_path = str(tmp_path / "source-background-fallback.png")
+    calls = _patch_render_dependencies(monkeypatch, whiteboard_result=whiteboard_path)
+    slide_meta = _base_slide_meta(tmp_path, mode="source_background", whiteboard_mode=False)
+    slide_meta["image_path"] = ""
+
+    result = worker_tasks.synthesize_and_render_slide.run(
+        slide_meta,
+        project_id="1",
+        voice_id="test-voice",
+        pause_sec=0.2,
+        lang_hint="auto",
+    )
+
+    assert calls["overlay"] == []
+    assert len(calls["whiteboard"]) == 1
+    assert calls["create"][0]["image_path"] == whiteboard_path
+    assert result["slide_path"] == whiteboard_path
+    assert result["whiteboard_mode"] is True
+    assert "source_background_missing_fallback_whiteboard" in result["source_render_warnings"]
+
+
 def test_whiteboard_mode_still_uses_whiteboard_renderer(tmp_path, monkeypatch):
     whiteboard_path = str(tmp_path / "whiteboard.png")
     calls = _patch_render_dependencies(monkeypatch, whiteboard_result=whiteboard_path)

@@ -186,6 +186,58 @@ def test_owner_can_patch_scene_settings():
 
 
 @pytest.mark.django_db
+def test_owner_can_select_source_background_mode(tmp_path):
+    teacher = _make_teacher("patch_source_background_owner")
+    project = Project.objects.create(title="Patch source background", user=teacher)
+    source_path = tmp_path / str(project.id) / "source_backgrounds" / "slide-1.png"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(PNG_1X1)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "original",
+                "source_background_path": f"{project.id}/source_backgrounds/slide-1.png",
+            },
+        },
+    )
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/scene/",
+        {"background_mode": "source_background"},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.TranscriptPageSceneView.as_view()(request, project_id=project.id, page_id=page.id)
+
+    assert response.status_code == 200
+    page.refresh_from_db()
+    assert page.whiteboard_mode is False
+    assert page.editor_document["scene"]["background_mode"] == "source_background"
+    response_scene = response.data["page"]["editor_document"]["scene"]
+    assert response_scene["background_mode"] == "source_background"
+    assert response_scene["has_source_background"] is True
+    assert response_scene["source_background_url"]
+    assert "source_background_path" not in response_scene
+
+    get_request = APIRequestFactory().get(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/source/"
+    )
+    force_authenticate(get_request, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        get_response = views.TranscriptPageBackgroundImageView.as_view()(
+            get_request,
+            project_id=project.id,
+            page_id=page.id,
+            kind="source",
+        )
+    assert get_response.status_code == 200
+
+
+@pytest.mark.django_db
 def test_non_owner_cannot_patch_scene_settings():
     owner = _make_teacher("patch_scene_forbidden_owner")
     other = _make_teacher("patch_scene_forbidden_other")
@@ -510,6 +562,89 @@ def test_sync_render_descriptor_includes_background_and_text(tmp_path, monkeypat
     assert slides[0]["scene_text_scale"] == 0.75
 
 
+@pytest.mark.django_db
+def test_sync_render_descriptor_uses_source_background_path(tmp_path, monkeypatch):
+    project = _make_project("sync_source_background_descriptor")
+    source_background_path = tmp_path / str(project.id) / "source_backgrounds" / "slide-1.png"
+    source_background_path.parent.mkdir(parents=True, exist_ok=True)
+    source_background_path.write_bytes(PNG_1X1)
+    slide_path = tmp_path / str(project.id) / "images" / "slide-1.png"
+    slide_path.parent.mkdir(parents=True, exist_ok=True)
+    slide_path.write_bytes(PNG_1X1)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "source_background",
+                "source_background_path": f"{project.id}/source_backgrounds/slide-1.png",
+                "background_fit": "cover",
+            },
+            "paragraphs": [{"index": 0, "text": "Display overlay"}],
+        },
+    )
+    page.original_text = "Display overlay"
+    page.save(update_fields=["original_text", "editor_document"])
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    slides = worker_tasks._sync_transcript_pages_from_export(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "page_key": page.page_key,
+                "source_type": "pptx",
+                "image_path": str(slide_path),
+                "source_background_path": str(source_background_path),
+            }
+        ],
+    )
+
+    assert slides[0]["image_path"] == str(source_background_path)
+    assert slides[0]["scene_background_mode"] == "source_background"
+    assert slides[0]["whiteboard_mode"] is False
+    assert slides[0]["display_text"] == "Display overlay"
+
+
+@pytest.mark.django_db
+def test_sync_render_descriptor_falls_back_to_whiteboard_when_source_background_missing(tmp_path, monkeypatch):
+    project = _make_project("sync_source_background_missing")
+    slide_path = tmp_path / str(project.id) / "images" / "slide-1.png"
+    slide_path.parent.mkdir(parents=True, exist_ok=True)
+    slide_path.write_bytes(PNG_1X1)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "source_background",
+                "source_background_path": f"{project.id}/source_backgrounds/missing.png",
+            },
+        },
+    )
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    slides = worker_tasks._sync_transcript_pages_from_export(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "page_key": page.page_key,
+                "source_type": "pptx",
+                "image_path": str(slide_path),
+                "source_background_path": str(tmp_path / str(project.id) / "source_backgrounds" / "missing.png"),
+            }
+        ],
+    )
+
+    assert slides[0]["image_path"] == ""
+    assert slides[0]["scene_background_mode"] == "source_background"
+    assert slides[0]["whiteboard_mode"] is True
+    assert "source_background_missing_fallback_whiteboard" in slides[0]["source_background_warnings"]
+
+
 def test_scene_overlay_layout_autofits_long_whiteboard_text():
     Image = pytest.importorskip("PIL.Image")
     ImageDraw = pytest.importorskip("PIL.ImageDraw")
@@ -733,6 +868,7 @@ def test_public_catalog_does_not_expose_scene_storage_paths():
                 "background_mode": "original",
                 "original_background_path": "1/images/secret-slide.png",
                 "custom_background_path": "uploads/1/backgrounds/secret.png",
+                "source_background_path": "1/source_backgrounds/secret-clean.png",
             },
         },
     )
@@ -743,5 +879,7 @@ def test_public_catalog_does_not_expose_scene_storage_paths():
     assert response.status_code == 200
     payload = json.dumps(response.data)
     assert "secret-slide.png" not in payload
+    assert "secret-clean.png" not in payload
     assert "custom_background_path" not in payload
     assert "original_background_path" not in payload
+    assert "source_background_path" not in payload
