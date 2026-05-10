@@ -1345,6 +1345,7 @@ def _render_avatar_safe_slide_image(source_image_path: str, output_path: str) ->
 
 _SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom", "source_background"}
 _SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
+_SOURCE_BACKGROUND_SUPPORTED_TYPES = {"pptx"}
 
 
 def _scene_storage_rel_path(path_value: Any) -> str:
@@ -1390,6 +1391,10 @@ def _source_type_from_value(value: Any) -> str:
 def _source_type_uses_visual_mapping(source_type: Any) -> bool:
     normalized = _source_type_from_value(source_type)
     return bool(normalized and normalized != "txt")
+
+
+def _source_background_supported_for_source_type(source_type: Any) -> bool:
+    return _source_type_from_value(source_type) in _SOURCE_BACKGROUND_SUPPORTED_TYPES
 
 
 def _warning_list_from_value(value: Any) -> list[str]:
@@ -1458,6 +1463,8 @@ def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
     scene = dict(editor_document.get("scene") or {})
     source_type = _source_type_from_value(slide_payload.get("source_type") or slide_payload.get("source_ext"))
     is_text_only_source = source_type == "txt"
+    if source_type:
+        scene["source_type"] = source_type
     original_background_path = _scene_storage_rel_path(
         slide_payload.get("original_background_path")
         or slide_payload.get("image_path")
@@ -1490,7 +1497,14 @@ def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
         else ("original" if has_original_background else "whiteboard")
     )
     mode = _scene_mode_from_value(scene.get("background_mode"), fallback=fallback_mode)
+    if mode == "source_background" and not _source_background_supported_for_source_type(source_type):
+        mode = "whiteboard"
+        source_background_warnings = list(
+            dict.fromkeys([*source_background_warnings, "source_background_unsupported_for_source_type"])
+        )
     scene["background_mode"] = mode
+    if source_background_warnings:
+        scene["source_background_warnings"] = source_background_warnings
     scene["background_fit"] = _scene_fit_from_value(scene.get("background_fit"))
     scene["text_scale"] = _scene_text_scale_from_value(
         scene.get("text_scale"),
@@ -1517,9 +1531,49 @@ def _scene_background_image_for_render(scene: dict[str, Any], fallback_image_pat
             candidate = Path(STORAGE_ROOT) / raw.lstrip("/\\")
         if candidate.exists() and candidate.is_file():
             return str(candidate)
-    if mode == "source_background":
+    if mode in {"custom", "source_background"}:
         return ""
     return str(fallback_image_path or "")
+
+
+def _scene_render_warning_list(slide_payload: dict[str, Any], scene: dict[str, Any]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            [
+                *_warning_list_from_value(slide_payload.get("source_background_warnings")),
+                *_warning_list_from_value(scene.get("source_background_warnings")),
+            ]
+        )
+    )
+
+
+def _normalize_scene_mode_for_render(
+    scene_mode: str,
+    *,
+    source_type: Any,
+    render_image_path: str,
+    warnings: list[str],
+) -> tuple[str, list[str], bool]:
+    normalized_source_type = _source_type_from_value(source_type)
+    if scene_mode == "source_background" and not _source_background_supported_for_source_type(normalized_source_type):
+        return (
+            "whiteboard",
+            list(dict.fromkeys([*warnings, "source_background_unsupported_for_source_type"])),
+            True,
+        )
+    if scene_mode == "source_background" and not str(render_image_path or "").strip():
+        return (
+            scene_mode,
+            list(dict.fromkeys([*warnings, "source_background_missing_fallback_whiteboard"])),
+            True,
+        )
+    if scene_mode == "custom" and not str(render_image_path or "").strip():
+        return (
+            "whiteboard",
+            list(dict.fromkeys([*warnings, "custom_background_missing_fallback_whiteboard"])),
+            True,
+        )
+    return scene_mode, warnings, scene_mode == "whiteboard"
 
 
 def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1612,29 +1666,31 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
         slide_payload = dict(template or {})
         editor_document = dict(page.editor_document or {})
         scene = dict(editor_document.get("scene") or {})
+        source_type = _source_type_from_value(
+            slide_payload.get("source_type") or scene.get("source_type") or slide_payload.get("source_ext")
+        )
         scene_mode = _scene_mode_from_value(
             scene.get("background_mode"),
             fallback="whiteboard" if bool(page.whiteboard_mode) else "original",
         )
-        if scene_mode == "source_background" and not scene.get("source_background_path"):
+        if (
+            scene_mode == "source_background"
+            and _source_background_supported_for_source_type(source_type)
+            and not scene.get("source_background_path")
+        ):
             payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
             if payload_source_background:
                 scene["source_background_path"] = payload_source_background
         render_image_path = _scene_background_image_for_render(scene, slide_payload.get("image_path") or slide_payload.get("slide_path") or "")
-        source_background_missing = scene_mode == "source_background" and not str(render_image_path or "").strip()
-        effective_whiteboard_mode = scene_mode == "whiteboard" or source_background_missing
-        source_background_warnings = list(
-            dict.fromkeys(
-                [
-                    *_warning_list_from_value(slide_payload.get("source_background_warnings")),
-                    *_warning_list_from_value(scene.get("source_background_warnings")),
-                ]
-            )
+        source_background_warnings = _scene_render_warning_list(slide_payload, scene)
+        scene_mode, source_background_warnings, effective_whiteboard_mode = _normalize_scene_mode_for_render(
+            scene_mode,
+            source_type=source_type,
+            render_image_path=render_image_path,
+            warnings=source_background_warnings,
         )
-        if source_background_missing:
-            source_background_warnings = list(
-                dict.fromkeys([*source_background_warnings, "source_background_missing_fallback_whiteboard"])
-            )
+        if effective_whiteboard_mode:
+            render_image_path = "" if scene_mode == "whiteboard" else render_image_path
         display_text = str(page.original_text or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
         subtitle_source = str(page.narration_text or page.original_text or slide_payload.get("notes_text") or "")
         slide_payload.update(
@@ -1652,10 +1708,11 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
                 "rich_text_html": str(page.rich_text_html or ""),
                 "editor_document": editor_document,
                 "subtitle_chunks": list(page.subtitle_chunks or ([subtitle_source] if subtitle_source else [])),
-                "source_type": str(slide_payload.get("source_type") or ""),
+                "source_type": source_type,
                 "whiteboard_mode": effective_whiteboard_mode,
                 "scene_background_mode": scene_mode,
                 "source_background_warnings": source_background_warnings,
+                "custom_background_path": scene.get("custom_background_path") or "",
                 "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
                 "scene_text_scale": _scene_text_scale_from_value(
                     scene.get("text_scale"),
@@ -1722,11 +1779,18 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
         slide_payload = dict(source_templates.get(source_index) or first_template or {})
         editor_document = dict(page.get("editor_document") or {})
         scene = dict(editor_document.get("scene") or {})
+        source_type = _source_type_from_value(
+            slide_payload.get("source_type") or scene.get("source_type") or slide_payload.get("source_ext")
+        )
         scene_mode = _scene_mode_from_value(
             scene.get("background_mode"),
             fallback="whiteboard" if bool(page.get("whiteboard_mode")) else "original",
         )
-        if scene_mode == "source_background" and not scene.get("source_background_path"):
+        if (
+            scene_mode == "source_background"
+            and _source_background_supported_for_source_type(source_type)
+            and not scene.get("source_background_path")
+        ):
             payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
             if payload_source_background:
                 scene["source_background_path"] = payload_source_background
@@ -1734,20 +1798,15 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
             scene,
             slide_payload.get("image_path") or slide_payload.get("slide_path") or "",
         )
-        source_background_missing = scene_mode == "source_background" and not str(render_image_path or "").strip()
-        effective_whiteboard_mode = scene_mode == "whiteboard" or source_background_missing
-        source_background_warnings = list(
-            dict.fromkeys(
-                [
-                    *_warning_list_from_value(slide_payload.get("source_background_warnings")),
-                    *_warning_list_from_value(scene.get("source_background_warnings")),
-                ]
-            )
+        source_background_warnings = _scene_render_warning_list(slide_payload, scene)
+        scene_mode, source_background_warnings, effective_whiteboard_mode = _normalize_scene_mode_for_render(
+            scene_mode,
+            source_type=source_type,
+            render_image_path=render_image_path,
+            warnings=source_background_warnings,
         )
-        if source_background_missing:
-            source_background_warnings = list(
-                dict.fromkeys([*source_background_warnings, "source_background_missing_fallback_whiteboard"])
-            )
+        if effective_whiteboard_mode:
+            render_image_path = "" if scene_mode == "whiteboard" else render_image_path
         display_text = str(page.get("original_text") or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
         narration_text = str(page.get("narration_text") or display_text)
         subtitle_chunks = list(page.get("subtitle_chunks") or ([narration_text] if narration_text else []))
@@ -1766,10 +1825,11 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
                 "rich_text_html": str(page.get("rich_text_html") or ""),
                 "editor_document": editor_document,
                 "subtitle_chunks": subtitle_chunks,
-                "source_type": str(slide_payload.get("source_type") or ""),
+                "source_type": source_type,
                 "whiteboard_mode": effective_whiteboard_mode,
                 "scene_background_mode": scene_mode,
                 "source_background_warnings": source_background_warnings,
+                "custom_background_path": scene.get("custom_background_path") or "",
                 "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
                 "scene_text_scale": _scene_text_scale_from_value(scene.get("text_scale"), fallback=1.0),
                 "image_path": render_image_path,
@@ -4648,16 +4708,22 @@ def synthesize_and_render_slide(
         slide_meta.get("scene_background_mode") or editor_scene.get("background_mode"),
         fallback="whiteboard" if whiteboard_mode else "original",
     )
+    source_type = _source_type_from_value(slide_meta.get("source_type") or editor_scene.get("source_type"))
     source_background_warnings = _warning_list_from_value(
         slide_meta.get("source_background_warnings") or editor_scene.get("source_background_warnings")
     )
     source_background_details = _details_list_from_value(slide_meta.get("source_background_details"))
-    source_background_missing = scene_background_mode == "source_background" and not str(image_path or "").strip()
-    if source_background_missing:
-        source_background_warnings = list(
-            dict.fromkeys([*source_background_warnings, "source_background_missing_fallback_whiteboard"])
-        )
-    effective_whiteboard_mode = scene_background_mode == "whiteboard" or source_background_missing
+    has_custom_background = bool(str(
+        slide_meta.get("custom_background_path") or editor_scene.get("custom_background_path") or ""
+    ).strip())
+    if scene_background_mode == "custom" and not has_custom_background:
+        image_path = ""
+    scene_background_mode, source_background_warnings, effective_whiteboard_mode = _normalize_scene_mode_for_render(
+        scene_background_mode,
+        source_type=source_type,
+        render_image_path=image_path,
+        warnings=source_background_warnings,
+    )
     scene_background_fit = _scene_fit_from_value(
         slide_meta.get("scene_background_fit") or editor_scene.get("background_fit")
     )

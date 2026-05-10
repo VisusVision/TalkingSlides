@@ -742,20 +742,25 @@ function pageSceneSettings(page) {
     : (page?.whiteboard_mode ? 'whiteboard' : 'original');
   const rawFit = String(scene.background_fit || '').trim().toLowerCase();
   const backgroundFit = SCENE_BACKGROUND_FITS.has(rawFit) ? rawFit : 'contain';
+  const sourceType = textValue(scene.source_type).trim().toLowerCase().replace(/^\./, '');
   const numericScale = Number(scene.text_scale);
   const textScale = Number.isFinite(numericScale)
     ? Math.min(SCENE_TEXT_SCALE_MAX, Math.max(SCENE_TEXT_SCALE_MIN, numericScale))
     : 1;
+  const hasSource = Boolean(scene.has_source_background || scene.source_background_url);
+  const sourceBackgroundAvailable = Boolean(scene.source_background_available || (sourceType === 'pptx' && hasSource));
   return {
     backgroundMode,
     backgroundFit,
     textScale,
+    sourceType,
     originalUrl: textValue(scene.original_background_url),
     customUrl: textValue(scene.custom_background_url),
-    sourceUrl: textValue(scene.source_background_url),
+    sourceUrl: sourceBackgroundAvailable ? textValue(scene.source_background_url) : '',
     hasOriginal: Boolean(scene.has_original_background || scene.original_background_url),
     hasCustom: Boolean(scene.has_custom_background || scene.custom_background_url),
-    hasSource: Boolean(scene.has_source_background || scene.source_background_url),
+    hasSource,
+    sourceBackgroundAvailable,
     sourceWarnings: Array.isArray(scene.source_background_warnings) ? scene.source_background_warnings : [],
   };
 }
@@ -781,7 +786,7 @@ function scenePreviewTextLayout(scale, text) {
 function sceneBackgroundUrl(page) {
   const settings = pageSceneSettings(page);
   if (settings.backgroundMode === 'whiteboard') return '';
-  if (settings.backgroundMode === 'custom') return settings.customUrl || settings.originalUrl;
+  if (settings.backgroundMode === 'custom') return settings.customUrl;
   if (settings.backgroundMode === 'source_background') return settings.sourceUrl;
   return settings.originalUrl || settings.customUrl;
 }
@@ -1880,9 +1885,11 @@ export default function Studio({ user, onLoginRequest }) {
           backgroundMode: sceneSettings.backgroundMode,
           backgroundFit: sceneSettings.backgroundFit,
           textScale: sceneSettings.textScale,
+          sourceType: sceneSettings.sourceType,
           hasOriginalBackground: sceneSettings.hasOriginal,
           hasCustomBackground: sceneSettings.hasCustom,
           hasSourceBackground: sceneSettings.hasSource,
+          sourceBackgroundAvailable: sceneSettings.sourceBackgroundAvailable,
           sourceBackgroundWarnings: sceneSettings.sourceWarnings,
           draftBackgroundDirty: Boolean(page?.draft_background_dirty || page?.draft_scene_dirty),
           moderationWarning: moderationPageWarnings[key] || null,
@@ -1962,6 +1969,13 @@ export default function Studio({ user, onLoginRequest }) {
   const selectedSceneFit = selectedScene?.backgroundFit || 'contain';
   const selectedSceneTextScale = selectedScene?.textScale ?? 1;
   const selectedSceneBackgroundUrl = selectedScene?.backgroundUrl || '';
+  const selectedSceneSourceBackgroundAvailable = Boolean(selectedScene?.sourceBackgroundAvailable);
+  const selectedSceneHasCustomBackground = Boolean(selectedScene?.hasCustomBackground);
+  const selectedSceneOriginalAvailable = selectedScene?.sourceType !== 'txt'
+    || Boolean(selectedScene?.hasOriginalBackground);
+  const selectedSceneSourceBackgroundMessage = selectedScene?.sourceType === 'pptx'
+    ? 'Source Background is not available for this slide.'
+    : 'Source Background is currently available for PPTX lessons only.';
   const selectedSceneSourceWarnings = Array.isArray(selectedScene?.sourceBackgroundWarnings)
     ? selectedScene.sourceBackgroundWarnings
     : [];
@@ -2037,6 +2051,26 @@ export default function Studio({ user, onLoginRequest }) {
     }
   }, [replaceTranscriptPage, selectedLesson?.id, selectedScene?.page]);
 
+  const handleSceneModeChange = useCallback((event) => {
+    const nextMode = event.target.value;
+    if (nextMode === 'source_background' && !selectedSceneSourceBackgroundAvailable) {
+      setSceneActionMessage('');
+      setSceneActionError(selectedSceneSourceBackgroundMessage);
+      return;
+    }
+    if (nextMode === 'original' && !selectedSceneOriginalAvailable) {
+      setSceneActionMessage('');
+      setSceneActionError('Original mode is not available for this source.');
+      return;
+    }
+    if (nextMode === 'custom' && !selectedSceneHasCustomBackground) {
+      setSceneActionMessage('');
+      setSceneActionError('Upload/select a custom background first.');
+      return;
+    }
+    handleScenePatch({ background_mode: nextMode }, 'Background mode updated.');
+  }, [handleScenePatch, selectedSceneHasCustomBackground, selectedSceneOriginalAvailable, selectedSceneSourceBackgroundAvailable, selectedSceneSourceBackgroundMessage]);
+
   const handleSceneBackgroundUpload = useCallback(async (file) => {
     if (!file || !selectedLesson?.id || !selectedScene?.page?.id) return;
     setSceneActionBusy('background');
@@ -2062,6 +2096,21 @@ export default function Studio({ user, onLoginRequest }) {
 
   const handleApplyBackgroundToAll = useCallback(async () => {
     if (!selectedLesson?.id || !selectedScene?.page?.id) return;
+    if (selectedSceneMode === 'source_background' && !selectedSceneSourceBackgroundAvailable) {
+      setSceneActionMessage('');
+      setSceneActionError(selectedSceneSourceBackgroundMessage);
+      return;
+    }
+    if (selectedSceneMode === 'original' && !selectedSceneOriginalAvailable) {
+      setSceneActionMessage('');
+      setSceneActionError('Original mode is not available for this source.');
+      return;
+    }
+    if (selectedSceneMode === 'custom' && !selectedSceneHasCustomBackground) {
+      setSceneActionMessage('');
+      setSceneActionError('Upload/select a custom background first.');
+      return;
+    }
     setSceneActionBusy('apply-all');
     setSceneActionError('');
     setSceneActionMessage('');
@@ -2093,7 +2142,7 @@ export default function Studio({ user, onLoginRequest }) {
     } finally {
       setSceneActionBusy('');
     }
-  }, [handleTranscriptPagesUpdated, refreshProjectTranscript, refreshSelectedLessonState, selectedLesson?.id, selectedPageIndex, selectedScene?.page, selectedSceneFit, selectedSceneMode, selectedSceneTextScale]);
+  }, [handleTranscriptPagesUpdated, refreshProjectTranscript, refreshSelectedLessonState, selectedLesson?.id, selectedPageIndex, selectedScene?.page, selectedSceneFit, selectedSceneHasCustomBackground, selectedSceneMode, selectedSceneOriginalAvailable, selectedSceneSourceBackgroundAvailable, selectedSceneSourceBackgroundMessage, selectedSceneTextScale]);
 
   const handleCoverUpload = useCallback(async (file) => {
     if (!file || !selectedLesson?.id) return;
@@ -3367,17 +3416,32 @@ export default function Studio({ user, onLoginRequest }) {
                             Mode
                             <select
                               value={selectedSceneMode}
-                              onChange={(event) => handleScenePatch({ background_mode: event.target.value }, 'Background mode updated.')}
+                              onChange={handleSceneModeChange}
                               disabled={Boolean(sceneActionBusy)}
                               className="focus-ring mt-1 h-10 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
                             >
-                              <option value="original">Original</option>
-                              <option value="source_background">Source Background</option>
+                              <option value="original" disabled={!selectedSceneOriginalAvailable}>Original</option>
+                              <option value="source_background" disabled={!selectedSceneSourceBackgroundAvailable}>Source Background</option>
                               <option value="whiteboard">Whiteboard</option>
-                              <option value="custom">Custom background</option>
+                              <option value="custom" disabled={!selectedSceneHasCustomBackground}>Custom background</option>
                             </select>
                           </label>
-                          {selectedSceneMode === 'source_background' && (
+                          {!selectedSceneSourceBackgroundAvailable && (
+                            <p className="rounded-xl bg-[color:var(--status-info-bg)] px-3 py-2 text-xs text-[color:var(--status-info-fg)]">
+                              {selectedSceneSourceBackgroundMessage}
+                            </p>
+                          )}
+                          {!selectedSceneHasCustomBackground && (
+                            <p className="rounded-xl bg-[color:var(--status-info-bg)] px-3 py-2 text-xs text-[color:var(--status-info-fg)]">
+                              Upload/select a custom background first.
+                            </p>
+                          )}
+                          {!selectedSceneOriginalAvailable && (
+                            <p className="rounded-xl bg-[color:var(--status-info-bg)] px-3 py-2 text-xs text-[color:var(--status-info-fg)]">
+                              Original mode is not available for this source.
+                            </p>
+                          )}
+                          {selectedSceneMode === 'source_background' && selectedSceneSourceBackgroundAvailable && (
                             <p className="rounded-xl bg-[color:var(--status-info-bg)] px-3 py-2 text-xs text-[color:var(--status-info-fg)]">
                               Source Background keeps slide design but replaces source text with editable text.
                             </p>
@@ -3446,7 +3510,10 @@ export default function Studio({ user, onLoginRequest }) {
                               size="sm"
                               variant="secondary"
                               onClick={handleApplyBackgroundToAll}
-                              disabled={Boolean(sceneActionBusy)}
+                              disabled={Boolean(sceneActionBusy)
+                                || (selectedSceneMode === 'original' && !selectedSceneOriginalAvailable)
+                                || (selectedSceneMode === 'source_background' && !selectedSceneSourceBackgroundAvailable)
+                                || (selectedSceneMode === 'custom' && !selectedSceneHasCustomBackground)}
                             >
                               <ImagePlus size={14} />
                               <span>Apply to all</span>

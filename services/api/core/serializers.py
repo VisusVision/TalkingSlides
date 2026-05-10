@@ -122,6 +122,7 @@ def _project_avatar_artifact_exists(project: Project) -> bool:
 
 SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom", "source_background"}
 SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
+SOURCE_BACKGROUND_SUPPORTED_TYPES = {"pptx"}
 
 
 def _transcript_background_url(page: TranscriptPage, kind: str, context: dict | None) -> str:
@@ -144,6 +145,24 @@ def _transcript_background_url(page: TranscriptPage, kind: str, context: dict | 
 
 def _scene_path(scene: Mapping, key: str) -> str:
     return _normalize_rel_storage_path(str(scene.get(key) or ""))
+
+
+def _scene_source_type(page: TranscriptPage, scene: Mapping) -> str:
+    raw_source_type = str(scene.get("source_type") or "").strip().lower().lstrip(".")
+    if raw_source_type:
+        return raw_source_type
+    try:
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        upload_dir = storage_root / "uploads" / str(page.project_id)
+        if upload_dir.exists():
+            lesson_files = sorted(upload_dir.glob("lesson.*"))
+            if lesson_files:
+                return lesson_files[0].suffix.lower().lstrip(".")
+    except Exception:
+        pass
+    if _scene_path(scene, "source_background_path"):
+        return "pptx"
+    return ""
 
 
 def transcript_page_editor_document_for_response(page: TranscriptPage, context: dict | None = None) -> dict:
@@ -170,6 +189,8 @@ def transcript_page_editor_document_for_response(page: TranscriptPage, context: 
     original_path = _scene_path(scene, "original_background_path")
     custom_path = _scene_path(scene, "custom_background_path")
     source_background_path = _scene_path(scene, "source_background_path")
+    source_type = _scene_source_type(page, scene)
+    source_background_available = bool(source_type in SOURCE_BACKGROUND_SUPPORTED_TYPES and source_background_path)
     source_background_warnings = scene.get("source_background_warnings")
     if not isinstance(source_background_warnings, list):
         source_background_warnings = []
@@ -179,11 +200,13 @@ def transcript_page_editor_document_for_response(page: TranscriptPage, context: 
         "text_scale": text_scale,
         "original_background_url": _transcript_background_url(page, "original", context) if original_path else "",
         "custom_background_url": _transcript_background_url(page, "custom", context) if custom_path else "",
-        "source_background_url": _transcript_background_url(page, "source", context) if source_background_path else "",
+        "source_background_url": _transcript_background_url(page, "source", context) if source_background_available else "",
         "has_original_background": bool(original_path),
         "has_custom_background": bool(custom_path),
-        "has_source_background": bool(source_background_path),
-        "source_background_generated": bool(source_background_path),
+        "has_source_background": source_background_available,
+        "source_background_generated": source_background_available,
+        "source_background_available": source_background_available,
+        "source_type": source_type,
         "source_background_warnings": [
             str(warning).strip() for warning in source_background_warnings if str(warning or "").strip()
         ],
