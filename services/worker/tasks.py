@@ -4444,6 +4444,7 @@ def export_project(
     image_paths = list(export_metadata.get("image_paths") or [])
     source_render_method = str(export_metadata.get("source_render_method") or "")
     source_render_warnings = list(export_metadata.get("source_render_warnings") or [])
+    source_render_dependency_report = dict(export_metadata.get("source_render_dependency_report") or {})
     n_slides = len(image_paths)
     if n_slides == 0:
         raise ValueError(f"No slide images exported from {pptx_path!r}")
@@ -4525,6 +4526,7 @@ def export_project(
                 "source_type": source_type,
                 "source_render_method": source_render_method,
                 "source_render_warnings": source_render_warnings,
+                "source_render_dependency_report": source_render_dependency_report,
                 "notes_text": notes_text,
                 "original_text": page_text,
                 "display_text": page_text,
@@ -4916,6 +4918,7 @@ def synthesize_and_render_slide(
             "scene_background_mode": scene_background_mode,
             "source_render_method": str(slide_meta.get("source_render_method") or ""),
             "source_render_warnings": combined_source_render_warnings,
+            "source_render_dependency_report": dict(slide_meta.get("source_render_dependency_report") or {}),
             "source_background_warnings": source_background_warnings,
             "avatar_applied": avatar_applied,
             "avatar_engine_used": avatar_engine_used,
@@ -5071,6 +5074,7 @@ def concat_and_finalize(
                 "page_key": str(item.get("page_key") or ""),
                 "method": str(item.get("source_render_method") or ""),
                 "warnings": list(item.get("source_render_warnings") or []),
+                "dependency_report": dict(item.get("source_render_dependency_report") or {}),
             }
             for item in ordered
             if item.get("source_render_method") or item.get("source_render_warnings")
@@ -5179,6 +5183,7 @@ def concat_and_finalize(
                 "avatar_failure_reason": str(item.get("avatar_failure_reason") or item.get("avatar_error") or ""),
                 "source_render_method": str(item.get("source_render_method") or ""),
                 "source_render_warnings": list(item.get("source_render_warnings") or []),
+                "source_render_dependency_report": dict(item.get("source_render_dependency_report") or {}),
                 "pause_seconds": playback_assets["pause_durations"][idx],
                 "part_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("part_path"))),
                 "duration": float(item.get("duration") or 0.0),

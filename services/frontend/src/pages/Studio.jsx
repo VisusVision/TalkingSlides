@@ -1962,6 +1962,16 @@ export default function Studio({ user, onLoginRequest }) {
   const selectedSceneFit = selectedScene?.backgroundFit || 'contain';
   const selectedSceneTextScale = selectedScene?.textScale ?? 1;
   const selectedSceneBackgroundUrl = selectedScene?.backgroundUrl || '';
+  const selectedSceneSourceWarnings = Array.isArray(selectedScene?.sourceBackgroundWarnings)
+    ? selectedScene.sourceBackgroundWarnings
+    : [];
+  const selectedSceneHasRenderDependencyWarning = selectedSceneSourceWarnings.some((warning) => (
+    warning === 'slide_render_dependency_missing_libreoffice'
+    || warning === 'slide_render_dependency_missing_pdftoppm'
+    || warning === 'original_fidelity_reconstructed'
+    || warning === 'source_background_reconstructed'
+    || warning === 'source_background_generation_failed'
+  ));
   const selectedSceneTextDirection = isProbablyRtlText(selectedSceneFullText) ? 'rtl' : 'ltr';
   const selectedSceneTextLayout = useMemo(
     () => scenePreviewTextLayout(selectedSceneTextScale, selectedSceneFullText),
@@ -3370,6 +3380,11 @@ export default function Studio({ user, onLoginRequest }) {
                           {selectedSceneMode === 'source_background' && (
                             <p className="rounded-xl bg-[color:var(--status-info-bg)] px-3 py-2 text-xs text-[color:var(--status-info-fg)]">
                               Source Background keeps slide design but replaces source text with editable text.
+                            </p>
+                          )}
+                          {selectedSceneHasRenderDependencyWarning && (
+                            <p className="rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-medium text-[color:var(--status-warning-fg)]">
+                              High-fidelity slide rendering requires LibreOffice/Poppler. Current output may use fallback reconstruction.
                             </p>
                           )}
 

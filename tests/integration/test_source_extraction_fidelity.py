@@ -404,7 +404,7 @@ def test_reconstructed_office_export_records_fidelity_warning(tmp_path, monkeypa
     metadata = pptx_extract.export_slide_images_with_metadata(str(source_path), str(tmp_path / "images"))
 
     assert metadata["source_render_method"] == "python_pptx_reconstructed"
-    assert metadata["source_render_warnings"] == ["original_fidelity_reconstructed"]
+    assert "original_fidelity_reconstructed" in metadata["source_render_warnings"]
     assert metadata["image_paths"][0].endswith("slide-1.png")
 
 
@@ -424,7 +424,7 @@ def test_docx_reconstructed_export_records_fidelity_warning(tmp_path, monkeypatc
     metadata = pptx_extract.export_slide_images_with_metadata(str(source_path), str(tmp_path / "images"))
 
     assert metadata["source_render_method"] == "python_docx_reconstructed"
-    assert metadata["source_render_warnings"] == ["original_fidelity_reconstructed"]
+    assert "original_fidelity_reconstructed" in metadata["source_render_warnings"]
     assert metadata["image_paths"][0].endswith("slide-1.png")
 
 
@@ -507,6 +507,91 @@ def test_pptx_source_background_text_hiding_is_best_effort(tmp_path):
     assert "source_background_partial_text_removal" in result["warnings"]
 
 
+def test_pptx_source_background_text_hiding_preserves_pictures_and_original(tmp_path):
+    if pptx_extract.Presentation is None or pptx_extract.Image is None:
+        pytest.skip("python-pptx and Pillow are not available")
+
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.util import Inches
+
+    picture_path = tmp_path / "picture.png"
+    pptx_extract.Image.new("RGB", (24, 24), color=(20, 90, 160)).save(picture_path)
+    source_path = tmp_path / "source-with-picture.pptx"
+    cleaned_path = tmp_path / "cleaned-with-picture.pptx"
+
+    prs = pptx_extract.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_picture(str(picture_path), Inches(0.25), Inches(0.25), Inches(1.5), Inches(1.5))
+    text_box = slide.shapes.add_textbox(Inches(2), Inches(0.5), Inches(2), Inches(0.75))
+    text_box.text = "Remove this text"
+    prs.save(source_path)
+
+    result = pptx_extract._strip_text_from_pptx_copy(str(source_path), str(cleaned_path))
+
+    original = pptx_extract.Presentation(str(source_path))
+    cleaned = pptx_extract.Presentation(str(cleaned_path))
+    original_shapes = list(original.slides[0].shapes)
+    cleaned_shapes = list(cleaned.slides[0].shapes)
+    original_text = "\n".join(str(getattr(shape, "text", "") or "") for shape in original_shapes)
+    cleaned_text = "\n".join(str(getattr(shape, "text", "") or "") for shape in cleaned_shapes)
+    original_picture_count = sum(
+        1 for shape in original_shapes if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE
+    )
+    cleaned_picture_count = sum(
+        1 for shape in cleaned_shapes if getattr(shape, "shape_type", None) == MSO_SHAPE_TYPE.PICTURE
+    )
+
+    assert original_picture_count == 1
+    assert cleaned_picture_count == 1
+    assert "Remove this text" in original_text
+    assert "Remove this text" not in cleaned_text
+    assert "source_background_text_removed" in result["warnings"]
+
+
+def test_source_render_dependency_warnings_surface_missing_tools(monkeypatch):
+    monkeypatch.setattr(pptx_extract.shutil, "which", lambda _name: None)
+
+    warnings = pptx_extract.source_render_dependency_warnings(".pptx")
+    report = pptx_extract.source_render_dependency_report()
+
+    assert "slide_render_dependency_missing_libreoffice" in warnings
+    assert "slide_render_dependency_missing_pdftoppm" in warnings
+    assert report["libreoffice_available"] is False
+    assert report["pdftoppm_available"] is False
+    assert "pymupdf_available" in report
+    assert "python_pptx_available" in report
+
+
+def test_pptx_source_background_uses_reconstructed_fallback_when_libreoffice_fails(tmp_path, monkeypatch):
+    if pptx_extract.Presentation is None:
+        pytest.skip("python-pptx is not available")
+
+    source_path = tmp_path / "lesson.pptx"
+    out_dir = tmp_path / "source_backgrounds"
+
+    prs = pptx_extract.Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    text_box = slide.shapes.add_textbox(0, 0, 1000000, 1000000)
+    text_box.text = "Remove this"
+    prs.save(source_path)
+
+    def fail_libreoffice(*_args, **_kwargs):
+        raise RuntimeError("libreoffice missing")
+
+    def fake_python_pptx(_source_path: str, output_dir: str, _resolution: int = 1920) -> list[str]:
+        return [str(_write_png(Path(output_dir) / "slide-1.png"))]
+
+    monkeypatch.setattr(pptx_extract, "_export_via_libreoffice", fail_libreoffice)
+    monkeypatch.setattr(pptx_extract, "_export_via_python_pptx", fake_python_pptx)
+
+    metadata = pptx_extract.export_pptx_source_backgrounds(str(source_path), str(out_dir))
+
+    assert len(metadata["source_background_paths"]) == 1
+    assert metadata["source_background_render_method"] == "python_pptx_reconstructed"
+    assert "source_background_reconstructed" in metadata["source_background_warnings"]
+    assert "source_background_generation_failed" not in metadata["source_background_warnings"]
+
+
 def test_pptx_source_background_generation_failure_records_warning(tmp_path, monkeypatch):
     source_path = tmp_path / "lesson.pptx"
     source_path.write_bytes(b"fake pptx")
@@ -519,7 +604,7 @@ def test_pptx_source_background_generation_failure_records_warning(tmp_path, mon
     metadata = pptx_extract.export_pptx_source_backgrounds(str(source_path), str(tmp_path / "source_backgrounds"))
 
     assert metadata["source_background_paths"] == []
-    assert metadata["source_background_warnings"] == ["source_background_generation_failed"]
+    assert "source_background_generation_failed" in metadata["source_background_warnings"]
 
 
 @pytest.mark.django_db

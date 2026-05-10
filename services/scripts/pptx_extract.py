@@ -119,6 +119,28 @@ def _run(cmd: List[str], check=True, capture=False):
     return proc
 
 
+def source_render_dependency_report() -> dict:
+    return {
+        "libreoffice_available": bool(shutil.which("soffice") or shutil.which("libreoffice")),
+        "pdftoppm_available": bool(shutil.which("pdftoppm")),
+        "pymupdf_available": bool(_HAVE_PYMUPDF),
+        "python_pptx_available": bool(Presentation is not None),
+    }
+
+
+def source_render_dependency_warnings(source_ext: str | None = None) -> List[str]:
+    ext = str(source_ext or "").strip().lower()
+    if ext and ext not in {".pptx", ".pdf", ".docx"}:
+        return []
+    report = source_render_dependency_report()
+    warnings: List[str] = []
+    if ext in {"", ".pptx", ".docx"} and not report["libreoffice_available"]:
+        warnings.append("slide_render_dependency_missing_libreoffice")
+    if ext in {"", ".pptx", ".docx", ".pdf"} and not report["pdftoppm_available"]:
+        warnings.append("slide_render_dependency_missing_pdftoppm")
+    return warnings
+
+
 def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
     """Convert an office document to PDF in *out_dir* and return the PDF path."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -506,11 +528,14 @@ def _strip_text_from_pptx_copy(source_path: str, target_path: str) -> dict:
 
 def export_pptx_source_backgrounds(source_path: str, out_dir: str, resolution: int = 1920) -> dict:
     """Create cleaned PPTX slide backgrounds for the optional Source Background mode."""
+    dependency_report = source_render_dependency_report()
+    dependency_warnings = source_render_dependency_warnings(".pptx")
     if Path(source_path).suffix.lower() != ".pptx":
         return {
             "source_background_paths": [],
             "source_background_warnings": [],
             "source_background_slide_warnings": [],
+            "source_background_dependency_report": dependency_report,
         }
 
     _ensure_dir(out_dir)
@@ -518,19 +543,35 @@ def export_pptx_source_backgrounds(source_path: str, out_dir: str, resolution: i
         with tempfile.TemporaryDirectory(prefix="source-background-") as tmp:
             cleaned_path = Path(tmp) / Path(source_path).name
             strip_result = _strip_text_from_pptx_copy(source_path, str(cleaned_path))
-            paths = _export_via_libreoffice(str(cleaned_path), out_dir, resolution)
             slide_warnings = list(strip_result.get("slide_warnings") or [])
+            warnings = list(dict.fromkeys([*dependency_warnings, *list(strip_result.get("warnings") or [])]))
+            try:
+                paths = _export_via_libreoffice(str(cleaned_path), out_dir, resolution)
+                render_method = "libreoffice_pdf_raster"
+            except Exception as exc:
+                logger.warning(
+                    "LibreOffice source background export failed for %s, using reconstructed fallback: %s",
+                    source_path,
+                    exc,
+                )
+                paths = _export_via_python_pptx(str(cleaned_path), out_dir, resolution)
+                render_method = "python_pptx_reconstructed"
+                warnings = list(dict.fromkeys([*warnings, "source_background_reconstructed"]))
             return {
                 "source_background_paths": paths,
-                "source_background_warnings": list(dict.fromkeys(strip_result.get("warnings") or [])),
+                "source_background_render_method": render_method,
+                "source_background_warnings": warnings,
                 "source_background_slide_warnings": slide_warnings,
+                "source_background_dependency_report": dependency_report,
             }
     except Exception as exc:
         logger.warning("PPTX source background generation failed for %s: %s", source_path, exc)
         return {
             "source_background_paths": [],
-            "source_background_warnings": ["source_background_generation_failed"],
+            "source_background_render_method": "failed",
+            "source_background_warnings": list(dict.fromkeys([*dependency_warnings, "source_background_generation_failed"])),
             "source_background_slide_warnings": [],
+            "source_background_dependency_report": dependency_report,
         }
 
 
@@ -1039,11 +1080,18 @@ def _fallback_stub_paths(source_path: str, out_dir: str, ext: str) -> List[str]:
     return fallback_paths
 
 
-def _export_metadata_payload(image_paths: List[str], *, method: str, warnings: List[str] | None = None) -> dict:
+def _export_metadata_payload(
+    image_paths: List[str],
+    *,
+    method: str,
+    warnings: List[str] | None = None,
+    dependency_report: dict | None = None,
+) -> dict:
     return {
         "image_paths": image_paths,
         "source_render_method": method,
         "source_render_warnings": list(dict.fromkeys(warnings or [])),
+        "source_render_dependency_report": dict(dependency_report or source_render_dependency_report()),
     }
 
 
@@ -1051,43 +1099,65 @@ def export_slide_images_with_metadata(source_path: str, out_dir: str, resolution
     """Export slide/page images and include source-render fidelity metadata."""
     _ensure_dir(out_dir)
     ext = Path(source_path).suffix.lower()
+    dependency_report = source_render_dependency_report()
+    dependency_warnings = source_render_dependency_warnings(ext)
 
     try:
         if ext in _IMAGE_SOURCE_EXTS:
             paths, warnings = _export_image_source(source_path, out_dir)
-            return _export_metadata_payload(paths, method="image_first_frame_png", warnings=warnings)
+            return _export_metadata_payload(
+                paths,
+                method="image_first_frame_png",
+                warnings=warnings,
+                dependency_report=dependency_report,
+            )
 
         if ext == ".pdf":
-            return _export_metadata_payload(_export_pdf_images(source_path, out_dir, resolution), method="pdf_raster")
+            return _export_metadata_payload(
+                _export_pdf_images(source_path, out_dir, resolution),
+                method="pdf_raster",
+                warnings=dependency_warnings,
+                dependency_report=dependency_report,
+            )
 
         if ext == ".docx":
             try:
                 return _export_metadata_payload(
                     _export_via_libreoffice(source_path, out_dir, resolution),
                     method="libreoffice_pdf_raster",
+                    warnings=dependency_warnings,
+                    dependency_report=dependency_report,
                 )
             except Exception as e:
                 logger.warning("LibreOffice failed for DOCX, using reconstructed fallback: %s", e)
                 return _export_metadata_payload(
                     _export_docx_images_reconstructed(source_path, out_dir, resolution),
                     method="python_docx_reconstructed",
-                    warnings=["original_fidelity_reconstructed"],
+                    warnings=[*dependency_warnings, "original_fidelity_reconstructed"],
+                    dependency_report=dependency_report,
                 )
 
         if ext == ".txt":
-            return _export_metadata_payload(_export_txt_images(source_path, out_dir, resolution), method="txt_whiteboard")
+            return _export_metadata_payload(
+                _export_txt_images(source_path, out_dir, resolution),
+                method="txt_whiteboard",
+                dependency_report=dependency_report,
+            )
 
         try:
             return _export_metadata_payload(
                 _export_via_libreoffice(source_path, out_dir, resolution),
                 method="libreoffice_pdf_raster",
+                warnings=dependency_warnings,
+                dependency_report=dependency_report,
             )
         except Exception as e:
             logger.warning("LibreOffice export failed, falling back to reconstructed python-pptx: %s", e)
             return _export_metadata_payload(
                 _export_via_python_pptx(source_path, out_dir, resolution),
                 method="python_pptx_reconstructed",
-                warnings=["original_fidelity_reconstructed"],
+                warnings=[*dependency_warnings, "original_fidelity_reconstructed"],
+                dependency_report=dependency_report,
             )
 
     except Exception as exc:
@@ -1095,7 +1165,8 @@ def export_slide_images_with_metadata(source_path: str, out_dir: str, resolution
         return _export_metadata_payload(
             _fallback_stub_paths(source_path, out_dir, ext),
             method="stub",
-            warnings=["source_render_stub"],
+            warnings=[*dependency_warnings, "source_render_stub"],
+            dependency_report=dependency_report,
         )
 
 
