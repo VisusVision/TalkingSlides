@@ -193,7 +193,7 @@ def _dispatch_celery_task(task_name: str, *, args: list | None = None, kwargs: d
         return _celery_app.send_task(task_name, args=task_args, kwargs=task_kwargs)
 
 _MAX_LESSON_BYTES = 100 * 1024 * 1024  # 100 MB
-_ALLOWED_EXTENSIONS = {".pptx", ".pdf", ".docx", ".txt"}
+_ALLOWED_EXTENSIONS = {".pptx", ".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _MAX_COVER_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 logger = logging.getLogger(__name__)

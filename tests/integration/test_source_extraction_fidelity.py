@@ -113,12 +113,17 @@ def test_docx_export_uses_raster_page_count_and_handles_text_mismatch(tmp_path, 
     source_path.write_bytes(b"fake docx")
     monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(storage_root))
 
-    def fake_export_slide_images(_source_path: str, out_dir: str) -> list[str]:
-        return [
+    def fake_export_slide_images_with_metadata(_source_path: str, out_dir: str) -> dict:
+        image_paths = [
             str(_write_png(Path(out_dir) / "slide-1.png")),
             str(_write_png(Path(out_dir) / "slide-2.png")),
             str(_write_png(Path(out_dir) / "slide-3.png")),
         ]
+        return {
+            "image_paths": image_paths,
+            "source_render_method": "libreoffice_pdf_raster",
+            "source_render_warnings": [],
+        }
 
     def fake_extract_speaker_notes(_source_path: str, out_dir: str) -> list[str]:
         note_path = Path(out_dir) / "notes" / "slide-1.txt"
@@ -126,7 +131,7 @@ def test_docx_export_uses_raster_page_count_and_handles_text_mismatch(tmp_path, 
         note_path.write_text("Only the first physical page has extracted text.", encoding="utf-8")
         return [str(note_path)]
 
-    monkeypatch.setattr(pptx_extract, "export_slide_images", fake_export_slide_images)
+    monkeypatch.setattr(pptx_extract, "export_slide_images_with_metadata", fake_export_slide_images_with_metadata)
     monkeypatch.setattr(pptx_extract, "extract_speaker_notes", fake_extract_speaker_notes)
     monkeypatch.setattr(worker_tasks.export_project, "update_state", lambda *args, **kwargs: None)
 
@@ -255,3 +260,85 @@ def test_txt_source_defaults_to_whiteboard_without_original_background(tmp_path,
     assert serialized_scene["has_original_background"] is False
     assert serialized_scene["original_background_url"] == ""
     assert "original_background_path" not in serialized_scene
+
+
+def test_reconstructed_office_export_records_fidelity_warning(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+
+    def fail_libreoffice(*_args, **_kwargs):
+        raise RuntimeError("libreoffice unavailable")
+
+    def fake_python_pptx(_source_path: str, out_dir: str, _resolution: int = 1920) -> list[str]:
+        return [str(_write_png(Path(out_dir) / "slide-1.png"))]
+
+    monkeypatch.setattr(pptx_extract, "_export_via_libreoffice", fail_libreoffice)
+    monkeypatch.setattr(pptx_extract, "_export_via_python_pptx", fake_python_pptx)
+
+    metadata = pptx_extract.export_slide_images_with_metadata(str(source_path), str(tmp_path / "images"))
+
+    assert metadata["source_render_method"] == "python_pptx_reconstructed"
+    assert metadata["source_render_warnings"] == ["original_fidelity_reconstructed"]
+    assert metadata["image_paths"][0].endswith("slide-1.png")
+
+
+def test_docx_reconstructed_export_records_fidelity_warning(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.docx"
+    source_path.write_bytes(b"fake docx")
+
+    def fail_libreoffice(*_args, **_kwargs):
+        raise RuntimeError("libreoffice unavailable")
+
+    def fake_reconstructed(_source_path: str, out_dir: str, _resolution: int = 1920) -> list[str]:
+        return [str(_write_png(Path(out_dir) / "slide-1.png"))]
+
+    monkeypatch.setattr(pptx_extract, "_export_via_libreoffice", fail_libreoffice)
+    monkeypatch.setattr(pptx_extract, "_export_docx_images_reconstructed", fake_reconstructed)
+
+    metadata = pptx_extract.export_slide_images_with_metadata(str(source_path), str(tmp_path / "images"))
+
+    assert metadata["source_render_method"] == "python_docx_reconstructed"
+    assert metadata["source_render_warnings"] == ["original_fidelity_reconstructed"]
+    assert metadata["image_paths"][0].endswith("slide-1.png")
+
+
+def test_image_source_exports_single_original_slide_and_keeps_ocr_text(tmp_path, monkeypatch):
+    source_path = _write_png(tmp_path / "lesson.png")
+    storage_root = tmp_path / "storage"
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(storage_root))
+    monkeypatch.setattr(worker_tasks.export_project, "update_state", lambda *args, **kwargs: None)
+
+    from worker.ai_agents import ocr_bridge
+
+    monkeypatch.setattr(ocr_bridge.OCRBridge, "extract_text", lambda *_args, **_kwargs: "Image OCR narration")
+
+    slides = worker_tasks.export_project.run("77", str(source_path), False)
+
+    assert len(slides) == 1
+    assert slides[0]["source_type"] == "png"
+    assert slides[0]["source_render_method"] == "image_first_frame_png"
+    assert slides[0]["source_render_warnings"] == []
+    assert slides[0]["whiteboard_mode"] is False
+    assert slides[0]["original_background_path"] == slides[0]["image_path"]
+    assert slides[0]["original_text"] == "Image OCR narration"
+    assert slides[0]["narration_text"] == "Image OCR narration"
+
+    visual_assets = worker_tasks._visual_slide_assets_from_export(slides)
+    assert visual_assets[0]["image_path"] == slides[0]["image_path"]
+
+
+def test_animated_gif_source_normalizes_first_frame_with_warning(tmp_path):
+    if pptx_extract.Image is None:
+        pytest.skip("Pillow is not available")
+
+    source_path = tmp_path / "lesson.gif"
+    first = pptx_extract.Image.new("RGB", (4, 4), color=(255, 0, 0))
+    second = pptx_extract.Image.new("RGB", (4, 4), color=(0, 0, 255))
+    first.save(source_path, format="GIF", save_all=True, append_images=[second], duration=50, loop=0)
+
+    metadata = pptx_extract.export_slide_images_with_metadata(str(source_path), str(tmp_path / "images"))
+
+    assert metadata["source_render_method"] == "image_first_frame_png"
+    assert metadata["source_render_warnings"] == ["animated_gif_first_frame_only"]
+    assert len(metadata["image_paths"]) == 1
+    assert metadata["image_paths"][0].endswith("slide-1.png")
