@@ -49,6 +49,13 @@ def _write_png(path: Path) -> Path:
     return path
 
 
+def _long_slide_text() -> str:
+    return " ".join(
+        f"Sentence {index} keeps the original source slide mapped to one visual frame."
+        for index in range(80)
+    )
+
+
 def _sync_one_page(project: Project, tmp_path: Path, monkeypatch, *, source_type: str, page_key: str = "s1-p1") -> TranscriptPage:
     storage_root = tmp_path / "storage"
     image_path = _write_png(storage_root / str(project.id) / "images" / f"{source_type}-slide-1.png")
@@ -143,6 +150,86 @@ def test_docx_export_uses_raster_page_count_and_handles_text_mismatch(tmp_path, 
     assert slides[1]["original_text"] == ""
     assert slides[2]["narration_text"] == ""
     assert all(slide["original_background_path"] == slide["image_path"] for slide in slides)
+
+
+@pytest.mark.django_db
+def test_pptx_source_background_export_preserves_source_slide_mapping_for_long_text(tmp_path, monkeypatch):
+    project = _make_project("pptx_source_mapping")
+    storage_root = tmp_path / "storage"
+    source_path = tmp_path / "source.pptx"
+    source_path.write_bytes(b"fake pptx")
+    note_text = _long_slide_text()
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(storage_root))
+    monkeypatch.setattr(worker_tasks.export_project, "update_state", lambda *args, **kwargs: None)
+
+    def fake_export_slide_images_with_metadata(_source_path: str, out_dir: str) -> dict:
+        return {
+            "image_paths": [str(_write_png(Path(out_dir) / "slide-1.png"))],
+            "source_render_method": "libreoffice_pdf_raster",
+            "source_render_warnings": [],
+        }
+
+    def fake_source_backgrounds(_source_path: str, out_dir: str) -> dict:
+        return {
+            "source_background_paths": [str(_write_png(Path(out_dir) / "slide-1.png"))],
+            "source_background_warnings": ["source_background_text_removed"],
+            "source_background_slide_warnings": [],
+        }
+
+    def fake_extract_speaker_notes(_source_path: str, out_dir: str) -> list[str]:
+        note_path = Path(out_dir) / "notes" / "slide-1.txt"
+        note_path.parent.mkdir(parents=True, exist_ok=True)
+        note_path.write_text(note_text, encoding="utf-8")
+        return [str(note_path)]
+
+    monkeypatch.setattr(pptx_extract, "export_slide_images_with_metadata", fake_export_slide_images_with_metadata)
+    monkeypatch.setattr(pptx_extract, "export_pptx_source_backgrounds", fake_source_backgrounds)
+    monkeypatch.setattr(pptx_extract, "extract_speaker_notes", fake_extract_speaker_notes)
+
+    slides = worker_tasks.export_project.run(str(project.id), str(source_path), False)
+
+    assert len(slides) == 1
+    assert slides[0]["source_slide_index"] == 0
+    assert slides[0]["split_index"] == 0
+    assert slides[0]["page_key"] == "s1-p1"
+    assert slides[0]["source_background_path"].replace("\\", "/").endswith("source_backgrounds/slide-1.png")
+    assert slides[0]["original_text"] == note_text
+    assert len(slides[0]["subtitle_chunks"]) > 1
+
+
+@pytest.mark.django_db
+def test_whiteboard_export_keeps_long_text_visual_splitting(tmp_path, monkeypatch):
+    project = _make_project("whiteboard_source_splitting")
+    storage_root = tmp_path / "storage"
+    source_path = tmp_path / "source.pptx"
+    source_path.write_bytes(b"fake pptx")
+    note_text = _long_slide_text()
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(storage_root))
+    monkeypatch.setattr(worker_tasks.export_project, "update_state", lambda *args, **kwargs: None)
+
+    def fake_export_slide_images_with_metadata(_source_path: str, out_dir: str) -> dict:
+        return {
+            "image_paths": [str(_write_png(Path(out_dir) / "slide-1.png"))],
+            "source_render_method": "libreoffice_pdf_raster",
+            "source_render_warnings": [],
+        }
+
+    def fake_extract_speaker_notes(_source_path: str, out_dir: str) -> list[str]:
+        note_path = Path(out_dir) / "notes" / "slide-1.txt"
+        note_path.parent.mkdir(parents=True, exist_ok=True)
+        note_path.write_text(note_text, encoding="utf-8")
+        return [str(note_path)]
+
+    monkeypatch.setattr(pptx_extract, "export_slide_images_with_metadata", fake_export_slide_images_with_metadata)
+    monkeypatch.setattr(pptx_extract, "export_pptx_source_backgrounds", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(pptx_extract, "extract_speaker_notes", fake_extract_speaker_notes)
+
+    slides = worker_tasks.export_project.run(str(project.id), str(source_path), True)
+
+    assert len(slides) > 1
+    assert {slide["source_slide_index"] for slide in slides} == {0}
+    assert [slide["split_index"] for slide in slides] == list(range(len(slides)))
+    assert all(slide["whiteboard_mode"] is True for slide in slides)
 
 
 @pytest.mark.django_db

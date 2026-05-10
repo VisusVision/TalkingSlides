@@ -214,6 +214,28 @@ def test_source_background_missing_falls_back_to_whiteboard_with_warning(tmp_pat
     assert "source_background_missing_fallback_whiteboard" in result["source_render_warnings"]
 
 
+def test_source_background_records_text_overflow_warning(tmp_path, monkeypatch):
+    overlay_path = str(tmp_path / "source-background-overflow.png")
+    _patch_render_dependencies(monkeypatch, overlay_result=overlay_path)
+    slide_meta = _base_slide_meta(tmp_path, mode="source_background", whiteboard_mode=False)
+    long_text = " ".join(["Source background overlay text should remain on one visual slide."] * 900)
+    slide_meta["original_text"] = long_text
+    slide_meta["display_text"] = long_text
+    slide_meta["rich_text_html"] = f"<p>{long_text}</p>"
+    slide_meta["subtitle_chunks"] = [long_text]
+
+    result = worker_tasks.synthesize_and_render_slide.run(
+        slide_meta,
+        project_id="1",
+        voice_id="test-voice",
+        pause_sec=0.2,
+        lang_hint="auto",
+    )
+
+    assert result["scene_background_mode"] == "source_background"
+    assert "source_background_text_overflow" in result["source_render_warnings"]
+
+
 def test_whiteboard_mode_still_uses_whiteboard_renderer(tmp_path, monkeypatch):
     whiteboard_path = str(tmp_path / "whiteboard.png")
     calls = _patch_render_dependencies(monkeypatch, whiteboard_result=whiteboard_path)

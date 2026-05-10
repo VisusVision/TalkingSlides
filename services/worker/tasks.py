@@ -1306,6 +1306,33 @@ def _render_transcript_overlay_image(
     return str(output)
 
 
+def _source_background_overflow_warnings(
+    base_image_path: str,
+    display_text: str,
+    rich_text_html: str,
+    *,
+    text_scale: float,
+    background_fit: str,
+) -> list[str]:
+    if Image is None or ImageDraw is None:
+        return []
+    source = Path(base_image_path)
+    if not source.exists() or not source.is_file():
+        return []
+    text = _prepare_narration_for_tts(display_text)
+    if not text and rich_text_html:
+        text = _prepare_narration_for_tts(re.sub(r"<[^>]+>", " ", rich_text_html))
+    if not text:
+        return []
+    try:
+        image = _fit_image_to_scene_canvas(Image.open(source).convert("RGBA"), background_fit)
+        draw = ImageDraw.Draw(Image.new("RGBA", image.size, (0, 0, 0, 0)))
+        layout = _compute_scene_text_overlay_layout(draw, text, image.size, text_scale, boxed=True)
+    except Exception:
+        return []
+    return ["source_background_text_overflow"] if layout.get("truncated") else []
+
+
 def _render_avatar_safe_slide_image(source_image_path: str, output_path: str) -> str:
     source = Path(source_image_path)
     if not source.exists() or not source.is_file():
@@ -1360,6 +1387,11 @@ def _source_type_from_value(value: Any) -> str:
     return str(value or "").strip().lower().lstrip(".")
 
 
+def _source_type_uses_visual_mapping(source_type: Any) -> bool:
+    normalized = _source_type_from_value(source_type)
+    return bool(normalized and normalized != "txt")
+
+
 def _warning_list_from_value(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         items = value
@@ -1368,6 +1400,26 @@ def _warning_list_from_value(value: Any) -> list[str]:
     else:
         items = []
     return list(dict.fromkeys(str(item).strip() for item in items if str(item or "").strip()))
+
+
+def _single_source_page_structure(source_slide_index: int, text: str) -> dict[str, Any]:
+    from scripts.text_segmentation import SegmentationConfig, normalize_source_text, split_narration_chunks
+
+    cfg = SegmentationConfig()
+    display_text = normalize_source_text(text)
+    chunks = split_narration_chunks(
+        display_text,
+        max_chars=cfg.max_chunk_chars,
+        min_chars=cfg.min_chunk_chars,
+    ) if display_text else []
+    return {
+        "source_slide_index": source_slide_index,
+        "split_index": 0,
+        "page_key": f"s{source_slide_index + 1}-p1",
+        "original_text": display_text,
+        "narration_text": display_text,
+        "subtitle_chunks": chunks,
+    }
 
 
 def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
@@ -4420,9 +4472,11 @@ def export_project(
     logger.info("export_project: %d note files extracted", len(note_paths))
     self.update_state(state="PROGRESS", meta={"step": "notes_done", "progress": 10})
 
-    # Build render descriptors with reusable long-slide splitting.
+    # Build render descriptors. Source-based visuals preserve the original
+    # slide/page count; whiteboard/text-only sources retain long-text splitting.
     slides: list[dict[str, Any]] = []
     display_index = 0
+    split_visual_pages = bool(whiteboard_mode_all or not _source_type_uses_visual_mapping(source_type))
     for idx in range(n_slides):
         slide_num = idx + 1
 
@@ -4432,8 +4486,10 @@ def export_project(
             if txt_file.exists():
                 notes_text = txt_file.read_text(encoding="utf-8").strip()
 
-        if notes_text:
+        if notes_text and split_visual_pages:
             page_items = build_slide_page_structure(idx, notes_text)
+        elif notes_text:
+            page_items = [_single_source_page_structure(idx, notes_text)]
         else:
             page_items = [
                 {
@@ -4622,6 +4678,21 @@ def synthesize_and_render_slide(
                 text_scale=scene_text_scale,
             )
         elif scene_background_mode in {"custom", "source_background"}:
+            if scene_background_mode == "source_background":
+                source_background_warnings = list(
+                    dict.fromkeys(
+                        [
+                            *source_background_warnings,
+                            *_source_background_overflow_warnings(
+                                image_path,
+                                display_text,
+                                rich_text_html,
+                                text_scale=scene_text_scale,
+                                background_fit=scene_background_fit,
+                            ),
+                        ]
+                    )
+                )
             render_image_path = _render_transcript_overlay_image(
                 image_path,
                 display_text,
