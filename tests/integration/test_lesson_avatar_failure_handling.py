@@ -414,6 +414,300 @@ def test_concat_finalize_queues_avatar_after_base_video_without_blocking(tmp_pat
     assert sidecar_payload["avatar_status"] == "none"
 
 
+def _patch_avatar_overlay_task_lightweight(tmp_path, monkeypatch):
+    core_models = importlib.import_module("core.models")
+    ffmpeg_helpers = importlib.import_module("scripts.ffmpeg_helpers")
+    job_updates: list[dict] = []
+    project_updates: list[dict] = []
+    profile_updates: list[dict] = []
+
+    class FakeQuerySet:
+        def __init__(self, row=None, updates=None):
+            self.row = row
+            self.updates = updates
+
+        def filter(self, **_kwargs):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def values(self, *_args):
+            return self
+
+        def first(self):
+            return self.row
+
+        def update(self, **kwargs):
+            if self.updates is not None:
+                self.updates.append(kwargs)
+            return 1
+
+    class FakeJobObjects:
+        def filter(self, **_kwargs):
+            return FakeQuerySet(row={"id": 55}, updates=job_updates)
+
+    class FakeProjectObjects:
+        def filter(self, **_kwargs):
+            return FakeQuerySet(row={"avatar_last_job_id": "77"}, updates=project_updates)
+
+    class FakeUserProfileObjects:
+        def filter(self, **_kwargs):
+            return FakeQuerySet(updates=profile_updates)
+
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("AVATAR_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks.render_lesson_avatar_overlay, "update_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_avatar_job_is_current", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(worker_tasks, "_record_avatar_render_job", lambda **_kwargs: None)
+    monkeypatch.setattr(core_models, "Job", SimpleNamespace(objects=FakeJobObjects()))
+    monkeypatch.setattr(core_models, "Project", SimpleNamespace(objects=FakeProjectObjects()))
+    monkeypatch.setattr(core_models, "UserProfile", SimpleNamespace(objects=FakeUserProfileObjects()))
+
+    def fake_concat_videos(_paths, output_path):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"avatar-track")
+
+    monkeypatch.setattr(ffmpeg_helpers, "concat_videos", fake_concat_videos)
+    return {"job": job_updates, "project": project_updates, "profile": profile_updates}
+
+
+def test_avatar_handoff_manifest_helpers_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    payload = {
+        "schema_version": 1,
+        "project_id": 129,
+        "base_job_id": 55,
+        "avatar_job_id": 77,
+        "created_at": "2026-05-10T00:00:00+00:00",
+        "ordered_results": [{"index": 0, "tts_audio_path": "129/audio/slide_001.mp3"}],
+        "avatar_settings": {"lipsync_engine": "liveportrait+musetalk"},
+        "status": "created",
+    }
+
+    manifest_path = worker_tasks._write_avatar_handoff_manifest("129", "55", payload)
+
+    assert Path(manifest_path) == tmp_path / "projects" / "129" / "renders" / "55" / "avatar_handoff.json"
+    assert worker_tasks._read_avatar_handoff_manifest(manifest_path) == payload
+
+
+def test_avatar_overlay_queue_writes_manifest_and_sends_path_only(tmp_path, monkeypatch):
+    core_models = importlib.import_module("core.models")
+    captured: dict = {}
+    state_updates: list[dict] = []
+    job_updates: list[dict] = []
+    project_updates: list[dict] = []
+    created_jobs: list[dict] = []
+
+    class FakeAsyncResult:
+        id = "celery-avatar-123"
+
+    class FakeQuerySet:
+        def __init__(self, row=None, updates=None):
+            self.row = row
+            self.updates = updates
+
+        def filter(self, **_kwargs):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def values(self, *_args):
+            return self
+
+        def first(self):
+            return self.row
+
+        def update(self, **kwargs):
+            if self.updates is not None:
+                self.updates.append(kwargs)
+            return 1
+
+    class FakeJobObjects:
+        def create(self, **kwargs):
+            created_jobs.append(kwargs)
+            return SimpleNamespace(id=77)
+
+        def filter(self, **_kwargs):
+            return FakeQuerySet(row={"id": 55}, updates=job_updates)
+
+    class FakeProjectObjects:
+        def filter(self, **_kwargs):
+            return FakeQuerySet(updates=project_updates)
+
+    def fake_apply_async(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return FakeAsyncResult()
+
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "_mark_project_avatar_state", lambda *_args, **kwargs: state_updates.append(kwargs))
+    monkeypatch.setattr(core_models, "Job", SimpleNamespace(objects=FakeJobObjects()))
+    monkeypatch.setattr(core_models, "Project", SimpleNamespace(objects=FakeProjectObjects()))
+    monkeypatch.setattr(worker_tasks.render_lesson_avatar_overlay, "apply_async", fake_apply_async)
+
+    ordered_results = [{"index": 0, "slide_num": 1, "tts_audio_path": "129/audio/slide_001.mp3"}]
+    result = worker_tasks._queue_lesson_avatar_overlay_after_base_render(
+        project_id="129",
+        ordered_results=ordered_results,
+        avatar_options={
+            "requested": True,
+            "enabled": True,
+            "teacher_id": 2,
+            "base_job_id": 55,
+            "avatar_source_hash": "source-hash",
+            "lipsync_engine": "liveportrait+musetalk",
+        },
+        output_rel_prefix="129",
+    )
+
+    assert result["status"] == "queued"
+    assert created_jobs[0]["job_type"] == "avatar_render"
+    task_kwargs = captured["kwargs"]["kwargs"]
+    assert "render_results" not in task_kwargs
+    assert "avatar_options" not in task_kwargs
+    assert task_kwargs["handoff_manifest_path"] == result["handoff_manifest_path"]
+    assert captured["kwargs"].get("args") in (None, [])
+    manifest = json.loads(Path(result["handoff_manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    assert manifest["base_job_id"] == 55
+    assert manifest["avatar_job_id"] == 77
+    assert manifest["ordered_results"] == ordered_results
+    assert manifest["avatar_settings"]["lipsync_engine"] == "liveportrait+musetalk"
+    assert state_updates[-1]["status"] == "queued"
+
+
+def test_render_lesson_avatar_overlay_reads_handoff_manifest_path(tmp_path, monkeypatch):
+    _patch_avatar_overlay_task_lightweight(tmp_path, monkeypatch)
+    audio = tmp_path / "129" / "audio" / "slide_001.mp3"
+    slide = tmp_path / "129" / "images" / "slide_001.png"
+    source = tmp_path / "avatars" / "teacher.png"
+    for path in [audio, slide, source]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    (tmp_path / "129").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "129" / "playback_assets.json").write_text(
+        json.dumps({"mp4_rel_path": "129/129.mp4", "final_segments": [{"index": 0}]}),
+        encoding="utf-8",
+    )
+
+    class SuccessfulAvatarResult:
+        result = {
+            "output_path": str(tmp_path / "129" / "avatar_segments" / "avatar_001.mp4"),
+            "engine_used": "liveportrait+musetalk",
+            "fallback_chain_used": ["liveportrait", "musetalk"],
+            "motion_validation": {"motion_real": True},
+        }
+
+        def failed(self):
+            return False
+
+    def fake_apply(**kwargs):
+        output_path = Path(kwargs["kwargs"]["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"avatar-segment")
+        return SuccessfulAvatarResult()
+
+    monkeypatch.setattr(worker_tasks, "render_avatar_segment", SimpleNamespace(apply=fake_apply))
+    manifest_path = worker_tasks._write_avatar_handoff_manifest(
+        "129",
+        "55",
+        {
+            "schema_version": 1,
+            "project_id": 129,
+            "base_job_id": 55,
+            "avatar_job_id": 77,
+            "created_at": "2026-05-10T00:00:00+00:00",
+            "ordered_results": [
+                {
+                    "index": 0,
+                    "slide_num": 1,
+                    "page_key": "p1",
+                    "text": "Slide",
+                    "tts_audio_path": str(audio),
+                    "slide_path": str(slide),
+                    "duration": 1.0,
+                }
+            ],
+            "avatar_settings": {
+                "teacher_id": 2,
+                "source_image_rel_path": "avatars/teacher.png",
+                "avatar_source_valid": True,
+                "avatar_preview_stale": False,
+                "lipsync_engine": "liveportrait+musetalk",
+            },
+            "render_metadata": {"output_rel_prefix": "129"},
+            "status": "created",
+        },
+    )
+
+    result = worker_tasks.render_lesson_avatar_overlay.run(
+        project_id=129,
+        teacher_id=2,
+        handoff_manifest_path=manifest_path,
+        output_rel_prefix="129",
+        avatar_job_id=77,
+        base_job_id=55,
+    )
+
+    assert result["status"] == "ready"
+    assert result["avatar_track_rel_path"] == "129/avatar/avatar_track.mp4"
+    sidecar_payload = json.loads((tmp_path / "129" / "playback_assets.json").read_text(encoding="utf-8"))
+    assert sidecar_payload["avatar"]["track_rel_path"] == "129/avatar/avatar_track.mp4"
+    assert sidecar_payload["final_segments"][0]["avatar_clip"] == "129/avatar_segments/avatar_001.mp4"
+
+
+def test_render_lesson_avatar_overlay_accepts_legacy_ordered_results(tmp_path, monkeypatch):
+    state_updates: list[dict] = []
+    _patch_avatar_overlay_task_lightweight(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker_tasks, "_mark_project_avatar_state", lambda *_args, **kwargs: state_updates.append(kwargs))
+
+    result = worker_tasks.render_lesson_avatar_overlay.run(
+        project_id=129,
+        teacher_id=2,
+        render_results=[{"index": 0, "slide_num": 1, "tts_audio_path": str(tmp_path / "missing.mp3")}],
+        avatar_options={
+            "teacher_id": 2,
+            "avatar_source_valid": False,
+            "avatar_source_validation_error": "avatar_input_face_not_detected",
+            "lipsync_engine": "liveportrait+musetalk",
+        },
+        output_rel_prefix="129",
+        avatar_job_id=77,
+    )
+
+    assert result["status"] == "failed"
+    assert result["avatar_failures"][0]["status"] == "avatar_source_invalid"
+    assert state_updates[-1]["status"] == "failed"
+
+
+def test_missing_avatar_handoff_manifest_fails_avatar_only(tmp_path, monkeypatch):
+    state_updates: list[dict] = []
+    _patch_avatar_overlay_task_lightweight(tmp_path, monkeypatch)
+    monkeypatch.setattr(worker_tasks, "_mark_project_avatar_state", lambda *_args, **kwargs: state_updates.append(kwargs))
+    sidecar_path = tmp_path / "129" / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True)
+    sidecar_path.write_text(json.dumps({"mp4_rel_path": "129/129.mp4", "avatar": {"track_rel_path": "old.mp4"}}), encoding="utf-8")
+
+    result = worker_tasks.render_lesson_avatar_overlay.run(
+        project_id=129,
+        teacher_id=2,
+        handoff_manifest_path=str(tmp_path / "missing" / "avatar_handoff.json"),
+        output_rel_prefix="129",
+        avatar_job_id=77,
+        base_job_id=55,
+    )
+
+    assert result["status"] == "failed"
+    assert result["avatar_failures"][0]["status"] == "avatar_handoff_unavailable"
+    assert state_updates[-1]["status"] == "failed"
+    sidecar_payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar_payload["mp4_rel_path"] == "129/129.mp4"
+    assert sidecar_payload["avatar"] is None
+    assert sidecar_payload["avatar_status"] == "failed"
+
+
 def test_render_chord_errback_marks_job_failed(monkeypatch):
     updates: list[dict] = []
     monkeypatch.setattr(worker_tasks, "_update_job", lambda _project_id, **kwargs: updates.append(kwargs))

@@ -3807,6 +3807,7 @@ class ProjectUploadView(APIView):
             project.save(update_fields=["cover_image_original", "cover_image_processed"])
 
         job = Job.objects.create(project=project, job_type="video_export", status="pending")
+        avatar_options = {**avatar_options, "base_job_id": job.id}
         task_args = [
             str(project.id),
             str(saved_path),
@@ -3987,6 +3988,7 @@ def _queue_transcript_rerender(
     saved_path = str(lesson_files[0])
     job = Job.objects.create(project=project, job_type="video_export", status="pending")
     avatar_options = _resolve_avatar_options_for_project(project, request)
+    avatar_options = {**avatar_options, "base_job_id": job.id}
     rerender_keys = [] if full_rerender or use_draft else sorted({str(key) for key in changed_page_keys if str(key)})
     task_args = [
         str(project.id),
@@ -5467,6 +5469,7 @@ class ProjectRerenderView(APIView):
         use_draft = has_dirty_draft(project)
         job = Job.objects.create(project=project, job_type="video_export", status="pending")
         avatar_options = _resolve_avatar_options_for_project(project, request)
+        avatar_options = {**avatar_options, "base_job_id": job.id}
         task_args = [
             str(project.id),
             saved_path,
