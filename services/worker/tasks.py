@@ -262,7 +262,13 @@ def _update_job(
         logger.warning("_update_job skipped for project=%s because core.models.Job is unavailable", project_id, exc_info=True)
         return
 
-    job = Job.objects.filter(project_id=int(project_id)).order_by("-created_at", "-id").first()
+    job = (
+        Job.objects.filter(project_id=int(project_id), job_type="video_export")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if job is None:
+        job = Job.objects.filter(project_id=int(project_id)).order_by("-created_at", "-id").first()
     if job is None:
         return
 
@@ -329,6 +335,22 @@ def _mark_project_avatar_state(
         logger.warning("Failed to update avatar state for project=%s", project_id, exc_info=True)
 
 
+def _avatar_job_is_current(project_id: str | int, avatar_job_id: str | int | None) -> bool:
+    if not avatar_job_id:
+        return True
+    try:
+        from core.models import Project
+
+        row = Project.objects.filter(pk=int(project_id)).values("avatar_last_job_id").first()
+        if not row:
+            return True
+        current = str(row.get("avatar_last_job_id") or "").strip()
+        return not current or current == str(avatar_job_id)
+    except Exception:
+        logger.warning("Avatar job freshness check skipped for project=%s job=%s", project_id, avatar_job_id, exc_info=True)
+        return True
+
+
 def _worker_protection_mode() -> str:
     try:
         from django.conf import settings
@@ -359,6 +381,38 @@ def _read_json_sidecar(project_id: str | int, file_name: str) -> dict[str, Any]:
         logger.warning("Failed to read sidecar project=%s file=%s", project_id, file_name, exc_info=True)
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def _avatar_handoff_manifest_dir(project_id: str | int, job_id: str | int) -> Path:
+    job_part = str(job_id or "unknown").strip() or "unknown"
+    return Path(STORAGE_ROOT) / "projects" / str(project_id) / "renders" / job_part
+
+
+def _write_avatar_handoff_manifest(project_id: str | int, job_id: str | int, payload: dict[str, Any]) -> str:
+    target = _avatar_handoff_manifest_dir(project_id, job_id) / "avatar_handoff.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    return str(target)
+
+
+def _read_avatar_handoff_manifest(path: str | Path) -> dict[str, Any]:
+    raw_path = str(path or "").strip()
+    if not raw_path:
+        raise ValueError("avatar_handoff_manifest_path_missing")
+    manifest_path = Path(raw_path)
+    if not manifest_path.is_absolute() and not manifest_path.exists():
+        manifest_path = Path(STORAGE_ROOT) / manifest_path
+    if not manifest_path.exists() or not manifest_path.is_file():
+        raise FileNotFoundError("avatar_handoff_manifest_missing")
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("avatar_handoff_manifest_unreadable") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("avatar_handoff_manifest_invalid")
+    if int(payload.get("schema_version") or 0) != 1:
+        raise ValueError("avatar_handoff_manifest_schema_unsupported")
+    return payload
 
 
 def _write_language_detection_sidecar(project_id: str | int, payload: dict[str, Any]) -> str:
@@ -2972,6 +3026,20 @@ def _latest_video_export_job_id(project_id: str | int) -> int | None:
         return None
 
 
+def _latest_project_job_id(project_id: str | int, *, job_type: str | None = None) -> int | None:
+    try:
+        from core.models import Job
+
+        queryset = Job.objects.filter(project_id=int(project_id))
+        if job_type:
+            queryset = queryset.filter(job_type=str(job_type))
+        row = queryset.order_by("-created_at", "-id").values("id").first()
+        return int(row["id"]) if row else None
+    except Exception:
+        logger.warning("Latest project job lookup failed for project=%s type=%s", project_id, job_type, exc_info=True)
+        return None
+
+
 def _persist_auto_video_frame_audit_results(
     *,
     project,
@@ -3541,11 +3609,13 @@ def render_avatar_lesson(self, project_id: int, teacher_id: int, segments: list[
 def render_lesson_avatar_overlay(
     self,
     project_id: int,
-    teacher_id: int,
-    render_results: list[dict[str, Any]],
-    avatar_options: dict[str, Any] | None,
-    output_rel_prefix: str,
+    teacher_id: int | None = None,
+    render_results: list[dict[str, Any]] | None = None,
+    avatar_options: dict[str, Any] | None = None,
+    output_rel_prefix: str = "",
     avatar_job_id: int | None = None,
+    handoff_manifest_path: str | None = None,
+    base_job_id: int | None = None,
 ) -> dict[str, Any]:
     """Render lesson avatar artifacts after the base lesson video is available."""
     try:
@@ -3557,11 +3627,11 @@ def render_lesson_avatar_overlay(
         raise RuntimeError(f"Avatar overlay dependencies not importable: {exc}") from exc
 
     project_id_int = int(project_id)
-    teacher_id_int = int(teacher_id)
+    teacher_id_int = int(teacher_id or 0)
     job_id = int(avatar_job_id or 0) or None
     avatar_cfg = dict(avatar_options or {})
     output_rel_prefix = str(output_rel_prefix or str(project_id_int)).strip().replace("\\", "/").strip("/") or str(project_id_int)
-    ordered = sorted(list(render_results or []), key=lambda item: int(item.get("index") or 0))
+    base_job_id_int = int(base_job_id or 0) or None
 
     def _set_job(**updates: Any) -> None:
         if job_id:
@@ -3570,19 +3640,20 @@ def render_lesson_avatar_overlay(
     def _fail(message: str, failures: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         message = str(message or "Avatar failed. Base video is still published.")
         _set_job(status="failed", progress=100, error_message=message)
-        _mark_project_avatar_state(
-            project_id_int,
-            status="failed",
-            message=message,
-            job_id=job_id,
-            clear_output=True,
-        )
-        sidecar = _read_playback_sidecar(project_id_int)
-        if sidecar:
-            sidecar["avatar"] = None
-            sidecar["avatar_status"] = "failed"
-            sidecar["avatar_failures"] = list(failures or [])
-            _write_playback_sidecar(project_id_int, sidecar)
+        if _avatar_job_is_current(project_id_int, job_id):
+            _mark_project_avatar_state(
+                project_id_int,
+                status="failed",
+                message=message,
+                job_id=job_id,
+                clear_output=True,
+            )
+            sidecar = _read_playback_sidecar(project_id_int)
+            if sidecar:
+                sidecar["avatar"] = None
+                sidecar["avatar_status"] = "failed"
+                sidecar["avatar_failures"] = list(failures or [])
+                _write_playback_sidecar(project_id_int, sidecar)
         return {
             "status": "failed",
             "project_id": project_id_int,
@@ -3591,6 +3662,44 @@ def render_lesson_avatar_overlay(
             "message": message,
         }
 
+    if not _avatar_job_is_current(project_id_int, job_id):
+        message = "Stale avatar job ignored."
+        _set_job(status="failed", progress=100, error_message=message)
+        return {"status": "stale", "project_id": project_id_int, "teacher_id": teacher_id_int, "message": message}
+
+    if handoff_manifest_path:
+        try:
+            handoff = _read_avatar_handoff_manifest(handoff_manifest_path)
+        except Exception as exc:  # noqa: BLE001
+            reason = _concise_error_text(exc, fallback="avatar_handoff_manifest_unavailable")
+            return _fail("Avatar failed. Base video is still published.", [{"status": "avatar_handoff_unavailable", "reason": reason}])
+        try:
+            manifest_project_id = int(handoff.get("project_id") or 0)
+            manifest_base_job_id = int(handoff.get("base_job_id") or 0) or None
+        except Exception:
+            return _fail(
+                "Avatar failed. Base video is still published.",
+                [{"status": "avatar_handoff_invalid", "reason": "invalid_manifest_ids"}],
+            )
+        if manifest_project_id != project_id_int:
+            return _fail(
+                "Avatar failed. Base video is still published.",
+                [{"status": "avatar_handoff_project_mismatch", "reason": "project_id_mismatch"}],
+            )
+        if base_job_id_int and manifest_base_job_id and manifest_base_job_id != base_job_id_int:
+            return _fail(
+                "Avatar failed. Base video is still published.",
+                [{"status": "avatar_handoff_stale", "reason": "base_job_id_mismatch"}],
+            )
+        base_job_id_int = manifest_base_job_id or base_job_id_int
+        render_results = list(handoff.get("ordered_results") or [])
+        avatar_cfg = dict(handoff.get("avatar_settings") or {})
+        if not teacher_id_int:
+            teacher_id_int = int(avatar_cfg.get("teacher_id") or 0)
+        render_meta = handoff.get("render_metadata") if isinstance(handoff.get("render_metadata"), dict) else {}
+        output_rel_prefix = str(render_meta.get("output_rel_prefix") or output_rel_prefix or str(project_id_int)).strip().replace("\\", "/").strip("/") or str(project_id_int)
+
+    ordered = sorted(list(render_results or []), key=lambda item: int(item.get("index") or 0))
     logger.info("Lesson avatar overlay START project=%s teacher=%s slides=%d", project_id_int, teacher_id_int, len(ordered))
     _set_job(status="running", progress=5)
     _mark_project_avatar_state(
@@ -3789,6 +3898,11 @@ def render_lesson_avatar_overlay(
     except Exception as exc:  # noqa: BLE001
         return _fail("Avatar failed. Base video is still published.", [{"status": "avatar_concat_failed", "reason": _concise_error_text(exc, fallback="avatar_concat_failed")}])
 
+    if not _avatar_job_is_current(project_id_int, job_id):
+        message = "Stale avatar job ignored."
+        _set_job(status="failed", progress=100, error_message=message)
+        return {"status": "stale", "project_id": project_id_int, "teacher_id": teacher_id_int, "message": message}
+
     avatar_track_rel = _safe_rel_path(_avatar_storage_root(), avatar_track_path)
     sidecar = _read_playback_sidecar(project_id_int)
     if not sidecar:
@@ -3882,7 +3996,33 @@ def _queue_lesson_avatar_overlay_after_base_render(
         from django.utils import timezone
         from core.models import Job, Project
 
+        base_job_id = int(avatar_cfg.get("base_job_id") or 0) or _latest_project_job_id(project_id, job_type="video_export")
         job = Job.objects.create(project_id=int(project_id), job_type="avatar_render", status="pending", progress=0)
+        handoff_job_id = base_job_id or job.id
+        handoff_manifest_path = _write_avatar_handoff_manifest(
+            project_id,
+            handoff_job_id,
+            {
+                "schema_version": 1,
+                "project_id": int(project_id),
+                "base_job_id": base_job_id,
+                "avatar_job_id": job.id,
+                "created_at": timezone.now().isoformat(),
+                "ordered_results": list(ordered_results or []),
+                "avatar_settings": avatar_cfg,
+                "source_hashes": {
+                    "avatar_source_hash": str(avatar_cfg.get("avatar_source_hash") or ""),
+                    "avatar_preview_source_hash": str(avatar_cfg.get("avatar_preview_source_hash") or ""),
+                },
+                "render_metadata": {
+                    "output_rel_prefix": str(output_rel_prefix or project_id),
+                    "slide_count": len(ordered_results or []),
+                    "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or ""),
+                    "model_version": str(avatar_cfg.get("model_version") or ""),
+                },
+                "status": "created",
+            },
+        )
         _mark_project_avatar_state(
             project_id,
             status="queued",
@@ -3891,19 +4031,26 @@ def _queue_lesson_avatar_overlay_after_base_render(
             clear_output=True,
         )
         async_result = render_lesson_avatar_overlay.apply_async(
-            args=[
-                int(project_id),
-                teacher_id,
-                ordered_results,
-                avatar_cfg,
-                str(output_rel_prefix or project_id),
-                int(job.id),
-            ],
+            kwargs={
+                "project_id": int(project_id),
+                "teacher_id": teacher_id,
+                "output_rel_prefix": str(output_rel_prefix or project_id),
+                "avatar_job_id": int(job.id),
+                "handoff_manifest_path": handoff_manifest_path,
+                "base_job_id": base_job_id,
+            },
             queue=_avatar_queue_name(),
         )
         Job.objects.filter(pk=job.id).update(celery_task_id=str(async_result.id or ""), updated_at=timezone.now())
         Project.objects.filter(pk=int(project_id)).update(updated_at=timezone.now())
-        return {"status": "queued", "queued": True, "job_id": job.id, "celery_task_id": str(async_result.id or "")}
+        return {
+            "status": "queued",
+            "queued": True,
+            "job_id": job.id,
+            "base_job_id": base_job_id,
+            "handoff_manifest_path": handoff_manifest_path,
+            "celery_task_id": str(async_result.id or ""),
+        }
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to queue lesson avatar overlay project=%s", project_id, exc_info=True)
         _mark_project_avatar_state(

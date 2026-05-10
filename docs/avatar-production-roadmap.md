@@ -62,34 +62,42 @@ Paid users can later receive priority queues or higher concurrency budgets. Avat
 
 ## 5. Sidecar-backed Handoff Plan
 
-Current risk: very large `ordered_results` or render metadata should not be passed directly through Celery for huge lessons.
+Status: implemented for the lesson avatar overlay handoff. The base render writes a JSON avatar handoff manifest to storage and the avatar queue receives only identifiers plus the manifest path. Legacy direct `ordered_results` payloads remain supported so already queued jobs can finish during deployment.
 
-Proposed solution:
+Implemented handoff:
 
-- Write render and avatar handoff manifests to storage.
-- Pass only `project_id`, `job_id`, and `manifest_path` through Celery messages.
+- Write the avatar handoff manifest to storage after base render assets are available.
+- Pass only `project_id`, `teacher_id`, `base_job_id`, `avatar_job_id`, `output_rel_prefix`, and `handoff_manifest_path` through Celery messages.
+- Keep old direct-payload handling in `render_lesson_avatar_overlay` for deployment compatibility.
+- Fail only avatar processing if the manifest is missing, unreadable, stale, or unsupported.
 - Later support MinIO or S3 for distributed workers.
 
-Example paths:
+Implemented path:
 
 ```text
 storage_local/projects/<project_id>/renders/<job_id>/avatar_handoff.json
+```
+
+Future result-manifest path:
+
+```text
 storage_local/projects/<project_id>/renders/<job_id>/avatar_result_manifest.json
 ```
 
-Manifest fields:
+Implemented manifest schema version 1:
 
+- `schema_version`
 - `project_id`
 - `base_job_id`
 - `avatar_job_id`
-- `ordered_slide_results`
-- `audio_paths`
-- `slide_video_paths`
+- `created_at`
+- `ordered_results`
 - `avatar_settings`
-- `engine_chain`
+- `source_hashes`
+- `render_metadata`
 - `status`
-- `errors`
-- `timestamps`
+
+Future manifest fields can add `audio_paths`, `slide_video_paths`, `engine_chain`, `errors`, and richer timestamps once the pipeline needs separate result manifests or remote object storage.
 
 ## 6. Avatar Persona Bank
 
@@ -216,7 +224,7 @@ Expected behavior:
 
 Phase 1: Documentation and current non-blocking workflow stabilization.
 
-Phase 2: Sidecar manifest handoff.
+Phase 2: Sidecar manifest handoff for lesson avatar overlay. Implemented locally; future work is remote object storage and a separate avatar result manifest.
 
 Phase 3: Persona bank data model and admin seed flow.
 
