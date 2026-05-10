@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import html
 import hashlib
 import json
 import logging
@@ -1458,6 +1459,56 @@ def _single_source_page_structure(source_slide_index: int, text: str) -> dict[st
     }
 
 
+def _split_text_on_blank_lines(value: Any) -> list[str]:
+    normalized = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
+
+
+def _normalized_text_for_compare(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _rich_text_html_from_display_text(value: Any) -> str:
+    return html.escape(str(value or "")).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br />")
+
+
+def _plain_text_from_html(value: Any) -> str:
+    text = re.sub(r"<br\s*/?>", "\n", str(value or ""), flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return html.unescape(text)
+
+
+def _split_consistent_display_text(display_text: Any, narration_text: Any) -> str:
+    display = str(display_text or "")
+    narration = str(narration_text or "")
+    display_parts = _split_text_on_blank_lines(display)
+    if len(display_parts) > 1 and _normalized_text_for_compare(narration):
+        normalized_narration = _normalized_text_for_compare(narration)
+        for part in display_parts:
+            if _normalized_text_for_compare(part) == normalized_narration:
+                return part
+        return narration
+    if not display.strip() and narration.strip():
+        return narration
+    return display
+
+
+def _split_consistent_rich_text_html(display_text: Any, rich_text_html: Any) -> str:
+    display = str(display_text or "")
+    rich = str(rich_text_html or "")
+    if rich and _normalized_text_for_compare(_plain_text_from_html(rich)) == _normalized_text_for_compare(display):
+        return rich
+    return _rich_text_html_from_display_text(display)
+
+
+def _subtitle_chunks_for_render(chunks: Any, narration_text: Any) -> list[str]:
+    narration = str(narration_text or "")
+    safe_chunks = [str(chunk).strip() for chunk in (chunks or []) if str(chunk or "").strip()] if isinstance(chunks, list) else []
+    if safe_chunks and _normalized_text_for_compare(" ".join(safe_chunks)) == _normalized_text_for_compare(narration):
+        return safe_chunks
+    return [narration] if narration.strip() else []
+
+
 def _merge_scene_from_export(page: Any, slide_payload: dict[str, Any]) -> None:
     editor_document = dict(getattr(page, "editor_document", None) or {})
     scene = dict(editor_document.get("scene") or {})
@@ -1691,8 +1742,17 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
         )
         if effective_whiteboard_mode:
             render_image_path = "" if scene_mode == "whiteboard" else render_image_path
-        display_text = str(page.original_text or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
-        subtitle_source = str(page.narration_text or page.original_text or slide_payload.get("notes_text") or "")
+        narration_text = str(page.narration_text or slide_payload.get("narration_text") or slide_payload.get("notes_text") or "")
+        raw_display_text = str(
+            page.original_text
+            or slide_payload.get("display_text")
+            or slide_payload.get("original_text")
+            or slide_payload.get("notes_text")
+            or ""
+        )
+        display_text = _split_consistent_display_text(raw_display_text, narration_text)
+        rich_text_html = _split_consistent_rich_text_html(display_text, page.rich_text_html)
+        subtitle_chunks = _subtitle_chunks_for_render(page.subtitle_chunks, narration_text)
         slide_payload.update(
             {
                 "index": display_index,
@@ -1701,13 +1761,13 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
                 "source_slide_num": int(page.source_slide_index or 0) + 1,
                 "split_index": int(page.split_index or 0),
                 "page_key": str(page.page_key or ""),
-                "notes_text": display_text or subtitle_source,
+                "notes_text": narration_text,
                 "original_text": display_text,
                 "display_text": display_text,
-                "narration_text": str(page.narration_text or subtitle_source),
-                "rich_text_html": str(page.rich_text_html or ""),
+                "narration_text": narration_text,
+                "rich_text_html": rich_text_html,
                 "editor_document": editor_document,
-                "subtitle_chunks": list(page.subtitle_chunks or ([subtitle_source] if subtitle_source else [])),
+                "subtitle_chunks": subtitle_chunks,
                 "source_type": source_type,
                 "whiteboard_mode": effective_whiteboard_mode,
                 "scene_background_mode": scene_mode,
@@ -1807,9 +1867,17 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
         )
         if effective_whiteboard_mode:
             render_image_path = "" if scene_mode == "whiteboard" else render_image_path
-        display_text = str(page.get("original_text") or slide_payload.get("original_text") or slide_payload.get("notes_text") or "")
-        narration_text = str(page.get("narration_text") or display_text)
-        subtitle_chunks = list(page.get("subtitle_chunks") or ([narration_text] if narration_text else []))
+        narration_text = str(page.get("narration_text") or slide_payload.get("narration_text") or slide_payload.get("notes_text") or "")
+        raw_display_text = str(
+            page.get("original_text")
+            or slide_payload.get("display_text")
+            or slide_payload.get("original_text")
+            or slide_payload.get("notes_text")
+            or ""
+        )
+        display_text = _split_consistent_display_text(raw_display_text, narration_text)
+        rich_text_html = _split_consistent_rich_text_html(display_text, page.get("rich_text_html") or "")
+        subtitle_chunks = _subtitle_chunks_for_render(page.get("subtitle_chunks"), narration_text)
         slide_payload.update(
             {
                 "index": display_index,
@@ -1818,11 +1886,11 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
                 "source_slide_num": source_index + 1,
                 "split_index": int(page.get("split_index") or 0),
                 "page_key": str(page.get("page_key") or f"draft-page-{display_index + 1}"),
-                "notes_text": display_text or narration_text,
+                "notes_text": narration_text,
                 "original_text": display_text,
                 "display_text": display_text,
                 "narration_text": narration_text,
-                "rich_text_html": str(page.get("rich_text_html") or ""),
+                "rich_text_html": rich_text_html,
                 "editor_document": editor_document,
                 "subtitle_chunks": subtitle_chunks,
                 "source_type": source_type,
@@ -4627,7 +4695,7 @@ def export_project(
                 "source_render_details": clean_source_render_details,
                 "source_render_dependency_report": source_render_dependency_report,
                 "source_background_details": clean_background_details,
-                "notes_text": notes_text,
+                "notes_text": narration_text,
                 "original_text": page_text,
                 "display_text": page_text,
                 "narration_text": narration_text,
@@ -4698,9 +4766,10 @@ def synthesize_and_render_slide(
     image_path = slide_meta["image_path"]
     notes_text = slide_meta["notes_text"]
     narration_text = slide_meta.get("narration_text") or notes_text
-    original_text = slide_meta.get("original_text") or notes_text
-    display_text = slide_meta.get("display_text") or original_text
-    subtitle_chunks = list(slide_meta.get("subtitle_chunks") or [])
+    raw_original_text = slide_meta.get("original_text") or notes_text
+    display_text = _split_consistent_display_text(slide_meta.get("display_text") or raw_original_text, narration_text)
+    original_text = display_text
+    subtitle_chunks = _subtitle_chunks_for_render(slide_meta.get("subtitle_chunks"), narration_text)
     whiteboard_mode = bool(slide_meta.get("whiteboard_mode"))
     editor_document = slide_meta.get("editor_document") if isinstance(slide_meta.get("editor_document"), dict) else {}
     editor_scene = editor_document.get("scene") if isinstance(editor_document.get("scene"), dict) else {}
@@ -4741,6 +4810,7 @@ def synthesize_and_render_slide(
             narration_text = "\n".join(para_lines)
     if isinstance(editor_document, dict) and not rich_text_html:
         rich_text_html = str(editor_document.get("html") or "")
+    rich_text_html = _split_consistent_rich_text_html(display_text, rich_text_html)
     notes_text_prepared = str(narration_text or "").strip() or f"Slide {slide_num}."
     audio_out  = slide_meta["audio_out"]
     part_out   = slide_meta["part_out"]

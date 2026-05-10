@@ -738,6 +738,15 @@ def _chunk_transcript_text(text: str, max_chars: int = 120) -> list[str]:
     return [c for c in chunks if c]
 
 
+def _split_text_on_blank_lines(value: Any) -> list[str]:
+    normalized = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
+
+
+def _normalized_text_for_compare(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
 def _text_flags_from_editor_document(editor_document: Any, *, original_text: str = "", narration_text: str = "") -> dict:
     text_flags = {}
     if isinstance(editor_document, dict) and isinstance(editor_document.get("text"), dict):
@@ -1081,21 +1090,106 @@ def _rich_text_html_from_narration(text: str) -> str:
     return html.escape(str(text or "")).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br />")
 
 
+def _split_segment_records(
+    parts_payload: list[dict],
+    *,
+    source_display_text: str,
+    text_flags: dict,
+) -> list[dict]:
+    narration_parts: list[str] = []
+    explicit_display_parts: list[str] = []
+    has_explicit_display = False
+
+    for item in parts_payload:
+        if not isinstance(item, dict):
+            raise TranscriptActionError("each part must be an object.")
+        narration_parts.append(str(item.get("narration_text") or item.get("text") or ""))
+        if "original_text" in item or "display_text" in item:
+            has_explicit_display = True
+            explicit_display_parts.append(str(item.get("original_text") if "original_text" in item else item.get("display_text") or ""))
+        else:
+            explicit_display_parts.append("")
+
+    if not any(part.strip() for part in narration_parts):
+        raise TranscriptActionError("at least one split part must contain narration text.")
+
+    source_display_parts = _split_text_on_blank_lines(source_display_text)
+    use_source_display_parts = len(source_display_parts) == len(narration_parts)
+    display_from_narration = not has_explicit_display and not use_source_display_parts
+
+    records: list[dict] = []
+    for index, narration_text in enumerate(narration_parts):
+        if has_explicit_display:
+            display_text = explicit_display_parts[index]
+        elif use_source_display_parts:
+            display_text = source_display_parts[index]
+        else:
+            display_text = narration_text
+        rich_text_html = _rich_text_html_from_narration(display_text)
+        segment_flags = {
+            "display_text_customized": bool(text_flags.get("display_text_customized") and not display_from_narration),
+            "narration_customized": bool(
+                _normalized_text_for_compare(narration_text)
+                and _normalized_text_for_compare(display_text) != _normalized_text_for_compare(narration_text)
+            ),
+        }
+        records.append(
+            {
+                "display_text": display_text,
+                "narration_text": narration_text,
+                "rich_text_html": rich_text_html,
+                "subtitle_chunks": _chunk_transcript_text(narration_text),
+                "text_flags": segment_flags,
+            }
+        )
+    return records
+
+
+def _set_page_text_artifacts(page: TranscriptPage, record: dict) -> None:
+    page.original_text = str(record.get("display_text") or "")
+    page.narration_text = str(record.get("narration_text") or "")
+    page.rich_text_html = str(record.get("rich_text_html") or _rich_text_html_from_narration(page.original_text))
+    page.editor_document = _editor_document_with_scene(
+        page,
+        page.original_text,
+        page.rich_text_html,
+        text_flags=dict(record.get("text_flags") or {}),
+    )
+    page.subtitle_chunks = list(record.get("subtitle_chunks") or _chunk_transcript_text(page.narration_text))
+
+
 def _set_page_narration_artifacts(page: TranscriptPage, narration_text: str) -> None:
-    page.narration_text = str(narration_text or "")
-    page.rich_text_html = _rich_text_html_from_narration(page.original_text)
     text_flags = _text_flags_from_editor_document(
         getattr(page, "editor_document", None),
         original_text=getattr(page, "original_text", ""),
-        narration_text=page.narration_text,
+        narration_text=str(narration_text or ""),
     )
     text_flags["narration_customized"] = bool(
-        re.sub(r"\s+", " ", page.narration_text).strip()
+        re.sub(r"\s+", " ", str(narration_text or "")).strip()
         and re.sub(r"\s+", " ", str(page.original_text or "")).strip()
-        != re.sub(r"\s+", " ", page.narration_text).strip()
+        != re.sub(r"\s+", " ", str(narration_text or "")).strip()
     )
-    page.editor_document = _editor_document_with_scene(page, page.original_text, page.rich_text_html, text_flags=text_flags)
-    page.subtitle_chunks = _chunk_transcript_text(page.narration_text)
+    _set_page_text_artifacts(
+        page,
+        {
+            "display_text": page.original_text,
+            "narration_text": str(narration_text or ""),
+            "rich_text_html": _rich_text_html_from_narration(page.original_text),
+            "subtitle_chunks": _chunk_transcript_text(str(narration_text or "")),
+            "text_flags": text_flags,
+        },
+    )
+
+
+def _set_draft_text_artifacts(page: dict, record: dict) -> None:
+    page["original_text"] = str(record.get("display_text") or "")
+    page["narration_text"] = str(record.get("narration_text") or "")
+    page["rich_text_html"] = str(record.get("rich_text_html") or _rich_text_html_from_narration(page["original_text"]))
+    page["subtitle_chunks"] = list(record.get("subtitle_chunks") or _chunk_transcript_text(page["narration_text"]))
+    page["editor_document"] = _merge_editor_document_preserving_scene(
+        _build_editor_document(page["original_text"], page["rich_text_html"], text_flags=dict(record.get("text_flags") or {})),
+        page.get("editor_document") or {},
+    )
 
 
 def _normalize_active_transcript_order(project: Project, ordered_pages: list[TranscriptPage] | None = None) -> None:
@@ -1108,8 +1202,12 @@ def _normalize_active_transcript_order(project: Project, ordered_pages: list[Tra
 
 def _unique_split_page_key(project: Project, base_key: str, existing_keys: set[str], split_index: int) -> str:
     safe_base = str(base_key or "page").strip() or "page"
-    suffix = f"-x{split_index}"
-    candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
+    match = re.match(r"^(s\d+-p)(\d+)$", safe_base)
+    if match:
+        candidate = f"{match.group(1)}{int(match.group(2)) + int(split_index)}"
+    else:
+        suffix = f"-x{split_index}"
+        candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
     while candidate in existing_keys:
         random_suffix = f"-x{split_index}-{uuid.uuid4().hex[:4]}"
         candidate = f"{safe_base[: max(1, 64 - len(random_suffix))]}{random_suffix}"
@@ -1144,34 +1242,44 @@ def _split_pages_on_double_newline(project: Project) -> None:
 
     for page in pages:
         text = str(page.narration_text or "").replace("\r\n", "\n").replace("\r", "\n")
-        parts = [part for part in re.split(r"\n\s*\n+", text) if part.strip()]
+        parts = _split_text_on_blank_lines(text)
         if len(parts) <= 1:
             continue
 
-        page.narration_text = parts[0]
-        page.subtitle_chunks = _chunk_transcript_text(parts[0])
-        page.save(update_fields=["narration_text", "subtitle_chunks", "updated_at"])
+        text_flags = _text_flags_from_editor_document(
+            page.editor_document,
+            original_text=page.original_text,
+            narration_text=page.narration_text,
+        )
+        records = _split_segment_records(
+            [{"narration_text": part} for part in parts],
+            source_display_text=page.original_text,
+            text_flags=text_flags,
+        )
 
-        for idx, part in enumerate(parts[1:], start=1):
-            candidate_key = f"{page.page_key}-x{idx}"
-            while candidate_key in existing_keys:
-                candidate_key = f"{page.page_key}-x{idx}-{uuid.uuid4().hex[:4]}"
-            existing_keys.add(candidate_key)
+        _set_page_text_artifacts(page, records[0])
+        page.save(update_fields=["original_text", "narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
 
+        for idx, record in enumerate(records[1:], start=1):
+            candidate_key = _unique_split_page_key(project, page.page_key, existing_keys, idx)
             TranscriptPage.objects.create(
                 project=project,
                 order=page.order + idx,
                 source_slide_index=page.source_slide_index,
                 split_index=page.split_index + idx,
                 page_key=candidate_key,
-                original_text=part,
-                narration_text=part,
-                rich_text_html=part.replace("\n", "<br />"),
+                original_text=record["display_text"],
+                narration_text=record["narration_text"],
+                rich_text_html=record["rich_text_html"],
                 editor_document=_merge_editor_document_preserving_scene(
-                    _build_editor_document(part, part.replace("\n", "<br />")),
+                    _build_editor_document(
+                        record["display_text"],
+                        record["rich_text_html"],
+                        text_flags=dict(record.get("text_flags") or {}),
+                    ),
                     page.editor_document,
                 ),
-                subtitle_chunks=_chunk_transcript_text(part),
+                subtitle_chunks=record["subtitle_chunks"],
                 whiteboard_mode=page.whiteboard_mode,
             )
 
@@ -4375,8 +4483,12 @@ def _set_draft_narration(page: dict, narration_text: str) -> None:
 
 def _draft_page_key(existing_keys: set[str], base_key: str, split_index: int) -> str:
     safe_base = str(base_key or "page").strip() or "page"
-    suffix = f"-x{split_index}"
-    candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
+    match = re.match(r"^(s\d+-p)(\d+)$", safe_base)
+    if match:
+        candidate = f"{match.group(1)}{int(match.group(2)) + int(split_index)}"
+    else:
+        suffix = f"-x{split_index}"
+        candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
     while candidate in existing_keys:
         random_suffix = f"-x{split_index}-{uuid.uuid4().hex[:4]}"
         candidate = f"{safe_base[: max(1, 64 - len(random_suffix))]}{random_suffix}"
@@ -4508,13 +4620,16 @@ def _split_transcript_page(project: Project, payload: dict) -> list[str]:
     if len(parts_payload) > 20:
         raise TranscriptActionError("parts may not contain more than 20 entries.")
 
-    parts: list[str] = []
-    for item in parts_payload:
-        if not isinstance(item, dict):
-            raise TranscriptActionError("each part must be an object.")
-        parts.append(str(item.get("narration_text") or ""))
-    if not any(part.strip() for part in parts):
-        raise TranscriptActionError("at least one split part must contain narration text.")
+    text_flags = _text_flags_from_editor_document(
+        page.editor_document,
+        original_text=page.original_text,
+        narration_text=page.narration_text,
+    )
+    records = _split_segment_records(
+        parts_payload,
+        source_display_text=page.original_text,
+        text_flags=text_flags,
+    )
 
     active_pages = list(_active_transcript_pages(project))
     try:
@@ -4523,23 +4638,22 @@ def _split_transcript_page(project: Project, payload: dict) -> list[str]:
         raise TranscriptActionError("page_id must reference an active page in this project.") from None
 
     existing_keys = set(project.transcript_pages.values_list("page_key", flat=True))
-    _set_page_narration_artifacts(page, parts[0])
-    page.save(update_fields=["narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
+    _set_page_text_artifacts(page, records[0])
+    page.save(update_fields=["original_text", "narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
 
     created_pages: list[TranscriptPage] = []
-    for offset, part in enumerate(parts[1:], start=1):
+    for offset, record in enumerate(records[1:], start=1):
         new_page = TranscriptPage(
             project=project,
             order=page.order + offset,
             source_slide_index=page.source_slide_index,
             split_index=page.split_index + offset,
             page_key=_unique_split_page_key(project, page.page_key, existing_keys, offset),
-            original_text="",
             whiteboard_mode=page.whiteboard_mode,
             is_active=True,
             deleted_at=None,
         )
-        _set_page_narration_artifacts(new_page, part)
+        _set_page_text_artifacts(new_page, record)
         new_page.editor_document = _merge_editor_document_preserving_scene(new_page.editor_document, page.editor_document)
         new_page.save()
         created_pages.append(new_page)
@@ -4666,44 +4780,37 @@ def _draft_split_transcript_page(draft_data: dict, payload: dict) -> list[str]:
     if len(parts_payload) > 20:
         raise TranscriptActionError("parts may not contain more than 20 entries.")
 
-    parts = []
-    for item in parts_payload:
-        if not isinstance(item, dict):
-            raise TranscriptActionError("each part must be an object.")
-        parts.append(str(item.get("narration_text") or ""))
-    if not any(part.strip() for part in parts):
-        raise TranscriptActionError("at least one split part must contain narration text.")
+    text_flags = _draft_text_flags(page)
+    records = _split_segment_records(
+        parts_payload,
+        source_display_text=str(page.get("original_text") or ""),
+        text_flags=text_flags,
+    )
 
     insert_at = pages.index(page)
     existing_keys = {str(candidate.get("page_key") or "") for candidate in pages if candidate.get("page_key")}
-    _set_draft_narration(page, parts[0])
-    page["rich_text_html"] = page.get("rich_text_html") or _rich_text_html_from_narration(page.get("original_text", ""))
+    _set_draft_text_artifacts(page, records[0])
     changed_keys = [str(page.get("page_key") or page.get("id") or "")]
 
     created_pages = []
-    for offset, part in enumerate(parts[1:], start=1):
+    next_temp_id = _next_draft_temp_page_id(draft_data)
+    for offset, record in enumerate(records[1:], start=1):
         new_page = {
-            "id": _next_draft_temp_page_id(draft_data),
+            "id": next_temp_id,
             "order": int(page.get("order") or 0) + offset,
             "source_slide_index": page.get("source_slide_index"),
             "split_index": int(page.get("split_index") or 0) + offset,
             "page_key": _draft_page_key(existing_keys, str(page.get("page_key") or "page"), offset),
-            "original_text": "",
-            "narration_text": str(part or ""),
-            "rich_text_html": "",
-            "editor_document": _merge_editor_document_preserving_scene(
-                {
-                    "version": 1,
-                    "html": "",
-                    "text": {"narration_customized": True, "display_text_customized": False},
-                },
-                page.get("editor_document") or {},
-            ),
             "whiteboard_mode": bool(page.get("whiteboard_mode")),
-            "subtitle_chunks": _chunk_transcript_text(part),
         }
+        _set_draft_text_artifacts(new_page, record)
+        new_page["editor_document"] = _merge_editor_document_preserving_scene(
+            new_page.get("editor_document") or {},
+            page.get("editor_document") or {},
+        )
         created_pages.append(new_page)
         changed_keys.append(new_page["page_key"])
+        next_temp_id -= 1
 
     pages[insert_at + 1:insert_at + 1] = created_pages
     _normalize_draft_page_order(pages)

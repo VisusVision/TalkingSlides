@@ -223,6 +223,52 @@ def test_split_draft_pages_promote_as_active_pages():
     promote_project_draft(project)
     active_pages = list(project.transcript_pages.filter(is_active=True).order_by("order", "id"))
     assert [active.narration_text for active in active_pages] == ["First A", "First B"]
+    assert [active.original_text for active in active_pages] == ["First A", "First B"]
+    assert [active.page_key for active in active_pages] == ["s1-p1", "s1-p2"]
+    assert [active.subtitle_chunks for active in active_pages] == [["First A"], ["First B"]]
+    assert active_pages[0].editor_document["paragraphs"][0]["text"] == "First A"
+    assert active_pages[1].editor_document["paragraphs"][0]["text"] == "First B"
+
+
+@pytest.mark.django_db
+def test_split_draft_render_descriptors_use_split_text_fields():
+    owner = _make_user("draft_split_descriptor_owner")
+    project = _make_project(owner)
+    page = _make_page(project, order=0, text="First A\n\nFirst B")
+
+    response = _client(owner).post(
+        f"/api/v1/projects/{project.id}/transcript/actions/",
+        {
+            "draft_only": True,
+            "action": "split_page",
+            "page_id": page.id,
+            "parts": [{"narration_text": "First A"}, {"narration_text": "First B"}],
+        },
+        format="json",
+    )
+    assert response.status_code == 200
+
+    slides = worker_tasks._build_render_slides_from_draft(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "image_path": "",
+                "notes_text": "First A\n\nFirst B",
+                "original_text": "First A\n\nFirst B",
+                "display_text": "First A\n\nFirst B",
+            }
+        ],
+    )
+
+    assert [slide["page_key"] for slide in slides] == ["s1-p1", "s1-p2"]
+    assert [slide["split_index"] for slide in slides] == [0, 1]
+    assert [slide["narration_text"] for slide in slides] == ["First A", "First B"]
+    assert [slide["original_text"] for slide in slides] == ["First A", "First B"]
+    assert [slide["display_text"] for slide in slides] == ["First A", "First B"]
+    assert [slide["notes_text"] for slide in slides] == ["First A", "First B"]
+    assert [slide["subtitle_chunks"] for slide in slides] == [["First A"], ["First B"]]
 
 
 @pytest.mark.django_db

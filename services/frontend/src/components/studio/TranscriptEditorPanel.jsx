@@ -571,6 +571,8 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   const splitSelectedPage = useCallback(() => {
     if (!selectedDraftPage?.id) return;
     const parts = splitByBlankLines(selectedDraftPage.narration_text);
+    const displayParts = splitByBlankLines(displayValue(selectedDraftPage));
+    const displayMatchesNarrationParts = displayParts.length === parts.length;
     if (parts.length < 2) {
       setError('Add a double blank line in the selected narration before splitting.');
       setStatusMessage('');
@@ -591,7 +593,10 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           'split_page',
           {
             page_id: selectedDraftPage.id,
-            parts: parts.map((part) => ({ narration_text: part })),
+            parts: parts.map((part, index) => ({
+              narration_text: part,
+              original_text: displayMatchesNarrationParts ? displayParts[index] : part,
+            })),
           },
           {
             selectPage: selectedDraftPage,

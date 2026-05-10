@@ -159,6 +159,13 @@ def test_split_and_reorder_actions_mutate_draft_only():
     )
 
     assert split_response.status_code == 200
+    split_pages = split_response.data["pages"]
+    assert [page["page_key"] for page in split_pages[:2]] == ["s1-p1", "s1-p2"]
+    assert [page["original_text"] for page in split_pages[:2]] == ["First A", "First B"]
+    assert [page["narration_text"] for page in split_pages[:2]] == ["First A", "First B"]
+    assert [page["subtitle_chunks"] for page in split_pages[:2]] == [["First A"], ["First B"]]
+    assert split_pages[0]["editor_document"]["paragraphs"][0]["text"] == "First A"
+    assert split_pages[1]["editor_document"]["paragraphs"][0]["text"] == "First B"
     assert reorder_response.status_code == 200
     active_pages = list(TranscriptPage.objects.filter(project=project, is_active=True).order_by("order", "id"))
     assert [page.id for page in active_pages] == [first.id, second.id]

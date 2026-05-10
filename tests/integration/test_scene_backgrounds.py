@@ -628,6 +628,51 @@ def test_sync_render_descriptor_includes_background_and_text(tmp_path, monkeypat
 
 
 @pytest.mark.django_db
+def test_sync_render_descriptor_normalizes_legacy_split_text(tmp_path, monkeypatch):
+    project = _make_project("sync_legacy_split_text")
+    slide_path = tmp_path / str(project.id) / "images" / "slide-1.png"
+    slide_path.parent.mkdir(parents=True, exist_ok=True)
+    slide_path.write_bytes(PNG_1X1)
+    first = _make_page(project, key="s1-p1", whiteboard_mode=True)
+    second = _make_page(project, key="s1-p2", whiteboard_mode=True)
+    second.order = 1
+    second.source_slide_index = 0
+    second.split_index = 1
+    first.original_text = "First visual segment\n\nSecond visual segment"
+    first.narration_text = "First visual segment"
+    first.rich_text_html = "First visual segment<br /><br />Second visual segment"
+    first.subtitle_chunks = ["First visual segment", "Second visual segment"]
+    second.original_text = ""
+    second.narration_text = "Second visual segment"
+    second.rich_text_html = ""
+    second.subtitle_chunks = ["First visual segment", "Second visual segment"]
+    first.save(update_fields=["original_text", "narration_text", "rich_text_html", "subtitle_chunks"])
+    second.save(update_fields=["order", "source_slide_index", "split_index", "original_text", "narration_text", "rich_text_html", "subtitle_chunks"])
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    slides = worker_tasks._sync_transcript_pages_from_export(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "page_key": "s1-p1",
+                "image_path": str(slide_path),
+                "original_text": "First visual segment\n\nSecond visual segment",
+                "display_text": "First visual segment\n\nSecond visual segment",
+                "notes_text": "First visual segment\n\nSecond visual segment",
+            }
+        ],
+    )
+
+    assert [slide["page_key"] for slide in slides] == ["s1-p1", "s1-p2"]
+    assert [slide["narration_text"] for slide in slides] == ["First visual segment", "Second visual segment"]
+    assert [slide["original_text"] for slide in slides] == ["First visual segment", "Second visual segment"]
+    assert [slide["display_text"] for slide in slides] == ["First visual segment", "Second visual segment"]
+    assert [slide["subtitle_chunks"] for slide in slides] == [["First visual segment"], ["Second visual segment"]]
+
+
+@pytest.mark.django_db
 def test_sync_render_descriptor_uses_source_background_path(tmp_path, monkeypatch):
     project = _make_project("sync_source_background_descriptor")
     source_background_path = tmp_path / str(project.id) / "source_backgrounds" / "slide-1.png"
