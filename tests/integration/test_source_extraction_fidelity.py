@@ -576,6 +576,36 @@ def test_source_render_dependency_warnings_surface_missing_tools(monkeypatch):
     assert "python_pptx_available" in report
 
 
+def test_libreoffice_conversion_uses_staged_temp_input_path(tmp_path, monkeypatch):
+    original_dir = tmp_path / "app" / "storage_local" / "uploads" / "210"
+    source_path = original_dir / "lesson.pptx"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"fake pptx")
+    out_dir = tmp_path / "lo-out"
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, **_kwargs):
+        staged_input = Path(cmd[-1])
+        captured["cmd"] = cmd
+        captured["cwd"] = _kwargs.get("cwd")
+        captured["staged_input"] = staged_input
+        assert staged_input != source_path.resolve()
+        assert staged_input.name == source_path.name
+        assert staged_input.exists()
+        (out_dir / "lesson.pdf").write_bytes(b"%PDF-1.4")
+        return pptx_extract.subprocess.CompletedProcess(cmd, 0, stdout="converted", stderr="")
+
+    monkeypatch.setattr(pptx_extract, "_find_soffice_executable", lambda: "soffice")
+    monkeypatch.setattr(pptx_extract.subprocess, "run", fake_run)
+
+    converted = pptx_extract._convert_via_libreoffice_to_pdf(str(source_path), out_dir)
+
+    assert converted == out_dir.resolve() / "lesson.pdf"
+    assert str(source_path.resolve()) not in captured["cmd"]
+    assert str(captured["staged_input"]).endswith("lesson.pptx")
+    assert captured["cwd"] == str(Path(captured["staged_input"]).parent)
+
+
 def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, monkeypatch):
     source_path = tmp_path / "lesson.pptx"
     source_path.write_bytes(b"fake pptx")
@@ -614,8 +644,11 @@ def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, m
     assert details["expected_output_path"].endswith("lesson.pdf")
     assert any("conversion.log" in item for item in details["actual_output_files"])
     assert details["input_path"] == str(source_path.resolve())
+    assert details["staged_input_path"] != details["input_path"]
+    assert details["staged_input_path"].endswith("lesson.pptx")
+    assert details["staged_input_path"] in details["command"]
     assert details["output_directory"] == str(out_dir.resolve())
-    assert details["working_directory"] == str(tmp_path.resolve())
+    assert details["working_directory"] == str(Path(details["staged_input_path"]).parent)
 
 
 def test_libreoffice_missing_output_pdf_records_outdir_files(tmp_path, monkeypatch):
@@ -638,6 +671,7 @@ def test_libreoffice_missing_output_pdf_records_outdir_files(tmp_path, monkeypat
     assert "libreoffice_export_no_output_pdf" in exc.warnings
     assert exc.details["warning_code"] == "libreoffice_export_no_output_pdf"
     assert exc.details["return_code"] == 0
+    assert exc.details["staged_input_path"] != exc.details["input_path"]
     assert any("notes.txt" in item for item in exc.details["actual_output_files"])
 
 
@@ -660,7 +694,33 @@ def test_libreoffice_empty_output_pdf_records_output_not_found(tmp_path, monkeyp
     exc = raised.value
     assert "libreoffice_export_output_not_found" in exc.warnings
     assert exc.details["warning_code"] == "libreoffice_export_output_not_found"
+    assert exc.details["staged_input_path"] != exc.details["input_path"]
     assert any("lesson.pdf (0 bytes)" in item for item in exc.details["actual_output_files"])
+
+
+def test_reconstructed_office_export_records_staging_failure_warning(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+
+    def fail_staging(_source_path: Path, _staging_dir: Path):
+        raise OSError("copy denied")
+
+    def fake_python_pptx(_source_path: str, out_dir: str, _resolution: int = 1920) -> list[str]:
+        return [str(_write_png(Path(out_dir) / "slide-1.png"))]
+
+    monkeypatch.setattr(pptx_extract, "_find_soffice_executable", lambda: "soffice")
+    monkeypatch.setattr(pptx_extract, "_stage_libreoffice_input", fail_staging)
+    monkeypatch.setattr(pptx_extract, "_export_via_python_pptx", fake_python_pptx)
+
+    metadata = pptx_extract.export_slide_images_with_metadata(str(source_path), str(tmp_path / "images"))
+
+    assert metadata["source_render_method"] == "python_pptx_reconstructed"
+    assert "libreoffice_export_failed" in metadata["source_render_warnings"]
+    assert "libreoffice_input_staging_failed" in metadata["source_render_warnings"]
+    assert "original_fidelity_reconstructed" in metadata["source_render_warnings"]
+    assert metadata["source_render_details"][0]["warning_code"] == "libreoffice_input_staging_failed"
+    assert metadata["source_render_details"][0]["input_path"] == str(source_path.resolve())
+    assert metadata["image_paths"][0].endswith("slide-1.png")
 
 
 def test_pptx_source_background_uses_reconstructed_fallback_when_libreoffice_fails(tmp_path, monkeypatch):

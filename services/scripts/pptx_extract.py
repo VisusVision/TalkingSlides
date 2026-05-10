@@ -189,6 +189,7 @@ def _libreoffice_details(
     out_dir: Path,
     expected_pdf: Path,
     cwd: Path,
+    staged_input_path: Path | None = None,
     profile_dir: Path | None = None,
     return_code: int | None = None,
     stdout: Any = "",
@@ -205,9 +206,18 @@ def _libreoffice_details(
         "input_path": str(source_path),
         "output_directory": str(out_dir),
     }
+    if staged_input_path is not None:
+        details["staged_input_path"] = str(staged_input_path)
     if profile_dir is not None:
         details["user_profile_path"] = str(profile_dir)
     return details
+
+
+def _stage_libreoffice_input(source_path: Path, staging_dir: Path) -> Path:
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    staged_path = staging_dir / source_path.name
+    shutil.copy2(source_path, staged_path)
+    return staged_path
 
 
 def _pdf_output_candidates(out_dir: Path) -> list[Path]:
@@ -300,7 +310,7 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     expected_pdf = out_dir / f"{source.stem}.pdf"
-    cwd = source.parent if source.parent.exists() else Path.cwd()
+    fallback_cwd = source.parent if source.parent.exists() else Path.cwd()
     soffice = _find_soffice_executable()
     if not soffice:
         cmd = [
@@ -313,7 +323,7 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
             source_path=source,
             out_dir=out_dir,
             expected_pdf=expected_pdf,
-            cwd=cwd,
+            cwd=fallback_cwd,
             stderr="LibreOffice executable was not found.",
         )
         raise LibreOfficeExportError(
@@ -322,9 +332,11 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
             details=details,
         )
 
-    with tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_tmp:
+    with tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_tmp, tempfile.TemporaryDirectory(prefix="lo-input-") as stage_tmp:
         profile_dir = Path(profile_tmp).resolve()
         profile_dir.mkdir(parents=True, exist_ok=True)
+        staging_dir = Path(stage_tmp).resolve()
+        staged_source = staging_dir / source.name
         lo_cmd = [
             soffice,
             "--headless",
@@ -337,8 +349,27 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
             "pdf",
             "--outdir",
             str(out_dir),
-            str(source),
+            str(staged_source),
         ]
+        try:
+            staged_source = _stage_libreoffice_input(source, staging_dir)
+        except Exception as exc:
+            details = _libreoffice_details(
+                cmd=lo_cmd,
+                source_path=source,
+                staged_input_path=staged_source,
+                out_dir=out_dir,
+                expected_pdf=expected_pdf,
+                cwd=staging_dir,
+                profile_dir=profile_dir,
+                stderr=str(exc),
+            )
+            raise LibreOfficeExportError(
+                "LibreOffice input staging failed",
+                warning_code="libreoffice_input_staging_failed",
+                details=details,
+            ) from exc
+
         try:
             proc = subprocess.run(
                 lo_cmd,
@@ -346,15 +377,16 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 stderr=subprocess.PIPE,
                 text=True,
                 timeout=_LIBREOFFICE_EXPORT_TIMEOUT_SECONDS,
-                cwd=str(cwd),
+                cwd=str(staging_dir),
             )
         except subprocess.TimeoutExpired as exc:
             details = _libreoffice_details(
                 cmd=lo_cmd,
                 source_path=source,
+                staged_input_path=staged_source,
                 out_dir=out_dir,
                 expected_pdf=expected_pdf,
-                cwd=cwd,
+                cwd=staging_dir,
                 profile_dir=profile_dir,
                 stdout=exc.stdout,
                 stderr=exc.stderr,
@@ -368,9 +400,10 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
             details = _libreoffice_details(
                 cmd=lo_cmd,
                 source_path=source,
+                staged_input_path=staged_source,
                 out_dir=out_dir,
                 expected_pdf=expected_pdf,
-                cwd=cwd,
+                cwd=staging_dir,
                 profile_dir=profile_dir,
                 stderr=str(exc),
             )
@@ -384,9 +417,10 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
             details = _libreoffice_details(
                 cmd=lo_cmd,
                 source_path=source,
+                staged_input_path=staged_source,
                 out_dir=out_dir,
                 expected_pdf=expected_pdf,
-                cwd=cwd,
+                cwd=staging_dir,
                 profile_dir=profile_dir,
                 return_code=proc.returncode,
                 stdout=proc.stdout,
@@ -410,9 +444,10 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
         details = _libreoffice_details(
             cmd=lo_cmd,
             source_path=source,
+            staged_input_path=staged_source,
             out_dir=out_dir,
             expected_pdf=expected_pdf,
-            cwd=cwd,
+            cwd=staging_dir,
             profile_dir=profile_dir,
             return_code=proc.returncode,
             stdout=proc.stdout,
@@ -1208,14 +1243,19 @@ def _extract_docx_text(docx_path: str, notes_dir: Path) -> List[str]:
 
     # Fallback: try LibreOffice to convert to txt
     try:
-        with tempfile.TemporaryDirectory() as tmpd, tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_tmp:
+        with (
+            tempfile.TemporaryDirectory() as tmpd,
+            tempfile.TemporaryDirectory(prefix="lo-profile-") as profile_tmp,
+            tempfile.TemporaryDirectory(prefix="lo-input-") as stage_tmp,
+        ):
             soffice = _find_soffice_executable() or "soffice"
+            staged_docx = _stage_libreoffice_input(Path(docx_path).resolve(), Path(stage_tmp).resolve())
             _run([
                 soffice, "--headless", "--nologo", "--nofirststartwizard", "--nolockcheck", "--nodefault",
                 f"-env:UserInstallation={Path(profile_tmp).resolve().as_uri()}",
                 "--convert-to", "txt:Text",
                 "--outdir", tmpd,
-                docx_path,
+                str(staged_docx),
             ])
             txt_candidates = sorted(Path(tmpd).glob("*.txt")) + sorted(Path(tmpd).glob("*.TXT"))
             if not txt_candidates:
