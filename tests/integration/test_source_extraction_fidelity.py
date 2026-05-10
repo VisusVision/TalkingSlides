@@ -576,18 +576,42 @@ def test_source_render_dependency_warnings_surface_missing_tools(monkeypatch):
     assert "python_pptx_available" in report
 
 
+def _fake_libreoffice_program(tmp_path: Path) -> tuple[Path, Path]:
+    program_dir = tmp_path / "lo" / "program"
+    program_dir.mkdir(parents=True)
+    soffice = program_dir / "soffice"
+    soffice.write_text("", encoding="utf-8")
+    (program_dir / "soffice.bin").write_text("", encoding="utf-8")
+    return soffice, program_dir
+
+
+def test_libreoffice_subprocess_env_prepends_program_dir_and_preserves_existing_ld_path(tmp_path, monkeypatch):
+    soffice, program_dir = _fake_libreoffice_program(tmp_path)
+    existing_ld_path = f"{tmp_path / 'cuda'}{os.pathsep}{tmp_path / 'torch'}"
+    monkeypatch.setenv("LD_LIBRARY_PATH", existing_ld_path)
+
+    env = pptx_extract._build_libreoffice_subprocess_env(soffice)
+
+    assert env["PATH"] == os.environ["PATH"]
+    assert env["LD_LIBRARY_PATH"] == f"{program_dir}{os.pathsep}{existing_ld_path}"
+
+
 def test_libreoffice_conversion_uses_staged_temp_input_path(tmp_path, monkeypatch):
     original_dir = tmp_path / "app" / "storage_local" / "uploads" / "210"
     source_path = original_dir / "lesson.pptx"
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_bytes(b"fake pptx")
     out_dir = tmp_path / "lo-out"
+    soffice, program_dir = _fake_libreoffice_program(tmp_path)
+    existing_ld_path = f"{tmp_path / 'cuda'}{os.pathsep}{tmp_path / 'torch'}"
+    monkeypatch.setenv("LD_LIBRARY_PATH", existing_ld_path)
     captured: dict[str, object] = {}
 
     def fake_run(cmd, **_kwargs):
         staged_input = Path(cmd[-1])
         captured["cmd"] = cmd
         captured["cwd"] = _kwargs.get("cwd")
+        captured["env"] = _kwargs.get("env")
         captured["staged_input"] = staged_input
         assert staged_input != source_path.resolve()
         assert staged_input.name == source_path.name
@@ -595,7 +619,7 @@ def test_libreoffice_conversion_uses_staged_temp_input_path(tmp_path, monkeypatc
         (out_dir / "lesson.pdf").write_bytes(b"%PDF-1.4")
         return pptx_extract.subprocess.CompletedProcess(cmd, 0, stdout="converted", stderr="")
 
-    monkeypatch.setattr(pptx_extract, "_find_soffice_executable", lambda: "soffice")
+    monkeypatch.setattr(pptx_extract, "_find_soffice_executable", lambda: str(soffice))
     monkeypatch.setattr(pptx_extract.subprocess, "run", fake_run)
 
     converted = pptx_extract._convert_via_libreoffice_to_pdf(str(source_path), out_dir)
@@ -604,6 +628,7 @@ def test_libreoffice_conversion_uses_staged_temp_input_path(tmp_path, monkeypatc
     assert str(source_path.resolve()) not in captured["cmd"]
     assert str(captured["staged_input"]).endswith("lesson.pptx")
     assert captured["cwd"] == str(Path(captured["staged_input"]).parent)
+    assert captured["env"]["LD_LIBRARY_PATH"] == f"{program_dir}{os.pathsep}{existing_ld_path}"
 
 
 def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, monkeypatch):
@@ -612,6 +637,9 @@ def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, m
     out_dir = tmp_path / "lo-out"
     out_dir.mkdir()
     (out_dir / "conversion.log").write_text("debug", encoding="utf-8")
+    soffice, program_dir = _fake_libreoffice_program(tmp_path)
+    existing_ld_path = f"{tmp_path / 'cuda'}{os.pathsep}{tmp_path / 'torch'}"
+    monkeypatch.setenv("LD_LIBRARY_PATH", existing_ld_path)
 
     def fake_run(cmd, **_kwargs):
         return pptx_extract.subprocess.CompletedProcess(
@@ -624,7 +652,7 @@ def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, m
     monkeypatch.setattr(
         pptx_extract,
         "_find_soffice_executable",
-        lambda: r"C:\Program Files\LibreOffice\program\soffice.exe",
+        lambda: str(soffice),
     )
     monkeypatch.setattr(pptx_extract.subprocess, "run", fake_run)
 
@@ -636,7 +664,7 @@ def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, m
     details = exc.details
     assert details["warning_code"] == "libreoffice_export_return_code_nonzero"
     assert details["return_code"] == 23
-    assert "soffice.exe" in details["command"]
+    assert str(soffice) in details["command"]
     assert "--headless" in details["command"]
     assert "-env:UserInstallation=file:" in details["command"]
     assert details["stdout_tail"].endswith("o" * 1200)
@@ -649,6 +677,32 @@ def test_libreoffice_nonzero_exit_records_diagnostic_warning_details(tmp_path, m
     assert details["staged_input_path"] in details["command"]
     assert details["output_directory"] == str(out_dir.resolve())
     assert details["working_directory"] == str(Path(details["staged_input_path"]).parent)
+    assert details["libreoffice_program_dir"] == str(program_dir)
+    assert details["libreoffice_env_ld_library_path_tail"] == f"{program_dir}{os.pathsep}{existing_ld_path}"
+
+
+def test_libreoffice_missing_program_dir_records_warning(tmp_path, monkeypatch):
+    source_path = tmp_path / "lesson.pptx"
+    source_path.write_bytes(b"fake pptx")
+    out_dir = tmp_path / "lo-out"
+    out_dir.mkdir()
+    missing_soffice = tmp_path / "missing" / "soffice"
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(tmp_path / "cuda"))
+
+    def fake_run(cmd, **_kwargs):
+        assert _kwargs["env"]["LD_LIBRARY_PATH"] == str(tmp_path / "cuda")
+        return pptx_extract.subprocess.CompletedProcess(cmd, 77, stdout="", stderr="missing private libs")
+
+    monkeypatch.setattr(pptx_extract, "_find_soffice_executable", lambda: str(missing_soffice))
+    monkeypatch.setattr(pptx_extract.subprocess, "run", fake_run)
+
+    with pytest.raises(pptx_extract.LibreOfficeExportError) as raised:
+        pptx_extract._convert_via_libreoffice_to_pdf(str(source_path), out_dir)
+
+    exc = raised.value
+    assert "libreoffice_program_dir_not_found" in exc.warnings
+    assert exc.details["libreoffice_program_dir"] == ""
+    assert exc.details["libreoffice_env_ld_library_path_tail"] == str(tmp_path / "cuda")
 
 
 def test_libreoffice_missing_output_pdf_records_outdir_files(tmp_path, monkeypatch):

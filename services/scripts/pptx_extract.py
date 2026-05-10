@@ -20,6 +20,7 @@ any supported file without changes.
 
 from __future__ import annotations
 
+import getpass
 import io
 import logging
 import os
@@ -73,17 +74,34 @@ def _env_int(name: str, default: int) -> int:
 
 _LIBREOFFICE_EXPORT_TIMEOUT_SECONDS = _env_int("LIBREOFFICE_EXPORT_TIMEOUT_SECONDS", 120)
 _LIBREOFFICE_STDIO_TAIL_CHARS = 1200
+_LIBREOFFICE_ENV_TAIL_CHARS = 800
 _LIBREOFFICE_MAX_LISTED_OUTPUT_FILES = 50
 _LIBREOFFICE_CONFIG_ENV_VARS = ("SOFFICE_PATH", "LIBREOFFICE_PATH", "LIBREOFFICE_EXECUTABLE")
+_LIBREOFFICE_PROGRAM_DIR_CANDIDATES = (
+    Path("/usr/lib/libreoffice/program"),
+    Path("/usr/lib64/libreoffice/program"),
+    Path("/opt/libreoffice/program"),
+)
+_LIBREOFFICE_PRIVATE_LIB_MARKERS = ("libreglo.so", "soffice.bin")
 
 
 class LibreOfficeExportError(RuntimeError):
     """Raised when the LibreOffice conversion step fails with diagnostic metadata."""
 
-    def __init__(self, message: str, *, warning_code: str, details: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        warning_code: str,
+        details: dict[str, Any] | None = None,
+        extra_warnings: List[str] | None = None,
+    ):
         warnings = ["libreoffice_export_failed"]
         if warning_code and warning_code not in warnings:
             warnings.append(warning_code)
+        for warning in extra_warnings or []:
+            if warning and warning not in warnings:
+                warnings.append(warning)
         self.warning_code = warning_code
         self.warnings = warnings
         self.details = dict(details or {})
@@ -159,6 +177,50 @@ def _find_soffice_executable() -> str | None:
     return None
 
 
+def _is_libreoffice_program_dir(path: Path) -> bool:
+    try:
+        return path.is_dir() and any((path / marker).exists() for marker in _LIBREOFFICE_PRIVATE_LIB_MARKERS)
+    except OSError:
+        return False
+
+
+def _find_libreoffice_program_dir(soffice_path: str | Path) -> Path | None:
+    try:
+        candidates = [Path(soffice_path).resolve().parent]
+    except OSError:
+        candidates = [Path(soffice_path).parent]
+    candidates.extend(_LIBREOFFICE_PROGRAM_DIR_CANDIDATES)
+    for candidate in candidates:
+        if _is_libreoffice_program_dir(candidate):
+            return candidate
+    return None
+
+
+def _build_libreoffice_subprocess_env(soffice_path: str | Path) -> dict[str, str]:
+    env = dict(os.environ)
+    program_dir = _find_libreoffice_program_dir(soffice_path)
+    if program_dir is None:
+        return env
+    existing = env.get("LD_LIBRARY_PATH", "")
+    env["LD_LIBRARY_PATH"] = (
+        str(program_dir) if not existing else f"{program_dir}{os.pathsep}{existing}"
+    )
+    return env
+
+
+def _libreoffice_ld_library_path_summary(env: dict[str, str] | None) -> str:
+    if not env:
+        return ""
+    return _tail_text(env.get("LD_LIBRARY_PATH", ""), _LIBREOFFICE_ENV_TAIL_CHARS)
+
+
+def _current_user_name() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:
+        return ""
+
+
 def _listed_output_files(out_dir: Path) -> list[str]:
     if not out_dir.exists():
         return []
@@ -190,6 +252,8 @@ def _libreoffice_details(
     expected_pdf: Path,
     cwd: Path,
     staged_input_path: Path | None = None,
+    libreoffice_program_dir: Path | None = None,
+    libreoffice_env: dict[str, str] | None = None,
     profile_dir: Path | None = None,
     return_code: int | None = None,
     stdout: Any = "",
@@ -205,6 +269,9 @@ def _libreoffice_details(
         "working_directory": str(cwd),
         "input_path": str(source_path),
         "output_directory": str(out_dir),
+        "libreoffice_program_dir": str(libreoffice_program_dir) if libreoffice_program_dir is not None else "",
+        "libreoffice_env_ld_library_path_tail": _libreoffice_ld_library_path_summary(libreoffice_env),
+        "user": _current_user_name(),
     }
     if staged_input_path is not None:
         details["staged_input_path"] = str(staged_input_path)
@@ -258,7 +325,14 @@ def _libreoffice_failure_details(exc: Exception) -> list[dict[str, Any]]:
     ]
 
 
-def _run(cmd: List[str], check=True, capture=False, timeout: int | None = None, cwd: str | Path | None = None):
+def _run(
+    cmd: List[str],
+    check=True,
+    capture=False,
+    timeout: int | None = None,
+    cwd: str | Path | None = None,
+    env: dict[str, str] | None = None,
+):
     logger.debug("Running: %s", " ".join(cmd))
     try:
         proc = subprocess.run(
@@ -268,6 +342,7 @@ def _run(cmd: List[str], check=True, capture=False, timeout: int | None = None, 
             text=True,
             timeout=timeout,
             cwd=str(cwd) if cwd is not None else None,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
@@ -337,6 +412,9 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
         profile_dir.mkdir(parents=True, exist_ok=True)
         staging_dir = Path(stage_tmp).resolve()
         staged_source = staging_dir / source.name
+        libreoffice_program_dir = _find_libreoffice_program_dir(soffice)
+        libreoffice_env = _build_libreoffice_subprocess_env(soffice)
+        env_warnings = ["libreoffice_program_dir_not_found"] if libreoffice_program_dir is None else []
         lo_cmd = [
             soffice,
             "--headless",
@@ -358,6 +436,8 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 cmd=lo_cmd,
                 source_path=source,
                 staged_input_path=staged_source,
+                libreoffice_program_dir=libreoffice_program_dir,
+                libreoffice_env=libreoffice_env,
                 out_dir=out_dir,
                 expected_pdf=expected_pdf,
                 cwd=staging_dir,
@@ -368,6 +448,7 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 "LibreOffice input staging failed",
                 warning_code="libreoffice_input_staging_failed",
                 details=details,
+                extra_warnings=env_warnings,
             ) from exc
 
         try:
@@ -378,12 +459,15 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 text=True,
                 timeout=_LIBREOFFICE_EXPORT_TIMEOUT_SECONDS,
                 cwd=str(staging_dir),
+                env=libreoffice_env,
             )
         except subprocess.TimeoutExpired as exc:
             details = _libreoffice_details(
                 cmd=lo_cmd,
                 source_path=source,
                 staged_input_path=staged_source,
+                libreoffice_program_dir=libreoffice_program_dir,
+                libreoffice_env=libreoffice_env,
                 out_dir=out_dir,
                 expected_pdf=expected_pdf,
                 cwd=staging_dir,
@@ -395,12 +479,15 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 "LibreOffice export timed out",
                 warning_code="libreoffice_export_timeout",
                 details=details,
+                extra_warnings=env_warnings,
             ) from exc
         except OSError as exc:
             details = _libreoffice_details(
                 cmd=lo_cmd,
                 source_path=source,
                 staged_input_path=staged_source,
+                libreoffice_program_dir=libreoffice_program_dir,
+                libreoffice_env=libreoffice_env,
                 out_dir=out_dir,
                 expected_pdf=expected_pdf,
                 cwd=staging_dir,
@@ -411,6 +498,7 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 "LibreOffice export failed before conversion completed",
                 warning_code="libreoffice_export_failed",
                 details=details,
+                extra_warnings=env_warnings,
             ) from exc
 
         if proc.returncode != 0:
@@ -418,6 +506,8 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 cmd=lo_cmd,
                 source_path=source,
                 staged_input_path=staged_source,
+                libreoffice_program_dir=libreoffice_program_dir,
+                libreoffice_env=libreoffice_env,
                 out_dir=out_dir,
                 expected_pdf=expected_pdf,
                 cwd=staging_dir,
@@ -430,6 +520,7 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
                 "LibreOffice export returned a non-zero exit code",
                 warning_code="libreoffice_export_return_code_nonzero",
                 details=details,
+                extra_warnings=env_warnings,
             )
 
         selected_pdf = _select_libreoffice_pdf_output(source, out_dir)
@@ -445,6 +536,8 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
             cmd=lo_cmd,
             source_path=source,
             staged_input_path=staged_source,
+            libreoffice_program_dir=libreoffice_program_dir,
+            libreoffice_env=libreoffice_env,
             out_dir=out_dir,
             expected_pdf=expected_pdf,
             cwd=staging_dir,
@@ -457,6 +550,7 @@ def _convert_via_libreoffice_to_pdf(source_path: str, out_dir: Path) -> Path:
             "LibreOffice export did not produce a usable PDF",
             warning_code=warning_code,
             details=details,
+            extra_warnings=env_warnings,
         )
 
 
@@ -1250,13 +1344,14 @@ def _extract_docx_text(docx_path: str, notes_dir: Path) -> List[str]:
         ):
             soffice = _find_soffice_executable() or "soffice"
             staged_docx = _stage_libreoffice_input(Path(docx_path).resolve(), Path(stage_tmp).resolve())
+            libreoffice_env = _build_libreoffice_subprocess_env(soffice)
             _run([
                 soffice, "--headless", "--nologo", "--nofirststartwizard", "--nolockcheck", "--nodefault",
                 f"-env:UserInstallation={Path(profile_tmp).resolve().as_uri()}",
                 "--convert-to", "txt:Text",
                 "--outdir", tmpd,
                 str(staged_docx),
-            ])
+            ], env=libreoffice_env)
             txt_candidates = sorted(Path(tmpd).glob("*.txt")) + sorted(Path(tmpd).glob("*.TXT"))
             if not txt_candidates:
                 stem_txt = Path(tmpd) / f"{Path(docx_path).stem}.txt"
