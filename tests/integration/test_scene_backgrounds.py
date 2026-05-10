@@ -238,6 +238,71 @@ def test_owner_can_select_source_background_mode(tmp_path):
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize("source_type,lesson_name", [("docx", "lesson.docx"), ("pdf", "lesson.pdf"), ("png", "lesson.png")])
+def test_non_pptx_source_background_mode_is_rejected(tmp_path, source_type, lesson_name):
+    teacher = _make_teacher(f"reject_source_background_{source_type}")
+    project = Project.objects.create(title=f"Reject source background {source_type}", user=teacher)
+    upload_dir = tmp_path / "uploads" / str(project.id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    (upload_dir / lesson_name).write_bytes(b"source")
+    source_background_path = tmp_path / str(project.id) / "source_backgrounds" / "slide-1.png"
+    source_background_path.parent.mkdir(parents=True, exist_ok=True)
+    source_background_path.write_bytes(PNG_1X1)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "original",
+                "source_type": source_type,
+                "source_background_path": f"{project.id}/source_backgrounds/slide-1.png",
+            },
+        },
+    )
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/scene/",
+        {"background_mode": "source_background"},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.TranscriptPageSceneView.as_view()(request, project_id=project.id, page_id=page.id)
+        serialized_scene = TranscriptPageSerializer(page, context={"request": request}).data["editor_document"]["scene"]
+
+    assert response.status_code == 400
+    assert response.data["error"] == "Source Background is currently available for PPTX lessons only."
+    page.refresh_from_db()
+    assert page.editor_document["scene"]["background_mode"] == "original"
+    assert serialized_scene["source_type"] == source_type
+    assert serialized_scene["source_background_available"] is False
+    assert serialized_scene["has_source_background"] is False
+    assert serialized_scene["source_background_url"] == ""
+
+
+@pytest.mark.django_db
+def test_custom_mode_without_background_is_rejected():
+    teacher = _make_teacher("reject_custom_without_background")
+    project = Project.objects.create(title="Reject custom without background", user=teacher)
+    page = _make_page(project)
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/scene/",
+        {"background_mode": "custom"},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    response = views.TranscriptPageSceneView.as_view()(request, project_id=project.id, page_id=page.id)
+
+    assert response.status_code == 400
+    assert response.data["error"] == "Upload/select a custom background first."
+    page.refresh_from_db()
+    assert page.editor_document.get("scene", {}).get("background_mode") != "custom"
+
+
+@pytest.mark.django_db
 def test_non_owner_cannot_patch_scene_settings():
     owner = _make_teacher("patch_scene_forbidden_owner")
     other = _make_teacher("patch_scene_forbidden_other")
@@ -645,6 +710,80 @@ def test_sync_render_descriptor_falls_back_to_whiteboard_when_source_background_
     assert "source_background_missing_fallback_whiteboard" in slides[0]["source_background_warnings"]
 
 
+@pytest.mark.django_db
+def test_sync_render_descriptor_falls_back_when_source_background_unsupported(tmp_path, monkeypatch):
+    project = _make_project("sync_source_background_unsupported")
+    slide_path = tmp_path / str(project.id) / "images" / "docx-slide-1.png"
+    slide_path.parent.mkdir(parents=True, exist_ok=True)
+    slide_path.write_bytes(PNG_1X1)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "source_background",
+                "source_type": "docx",
+            },
+        },
+    )
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    slides = worker_tasks._sync_transcript_pages_from_export(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "page_key": page.page_key,
+                "source_type": "docx",
+                "image_path": str(slide_path),
+            }
+        ],
+    )
+
+    assert slides[0]["image_path"] == ""
+    assert slides[0]["scene_background_mode"] == "whiteboard"
+    assert slides[0]["whiteboard_mode"] is True
+    assert "source_background_unsupported_for_source_type" in slides[0]["source_background_warnings"]
+
+
+@pytest.mark.django_db
+def test_sync_render_descriptor_custom_missing_falls_back_to_whiteboard(tmp_path, monkeypatch):
+    project = _make_project("sync_custom_missing")
+    slide_path = tmp_path / str(project.id) / "images" / "docx-slide-1.png"
+    slide_path.parent.mkdir(parents=True, exist_ok=True)
+    slide_path.write_bytes(PNG_1X1)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "custom",
+                "source_type": "docx",
+            },
+        },
+    )
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    slides = worker_tasks._sync_transcript_pages_from_export(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "page_key": page.page_key,
+                "source_type": "docx",
+                "image_path": str(slide_path),
+            }
+        ],
+    )
+
+    assert slides[0]["image_path"] == ""
+    assert slides[0]["scene_background_mode"] == "whiteboard"
+    assert slides[0]["whiteboard_mode"] is True
+    assert "custom_background_missing_fallback_whiteboard" in slides[0]["source_background_warnings"]
+
+
 def test_scene_overlay_layout_autofits_long_whiteboard_text():
     Image = pytest.importorskip("PIL.Image")
     ImageDraw = pytest.importorskip("PIL.ImageDraw")
@@ -796,6 +935,7 @@ def test_custom_background_slide_render_uses_fit_scale_and_overlay_text(tmp_path
             "subtitle_chunks": ["Spoken narration"],
             "whiteboard_mode": False,
             "scene_background_mode": "custom",
+            "custom_background_path": "uploads/1/backgrounds/custom-background.png",
             "scene_background_fit": "cover",
             "scene_text_scale": 1.0,
             "audio_out": str(audio_path),

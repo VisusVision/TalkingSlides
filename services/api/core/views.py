@@ -778,6 +778,7 @@ SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom", "source_background
 SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
 SCENE_TEXT_SCALE_MIN = 0.75
 SCENE_TEXT_SCALE_MAX = 2.0
+SOURCE_BACKGROUND_SUPPORTED_TYPES = {"pptx"}
 
 
 def _raw_scene_from_document(editor_document: Any) -> dict:
@@ -861,6 +862,55 @@ def _page_scene_path(page: TranscriptPage, kind: str) -> str:
     scene = _page_scene_for_storage(page)
     key = "source_background_path" if kind in {"source", "source_background"} else f"{kind}_background_path"
     return _normalize_rel_storage_path(str(scene.get(key) or ""))
+
+
+def _project_lesson_source_type(project: Project) -> str:
+    try:
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        upload_dir = storage_root / "uploads" / str(project.id)
+        if upload_dir.exists():
+            lesson_files = sorted(upload_dir.glob("lesson.*"))
+            if lesson_files:
+                return lesson_files[0].suffix.lower().lstrip(".")
+    except Exception:
+        pass
+    return ""
+
+
+def _page_source_type_for_scene(project: Project, scene: dict) -> str:
+    source_type = str(scene.get("source_type") or "").strip().lower().lstrip(".")
+    if source_type:
+        return source_type
+    source_type = _project_lesson_source_type(project)
+    if source_type:
+        return source_type
+    if _normalize_rel_storage_path(str(scene.get("source_background_path") or "")):
+        return "pptx"
+    return ""
+
+
+def _scene_path_exists(rel_path: str) -> bool:
+    safe_path = _normalize_rel_storage_path(str(rel_path or ""))
+    if not safe_path:
+        return False
+    storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+    return _resolve_storage_file(storage_root, safe_path) is not None
+
+
+def _scene_mode_validation_error(project: Project, scene: dict, mode: str) -> str:
+    if mode == "source_background":
+        source_type = _page_source_type_for_scene(project, scene)
+        if source_type not in SOURCE_BACKGROUND_SUPPORTED_TYPES:
+            return "Source Background is currently available for PPTX lessons only."
+        if not _scene_path_exists(str(scene.get("source_background_path") or "")):
+            return "Source Background is not available for this page."
+    if mode == "custom" and not _scene_path_exists(str(scene.get("custom_background_path") or "")):
+        return "Upload/select a custom background first."
+    if mode == "original":
+        source_type = _page_source_type_for_scene(project, scene)
+        if source_type == "txt" and not _scene_path_exists(str(scene.get("original_background_path") or "")):
+            return "Original mode is not available for this source."
+    return ""
 
 
 def _page_scene_response(page: TranscriptPage, request) -> dict:
@@ -5171,6 +5221,9 @@ class TranscriptPageSceneView(APIView):
                         {"error": "background_mode must be original, source_background, whiteboard, or custom."},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
+                validation_error = _scene_mode_validation_error(project, scene, mode)
+                if validation_error:
+                    return Response({"error": validation_error}, status=status.HTTP_400_BAD_REQUEST)
                 scene["background_mode"] = mode
             if "background_fit" in request.data:
                 fit = str(request.data.get("background_fit") or "").strip().lower()
@@ -5205,6 +5258,9 @@ class TranscriptPageSceneView(APIView):
                     {"error": "background_mode must be original, source_background, whiteboard, or custom."},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            validation_error = _scene_mode_validation_error(project, scene, mode)
+            if validation_error:
+                return Response({"error": validation_error}, status=status.HTTP_400_BAD_REQUEST)
             scene["background_mode"] = mode
         if "background_fit" in request.data:
             fit = str(request.data.get("background_fit") or "").strip().lower()
@@ -5373,6 +5429,21 @@ class ProjectBackgroundApplyAllView(APIView):
             )
 
         pages = list(_active_transcript_pages(project))
+        if requested_mode == "source_background":
+            source_type = _project_lesson_source_type(project)
+            if source_type not in SOURCE_BACKGROUND_SUPPORTED_TYPES:
+                return Response(
+                    {"error": "Source Background is currently available for PPTX lessons only."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            has_any_source_background = any(
+                bool(_page_scene_path(page, "source_background")) for page in pages
+            )
+            if not has_any_source_background:
+                return Response(
+                    {"error": "Source Background is not available for these pages."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         if draft_only:
             draft_data = ensure_project_draft_data(project)
             for page in pages:
