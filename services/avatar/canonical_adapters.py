@@ -41,7 +41,7 @@ def normalize_avatar_engine(value: str | None) -> str:
     if requested in {"", CANONICAL_ENGINE}:
         return CANONICAL_ENGINE
     if requested == MUSETALK_ONLY_ENGINE:
-        if musetalk_only_fast_mode_enabled():
+        if musetalk_only_fast_mode_enabled() and str(os.environ.get("AVATAR_ENGINE", "")).strip().lower() == MUSETALK_ONLY_ENGINE:
             return MUSETALK_ONLY_ENGINE
         return CANONICAL_ENGINE
     logger.warning("Unknown avatar engine=%s; using canonical engine=%s", requested, CANONICAL_ENGINE)
@@ -1257,10 +1257,17 @@ def _run_via_musetalk_service_chunked(
                 service_health=service_health,
             )
             elapsed = time.monotonic() - chunk_started
+            frame_count = 0
+            output_duration_seconds = 0.0
+            if result.success:
+                frame_count = _probe_frame_count(str(chunk_output))
+                output_duration_seconds = round(_probe_duration_seconds(str(chunk_output)), 4)
             metadata = {
                 "index": int(chunk_index),
+                "chunk_index": int(chunk_index),
                 "start_seconds": round(float(start_seconds), 4),
                 "duration_seconds": round(float(chunk_duration), 4),
+                "audio_duration_seconds": round(float(chunk_duration), 4),
                 "source_video_path": str(chunk_source_video or ""),
                 "audio_path": str(chunk_audio),
                 "output_path": str(chunk_output),
@@ -1268,16 +1275,26 @@ def _run_via_musetalk_service_chunked(
                 "stage_budget_timeout_seconds": round(float(chunk_timeout), 4),
                 "http_timeout_seconds": round(float(chunk_http_timeout), 4),
                 "service_elapsed_seconds": round(float(result.details.get("elapsed_seconds") or elapsed), 4),
+                "elapsed_seconds": round(float(elapsed), 4),
                 "service_success": bool(result.success),
                 "service_error": str(result.error or ""),
-                "frame_count": 0,
-                "output_duration_seconds": 0.0,
+                "frame_count": int(frame_count),
+                "output_duration_seconds": float(output_duration_seconds),
             }
             if result.success:
-                metadata["frame_count"] = _probe_frame_count(str(chunk_output))
-                metadata["output_duration_seconds"] = round(_probe_duration_seconds(str(chunk_output)), 4)
                 chunk_outputs.append(chunk_output)
             chunk_metadata.append(metadata)
+            logger.info(
+                "MuseTalk service chunk_timing run_id=%s chunk_index=%s chunk_count=%s "
+                "audio_duration_seconds=%.4f frame_count=%s elapsed_seconds=%.4f success=%s",
+                chunk_run_id,
+                int(chunk_index),
+                int(chunk_count),
+                float(metadata["audio_duration_seconds"]),
+                int(metadata["frame_count"]),
+                float(metadata["elapsed_seconds"]),
+                bool(result.success),
+            )
             if not result.success:
                 return EngineResult(False, "musetalk", output_path, result.error or "musetalk_service_chunk_failed", "", {
                     "elapsed_seconds": round(time.monotonic() - total_started, 4),

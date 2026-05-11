@@ -116,3 +116,5 @@ def test_avatar_prepare_marks_ready_when_assets_exist(monkeypatch):
     assert response.status_code == 200
     assert response.data.get("status") == "avatar_ready"
     assert bool((response.data.get("readiness") or {}).get("ready")) is True
+    assert response.data["normalized_engine"] == "liveportrait+musetalk"
+    assert response.data["avatar_engine_selected"] == "liveportrait+musetalk"

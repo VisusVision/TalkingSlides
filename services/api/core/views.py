@@ -3730,6 +3730,8 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
         "avatar_reference_type": resolved_ref,
         "motion_preset": profile.avatar_motion_preset or "natural",
         "lipsync_engine": lesson_engine,
+        "avatar_engine_selected": lesson_engine,
+        "normalized_engine": lesson_engine,
         "quality_preset": profile.avatar_quality_preset or "high",
         "engine_primary": selected_engine,
         "engine_fallback": "",
@@ -3807,15 +3809,31 @@ def _avatar_engine_chain_for_project(project: Project) -> list[str]:
     return list(chain or [])
 
 
+def _avatar_engine_selected_for_project(project: Project) -> str:
+    latest = project.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+    if latest is not None:
+        metadata = latest.metadata if isinstance(latest.metadata, dict) else {}
+        selected = metadata.get("avatar_engine_selected") or metadata.get("normalized_engine") or latest.engine_used
+        if selected and str(selected) != "none":
+            return str(selected)
+    profile = getattr(getattr(project, "user", None), "profile", None)
+    if profile is None:
+        return ""
+    return _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE"))
+
+
 def _avatar_playback_state_payload(project: Project, *, avatar_available: bool | None = None) -> dict[str, Any]:
     available = bool(avatar_available) if avatar_available is not None else _avatar_artifact_available(project)[0]
     updated_at = getattr(project, "avatar_updated_at", None)
+    avatar_engine_selected = _avatar_engine_selected_for_project(project)
     return {
         "avatar_processing_status": str(getattr(project, "avatar_processing_status", "") or "none"),
         "avatar_processing_message": str(getattr(project, "avatar_processing_message", "") or ""),
         "avatar_visible": bool(getattr(project, "avatar_visible", True)),
         "avatar_available": available,
         "avatar_updated_at": updated_at.isoformat() if updated_at else None,
+        "avatar_engine_selected": avatar_engine_selected,
+        "normalized_engine": avatar_engine_selected,
         "final_avatar_engine_chain": _avatar_engine_chain_for_project(project),
     }
 
@@ -5846,6 +5864,8 @@ class AvatarProfileView(APIView):
                 "model_version": profile.avatar_model_version,
                 "lipsync_engine": _normalize_avatar_engine(profile.avatar_lipsync_engine),
                 "engine_primary": _normalize_avatar_engine(profile.avatar_engine_primary),
+                "normalized_engine": str(readiness.get("normalized_engine") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary)),
+                "avatar_engine_selected": str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary)),
                 "reference_type": profile.avatar_reference_type,
                 "last_rendered_at": profile.avatar_last_rendered_at,
                 "last_preview_status": profile.avatar_last_preview_status,
@@ -6195,6 +6215,7 @@ class AvatarPreviewRegenerateView(APIView):
             voice_profile,
             storage_root=storage_root,
         )
+        selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
         if not bool(readiness.get("ready")):
             profile.avatar_last_preview_status = "setup_failed"
             profile.avatar_image_status = "failed"
@@ -6206,6 +6227,8 @@ class AvatarPreviewRegenerateView(APIView):
                     "error_code": readiness.get("error_code") or "setup_not_prepared",
                     "missing_requirements": readiness.get("missing_requirements") or [],
                     "readiness": readiness,
+                    "normalized_engine": selected_engine,
+                    "avatar_engine_selected": selected_engine,
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -6235,6 +6258,8 @@ class AvatarPreviewRegenerateView(APIView):
                 "status": "queued",
                 "job_id": job.id,
                 "task_id": async_result.id,
+                "normalized_engine": selected_engine,
+                "avatar_engine_selected": selected_engine,
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -6341,6 +6366,7 @@ class AvatarPrepareView(APIView):
                 )
 
         readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+        selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
         if readiness.get("ready"):
             profile.avatar_image_status = "ready"
             profile.avatar_preview_error = ""
@@ -6349,6 +6375,8 @@ class AvatarPrepareView(APIView):
                 {
                     "status": "avatar_ready",
                     "readiness": readiness,
+                    "normalized_engine": selected_engine,
+                    "avatar_engine_selected": selected_engine,
                     "actions": actions,
                     "warnings": warnings,
                 }
@@ -6364,6 +6392,8 @@ class AvatarPrepareView(APIView):
                 "error": readiness.get("error") or "Avatar is not prepared for preview.",
                 "missing_requirements": readiness.get("missing_requirements") or [],
                 "readiness": readiness,
+                "normalized_engine": selected_engine,
+                "avatar_engine_selected": selected_engine,
                 "actions": actions,
                 "warnings": warnings,
             },
@@ -6441,6 +6471,9 @@ class AvatarPreviewStatusView(APIView):
             storage_root=Path(getattr(settings, "STORAGE_ROOT", "storage_local")),
         )
         payload["preview_readiness"] = readiness
+        selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
+        payload["normalized_engine"] = selected_engine
+        payload["avatar_engine_selected"] = selected_engine
         payload["avatar_ready"] = bool(readiness.get("avatar_ready"))
         payload["avatar_source_valid"] = bool(profile.avatar_source_valid)
         payload["avatar_source_validation_error"] = str(profile.avatar_source_validation_error or "")
@@ -7363,6 +7396,8 @@ class CatalogDetailView(APIView):
         data["avatar_visible"] = playback.get("avatar_visible", True)
         data["avatar_available"] = playback.get("avatar_available", False)
         data["avatar_updated_at"] = playback.get("avatar_updated_at")
+        data["avatar_engine_selected"] = playback.get("avatar_engine_selected", "")
+        data["normalized_engine"] = playback.get("normalized_engine", data["avatar_engine_selected"])
         data["final_avatar_engine_chain"] = playback.get("final_avatar_engine_chain", [])
         data["playback_status"] = playback.get("playback_status")
         data["mode_debug"] = playback.get("mode_debug")

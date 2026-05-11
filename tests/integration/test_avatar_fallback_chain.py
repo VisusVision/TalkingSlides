@@ -51,3 +51,15 @@ def test_musetalk_only_fast_mode_requires_explicit_flag(monkeypatch):
     assert report["active_chain"] == ["musetalk"]
     assert report["musetalk_only_fast_mode_enabled"] is True
     assert bootstrap_musetalk._selected_avatar_engine() == "musetalk"
+
+
+def test_musetalk_only_fast_mode_requires_flag_and_engine(monkeypatch):
+    monkeypatch.delenv("AVATAR_ENGINE", raising=False)
+    monkeypatch.setenv("AVATAR_ALLOW_MUSETALK_ONLY_FAST_MODE", "1")
+
+    assert normalize_avatar_engine("musetalk") == CANONICAL_ENGINE
+
+    monkeypatch.setenv("AVATAR_ENGINE", "musetalk")
+    monkeypatch.delenv("AVATAR_ALLOW_MUSETALK_ONLY_FAST_MODE", raising=False)
+
+    assert normalize_avatar_engine("musetalk") == CANONICAL_ENGINE

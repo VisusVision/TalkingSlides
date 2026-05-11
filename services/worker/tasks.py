@@ -3880,6 +3880,9 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
         "lipsync_engine": normalize_avatar_engine(
             profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE")
         ),
+        "avatar_engine_selected": normalize_avatar_engine(
+            profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE")
+        ),
         "model_version": str(profile.avatar_model_version or "liveportrait+musetalk:v1"),
         "avatar_source_valid": bool(source_state.get("valid")),
         "avatar_source_validation_error": str(source_state.get("error") or profile.avatar_source_validation_error or ""),
@@ -3909,6 +3912,7 @@ def render_avatar_segment(
     quality_preset: str = "high",
     lipsync_engine: str = "",
     cache_text_hash: str = "",
+    avatar_job_id: int | None = None,
 ) -> dict[str, Any]:
     from avatar.canonical_adapters import normalize_avatar_engine
     from avatar.hashing import sha256_file
@@ -3952,6 +3956,9 @@ def render_avatar_segment(
         cache_text_hash=str(cache_text_hash or ""),
     )
     setattr(request, "_requested_engine_raw", raw_lipsync_engine)
+    setattr(request, "_project_id", int(project_id or 0))
+    setattr(request, "_avatar_job_id", int(avatar_job_id or 0))
+    setattr(request, "_segment_index", int(slide_index or 0))
 
     logger.info(
         "Avatar segment dispatch project_id=%s teacher_id=%s slide_index=%s source_image_path=%s source_image_original_path=%s source_video_path=%s audio_path=%s output_path=%s text_hash=%s requested_engine_raw=%s normalized_engine=%s",
@@ -3974,6 +3981,7 @@ def render_avatar_segment(
     render_info["teacher_id"] = int(teacher_id) if teacher_id is not None else None
     render_info["slide_index"] = int(slide_index or 0)
     render_info["avatar_reference_type"] = reference_type
+    render_info["avatar_engine_selected"] = normalized_lipsync_engine
     render_info["source_image_hash"] = sha256_file(source_image_abs) if source_image_abs and Path(source_image_abs).exists() else ""
     render_info["source_image_original_hash"] = sha256_file(source_image_original_abs) if source_image_original_abs and Path(source_image_original_abs).exists() else ""
     render_info["source_video_hash"] = sha256_file(source_video_abs) if source_video_abs and Path(source_video_abs).exists() else ""
@@ -4188,6 +4196,7 @@ def render_lesson_avatar_overlay(
             "avatar_error": "",
             "avatar_segment_rel_path": "",
             "avatar_engine_used": "none",
+            "avatar_engine_selected": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
             "avatar_fallback_chain": [],
             "avatar_motion_validation": {},
         }
@@ -4214,6 +4223,7 @@ def render_lesson_avatar_overlay(
                     "quality_preset": str(avatar_cfg.get("quality_preset") or "high"),
                     "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
                     "cache_text_hash": hashlib.sha256(str(item.get("text") or "").encode("utf-8")).hexdigest(),
+                    "avatar_job_id": int(job_id or 0),
                 }
             )
             if avatar_result.failed():
@@ -4227,6 +4237,7 @@ def render_lesson_avatar_overlay(
             rel_path = _safe_rel_path(_avatar_storage_root(), avatar_output_path)
             fallback_chain = list(payload.get("fallback_chain_used") or payload.get("final_avatar_engine_chain") or [])
             engine_used = str(payload.get("engine_used") or "liveportrait+musetalk")
+            avatar_engine_selected = str(payload.get("avatar_engine_selected") or payload.get("normalized_engine") or engine_used)
             if not final_avatar_engine_chain:
                 final_avatar_engine_chain = list(payload.get("final_avatar_engine_chain") or fallback_chain or ["liveportrait", "musetalk"])
             metadata_payload.update(
@@ -4237,6 +4248,7 @@ def render_lesson_avatar_overlay(
                     "avatar_error": "",
                     "avatar_segment_rel_path": rel_path,
                     "avatar_engine_used": engine_used,
+                    "avatar_engine_selected": avatar_engine_selected,
                     "avatar_fallback_chain": fallback_chain,
                     "avatar_motion_validation": dict(payload.get("motion_validation") or {}),
                 }
@@ -4245,6 +4257,7 @@ def render_lesson_avatar_overlay(
                 {
                     "index": index,
                     "engine": engine_used,
+                    "avatar_engine_selected": avatar_engine_selected,
                     "fallback_chain": fallback_chain,
                     "segment_rel_path": rel_path,
                     "duration": round(float(item.get("duration") or 0.0), 3),
@@ -4271,6 +4284,8 @@ def render_lesson_avatar_overlay(
                         "slide_num": slide_num,
                         "page_key": str(item.get("page_key") or ""),
                         "motion_validation": dict(payload.get("motion_validation") or {}),
+                        "normalized_engine": str(payload.get("normalized_engine") or avatar_engine_selected),
+                        "avatar_engine_selected": avatar_engine_selected,
                         "final_avatar_engine_chain": final_avatar_engine_chain,
                         "background_avatar_job_id": job_id,
                     },
@@ -4308,6 +4323,8 @@ def render_lesson_avatar_overlay(
                         "avatar_version": str(avatar_cfg.get("model_version") or "liveportrait+musetalk:v1"),
                         "avatar_reference_type": str(avatar_cfg.get("avatar_reference_type") or "image"),
                         "avatar_status": "failed",
+                        "normalized_engine": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
+                        "avatar_engine_selected": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
                         "slide_num": slide_num,
                         "page_key": str(item.get("page_key") or ""),
                         "background_avatar_job_id": job_id,
@@ -4349,6 +4366,9 @@ def render_lesson_avatar_overlay(
         "segments": avatar_segments,
     }
     sidecar["avatar_status"] = "ready"
+    sidecar["avatar_engine_selected"] = str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk")
+    sidecar["normalized_engine"] = sidecar["avatar_engine_selected"]
+    sidecar["final_avatar_engine_chain"] = final_avatar_engine_chain
     sidecar["avatar_failures"] = []
     sidecar["avatar_clips"] = [segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
     sidecar["avatar_slide_metadata"] = avatar_slide_metadata
@@ -4368,6 +4388,7 @@ def render_lesson_avatar_overlay(
             final_segment["avatar_status"] = str(meta.get("avatar_status") or "none")
             final_segment["avatar_error"] = str(meta.get("avatar_error") or "")
             final_segment["avatar_failure_reason"] = str(meta.get("avatar_error") or "")
+            final_segment["avatar_engine_selected"] = str(meta.get("avatar_engine_selected") or meta.get("avatar_engine_used") or "none")
     _write_playback_sidecar(project_id_int, sidecar)
 
     _set_job(status="done", progress=100, result_url=avatar_track_rel, error_message="")
@@ -4387,6 +4408,8 @@ def render_lesson_avatar_overlay(
         "teacher_id": teacher_id_int,
         "avatar_track_rel_path": avatar_track_rel,
         "avatar_segments": avatar_segments,
+        "avatar_engine_selected": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
+        "normalized_engine": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
         "final_avatar_engine_chain": final_avatar_engine_chain,
     }
 
@@ -5381,6 +5404,7 @@ def concat_and_finalize(
                     {
                         "index": int(result.get("index") or 0),
                         "engine": str(result.get("avatar_engine_used") or "none"),
+                        "avatar_engine_selected": str(result.get("avatar_engine_selected") or result.get("avatar_engine_used") or "none"),
                         "fallback_chain": list(result.get("avatar_fallback_chain") or []),
                         "segment_rel_path": str(result.get("avatar_segment_rel_path") or ""),
                         "duration": round(duration, 3),
@@ -5443,6 +5467,7 @@ def concat_and_finalize(
             "timeline": page_timeline,
             "hls": _hls_sidecar_payload(enabled=False, packaging_status="not_required"),
             "avatar": None,
+            "avatar_engine_selected": str((avatar_options or {}).get("avatar_engine_selected") or (avatar_options or {}).get("lipsync_engine") or ""),
             "source_render_metadata": source_render_metadata,
             "source_render_warnings": source_render_warnings,
             "source_render_details": source_render_details,
@@ -5492,6 +5517,7 @@ def concat_and_finalize(
                     "avatar_error": str(item.get("avatar_error") or item.get("avatar_failure_reason") or ""),
                     "avatar_segment_rel_path": str(item.get("avatar_segment_rel_path") or ""),
                     "avatar_engine_used": str(item.get("avatar_engine_used") or "none"),
+                    "avatar_engine_selected": str(item.get("avatar_engine_selected") or item.get("avatar_engine_used") or "none"),
                     "avatar_fallback_chain": list(item.get("avatar_fallback_chain") or []),
                     "avatar_motion_validation": dict(item.get("avatar_motion_validation") or {}),
                 }
@@ -5528,6 +5554,7 @@ def concat_and_finalize(
                 "avatar_status": str(item.get("avatar_status") or ("avatar_failed" if item.get("avatar_failed") else ("ready" if item.get("avatar_applied") else "none"))),
                 "avatar_error": str(item.get("avatar_error") or item.get("avatar_failure_reason") or ""),
                 "avatar_failure_reason": str(item.get("avatar_failure_reason") or item.get("avatar_error") or ""),
+                "avatar_engine_selected": str(item.get("avatar_engine_selected") or item.get("avatar_engine_used") or "none"),
                 "source_render_method": str(item.get("source_render_method") or ""),
                 "source_render_warnings": list(item.get("source_render_warnings") or []),
                 "source_render_details": _details_list_from_value(item.get("source_render_details")),

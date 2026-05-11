@@ -11,7 +11,17 @@ from .avatar_source_validation import stored_avatar_source_state
 
 def normalize_avatar_engine(value: str | None) -> str:
     requested = str(value or "").strip().lower()
-    if requested in {"", "musetalk", "liveportrait+musetalk"}:
+    if requested == "musetalk":
+        fast_mode = str(os.environ.get("AVATAR_ALLOW_MUSETALK_ONLY_FAST_MODE", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        if fast_mode and str(os.environ.get("AVATAR_ENGINE", "")).strip().lower() == "musetalk":
+            return "musetalk"
+        return "liveportrait+musetalk"
+    if requested in {"", "liveportrait+musetalk"}:
         return "liveportrait+musetalk"
     return "liveportrait+musetalk"
 
@@ -22,7 +32,9 @@ def engine_config_health(engine: str) -> dict[str, Any]:
         "musetalk_command": bool(str(os.environ.get("AVATAR_MUSETALK_CMD", "")).strip()),
         "liveportrait_command": bool(str(os.environ.get("AVATAR_LIVEPORTRAIT_CMD", "")).strip()),
     }
-    valid = bool(checks["musetalk_command"] and checks["liveportrait_command"])
+    valid = bool(checks["musetalk_command"]) if selected == "musetalk" else bool(
+        checks["musetalk_command"] and checks["liveportrait_command"]
+    )
     return {
         "selected_engine": selected,
         "valid": valid,
@@ -73,6 +85,8 @@ def avatar_preview_readiness(
         "voice_id": voice_id,
         "voice_id_exists": bool(voice_id),
         "requested_engine": selected_engine,
+        "normalized_engine": selected_engine,
+        "avatar_engine_selected": selected_engine,
         "engine_config_valid": bool(engine_health.get("valid")),
         "engine_config_checks": dict(engine_health.get("checks") or {}),
     }
@@ -113,6 +127,8 @@ def avatar_preview_readiness(
         return {
             "ready": True,
             "avatar_ready": preview_ready,
+            "normalized_engine": selected_engine,
+            "avatar_engine_selected": selected_engine,
             "avatar_preview_stale": bool(checks["avatar_preview_stale"]),
             "error_code": "",
             "error": "",
@@ -139,6 +155,8 @@ def avatar_preview_readiness(
     return {
         "ready": False,
         "avatar_ready": False,
+        "normalized_engine": selected_engine,
+        "avatar_engine_selected": selected_engine,
         "avatar_preview_stale": bool(checks["avatar_preview_stale"]),
         "error_code": "setup_not_prepared",
         "error": "Avatar is not prepared for preview. " + " ".join(guidance),
