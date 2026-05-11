@@ -113,6 +113,11 @@ from core.drafts import (
 )
 from core.tts_llm_suggestions import pronunciation_suggestion_response
 from core.avatar_readiness import avatar_preview_readiness, normalize_avatar_engine
+from core.avatar_placement import (
+    apply_avatar_placement_to_preference,
+    normalize_avatar_placement,
+    project_avatar_placement,
+)
 from core.avatar_image_moderation import (
     avatar_image_moderation_auto_enabled,
     avatar_image_moderation_gate,
@@ -1599,17 +1604,26 @@ def _playback_payload(
         "token_renewal_enabled": bool(playback_session_id),
         "secure_hls_active": bool(hls_manifest_token),
     }
+    avatar_defaults = dict(avatar_overlay_defaults or {})
+    avatar_placement = normalize_avatar_placement(
+        avatar_defaults.get("avatar_placement") if isinstance(avatar_defaults.get("avatar_placement"), dict) else avatar_defaults
+    )
+    avatar_defaults.update(avatar_placement)
+    avatar_defaults["avatar_placement"] = avatar_placement
+
     if avatar_token:
         payload["avatar_overlay"] = {
             "enabled": True,
             "stream_url": _stream_url(request, avatar_token),
-            "defaults": avatar_overlay_defaults or {},
+            "placement": avatar_placement,
+            "defaults": avatar_defaults,
         }
     else:
         payload["avatar_overlay"] = {
             "enabled": False,
             "stream_url": "",
-            "defaults": avatar_overlay_defaults or {},
+            "placement": avatar_placement,
+            "defaults": avatar_defaults,
         }
     payload.update(_avatar_playback_state_payload(project, avatar_available=bool(avatar_token)))
     payload["mode_debug"] = mode_debug or {}
@@ -3757,9 +3771,10 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
 def _avatar_overlay_defaults_for_project(project: Project) -> dict:
     project_user = getattr(project, "user", None)
     teacher_profile = getattr(project_user, "profile", None) if project_user else None
+    placement = project_avatar_placement(project)
     return {
-        "position": getattr(teacher_profile, "avatar_overlay_default_position", "top-right") or "top-right",
-        "size": getattr(teacher_profile, "avatar_overlay_size", "medium") or "medium",
+        **placement,
+        "avatar_placement": placement,
         "visible": bool(getattr(teacher_profile, "avatar_overlay_visible", True)),
     }
 
@@ -4090,12 +4105,13 @@ class ProjectDetailView(APIView):
         has_category_name = "category_name" in request.data or "category" in request.data
         has_avatar_enabled = "avatar_enabled" in request.data
         has_avatar_visible = "avatar_visible" in request.data or "show_avatar" in request.data
+        has_avatar_placement = "avatar_placement" in request.data
         has_is_published = "is_published" in request.data
         has_tts_settings = "tts_settings" in request.data
         draft_only = _truthy_request_value(request.data.get("draft_only"))
-        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_avatar_visible and not has_is_published and not has_tts_settings:
+        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_avatar_visible and not has_avatar_placement and not has_is_published and not has_tts_settings:
             return Response(
-                {"error": "category_id, category_name, avatar_enabled, avatar_visible, is_published, or tts_settings is required for updates."},
+                {"error": "category_id, category_name, avatar_enabled, avatar_visible, avatar_placement, is_published, or tts_settings is required for updates."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -4114,7 +4130,7 @@ class ProjectDetailView(APIView):
                     {"error": "Invalid tts_settings.", "details": exc.detail},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_is_published):
+            if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_avatar_placement or has_is_published):
                 draft_data = ensure_project_draft_data(project)
                 draft_data.setdefault("project", {})["tts_settings"] = updates["tts_settings"]
                 save_project_draft_data(project, draft_data, dirty=True)
@@ -4181,7 +4197,12 @@ class ProjectDetailView(APIView):
 
             for field_name, value in updates.items():
                 setattr(project, field_name, value)
-            project.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
+            if update_fields:
+                project.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
+            if has_avatar_placement:
+                pref, _ = AvatarOverlayPreference.objects.get_or_create(user=project.user, lesson=project)
+                apply_avatar_placement_to_preference(pref, request.data.get("avatar_placement"))
+                pref.save(update_fields=["anchor", "x_percent", "y_percent", "width_percent", "updated_at"])
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
 
@@ -6575,10 +6596,7 @@ class AvatarOverlayPreferenceView(APIView):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         pref, _ = AvatarOverlayPreference.objects.get_or_create(user=request.user, lesson=project)
-        pref.anchor = str(request.data.get("anchor") or pref.anchor)
-        pref.x_percent = float(request.data.get("x_percent", pref.x_percent))
-        pref.y_percent = float(request.data.get("y_percent", pref.y_percent))
-        pref.width_percent = float(request.data.get("width_percent", pref.width_percent))
+        apply_avatar_placement_to_preference(pref, request.data)
         pref.visible = self._to_bool(request.data.get("visible"), pref.visible)
         pref.pinned = self._to_bool(request.data.get("pinned"), pref.pinned)
         pref.save(update_fields=["anchor", "x_percent", "y_percent", "width_percent", "visible", "pinned", "updated_at"])
@@ -7390,6 +7408,7 @@ class CatalogDetailView(APIView):
         data["protection"] = playback["protection"]
         data["drm"] = playback["drm"]
         data["avatar_overlay"] = playback.get("avatar_overlay", {"enabled": False, "stream_url": "", "defaults": {}})
+        data["avatar_placement"] = data["avatar_overlay"].get("placement") or normalize_avatar_placement()
         data["avatar_active_for_lesson"] = _avatar_active_for_project(project)
         data["avatar_processing_status"] = playback.get("avatar_processing_status", "none")
         data["avatar_processing_message"] = playback.get("avatar_processing_message", "")

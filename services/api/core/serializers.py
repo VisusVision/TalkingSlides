@@ -12,6 +12,11 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from core.avatar_readiness import normalize_avatar_engine
 from core.avatar_image_moderation import avatar_image_moderation_gate
+from core.avatar_placement import (
+    normalize_avatar_placement,
+    placement_from_overlay_preference,
+    project_avatar_placement,
+)
 from core.models import (
     AvatarRenderJob,
     AvatarOverlayPreference,
@@ -564,6 +569,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     avatar_available = serializers.SerializerMethodField()
     avatar_engine_selected = serializers.SerializerMethodField()
     final_avatar_engine_chain = serializers.SerializerMethodField()
+    avatar_placement = serializers.SerializerMethodField()
     tts_settings = serializers.SerializerMethodField()
     has_draft = serializers.SerializerMethodField()
     draft_metadata = serializers.SerializerMethodField()
@@ -576,7 +582,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
             "is_published", "avatar_enabled_override", "avatar_active", "avatar_processing_status",
             "avatar_processing_message", "avatar_visible", "avatar_available", "avatar_last_job_id",
-            "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "category_id", "category_name",
+            "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement", "category_id", "category_name",
             "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
         ]
         read_only_fields = [
@@ -584,7 +590,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings", "status",
             "moderation_status", "moderation_summary", "last_moderation_run_id",
             "avatar_processing_status", "avatar_processing_message", "avatar_available",
-            "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain",
+            "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
             "category_id", "category_name", "category_slug", "has_draft", "draft_metadata",
             "created_at", "updated_at", "latest_job",
         ]
@@ -634,6 +640,9 @@ class ProjectSerializer(serializers.ModelSerializer):
         metadata = latest.metadata if isinstance(latest.metadata, Mapping) else {}
         chain = metadata.get("final_avatar_engine_chain") or metadata.get("fallback_chain_used") or latest.fallback_chain_used
         return list(chain or [])
+
+    def get_avatar_placement(self, obj):
+        return project_avatar_placement(obj)
 
     def get_tts_settings(self, obj):
         draft_data = getattr(obj, "draft_data", None)
@@ -952,6 +961,13 @@ class AvatarRenderJobSerializer(serializers.ModelSerializer):
 
 
 class AvatarOverlayPreferenceSerializer(serializers.ModelSerializer):
+    position = serializers.SerializerMethodField()
+    size = serializers.SerializerMethodField()
+    x = serializers.SerializerMethodField()
+    y = serializers.SerializerMethodField()
+    width = serializers.SerializerMethodField()
+    avatar_placement = serializers.SerializerMethodField()
+
     class Meta:
         model = AvatarOverlayPreference
         fields = [
@@ -962,11 +978,38 @@ class AvatarOverlayPreferenceSerializer(serializers.ModelSerializer):
             "x_percent",
             "y_percent",
             "width_percent",
+            "position",
+            "size",
+            "x",
+            "y",
+            "width",
+            "avatar_placement",
             "visible",
             "pinned",
             "updated_at",
         ]
         read_only_fields = ["id", "user", "lesson", "updated_at"]
+
+    def _placement(self, obj):
+        return placement_from_overlay_preference(obj)
+
+    def get_position(self, obj):
+        return self._placement(obj)["position"]
+
+    def get_size(self, obj):
+        return self._placement(obj)["size"]
+
+    def get_x(self, obj):
+        return self._placement(obj)["x"]
+
+    def get_y(self, obj):
+        return self._placement(obj)["y"]
+
+    def get_width(self, obj):
+        return self._placement(obj)["width"]
+
+    def get_avatar_placement(self, obj):
+        return normalize_avatar_placement(self._placement(obj))
 
 
 class LessonSegmentSerializer(serializers.ModelSerializer):

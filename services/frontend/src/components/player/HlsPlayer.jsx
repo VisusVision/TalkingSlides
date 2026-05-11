@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { AlertCircle } from 'lucide-react';
+import { avatarPlacementStyle } from '../../utils/avatarPlacement';
 import SurfaceCard from '../ui/SurfaceCard';
 
 function vttUrlForLesson(lesson) {
@@ -86,21 +87,6 @@ function setActiveTextTrack(video, captionTrack) {
   }
 }
 
-function avatarSizeClass(size) {
-  const normalized = String(size || 'medium').trim().toLowerCase();
-  if (normalized === 'small') return 'w-[18%] min-w-[110px] max-w-[180px]';
-  if (normalized === 'large') return 'w-[30%] min-w-[170px] max-w-[320px]';
-  return 'w-[24%] min-w-[140px] max-w-[240px]';
-}
-
-function avatarPositionClass(position) {
-  const normalized = String(position || 'top-right').trim().toLowerCase();
-  if (normalized === 'top-left') return 'left-4 top-4';
-  if (normalized === 'bottom-left') return 'bottom-4 left-4';
-  if (normalized === 'bottom-right') return 'bottom-4 right-4';
-  return 'right-4 top-4';
-}
-
 export default function HlsPlayer({
   lesson,
   videoRef,
@@ -125,7 +111,7 @@ export default function HlsPlayer({
   const sourceUrl = usingFallback ? String(fallbackUrl || '').trim() : String(manifestUrl || '').trim();
   const canUseFallback = Boolean(fallbackAllowed && fallbackUrl);
   const avatarOverlay = lesson?.avatar_overlay || {};
-  const avatarDefaults = avatarOverlay?.defaults || {};
+  const avatarPlacement = avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {};
   const avatarStreamUrl = String(avatarOverlay?.stream_url || '').trim();
   const avatarOverlayEnabled = Boolean(avatarOverlay?.enabled && avatarStreamUrl);
 
@@ -317,7 +303,8 @@ export default function HlsPlayer({
               <video
                 ref={avatarVideoRef}
                 src={avatarStreamUrl}
-                className={`pointer-events-none absolute aspect-video rounded-lg border border-black/30 bg-black object-cover shadow-xl ${avatarSizeClass(avatarDefaults.size)} ${avatarPositionClass(avatarDefaults.position)}`}
+                className="pointer-events-none absolute aspect-video rounded-lg border border-black/30 bg-black object-cover shadow-xl"
+                style={avatarPlacementStyle(avatarPlacement)}
                 muted
                 playsInline
                 preload="metadata"

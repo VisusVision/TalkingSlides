@@ -27,6 +27,7 @@ import {
   fetchProjects,
   getProjectModeration,
   generateSubtitleTrack,
+  fetchAvatarOverlayPreference,
   fetchSubtitleTrackBundle,
   requestProjectAdminReview,
   rerenderProject,
@@ -37,8 +38,17 @@ import {
   uploadProjectCover,
   uploadTranscriptPageBackground,
   updateProjectAvatarVisible,
+  saveAvatarOverlayPreference,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
+import {
+  AVATAR_PLACEMENT_OPTIONS,
+  AVATAR_SIZE_OPTIONS,
+  AVATAR_SIZE_WIDTHS,
+  DEFAULT_AVATAR_PLACEMENT,
+  avatarPlacementStyle,
+  normalizeAvatarPlacement,
+} from '../utils/avatarPlacement';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
@@ -1026,6 +1036,9 @@ export default function Studio({ user, onLoginRequest }) {
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
   const [avatarVisibilitySaving, setAvatarVisibilitySaving] = useState(false);
+  const [avatarPlacement, setAvatarPlacement] = useState(DEFAULT_AVATAR_PLACEMENT);
+  const [avatarPlacementSaving, setAvatarPlacementSaving] = useState(false);
+  const [avatarPlacementMessage, setAvatarPlacementMessage] = useState('');
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -1494,6 +1507,33 @@ export default function Studio({ user, onLoginRequest }) {
     setEditorSavedAtLabel('');
   }, [selectedLesson?.avatar_active, selectedLesson?.avatar_enabled_override, selectedLesson?.category_name, selectedLesson?.description, selectedLesson?.id, selectedLesson?.title]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const fallbackPlacement = normalizeAvatarPlacement(selectedLesson?.avatar_placement || selectedLesson?.avatar_overlay);
+    setAvatarPlacement(fallbackPlacement);
+    setAvatarPlacementMessage('');
+
+    if (!selectedLesson?.id) return () => {
+      cancelled = true;
+    };
+
+    fetchAvatarOverlayPreference(selectedLesson.id)
+      .then((payload) => {
+        if (!cancelled) {
+          setAvatarPlacement(normalizeAvatarPlacement(payload?.avatar_placement || payload));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAvatarPlacement(fallbackPlacement);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedLesson?.avatar_overlay, selectedLesson?.avatar_placement, selectedLesson?.id]);
+
   const handleCreateProject = async ({
     file,
     coverFile,
@@ -1598,6 +1638,49 @@ export default function Studio({ user, onLoginRequest }) {
       window.alert(err.message || 'Avatar visibility update failed.');
     } finally {
       setAvatarVisibilitySaving(false);
+    }
+  };
+
+  const updateAvatarPlacementDraft = (patch) => {
+    setAvatarPlacement((previous) => {
+      const nextPatch = { ...patch };
+      if (patch.size && AVATAR_SIZE_WIDTHS[patch.size]) {
+        nextPatch.width = AVATAR_SIZE_WIDTHS[patch.size];
+      }
+      return normalizeAvatarPlacement({ ...previous, ...nextPatch }, previous);
+    });
+    setAvatarPlacementMessage('');
+  };
+
+  const handleAvatarPlacementSave = async () => {
+    if (!selectedLesson?.id || avatarPlacementSaving) return;
+    setAvatarPlacementSaving(true);
+    setAvatarPlacementMessage('');
+    try {
+      const normalized = normalizeAvatarPlacement(avatarPlacement);
+      const saved = await saveAvatarOverlayPreference(selectedLesson.id, {
+        avatar_placement: normalized,
+      });
+      const nextPlacement = normalizeAvatarPlacement(saved?.avatar_placement || saved || normalized);
+      setAvatarPlacement(nextPlacement);
+      handleProjectUpdated({
+        id: selectedLesson.id,
+        avatar_placement: nextPlacement,
+        avatar_overlay: {
+          ...(selectedLesson.avatar_overlay || {}),
+          placement: nextPlacement,
+          defaults: {
+            ...((selectedLesson.avatar_overlay || {}).defaults || {}),
+            ...nextPlacement,
+            avatar_placement: nextPlacement,
+          },
+        },
+      });
+      setAvatarPlacementMessage('Placement saved.');
+    } catch (err) {
+      window.alert(err.message || 'Avatar placement update failed.');
+    } finally {
+      setAvatarPlacementSaving(false);
     }
   };
 
@@ -2436,30 +2519,117 @@ export default function Studio({ user, onLoginRequest }) {
                   </div>
 
                   {selectedLesson && (
-                    <div className="flex flex-col gap-3 border-y border-[var(--border-subtle)] py-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">Avatar</p>
-                        <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
+                    <div className="space-y-3 border-y border-[var(--border-subtle)] py-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-[var(--text-primary)]">Avatar</p>
+                          <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
+                        </div>
+                        <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
+                          <span>{avatarVisible(selectedLesson) ? 'Show avatar' : 'Hide avatar'}</span>
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={avatarVisible(selectedLesson)}
+                            disabled={avatarVisibilitySaving}
+                            onChange={(event) => handleAvatarVisibilityToggle(selectedLesson, event.target.checked)}
+                          />
+                          <span className={`relative h-6 w-11 rounded-full transition ${
+                            avatarVisible(selectedLesson)
+                              ? 'bg-[var(--accent-primary)]'
+                              : 'bg-[var(--surface-container-highest)]'
+                          }`}>
+                            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${
+                              avatarVisible(selectedLesson) ? 'left-6' : 'left-1'
+                            }`} />
+                          </span>
+                        </label>
                       </div>
-                      <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
-                        <span>{avatarVisible(selectedLesson) ? 'Show avatar' : 'Hide avatar'}</span>
-                        <input
-                          type="checkbox"
-                          className="sr-only"
-                          checked={avatarVisible(selectedLesson)}
-                          disabled={avatarVisibilitySaving}
-                          onChange={(event) => handleAvatarVisibilityToggle(selectedLesson, event.target.checked)}
-                        />
-                        <span className={`relative h-6 w-11 rounded-full transition ${
-                          avatarVisible(selectedLesson)
-                            ? 'bg-[var(--accent-primary)]'
-                            : 'bg-[var(--surface-container-highest)]'
-                        }`}>
-                          <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${
-                            avatarVisible(selectedLesson) ? 'left-6' : 'left-1'
-                          }`} />
-                        </span>
-                      </label>
+
+                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-end">
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                          <label className="text-xs font-medium text-[var(--text-secondary)]">
+                            Position
+                            <select
+                              value={avatarPlacement.position}
+                              onChange={(event) => updateAvatarPlacementDraft({ position: event.target.value })}
+                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
+                            >
+                              {AVATAR_PLACEMENT_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="text-xs font-medium text-[var(--text-secondary)]">
+                            Size
+                            <select
+                              value={avatarPlacement.size}
+                              onChange={(event) => updateAvatarPlacementDraft({ size: event.target.value })}
+                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
+                            >
+                              {AVATAR_SIZE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <Button variant="secondary" onClick={handleAvatarPlacementSave} disabled={avatarPlacementSaving}>
+                            <Save size={16} />
+                            <span>{avatarPlacementSaving ? 'Saving' : 'Save placement'}</span>
+                          </Button>
+                        </div>
+
+                        <div className="relative aspect-video overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-black/80">
+                          <div
+                            className="absolute aspect-video rounded border border-white/60 bg-white/30"
+                            style={avatarPlacementStyle(avatarPlacement)}
+                          />
+                        </div>
+                      </div>
+
+                      {avatarPlacement.position === 'custom' && (
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <label className="text-xs font-medium text-[var(--text-secondary)]">
+                            X
+                            <input
+                              type="number"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={avatarPlacement.x}
+                              onChange={(event) => updateAvatarPlacementDraft({ position: 'custom', x: event.target.value })}
+                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
+                            />
+                          </label>
+                          <label className="text-xs font-medium text-[var(--text-secondary)]">
+                            Y
+                            <input
+                              type="number"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={avatarPlacement.y}
+                              onChange={(event) => updateAvatarPlacementDraft({ position: 'custom', y: event.target.value })}
+                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
+                            />
+                          </label>
+                          <label className="text-xs font-medium text-[var(--text-secondary)]">
+                            Width
+                            <input
+                              type="number"
+                              min="0.12"
+                              max="0.35"
+                              step="0.01"
+                              value={avatarPlacement.width}
+                              onChange={(event) => updateAvatarPlacementDraft({ position: 'custom', width: event.target.value })}
+                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
+                            />
+                          </label>
+                        </div>
+                      )}
+
+                      {avatarPlacementMessage && (
+                        <p className="text-xs font-medium text-[var(--text-primary)]">{avatarPlacementMessage}</p>
+                      )}
                     </div>
                   )}
 

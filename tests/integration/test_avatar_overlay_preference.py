@@ -21,7 +21,7 @@ from django.test.utils import override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
-from core.models import Job, Project, UserProfile  # noqa: E402
+from core.models import AvatarOverlayPreference, Job, Project, UserProfile  # noqa: E402
 
 pytestmark = pytest.mark.django_db
 
@@ -83,6 +83,172 @@ def test_avatar_overlay_preference_persists_per_user_and_lesson():
     assert get_response.status_code == 200
     assert float(get_response.data["width_percent"]) == 27.0
     assert get_response.data["pinned"] is False
+
+
+def test_avatar_overlay_default_placement_is_top_right_medium():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"default_place_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(
+        title="Default Placement",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    Job.objects.create(project=lesson, job_type="video_export", status="done", progress=100, result_url="default.mp4")
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/catalog/{lesson.id}/"))
+    with override_settings(LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.CatalogDetailView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    placement = response.data["avatar_overlay"]["placement"]
+    assert placement["position"] == "top-right"
+    assert placement["size"] == "medium"
+    assert placement["x"] == 0.72
+    assert placement["y"] == 0.08
+    assert placement["width"] == 0.24
+
+
+def test_avatar_overlay_placement_saves_and_returns_normalized_payload():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"place_owner_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(title="Placed Avatar", user=teacher, status="ready")
+    Job.objects.create(project=lesson, job_type="video_export", status="done", progress=100, result_url="placed.mp4")
+
+    factory = APIRequestFactory()
+    request = factory.put(
+        f"/api/v1/projects/{lesson.id}/avatar-overlay/",
+        {"avatar_placement": {"position": "bottom-left", "size": "large"}},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+    response = views.AvatarOverlayPreferenceView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    placement = response.data["avatar_placement"]
+    assert placement["position"] == "bottom-left"
+    assert placement["size"] == "large"
+    assert placement["width"] == 0.3
+    assert placement["x"] == 0.04
+    assert placement["y"] == pytest.approx(0.7513)
+
+
+def test_avatar_overlay_custom_coordinates_are_clamped():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"place_clamp_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(title="Clamped Avatar", user=teacher, status="ready")
+
+    factory = APIRequestFactory()
+    request = factory.put(
+        f"/api/v1/projects/{lesson.id}/avatar-overlay/",
+        {"avatar_placement": {"position": "custom", "x": 2, "y": -5, "width": 0.6}},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+    response = views.AvatarOverlayPreferenceView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    placement = response.data["avatar_placement"]
+    assert placement["position"] == "custom"
+    assert placement["size"] == "large"
+    assert placement["width"] == 0.35
+    assert placement["x"] == 0.65
+    assert placement["y"] == 0
+
+
+def test_avatar_overlay_invalid_position_is_normalized():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"place_invalid_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(title="Invalid Placement", user=teacher, status="ready")
+
+    factory = APIRequestFactory()
+    request = factory.put(
+        f"/api/v1/projects/{lesson.id}/avatar-overlay/",
+        {"avatar_placement": {"position": "center", "size": "medium"}},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+    response = views.AvatarOverlayPreferenceView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["avatar_placement"]["position"] == "top-right"
+    assert response.data["avatar_placement"]["size"] == "medium"
+
+
+def test_project_patch_updates_avatar_placement_without_render_job():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"place_patch_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(
+        title="Patch Placement",
+        user=teacher,
+        status="ready",
+        avatar_processing_status="ready",
+        avatar_visible=True,
+    )
+    job = Job.objects.create(project=lesson, job_type="video_export", status="done", progress=100, result_url="patch.mp4")
+
+    factory = APIRequestFactory()
+    request = factory.patch(
+        f"/api/v1/projects/{lesson.id}/",
+        {"avatar_placement": {"position": "top-left", "size": "small"}},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+    response = views.ProjectDetailView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    lesson.refresh_from_db()
+    assert lesson.avatar_processing_status == "ready"
+    assert lesson.avatar_visible is True
+    assert list(Job.objects.filter(project=lesson).values_list("id", flat=True)) == [job.id]
+    assert response.data["avatar_placement"]["position"] == "top-left"
+    assert response.data["avatar_placement"]["size"] == "small"
+    pref = AvatarOverlayPreference.objects.get(user=teacher, lesson=lesson)
+    assert pref.anchor == "top-left"
+
+
+def test_playback_token_includes_saved_avatar_placement(tmp_path):
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"place_token_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(
+        title="Placement Token",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    Job.objects.create(project=lesson, job_type="video_export", status="done", progress=100, result_url=f"{lesson.id}/{lesson.id}.mp4")
+    AvatarOverlayPreference.objects.create(
+        user=teacher,
+        lesson=lesson,
+        anchor="custom",
+        x_percent=62,
+        y_percent=12,
+        width_percent=22,
+    )
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    placement = response.data["avatar_overlay"]["placement"]
+    assert placement == {
+        "position": "custom",
+        "size": "medium",
+        "x": 0.62,
+        "y": 0.12,
+        "width": 0.22,
+    }
 
 
 def test_avatar_visibility_hides_ready_artifact_without_deleting_it(tmp_path):
