@@ -25,3 +25,12 @@ Phase 1 frontend player routing should be verified with backend playback-token p
 - No ready DRM systems shows the protected-playback unavailable message.
 - No EME support shows the protected-playback unavailable message.
 - Valid DRM metadata routes to the Phase 1 unavailable state for `drm_shaka`; Shaka playback is not implemented in this phase.
+
+## Phase 2 Protection Overlay
+
+- Watermark renders only when playback token payload has `watermark.enabled=true` and `VITE_PLAYER_WATERMARK_ENABLED` is not `false`.
+- Watermark displays `watermark.text`, moves to different player positions over time, and does not block native controls.
+- Heartbeat starts after play for MP4 and HLS playback and stops on pause, ended, unmount, or source change.
+- Heartbeat sends `visibility=visible` while the page is visible and `visibility=hidden` while the tab is hidden.
+- Backend heartbeat denial, including `409`, pauses playback and replaces the player with `Playback session expired or is active elsewhere. Please refresh.`
+- Transient heartbeat transport failures back off without repeatedly surfacing session-expired UI.

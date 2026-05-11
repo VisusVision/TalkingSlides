@@ -821,7 +821,7 @@ export async function fetchPlaybackToken(projectId) {
 export async function heartbeatPlaybackSession(projectId, visibility = 'visible') {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/playback-session/heartbeat/`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ visibility }),
   });
 

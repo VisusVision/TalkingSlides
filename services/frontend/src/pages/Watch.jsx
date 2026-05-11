@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Focus, Heart, Layers3, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -18,6 +18,7 @@ import {
 } from '../api';
 import VideoStage from '../components/player/VideoStage';
 import UnavailableStage from '../components/player/UnavailableStage';
+import WatermarkOverlay from '../components/player/WatermarkOverlay';
 import { PLAYER_MODES, resolvePlayerMode } from '../components/player/playerMode';
 import ChapterList from '../components/player/ChapterList';
 import TranscriptPanel from '../components/player/TranscriptPanel';
@@ -27,6 +28,7 @@ import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
 import { buildChapters, buildTranscriptLines } from '../lib/watch';
+import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 
 const COMMENT_PREVIEW_LIMIT = 5;
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
@@ -260,6 +262,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [selectedSubtitleKey, setSelectedSubtitleKey] = useState('off');
   const [pendingSubtitleRequest, setPendingSubtitleRequest] = useState(null);
   const [playbackTime, setPlaybackTime] = useState(0);
+  const [playbackActive, setPlaybackActive] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [notesCollapsed, setNotesCollapsed] = useState(false);
   const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
@@ -371,6 +374,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         setSelectedSubtitleKey('off');
         setPendingSubtitleRequest(null);
         setPlaybackTime(0);
+        setPlaybackActive(false);
         progressSavedAtRef.current = 0;
         setLikeError('');
         setFollowError('');
@@ -597,6 +601,34 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       stream_url: playerMode.fallbackUrl || lesson.stream_url || lesson.video_url || '',
     };
   }, [lesson, playerMode]);
+  const playableMode = playerMode.mode === PLAYER_MODES.PUBLIC_MP4 || playerMode.mode === PLAYER_MODES.SECURE_HLS;
+  const playbackSourceKey = useMemo(
+    () => [
+      activeLessonId || '',
+      playerMode.mode || '',
+      playbackLesson?.stream_url || '',
+      playerMode.manifestUrl || '',
+      playerMode.fallbackUrl || '',
+    ].join('|'),
+    [activeLessonId, playbackLesson?.stream_url, playerMode.fallbackUrl, playerMode.manifestUrl, playerMode.mode],
+  );
+  const handlePlaybackStarted = useCallback(() => {
+    setPlaybackActive(true);
+  }, []);
+  const handlePlaybackStopped = useCallback(() => {
+    setPlaybackActive(false);
+  }, []);
+  const handlePlaybackDenied = useCallback(() => {
+    setPlaybackActive(false);
+  }, []);
+  const playbackHeartbeat = usePlaybackHeartbeat({
+    lessonId: activeLessonId,
+    active: Boolean(playbackActive && playableMode && !loadingLesson),
+    videoRef,
+    sourceKey: playbackSourceKey,
+    visibilityLock: Boolean(lesson?.protection?.visibility_lock),
+    onDenied: handlePlaybackDenied,
+  });
 
   const userProgressPct = Math.max(0, Math.min(100, Number(lesson?.user_progress || 0)));
   const likedByMe = Boolean(lesson?.user_liked || lesson?.liked_by_me);
@@ -619,6 +651,10 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       setSelectedSubtitleKey(targetKey);
     }
   }, [preferredSubtitleLanguage, subtitleOptions]);
+
+  useEffect(() => {
+    setPlaybackActive(false);
+  }, [playbackSourceKey]);
 
   useEffect(() => {
     const canResumePlayback = playerMode.mode === PLAYER_MODES.PUBLIC_MP4 || playerMode.mode === PLAYER_MODES.SECURE_HLS;
@@ -862,9 +898,26 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
   };
 
+  const renderWatermarkedStage = (stage) => (
+    <div className="relative overflow-hidden rounded-3xl">
+      {stage}
+      <WatermarkOverlay lesson={lesson} />
+    </div>
+  );
+
   const renderPlayerStage = () => {
-    if (playerMode.mode === PLAYER_MODES.PUBLIC_MP4) {
+    if (playbackHeartbeat.error) {
       return (
+        <UnavailableStage
+          message={playbackHeartbeat.error}
+          reason="playback_session_denied"
+          mode={PLAYER_MODES.UNAVAILABLE}
+        />
+      );
+    }
+
+    if (playerMode.mode === PLAYER_MODES.PUBLIC_MP4) {
+      return renderWatermarkedStage(
         <VideoStage
           lesson={playbackLesson}
           subtitleTracks={subtitleTracks}
@@ -872,15 +925,17 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           selectedSubtitleKey={selectedSubtitleKey}
           onSubtitleKeyChange={setSelectedSubtitleKey}
           onPlaybackTimeChange={handlePlaybackTimeChange}
+          onPlaybackStarted={handlePlaybackStarted}
+          onPlaybackStopped={handlePlaybackStopped}
           videoRef={videoRef}
           showSubtitleControls={false}
           showLessonDetails={false}
-        />
+        />,
       );
     }
 
     if (playerMode.mode === PLAYER_MODES.SECURE_HLS) {
-      return (
+      return renderWatermarkedStage(
         <Suspense
           fallback={(
             <SurfaceCard elevated className="p-4 sm:p-5">
@@ -895,12 +950,14 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             fallbackUrl={playerMode.fallbackUrl}
             fallbackAllowed={playerMode.fallbackAllowed}
             onPlaybackTimeChange={handlePlaybackTimeChange}
+            onPlaybackStarted={handlePlaybackStarted}
+            onPlaybackStopped={handlePlaybackStopped}
             subtitleTracks={subtitleTracks}
             preferredSubtitleLanguage={preferredSubtitleLanguage}
             selectedSubtitleKey={selectedSubtitleKey}
             onSubtitleKeyChange={setSelectedSubtitleKey}
           />
-        </Suspense>
+        </Suspense>,
       );
     }
 
