@@ -275,6 +275,8 @@ def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, caps
     assert compose_kwargs.get("source_kind") == "image"
     assert compose_kwargs.get("source_image_path") == paths["source_image"]
     assert compose_kwargs.get("source_video_path") is None
+    assert compose_kwargs.get("motion_preset") == "natural_conservative"
+    assert compose_kwargs.get("motion_profile") == "default"
 
     driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
     assert driving_arg != str(paths["source_image"])
@@ -282,6 +284,9 @@ def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, caps
 
     stderr_text = capsys.readouterr().err
     assert "motion_source=image_composed" in stderr_text
+    assert "liveportrait_driver_source=composer" in stderr_text
+    assert "liveportrait_composer_used=1" in stderr_text
+    assert "liveportrait_boosted_retry_used=0" in stderr_text
     assert "input_kind=image" in stderr_text
 
 
@@ -331,6 +336,7 @@ def test_duration_contract_uses_requested_fps_not_internal_composer_fps(tmp_path
     assert compose_kwargs.get("target_frame_count") == 596
     assert compose_kwargs.get("expected_duration_seconds") == 37.25
     assert compose_kwargs.get("render_fps") == runner._TARGET_FPS
+    assert compose_kwargs.get("motion_preset") == "natural_conservative"
 
     stderr_text = capsys.readouterr().err
     assert "requested_fps=16.0000" in stderr_text
@@ -380,6 +386,8 @@ def test_video_input_uses_real_video_source(tmp_path, monkeypatch, capsys):
 
     stderr_text = capsys.readouterr().err
     assert "motion_source=real_video" in stderr_text
+    assert "liveportrait_driver_source=source_video" in stderr_text
+    assert "liveportrait_composer_used=0" in stderr_text
     assert "input_kind=video" in stderr_text
 
 
@@ -501,6 +509,7 @@ def test_image_input_regenerates_driver_until_variation_is_valid(tmp_path, monke
     captured: dict[str, object] = {}
     compose_profiles: list[str] = []
     probe_calls = {"count": 0}
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", "1")
 
     def _fake_compose(_target_duration_s, output_path, **kwargs):
         compose_profiles.append(str(kwargs.get("motion_profile") or "default"))
@@ -575,6 +584,76 @@ def test_image_input_regenerates_driver_until_variation_is_valid(tmp_path, monke
     stderr_text = capsys.readouterr().err
     assert "driver candidate rejected candidate=image_composed profile=default" in stderr_text
     assert "final_driver_recipe motion_source=image_composed:boosted" in stderr_text
+    assert "liveportrait_boosted_retry_used=1" in stderr_text
+
+
+def test_image_input_does_not_auto_boost_without_flag(tmp_path, monkeypatch):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {}
+    compose_profiles: list[str] = []
+
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+
+    def _fake_compose(_target_duration_s, output_path, **kwargs):
+        compose_profiles.append(str(kwargs.get("motion_profile") or "default"))
+        Path(output_path).write_bytes(b"driving")
+        return True
+
+    def _fake_validate(*, path, expected_duration_seconds, requested_fps, target_frame_count, fps_validation_mode):
+        return _driver_metrics(
+            path,
+            duration_seconds=expected_duration_seconds or 1.0,
+            fps=25.0,
+            frame_count=25,
+            requested_fps=requested_fps,
+            target_frame_count=target_frame_count,
+            unique_frames=2,
+            unique_ratio=0.08,
+            mean_mad=0.11,
+            near_static=True,
+            valid=False,
+            failure_reason="driver_near_static:unique_ratio=0.08<min_0.16",
+            validation_failure_reason="driver_invalid:driver_near_static:unique_ratio=0.08<min_0.16",
+        )
+
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
+    monkeypatch.setattr(
+        runner,
+        "_ensure_driving_clip_contract",
+        lambda **kwargs: (kwargs["source_video"], "passed_through", kwargs["target_duration_seconds"]),
+    )
+    _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setattr(runner, "_validate_driving_clip", _fake_validate)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+        ],
+    )
+
+    try:
+        runner.main()
+        assert False, "runner.main() should have raised RuntimeError"
+    except RuntimeError as exc:
+        assert "liveportrait_invalid_driving_clip" in str(exc)
+
+    assert compose_profiles == ["default"]
+    assert captured.get("run_called") is not True
 
 
 def test_image_input_prefers_template_and_materializes_exact_requested_contract(tmp_path, monkeypatch):

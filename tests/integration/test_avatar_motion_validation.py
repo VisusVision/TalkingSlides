@@ -260,6 +260,8 @@ def _stub_canonical_input_for_source_key(tmp_path: Path, image: Path, source_key
 
 def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypatch):
     monkeypatch.delenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
     image.write_bytes(b"image")
@@ -277,6 +279,8 @@ def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypa
     )
 
     assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.0"
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
 
 
 def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, monkeypatch):
@@ -298,6 +302,37 @@ def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, 
     )
 
     assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.37"
+
+
+def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch):
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        audio_path=str(audio),
+        output_path=str(tmp_path / "preview.mp4"),
+        preview_teacher_id=1,
+        preview_job_id=2,
+    )
+
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    default_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "subtle_gaze")
+    subtle_gaze_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", "1")
+    boosted_allowed_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    assert default_keys["liveportrait_motion_preset"] == "natural_conservative"
+    assert subtle_gaze_keys["liveportrait_motion_preset"] == "subtle_gaze"
+    assert default_keys != subtle_gaze_keys
+    assert subtle_gaze_keys["liveportrait_boosted_retry_allowed"] == "0"
+    assert boosted_allowed_keys["liveportrait_boosted_retry_allowed"] == "1"
+    assert subtle_gaze_keys != boosted_allowed_keys
 
 
 def test_musetalk_chunk_timing_metrics_are_shape_stable():
@@ -1041,7 +1076,24 @@ def test_preview_pipeline_preserves_liveportrait_when_musetalk_times_out(tmp_pat
 
     def fake_liveportrait(*, output_path, **_kwargs):
         Path(output_path).write_bytes(b"liveportrait")
-        return EngineResult(True, "liveportrait", output_path, "")
+        return EngineResult(
+            True,
+            "liveportrait",
+            output_path,
+            "",
+            details={
+                "stderr": (
+                    "[LivePortrait] final_driver_recipe motion_source=image_composed:default "
+                    "liveportrait_motion_preset=natural_conservative "
+                    "liveportrait_motion_profile=default "
+                    "liveportrait_driver_source=composer "
+                    "liveportrait_composer_used=1 "
+                    "liveportrait_boosted_retry_used=0 "
+                    "liveportrait_recenter_enabled=1 "
+                    "liveportrait_whole_frame_drift_guard=1"
+                ),
+            },
+        )
 
     def fake_musetalk(*, output_path, timeout_seconds=None, stage_name="musetalk", **_kwargs):
         assert reconciliation_calls
@@ -1146,7 +1198,24 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
 
     def fake_liveportrait(*, output_path, **_kwargs):
         Path(output_path).write_bytes(b"liveportrait")
-        return EngineResult(True, "liveportrait", output_path, "")
+        return EngineResult(
+            True,
+            "liveportrait",
+            output_path,
+            "",
+            details={
+                "stderr": (
+                    "[LivePortrait] final_driver_recipe motion_source=image_composed:default "
+                    "liveportrait_motion_preset=natural_conservative "
+                    "liveportrait_motion_profile=default "
+                    "liveportrait_driver_source=composer "
+                    "liveportrait_composer_used=1 "
+                    "liveportrait_boosted_retry_used=0 "
+                    "liveportrait_recenter_enabled=1 "
+                    "liveportrait_whole_frame_drift_guard=1"
+                ),
+            },
+        )
 
     musetalk_calls = []
 
@@ -1179,6 +1248,13 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     assert result["stage_paths"]["musetalk_stage_state"] == "completed"
     assert result["stage_paths"]["liveportrait_started"] is True
     assert result["stage_paths"]["liveportrait_succeeded"] is True
+    assert result["stage_paths"]["liveportrait_motion_preset"] == "natural_conservative"
+    assert result["stage_paths"]["liveportrait_motion_profile"] == "default"
+    assert result["stage_paths"]["liveportrait_driver_source"] == "composer"
+    assert result["stage_paths"]["liveportrait_composer_used"] is True
+    assert result["stage_paths"]["liveportrait_boosted_retry_used"] is False
+    assert result["stage_paths"]["liveportrait_recenter_enabled"] is True
+    assert result["stage_paths"]["liveportrait_whole_frame_drift_guard"] is True
     assert result["stage_paths"]["musetalk_started"] is True
     assert result["stage_paths"]["musetalk_succeeded"] is True
     assert result["stage_paths"]["musetalk_source_kind"] == "liveportrait"

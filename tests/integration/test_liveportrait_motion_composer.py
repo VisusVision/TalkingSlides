@@ -1,5 +1,57 @@
 from services.scripts import liveportrait_motion_composer as motion_composer
-from services.scripts.liveportrait_motion_composer import _build_motion_recipe, _build_schedule, _DIRECTIONS
+from services.scripts.liveportrait_motion_composer import (
+    _DIRECTIONS,
+    _build_motion_recipe,
+    _build_schedule,
+    profile_sequence_for_preset,
+    resolve_motion_preset,
+)
+
+
+def test_default_motion_preset_is_natural_conservative(monkeypatch):
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+
+    recipe = _build_motion_recipe(8.0, seed=123)
+
+    assert resolve_motion_preset(None) == "natural_conservative"
+    assert recipe["motion_preset"] == "natural_conservative"
+    assert recipe["whole_frame_drift_guard"] is True
+    assert profile_sequence_for_preset(motion_preset=recipe["motion_preset"]) == ["default"]
+
+
+def test_subtle_blink_preset_is_blink_dominant():
+    recipe = _build_motion_recipe(4.0, seed=42, motion_preset="subtle_blink")
+
+    assert recipe["motion_preset"] == "subtle_blink"
+    assert recipe["gaze_enabled"] is False
+    assert list(recipe.get("gaze_events") or []) == []
+    assert list(recipe.get("blink_events_s") or [])
+    assert float(recipe["head_shift_max_px"]) <= 0.12
+    assert float(recipe["base_sway_x_px"]) <= 0.018
+
+
+def test_subtle_gaze_preset_uses_small_recentering_side_glance():
+    recipe = _build_motion_recipe(4.0, seed=42, motion_preset="subtle_gaze")
+    gaze_events = list(recipe.get("gaze_events") or [])
+
+    assert recipe["motion_preset"] == "subtle_gaze"
+    assert recipe["recenter_enabled"] is True
+    assert recipe["whole_frame_drift_guard"] is True
+    assert gaze_events
+    assert all(str(evt.get("direction")) in {"left", "right"} for evt in gaze_events)
+    assert all(bool(evt.get("recenter_enabled")) for evt in gaze_events)
+    assert max(abs(float(evt.get("dx_px") or 0.0)) for evt in gaze_events) <= 0.48
+
+
+def test_expressive_debug_allows_boosted_profiles():
+    assert profile_sequence_for_preset(motion_preset="expressive_debug") == ["default", "boosted", "boosted_strong"]
+
+    recipe = _build_motion_recipe(4.0, seed=42, motion_preset="expressive_debug", motion_profile="boosted")
+
+    assert recipe["motion_preset"] == "expressive_debug"
+    assert recipe["boosted_profile"] is True
+    assert recipe["whole_frame_drift_guard"] is False
 
 
 def test_nod_behavior_is_disabled():
@@ -54,7 +106,9 @@ def test_gaze_duration_is_brief_then_returns_neutral():
 
     for evt in gaze_events:
         duration_s = float(evt.get("duration_s") or 0.0)
-        assert motion_composer._GAZE_DUR_MIN <= duration_s <= motion_composer._GAZE_DUR_MAX
+        assert 0.45 <= duration_s <= motion_composer._GAZE_DUR_MAX
+        assert evt.get("recenter_enabled") is True
+        assert float(evt.get("recenter_after_s") or 0.0) >= float(evt.get("start_s") or 0.0) + duration_s - 1e-4
 
 
 def test_head_motion_stays_subtle():
@@ -120,6 +174,8 @@ def test_compose_logs_motion_recipe_details(tmp_path, monkeypatch, capsys):
     assert ok is True
     stderr_text = capsys.readouterr().err
     assert "nods_disabled=1" in stderr_text
+    assert "motion_preset=natural_conservative" in stderr_text
+    assert "whole_frame_drift_guard=1" in stderr_text
     assert "blink_schedule_s=" in stderr_text
     assert "gaze_event index=" in stderr_text
     assert "motion_recipe=" in stderr_text

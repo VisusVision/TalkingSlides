@@ -48,6 +48,120 @@ _CONTINUOUS_EYE_WANDER_ENABLED = str(
 ).strip().lower() in {"1", "true", "yes", "on"}
 
 _DIRECTIONS = ["left", "right", "up", "down", "top-left", "top-right", "bottom-left", "bottom-right"]
+_DEFAULT_MOTION_PRESET = "natural_conservative"
+_ALLOWED_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
+_BOOSTED_PROFILES = {"boosted", "boosted_strong", "stronger", "strong"}
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    raw = str(os.environ.get(name, default)).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def resolve_motion_preset(value: str | None = None) -> str:
+    raw = str(value if value is not None else os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "")).strip().lower()
+    if raw in _ALLOWED_MOTION_PRESETS:
+        return raw
+    return _DEFAULT_MOTION_PRESET
+
+
+def boosted_retry_allowed(*, motion_preset: str | None = None, env_value: str | None = None) -> bool:
+    preset = resolve_motion_preset(motion_preset)
+    if preset == "expressive_debug":
+        return True
+    if env_value is not None:
+        return str(env_value).strip().lower() in {"1", "true", "yes", "on"}
+    return _truthy_env("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", "0")
+
+
+def profile_sequence_for_preset(*, motion_preset: str | None = None, allow_boosted_retry: bool | None = None) -> list[str]:
+    preset = resolve_motion_preset(motion_preset)
+    allow_boosted = boosted_retry_allowed(motion_preset=preset) if allow_boosted_retry is None else bool(allow_boosted_retry)
+    profiles = ["default"]
+    if allow_boosted:
+        profiles.extend(["boosted", "boosted_strong"])
+    return profiles
+
+
+def _preset_settings(preset: str, *, motion_profile: str = "default") -> dict[str, Any]:
+    resolved = resolve_motion_preset(preset)
+    profile = str(motion_profile or "default").strip().lower()
+    boosted_profile = profile in _BOOSTED_PROFILES
+    if resolved == "subtle_blink":
+        return {
+            "preset": resolved,
+            "gaze_enabled": False,
+            "directions": ["left", "right"],
+            "head_shift_cap_px": 0.12,
+            "boosted_head_shift_cap_px": 0.28,
+            "head_shift_min_px": 0.0,
+            "blink_shift_cap_px": 0.26 if not boosted_profile else 0.42,
+            "blink_shift_min_px": 0.10,
+            "base_sway_x_cap_px": 0.018,
+            "base_sway_y_cap_px": 0.014,
+            "gaze_interval_scale": 1.6,
+            "gaze_duration_scale": 0.55,
+            "short_gaze_scale": 0.0,
+            "short_gaze_min_px": 0.0,
+            "recenter_enabled": True,
+            "whole_frame_drift_guard": True,
+        }
+    if resolved == "subtle_gaze":
+        return {
+            "preset": resolved,
+            "gaze_enabled": True,
+            "directions": ["left", "right"],
+            "head_shift_cap_px": 0.48,
+            "boosted_head_shift_cap_px": 0.85,
+            "head_shift_min_px": 0.18,
+            "blink_shift_cap_px": 0.28 if not boosted_profile else 0.52,
+            "blink_shift_min_px": 0.12,
+            "base_sway_x_cap_px": 0.045,
+            "base_sway_y_cap_px": 0.035,
+            "gaze_interval_scale": 1.15,
+            "gaze_duration_scale": 0.78,
+            "short_gaze_scale": 0.62,
+            "short_gaze_min_px": 0.22,
+            "recenter_enabled": True,
+            "whole_frame_drift_guard": True,
+        }
+    if resolved == "expressive_debug":
+        return {
+            "preset": resolved,
+            "gaze_enabled": True,
+            "directions": list(_DIRECTIONS),
+            "head_shift_cap_px": 2.8,
+            "boosted_head_shift_cap_px": 2.8,
+            "head_shift_min_px": 0.45,
+            "blink_shift_cap_px": 1.2,
+            "blink_shift_min_px": 0.15,
+            "base_sway_x_cap_px": 0.80,
+            "base_sway_y_cap_px": 0.70,
+            "gaze_interval_scale": 1.0,
+            "gaze_duration_scale": 1.0,
+            "short_gaze_scale": 0.85,
+            "short_gaze_min_px": 0.60,
+            "recenter_enabled": True,
+            "whole_frame_drift_guard": False,
+        }
+    return {
+        "preset": "natural_conservative",
+        "gaze_enabled": True,
+        "directions": ["left", "right", "up", "down"],
+        "head_shift_cap_px": 0.72,
+        "boosted_head_shift_cap_px": 1.05,
+        "head_shift_min_px": 0.24,
+        "blink_shift_cap_px": 0.30 if not boosted_profile else 0.58,
+        "blink_shift_min_px": 0.12,
+        "base_sway_x_cap_px": 0.060,
+        "base_sway_y_cap_px": 0.045,
+        "gaze_interval_scale": 1.10,
+        "gaze_duration_scale": 0.82,
+        "short_gaze_scale": 0.58,
+        "short_gaze_min_px": 0.28,
+        "recenter_enabled": True,
+        "whole_frame_drift_guard": True,
+    }
 
 
 def _profile_scales(profile: str) -> dict[str, float]:
@@ -92,52 +206,125 @@ def _direction_to_offsets(direction: str, amplitude: float) -> tuple[float, floa
     return direction_map.get(str(direction or "").strip().lower(), (0.0, 0.0))
 
 
-def _build_motion_recipe(target_duration_s: float, seed: int = 42, *, motion_profile: str = "default") -> dict[str, Any]:
+def _bounded(value: float, *, minimum: float, maximum: float) -> float:
+    return min(max(float(value), float(minimum)), float(maximum))
+
+
+def _gaze_event(
+    *,
+    start_s: float,
+    duration_s: float,
+    direction: str,
+    dx_px: float,
+    dy_px: float,
+    recenter_enabled: bool,
+) -> dict[str, Any]:
+    event = {
+        "start_s": round(float(start_s), 4),
+        "duration_s": round(float(duration_s), 4),
+        "direction": str(direction),
+        "dx_px": round(float(dx_px), 4),
+        "dy_px": round(float(dy_px), 4),
+    }
+    if recenter_enabled:
+        event.update(
+            {
+                "recenter_enabled": True,
+                "recenter_after_s": round(float(start_s) + float(duration_s), 4),
+                "recenter_duration_s": 0.24,
+            }
+        )
+    return event
+
+
+def _build_motion_recipe(
+    target_duration_s: float,
+    seed: int = 42,
+    *,
+    motion_profile: str = "default",
+    motion_preset: str | None = None,
+) -> dict[str, Any]:
     duration = max(float(target_duration_s), 0.0)
     rng = random.Random(int(seed))
+    resolved_preset = resolve_motion_preset(motion_preset)
+    preset_settings = _preset_settings(resolved_preset, motion_profile=motion_profile)
+    profile_name = str(motion_profile or "default").strip().lower() or "default"
+    boosted_profile = profile_name in _BOOSTED_PROFILES
     scales = _profile_scales(motion_profile)
 
     effective_blink_min = max(float(_BLINK_MIN) * float(scales["blink_interval"]), 0.9)
     effective_blink_max = max(float(_BLINK_MAX) * float(scales["blink_interval"]), effective_blink_min + 0.2)
-    effective_gaze_min = max(float(_GAZE_MIN) * float(scales["gaze_interval"]), 1.2)
+    effective_gaze_min = max(float(_GAZE_MIN) * float(scales["gaze_interval"]) * float(preset_settings["gaze_interval_scale"]), 1.2)
     effective_gaze_max = max(float(_GAZE_MAX) * float(scales["gaze_interval"]), effective_gaze_min + 0.6)
-    effective_head_shift_max_px = min(max(float(_HEAD_SHIFT_MAX_PX) * float(scales["head_shift"]), 0.45), 2.8)
-    effective_blink_shift_px = min(max(float(_BLINK_SHIFT_PX) * float(scales["blink_shift"]), 0.15), 1.2)
-    effective_base_sway_x_px = min(max(float(_BASE_SWAY_X_PX) * float(scales["base_sway"]), 0.08), 0.80)
-    effective_base_sway_y_px = min(max(float(_BASE_SWAY_Y_PX) * float(scales["base_sway"]), 0.06), 0.70)
+    head_cap = float(preset_settings["boosted_head_shift_cap_px"] if boosted_profile else preset_settings["head_shift_cap_px"])
+    effective_head_shift_max_px = _bounded(
+        float(_HEAD_SHIFT_MAX_PX) * float(scales["head_shift"]),
+        minimum=float(preset_settings["head_shift_min_px"]),
+        maximum=head_cap,
+    )
+    effective_blink_shift_px = _bounded(
+        float(_BLINK_SHIFT_PX) * float(scales["blink_shift"]),
+        minimum=float(preset_settings["blink_shift_min_px"]),
+        maximum=float(preset_settings["blink_shift_cap_px"]),
+    )
+    effective_base_sway_x_px = _bounded(
+        float(_BASE_SWAY_X_PX) * float(scales["base_sway"]),
+        minimum=0.0,
+        maximum=float(preset_settings["base_sway_x_cap_px"]),
+    )
+    effective_base_sway_y_px = _bounded(
+        float(_BASE_SWAY_Y_PX) * float(scales["base_sway"]),
+        minimum=0.0,
+        maximum=float(preset_settings["base_sway_y_cap_px"]),
+    )
     short_preview_threshold = max(float(_SHORT_PREVIEW_BOOTSTRAP_S), 6.0)
 
     blink_events_s: list[float] = []
     gaze_events: list[dict[str, Any]] = []
 
     if duration <= short_preview_threshold:
-        gaze_dir = rng.choice(["left", "right", "up", "down"])
-        gaze_start = max(min(duration * 0.08, 0.20), 0.03)
-        gaze_duration = min(max(duration * 0.55, 0.60), 1.60)
-        gaze_dx, gaze_dy = _direction_to_offsets(gaze_dir, max(effective_head_shift_max_px * 0.85, 0.60))
-        gaze_events.append(
-            {
-                "start_s": round(gaze_start, 4),
-                "duration_s": round(gaze_duration, 4),
-                "direction": gaze_dir,
-                "dx_px": round(float(gaze_dx), 4),
-                "dy_px": round(float(gaze_dy), 4),
-            }
-        )
-        if duration >= 3.2:
-            second_gaze_dir = rng.choice([direction for direction in _DIRECTIONS if direction != gaze_dir])
-            second_gaze_start = max(min(duration * 0.56, duration - 0.65), 0.55)
-            second_gaze_duration = min(max(duration * 0.28, 0.45), 1.05)
-            second_dx, second_dy = _direction_to_offsets(second_gaze_dir, max(effective_head_shift_max_px * 0.70, 0.45))
-            gaze_events.append(
-                {
-                    "start_s": round(float(second_gaze_start), 4),
-                    "duration_s": round(float(second_gaze_duration), 4),
-                    "direction": second_gaze_dir,
-                    "dx_px": round(float(second_dx), 4),
-                    "dy_px": round(float(second_dy), 4),
-                }
+        if bool(preset_settings["gaze_enabled"]):
+            directions = list(preset_settings["directions"] or ["left", "right"])
+            gaze_dir = rng.choice(directions)
+            gaze_start = max(min(duration * 0.08, 0.20), 0.03)
+            gaze_duration = min(max(duration * 0.55, 0.60), 1.60)
+            short_gaze_amplitude = _bounded(
+                effective_head_shift_max_px * float(preset_settings["short_gaze_scale"]),
+                minimum=float(preset_settings["short_gaze_min_px"]),
+                maximum=head_cap,
             )
+            gaze_dx, gaze_dy = _direction_to_offsets(gaze_dir, short_gaze_amplitude)
+            gaze_events.append(
+                _gaze_event(
+                    start_s=gaze_start,
+                    duration_s=gaze_duration,
+                    direction=gaze_dir,
+                    dx_px=gaze_dx,
+                    dy_px=gaze_dy,
+                    recenter_enabled=bool(preset_settings["recenter_enabled"]),
+                )
+            )
+            if duration >= 3.2:
+                second_choices = [direction for direction in directions if direction != gaze_dir] or directions
+                second_gaze_dir = rng.choice(second_choices)
+                second_gaze_start = max(min(duration * 0.56, duration - 0.65), 0.55)
+                second_gaze_duration = min(max(duration * 0.28, 0.45), 1.05)
+                second_amplitude = _bounded(
+                    effective_head_shift_max_px * max(float(preset_settings["short_gaze_scale"]) * 0.82, 0.1),
+                    minimum=max(float(preset_settings["short_gaze_min_px"]) * 0.75, 0.0),
+                    maximum=head_cap,
+                )
+                second_dx, second_dy = _direction_to_offsets(second_gaze_dir, second_amplitude)
+                gaze_events.append(
+                    _gaze_event(
+                        start_s=second_gaze_start,
+                        duration_s=second_gaze_duration,
+                        direction=second_gaze_dir,
+                        dx_px=second_dx,
+                        dy_px=second_dy,
+                        recenter_enabled=bool(preset_settings["recenter_enabled"]),
+                    )
+                )
         if duration >= 0.8:
             first_blink = max(min(duration * 0.34, duration - 0.20), 0.24)
             blink_events_s.append(round(float(first_blink), 4))
@@ -152,21 +339,25 @@ def _build_motion_recipe(target_duration_s: float, seed: int = 42, *, motion_pro
             blink_events_s.append(round(blink_cursor, 4))
             blink_cursor += rng.uniform(effective_blink_min, effective_blink_max)
 
-        gaze_cursor = rng.uniform(effective_gaze_min, effective_gaze_max)
-        while gaze_cursor < duration:
-            gaze_dir = rng.choice(_DIRECTIONS)
-            gaze_duration = rng.uniform(_GAZE_DUR_MIN, _GAZE_DUR_MAX)
-            gaze_dx, gaze_dy = _direction_to_offsets(gaze_dir, effective_head_shift_max_px)
-            gaze_events.append(
-                {
-                    "start_s": round(float(gaze_cursor), 4),
-                    "duration_s": round(float(gaze_duration), 4),
-                    "direction": gaze_dir,
-                    "dx_px": round(float(gaze_dx), 4),
-                    "dy_px": round(float(gaze_dy), 4),
-                }
-            )
-            gaze_cursor += rng.uniform(effective_gaze_min, effective_gaze_max)
+        if bool(preset_settings["gaze_enabled"]):
+            directions = list(preset_settings["directions"] or _DIRECTIONS)
+            gaze_cursor = rng.uniform(effective_gaze_min, effective_gaze_max)
+            while gaze_cursor < duration:
+                gaze_dir = rng.choice(directions)
+                gaze_duration = rng.uniform(_GAZE_DUR_MIN, _GAZE_DUR_MAX) * float(preset_settings["gaze_duration_scale"])
+                gaze_duration = _bounded(gaze_duration, minimum=0.45, maximum=float(_GAZE_DUR_MAX))
+                gaze_dx, gaze_dy = _direction_to_offsets(gaze_dir, effective_head_shift_max_px)
+                gaze_events.append(
+                    _gaze_event(
+                        start_s=gaze_cursor,
+                        duration_s=gaze_duration,
+                        direction=gaze_dir,
+                        dx_px=gaze_dx,
+                        dy_px=gaze_dy,
+                        recenter_enabled=bool(preset_settings["recenter_enabled"]),
+                    )
+                )
+                gaze_cursor += rng.uniform(effective_gaze_min, effective_gaze_max)
 
     blink_intervals_s: list[float] = []
     for idx in range(1, len(blink_events_s)):
@@ -174,11 +365,17 @@ def _build_motion_recipe(target_duration_s: float, seed: int = 42, *, motion_pro
 
     return {
         "recipe": "calm_sparse_human_v1",
+        "motion_preset": resolved_preset,
         "motion_profile": str(motion_profile or "default"),
+        "boosted_profile": bool(boosted_profile),
         "target_duration_s": round(duration, 4),
         "seed": int(seed),
         "nods_enabled": bool(_NODS_ENABLED),
         "continuous_eye_wander_enabled": bool(_CONTINUOUS_EYE_WANDER_ENABLED),
+        "recenter_enabled": bool(preset_settings["recenter_enabled"]),
+        "whole_frame_drift_guard": bool(preset_settings["whole_frame_drift_guard"]),
+        "gaze_enabled": bool(preset_settings["gaze_enabled"]),
+        "gaze_shift_max_px": round(float(effective_head_shift_max_px), 4),
         "blink_events_s": blink_events_s,
         "blink_intervals_s": blink_intervals_s,
         "blink_duration_s": round(float(_BLINK_DUR), 4),
@@ -471,6 +668,7 @@ def compose(
     seed: int = 42,
     verbose: bool = True,
     motion_profile: str = "default",
+    motion_preset: str | None = None,
     requested_fps: float = 0.0,
     target_frame_count: int = 0,
     expected_duration_seconds: float | None = None,
@@ -489,6 +687,7 @@ def compose(
         return False
 
     target_duration_s = max(float(target_duration_s), 0.5)
+    resolved_preset = resolve_motion_preset(motion_preset)
     requested_fps_value = max(float(requested_fps or 0.0), 0.0)
     target_frame_count_value = max(int(target_frame_count or 0), 0)
     expected_duration_value = (
@@ -514,13 +713,22 @@ def compose(
         if resolved_image is None or not resolved_image.exists():
             print("[motion_composer] ERROR: image source is missing", file=sys.stderr)
             return False
-        recipe = _build_motion_recipe(target_duration_s, seed=int(seed), motion_profile=motion_profile)
+        recipe = _build_motion_recipe(
+            target_duration_s,
+            seed=int(seed),
+            motion_profile=motion_profile,
+            motion_preset=resolved_preset,
+        )
         if verbose:
             import json as _json
             print(
                 "[motion_composer] "
                 f"nods_disabled={int(not bool(recipe.get('nods_enabled')))} "
-                f"continuous_eye_wander_disabled={int(not bool(recipe.get('continuous_eye_wander_enabled')))}",
+                f"continuous_eye_wander_disabled={int(not bool(recipe.get('continuous_eye_wander_enabled')))} "
+                f"motion_preset={resolved_preset} "
+                f"motion_profile={motion_profile} "
+                f"recenter_enabled={int(bool(recipe.get('recenter_enabled')))} "
+                f"whole_frame_drift_guard={int(bool(recipe.get('whole_frame_drift_guard')))}",
                 file=sys.stderr,
             )
             print(
@@ -548,7 +756,8 @@ def compose(
             print(
                 "[motion_composer] "
                 f"source_kind=image source_path={resolved_image} "
-                f"strategy=single_continuous_image_motion duration={target_duration_s:.3f}s fps={fps} seed={seed} motion_profile={motion_profile}",
+                f"strategy=single_continuous_image_motion duration={target_duration_s:.3f}s fps={fps} seed={seed} "
+                f"motion_preset={resolved_preset} motion_profile={motion_profile}",
                 file=sys.stderr,
             )
         ok = _render_continuous_image_motion(
@@ -572,7 +781,8 @@ def compose(
             print(
                 "[motion_composer] "
                 f"source_kind=video source_path={source_video_path} "
-                f"strategy=single_continuous_video_loop duration={target_duration_s:.3f}s fps={fps}",
+                f"strategy=single_continuous_video_loop duration={target_duration_s:.3f}s fps={fps} "
+                f"motion_preset={resolved_preset}",
                 file=sys.stderr,
             )
         ok = _loop_clip(source_video_path, target_duration_s, fps, output_path)
@@ -610,6 +820,8 @@ def main() -> int:
     parser.add_argument("--source_image", default="")
     parser.add_argument("--source_video", default="")
     parser.add_argument("--seed",     type=int, default=42)
+    parser.add_argument("--motion_preset", default="")
+    parser.add_argument("--motion_profile", default="default")
     args = parser.parse_args()
 
     t0 = time.monotonic()
@@ -621,6 +833,8 @@ def main() -> int:
         source_video_path=(Path(args.source_video) if str(args.source_video or "").strip() else None),
         seed=args.seed,
         verbose=True,
+        motion_preset=str(args.motion_preset or ""),
+        motion_profile=str(args.motion_profile or "default"),
     )
     elapsed = time.monotonic() - t0
 

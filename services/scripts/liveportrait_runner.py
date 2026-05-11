@@ -28,6 +28,55 @@ _DRIVER_MIN_MAD = float(os.environ.get("LP_DRIVER_MIN_MAD", "0.35"))
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+_DEFAULT_MOTION_PRESET = "natural_conservative"
+_ALLOWED_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
+_BOOSTED_PROFILES = {"boosted", "boosted_strong", "stronger", "strong"}
+
+
+def _truthy(value: str | None, default: str = "0") -> bool:
+    raw = str(value if value is not None else default).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _resolve_motion_preset(raw_value: str | None = None) -> str:
+    if _motion_composer is not None and hasattr(_motion_composer, "resolve_motion_preset"):
+        try:
+            return str(_motion_composer.resolve_motion_preset(raw_value))
+        except Exception:
+            pass
+    raw = str(raw_value if raw_value is not None else os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "")).strip().lower()
+    return raw if raw in _ALLOWED_MOTION_PRESETS else _DEFAULT_MOTION_PRESET
+
+
+def _boosted_retry_allowed(motion_preset: str) -> bool:
+    if _motion_composer is not None and hasattr(_motion_composer, "boosted_retry_allowed"):
+        try:
+            return bool(
+                _motion_composer.boosted_retry_allowed(
+                    motion_preset=motion_preset,
+                    env_value=os.environ.get("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"),
+                )
+            )
+        except Exception:
+            pass
+    return motion_preset == "expressive_debug" or _truthy(os.environ.get("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"), "0")
+
+
+def _compose_profiles_for_preset(motion_preset: str, allow_boosted_retry: bool) -> list[str]:
+    if _motion_composer is not None and hasattr(_motion_composer, "profile_sequence_for_preset"):
+        try:
+            return list(
+                _motion_composer.profile_sequence_for_preset(
+                    motion_preset=motion_preset,
+                    allow_boosted_retry=allow_boosted_retry,
+                )
+            )
+        except Exception:
+            pass
+    profiles = ["default"]
+    if allow_boosted_retry:
+        profiles.extend(["boosted", "boosted_strong"])
+    return profiles
 
 
 def _derive_duration_contract(
@@ -803,6 +852,15 @@ def main() -> int:
         # Video input: reuse the provided source video as real driving input.
         _motion_source = "real_video" if input_kind == "video" else "image_pending"
         _source_mode = "video_reuse" if input_kind == "video" else "image_driven_composition"
+        _motion_preset = _resolve_motion_preset(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_PRESET"))
+        _allow_boosted_retry = _boosted_retry_allowed(_motion_preset)
+        _compose_profiles = _compose_profiles_for_preset(_motion_preset, _allow_boosted_retry)
+        _composer_used = False
+        _boosted_retry_used = False
+        _driver_source = "source_video" if input_kind == "video" else "pending"
+        _selected_profile = ""
+        _recenter_enabled = _motion_preset in {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
+        _whole_frame_drift_guard = _motion_preset != "expressive_debug"
         _driving_action = "passed_through"
         _resolved_driving_duration_seconds = 0.0
         _driver_metrics: dict[str, object] = {}
@@ -831,12 +889,19 @@ def main() -> int:
             f"duration_source={_duration_source}",
             file=sys.stderr,
         )
+        print(
+            "[LivePortrait] motion_preset_policy "
+            f"liveportrait_motion_preset={_motion_preset} "
+            f"allow_boosted_retry={int(bool(_allow_boosted_retry))} "
+            f"compose_profiles={','.join(_compose_profiles)} "
+            f"liveportrait_recenter_enabled={int(bool(_recenter_enabled))} "
+            f"liveportrait_whole_frame_drift_guard={int(bool(_whole_frame_drift_guard))}",
+            file=sys.stderr,
+        )
 
         if input_kind == "image":
             _target_dur = max(_target_contract_duration_seconds, 0.5)
             _composed_out = temp_dir / "composed_drive.mp4"
-            _compose_profiles = ["default", "boosted", "boosted_strong"]
-            _selected_profile = ""
             _driver_rejections: list[str] = []
             _compose_succeeded_once = False
             _template_candidates = _discover_image_driving_templates(
@@ -915,6 +980,7 @@ def main() -> int:
                 if str(_template_origin).startswith("env:"):
                     source_video = _candidate_video
                     _motion_source = f"image_template:{_template_origin}"
+                    _driver_source = "template"
                     break
 
                 _template_score = (
@@ -942,6 +1008,7 @@ def main() -> int:
                     _resolved_driving_duration_seconds,
                 ) = _best_template_choice
                 _motion_source = f"image_template:{_selected_template_origin}"
+                _driver_source = "template"
                 print(
                     "[LivePortrait] selected_template_candidate "
                     f"origin={_selected_template_origin} "
@@ -966,6 +1033,7 @@ def main() -> int:
                             source_image_path=source_image,
                             source_video_path=None,
                             motion_profile=str(_profile),
+                            motion_preset=str(_motion_preset),
                             requested_fps=float(_requested_fps),
                             target_frame_count=int(_target_frame_count),
                             expected_duration_seconds=float(_expected_duration_seconds),
@@ -1017,6 +1085,9 @@ def main() -> int:
                     continue
 
                 _selected_profile = str(_profile)
+                _composer_used = True
+                _boosted_retry_used = str(_profile).strip().lower() in _BOOSTED_PROFILES
+                _driver_source = "composer"
                 source_video = _candidate_video
                 _motion_source = f"image_composed:{_selected_profile}"
                 break
@@ -1032,6 +1103,13 @@ def main() -> int:
             print(
                 "[LivePortrait] final_driver_recipe "
                 f"motion_source={_motion_source} "
+                f"liveportrait_motion_preset={_motion_preset} "
+                f"liveportrait_motion_profile={_selected_profile or 'template'} "
+                f"liveportrait_driver_source={_driver_source} "
+                f"liveportrait_composer_used={int(bool(_composer_used))} "
+                f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
+                f"liveportrait_recenter_enabled={int(bool(_recenter_enabled))} "
+                f"liveportrait_whole_frame_drift_guard={int(bool(_whole_frame_drift_guard))} "
                 f"profile={_selected_profile} "
                 f"metrics={_format_driver_metrics(_driver_metrics)}",
                 file=sys.stderr,
@@ -1048,6 +1126,7 @@ def main() -> int:
                 output_name="video_input_drive_contract.mp4",
             )
             _motion_source = "real_video"
+            _driver_source = "source_video"
 
         assert source_video is not None
         if input_kind == "image" and source_video.resolve() == source_image.resolve():
@@ -1082,6 +1161,13 @@ def main() -> int:
         print(
             "[LivePortrait] "
             f"motion_source={_motion_source} "
+            f"liveportrait_motion_preset={_motion_preset} "
+            f"liveportrait_motion_profile={_selected_profile or ('source_video' if input_kind == 'video' else 'template')} "
+            f"liveportrait_driver_source={_driver_source} "
+            f"liveportrait_composer_used={int(bool(_composer_used))} "
+            f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
+            f"liveportrait_recenter_enabled={int(bool(_recenter_enabled))} "
+            f"liveportrait_whole_frame_drift_guard={int(bool(_whole_frame_drift_guard))} "
             f"source_mode={_source_mode} "
             f"input_kind={input_kind} "
             f"driving_action={_driving_action} "
@@ -1178,6 +1264,13 @@ def main() -> int:
             print(
                 "[LivePortrait] "
                 f"motion_source={_motion_source} "
+                f"liveportrait_motion_preset={_motion_preset} "
+                f"liveportrait_motion_profile={_selected_profile or ('source_video' if input_kind == 'video' else 'template')} "
+                f"liveportrait_driver_source={_driver_source} "
+                f"liveportrait_composer_used={int(bool(_composer_used))} "
+                f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
+                f"liveportrait_recenter_enabled={int(bool(_recenter_enabled))} "
+                f"liveportrait_whole_frame_drift_guard={int(bool(_whole_frame_drift_guard))} "
                 f"source_mode={_source_mode} "
                 f"input_kind={input_kind} "
                 f"driving_action={_driving_action} "
