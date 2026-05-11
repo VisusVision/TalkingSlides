@@ -64,6 +64,17 @@ class _DummyJobsCollection:
         return self._job
 
 
+class _DummyAvatarRenderJobsCollection:
+    def exclude(self, **kwargs):
+        return self
+
+    def order_by(self, *args, **kwargs):
+        return self
+
+    def first(self):
+        return None
+
+
 def _extract_stream_tokens(text: str) -> list[str]:
     return re.findall(r"/api/v1/stream/([^/]+)/", text)
 
@@ -185,6 +196,7 @@ def test_playback_sidecar_loading_and_debug_payload(tmp_path):
 
     class _Project:
         id = project_id
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     class _Job:
         id = 888
@@ -207,6 +219,7 @@ def test_playback_sidecar_loading_and_debug_payload(tmp_path):
 def test_playback_payload_includes_safe_drm_contract_fields():
     class _Project:
         id = 1201
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     class _Job:
         id = 2202
@@ -255,6 +268,7 @@ def test_playback_payload_includes_safe_drm_contract_fields():
 def test_playback_payload_drm_protected_disables_mp4_fallback():
     class _Project:
         id = 1001
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     class _Job:
         id = 2002
@@ -285,6 +299,7 @@ def test_playback_payload_drm_protected_disables_mp4_fallback():
 def test_playback_payload_secure_stream_keeps_mp4_fallback():
     class _Project:
         id = 1003
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     class _Job:
         id = 2004
@@ -325,6 +340,7 @@ def test_effective_mode_uses_sidecar_when_env_not_public():
 def test_playback_payload_mode_debug_reflects_effective_mode_source():
     class _Project:
         id = 1401
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     class _Job:
         id = 2402
@@ -367,6 +383,7 @@ def test_playback_token_view_rejects_drm_protected_lesson_without_drm_config(tmp
     class _Project:
         id = project_id
         jobs = _DummyJobsCollection(job)
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     sidecar_path = tmp_path / str(project_id) / "playback_assets.json"
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
@@ -401,6 +418,7 @@ def test_playback_token_view_returns_hls_payload_for_drm_protected_lesson(tmp_pa
     class _Project:
         id = project_id
         jobs = _DummyJobsCollection(job)
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     sidecar_path = tmp_path / str(project_id) / "playback_assets.json"
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
@@ -446,6 +464,7 @@ def test_playback_token_view_returns_multi_system_drm_contract(tmp_path, monkeyp
     class _Project:
         id = project_id
         jobs = _DummyJobsCollection(job)
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     sidecar_path = tmp_path / str(project_id) / "playback_assets.json"
     sidecar_path.parent.mkdir(parents=True, exist_ok=True)
@@ -888,6 +907,7 @@ def test_playback_session_heartbeat_renews_active_grant(monkeypatch):
     class _Project:
         id = project_id
         jobs = _DummyJobsCollection(job)
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
 
     monkeypatch.setattr(views.Project.objects, "get", lambda pk: _Project())
 
