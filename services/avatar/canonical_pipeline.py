@@ -255,25 +255,26 @@ def _liveportrait_motion_gate(
     shared_probe_playable = bool(shared_duration > 0.0 and shared_frame_count > 0)
     shared_motion_passed = bool(shared_probe_playable and not shared_near_static)
 
-    handoff_failure_parts: list[str] = []
+    technical_failure_parts: list[str] = []
+    motion_failure_parts: list[str] = []
     if not bool(file_info.get("exists")):
-        handoff_failure_parts.append("file_missing")
+        technical_failure_parts.append("file_missing")
     if int(file_info.get("size_bytes") or 0) <= 0:
-        handoff_failure_parts.append("file_empty")
+        technical_failure_parts.append("file_empty")
     if not playable:
-        handoff_failure_parts.append(f"video_unplayable:{contract_error or 'unknown'}")
+        technical_failure_parts.append(f"video_unplayable:{contract_error or 'unknown'}")
     if not shared_probe_playable:
-        handoff_failure_parts.append("shared_probe_unplayable")
+        technical_failure_parts.append("shared_probe_unplayable")
     if not duration_matches:
-        handoff_failure_parts.append(
+        technical_failure_parts.append(
             f"duration={round(shared_duration, 6)}!=expected_{round(expected_duration, 6)}+/-{round(duration_tolerance, 6)}"
         )
     if not frame_count_matches:
-        handoff_failure_parts.append(f"frame_count={shared_frame_count}!=expected_{expected_frames}+/-{frame_tolerance}")
+        technical_failure_parts.append(f"frame_count={shared_frame_count}!=expected_{expected_frames}+/-{frame_tolerance}")
     if not fps_matches:
-        handoff_failure_parts.append(f"fps={round(shared_fps, 6)}!=expected_{round(expected_fps_value, 6)}+/-{round(fps_tolerance, 6)}")
+        technical_failure_parts.append(f"fps={round(shared_fps, 6)}!=expected_{round(expected_fps_value, 6)}+/-{round(fps_tolerance, 6)}")
     if shared_near_static:
-        handoff_failure_parts.append(str(shared_probe.get("failure_reason") or "shared_probe_near_static"))
+        motion_failure_parts.append(str(shared_probe.get("failure_reason") or "shared_probe_near_static"))
 
     passed = bool(
         bool(file_info.get("exists"))
@@ -285,13 +286,39 @@ def _liveportrait_motion_gate(
         and fps_matches
     )
 
+    technical_passed = bool(
+        bool(file_info.get("exists"))
+        and int(file_info.get("size_bytes") or 0) > 0
+        and playable
+        and duration_matches
+        and frame_count_matches
+        and fps_matches
+    )
+    motion_passed = bool(technical_passed and shared_motion_passed)
+
     analyzer_disagrees = bool(legacy_passed != passed)
     analyzer_mismatch = bool((not legacy_passed) and shared_motion_passed and duration_matches and frame_count_matches and fps_matches)
     analyzer_classification = "liveportrait_motion_gate_analyzer_mismatch" if analyzer_mismatch else ""
+    handoff_failure_parts = technical_failure_parts + motion_failure_parts
     failure_reason = "" if passed else ("liveportrait_motion_gate_failed:" + ";".join(handoff_failure_parts or ["unknown"]))
+    technical_failure_reason = (
+        ""
+        if technical_passed
+        else ("liveportrait_technical_validation_failed:" + ";".join(technical_failure_parts or ["unknown"]))
+    )
+    motion_failure_reason = (
+        ""
+        if motion_passed
+        else ("liveportrait_low_motion:" + ";".join(motion_failure_parts or ["motion_not_detected"]))
+    )
 
     result = {
         "passed": passed,
+        "technical_valid": technical_passed,
+        "technical_passed": technical_passed,
+        "motion_passed": motion_passed,
+        "shared_motion_passed": shared_motion_passed,
+        "shared_near_static": shared_near_static,
         "path": str(path),
         "analyzed_path": str(path),
         "file_exists": bool(file_info.get("exists")),
@@ -345,6 +372,8 @@ def _liveportrait_motion_gate(
         "analyzer_mismatch": bool(analyzer_mismatch),
         "analyzer_classification": analyzer_classification,
         "failure_reason": failure_reason,
+        "technical_failure_reason": technical_failure_reason,
+        "motion_failure_reason": motion_failure_reason,
     }
 
     logger.info(
@@ -732,13 +761,8 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "MUSETALK_PREVIEW_FAST_MODE": ("1" if (is_preview and preview_fast_musetalk) else "0"),
         "MUSETALK_PREVIEW_MAX_WIDTH": str(int(os.environ.get("MUSETALK_PREVIEW_MAX_WIDTH", preview_max_width_default) or int(preview_max_width_default))),
         "AVATAR_PROJECT_ID": str(int(getattr(request, "_project_id", 0) or 0)),
-        "AVATAR_JOB_ID": str(
-            int(
-                getattr(request, "_avatar_job_id", 0)
-                or getattr(request, "preview_job_id", 0)
-                or 0
-            )
-        ),
+        "AVATAR_JOB_ID": str(int(getattr(request, "_avatar_job_id", 0) or getattr(request, "preview_job_id", 0) or 0)),
+        "AVATAR_LP_FAILURE_FALLBACK_TO_MUSETALK": str(os.environ.get("AVATAR_LP_FAILURE_FALLBACK_TO_MUSETALK", "1")),
         "AVATAR_SEGMENT_INDEX": str(int(getattr(request, "_segment_index", 0) or 0)),
         "AVATAR_PREVIEW_JOB_ID": str(int(getattr(request, "preview_job_id", 0) or 0)),
         "AVATAR_PREVIEW_TEACHER_ID": str(int(getattr(request, "preview_teacher_id", 0) or 0)),
@@ -1858,6 +1882,21 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "requested_engine": requested_engine,
         "normalized_engine": requested_engine,
         "avatar_engine_selected": requested_engine,
+        "liveportrait_enabled": bool(cached_stage_paths.get("liveportrait_enabled")),
+        "liveportrait_started": bool(cached_stage_paths.get("liveportrait_started")),
+        "liveportrait_succeeded": bool(cached_stage_paths.get("liveportrait_succeeded")),
+        "liveportrait_failed": bool(cached_stage_paths.get("liveportrait_failed")),
+        "liveportrait_failure_reason": str(cached_stage_paths.get("liveportrait_failure_reason") or ""),
+        "liveportrait_quality_warning": str(cached_stage_paths.get("liveportrait_quality_warning") or ""),
+        "liveportrait_motion_passed": bool(cached_stage_paths.get("liveportrait_motion_passed")),
+        "liveportrait_technical_valid": bool(cached_stage_paths.get("liveportrait_technical_valid")),
+        "liveportrait_fallback_used": bool(cached_stage_paths.get("liveportrait_fallback_used")),
+        "liveportrait_fallback_reason": str(cached_stage_paths.get("liveportrait_fallback_reason") or ""),
+        "musetalk_source_video": str(cached_stage_paths.get("musetalk_source_video") or ""),
+        "musetalk_source_kind": str(cached_stage_paths.get("musetalk_source_kind") or ""),
+        "restoration_enabled": bool(cached_stage_paths.get("restoration_enabled")),
+        "restoration_succeeded": bool(cached_stage_paths.get("restoration_succeeded")),
+        "restoration_failed": bool(cached_stage_paths.get("restoration_failed")),
         "fallback_chain_used": ["cache"],
         "final_avatar_engine_chain": list(cached_stage_paths.get("final_avatar_engine_chain") or ["cache"]),
         "audio_hash": expected_cache["audio_hash"],
@@ -1896,6 +1935,21 @@ def _write_meta(
         "engine_used": engine_used,
         "normalized_engine": requested_engine,
         "avatar_engine_selected": requested_engine,
+        "liveportrait_enabled": bool(stage_paths.get("liveportrait_enabled")),
+        "liveportrait_started": bool(stage_paths.get("liveportrait_started")),
+        "liveportrait_succeeded": bool(stage_paths.get("liveportrait_succeeded")),
+        "liveportrait_failed": bool(stage_paths.get("liveportrait_failed")),
+        "liveportrait_failure_reason": str(stage_paths.get("liveportrait_failure_reason") or ""),
+        "liveportrait_quality_warning": str(stage_paths.get("liveportrait_quality_warning") or ""),
+        "liveportrait_motion_passed": bool(stage_paths.get("liveportrait_motion_passed")),
+        "liveportrait_technical_valid": bool(stage_paths.get("liveportrait_technical_valid")),
+        "liveportrait_fallback_used": bool(stage_paths.get("liveportrait_fallback_used")),
+        "liveportrait_fallback_reason": str(stage_paths.get("liveportrait_fallback_reason") or ""),
+        "musetalk_source_video": str(stage_paths.get("musetalk_source_video") or ""),
+        "musetalk_source_kind": str(stage_paths.get("musetalk_source_kind") or ""),
+        "restoration_enabled": bool(stage_paths.get("restoration_enabled")),
+        "restoration_succeeded": bool(stage_paths.get("restoration_succeeded")),
+        "restoration_failed": bool(stage_paths.get("restoration_failed")),
         "strict_validation_passed": bool(strict_pass),
         "preview_warning": str(preview_warning or ""),
         "motion_validation": validation,
@@ -1944,6 +1998,21 @@ def _final_payload(
         "requested_engine": requested_engine,
         "normalized_engine": requested_engine,
         "avatar_engine_selected": requested_engine,
+        "liveportrait_enabled": bool(stage_paths.get("liveportrait_enabled")),
+        "liveportrait_started": bool(stage_paths.get("liveportrait_started")),
+        "liveportrait_succeeded": bool(stage_paths.get("liveportrait_succeeded")),
+        "liveportrait_failed": bool(stage_paths.get("liveportrait_failed")),
+        "liveportrait_failure_reason": str(stage_paths.get("liveportrait_failure_reason") or ""),
+        "liveportrait_quality_warning": str(stage_paths.get("liveportrait_quality_warning") or ""),
+        "liveportrait_motion_passed": bool(stage_paths.get("liveportrait_motion_passed")),
+        "liveportrait_technical_valid": bool(stage_paths.get("liveportrait_technical_valid")),
+        "liveportrait_fallback_used": bool(stage_paths.get("liveportrait_fallback_used")),
+        "liveportrait_fallback_reason": str(stage_paths.get("liveportrait_fallback_reason") or ""),
+        "musetalk_source_video": str(stage_paths.get("musetalk_source_video") or ""),
+        "musetalk_source_kind": str(stage_paths.get("musetalk_source_kind") or ""),
+        "restoration_enabled": bool(stage_paths.get("restoration_enabled")),
+        "restoration_succeeded": bool(stage_paths.get("restoration_succeeded")),
+        "restoration_failed": bool(stage_paths.get("restoration_failed")),
         "fallback_chain_used": [record.get("stage") for record in stage_outputs],
         "final_avatar_engine_chain": list(
             stage_paths.get("final_avatar_engine_chain")
@@ -1969,6 +2038,48 @@ def _final_payload(
         "frame_trace": {"paths": stage_paths},
         "canonical_input": canonical_input,
     }
+
+
+def _build_static_handoff_loop(
+    *,
+    source_image: Path,
+    output_path: Path,
+    duration_seconds: float,
+    fps: float = 25.0,
+    stage_name: str = "static_loop_fallback",
+) -> Path:
+    if not source_image.exists():
+        raise RuntimeError(f"{stage_name}_source_missing:{source_image}")
+
+    duration = max(float(duration_seconds or 0.0), 0.05)
+    fps_val = max(float(fps or 25.0), 1.0)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-y",
+        "-loop",
+        "1",
+        "-i",
+        str(source_image),
+        "-t",
+        f"{duration:.6f}",
+        "-r",
+        str(fps_val),
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-pix_fmt",
+        "yuv420p",
+        str(output_path),
+    ]
+    proc = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=False, timeout=180)
+    if proc.returncode != 0 or (not output_path.exists()) or output_path.stat().st_size <= 0:
+        error_tail = (proc.stderr or proc.stdout or str(proc.returncode))[-400:]
+        raise RuntimeError(f"{stage_name}_build_failed:{error_tail}")
+
+    return output_path
 
 
 def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
@@ -2052,6 +2163,9 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
     musetalk_handoff_output = output_path.with_suffix(output_path.suffix + ".musetalk_handoff.mp4")
     musetalk_output = output_path.with_suffix(output_path.suffix + ".musetalk.mp4")
     restoration_output = output_path.with_suffix(output_path.suffix + ".restored.mp4")
+    liveportrait_runtime_enabled = _env_enabled("AVATAR_LIVEPORTRAIT_ENABLED", True)
+    lp_low_motion_fallback_to_static = _env_enabled("AVATAR_LP_LOW_MOTION_FALLBACK_TO_STATIC", False)
+    restoration_runtime_enabled = _restore_enabled(is_preview_request)
     stage_paths: dict[str, Any] = {
         **request_trace,
         "orchestrator_mode": "resource_adaptive_strict_quality",
@@ -2078,19 +2192,33 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_output_path": str(liveportrait_output),
         "liveportrait_raw_output_path": str(liveportrait_output),
         "liveportrait_reconciled_output_path": str(liveportrait_reconciled_output),
+        "liveportrait_enabled": bool(liveportrait_runtime_enabled),
         "liveportrait_started": False,
         "liveportrait_succeeded": False,
+        "liveportrait_failed": False,
+        "liveportrait_failure_reason": "",
+        "liveportrait_quality_warning": "",
+        "liveportrait_motion_passed": False,
+        "liveportrait_technical_valid": False,
+        "liveportrait_fallback_used": False,
+        "liveportrait_fallback_reason": "",
+        "liveportrait_low_motion_fallback_to_static": bool(lp_low_motion_fallback_to_static),
         "liveportrait_bypassed": False,
         "liveportrait_bypass_reason": "",
         "musetalk_handoff_video_path": str(musetalk_handoff_output),
         "musetalk_handoff_source": "",
         "musetalk_source_video": "",
+        "musetalk_source_kind": "",
         "musetalk_output_path": str(musetalk_output),
         "musetalk_started": False,
         "musetalk_succeeded": False,
         "musetalk_timeout_budget_seconds": 0.0,
         "musetalk_chunk_timing_metrics": [],
         "restoration_output_path": str(restoration_output),
+        "restoration_enabled": bool(restoration_runtime_enabled),
+        "restoration_succeeded": False,
+        "restoration_failed": False,
+        "restoration_failure_reason": "",
         "final_output_path": str(output_path),
         "final_avatar_engine_chain": [],
     }
@@ -2151,6 +2279,13 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "liveportrait_motion_source": stage_paths.get("liveportrait_motion_source"),
                     "liveportrait_bypassed": stage_paths.get("liveportrait_bypassed"),
                     "liveportrait_bypass_reason": stage_paths.get("liveportrait_bypass_reason"),
+                    "liveportrait_failed": stage_paths.get("liveportrait_failed"),
+                    "liveportrait_failure_reason": stage_paths.get("liveportrait_failure_reason"),
+                    "liveportrait_quality_warning": stage_paths.get("liveportrait_quality_warning"),
+                    "liveportrait_motion_passed": stage_paths.get("liveportrait_motion_passed"),
+                    "liveportrait_technical_valid": stage_paths.get("liveportrait_technical_valid"),
+                    "liveportrait_fallback_used": stage_paths.get("liveportrait_fallback_used"),
+                    "liveportrait_fallback_reason": stage_paths.get("liveportrait_fallback_reason"),
                     "liveportrait_source_candidates": stage_paths.get("liveportrait_source_candidates"),
                     "liveportrait_candidate_attempts": stage_paths.get("liveportrait_candidate_attempts"),
                     "liveportrait_rejected_sources": stage_paths.get("liveportrait_rejected_sources"),
@@ -2164,6 +2299,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "reconciliation_final_audio_duration": stage_paths.get("reconciliation_final_audio_duration"),
                     "musetalk_handoff_source": stage_paths.get("musetalk_handoff_source"),
                     "musetalk_handoff_video_path": stage_paths.get("musetalk_handoff_video_path"),
+                    "musetalk_source_video": stage_paths.get("musetalk_source_video"),
+                    "musetalk_source_kind": stage_paths.get("musetalk_source_kind"),
                     "musetalk_handoff_frame_normalization_strategy": stage_paths.get("musetalk_handoff_frame_normalization_strategy"),
                     "musetalk_handoff_frame_count_before": stage_paths.get("musetalk_handoff_frame_count_before"),
                     "musetalk_handoff_frame_count_after": stage_paths.get("musetalk_handoff_frame_count_after"),
@@ -2182,6 +2319,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "musetalk_chunk_timing_metrics": stage_paths.get("musetalk_chunk_timing_metrics"),
                     "cleanup_after_musetalk": stage_paths.get("cleanup_after_musetalk"),
                     "restoration_output_path": stage_paths.get("restoration_output_path"),
+                    "restoration_enabled": stage_paths.get("restoration_enabled"),
+                    "restoration_succeeded": stage_paths.get("restoration_succeeded"),
+                    "restoration_failed": stage_paths.get("restoration_failed"),
+                    "restoration_failure_reason": stage_paths.get("restoration_failure_reason"),
                     "restoration_timeout_seconds": stage_paths.get("restoration_timeout_seconds"),
                     "restoration_timeout_reason": stage_paths.get("restoration_timeout_reason"),
                     "restoration_elapsed_seconds": stage_paths.get("restoration_elapsed_seconds"),
@@ -2196,8 +2337,17 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "normalized_engine": requested_engine,
                     "avatar_engine_selected": requested_engine,
                     "pipeline_engine": CANONICAL_ENGINE,
+                    "liveportrait_enabled": stage_paths.get("liveportrait_enabled"),
                     "liveportrait_started": stage_paths.get("liveportrait_started"),
                     "liveportrait_succeeded": stage_paths.get("liveportrait_succeeded"),
+                    "liveportrait_failed": stage_paths.get("liveportrait_failed"),
+                    "liveportrait_failure_reason": stage_paths.get("liveportrait_failure_reason"),
+                    "liveportrait_quality_warning": stage_paths.get("liveportrait_quality_warning"),
+                    "liveportrait_motion_passed": stage_paths.get("liveportrait_motion_passed"),
+                    "liveportrait_technical_valid": stage_paths.get("liveportrait_technical_valid"),
+                    "liveportrait_fallback_used": stage_paths.get("liveportrait_fallback_used"),
+                    "liveportrait_fallback_reason": stage_paths.get("liveportrait_fallback_reason"),
+                    "musetalk_source_kind": stage_paths.get("musetalk_source_kind"),
                     "musetalk_started": stage_paths.get("musetalk_started"),
                     "musetalk_source_video": stage_paths.get("musetalk_source_video"),
                     "musetalk_succeeded": stage_paths.get("musetalk_succeeded"),
@@ -2215,6 +2365,25 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         liveportrait_rejections: list[dict[str, Any]] = []
         selected_stage_index = -1
         liveportrait_bypassed = False
+        liveportrait_enabled = bool(liveportrait_runtime_enabled)
+        liveportrait_succeeded = False
+        liveportrait_failed = False
+        liveportrait_failure_reason = ""
+        liveportrait_quality_warning = ""
+        liveportrait_fallback_used = False
+        liveportrait_fallback_reason = ""
+        musetalk_source_kind = "none"
+        restoration_enabled = bool(restoration_runtime_enabled)
+
+        stage_paths["liveportrait_enabled"] = liveportrait_enabled
+        stage_paths["liveportrait_succeeded"] = liveportrait_succeeded
+        stage_paths["liveportrait_failed"] = liveportrait_failed
+        stage_paths["liveportrait_failure_reason"] = liveportrait_failure_reason
+        stage_paths["liveportrait_quality_warning"] = liveportrait_quality_warning
+        stage_paths["liveportrait_fallback_used"] = liveportrait_fallback_used
+        stage_paths["liveportrait_fallback_reason"] = liveportrait_fallback_reason
+        stage_paths["musetalk_source_kind"] = musetalk_source_kind
+        stage_paths["restoration_enabled"] = restoration_enabled
 
         if requested_engine == MUSETALK_ONLY_ENGINE:
             try:
@@ -2234,6 +2403,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             source_image_primary = str(source_image_primary or getattr(canonical_input, "normalized_input_path", "") or "")
             source_video_primary = str(source_video_primary or "")
             liveportrait_bypassed = True
+            liveportrait_enabled = False
+            musetalk_source_kind = "static_source"
+            stage_paths["liveportrait_enabled"] = False
+            stage_paths["musetalk_source_kind"] = musetalk_source_kind
             stage_paths["liveportrait_bypassed"] = True
             stage_paths["liveportrait_bypass_reason"] = "requested_engine:musetalk"
             stage_paths["resolved_source_key"] = str(source_key_for_canonical)
@@ -2243,6 +2416,58 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             stage_paths["selected_source_key"] = str(getattr(canonical_input, "selected_source_key", "") or "")
             stage_paths["normalized_input_path"] = str(getattr(canonical_input, "normalized_input_path", "") or "")
             warning_parts.append("liveportrait_bypassed:requested_engine_musetalk")
+            canonical_input_payload = {
+                "request_trace": dict(request_trace),
+                "source_candidates": candidate_trace,
+                "source_attempts": [],
+                "rejected_sources": [],
+                "original_input_path": str(getattr(canonical_input, "original_input_path", "") or ""),
+                "selected_source_key": str(getattr(canonical_input, "selected_source_key", "") or ""),
+                "normalized_input_path": str(getattr(canonical_input, "normalized_input_path", "") or ""),
+                "normalized_mode": str(getattr(canonical_input, "normalized_mode", "") or ""),
+                "engine_name": str(getattr(canonical_input, "engine_name", "") or ""),
+                "source_kind": str(getattr(canonical_input, "source_kind", "") or ""),
+                "metrics": dict(getattr(canonical_input, "metrics", {}) or {}),
+                "warning": str(getattr(canonical_input, "warning", "") or ""),
+                "ranking": list(getattr(canonical_input, "ranking", []) or []),
+                "handoff": dict(getattr(canonical_input, "handoff", {}) or {}),
+            }
+            _update_preview_task_context(
+                request,
+                current_stage="after_liveportrait",
+                liveportrait_completed=False,
+                stage_timeout_budget_seconds=0.0,
+            )
+        elif not liveportrait_enabled:
+            try:
+                canonical_input = canonicalize_avatar_input(
+                    source_image_path=source_image_primary,
+                    source_video_path=source_video_primary,
+                    output_path=str(output_path),
+                    is_preview=is_preview_request,
+                    engine_name=CANONICAL_ENGINE,
+                    source_key=str(source_key_for_canonical or "static_source"),
+                )
+            except Exception as exc:
+                raise RuntimeError(f"liveportrait_disabled_input_failed:{exc}") from exc
+
+            stage_env = _build_stage_env(canonical_input, request)
+            source_key_for_canonical = str(source_key_for_canonical or getattr(canonical_input, "selected_source_key", "") or "static_source")
+            source_image_primary = str(source_image_primary or getattr(canonical_input, "normalized_input_path", "") or "")
+            source_video_primary = str(source_video_primary or "")
+            liveportrait_bypassed = True
+            musetalk_source_kind = "static_source"
+            stage_paths["liveportrait_enabled"] = False
+            stage_paths["musetalk_source_kind"] = musetalk_source_kind
+            stage_paths["liveportrait_bypassed"] = True
+            stage_paths["liveportrait_bypass_reason"] = "disabled"
+            stage_paths["resolved_source_key"] = str(source_key_for_canonical)
+            stage_paths["resolved_source_image_path"] = str(source_image_primary)
+            stage_paths["resolved_source_video_path"] = str(source_video_primary)
+            stage_paths["original_source_path"] = str(getattr(canonical_input, "original_input_path", "") or "")
+            stage_paths["selected_source_key"] = str(getattr(canonical_input, "selected_source_key", "") or "")
+            stage_paths["normalized_input_path"] = str(getattr(canonical_input, "normalized_input_path", "") or "")
+            warning_parts.append("liveportrait_bypassed:disabled")
             canonical_input_payload = {
                 "request_trace": dict(request_trace),
                 "source_candidates": candidate_trace,
@@ -2342,16 +2567,24 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 stage_started_at=liveportrait_started_at,
                 stage_timeout_budget_seconds=round(float(liveportrait_timeout_seconds), 4),
             )
-            liveportrait_result = run_liveportrait(
-                input_path=str(candidate_canonical_input.normalized_input_path),
-                output_path=str(liveportrait_output),
-                audio_path=str(getattr(request, "audio_path", "") or ""),
-                source_video=str(candidate_source_video or ""),
-                fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
-                target_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
-                env_overrides=stage_env,
-                timeout_seconds=float(liveportrait_timeout_seconds),
-            )
+            try:
+                liveportrait_result = run_liveportrait(
+                    input_path=str(candidate_canonical_input.normalized_input_path),
+                    output_path=str(liveportrait_output),
+                    audio_path=str(getattr(request, "audio_path", "") or ""),
+                    source_video=str(candidate_source_video or ""),
+                    fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
+                    target_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
+                    env_overrides=stage_env,
+                    timeout_seconds=float(liveportrait_timeout_seconds),
+                )
+            except Exception as liveportrait_exc:
+                liveportrait_result = EngineResult(
+                    False,
+                    "liveportrait",
+                    str(liveportrait_output),
+                    f"exception:{liveportrait_exc}",
+                )
             liveportrait_elapsed_seconds = time.monotonic() - liveportrait_started_at
 
             stage_record = _stage_record("liveportrait", liveportrait_result, input_path=str(candidate_canonical_input.normalized_input_path))
@@ -2379,6 +2612,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
 
             if not liveportrait_result.success:
                 rejection_reason = f"liveportrait_failed:{liveportrait_result.error or 'command_failed'}"
+                liveportrait_failed = True
+                liveportrait_failure_reason = rejection_reason
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = rejection_reason
                 attempt_payload["result"] = "rejected"
                 attempt_payload["failure_reason"] = rejection_reason
                 liveportrait_rejections.append(dict(attempt_payload))
@@ -2408,18 +2645,60 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     motion_source_marker,
                 )
 
-            liveportrait_contract = legacy_pipeline._assert_video_contract(str(liveportrait_output), stage_name="liveportrait")
+            try:
+                liveportrait_contract = legacy_pipeline._assert_video_contract(str(liveportrait_output), stage_name="liveportrait")
+            except Exception as contract_exc:
+                rejection_reason = f"liveportrait_technical_invalid:{contract_exc}"
+                liveportrait_failed = True
+                liveportrait_failure_reason = rejection_reason
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = rejection_reason
+                stage_paths["liveportrait_technical_valid"] = False
+                stage_paths["liveportrait_motion_passed"] = False
+                attempt_payload["result"] = "rejected"
+                attempt_payload["failure_reason"] = rejection_reason
+                liveportrait_rejections.append(dict(attempt_payload))
+                logger.warning(
+                    "Avatar liveportrait source candidate rejected teacher_id=%s job_id=%s attempt=%s source_key=%s reason=%s",
+                    int(getattr(request, "preview_teacher_id", 0) or 0),
+                    int(getattr(request, "preview_job_id", 0) or 0),
+                    int(attempt_index),
+                    candidate_source_key,
+                    rejection_reason,
+                )
+                continue
             stage_outputs[-1]["duration_seconds"] = round(float(liveportrait_contract.get("duration_seconds") or 0.0), 4)
             stage_paths["liveportrait_output_duration_seconds"] = round(float(liveportrait_contract.get("duration_seconds") or 0.0), 4)
 
-            motion_gate = _liveportrait_motion_gate(
-                str(liveportrait_output),
-                is_preview_request=is_preview_request,
-                expected_duration_seconds=float(contract_duration_seconds),
-                expected_fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
-                expected_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
-                stage_name="liveportrait_motion_gate_raw",
-            )
+            try:
+                motion_gate = _liveportrait_motion_gate(
+                    str(liveportrait_output),
+                    is_preview_request=is_preview_request,
+                    expected_duration_seconds=float(contract_duration_seconds),
+                    expected_fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
+                    expected_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
+                    stage_name="liveportrait_motion_gate_raw",
+                )
+            except Exception as motion_gate_exc:
+                rejection_reason = f"liveportrait_technical_invalid:motion_gate_error:{motion_gate_exc}"
+                liveportrait_failed = True
+                liveportrait_failure_reason = rejection_reason
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = rejection_reason
+                stage_paths["liveportrait_technical_valid"] = False
+                stage_paths["liveportrait_motion_passed"] = False
+                attempt_payload["result"] = "rejected"
+                attempt_payload["failure_reason"] = rejection_reason
+                liveportrait_rejections.append(dict(attempt_payload))
+                logger.warning(
+                    "Avatar liveportrait source candidate rejected teacher_id=%s job_id=%s attempt=%s source_key=%s reason=%s",
+                    int(getattr(request, "preview_teacher_id", 0) or 0),
+                    int(getattr(request, "preview_job_id", 0) or 0),
+                    int(attempt_index),
+                    candidate_source_key,
+                    rejection_reason,
+                )
+                continue
             stage_outputs[-1]["motion_gate"] = dict(motion_gate)
             stage_paths["liveportrait_motion_gate"] = dict(motion_gate)
             logger.info(
@@ -2448,8 +2727,25 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 bool(motion_gate.get("analyzer_disagrees")),
                 str(motion_gate.get("analyzer_classification") or ""),
             )
-            if not bool(motion_gate.get("passed")):
-                rejection_reason = str(motion_gate.get("failure_reason") or "liveportrait_motion_gate_failed")
+            liveportrait_technical_valid = bool(
+                motion_gate.get("technical_valid", motion_gate.get("technical_passed", motion_gate.get("passed")))
+            )
+            liveportrait_motion_passed = bool(motion_gate.get("motion_passed", motion_gate.get("passed")))
+            stage_paths["liveportrait_technical_valid"] = liveportrait_technical_valid
+            stage_paths["liveportrait_motion_passed"] = liveportrait_motion_passed
+            low_motion_fallback_selected = False
+            if not liveportrait_technical_valid:
+                rejection_reason = str(
+                    motion_gate.get("technical_failure_reason")
+                    or motion_gate.get("failure_reason")
+                    or "liveportrait_technical_invalid"
+                )
+                if not rejection_reason.startswith("liveportrait_technical_invalid"):
+                    rejection_reason = f"liveportrait_technical_invalid:{rejection_reason}"
+                liveportrait_failed = True
+                liveportrait_failure_reason = rejection_reason
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = rejection_reason
                 attempt_payload["result"] = "rejected"
                 attempt_payload["failure_reason"] = rejection_reason
                 attempt_payload["motion_gate"] = dict(motion_gate)
@@ -2463,6 +2759,20 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     rejection_reason,
                 )
                 continue
+            if not liveportrait_motion_passed:
+                liveportrait_quality_warning = str(
+                    motion_gate.get("motion_failure_reason")
+                    or motion_gate.get("failure_reason")
+                    or "liveportrait_low_motion"
+                )
+                stage_paths["liveportrait_quality_warning"] = liveportrait_quality_warning
+                attempt_payload["quality_warning"] = liveportrait_quality_warning
+                if lp_low_motion_fallback_to_static:
+                    low_motion_fallback_selected = True
+                    liveportrait_fallback_used = True
+                    liveportrait_fallback_reason = "low_motion"
+                    stage_paths["liveportrait_fallback_used"] = True
+                    stage_paths["liveportrait_fallback_reason"] = liveportrait_fallback_reason
 
             canonical_input = candidate_canonical_input
             selected_stage_index = len(stage_outputs) - 1
@@ -2480,6 +2790,13 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             stage_paths["liveportrait_selected_source_key"] = str(source_key_for_canonical)
             stage_paths["liveportrait_selected_source_image_path"] = str(source_image_primary)
             stage_paths["liveportrait_succeeded"] = True
+            stage_paths["liveportrait_failed"] = False
+            stage_paths["liveportrait_failure_reason"] = ""
+            liveportrait_succeeded = True
+            liveportrait_failed = False
+            liveportrait_failure_reason = ""
+            musetalk_source_kind = "static_fallback" if low_motion_fallback_selected else "liveportrait"
+            stage_paths["musetalk_source_kind"] = musetalk_source_kind
             _update_preview_task_context(
                 request,
                 current_stage="after_liveportrait",
@@ -2490,6 +2807,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             warning_parts = []
             if candidate_warning:
                 warning_parts.append(f"input_warning:{candidate_warning}")
+            if liveportrait_quality_warning:
+                warning_parts.append(f"liveportrait_quality_warning:{liveportrait_quality_warning}")
 
             canonical_input_payload = {
                 "request_trace": dict(request_trace),
@@ -2507,62 +2826,120 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 "ranking": list(getattr(canonical_input, "ranking", []) or []),
                 "handoff": dict(getattr(canonical_input, "handoff", {}) or {}),
             }
-            attempt_payload["result"] = "selected"
+            attempt_payload["result"] = "selected_static_fallback" if low_motion_fallback_selected else "selected"
             break
 
         stage_paths["liveportrait_candidate_attempts"] = list(liveportrait_attempts)
         stage_paths["liveportrait_rejected_sources"] = list(liveportrait_rejections)
 
-        if canonical_input is None:
-            rejected_sources = [
-                f"{entry.get('source_key') or 'unknown'}:{entry.get('failure_reason') or 'rejected'}"
-                for entry in liveportrait_rejections
-            ]
-            rejection_summary = "|".join(rejected_sources)
-            failure_reason = "all_candidates_failed" + (f":{rejection_summary}" if rejection_summary else "")
-            stage_paths["musetalk_stage_state"] = "skipped"
-            stage_paths["musetalk_ran"] = False
-            stage_paths["musetalk_skip_reason"] = "liveportrait_motion_source_selection_bug"
-            stage_paths["liveportrait_motion_source_selection_bug"] = True
-            stage_paths["liveportrait_motion_source_selection_reason"] = failure_reason
-            raise RuntimeError(f"liveportrait_motion_source_selection_bug:{failure_reason}")
+        if canonical_input is None or not liveportrait_succeeded:
+            if not liveportrait_bypassed:
+                rejected_sources = [
+                    f"{entry.get('source_key') or 'unknown'}:{entry.get('failure_reason') or 'rejected'}"
+                    for entry in liveportrait_rejections
+                ]
+                rejection_summary = "|".join(rejected_sources)
+                fallback_reason = str(
+                    liveportrait_failure_reason
+                    or ("all_candidates_failed" + (f":{rejection_summary}" if rejection_summary else ""))
+                )
+                logger.warning(
+                    "Avatar liveportrait failed for all candidates. Falling back to static image loop. project_id=%s teacher_id=%s reason=%s",
+                    int(getattr(request, "_project_id", 0) or 0),
+                    int(getattr(request, "preview_teacher_id", 0) or 0),
+                    fallback_reason,
+                )
+                liveportrait_failed = True
+                liveportrait_failure_reason = fallback_reason
+                liveportrait_fallback_used = True
+                liveportrait_fallback_reason = fallback_reason
+                musetalk_source_kind = "static_fallback"
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = fallback_reason
+                stage_paths["liveportrait_fallback_used"] = True
+                stage_paths["liveportrait_fallback_reason"] = liveportrait_fallback_reason
+                stage_paths["musetalk_source_kind"] = musetalk_source_kind
+                # If we have no canonical_input yet (it failed for all candidates), we need to try to get one for the static fallback
+                if canonical_input is None:
+                    try:
+                        canonical_input = canonicalize_avatar_input(
+                            source_image_path=source_image_primary,
+                            source_video_path=source_video_primary,
+                            output_path=str(output_path),
+                            is_preview=is_preview_request,
+                            engine_name=CANONICAL_ENGINE,
+                            source_key=str(source_key_for_canonical or "fallback"),
+                        )
+                    except Exception as fallback_exc:
+                        raise RuntimeError(f"liveportrait_fallback_input_failed:{fallback_exc}") from fallback_exc
+                    stage_env = _build_stage_env(canonical_input, request)
+                    stage_paths["original_source_path"] = str(getattr(canonical_input, "original_input_path", "") or "")
+                    stage_paths["selected_source_key"] = str(getattr(canonical_input, "selected_source_key", "") or "")
+                    stage_paths["normalized_input_path"] = str(getattr(canonical_input, "normalized_input_path", "") or "")
+                canonical_input_payload = {
+                    "request_trace": dict(request_trace),
+                    "source_candidates": candidate_trace,
+                    "source_attempts": list(liveportrait_attempts),
+                    "rejected_sources": list(liveportrait_rejections),
+                    "original_input_path": str(getattr(canonical_input, "original_input_path", "") or ""),
+                    "selected_source_key": str(getattr(canonical_input, "selected_source_key", "") or ""),
+                    "normalized_input_path": str(getattr(canonical_input, "normalized_input_path", "") or ""),
+                    "normalized_mode": str(getattr(canonical_input, "normalized_mode", "") or ""),
+                    "engine_name": str(getattr(canonical_input, "engine_name", "") or ""),
+                    "source_kind": str(getattr(canonical_input, "source_kind", "") or ""),
+                    "metrics": dict(getattr(canonical_input, "metrics", {}) or {}),
+                    "warning": str(getattr(canonical_input, "warning", "") or ""),
+                    "ranking": list(getattr(canonical_input, "ranking", []) or []),
+                    "handoff": dict(getattr(canonical_input, "handoff", {}) or {}),
+                }
 
         musetalk_handoff_video = liveportrait_output
-        if liveportrait_bypassed:
-            static_handoff = musetalk_handoff_output
+
+        def _use_static_handoff(*, reason: str, source_kind: str, stage_name: str) -> None:
+            nonlocal liveportrait_fallback_used, liveportrait_fallback_reason, musetalk_handoff_video, musetalk_source_kind
+            if canonical_input is None:
+                raise RuntimeError(f"{stage_name}_missing_canonical_input")
+            if source_kind == "static_fallback":
+                liveportrait_fallback_used = True
+                liveportrait_fallback_reason = str(reason or "liveportrait_static_fallback")
+                stage_paths["liveportrait_fallback_used"] = True
+                stage_paths["liveportrait_fallback_reason"] = liveportrait_fallback_reason
             static_source = Path(str(getattr(canonical_input, "normalized_input_path", "") or source_image_primary))
-            if not static_source.exists():
-                raise RuntimeError(f"musetalk_only_handoff_source_missing:{static_source}")
-            ffmpeg_cmd = [
-                "ffmpeg",
-                "-y",
-                "-loop",
-                "1",
-                "-i",
-                str(static_source),
-                "-t",
-                f"{max(float(contract_duration_seconds or 0.0), 0.05):.6f}",
-                "-an",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "veryfast",
-                "-pix_fmt",
-                "yuv420p",
-                str(static_handoff),
-            ]
-            proc = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, check=False, timeout=180)
-            if proc.returncode != 0 or (not static_handoff.exists()) or static_handoff.stat().st_size <= 0:
-                error_tail = (proc.stderr or proc.stdout or str(proc.returncode))[-400:]
-                raise RuntimeError(f"musetalk_only_handoff_build_failed:{error_tail}")
-            musetalk_handoff_video = static_handoff
+            _build_static_handoff_loop(
+                source_image=static_source,
+                output_path=musetalk_handoff_output,
+                duration_seconds=float(contract_duration_seconds),
+                fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS") or stage_env.get("MUSETALK_FPS") or 25.0),
+                stage_name=stage_name,
+            )
+            musetalk_handoff_video = musetalk_handoff_output
+            musetalk_source_kind = source_kind
             stage_paths["musetalk_handoff_video_path"] = str(musetalk_handoff_video)
-            stage_paths["musetalk_handoff_source"] = "musetalk_only_static_image_loop"
+            stage_paths["musetalk_handoff_source"] = "static_image_loop"
+            stage_paths["musetalk_source_kind"] = source_kind
             stage_paths["liveportrait_reconciled_output_path"] = str(musetalk_handoff_video)
+            stage_paths["liveportrait_fallback_used"] = liveportrait_fallback_used
+
+        if liveportrait_bypassed:
+            _use_static_handoff(
+                reason=str(stage_paths.get("liveportrait_bypass_reason") or "liveportrait_bypassed"),
+                source_kind="static_source",
+                stage_name=("musetalk_only_static_loop" if requested_engine == MUSETALK_ONLY_ENGINE else "liveportrait_disabled_static_loop"),
+            )
+        elif liveportrait_fallback_used:
+            _use_static_handoff(
+                reason=str(liveportrait_fallback_reason or "liveportrait_failed"),
+                source_kind="static_fallback",
+                stage_name="liveportrait_fallback_static_loop",
+            )
         reconciliation_info: dict[str, Any] = {}
         if is_preview_request:
             try:
-                handoff_source_for_reconciliation = musetalk_handoff_video if liveportrait_bypassed else liveportrait_output
+                handoff_source_for_reconciliation = (
+                    musetalk_handoff_video
+                    if (liveportrait_bypassed or liveportrait_fallback_used)
+                    else liveportrait_output
+                )
                 try:
                     reconciliation_info = _reconcile_duration_contract(
                         video_path=str(handoff_source_for_reconciliation),
@@ -2600,7 +2977,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 liveportrait_reconciled_path = Path(str(reconciliation_info.get("reconciled_video_path") or handoff_source_for_reconciliation))
                 liveportrait_contract = legacy_pipeline._assert_video_contract(
                     str(liveportrait_reconciled_path),
-                    stage_name=("musetalk_only_handoff_after_reconciliation" if liveportrait_bypassed else "liveportrait_after_reconciliation"),
+                    stage_name=(
+                        "static_handoff_after_reconciliation"
+                        if (liveportrait_bypassed or liveportrait_fallback_used)
+                        else "liveportrait_after_reconciliation"
+                    ),
                 )
                 if selected_stage_index >= 0:
                     stage_outputs[selected_stage_index]["duration_seconds"] = round(float(liveportrait_contract.get("duration_seconds") or 0.0), 4)
@@ -2640,9 +3021,19 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             except Exception as reconciliation_exc:
                 stage_paths["duration_reconciliation_strategy"] = "failed"
                 stage_paths["duration_reconciliation_failure_reason"] = str(reconciliation_exc)
-                raise RuntimeError(f"preview_duration_reconciliation_failed:{reconciliation_exc}")
+                if liveportrait_bypassed or liveportrait_fallback_used:
+                    raise RuntimeError(f"preview_duration_reconciliation_failed:{reconciliation_exc}") from reconciliation_exc
+                liveportrait_failed = True
+                liveportrait_failure_reason = f"handoff_reconciliation_failed:{reconciliation_exc}"
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = liveportrait_failure_reason
+                _use_static_handoff(
+                    reason=liveportrait_failure_reason,
+                    source_kind="static_fallback",
+                    stage_name="liveportrait_reconciliation_static_fallback",
+                )
         elif should_enforce_exact_duration:
-            if not liveportrait_bypassed:
+            if not liveportrait_bypassed and not liveportrait_fallback_used:
                 shutil.copy2(str(liveportrait_output), str(musetalk_handoff_output))
                 musetalk_handoff_video = musetalk_handoff_output
                 stage_paths["musetalk_handoff_video_path"] = str(musetalk_handoff_video)
@@ -2653,7 +3044,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             )
             liveportrait_contract = legacy_pipeline._assert_video_contract(
                 str(musetalk_handoff_video),
-                stage_name=("musetalk_only_handoff" if liveportrait_bypassed else "liveportrait"),
+                stage_name=(
+                    "static_handoff"
+                    if (liveportrait_bypassed or liveportrait_fallback_used)
+                    else "liveportrait"
+                ),
             )
             if selected_stage_index >= 0:
                 stage_outputs[selected_stage_index]["duration_seconds"] = round(float(liveportrait_contract.get("duration_seconds") or 0.0), 4)
@@ -2667,16 +3062,18 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 dict(liveportrait_trim_info or {}),
             )
         else:
-            if not liveportrait_bypassed and liveportrait_output.exists():
+            if not liveportrait_bypassed and not liveportrait_fallback_used and liveportrait_output.exists():
                 shutil.copy2(str(liveportrait_output), str(musetalk_handoff_output))
                 musetalk_handoff_video = musetalk_handoff_output
                 stage_paths["musetalk_handoff_video_path"] = str(musetalk_handoff_video)
-            stage_paths["liveportrait_reconciled_output_path"] = str(musetalk_handoff_video if liveportrait_bypassed else liveportrait_output)
+            stage_paths["liveportrait_reconciled_output_path"] = str(
+                musetalk_handoff_video if (liveportrait_bypassed or liveportrait_fallback_used) else liveportrait_output
+            )
 
-        if liveportrait_bypassed:
+        if liveportrait_bypassed or liveportrait_fallback_used:
             stage_paths["liveportrait_handoff_motion_gate"] = {
                 "skipped": True,
-                "reason": "liveportrait_bypassed",
+                "reason": "liveportrait_bypassed" if liveportrait_bypassed else "liveportrait_static_fallback",
             }
         else:
             handoff_motion_gate = _liveportrait_motion_gate(
@@ -2690,11 +3087,41 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             if selected_stage_index >= 0:
                 stage_outputs[selected_stage_index]["handoff_motion_gate"] = dict(handoff_motion_gate)
             stage_paths["liveportrait_handoff_motion_gate"] = dict(handoff_motion_gate)
-            if not bool(handoff_motion_gate.get("passed")):
-                stage_paths["musetalk_stage_state"] = "skipped"
-                stage_paths["musetalk_ran"] = False
-                stage_paths["musetalk_skip_reason"] = "liveportrait_handoff_motion_gate_failed"
-                raise RuntimeError(str(handoff_motion_gate.get("failure_reason") or "liveportrait_handoff_motion_gate_failed"))
+            handoff_technical_valid = bool(
+                handoff_motion_gate.get("technical_valid", handoff_motion_gate.get("technical_passed", handoff_motion_gate.get("passed")))
+            )
+            handoff_motion_passed = bool(handoff_motion_gate.get("motion_passed", handoff_motion_gate.get("passed")))
+            stage_paths["liveportrait_technical_valid"] = handoff_technical_valid
+            stage_paths["liveportrait_motion_passed"] = handoff_motion_passed
+            if not handoff_technical_valid:
+                liveportrait_failed = True
+                liveportrait_failure_reason = str(
+                    handoff_motion_gate.get("technical_failure_reason")
+                    or handoff_motion_gate.get("failure_reason")
+                    or "liveportrait_handoff_technical_invalid"
+                )
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = liveportrait_failure_reason
+                _use_static_handoff(
+                    reason=liveportrait_failure_reason,
+                    source_kind="static_fallback",
+                    stage_name="liveportrait_handoff_static_fallback",
+                )
+            elif not handoff_motion_passed:
+                liveportrait_quality_warning = str(
+                    handoff_motion_gate.get("motion_failure_reason")
+                    or handoff_motion_gate.get("failure_reason")
+                    or "liveportrait_low_motion"
+                )
+                stage_paths["liveportrait_quality_warning"] = liveportrait_quality_warning
+                if f"liveportrait_quality_warning:{liveportrait_quality_warning}" not in warning_parts:
+                    warning_parts.append(f"liveportrait_quality_warning:{liveportrait_quality_warning}")
+                if lp_low_motion_fallback_to_static:
+                    _use_static_handoff(
+                        reason="low_motion",
+                        source_kind="static_fallback",
+                        stage_name="liveportrait_low_motion_static_fallback",
+                    )
 
         logger.info(
             "Avatar preview liveportrait output teacher_id=%s job_id=%s canonical_input_path=%s raw_output_path=%s reconciled_output_path=%s handoff_video_path=%s liveportrait_output_duration_seconds=%s tts_audio_duration_seconds=%s",
@@ -2716,8 +3143,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         if current_audio_hash != expected_audio_hash:
             raise RuntimeError("preview_audio_hash_changed_before_musetalk")
 
-        final_stage_path = musetalk_handoff_video if liveportrait_bypassed else liveportrait_output
-        engine_used_for_output = MUSETALK_ONLY_ENGINE if liveportrait_bypassed else CANONICAL_ENGINE
+        final_stage_path = musetalk_handoff_video if (liveportrait_bypassed or liveportrait_fallback_used) else liveportrait_output
+        engine_used_for_output = MUSETALK_ONLY_ENGINE if requested_engine == MUSETALK_ONLY_ENGINE else CANONICAL_ENGINE
         restoration_warning = ""
         stage_paths["musetalk_stage_state"] = "running"
         stage_paths["musetalk_ran"] = True
@@ -2943,7 +3370,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             )
 
             final_stage_path = musetalk_output
-            if _restore_enabled(is_preview_request):
+            if restoration_enabled:
                 cleanup_after_musetalk = release_stage_resources(reason="after_musetalk_before_restoration")
                 stage_paths["cleanup_after_musetalk"] = _cleanup_summary(cleanup_after_musetalk)
                 stage_paths["runtime_resources_before_restoration"] = probe_runtime_resources()
@@ -2961,14 +3388,22 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     stage_started_at=restoration_started_at,
                     stage_timeout_budget_seconds=round(float(restoration_timeout_seconds), 4),
                 )
-                restoration_result = run_restoration(
-                    input_video=str(musetalk_output),
-                    output_path=str(restoration_output),
-                    source_image=str(canonical_input.normalized_input_path),
-                    audio_path=str(getattr(request, "audio_path", "") or ""),
-                    env_overrides=stage_env,
-                    timeout_seconds=float(restoration_timeout_seconds),
-                )
+                try:
+                    restoration_result = run_restoration(
+                        input_video=str(musetalk_output),
+                        output_path=str(restoration_output),
+                        source_image=str(canonical_input.normalized_input_path),
+                        audio_path=str(getattr(request, "audio_path", "") or ""),
+                        env_overrides=stage_env,
+                        timeout_seconds=float(restoration_timeout_seconds),
+                    )
+                except Exception as restoration_exc:
+                    restoration_result = EngineResult(
+                        False,
+                        "restoration",
+                        str(restoration_output),
+                        f"exception:{restoration_exc}",
+                    )
                 restoration_elapsed_seconds = time.monotonic() - restoration_started_at
                 stage_outputs.append(_stage_record("restoration", restoration_result, input_path=str(musetalk_output)))
                 stage_outputs[-1]["elapsed_seconds"] = round(float(restoration_elapsed_seconds), 4)
@@ -2988,8 +3423,14 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 )
                 if restoration_result.success and _video_is_playable(restoration_output, stage_name="restoration"):
                     final_stage_path = restoration_output
+                    stage_paths["restoration_succeeded"] = True
+                    stage_paths["restoration_failed"] = False
+                    stage_paths["restoration_failure_reason"] = ""
                 else:
-                    restoration_warning = f"restoration_skipped:{restoration_result.error or 'missing_output'}"
+                    restoration_warning = f"restoration_failed:{restoration_result.error or 'missing_output'}"
+                    stage_paths["restoration_succeeded"] = False
+                    stage_paths["restoration_failed"] = True
+                    stage_paths["restoration_failure_reason"] = str(restoration_result.error or "missing_output")
                     warning_parts.append(restoration_warning)
 
         if final_stage_path != output_path:
