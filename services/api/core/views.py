@@ -798,10 +798,10 @@ def _raw_scene_from_document(editor_document: Any) -> dict:
 
 
 def _merge_editor_document_preserving_scene(next_document: dict, current_document: Any) -> dict:
-    document = dict(next_document or {})
-    current_scene = _raw_scene_from_document(current_document)
+    document = deepcopy(next_document or {})
+    current_scene = deepcopy(_raw_scene_from_document(current_document))
     if current_scene:
-        incoming_scene = _raw_scene_from_document(document)
+        incoming_scene = deepcopy(_raw_scene_from_document(document))
         merged_scene = {**current_scene, **incoming_scene}
         for unsafe_key in (
             "original_background_path",
@@ -809,7 +809,7 @@ def _merge_editor_document_preserving_scene(next_document: dict, current_documen
             "source_background_path",
         ):
             if not incoming_scene.get(unsafe_key) and current_scene.get(unsafe_key):
-                merged_scene[unsafe_key] = current_scene[unsafe_key]
+                merged_scene[unsafe_key] = deepcopy(current_scene[unsafe_key])
         document["scene"] = merged_scene
     return document
 
@@ -860,8 +860,8 @@ def _page_scene_for_storage(page: TranscriptPage) -> dict:
 
 
 def _set_page_scene(page: TranscriptPage, scene: dict) -> None:
-    editor_document = dict(page.editor_document or {})
-    editor_document["scene"] = dict(scene or {})
+    editor_document = deepcopy(page.editor_document or {})
+    editor_document["scene"] = deepcopy(scene or {})
     page.editor_document = editor_document
 
 
@@ -945,7 +945,39 @@ def _draft_page_for_active_page(draft_data: dict, page: TranscriptPage) -> dict 
     return None
 
 
-def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPage) -> dict:
+def _draft_page_for_ref(draft_data: dict, page_ref: Any) -> dict | None:
+    pages = draft_data.get("transcript_pages")
+    if not isinstance(pages, list):
+        return None
+    ref = str(page_ref or "").strip()
+    if not ref:
+        return None
+    for draft_page in pages:
+        if not isinstance(draft_page, dict):
+            continue
+        if str(draft_page.get("page_key") or "") == ref:
+            return draft_page
+        if str(draft_page.get("id") or "") == ref:
+            return draft_page
+    return None
+
+
+def _active_page_for_draft_page(project: Project, draft_page: dict) -> TranscriptPage | None:
+    try:
+        draft_id = int(draft_page.get("id") or 0)
+    except (TypeError, ValueError):
+        draft_id = 0
+    if draft_id > 0:
+        active_page = project.transcript_pages.filter(pk=draft_id).first()
+        if active_page is not None:
+            return active_page
+    page_key = str(draft_page.get("page_key") or "").strip()
+    if page_key:
+        return project.transcript_pages.filter(page_key=page_key).first()
+    return None
+
+
+def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPage | None) -> dict:
     scene = _raw_scene_from_document(draft_page.get("editor_document"))
     mode = _clean_scene_mode(
         scene.get("background_mode"),
@@ -963,7 +995,7 @@ def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPag
 
 def _set_draft_page_scene(draft_page: dict, scene: dict) -> None:
     editor_document = deepcopy(draft_page.get("editor_document")) if isinstance(draft_page.get("editor_document"), dict) else {}
-    editor_document["scene"] = dict(scene or {})
+    editor_document["scene"] = deepcopy(scene or {})
     draft_page["editor_document"] = editor_document
     draft_page["whiteboard_mode"] = scene.get("background_mode") == "whiteboard"
 
@@ -978,6 +1010,20 @@ def _draft_page_scene_path(project: Project, page: TranscriptPage, kind: str) ->
     if draft_page is None:
         return ""
     scene = _draft_page_scene_for_storage(draft_page, page)
+    key = "source_background_path" if kind in {"source", "source_background"} else f"{kind}_background_path"
+    return _normalize_rel_storage_path(str(scene.get(key) or ""))
+
+
+def _draft_page_scene_path_by_ref(project: Project, page_ref: Any, kind: str) -> str:
+    if kind not in {"original", "custom", "source", "source_background"}:
+        return ""
+    draft_data = get_project_draft_data(project)
+    if not has_project_draft(project):
+        return ""
+    draft_page = _draft_page_for_ref(draft_data, page_ref)
+    if draft_page is None:
+        return ""
+    scene = _draft_page_scene_for_storage(draft_page, _active_page_for_draft_page(project, draft_page))
     key = "source_background_path" if kind in {"source", "source_background"} else f"{kind}_background_path"
     return _normalize_rel_storage_path(str(scene.get(key) or ""))
 
@@ -1035,21 +1081,12 @@ def _draft_page_response(project: Project, draft_page: dict, request) -> dict:
         if field in draft_page:
             setattr(page, field, deepcopy(draft_page.get(field)))
     page.is_active = True
-    active_page = None
-    try:
-        draft_id = int(draft_page.get("id") or 0)
-    except (TypeError, ValueError):
-        draft_id = 0
-    if draft_id > 0:
-        active_page = project.transcript_pages.filter(pk=draft_id).first()
-    if active_page is None and draft_page.get("page_key"):
-        active_page = project.transcript_pages.filter(page_key=str(draft_page.get("page_key"))).first()
+    active_page = _active_page_for_draft_page(project, draft_page)
 
     data = TranscriptPageSerializer(page, context={"request": request}).data
     scene = data.get("editor_document", {}).get("scene")
-    if isinstance(scene, dict) and draft_id > 0:
-        for kind in ("original", "custom"):
-            url_key = f"{kind}_background_url"
+    if isinstance(scene, dict):
+        for url_key in ("original_background_url", "custom_background_url", "source_background_url"):
             if scene.get(url_key):
                 scene[url_key] = _draft_url(scene[url_key])
     data["draft_scene_dirty"] = _draft_scene_differs(active_page, draft_page)
@@ -5266,7 +5303,7 @@ class TranscriptPageBackgroundImageView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request, project_id, page_id, kind):
+    def get(self, request, project_id, page_id=None, kind=None, page_ref=None):
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
@@ -5274,15 +5311,16 @@ class TranscriptPageBackgroundImageView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        page = project.transcript_pages.filter(pk=page_id, is_active=True).first()
-        if page is None:
-            return Response({"error": "Transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+        page_token = page_ref if page_ref is not None else page_id
         clean_kind = str(kind or "").strip().lower()
-        rel_path = (
-            _draft_page_scene_path(project, page, clean_kind)
-            if _truthy_request_value(request.query_params.get("draft"))
-            else _page_scene_path(page, clean_kind)
-        )
+        if _truthy_request_value(request.query_params.get("draft")):
+            rel_path = _draft_page_scene_path_by_ref(project, page_token, clean_kind)
+        else:
+            try:
+                page = _get_project_page(project, page_token, active=True, field_name="page_id")
+            except TranscriptActionError:
+                return Response({"error": "Transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            rel_path = _page_scene_path(page, clean_kind)
         if not rel_path:
             raise Http404
 
@@ -5302,7 +5340,7 @@ class TranscriptPageSceneView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    def patch(self, request, project_id, page_id):
+    def patch(self, request, project_id, page_id=None, page_ref=None):
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
@@ -5310,16 +5348,14 @@ class TranscriptPageSceneView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            page = _get_project_page(project, page_id, active=True, field_name="page_id")
-        except TranscriptActionError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        page_token = page_ref if page_ref is not None else page_id
 
         if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
             draft_data = ensure_project_draft_data(project)
-            draft_page = _draft_page_for_active_page(draft_data, page)
+            draft_page = _draft_page_for_ref(draft_data, page_token)
             if draft_page is None:
                 return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            page = _active_page_for_draft_page(project, draft_page)
             scene = _draft_page_scene_for_storage(draft_page, page)
             if "background_mode" in request.data:
                 mode = str(request.data.get("background_mode") or "").strip().lower()
@@ -5357,6 +5393,11 @@ class TranscriptPageSceneView(APIView):
                 }
             )
 
+        try:
+            page = _get_project_page(project, page_token, active=True, field_name="page_id")
+        except TranscriptActionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
         scene = _page_scene_for_storage(page)
         if "background_mode" in request.data:
             mode = str(request.data.get("background_mode") or "").strip().lower()
@@ -5392,7 +5433,7 @@ class TranscriptPageBackgroundUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request, project_id, page_id):
+    def post(self, request, project_id, page_id=None, page_ref=None):
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
@@ -5400,10 +5441,22 @@ class TranscriptPageBackgroundUploadView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            page = _get_project_page(project, page_id, active=True, field_name="page_id")
-        except TranscriptActionError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        page_token = page_ref if page_ref is not None else page_id
+        draft_only = _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only"))
+        page = None
+        draft_data = None
+        draft_page = None
+        if draft_only:
+            draft_data = ensure_project_draft_data(project)
+            draft_page = _draft_page_for_ref(draft_data, page_token)
+            if draft_page is None:
+                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            page = _active_page_for_draft_page(project, draft_page)
+        else:
+            try:
+                page = _get_project_page(project, page_token, active=True, field_name="page_id")
+            except TranscriptActionError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
         background_file = request.FILES.get("background_file") or request.FILES.get("image") or request.FILES.get("file")
         if background_file is None:
@@ -5416,14 +5469,11 @@ class TranscriptPageBackgroundUploadView(APIView):
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
         background_dir = storage_root / "uploads" / str(project.id) / "backgrounds"
         background_dir.mkdir(parents=True, exist_ok=True)
-        saved_path = background_dir / f"page_{page.id}_{uuid.uuid4().hex[:10]}{ext}"
+        safe_page_token = re.sub(r"[^A-Za-z0-9_-]+", "_", str(page_token or getattr(page, "id", "") or "draft"))
+        saved_path = background_dir / f"page_{safe_page_token[:32]}_{uuid.uuid4().hex[:10]}{ext}"
         _write_uploaded_file(background_file, saved_path)
 
-        if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
-            draft_data = ensure_project_draft_data(project)
-            draft_page = _draft_page_for_active_page(draft_data, page)
-            if draft_page is None:
-                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+        if draft_only:
             scene = _draft_page_scene_for_storage(draft_page, page)
             scene["custom_background_path"] = str(saved_path.relative_to(storage_root)).replace("\\", "/")
             scene["background_mode"] = "custom"

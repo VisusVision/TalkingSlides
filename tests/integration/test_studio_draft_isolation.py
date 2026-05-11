@@ -16,10 +16,19 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
+from django.core.files.uploadedfile import SimpleUploadedFile  # noqa: E402
+from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
 from core.drafts import clear_project_draft  # noqa: E402
 from core.models import Job, Project, TranscriptPage, UserProfile  # noqa: E402
+
+
+PNG_1X1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc```\x00\x00"
+    b"\x00\x04\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 def _make_user(username: str, *, role: str = "publisher") -> User:
@@ -47,7 +56,15 @@ def _make_project(owner: User, title: str = "Draft isolated lesson") -> Project:
     return project
 
 
-def _make_page(project: Project, *, order: int, text: str, page_key: str | None = None) -> TranscriptPage:
+def _make_page(
+    project: Project,
+    *,
+    order: int,
+    text: str,
+    page_key: str | None = None,
+    editor_document: dict | None = None,
+    whiteboard_mode: bool = False,
+) -> TranscriptPage:
     return TranscriptPage.objects.create(
         project=project,
         order=order,
@@ -58,12 +75,13 @@ def _make_page(project: Project, *, order: int, text: str, page_key: str | None 
         narration_text=text,
         rich_text_html=text,
         subtitle_chunks=[text],
-        editor_document={
+        editor_document=editor_document or {
             "version": 1,
             "html": text,
             "paragraphs": [{"index": 0, "text": text}],
             "text": {"narration_customized": False, "display_text_customized": False},
         },
+        whiteboard_mode=whiteboard_mode,
     )
 
 
@@ -173,6 +191,105 @@ def test_split_and_reorder_actions_mutate_draft_only():
     project.refresh_from_db()
     assert [page["id"] for page in project.draft_data["transcript_pages"]] == [second.id, first.id, -1]
     assert len(project.draft_data["transcript_pages"]) == 3
+
+
+@pytest.mark.django_db
+def test_split_draft_page_inherits_visual_scene_and_remains_editable(tmp_path):
+    owner = _make_user("draft_split_visual_owner")
+    project = _make_project(owner)
+    parent_scene = {
+        "background_mode": "source_background",
+        "background_fit": "cover",
+        "text_scale": 1.35,
+        "source_type": "pptx",
+        "original_background_path": f"{project.id}/images/slide-1.png",
+        "custom_background_path": f"uploads/{project.id}/backgrounds/custom.png",
+        "source_background_path": f"{project.id}/source_backgrounds/slide-1.png",
+        "overlay_layout": {"padding": 44, "safe_area": {"top": 12, "bottom": 18}},
+        "font": {"size": 34, "align": "center", "family": "Inter"},
+    }
+    page = _make_page(
+        project,
+        order=0,
+        text="First visual part\n\nSecond visual part",
+        editor_document={
+            "version": 1,
+            "html": "First visual part<br><br>Second visual part",
+            "paragraphs": [{"index": 0, "text": "First visual part\n\nSecond visual part"}],
+            "scene": parent_scene,
+        },
+    )
+
+    split_response = _client(owner).post(
+        f"/api/v1/projects/{project.id}/transcript/actions/",
+        {
+            "draft_only": True,
+            "action": "split_page",
+            "page_id": page.id,
+            "parts": [{"narration_text": "First visual part"}, {"narration_text": "Second visual part"}],
+        },
+        format="json",
+    )
+
+    assert split_response.status_code == 200
+    first_split, second_split = split_response.data["pages"][:2]
+    assert first_split["original_text"] == "First visual part"
+    assert second_split["original_text"] == "Second visual part"
+    assert int(second_split["id"]) < 0
+    second_scene = second_split["editor_document"]["scene"]
+    assert second_scene["background_mode"] == "source_background"
+    assert second_scene["background_fit"] == "cover"
+    assert second_scene["text_scale"] == 1.35
+    assert second_scene["overlay_layout"] == parent_scene["overlay_layout"]
+    assert second_scene["font"] == parent_scene["font"]
+    assert second_scene["original_background_url"].endswith("?draft=1")
+    assert second_scene["custom_background_url"].endswith("?draft=1")
+    assert second_scene["source_background_url"].endswith("?draft=1")
+    assert "original_background_path" not in second_scene
+    assert "custom_background_path" not in second_scene
+    assert "source_background_path" not in second_scene
+
+    scene_response = _client(owner).patch(
+        f"/api/v1/projects/{project.id}/transcript-pages/{second_split['id']}/scene/",
+        {"draft_only": True, "text_scale": 1.8, "background_fit": "stretch"},
+        format="json",
+    )
+
+    assert scene_response.status_code == 200
+    project.refresh_from_db()
+    first_draft, second_draft = project.draft_data["transcript_pages"][:2]
+    first_scene = first_draft["editor_document"]["scene"]
+    edited_second_scene = second_draft["editor_document"]["scene"]
+    assert first_scene["text_scale"] == 1.35
+    assert first_scene["background_fit"] == "cover"
+    assert edited_second_scene["text_scale"] == 1.8
+    assert edited_second_scene["background_fit"] == "stretch"
+    assert edited_second_scene["source_background_path"] == parent_scene["source_background_path"]
+    assert edited_second_scene["overlay_layout"] == parent_scene["overlay_layout"]
+
+    upload = SimpleUploadedFile("replacement.png", PNG_1X1, content_type="image/png")
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        upload_response = _client(owner).post(
+            f"/api/v1/projects/{project.id}/transcript-pages/{second_split['id']}/background/",
+            {
+                "draft_only": "1",
+                "background_file": upload,
+                "background_fit": "contain",
+                "text_scale": "1.1",
+            },
+            format="multipart",
+        )
+
+    assert upload_response.status_code == 200
+    project.refresh_from_db()
+    first_scene = project.draft_data["transcript_pages"][0]["editor_document"]["scene"]
+    uploaded_second_scene = project.draft_data["transcript_pages"][1]["editor_document"]["scene"]
+    assert first_scene["custom_background_path"] == parent_scene["custom_background_path"]
+    assert uploaded_second_scene["background_mode"] == "custom"
+    assert uploaded_second_scene["custom_background_path"].startswith(f"uploads/{project.id}/backgrounds/page_-1_")
+    assert uploaded_second_scene["text_scale"] == 1.1
+    assert uploaded_second_scene["overlay_layout"] == parent_scene["overlay_layout"]
+    assert upload_response.data["page"]["editor_document"]["scene"]["custom_background_url"].endswith("?draft=1")
 
 
 @pytest.mark.django_db

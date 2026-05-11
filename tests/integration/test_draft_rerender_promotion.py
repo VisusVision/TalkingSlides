@@ -272,6 +272,98 @@ def test_split_draft_render_descriptors_use_split_text_fields():
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("mode", "path_key", "expected_whiteboard"),
+    [
+        ("whiteboard", "", True),
+        ("original", "original_background_path", False),
+        ("custom", "custom_background_path", False),
+        ("source_background", "source_background_path", False),
+    ],
+)
+def test_split_draft_render_descriptors_inherit_visual_scene_settings(
+    tmp_path,
+    monkeypatch,
+    mode,
+    path_key,
+    expected_whiteboard,
+):
+    owner = _make_user(f"draft_split_visual_descriptor_{mode}")
+    project = _make_project(owner)
+    page = _make_page(project, order=0, text="First A\n\nFirst B")
+    original_rel = f"{project.id}/images/slide-1.png"
+    custom_rel = f"uploads/{project.id}/backgrounds/custom.png"
+    source_rel = f"{project.id}/source_backgrounds/slide-1.png"
+    for rel_path in (original_rel, custom_rel, source_rel):
+        absolute = tmp_path / rel_path
+        absolute.parent.mkdir(parents=True, exist_ok=True)
+        absolute.write_bytes(b"image")
+
+    scene = {
+        "background_mode": mode,
+        "background_fit": "cover",
+        "text_scale": 1.45,
+        "source_type": "pptx",
+        "original_background_path": original_rel,
+        "custom_background_path": custom_rel,
+        "source_background_path": source_rel,
+        "overlay_layout": {"padding": 52, "safe_area": {"left": 20, "right": 20}},
+        "font": {"size": 36, "align": "center"},
+    }
+    page.editor_document = {
+        "version": 1,
+        "html": "First A<br><br>First B",
+        "paragraphs": [{"index": 0, "text": "First A\n\nFirst B"}],
+        "scene": scene,
+    }
+    page.whiteboard_mode = mode == "whiteboard"
+    page.save(update_fields=["editor_document", "whiteboard_mode", "updated_at"])
+
+    split_response = _client(owner).post(
+        f"/api/v1/projects/{project.id}/transcript/actions/",
+        {
+            "draft_only": True,
+            "action": "split_page",
+            "page_id": page.id,
+            "parts": [{"narration_text": "First A"}, {"narration_text": "First B"}],
+        },
+        format="json",
+    )
+    assert split_response.status_code == 200
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    slides = worker_tasks._build_render_slides_from_draft(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "source_type": "pptx",
+                "image_path": str(tmp_path / original_rel),
+                "notes_text": "First A\n\nFirst B",
+                "original_text": "First A\n\nFirst B",
+                "display_text": "First A\n\nFirst B",
+            }
+        ],
+    )
+
+    expected_mode = "whiteboard" if mode == "whiteboard" else mode
+    if path_key:
+        expected_image_path = str(tmp_path / scene[path_key])
+    else:
+        expected_image_path = ""
+    assert [slide["page_key"] for slide in slides] == ["s1-p1", "s1-p2"]
+    assert [slide["display_text"] for slide in slides] == ["First A", "First B"]
+    assert [slide["scene_background_mode"] for slide in slides] == [expected_mode, expected_mode]
+    assert [slide["whiteboard_mode"] for slide in slides] == [expected_whiteboard, expected_whiteboard]
+    assert [slide["image_path"] for slide in slides] == [expected_image_path, expected_image_path]
+    assert [slide["scene_background_fit"] for slide in slides] == ["cover", "cover"]
+    assert [slide["scene_text_scale"] for slide in slides] == [1.45, 1.45]
+    assert slides[1]["editor_document"]["scene"]["overlay_layout"] == scene["overlay_layout"]
+    assert slides[1]["editor_document"]["scene"]["font"] == scene["font"]
+
+
+@pytest.mark.django_db
 def test_deleted_draft_pages_are_deactivated_on_promotion():
     owner = _make_user("draft_delete_promote_owner")
     project = _make_project(owner)

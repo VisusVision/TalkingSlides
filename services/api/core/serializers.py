@@ -195,22 +195,39 @@ def transcript_page_editor_document_for_response(page: TranscriptPage, context: 
     if not isinstance(source_background_warnings, list):
         source_background_warnings = []
     safe_scene = {
-        "background_mode": mode,
-        "background_fit": fit,
-        "text_scale": text_scale,
-        "original_background_url": _transcript_background_url(page, "original", context) if original_path else "",
-        "custom_background_url": _transcript_background_url(page, "custom", context) if custom_path else "",
-        "source_background_url": _transcript_background_url(page, "source", context) if source_background_available else "",
-        "has_original_background": bool(original_path),
-        "has_custom_background": bool(custom_path),
-        "has_source_background": source_background_available,
-        "source_background_generated": source_background_available,
-        "source_background_available": source_background_available,
-        "source_type": source_type,
-        "source_background_warnings": [
-            str(warning).strip() for warning in source_background_warnings if str(warning or "").strip()
-        ],
+        str(key): deepcopy(value)
+        for key, value in scene.items()
+        if str(key)
+        not in {
+            "original_background_path",
+            "custom_background_path",
+            "source_background_path",
+            "original_background_url",
+            "custom_background_url",
+            "source_background_url",
+            "source_background_details",
+        }
+        and not str(key).endswith("_path")
     }
+    safe_scene.update(
+        {
+            "background_mode": mode,
+            "background_fit": fit,
+            "text_scale": text_scale,
+            "original_background_url": _transcript_background_url(page, "original", context) if original_path else "",
+            "custom_background_url": _transcript_background_url(page, "custom", context) if custom_path else "",
+            "source_background_url": _transcript_background_url(page, "source", context) if source_background_available else "",
+            "has_original_background": bool(original_path),
+            "has_custom_background": bool(custom_path),
+            "has_source_background": source_background_available,
+            "source_background_generated": source_background_available,
+            "source_background_available": source_background_available,
+            "source_type": source_type,
+            "source_background_warnings": [
+                str(warning).strip() for warning in source_background_warnings if str(warning or "").strip()
+            ],
+        }
+    )
     document["scene"] = safe_scene
     return document
 
