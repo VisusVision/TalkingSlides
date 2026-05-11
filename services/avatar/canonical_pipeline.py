@@ -34,7 +34,10 @@ def _is_preview_request(request: Any) -> bool:
     )
 
 
-def _restore_enabled(is_preview_request: bool) -> bool:
+def _restore_enabled(is_preview_request: bool, request: Any | None = None) -> bool:
+    request_value = getattr(request, "restoration_enabled", None) if request is not None else None
+    if request_value is not None:
+        return bool(request_value)
     if not is_preview_request:
         return False
     return str(os.environ.get("AVATAR_PREVIEW_USE_RESTORATION", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -711,7 +714,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
     preview_motion_strength = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")).strip() if is_preview else ""
     preview_temporal_smoothing = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.00")).strip() if is_preview else ""
     preview_fast_musetalk = str(os.environ.get("AVATAR_PREVIEW_MUSETALK_FAST_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
-    liveportrait_motion_preset = _liveportrait_motion_preset()
+    liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
     preview_max_width_default = "384" if is_preview else "512"
     default_batch_size = 2 if is_preview else 8
@@ -752,6 +755,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING": preview_temporal_smoothing,
         "AVATAR_LIVEPORTRAIT_MOTION_PRESET": liveportrait_motion_preset,
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
+        "AVATAR_LIVEPORTRAIT_ENABLED": "1" if _liveportrait_enabled_for_request(request) else "0",
         "MUSETALK_BBOX_SHIFT": str(int(params.get("bbox_shift", (0 if is_preview else 0)))),
         "MUSETALK_EXTRA_MARGIN": str(int(params.get("extra_margin", (6 if is_preview else 10)))),
         "MUSETALK_PARSING_MODE": str(params.get("parsing_mode", "jaw")),
@@ -1190,8 +1194,10 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     source_image_original_path = str(getattr(request, "source_image_original_path", "") or source_image_path)
     audio_path = str(getattr(request, "audio_path", "") or "")
     pipeline_mode = "preview_canonical_liveportrait_then_musetalk" if _is_preview_request(request) else "lesson_canonical_liveportrait_then_musetalk"
-    liveportrait_motion_preset = _liveportrait_motion_preset()
+    liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
+    liveportrait_enabled = _liveportrait_enabled_for_request(request)
+    restoration_enabled = _restore_enabled(_is_preview_request(request), request)
     return {
         "audio_hash": sha256_file(audio_path) if audio_path and Path(audio_path).exists() else "",
         "source_image_hash": sha256_file(source_image_path) if Path(source_image_path).exists() else "",
@@ -1206,6 +1212,8 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "pipeline_engine": CANONICAL_ENGINE,
         "pipeline_mode": pipeline_mode,
         "liveportrait_motion_preset": liveportrait_motion_preset,
+        "liveportrait_enabled": "1" if liveportrait_enabled else "0",
+        "restoration_enabled": "1" if restoration_enabled else "0",
         "liveportrait_boosted_retry_allowed": "1" if liveportrait_boosted_retry_allowed else "0",
         "liveportrait_motion_profile_policy": "boosted_retry_allowed" if liveportrait_boosted_retry_allowed else "conservative_only",
     }
@@ -1240,11 +1248,36 @@ def _env_enabled(name: str, default: bool = False) -> bool:
 
 
 _LIVEPORTRAIT_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
+_LIVEPORTRAIT_SAFE_REQUEST_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze"}
+_LIVEPORTRAIT_REQUEST_PRESET_ALIASES = {
+    "natural": "natural_conservative",
+    "blink": "subtle_blink",
+    "blink_only": "subtle_blink",
+    "gaze": "subtle_gaze",
+}
 
 
 def _liveportrait_motion_preset() -> str:
     raw = str(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "")).strip().lower()
     return raw if raw in _LIVEPORTRAIT_MOTION_PRESETS else "natural_conservative"
+
+
+def _liveportrait_motion_preset_for_request(request: Any | None = None) -> str:
+    raw = str(getattr(request, "motion_preset", "") or "").strip().lower() if request is not None else ""
+    if raw in {"", "natural"}:
+        return _liveportrait_motion_preset()
+    if raw in _LIVEPORTRAIT_SAFE_REQUEST_PRESETS:
+        return raw
+    if raw:
+        return _LIVEPORTRAIT_REQUEST_PRESET_ALIASES.get(raw, "natural_conservative")
+    return _liveportrait_motion_preset()
+
+
+def _liveportrait_enabled_for_request(request: Any | None = None) -> bool:
+    request_value = getattr(request, "liveportrait_enabled", None) if request is not None else None
+    if request_value is not None:
+        return bool(request_value)
+    return _env_enabled("AVATAR_LIVEPORTRAIT_ENABLED", True)
 
 
 def _liveportrait_boosted_retry_allowed(preset: str | None = None) -> bool:
@@ -1918,7 +1951,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "requested_engine": requested_engine,
         "normalized_engine": requested_engine,
         "avatar_engine_selected": requested_engine,
-        "liveportrait_motion_preset": str(cached_stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset()),
+        "liveportrait_motion_preset": str(cached_stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(cached_stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(cached_stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_composer_used": bool(cached_stage_paths.get("liveportrait_composer_used")),
@@ -1978,7 +2011,7 @@ def _write_meta(
         "engine_used": engine_used,
         "normalized_engine": requested_engine,
         "avatar_engine_selected": requested_engine,
-        "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset()),
+        "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_composer_used": bool(stage_paths.get("liveportrait_composer_used")),
@@ -2048,7 +2081,7 @@ def _final_payload(
         "requested_engine": requested_engine,
         "normalized_engine": requested_engine,
         "avatar_engine_selected": requested_engine,
-        "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset()),
+        "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_composer_used": bool(stage_paths.get("liveportrait_composer_used")),
@@ -2220,10 +2253,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
     musetalk_handoff_output = output_path.with_suffix(output_path.suffix + ".musetalk_handoff.mp4")
     musetalk_output = output_path.with_suffix(output_path.suffix + ".musetalk.mp4")
     restoration_output = output_path.with_suffix(output_path.suffix + ".restored.mp4")
-    liveportrait_runtime_enabled = _env_enabled("AVATAR_LIVEPORTRAIT_ENABLED", True)
+    liveportrait_runtime_enabled = _liveportrait_enabled_for_request(request)
     lp_low_motion_fallback_to_static = _env_enabled("AVATAR_LP_LOW_MOTION_FALLBACK_TO_STATIC", False)
-    restoration_runtime_enabled = _restore_enabled(is_preview_request)
-    liveportrait_motion_preset = _liveportrait_motion_preset()
+    restoration_runtime_enabled = _restore_enabled(is_preview_request, request)
+    liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
     stage_paths: dict[str, Any] = {
         **request_trace,

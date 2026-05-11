@@ -334,6 +334,39 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     assert boosted_allowed_keys["liveportrait_boosted_retry_allowed"] == "1"
     assert subtle_gaze_keys != boosted_allowed_keys
 
+    request.motion_preset = "subtle_blink"
+    request.restoration_enabled = True
+    request.liveportrait_enabled = False
+    request_override_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+    assert request_override_keys["liveportrait_motion_preset"] == "subtle_blink"
+    assert request_override_keys["restoration_enabled"] == "1"
+    assert request_override_keys["liveportrait_enabled"] == "0"
+    assert request_override_keys != boosted_allowed_keys
+
+
+def test_stage_env_uses_safe_runtime_motion_request_over_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "expressive_debug")
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        audio_path=str(audio),
+        output_path=str(tmp_path / "preview.mp4"),
+        motion_preset="subtle_gaze",
+        restoration_enabled=True,
+        liveportrait_enabled=False,
+        preview_teacher_id=1,
+        preview_job_id=2,
+    )
+
+    env = avatar_canonical_pipeline._build_stage_env(_stub_canonical_input(tmp_path, image), request)
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "subtle_gaze"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_ENABLED"] == "0"
+
 
 def test_musetalk_chunk_timing_metrics_are_shape_stable():
     metrics = avatar_canonical_pipeline._musetalk_chunk_timing_metrics(

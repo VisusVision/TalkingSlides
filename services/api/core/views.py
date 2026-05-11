@@ -118,6 +118,10 @@ from core.avatar_placement import (
     normalize_avatar_placement,
     project_avatar_placement,
 )
+from core.avatar_runtime_settings import (
+    project_avatar_runtime_settings,
+    save_project_avatar_runtime_settings,
+)
 from core.avatar_image_moderation import (
     avatar_image_moderation_auto_enabled,
     avatar_image_moderation_gate,
@@ -3733,6 +3737,7 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
 
     lesson_engine = selected_engine
     composite_fallback_allowed = _composite_fallback_allowed()
+    runtime_settings = project_avatar_runtime_settings(project)
 
     return {
         "requested": bool(avatar_enabled),
@@ -3742,7 +3747,10 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
         "source_image_original_rel_path": profile.avatar_image_original or profile.avatar_image_processed,
         "source_video_rel_path": profile.avatar_video_processed or profile.avatar_video_original,
         "avatar_reference_type": resolved_ref,
-        "motion_preset": profile.avatar_motion_preset or "natural",
+        "motion_preset": runtime_settings["motion_preset"],
+        "avatar_runtime_settings": runtime_settings,
+        "restoration_enabled": bool(runtime_settings["restoration_enabled"]),
+        "liveportrait_enabled": bool(runtime_settings["liveportrait_enabled"]),
         "lipsync_engine": lesson_engine,
         "avatar_engine_selected": lesson_engine,
         "normalized_engine": lesson_engine,
@@ -3837,6 +3845,29 @@ def _avatar_engine_selected_for_project(project: Project) -> str:
     return _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE"))
 
 
+def _avatar_runtime_status_for_project(project: Project) -> dict[str, Any]:
+    latest = project.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+    metadata = latest.metadata if latest is not None and isinstance(latest.metadata, dict) else {}
+    source_kind = str(metadata.get("musetalk_source_kind") or "")
+    selected = str(metadata.get("avatar_engine_selected") or metadata.get("normalized_engine") or getattr(latest, "engine_used", "") or "")
+    static_fallback = bool(metadata.get("liveportrait_fallback_used")) or source_kind in {"static_fallback", "static_source"}
+    warning = ""
+    if source_kind == "static_fallback" or bool(metadata.get("liveportrait_fallback_used")):
+        warning = "Avatar used static fallback because motion stage failed."
+    elif source_kind == "static_source" or bool(metadata.get("liveportrait_bypassed")):
+        warning = "Avatar lip-sync completed; motion fallback was used."
+    elif bool(metadata.get("restoration_failed")):
+        warning = "Avatar restoration failed; lip-sync output was used."
+    return {
+        "liveportrait_used": bool(metadata.get("liveportrait_succeeded")) and source_kind == "liveportrait",
+        "static_fallback_used": static_fallback,
+        "musetalk_only_used": selected == "musetalk_only_fast" or source_kind == "static_source",
+        "musetalk_source_kind": source_kind,
+        "restoration_failed": bool(metadata.get("restoration_failed")),
+        "warning": warning,
+    }
+
+
 def _avatar_playback_state_payload(project: Project, *, avatar_available: bool | None = None) -> dict[str, Any]:
     available = bool(avatar_available) if avatar_available is not None else _avatar_artifact_available(project)[0]
     updated_at = getattr(project, "avatar_updated_at", None)
@@ -3850,6 +3881,8 @@ def _avatar_playback_state_payload(project: Project, *, avatar_available: bool |
         "avatar_engine_selected": avatar_engine_selected,
         "normalized_engine": avatar_engine_selected,
         "final_avatar_engine_chain": _avatar_engine_chain_for_project(project),
+        "avatar_runtime_settings": project_avatar_runtime_settings(project),
+        "avatar_runtime_status": _avatar_runtime_status_for_project(project),
     }
 
 
@@ -4106,12 +4139,22 @@ class ProjectDetailView(APIView):
         has_avatar_enabled = "avatar_enabled" in request.data
         has_avatar_visible = "avatar_visible" in request.data or "show_avatar" in request.data
         has_avatar_placement = "avatar_placement" in request.data
+        has_avatar_runtime_settings = "avatar_runtime_settings" in request.data
         has_is_published = "is_published" in request.data
         has_tts_settings = "tts_settings" in request.data
         draft_only = _truthy_request_value(request.data.get("draft_only"))
-        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_avatar_visible and not has_avatar_placement and not has_is_published and not has_tts_settings:
+        if (
+            not has_category_id
+            and not has_category_name
+            and not has_avatar_enabled
+            and not has_avatar_visible
+            and not has_avatar_placement
+            and not has_avatar_runtime_settings
+            and not has_is_published
+            and not has_tts_settings
+        ):
             return Response(
-                {"error": "category_id, category_name, avatar_enabled, avatar_visible, avatar_placement, is_published, or tts_settings is required for updates."},
+                {"error": "category_id, category_name, avatar_enabled, avatar_visible, avatar_placement, avatar_runtime_settings, is_published, or tts_settings is required for updates."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -4130,7 +4173,7 @@ class ProjectDetailView(APIView):
                     {"error": "Invalid tts_settings.", "details": exc.detail},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_avatar_placement or has_is_published):
+            if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_avatar_placement or has_avatar_runtime_settings or has_is_published):
                 draft_data = ensure_project_draft_data(project)
                 draft_data.setdefault("project", {})["tts_settings"] = updates["tts_settings"]
                 save_project_draft_data(project, draft_data, dirty=True)
@@ -4203,6 +4246,9 @@ class ProjectDetailView(APIView):
                 pref, _ = AvatarOverlayPreference.objects.get_or_create(user=project.user, lesson=project)
                 apply_avatar_placement_to_preference(pref, request.data.get("avatar_placement"))
                 pref.save(update_fields=["anchor", "x_percent", "y_percent", "width_percent", "updated_at"])
+            if has_avatar_runtime_settings:
+                save_project_avatar_runtime_settings(project, request.data.get("avatar_runtime_settings"))
+                project.refresh_from_db()
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
 
@@ -7418,6 +7464,8 @@ class CatalogDetailView(APIView):
         data["avatar_engine_selected"] = playback.get("avatar_engine_selected", "")
         data["normalized_engine"] = playback.get("normalized_engine", data["avatar_engine_selected"])
         data["final_avatar_engine_chain"] = playback.get("final_avatar_engine_chain", [])
+        data["avatar_runtime_settings"] = playback.get("avatar_runtime_settings", project_avatar_runtime_settings(project))
+        data["avatar_runtime_status"] = playback.get("avatar_runtime_status", _avatar_runtime_status_for_project(project))
         data["playback_status"] = playback.get("playback_status")
         data["mode_debug"] = playback.get("mode_debug")
         data["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})

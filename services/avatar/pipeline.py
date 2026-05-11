@@ -37,6 +37,8 @@ class AvatarRenderRequest:
     motion_preset: str = "natural"
     quality_preset: str = "high"
     lipsync_engine: str = "musetalk"
+    restoration_enabled: bool | None = None
+    liveportrait_enabled: bool | None = None
     cache_text_hash: str = ""
     enforce_exact_audio_duration: bool = False
     musetalk_params: dict[str, Any] = field(default_factory=dict)

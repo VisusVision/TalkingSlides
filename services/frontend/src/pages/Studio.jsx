@@ -38,6 +38,7 @@ import {
   uploadProjectCover,
   uploadTranscriptPageBackground,
   updateProjectAvatarVisible,
+  updateProjectAvatarRuntimeSettings,
   saveAvatarOverlayPreference,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
@@ -49,6 +50,12 @@ import {
   avatarPlacementStyle,
   normalizeAvatarPlacement,
 } from '../utils/avatarPlacement';
+import {
+  AVATAR_MOTION_STYLE_OPTIONS,
+  DEFAULT_AVATAR_RUNTIME_SETTINGS,
+  avatarRuntimeStatusMessage,
+  normalizeAvatarRuntimeSettings,
+} from '../utils/avatarRuntimeSettings';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
@@ -486,12 +493,7 @@ function avatarVisible(project) {
 
 function avatarStatusLabel(project) {
   if (!projectAvatarEnabled(project)) return 'Avatar disabled.';
-  const status = avatarProcessingStatus(project);
-  if (status === 'queued') return 'Avatar queued.';
-  if (status === 'processing') return 'Avatar is still processing and will be added when ready.';
-  if (status === 'ready') return 'Avatar ready.';
-  if (status === 'failed') return 'Avatar failed. Base video is still published.';
-  return 'Avatar disabled.';
+  return avatarRuntimeStatusMessage(project);
 }
 
 function projectRenderReady(project) {
@@ -1039,6 +1041,9 @@ export default function Studio({ user, onLoginRequest }) {
   const [avatarPlacement, setAvatarPlacement] = useState(DEFAULT_AVATAR_PLACEMENT);
   const [avatarPlacementSaving, setAvatarPlacementSaving] = useState(false);
   const [avatarPlacementMessage, setAvatarPlacementMessage] = useState('');
+  const [avatarRuntimeSettings, setAvatarRuntimeSettings] = useState(DEFAULT_AVATAR_RUNTIME_SETTINGS);
+  const [avatarRuntimeSaving, setAvatarRuntimeSaving] = useState(false);
+  const [avatarRuntimeMessage, setAvatarRuntimeMessage] = useState('');
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -1534,6 +1539,11 @@ export default function Studio({ user, onLoginRequest }) {
     };
   }, [selectedLesson?.avatar_overlay, selectedLesson?.avatar_placement, selectedLesson?.id]);
 
+  useEffect(() => {
+    setAvatarRuntimeSettings(normalizeAvatarRuntimeSettings(selectedLesson?.avatar_runtime_settings));
+    setAvatarRuntimeMessage('');
+  }, [selectedLesson?.avatar_runtime_settings, selectedLesson?.id]);
+
   const handleCreateProject = async ({
     file,
     coverFile,
@@ -1681,6 +1691,29 @@ export default function Studio({ user, onLoginRequest }) {
       window.alert(err.message || 'Avatar placement update failed.');
     } finally {
       setAvatarPlacementSaving(false);
+    }
+  };
+
+  const updateAvatarRuntimeDraft = (patch) => {
+    setAvatarRuntimeSettings((previous) => normalizeAvatarRuntimeSettings({ ...previous, ...patch }, previous));
+    setAvatarRuntimeMessage('');
+  };
+
+  const handleAvatarRuntimeSave = async () => {
+    if (!selectedLesson?.id || avatarRuntimeSaving) return;
+    setAvatarRuntimeSaving(true);
+    setAvatarRuntimeMessage('');
+    try {
+      const normalized = normalizeAvatarRuntimeSettings(avatarRuntimeSettings);
+      const updated = await updateProjectAvatarRuntimeSettings(selectedLesson.id, normalized);
+      const nextSettings = normalizeAvatarRuntimeSettings(updated?.avatar_runtime_settings || normalized);
+      setAvatarRuntimeSettings(nextSettings);
+      handleProjectUpdated(updated);
+      setAvatarRuntimeMessage('Avatar settings saved.');
+    } catch (err) {
+      window.alert(err.message || 'Avatar runtime settings update failed.');
+    } finally {
+      setAvatarRuntimeSaving(false);
     }
   };
 
@@ -2545,6 +2578,50 @@ export default function Studio({ user, onLoginRequest }) {
                           </span>
                         </label>
                       </div>
+
+                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <label className="text-xs font-medium text-[var(--text-secondary)]">
+                            Motion style
+                            <select
+                              value={avatarRuntimeSettings.motion_preset}
+                              onChange={(event) => updateAvatarRuntimeDraft({ motion_preset: event.target.value })}
+                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
+                            >
+                              {AVATAR_MOTION_STYLE_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="inline-flex items-center justify-between gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-2 text-sm font-medium text-[var(--text-primary)]">
+                            <span>Restoration</span>
+                            <input
+                              type="checkbox"
+                              checked={avatarRuntimeSettings.restoration_enabled}
+                              onChange={(event) => updateAvatarRuntimeDraft({ restoration_enabled: event.target.checked })}
+                            />
+                          </label>
+                          <label className="inline-flex items-center justify-between gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-2 text-sm font-medium text-[var(--text-primary)]">
+                            <span>
+                              <span className="block">LivePortrait</span>
+                              <span className="block text-xs font-normal text-[var(--text-secondary)]">Off uses lip-sync fallback</span>
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={avatarRuntimeSettings.liveportrait_enabled}
+                              onChange={(event) => updateAvatarRuntimeDraft({ liveportrait_enabled: event.target.checked })}
+                            />
+                          </label>
+                        </div>
+                        <Button variant="secondary" onClick={handleAvatarRuntimeSave} disabled={avatarRuntimeSaving}>
+                          <Save size={16} />
+                          <span>{avatarRuntimeSaving ? 'Saving' : 'Save avatar settings'}</span>
+                        </Button>
+                      </div>
+
+                      {avatarRuntimeMessage && (
+                        <p className="text-xs font-medium text-[var(--text-primary)]">{avatarRuntimeMessage}</p>
+                      )}
 
                       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-end">
                         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

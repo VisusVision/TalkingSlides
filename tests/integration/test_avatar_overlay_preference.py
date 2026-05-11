@@ -21,7 +21,7 @@ from django.test.utils import override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
-from core.models import AvatarOverlayPreference, Job, Project, UserProfile  # noqa: E402
+from core.models import AvatarOverlayPreference, AvatarRenderJob, Job, Project, UserProfile  # noqa: E402
 
 pytestmark = pytest.mark.django_db
 
@@ -249,6 +249,164 @@ def test_playback_token_includes_saved_avatar_placement(tmp_path):
         "y": 0.12,
         "width": 0.22,
     }
+
+
+def test_avatar_runtime_settings_default_to_safe_values(monkeypatch):
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ENABLED", raising=False)
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"runtime_default_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(title="Runtime Defaults", user=teacher, status="ready")
+
+    factory = APIRequestFactory()
+    request = factory.get(f"/api/v1/projects/{lesson.id}/")
+    force_authenticate(request, user=teacher)
+    response = views.ProjectDetailView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["avatar_runtime_settings"] == {
+        "motion_preset": "natural_conservative",
+        "restoration_enabled": False,
+        "liveportrait_enabled": True,
+    }
+
+
+def test_avatar_runtime_settings_patch_normalizes_unsafe_values_without_base_rerender():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"runtime_patch_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(title="Runtime Patch", user=teacher, status="ready")
+    job = Job.objects.create(project=lesson, job_type="video_export", status="done", progress=100, result_url="runtime.mp4")
+
+    factory = APIRequestFactory()
+    request = factory.patch(
+        f"/api/v1/projects/{lesson.id}/",
+        {
+            "avatar_runtime_settings": {
+                "motion_preset": "expressive_debug",
+                "restoration_enabled": True,
+                "liveportrait_enabled": False,
+            }
+        },
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+    response = views.ProjectDetailView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["avatar_runtime_settings"] == {
+        "motion_preset": "natural_conservative",
+        "restoration_enabled": True,
+        "liveportrait_enabled": False,
+    }
+    lesson.refresh_from_db()
+    assert lesson.draft_data["metadata"]["dirty"] is False
+    assert list(Job.objects.filter(project=lesson).values_list("id", flat=True)) == [job.id]
+
+
+def test_per_project_runtime_settings_are_passed_to_avatar_options(monkeypatch):
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"runtime_opts_{suffix}", password="pass")
+    UserProfile.objects.create(
+        user=teacher,
+        role="teacher",
+        avatar_enabled=True,
+        avatar_consent_confirmed=True,
+        avatar_image_processed="avatars/runtime/processed.png",
+        avatar_source_valid=True,
+        avatar_moderation_status="approved",
+    )
+    lesson = Project.objects.create(
+        title="Runtime Options",
+        user=teacher,
+        status="ready",
+        draft_data={
+            "metadata": {
+                "dirty": False,
+                "avatar_runtime_settings": {
+                    "motion_preset": "subtle_gaze",
+                    "restoration_enabled": True,
+                    "liveportrait_enabled": False,
+                },
+            }
+        },
+    )
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
+    monkeypatch.setenv("AVATAR_MUSETALK_CMD", "echo musetalk")
+
+    options = views._resolve_avatar_options_for_project(lesson, type("Req", (), {"data": {}})())
+
+    assert options["motion_preset"] == "subtle_gaze"
+    assert options["restoration_enabled"] is True
+    assert options["liveportrait_enabled"] is False
+    assert options["avatar_runtime_settings"]["motion_preset"] == "subtle_gaze"
+
+
+def test_playback_token_includes_avatar_runtime_settings(tmp_path):
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"runtime_token_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(
+        title="Runtime Token",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+        draft_data={
+            "metadata": {
+                "dirty": False,
+                "avatar_runtime_settings": {
+                    "motion_preset": "subtle_blink",
+                    "restoration_enabled": True,
+                    "liveportrait_enabled": True,
+                },
+            }
+        },
+    )
+    Job.objects.create(project=lesson, job_type="video_export", status="done", progress=100, result_url=f"{lesson.id}/{lesson.id}.mp4")
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["avatar_runtime_settings"] == {
+        "motion_preset": "subtle_blink",
+        "restoration_enabled": True,
+        "liveportrait_enabled": True,
+    }
+
+
+def test_avatar_runtime_status_reports_static_fallback_warning():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"runtime_status_{suffix}", password="pass")
+    UserProfile.objects.create(user=teacher, role="teacher")
+    lesson = Project.objects.create(title="Runtime Status", user=teacher, status="ready")
+    AvatarRenderJob.objects.create(
+        lesson=lesson,
+        teacher=teacher,
+        source_image_hash="i",
+        tts_audio_hash="a",
+        engine_used="liveportrait+musetalk",
+        render_status="done",
+        metadata={
+            "avatar_engine_selected": "liveportrait+musetalk",
+            "liveportrait_succeeded": False,
+            "liveportrait_fallback_used": True,
+            "musetalk_source_kind": "static_fallback",
+        },
+    )
+
+    factory = APIRequestFactory()
+    request = factory.get(f"/api/v1/projects/{lesson.id}/")
+    force_authenticate(request, user=teacher)
+    response = views.ProjectDetailView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["avatar_runtime_status"]["static_fallback_used"] is True
+    assert response.data["avatar_runtime_status"]["warning"] == "Avatar used static fallback because motion stage failed."
 
 
 def test_avatar_visibility_hides_ready_artifact_without_deleting_it(tmp_path):

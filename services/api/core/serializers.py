@@ -17,6 +17,7 @@ from core.avatar_placement import (
     placement_from_overlay_preference,
     project_avatar_placement,
 )
+from core.avatar_runtime_settings import project_avatar_runtime_settings
 from core.models import (
     AvatarRenderJob,
     AvatarOverlayPreference,
@@ -570,6 +571,8 @@ class ProjectSerializer(serializers.ModelSerializer):
     avatar_engine_selected = serializers.SerializerMethodField()
     final_avatar_engine_chain = serializers.SerializerMethodField()
     avatar_placement = serializers.SerializerMethodField()
+    avatar_runtime_settings = serializers.SerializerMethodField()
+    avatar_runtime_status = serializers.SerializerMethodField()
     tts_settings = serializers.SerializerMethodField()
     has_draft = serializers.SerializerMethodField()
     draft_metadata = serializers.SerializerMethodField()
@@ -582,7 +585,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
             "is_published", "avatar_enabled_override", "avatar_active", "avatar_processing_status",
             "avatar_processing_message", "avatar_visible", "avatar_available", "avatar_last_job_id",
-            "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement", "category_id", "category_name",
+            "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
+            "avatar_runtime_settings", "avatar_runtime_status", "category_id", "category_name",
             "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
         ]
         read_only_fields = [
@@ -591,6 +595,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "moderation_status", "moderation_summary", "last_moderation_run_id",
             "avatar_processing_status", "avatar_processing_message", "avatar_available",
             "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
+            "avatar_runtime_settings", "avatar_runtime_status",
             "category_id", "category_name", "category_slug", "has_draft", "draft_metadata",
             "created_at", "updated_at", "latest_job",
         ]
@@ -643,6 +648,32 @@ class ProjectSerializer(serializers.ModelSerializer):
 
     def get_avatar_placement(self, obj):
         return project_avatar_placement(obj)
+
+    def get_avatar_runtime_settings(self, obj):
+        return project_avatar_runtime_settings(obj)
+
+    def get_avatar_runtime_status(self, obj):
+        latest = obj.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+        metadata = latest.metadata if latest is not None and isinstance(latest.metadata, Mapping) else {}
+        source_kind = str(metadata.get("musetalk_source_kind") or "")
+        selected = str(metadata.get("avatar_engine_selected") or metadata.get("normalized_engine") or getattr(latest, "engine_used", "") or "")
+        static_fallback = bool(metadata.get("liveportrait_fallback_used")) or source_kind in {"static_fallback", "static_source"}
+        musetalk_only = selected == "musetalk_only_fast" or source_kind == "static_source"
+        warning = ""
+        if source_kind == "static_fallback" or bool(metadata.get("liveportrait_fallback_used")):
+            warning = "Avatar used static fallback because motion stage failed."
+        elif source_kind == "static_source" or bool(metadata.get("liveportrait_bypassed")):
+            warning = "Avatar lip-sync completed; motion fallback was used."
+        elif bool(metadata.get("restoration_failed")):
+            warning = "Avatar restoration failed; lip-sync output was used."
+        return {
+            "liveportrait_used": bool(metadata.get("liveportrait_succeeded")) and source_kind == "liveportrait",
+            "static_fallback_used": static_fallback,
+            "musetalk_only_used": musetalk_only,
+            "musetalk_source_kind": source_kind,
+            "restoration_failed": bool(metadata.get("restoration_failed")),
+            "warning": warning,
+        }
 
     def get_tts_settings(self, obj):
         draft_data = getattr(obj, "draft_data", None)

@@ -294,6 +294,19 @@ export async function updateProjectAvatarVisible(projectId, avatarVisible) {
   return res.json();
 }
 
+export async function updateProjectAvatarRuntimeSettings(projectId, avatarRuntimeSettings) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ avatar_runtime_settings: avatarRuntimeSettings || {} }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to update avatar runtime settings");
+  }
+  return res.json();
+}
+
 export async function updateProjectPublished(projectId, isPublished) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, {
     method: "PATCH",

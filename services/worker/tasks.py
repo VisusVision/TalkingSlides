@@ -3830,6 +3830,7 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
     try:
         from avatar.canonical_adapters import normalize_avatar_engine
         from core.avatar_image_moderation import avatar_image_moderation_gate
+        from core.avatar_runtime_settings import default_avatar_runtime_settings
         from core.avatar_source_validation import refresh_avatar_source_validation, stored_avatar_source_state
         from core.models import UserProfile
     except Exception:
@@ -3868,6 +3869,7 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
         and not bool(moderation_gate.get("blocked"))
         and (processed_rel_path or original_rel_path or video_rel_path)
     )
+    runtime_settings = default_avatar_runtime_settings()
 
     return {
         "enabled": enabled,
@@ -3875,7 +3877,10 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
         "source_rel_path": original_rel_path,
         "video_rel_path": video_rel_path,
         "reference_type": reference_type,
-        "motion_preset": str(profile.avatar_motion_preset or "natural"),
+        "motion_preset": str(runtime_settings["motion_preset"]),
+        "restoration_enabled": bool(runtime_settings["restoration_enabled"]),
+        "liveportrait_enabled": bool(runtime_settings["liveportrait_enabled"]),
+        "avatar_runtime_settings": runtime_settings,
         "quality_preset": str(profile.avatar_quality_preset or "high"),
         "lipsync_engine": normalize_avatar_engine(
             profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE")
@@ -3911,12 +3916,15 @@ def render_avatar_segment(
     motion_preset: str = "natural",
     quality_preset: str = "high",
     lipsync_engine: str = "",
+    restoration_enabled: bool | None = None,
+    liveportrait_enabled: bool | None = None,
     cache_text_hash: str = "",
     avatar_job_id: int | None = None,
 ) -> dict[str, Any]:
     from avatar.canonical_adapters import normalize_avatar_engine
     from avatar.hashing import sha256_file
     from avatar.pipeline import AvatarRenderRequest, render_avatar_segment_local
+    from core.avatar_runtime_settings import normalize_avatar_runtime_settings
 
     storage_root = Path(_avatar_storage_root())
     audio_abs = _resolve_storage_path(audio_path, storage_root)
@@ -3943,6 +3951,13 @@ def render_avatar_segment(
 
     raw_lipsync_engine = str(lipsync_engine or os.environ.get("AVATAR_ENGINE") or "").strip()
     normalized_lipsync_engine = normalize_avatar_engine(raw_lipsync_engine)
+    runtime_settings = normalize_avatar_runtime_settings(
+        {
+            "motion_preset": motion_preset,
+            "restoration_enabled": restoration_enabled,
+            "liveportrait_enabled": liveportrait_enabled,
+        }
+    )
     request = AvatarRenderRequest(
         source_image_path=(source_image_abs or source_image_original_abs),
         source_image_original_path=(source_image_original_abs or source_image_abs),
@@ -3950,9 +3965,11 @@ def render_avatar_segment(
         avatar_reference_type=reference_type,
         audio_path=audio_abs,
         output_path=output_abs,
-        motion_preset=str(motion_preset or "natural"),
+        motion_preset=str(runtime_settings["motion_preset"]),
         quality_preset=str(quality_preset or "high"),
         lipsync_engine=normalized_lipsync_engine,
+        restoration_enabled=bool(runtime_settings["restoration_enabled"]),
+        liveportrait_enabled=bool(runtime_settings["liveportrait_enabled"]),
         cache_text_hash=str(cache_text_hash or ""),
     )
     setattr(request, "_requested_engine_raw", raw_lipsync_engine)
@@ -3982,6 +3999,7 @@ def render_avatar_segment(
     render_info["slide_index"] = int(slide_index or 0)
     render_info["avatar_reference_type"] = reference_type
     render_info["avatar_engine_selected"] = normalized_lipsync_engine
+    render_info["avatar_runtime_settings"] = runtime_settings
     render_info["source_image_hash"] = sha256_file(source_image_abs) if source_image_abs and Path(source_image_abs).exists() else ""
     render_info["source_image_original_hash"] = sha256_file(source_image_original_abs) if source_image_original_abs and Path(source_image_original_abs).exists() else ""
     render_info["source_video_hash"] = sha256_file(source_video_abs) if source_video_abs and Path(source_video_abs).exists() else ""
@@ -4041,6 +4059,8 @@ def render_avatar_lesson(self, project_id: int, teacher_id: int, segments: list[
                 "motion_preset": str(avatar_cfg.get("motion_preset") or "natural"),
                 "quality_preset": str(avatar_cfg.get("quality_preset") or "high"),
                 "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or "musetalk"),
+                "restoration_enabled": bool(avatar_cfg.get("restoration_enabled")),
+                "liveportrait_enabled": bool(avatar_cfg.get("liveportrait_enabled", True)),
                 "cache_text_hash": str(segment.get("text_hash") or ""),
             }
         ).result
@@ -4064,6 +4084,7 @@ def render_lesson_avatar_overlay(
     try:
         from django.utils import timezone
         from core.models import Job, Project, UserProfile
+        from core.avatar_runtime_settings import normalize_avatar_runtime_settings
         from avatar.hashing import sha256_file
         from scripts.ffmpeg_helpers import concat_videos
     except ImportError as exc:
@@ -4141,6 +4162,12 @@ def render_lesson_avatar_overlay(
             teacher_id_int = int(avatar_cfg.get("teacher_id") or 0)
         render_meta = handoff.get("render_metadata") if isinstance(handoff.get("render_metadata"), dict) else {}
         output_rel_prefix = str(render_meta.get("output_rel_prefix") or output_rel_prefix or str(project_id_int)).strip().replace("\\", "/").strip("/") or str(project_id_int)
+
+    runtime_settings = normalize_avatar_runtime_settings(avatar_cfg.get("avatar_runtime_settings") or avatar_cfg)
+    avatar_cfg["avatar_runtime_settings"] = runtime_settings
+    avatar_cfg["motion_preset"] = runtime_settings["motion_preset"]
+    avatar_cfg["restoration_enabled"] = bool(runtime_settings["restoration_enabled"])
+    avatar_cfg["liveportrait_enabled"] = bool(runtime_settings["liveportrait_enabled"])
 
     ordered = sorted(list(render_results or []), key=lambda item: int(item.get("index") or 0))
     logger.info("Lesson avatar overlay START project=%s teacher=%s slides=%d", project_id_int, teacher_id_int, len(ordered))
@@ -4222,6 +4249,8 @@ def render_lesson_avatar_overlay(
                     "motion_preset": str(avatar_cfg.get("motion_preset") or "natural"),
                     "quality_preset": str(avatar_cfg.get("quality_preset") or "high"),
                     "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
+                    "restoration_enabled": bool(avatar_cfg.get("restoration_enabled")),
+                    "liveportrait_enabled": bool(avatar_cfg.get("liveportrait_enabled", True)),
                     "cache_text_hash": hashlib.sha256(str(item.get("text") or "").encode("utf-8")).hexdigest(),
                     "avatar_job_id": int(job_id or 0),
                 }
@@ -4238,6 +4267,20 @@ def render_lesson_avatar_overlay(
             fallback_chain = list(payload.get("fallback_chain_used") or payload.get("final_avatar_engine_chain") or [])
             engine_used = str(payload.get("engine_used") or "liveportrait+musetalk")
             avatar_engine_selected = str(payload.get("avatar_engine_selected") or payload.get("normalized_engine") or engine_used)
+            runtime_observability = {
+                "liveportrait_enabled": bool(payload.get("liveportrait_enabled")),
+                "liveportrait_started": bool(payload.get("liveportrait_started")),
+                "liveportrait_succeeded": bool(payload.get("liveportrait_succeeded")),
+                "liveportrait_failed": bool(payload.get("liveportrait_failed")),
+                "liveportrait_failure_reason": str(payload.get("liveportrait_failure_reason") or ""),
+                "liveportrait_quality_warning": str(payload.get("liveportrait_quality_warning") or ""),
+                "liveportrait_fallback_used": bool(payload.get("liveportrait_fallback_used")),
+                "liveportrait_fallback_reason": str(payload.get("liveportrait_fallback_reason") or ""),
+                "musetalk_source_kind": str(payload.get("musetalk_source_kind") or ""),
+                "restoration_enabled": bool(payload.get("restoration_enabled")),
+                "restoration_succeeded": bool(payload.get("restoration_succeeded")),
+                "restoration_failed": bool(payload.get("restoration_failed")),
+            }
             if not final_avatar_engine_chain:
                 final_avatar_engine_chain = list(payload.get("final_avatar_engine_chain") or fallback_chain or ["liveportrait", "musetalk"])
             metadata_payload.update(
@@ -4251,6 +4294,7 @@ def render_lesson_avatar_overlay(
                     "avatar_engine_selected": avatar_engine_selected,
                     "avatar_fallback_chain": fallback_chain,
                     "avatar_motion_validation": dict(payload.get("motion_validation") or {}),
+                    **runtime_observability,
                 }
             )
             avatar_segments.append(
@@ -4260,6 +4304,7 @@ def render_lesson_avatar_overlay(
                     "avatar_engine_selected": avatar_engine_selected,
                     "fallback_chain": fallback_chain,
                     "segment_rel_path": rel_path,
+                    **runtime_observability,
                     "duration": round(float(item.get("duration") or 0.0), 3),
                 }
             )
@@ -4287,6 +4332,8 @@ def render_lesson_avatar_overlay(
                         "normalized_engine": str(payload.get("normalized_engine") or avatar_engine_selected),
                         "avatar_engine_selected": avatar_engine_selected,
                         "final_avatar_engine_chain": final_avatar_engine_chain,
+                        "avatar_runtime_settings": runtime_settings,
+                        **runtime_observability,
                         "background_avatar_job_id": job_id,
                     },
                 )
@@ -4325,6 +4372,7 @@ def render_lesson_avatar_overlay(
                         "avatar_status": "failed",
                         "normalized_engine": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
                         "avatar_engine_selected": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
+                        "avatar_runtime_settings": runtime_settings,
                         "slide_num": slide_num,
                         "page_key": str(item.get("page_key") or ""),
                         "background_avatar_job_id": job_id,
@@ -4369,6 +4417,7 @@ def render_lesson_avatar_overlay(
     sidecar["avatar_engine_selected"] = str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk")
     sidecar["normalized_engine"] = sidecar["avatar_engine_selected"]
     sidecar["final_avatar_engine_chain"] = final_avatar_engine_chain
+    sidecar["avatar_runtime_settings"] = runtime_settings
     sidecar["avatar_failures"] = []
     sidecar["avatar_clips"] = [segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
     sidecar["avatar_slide_metadata"] = avatar_slide_metadata
@@ -4389,6 +4438,9 @@ def render_lesson_avatar_overlay(
             final_segment["avatar_error"] = str(meta.get("avatar_error") or "")
             final_segment["avatar_failure_reason"] = str(meta.get("avatar_error") or "")
             final_segment["avatar_engine_selected"] = str(meta.get("avatar_engine_selected") or meta.get("avatar_engine_used") or "none")
+            final_segment["musetalk_source_kind"] = str(meta.get("musetalk_source_kind") or "")
+            final_segment["liveportrait_fallback_used"] = bool(meta.get("liveportrait_fallback_used"))
+            final_segment["liveportrait_failure_reason"] = str(meta.get("liveportrait_failure_reason") or "")
     _write_playback_sidecar(project_id_int, sidecar)
 
     _set_job(status="done", progress=100, result_url=avatar_track_rel, error_message="")
@@ -4422,6 +4474,16 @@ def _queue_lesson_avatar_overlay_after_base_render(
     output_rel_prefix: str,
 ) -> dict[str, Any]:
     avatar_cfg = dict(avatar_options or {})
+    try:
+        from core.avatar_runtime_settings import normalize_avatar_runtime_settings
+
+        runtime_settings = normalize_avatar_runtime_settings(avatar_cfg.get("avatar_runtime_settings") or avatar_cfg)
+        avatar_cfg["avatar_runtime_settings"] = runtime_settings
+        avatar_cfg["motion_preset"] = runtime_settings["motion_preset"]
+        avatar_cfg["restoration_enabled"] = bool(runtime_settings["restoration_enabled"])
+        avatar_cfg["liveportrait_enabled"] = bool(runtime_settings["liveportrait_enabled"])
+    except Exception:
+        logger.warning("Avatar runtime settings normalization skipped for project=%s", project_id, exc_info=True)
     requested = bool(avatar_cfg.get("requested", avatar_cfg.get("enabled", False)))
     enabled = bool(avatar_cfg.get("enabled"))
     teacher_id = int(avatar_cfg.get("teacher_id") or 0)
@@ -5147,6 +5209,8 @@ def synthesize_and_render_slide(
                             "motion_preset": str(avatar_state.get("motion_preset") or "natural"),
                             "quality_preset": str(avatar_state.get("quality_preset") or "high"),
                             "lipsync_engine": str(avatar_state.get("lipsync_engine") or "musetalk"),
+                            "restoration_enabled": bool(avatar_state.get("restoration_enabled")),
+                            "liveportrait_enabled": bool(avatar_state.get("liveportrait_enabled", True)),
                             "cache_text_hash": hashlib.sha256(notes_text_prepared.encode("utf-8")).hexdigest(),
                         }
                     )
@@ -6043,6 +6107,9 @@ def process_pptx_to_video(
                 "motion_preset": teacher_avatar_cfg.get("motion_preset", "natural"),
                 "quality_preset": teacher_avatar_cfg.get("quality_preset", "high"),
                 "lipsync_engine": teacher_avatar_cfg.get("lipsync_engine", "musetalk"),
+                "restoration_enabled": bool(teacher_avatar_cfg.get("restoration_enabled")),
+                "liveportrait_enabled": bool(teacher_avatar_cfg.get("liveportrait_enabled", True)),
+                "avatar_runtime_settings": dict(teacher_avatar_cfg.get("avatar_runtime_settings") or {}),
                 "model_version": teacher_avatar_cfg.get("model_version", "musetalk:v1"),
                 "avatar_source_valid": bool(teacher_avatar_cfg.get("avatar_source_valid")),
                 "avatar_source_validation_error": str(teacher_avatar_cfg.get("avatar_source_validation_error") or ""),
