@@ -416,6 +416,7 @@ def _request_trace(request: Any, requested_engine: str, raw_requested_engine: st
         "requested_engine_raw": str(raw_requested_engine or ""),
         "requested_engine": str(requested_engine or CANONICAL_ENGINE),
         "normalized_engine": str(requested_engine or CANONICAL_ENGINE),
+        "avatar_engine_selected": str(requested_engine or CANONICAL_ENGINE),
         "pipeline_engine": CANONICAL_ENGINE,
     }
 
@@ -677,7 +678,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         except Exception:
             derived_fps = 25
 
-    preview_motion_strength = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.20")).strip() if is_preview else ""
+    preview_motion_strength = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")).strip() if is_preview else ""
     preview_temporal_smoothing = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.00")).strip() if is_preview else ""
     preview_fast_musetalk = str(os.environ.get("AVATAR_PREVIEW_MUSETALK_FAST_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
     preview_max_width_default = "384" if is_preview else "512"
@@ -730,6 +731,17 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "MUSETALK_TARGET_DURATION_SECONDS": f"{float(target_duration_seconds):.6f}",
         "MUSETALK_PREVIEW_FAST_MODE": ("1" if (is_preview and preview_fast_musetalk) else "0"),
         "MUSETALK_PREVIEW_MAX_WIDTH": str(int(os.environ.get("MUSETALK_PREVIEW_MAX_WIDTH", preview_max_width_default) or int(preview_max_width_default))),
+        "AVATAR_PROJECT_ID": str(int(getattr(request, "_project_id", 0) or 0)),
+        "AVATAR_JOB_ID": str(
+            int(
+                getattr(request, "_avatar_job_id", 0)
+                or getattr(request, "preview_job_id", 0)
+                or 0
+            )
+        ),
+        "AVATAR_SEGMENT_INDEX": str(int(getattr(request, "_segment_index", 0) or 0)),
+        "AVATAR_PREVIEW_JOB_ID": str(int(getattr(request, "preview_job_id", 0) or 0)),
+        "AVATAR_PREVIEW_TEACHER_ID": str(int(getattr(request, "preview_teacher_id", 0) or 0)),
     }
 
 
@@ -1259,6 +1271,60 @@ def _musetalk_chunk_timings_from_debug(debug_payload: dict[str, Any]) -> list[di
             }
         )
     return timings
+
+
+def _musetalk_chunk_timing_metrics(
+    *,
+    details: dict[str, Any],
+    debug_payload: dict[str, Any],
+    audio_duration_seconds: float,
+    frame_count: int,
+    elapsed_seconds: float,
+) -> list[dict[str, Any]]:
+    metrics: list[dict[str, Any]] = []
+    raw_entries = list(details.get("chunk_metadata") or [])
+    if not raw_entries:
+        raw_entries = list(debug_payload.get("chunk_timing_metrics") or [])
+    if not raw_entries:
+        raw_entries = list(debug_payload.get("chunk_metadata") or [])
+
+    for position, entry in enumerate(raw_entries):
+        if not isinstance(entry, dict):
+            continue
+        duration = float(
+            entry.get("audio_duration_seconds")
+            or entry.get("duration_seconds")
+            or 0.0
+        )
+        chunk_elapsed = float(
+            entry.get("elapsed_seconds")
+            or entry.get("service_elapsed_seconds")
+            or entry.get("total_seconds")
+            or 0.0
+        )
+        metrics.append(
+            {
+                "chunk_index": int(entry.get("chunk_index", entry.get("index", position)) or 0),
+                "audio_duration_seconds": round(float(duration), 4),
+                "frame_count": int(entry.get("frame_count") or 0),
+                "elapsed_seconds": round(float(chunk_elapsed), 4),
+                "success": bool(entry.get("success", entry.get("service_success", True))),
+                "route": str(details.get("route") or debug_payload.get("route") or ""),
+            }
+        )
+
+    if metrics:
+        return metrics
+    return [
+        {
+            "chunk_index": 0,
+            "audio_duration_seconds": round(float(audio_duration_seconds), 4),
+            "frame_count": int(frame_count),
+            "elapsed_seconds": round(float(elapsed_seconds), 4),
+            "success": bool(details.get("return_code", 0) in {0, "0", None} and not details.get("stderr") == "timeout"),
+            "route": str(details.get("route") or debug_payload.get("route") or ""),
+        }
+    ]
 
 
 def _musetalk_debug_history_record(debug_payload: dict[str, Any], *, source: str) -> dict[str, Any] | None:
@@ -1791,6 +1857,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "requested_engine_raw": str(cached_stage_paths.get("requested_engine_raw") or requested_engine),
         "requested_engine": requested_engine,
         "normalized_engine": requested_engine,
+        "avatar_engine_selected": requested_engine,
         "fallback_chain_used": ["cache"],
         "final_avatar_engine_chain": list(cached_stage_paths.get("final_avatar_engine_chain") or ["cache"]),
         "audio_hash": expected_cache["audio_hash"],
@@ -1827,6 +1894,8 @@ def _write_meta(
         **_expected_cache_keys(request, requested_engine),
         "video_hash": video_hash,
         "engine_used": engine_used,
+        "normalized_engine": requested_engine,
+        "avatar_engine_selected": requested_engine,
         "strict_validation_passed": bool(strict_pass),
         "preview_warning": str(preview_warning or ""),
         "motion_validation": validation,
@@ -1874,6 +1943,7 @@ def _final_payload(
         "requested_engine_raw": str(stage_paths.get("requested_engine_raw") or ""),
         "requested_engine": requested_engine,
         "normalized_engine": requested_engine,
+        "avatar_engine_selected": requested_engine,
         "fallback_chain_used": [record.get("stage") for record in stage_outputs],
         "final_avatar_engine_chain": list(
             stage_paths.get("final_avatar_engine_chain")
@@ -2019,6 +2089,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "musetalk_started": False,
         "musetalk_succeeded": False,
         "musetalk_timeout_budget_seconds": 0.0,
+        "musetalk_chunk_timing_metrics": [],
         "restoration_output_path": str(restoration_output),
         "final_output_path": str(output_path),
         "final_avatar_engine_chain": [],
@@ -2108,6 +2179,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "musetalk_output_path": stage_paths.get("musetalk_output_path"),
                     "musetalk_timeout_budget_seconds": stage_paths.get("musetalk_timeout_budget_seconds"),
                     "musetalk_timeout_reason": stage_paths.get("musetalk_timeout_reason"),
+                    "musetalk_chunk_timing_metrics": stage_paths.get("musetalk_chunk_timing_metrics"),
                     "cleanup_after_musetalk": stage_paths.get("cleanup_after_musetalk"),
                     "restoration_output_path": stage_paths.get("restoration_output_path"),
                     "restoration_timeout_seconds": stage_paths.get("restoration_timeout_seconds"),
@@ -2122,6 +2194,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "requested_engine_raw": stage_paths.get("requested_engine_raw"),
                     "requested_engine": requested_engine,
                     "normalized_engine": requested_engine,
+                    "avatar_engine_selected": requested_engine,
                     "pipeline_engine": CANONICAL_ENGINE,
                     "liveportrait_started": stage_paths.get("liveportrait_started"),
                     "liveportrait_succeeded": stage_paths.get("liveportrait_succeeded"),
@@ -2783,6 +2856,34 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 "per_chunk_timings": _musetalk_chunk_timings_from_debug(musetalk_debug_payload),
                 "inference_total_seconds": float(musetalk_debug_payload.get("inference_total_seconds") or 0.0),
             }
+        chunk_timing_metrics = _musetalk_chunk_timing_metrics(
+            details=musetalk_details,
+            debug_payload=musetalk_debug_payload,
+            audio_duration_seconds=float(contract_duration_seconds),
+            frame_count=int(getattr(request, "target_frame_count", 0) or 0),
+            elapsed_seconds=float(musetalk_elapsed_seconds_total),
+        )
+        if not musetalk_result.success:
+            for metric in chunk_timing_metrics:
+                metric["success"] = False
+        stage_paths["musetalk_chunk_timing_metrics"] = chunk_timing_metrics
+        for metric in chunk_timing_metrics:
+            logger.info(
+                "Avatar musetalk chunk_timing project_id=%s job_id=%s segment_index=%s "
+                "preview_teacher_id=%s preview_job_id=%s chunk_index=%s audio_duration_seconds=%s "
+                "frame_count=%s elapsed_seconds=%s route=%s success=%s",
+                int(getattr(request, "_project_id", 0) or 0),
+                int(getattr(request, "_avatar_job_id", 0) or getattr(request, "preview_job_id", 0) or 0),
+                int(getattr(request, "_segment_index", 0) or 0),
+                int(getattr(request, "preview_teacher_id", 0) or 0),
+                int(getattr(request, "preview_job_id", 0) or 0),
+                int(metric.get("chunk_index") or 0),
+                round(float(metric.get("audio_duration_seconds") or 0.0), 4),
+                int(metric.get("frame_count") or 0),
+                round(float(metric.get("elapsed_seconds") or 0.0), 4),
+                str(metric.get("route") or stage_paths.get("musetalk_route") or ""),
+                bool(metric.get("success", True)),
+            )
         record_stage_timing(
             stage_name="musetalk",
             elapsed_seconds=float(musetalk_elapsed_seconds_total),
@@ -2798,6 +2899,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 "per_chunk_timeout_seconds": float(musetalk_timeout_reason.get("per_chunk_timeout_seconds") or 0.0),
                 "idle_timeout_seconds": float(musetalk_timeout_reason.get("idle_timeout_seconds") or 0.0),
                 "musetalk_debug": musetalk_debug_context,
+                "chunk_timing_metrics": chunk_timing_metrics,
             },
         )
         stage_paths["musetalk_exit_status"] = (

@@ -250,6 +250,80 @@ def _stub_canonical_input_for_source_key(tmp_path: Path, image: Path, source_key
     )
 
 
+def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypatch):
+    monkeypatch.delenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", raising=False)
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input(tmp_path, image),
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(tmp_path / "preview.mp4"),
+            preview_teacher_id=1,
+            preview_job_id=2,
+        ),
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.0"
+
+
+def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.37")
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input(tmp_path, image),
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(tmp_path / "preview.mp4"),
+            preview_teacher_id=1,
+            preview_job_id=2,
+        ),
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.37"
+
+
+def test_musetalk_chunk_timing_metrics_are_shape_stable():
+    metrics = avatar_canonical_pipeline._musetalk_chunk_timing_metrics(
+        details={
+            "route": "service_chunked",
+            "chunk_metadata": [
+                {
+                    "index": 2,
+                    "audio_duration_seconds": 3.25,
+                    "frame_count": 81,
+                    "elapsed_seconds": 14.5,
+                    "service_success": True,
+                }
+            ],
+        },
+        debug_payload={},
+        audio_duration_seconds=3.25,
+        frame_count=81,
+        elapsed_seconds=14.5,
+    )
+
+    assert metrics == [
+        {
+            "chunk_index": 2,
+            "audio_duration_seconds": 3.25,
+            "frame_count": 81,
+            "elapsed_seconds": 14.5,
+            "success": True,
+            "route": "service_chunked",
+        }
+    ]
+
+
 def test_liveportrait_gate_allows_shared_probe_motion_when_legacy_roi_gate_is_zero(tmp_path, monkeypatch):
     audio = tmp_path / "a.wav"
     image = tmp_path / "face.png"
@@ -839,6 +913,8 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     assert result["engine_used"] == CANONICAL_ENGINE
     assert result["requested_engine_raw"] == "musetalk"
     assert result["normalized_engine"] == CANONICAL_ENGINE
+    assert result["avatar_engine_selected"] == CANONICAL_ENGINE
+    assert result["stage_paths"]["avatar_engine_selected"] == CANONICAL_ENGINE
     assert result["stage_paths"]["musetalk_stage_state"] == "completed"
     assert result["stage_paths"]["liveportrait_started"] is True
     assert result["stage_paths"]["liveportrait_succeeded"] is True

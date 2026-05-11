@@ -173,6 +173,8 @@ def test_avatar_preview_status_polling_returns_job_state():
     assert response.data["status"] == "done"
     assert response.data["preview_rel_path"] == "avatars/2/preview/preview.mp4"
     assert "preview_readiness" in response.data
+    assert response.data["normalized_engine"] == "liveportrait+musetalk"
+    assert response.data["avatar_engine_selected"] == "liveportrait+musetalk"
 
 
 def test_avatar_preview_status_hides_preview_path_for_non_current_job():

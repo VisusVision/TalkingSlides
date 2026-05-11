@@ -135,6 +135,38 @@ def _probe_duration_seconds(path: Path) -> float:
         return 0.0
 
 
+def _probe_frame_count(path: Path) -> int:
+    if not path.exists() or not path.is_file():
+        return 0
+    proc = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-count_frames",
+            "-show_entries",
+            "stream=nb_read_frames,nb_frames",
+            "-of",
+            "json",
+            str(path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return 0
+    try:
+        payload = json.loads(proc.stdout or "{}")
+        stream = (payload.get("streams") or [{}])[0]
+        return int(stream.get("nb_read_frames") or stream.get("nb_frames") or 0)
+    except Exception:
+        return 0
+
+
 def _assert_onnxruntime_cuda_provider() -> dict[str, object]:
     require_cuda = str(os.environ.get("MUSETALK_REQUIRE_CUDA_PROVIDER", "1")).strip().lower() in {
         "1",
@@ -1399,6 +1431,10 @@ def main() -> int:
         chunk_timeout_seconds = max(_get_float_env("MUSETALK_CHUNK_TIMEOUT_SECONDS", 0.0), 0.0)
         idle_timeout_seconds = max(_get_float_env("MUSETALK_IDLE_TIMEOUT_SECONDS", 0.0), 0.0)
         total_deadline = (_entrypoint_start + total_timeout_seconds) if total_timeout_seconds > 0.0 else None
+        metric_project_id = str(os.environ.get("AVATAR_PROJECT_ID", "")).strip()
+        metric_job_id = str(os.environ.get("AVATAR_JOB_ID", "")).strip()
+        metric_segment_index = str(os.environ.get("AVATAR_SEGMENT_INDEX", "")).strip()
+        metric_preview_job_id = str(os.environ.get("AVATAR_PREVIEW_JOB_ID", "")).strip()
 
         stage_timeouts = _stage_idle_timeout_map()
         logger.info(
@@ -1424,6 +1460,7 @@ def main() -> int:
 
         inference_traces: list[dict[str, object]] = []
         chunk_metadata: list[dict[str, object]] = []
+        chunk_timing_metrics: list[dict[str, object]] = []
         chunk_outputs: list[Path] = []
         config_paths: list[Path] = []
 
@@ -1469,34 +1506,91 @@ def main() -> int:
                         str(chunk_audio_path),
                         round(float(chunk_timeout_seconds), 4),
                     )
-
                     chunk_started_at = time.monotonic()
-                    chunk_trace = _run_patched_inference_subprocess(
-                        work_dir=work,
-                        patched_inference_path=patched_inference_path,
-                        config_path=chunk_config_path,
-                        result_dir=chunk_result_dir,
-                        selected_params=selected_params,
-                        chunk_index=int(chunk_index),
-                        total_deadline=total_deadline,
-                        chunk_deadline=(chunk_started_at + chunk_timeout_seconds) if chunk_timeout_seconds > 0.0 else None,
-                    )
+                    try:
+                        chunk_trace = _run_patched_inference_subprocess(
+                            work_dir=work,
+                            patched_inference_path=patched_inference_path,
+                            config_path=chunk_config_path,
+                            result_dir=chunk_result_dir,
+                            selected_params=selected_params,
+                            chunk_index=int(chunk_index),
+                            total_deadline=total_deadline,
+                            chunk_deadline=(chunk_started_at + chunk_timeout_seconds) if chunk_timeout_seconds > 0.0 else None,
+                        )
+                    except Exception:
+                        elapsed = time.monotonic() - chunk_started_at
+                        logger.info(
+                            "MuseTalk chunk_timing project_id=%s job_id=%s segment_index=%s preview_job_id=%s "
+                            "chunk_index=%s audio_duration_seconds=%s frame_count=%s elapsed_seconds=%s success=%s",
+                            metric_project_id,
+                            metric_job_id,
+                            metric_segment_index,
+                            metric_preview_job_id,
+                            int(chunk_index),
+                            round(float(chunk_duration_seconds), 4),
+                            0,
+                            round(float(elapsed), 4),
+                            False,
+                        )
+                        raise
                     inference_traces.append(chunk_trace)
 
                     chunk_output = chunk_result_dir / "v15" / chunk_result_name
                     if not chunk_output.exists() or chunk_output.stat().st_size <= 0:
+                        elapsed = time.monotonic() - chunk_started_at
+                        logger.info(
+                            "MuseTalk chunk_timing project_id=%s job_id=%s segment_index=%s preview_job_id=%s "
+                            "chunk_index=%s audio_duration_seconds=%s frame_count=%s elapsed_seconds=%s success=%s",
+                            metric_project_id,
+                            metric_job_id,
+                            metric_segment_index,
+                            metric_preview_job_id,
+                            int(chunk_index),
+                            round(float(chunk_duration_seconds), 4),
+                            0,
+                            round(float(elapsed), 4),
+                            False,
+                        )
                         raise RuntimeError(
                             "musetalk_stage_failed stage=chunk_output_missing "
                             f"chunk_index={int(chunk_index)} output_path={chunk_output}"
                         )
                     chunk_outputs.append(chunk_output)
+                    chunk_elapsed_seconds = time.monotonic() - chunk_started_at
+                    chunk_frame_count = _probe_frame_count(chunk_output)
+                    chunk_timing = {
+                        "chunk_index": int(chunk_index),
+                        "audio_duration_seconds": round(float(chunk_duration_seconds), 4),
+                        "frame_count": int(chunk_frame_count),
+                        "elapsed_seconds": round(float(chunk_elapsed_seconds), 4),
+                        "success": True,
+                    }
+                    chunk_timing_metrics.append(chunk_timing)
                     chunk_metadata.append(
                         {
                             "index": int(chunk_index),
+                            "chunk_index": int(chunk_index),
                             "start_seconds": round(float(chunk_start_seconds), 4),
                             "duration_seconds": round(float(chunk_duration_seconds), 4),
+                            "audio_duration_seconds": round(float(chunk_duration_seconds), 4),
+                            "frame_count": int(chunk_frame_count),
+                            "elapsed_seconds": round(float(chunk_elapsed_seconds), 4),
                             "output_path": str(chunk_output),
                         }
+                    )
+                    logger.info(
+                        "MuseTalk chunk_timing project_id=%s job_id=%s segment_index=%s preview_job_id=%s "
+                        "chunk_index=%s audio_duration_seconds=%s frame_count=%s elapsed_seconds=%s success=%s",
+                        metric_project_id,
+                        metric_job_id,
+                        metric_segment_index,
+                        metric_preview_job_id,
+                        int(chunk_index),
+                        chunk_timing["audio_duration_seconds"],
+                        int(chunk_timing["frame_count"]),
+                        chunk_timing["elapsed_seconds"],
+                        True,
                     )
 
                     _runtime_cleanup(stage_name=f"post_chunk_{chunk_index}")
@@ -1521,18 +1615,73 @@ def main() -> int:
                 )
                 config_paths.append(config_path)
 
-                trace = _run_patched_inference_subprocess(
-                    work_dir=work,
-                    patched_inference_path=patched_inference_path,
-                    config_path=config_path,
-                    result_dir=result_dir,
-                    selected_params=selected_params,
-                    chunk_index=0,
-                    total_deadline=total_deadline,
-                    chunk_deadline=(time.monotonic() + chunk_timeout_seconds) if chunk_timeout_seconds > 0.0 else None,
-                )
+                chunk_started_at = time.monotonic()
+                try:
+                    trace = _run_patched_inference_subprocess(
+                        work_dir=work,
+                        patched_inference_path=patched_inference_path,
+                        config_path=config_path,
+                        result_dir=result_dir,
+                        selected_params=selected_params,
+                        chunk_index=0,
+                        total_deadline=total_deadline,
+                        chunk_deadline=(chunk_started_at + chunk_timeout_seconds) if chunk_timeout_seconds > 0.0 else None,
+                    )
+                except Exception:
+                    elapsed = time.monotonic() - chunk_started_at
+                    logger.info(
+                        "MuseTalk chunk_timing project_id=%s job_id=%s segment_index=%s preview_job_id=%s "
+                        "chunk_index=%s audio_duration_seconds=%s frame_count=%s elapsed_seconds=%s success=%s",
+                        metric_project_id,
+                        metric_job_id,
+                        metric_segment_index,
+                        metric_preview_job_id,
+                        0,
+                        round(float(audio_duration_seconds), 4),
+                        0,
+                        round(float(elapsed), 4),
+                        False,
+                    )
+                    raise
                 inference_traces.append(trace)
                 produced = result_dir / "v15" / result_name
+                chunk_elapsed_seconds = time.monotonic() - chunk_started_at
+                chunk_output_ready = bool(produced.exists() and produced.stat().st_size > 0)
+                chunk_frame_count = _probe_frame_count(produced)
+                chunk_timing = {
+                    "chunk_index": 0,
+                    "audio_duration_seconds": round(float(audio_duration_seconds), 4),
+                    "frame_count": int(chunk_frame_count),
+                    "elapsed_seconds": round(float(chunk_elapsed_seconds), 4),
+                    "success": bool(chunk_output_ready),
+                }
+                chunk_timing_metrics.append(chunk_timing)
+                chunk_metadata.append(
+                    {
+                        "index": 0,
+                        "chunk_index": 0,
+                        "start_seconds": 0.0,
+                        "duration_seconds": round(float(audio_duration_seconds), 4),
+                        "audio_duration_seconds": round(float(audio_duration_seconds), 4),
+                        "frame_count": int(chunk_frame_count),
+                        "elapsed_seconds": round(float(chunk_elapsed_seconds), 4),
+                        "output_path": str(produced),
+                        "success": bool(chunk_output_ready),
+                    }
+                )
+                logger.info(
+                    "MuseTalk chunk_timing project_id=%s job_id=%s segment_index=%s preview_job_id=%s "
+                    "chunk_index=%s audio_duration_seconds=%s frame_count=%s elapsed_seconds=%s success=%s",
+                    metric_project_id,
+                    metric_job_id,
+                    metric_segment_index,
+                    metric_preview_job_id,
+                    0,
+                    chunk_timing["audio_duration_seconds"],
+                    int(chunk_timing["frame_count"]),
+                    chunk_timing["elapsed_seconds"],
+                    bool(chunk_timing["success"]),
+                )
 
             _inference_done = time.monotonic()
             entrypoint_stage_timings["inference_total_seconds"] = round(_inference_done - _model_load_start, 4)
@@ -1571,6 +1720,7 @@ def main() -> int:
                     "inference_log_tail": trace_info.get("log_tail", []),
                     "chunking_used": bool(chunking_used),
                     "chunk_metadata": chunk_metadata,
+                    "chunk_timing_metrics": chunk_timing_metrics,
                 }
                 (failure_root / "failure_meta.json").write_text(
                     json.dumps(failure_meta, ensure_ascii=True, indent=2),
@@ -1627,6 +1777,13 @@ def main() -> int:
                 for start_seconds, duration_seconds in chunk_ranges
             ],
             "chunk_metadata": chunk_metadata,
+            "chunk_timing_metrics": chunk_timing_metrics,
+            "timing_context": {
+                "project_id": metric_project_id,
+                "job_id": metric_job_id,
+                "segment_index": metric_segment_index,
+                "preview_job_id": metric_preview_job_id,
+            },
             "frame_count_before_encoding": raw_before.get("frame_count", 0),
             "unique_frame_count_before_encoding": raw_before.get("unique_frame_count", 0),
             "frame_hash_summary_before_encoding": raw_before.get("frame_hash_summary", []),

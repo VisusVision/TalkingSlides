@@ -10,6 +10,7 @@ from pathlib import Path
 from django.conf import settings
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from core.avatar_readiness import normalize_avatar_engine
 from core.avatar_image_moderation import avatar_image_moderation_gate
 from core.models import (
     AvatarRenderJob,
@@ -561,6 +562,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     latest_job = serializers.SerializerMethodField()
     avatar_active = serializers.SerializerMethodField()
     avatar_available = serializers.SerializerMethodField()
+    avatar_engine_selected = serializers.SerializerMethodField()
     final_avatar_engine_chain = serializers.SerializerMethodField()
     tts_settings = serializers.SerializerMethodField()
     has_draft = serializers.SerializerMethodField()
@@ -574,7 +576,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
             "is_published", "avatar_enabled_override", "avatar_active", "avatar_processing_status",
             "avatar_processing_message", "avatar_visible", "avatar_available", "avatar_last_job_id",
-            "avatar_updated_at", "final_avatar_engine_chain", "category_id", "category_name",
+            "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "category_id", "category_name",
             "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
         ]
         read_only_fields = [
@@ -582,7 +584,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings", "status",
             "moderation_status", "moderation_summary", "last_moderation_run_id",
             "avatar_processing_status", "avatar_processing_message", "avatar_available",
-            "avatar_last_job_id", "avatar_updated_at", "final_avatar_engine_chain",
+            "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain",
             "category_id", "category_name", "category_slug", "has_draft", "draft_metadata",
             "created_at", "updated_at", "latest_job",
         ]
@@ -612,6 +614,18 @@ class ProjectSerializer(serializers.ModelSerializer):
             str(getattr(obj, "avatar_processing_status", "") or "") == "ready"
             and _project_avatar_artifact_exists(obj)
         )
+
+    def get_avatar_engine_selected(self, obj):
+        latest = obj.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+        if latest is not None:
+            metadata = latest.metadata if isinstance(latest.metadata, Mapping) else {}
+            selected = metadata.get("avatar_engine_selected") or metadata.get("normalized_engine") or latest.engine_used
+            if selected and str(selected) != "none":
+                return str(selected)
+        profile = getattr(obj.user, "profile", None) if obj.user else None
+        if profile is None:
+            return ""
+        return normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary)
 
     def get_final_avatar_engine_chain(self, obj):
         latest = obj.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
