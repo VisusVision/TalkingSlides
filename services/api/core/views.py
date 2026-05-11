@@ -738,6 +738,15 @@ def _chunk_transcript_text(text: str, max_chars: int = 120) -> list[str]:
     return [c for c in chunks if c]
 
 
+def _split_text_on_blank_lines(value: Any) -> list[str]:
+    normalized = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    return [part.strip() for part in re.split(r"\n\s*\n+", normalized) if part.strip()]
+
+
+def _normalized_text_for_compare(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
 def _text_flags_from_editor_document(editor_document: Any, *, original_text: str = "", narration_text: str = "") -> dict:
     text_flags = {}
     if isinstance(editor_document, dict) and isinstance(editor_document.get("text"), dict):
@@ -789,10 +798,10 @@ def _raw_scene_from_document(editor_document: Any) -> dict:
 
 
 def _merge_editor_document_preserving_scene(next_document: dict, current_document: Any) -> dict:
-    document = dict(next_document or {})
-    current_scene = _raw_scene_from_document(current_document)
+    document = deepcopy(next_document or {})
+    current_scene = deepcopy(_raw_scene_from_document(current_document))
     if current_scene:
-        incoming_scene = _raw_scene_from_document(document)
+        incoming_scene = deepcopy(_raw_scene_from_document(document))
         merged_scene = {**current_scene, **incoming_scene}
         for unsafe_key in (
             "original_background_path",
@@ -800,7 +809,7 @@ def _merge_editor_document_preserving_scene(next_document: dict, current_documen
             "source_background_path",
         ):
             if not incoming_scene.get(unsafe_key) and current_scene.get(unsafe_key):
-                merged_scene[unsafe_key] = current_scene[unsafe_key]
+                merged_scene[unsafe_key] = deepcopy(current_scene[unsafe_key])
         document["scene"] = merged_scene
     return document
 
@@ -851,8 +860,8 @@ def _page_scene_for_storage(page: TranscriptPage) -> dict:
 
 
 def _set_page_scene(page: TranscriptPage, scene: dict) -> None:
-    editor_document = dict(page.editor_document or {})
-    editor_document["scene"] = dict(scene or {})
+    editor_document = deepcopy(page.editor_document or {})
+    editor_document["scene"] = deepcopy(scene or {})
     page.editor_document = editor_document
 
 
@@ -936,7 +945,39 @@ def _draft_page_for_active_page(draft_data: dict, page: TranscriptPage) -> dict 
     return None
 
 
-def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPage) -> dict:
+def _draft_page_for_ref(draft_data: dict, page_ref: Any) -> dict | None:
+    pages = draft_data.get("transcript_pages")
+    if not isinstance(pages, list):
+        return None
+    ref = str(page_ref or "").strip()
+    if not ref:
+        return None
+    for draft_page in pages:
+        if not isinstance(draft_page, dict):
+            continue
+        if str(draft_page.get("page_key") or "") == ref:
+            return draft_page
+        if str(draft_page.get("id") or "") == ref:
+            return draft_page
+    return None
+
+
+def _active_page_for_draft_page(project: Project, draft_page: dict) -> TranscriptPage | None:
+    try:
+        draft_id = int(draft_page.get("id") or 0)
+    except (TypeError, ValueError):
+        draft_id = 0
+    if draft_id > 0:
+        active_page = project.transcript_pages.filter(pk=draft_id).first()
+        if active_page is not None:
+            return active_page
+    page_key = str(draft_page.get("page_key") or "").strip()
+    if page_key:
+        return project.transcript_pages.filter(page_key=page_key).first()
+    return None
+
+
+def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPage | None) -> dict:
     scene = _raw_scene_from_document(draft_page.get("editor_document"))
     mode = _clean_scene_mode(
         scene.get("background_mode"),
@@ -954,7 +995,7 @@ def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPag
 
 def _set_draft_page_scene(draft_page: dict, scene: dict) -> None:
     editor_document = deepcopy(draft_page.get("editor_document")) if isinstance(draft_page.get("editor_document"), dict) else {}
-    editor_document["scene"] = dict(scene or {})
+    editor_document["scene"] = deepcopy(scene or {})
     draft_page["editor_document"] = editor_document
     draft_page["whiteboard_mode"] = scene.get("background_mode") == "whiteboard"
 
@@ -969,6 +1010,20 @@ def _draft_page_scene_path(project: Project, page: TranscriptPage, kind: str) ->
     if draft_page is None:
         return ""
     scene = _draft_page_scene_for_storage(draft_page, page)
+    key = "source_background_path" if kind in {"source", "source_background"} else f"{kind}_background_path"
+    return _normalize_rel_storage_path(str(scene.get(key) or ""))
+
+
+def _draft_page_scene_path_by_ref(project: Project, page_ref: Any, kind: str) -> str:
+    if kind not in {"original", "custom", "source", "source_background"}:
+        return ""
+    draft_data = get_project_draft_data(project)
+    if not has_project_draft(project):
+        return ""
+    draft_page = _draft_page_for_ref(draft_data, page_ref)
+    if draft_page is None:
+        return ""
+    scene = _draft_page_scene_for_storage(draft_page, _active_page_for_draft_page(project, draft_page))
     key = "source_background_path" if kind in {"source", "source_background"} else f"{kind}_background_path"
     return _normalize_rel_storage_path(str(scene.get(key) or ""))
 
@@ -1026,21 +1081,12 @@ def _draft_page_response(project: Project, draft_page: dict, request) -> dict:
         if field in draft_page:
             setattr(page, field, deepcopy(draft_page.get(field)))
     page.is_active = True
-    active_page = None
-    try:
-        draft_id = int(draft_page.get("id") or 0)
-    except (TypeError, ValueError):
-        draft_id = 0
-    if draft_id > 0:
-        active_page = project.transcript_pages.filter(pk=draft_id).first()
-    if active_page is None and draft_page.get("page_key"):
-        active_page = project.transcript_pages.filter(page_key=str(draft_page.get("page_key"))).first()
+    active_page = _active_page_for_draft_page(project, draft_page)
 
     data = TranscriptPageSerializer(page, context={"request": request}).data
     scene = data.get("editor_document", {}).get("scene")
-    if isinstance(scene, dict) and draft_id > 0:
-        for kind in ("original", "custom"):
-            url_key = f"{kind}_background_url"
+    if isinstance(scene, dict):
+        for url_key in ("original_background_url", "custom_background_url", "source_background_url"):
             if scene.get(url_key):
                 scene[url_key] = _draft_url(scene[url_key])
     data["draft_scene_dirty"] = _draft_scene_differs(active_page, draft_page)
@@ -1081,21 +1127,106 @@ def _rich_text_html_from_narration(text: str) -> str:
     return html.escape(str(text or "")).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br />")
 
 
+def _split_segment_records(
+    parts_payload: list[dict],
+    *,
+    source_display_text: str,
+    text_flags: dict,
+) -> list[dict]:
+    narration_parts: list[str] = []
+    explicit_display_parts: list[str] = []
+    has_explicit_display = False
+
+    for item in parts_payload:
+        if not isinstance(item, dict):
+            raise TranscriptActionError("each part must be an object.")
+        narration_parts.append(str(item.get("narration_text") or item.get("text") or ""))
+        if "original_text" in item or "display_text" in item:
+            has_explicit_display = True
+            explicit_display_parts.append(str(item.get("original_text") if "original_text" in item else item.get("display_text") or ""))
+        else:
+            explicit_display_parts.append("")
+
+    if not any(part.strip() for part in narration_parts):
+        raise TranscriptActionError("at least one split part must contain narration text.")
+
+    source_display_parts = _split_text_on_blank_lines(source_display_text)
+    use_source_display_parts = len(source_display_parts) == len(narration_parts)
+    display_from_narration = not has_explicit_display and not use_source_display_parts
+
+    records: list[dict] = []
+    for index, narration_text in enumerate(narration_parts):
+        if has_explicit_display:
+            display_text = explicit_display_parts[index]
+        elif use_source_display_parts:
+            display_text = source_display_parts[index]
+        else:
+            display_text = narration_text
+        rich_text_html = _rich_text_html_from_narration(display_text)
+        segment_flags = {
+            "display_text_customized": bool(text_flags.get("display_text_customized") and not display_from_narration),
+            "narration_customized": bool(
+                _normalized_text_for_compare(narration_text)
+                and _normalized_text_for_compare(display_text) != _normalized_text_for_compare(narration_text)
+            ),
+        }
+        records.append(
+            {
+                "display_text": display_text,
+                "narration_text": narration_text,
+                "rich_text_html": rich_text_html,
+                "subtitle_chunks": _chunk_transcript_text(narration_text),
+                "text_flags": segment_flags,
+            }
+        )
+    return records
+
+
+def _set_page_text_artifacts(page: TranscriptPage, record: dict) -> None:
+    page.original_text = str(record.get("display_text") or "")
+    page.narration_text = str(record.get("narration_text") or "")
+    page.rich_text_html = str(record.get("rich_text_html") or _rich_text_html_from_narration(page.original_text))
+    page.editor_document = _editor_document_with_scene(
+        page,
+        page.original_text,
+        page.rich_text_html,
+        text_flags=dict(record.get("text_flags") or {}),
+    )
+    page.subtitle_chunks = list(record.get("subtitle_chunks") or _chunk_transcript_text(page.narration_text))
+
+
 def _set_page_narration_artifacts(page: TranscriptPage, narration_text: str) -> None:
-    page.narration_text = str(narration_text or "")
-    page.rich_text_html = _rich_text_html_from_narration(page.original_text)
     text_flags = _text_flags_from_editor_document(
         getattr(page, "editor_document", None),
         original_text=getattr(page, "original_text", ""),
-        narration_text=page.narration_text,
+        narration_text=str(narration_text or ""),
     )
     text_flags["narration_customized"] = bool(
-        re.sub(r"\s+", " ", page.narration_text).strip()
+        re.sub(r"\s+", " ", str(narration_text or "")).strip()
         and re.sub(r"\s+", " ", str(page.original_text or "")).strip()
-        != re.sub(r"\s+", " ", page.narration_text).strip()
+        != re.sub(r"\s+", " ", str(narration_text or "")).strip()
     )
-    page.editor_document = _editor_document_with_scene(page, page.original_text, page.rich_text_html, text_flags=text_flags)
-    page.subtitle_chunks = _chunk_transcript_text(page.narration_text)
+    _set_page_text_artifacts(
+        page,
+        {
+            "display_text": page.original_text,
+            "narration_text": str(narration_text or ""),
+            "rich_text_html": _rich_text_html_from_narration(page.original_text),
+            "subtitle_chunks": _chunk_transcript_text(str(narration_text or "")),
+            "text_flags": text_flags,
+        },
+    )
+
+
+def _set_draft_text_artifacts(page: dict, record: dict) -> None:
+    page["original_text"] = str(record.get("display_text") or "")
+    page["narration_text"] = str(record.get("narration_text") or "")
+    page["rich_text_html"] = str(record.get("rich_text_html") or _rich_text_html_from_narration(page["original_text"]))
+    page["subtitle_chunks"] = list(record.get("subtitle_chunks") or _chunk_transcript_text(page["narration_text"]))
+    page["editor_document"] = _merge_editor_document_preserving_scene(
+        _build_editor_document(page["original_text"], page["rich_text_html"], text_flags=dict(record.get("text_flags") or {})),
+        page.get("editor_document") or {},
+    )
 
 
 def _normalize_active_transcript_order(project: Project, ordered_pages: list[TranscriptPage] | None = None) -> None:
@@ -1108,8 +1239,12 @@ def _normalize_active_transcript_order(project: Project, ordered_pages: list[Tra
 
 def _unique_split_page_key(project: Project, base_key: str, existing_keys: set[str], split_index: int) -> str:
     safe_base = str(base_key or "page").strip() or "page"
-    suffix = f"-x{split_index}"
-    candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
+    match = re.match(r"^(s\d+-p)(\d+)$", safe_base)
+    if match:
+        candidate = f"{match.group(1)}{int(match.group(2)) + int(split_index)}"
+    else:
+        suffix = f"-x{split_index}"
+        candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
     while candidate in existing_keys:
         random_suffix = f"-x{split_index}-{uuid.uuid4().hex[:4]}"
         candidate = f"{safe_base[: max(1, 64 - len(random_suffix))]}{random_suffix}"
@@ -1144,34 +1279,44 @@ def _split_pages_on_double_newline(project: Project) -> None:
 
     for page in pages:
         text = str(page.narration_text or "").replace("\r\n", "\n").replace("\r", "\n")
-        parts = [part for part in re.split(r"\n\s*\n+", text) if part.strip()]
+        parts = _split_text_on_blank_lines(text)
         if len(parts) <= 1:
             continue
 
-        page.narration_text = parts[0]
-        page.subtitle_chunks = _chunk_transcript_text(parts[0])
-        page.save(update_fields=["narration_text", "subtitle_chunks", "updated_at"])
+        text_flags = _text_flags_from_editor_document(
+            page.editor_document,
+            original_text=page.original_text,
+            narration_text=page.narration_text,
+        )
+        records = _split_segment_records(
+            [{"narration_text": part} for part in parts],
+            source_display_text=page.original_text,
+            text_flags=text_flags,
+        )
 
-        for idx, part in enumerate(parts[1:], start=1):
-            candidate_key = f"{page.page_key}-x{idx}"
-            while candidate_key in existing_keys:
-                candidate_key = f"{page.page_key}-x{idx}-{uuid.uuid4().hex[:4]}"
-            existing_keys.add(candidate_key)
+        _set_page_text_artifacts(page, records[0])
+        page.save(update_fields=["original_text", "narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
 
+        for idx, record in enumerate(records[1:], start=1):
+            candidate_key = _unique_split_page_key(project, page.page_key, existing_keys, idx)
             TranscriptPage.objects.create(
                 project=project,
                 order=page.order + idx,
                 source_slide_index=page.source_slide_index,
                 split_index=page.split_index + idx,
                 page_key=candidate_key,
-                original_text=part,
-                narration_text=part,
-                rich_text_html=part.replace("\n", "<br />"),
+                original_text=record["display_text"],
+                narration_text=record["narration_text"],
+                rich_text_html=record["rich_text_html"],
                 editor_document=_merge_editor_document_preserving_scene(
-                    _build_editor_document(part, part.replace("\n", "<br />")),
+                    _build_editor_document(
+                        record["display_text"],
+                        record["rich_text_html"],
+                        text_flags=dict(record.get("text_flags") or {}),
+                    ),
                     page.editor_document,
                 ),
-                subtitle_chunks=_chunk_transcript_text(part),
+                subtitle_chunks=record["subtitle_chunks"],
                 whiteboard_mode=page.whiteboard_mode,
             )
 
@@ -4375,8 +4520,12 @@ def _set_draft_narration(page: dict, narration_text: str) -> None:
 
 def _draft_page_key(existing_keys: set[str], base_key: str, split_index: int) -> str:
     safe_base = str(base_key or "page").strip() or "page"
-    suffix = f"-x{split_index}"
-    candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
+    match = re.match(r"^(s\d+-p)(\d+)$", safe_base)
+    if match:
+        candidate = f"{match.group(1)}{int(match.group(2)) + int(split_index)}"
+    else:
+        suffix = f"-x{split_index}"
+        candidate = f"{safe_base[: max(1, 64 - len(suffix))]}{suffix}"
     while candidate in existing_keys:
         random_suffix = f"-x{split_index}-{uuid.uuid4().hex[:4]}"
         candidate = f"{safe_base[: max(1, 64 - len(random_suffix))]}{random_suffix}"
@@ -4508,13 +4657,16 @@ def _split_transcript_page(project: Project, payload: dict) -> list[str]:
     if len(parts_payload) > 20:
         raise TranscriptActionError("parts may not contain more than 20 entries.")
 
-    parts: list[str] = []
-    for item in parts_payload:
-        if not isinstance(item, dict):
-            raise TranscriptActionError("each part must be an object.")
-        parts.append(str(item.get("narration_text") or ""))
-    if not any(part.strip() for part in parts):
-        raise TranscriptActionError("at least one split part must contain narration text.")
+    text_flags = _text_flags_from_editor_document(
+        page.editor_document,
+        original_text=page.original_text,
+        narration_text=page.narration_text,
+    )
+    records = _split_segment_records(
+        parts_payload,
+        source_display_text=page.original_text,
+        text_flags=text_flags,
+    )
 
     active_pages = list(_active_transcript_pages(project))
     try:
@@ -4523,23 +4675,22 @@ def _split_transcript_page(project: Project, payload: dict) -> list[str]:
         raise TranscriptActionError("page_id must reference an active page in this project.") from None
 
     existing_keys = set(project.transcript_pages.values_list("page_key", flat=True))
-    _set_page_narration_artifacts(page, parts[0])
-    page.save(update_fields=["narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
+    _set_page_text_artifacts(page, records[0])
+    page.save(update_fields=["original_text", "narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
 
     created_pages: list[TranscriptPage] = []
-    for offset, part in enumerate(parts[1:], start=1):
+    for offset, record in enumerate(records[1:], start=1):
         new_page = TranscriptPage(
             project=project,
             order=page.order + offset,
             source_slide_index=page.source_slide_index,
             split_index=page.split_index + offset,
             page_key=_unique_split_page_key(project, page.page_key, existing_keys, offset),
-            original_text="",
             whiteboard_mode=page.whiteboard_mode,
             is_active=True,
             deleted_at=None,
         )
-        _set_page_narration_artifacts(new_page, part)
+        _set_page_text_artifacts(new_page, record)
         new_page.editor_document = _merge_editor_document_preserving_scene(new_page.editor_document, page.editor_document)
         new_page.save()
         created_pages.append(new_page)
@@ -4666,44 +4817,37 @@ def _draft_split_transcript_page(draft_data: dict, payload: dict) -> list[str]:
     if len(parts_payload) > 20:
         raise TranscriptActionError("parts may not contain more than 20 entries.")
 
-    parts = []
-    for item in parts_payload:
-        if not isinstance(item, dict):
-            raise TranscriptActionError("each part must be an object.")
-        parts.append(str(item.get("narration_text") or ""))
-    if not any(part.strip() for part in parts):
-        raise TranscriptActionError("at least one split part must contain narration text.")
+    text_flags = _draft_text_flags(page)
+    records = _split_segment_records(
+        parts_payload,
+        source_display_text=str(page.get("original_text") or ""),
+        text_flags=text_flags,
+    )
 
     insert_at = pages.index(page)
     existing_keys = {str(candidate.get("page_key") or "") for candidate in pages if candidate.get("page_key")}
-    _set_draft_narration(page, parts[0])
-    page["rich_text_html"] = page.get("rich_text_html") or _rich_text_html_from_narration(page.get("original_text", ""))
+    _set_draft_text_artifacts(page, records[0])
     changed_keys = [str(page.get("page_key") or page.get("id") or "")]
 
     created_pages = []
-    for offset, part in enumerate(parts[1:], start=1):
+    next_temp_id = _next_draft_temp_page_id(draft_data)
+    for offset, record in enumerate(records[1:], start=1):
         new_page = {
-            "id": _next_draft_temp_page_id(draft_data),
+            "id": next_temp_id,
             "order": int(page.get("order") or 0) + offset,
             "source_slide_index": page.get("source_slide_index"),
             "split_index": int(page.get("split_index") or 0) + offset,
             "page_key": _draft_page_key(existing_keys, str(page.get("page_key") or "page"), offset),
-            "original_text": "",
-            "narration_text": str(part or ""),
-            "rich_text_html": "",
-            "editor_document": _merge_editor_document_preserving_scene(
-                {
-                    "version": 1,
-                    "html": "",
-                    "text": {"narration_customized": True, "display_text_customized": False},
-                },
-                page.get("editor_document") or {},
-            ),
             "whiteboard_mode": bool(page.get("whiteboard_mode")),
-            "subtitle_chunks": _chunk_transcript_text(part),
         }
+        _set_draft_text_artifacts(new_page, record)
+        new_page["editor_document"] = _merge_editor_document_preserving_scene(
+            new_page.get("editor_document") or {},
+            page.get("editor_document") or {},
+        )
         created_pages.append(new_page)
         changed_keys.append(new_page["page_key"])
+        next_temp_id -= 1
 
     pages[insert_at + 1:insert_at + 1] = created_pages
     _normalize_draft_page_order(pages)
@@ -5159,7 +5303,7 @@ class TranscriptPageBackgroundImageView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    def get(self, request, project_id, page_id, kind):
+    def get(self, request, project_id, page_id=None, kind=None, page_ref=None):
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
@@ -5167,15 +5311,16 @@ class TranscriptPageBackgroundImageView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        page = project.transcript_pages.filter(pk=page_id, is_active=True).first()
-        if page is None:
-            return Response({"error": "Transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+        page_token = page_ref if page_ref is not None else page_id
         clean_kind = str(kind or "").strip().lower()
-        rel_path = (
-            _draft_page_scene_path(project, page, clean_kind)
-            if _truthy_request_value(request.query_params.get("draft"))
-            else _page_scene_path(page, clean_kind)
-        )
+        if _truthy_request_value(request.query_params.get("draft")):
+            rel_path = _draft_page_scene_path_by_ref(project, page_token, clean_kind)
+        else:
+            try:
+                page = _get_project_page(project, page_token, active=True, field_name="page_id")
+            except TranscriptActionError:
+                return Response({"error": "Transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            rel_path = _page_scene_path(page, clean_kind)
         if not rel_path:
             raise Http404
 
@@ -5195,7 +5340,7 @@ class TranscriptPageSceneView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    def patch(self, request, project_id, page_id):
+    def patch(self, request, project_id, page_id=None, page_ref=None):
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
@@ -5203,16 +5348,14 @@ class TranscriptPageSceneView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            page = _get_project_page(project, page_id, active=True, field_name="page_id")
-        except TranscriptActionError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        page_token = page_ref if page_ref is not None else page_id
 
         if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
             draft_data = ensure_project_draft_data(project)
-            draft_page = _draft_page_for_active_page(draft_data, page)
+            draft_page = _draft_page_for_ref(draft_data, page_token)
             if draft_page is None:
                 return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            page = _active_page_for_draft_page(project, draft_page)
             scene = _draft_page_scene_for_storage(draft_page, page)
             if "background_mode" in request.data:
                 mode = str(request.data.get("background_mode") or "").strip().lower()
@@ -5250,6 +5393,11 @@ class TranscriptPageSceneView(APIView):
                 }
             )
 
+        try:
+            page = _get_project_page(project, page_token, active=True, field_name="page_id")
+        except TranscriptActionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
         scene = _page_scene_for_storage(page)
         if "background_mode" in request.data:
             mode = str(request.data.get("background_mode") or "").strip().lower()
@@ -5285,7 +5433,7 @@ class TranscriptPageBackgroundUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated]
 
-    def post(self, request, project_id, page_id):
+    def post(self, request, project_id, page_id=None, page_ref=None):
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
@@ -5293,10 +5441,22 @@ class TranscriptPageBackgroundUploadView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
-        try:
-            page = _get_project_page(project, page_id, active=True, field_name="page_id")
-        except TranscriptActionError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        page_token = page_ref if page_ref is not None else page_id
+        draft_only = _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only"))
+        page = None
+        draft_data = None
+        draft_page = None
+        if draft_only:
+            draft_data = ensure_project_draft_data(project)
+            draft_page = _draft_page_for_ref(draft_data, page_token)
+            if draft_page is None:
+                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            page = _active_page_for_draft_page(project, draft_page)
+        else:
+            try:
+                page = _get_project_page(project, page_token, active=True, field_name="page_id")
+            except TranscriptActionError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
         background_file = request.FILES.get("background_file") or request.FILES.get("image") or request.FILES.get("file")
         if background_file is None:
@@ -5309,14 +5469,11 @@ class TranscriptPageBackgroundUploadView(APIView):
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
         background_dir = storage_root / "uploads" / str(project.id) / "backgrounds"
         background_dir.mkdir(parents=True, exist_ok=True)
-        saved_path = background_dir / f"page_{page.id}_{uuid.uuid4().hex[:10]}{ext}"
+        safe_page_token = re.sub(r"[^A-Za-z0-9_-]+", "_", str(page_token or getattr(page, "id", "") or "draft"))
+        saved_path = background_dir / f"page_{safe_page_token[:32]}_{uuid.uuid4().hex[:10]}{ext}"
         _write_uploaded_file(background_file, saved_path)
 
-        if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
-            draft_data = ensure_project_draft_data(project)
-            draft_page = _draft_page_for_active_page(draft_data, page)
-            if draft_page is None:
-                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+        if draft_only:
             scene = _draft_page_scene_for_storage(draft_page, page)
             scene["custom_background_path"] = str(saved_path.relative_to(storage_root)).replace("\\", "/")
             scene["background_mode"] = "custom"

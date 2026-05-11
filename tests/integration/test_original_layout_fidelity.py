@@ -130,6 +130,34 @@ def test_original_mode_does_not_overlay_rich_or_edited_text(tmp_path, monkeypatc
     assert result["slide_path"] == original_image_path
 
 
+def test_original_mode_keeps_screenshot_but_returns_split_metadata(tmp_path, monkeypatch):
+    calls = _patch_render_dependencies(monkeypatch)
+    slide_meta = _base_slide_meta(tmp_path, mode="original", whiteboard_mode=False)
+    slide_meta["original_text"] = "First visual segment\n\nSecond visual segment"
+    slide_meta["display_text"] = "First visual segment\n\nSecond visual segment"
+    slide_meta["rich_text_html"] = "First visual segment<br /><br />Second visual segment"
+    slide_meta["narration_text"] = "First visual segment"
+    slide_meta["notes_text"] = "First visual segment"
+    slide_meta["subtitle_chunks"] = ["First visual segment", "Second visual segment"]
+    original_image_path = slide_meta["image_path"]
+
+    result = worker_tasks.synthesize_and_render_slide.run(
+        slide_meta,
+        project_id="1",
+        voice_id="test-voice",
+        pause_sec=0.2,
+        lang_hint="auto",
+    )
+
+    assert calls["overlay"] == []
+    assert calls["whiteboard"] == []
+    assert calls["create"][0]["image_path"] == original_image_path
+    assert result["slide_path"] == original_image_path
+    assert result["original_text"] == "First visual segment"
+    assert result["display_text"] == "First visual segment"
+    assert result["subtitle_chunks"] == ["First visual segment"]
+
+
 def test_original_scene_mode_wins_over_legacy_whiteboard_flag(tmp_path, monkeypatch):
     calls = _patch_render_dependencies(monkeypatch)
     slide_meta = _base_slide_meta(tmp_path, mode="original", whiteboard_mode=True)
@@ -169,6 +197,38 @@ def test_custom_mode_still_renders_transcript_overlay(tmp_path, monkeypatch):
     assert calls["overlay"][0]["display_text"] == "Edited display text"
     assert calls["create"][0]["image_path"] == overlay_path
     assert result["slide_path"] == overlay_path
+
+
+@pytest.mark.parametrize("mode", ["custom", "source_background"])
+def test_overlay_modes_use_split_display_text(tmp_path, monkeypatch, mode):
+    overlay_path = str(tmp_path / f"{mode}-split-overlay.png")
+    calls = _patch_render_dependencies(monkeypatch, overlay_result=overlay_path)
+    slide_meta = _base_slide_meta(tmp_path, mode=mode, whiteboard_mode=False)
+    slide_meta["original_text"] = "First visual segment\n\nSecond visual segment"
+    slide_meta["display_text"] = "First visual segment\n\nSecond visual segment"
+    slide_meta["rich_text_html"] = "First visual segment<br /><br />Second visual segment"
+    slide_meta["narration_text"] = "Second visual segment"
+    slide_meta["notes_text"] = "Second visual segment"
+    slide_meta["subtitle_chunks"] = ["First visual segment", "Second visual segment"]
+    if mode == "custom":
+        slide_meta["custom_background_path"] = "uploads/1/backgrounds/custom.png"
+    else:
+        slide_meta["source_type"] = "pptx"
+
+    result = worker_tasks.synthesize_and_render_slide.run(
+        slide_meta,
+        project_id="1",
+        voice_id="test-voice",
+        pause_sec=0.2,
+        lang_hint="auto",
+    )
+
+    assert len(calls["overlay"]) == 1
+    assert calls["overlay"][0]["display_text"] == "Second visual segment"
+    assert "First visual segment" not in calls["overlay"][0]["display_text"]
+    assert result["display_text"] == "Second visual segment"
+    assert result["original_text"] == "Second visual segment"
+    assert result["subtitle_chunks"] == ["Second visual segment"]
 
 
 def test_custom_mode_without_custom_background_falls_back_to_whiteboard(tmp_path, monkeypatch):
@@ -325,6 +385,33 @@ def test_whiteboard_mode_still_uses_whiteboard_renderer(tmp_path, monkeypatch):
     assert calls["whiteboard"][0]["display_text"] == "Edited display text"
     assert calls["create"][0]["image_path"] == whiteboard_path
     assert result["slide_path"] == whiteboard_path
+
+
+def test_whiteboard_mode_uses_split_display_text(tmp_path, monkeypatch):
+    whiteboard_path = str(tmp_path / "whiteboard-split.png")
+    calls = _patch_render_dependencies(monkeypatch, whiteboard_result=whiteboard_path)
+    slide_meta = _base_slide_meta(tmp_path, mode="whiteboard", whiteboard_mode=True)
+    slide_meta["original_text"] = "First visual segment\n\nSecond visual segment"
+    slide_meta["display_text"] = "First visual segment\n\nSecond visual segment"
+    slide_meta["rich_text_html"] = "First visual segment<br /><br />Second visual segment"
+    slide_meta["narration_text"] = "Second visual segment"
+    slide_meta["notes_text"] = "Second visual segment"
+    slide_meta["subtitle_chunks"] = ["First visual segment", "Second visual segment"]
+
+    result = worker_tasks.synthesize_and_render_slide.run(
+        slide_meta,
+        project_id="1",
+        voice_id="test-voice",
+        pause_sec=0.2,
+        lang_hint="auto",
+    )
+
+    assert calls["overlay"] == []
+    assert len(calls["whiteboard"]) == 1
+    assert calls["whiteboard"][0]["display_text"] == "Second visual segment"
+    assert result["display_text"] == "Second visual segment"
+    assert result["original_text"] == "Second visual segment"
+    assert result["subtitle_chunks"] == ["Second visual segment"]
 
 
 def test_txt_exports_default_to_whiteboard_without_original_background(tmp_path, monkeypatch):
