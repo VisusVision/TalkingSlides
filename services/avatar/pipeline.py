@@ -1423,7 +1423,7 @@ def _build_liveportrait_attempt_profiles(*, is_preview_render: bool) -> list[dic
     primary = {
         "name": "preview_primary",
         "retry": False,
-        "motion_strength": float(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "0.76") or 0.76),
+        "motion_strength": float(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.0") or 1.0),
         "warp_strength": float(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_WARP_STRENGTH", "0.84") or 0.84),
         "temporal_smoothing": float(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.10") or 0.10),
         "stabilize_window": int(float(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_STABILIZE_WINDOW", "8") or 8)),

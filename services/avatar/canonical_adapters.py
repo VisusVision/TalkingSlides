@@ -778,6 +778,7 @@ def _build_musetalk_service_params(
         "stage_budget_timeout_seconds": float(stage_budget_timeout_seconds),
         "http_timeout_seconds": float(http_timeout_seconds),
         "stage_name": str(stage_name),
+        "env_overrides": dict(env_overrides),
     }
 
 
@@ -971,6 +972,20 @@ def _run_via_musetalk_service(
         with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
             elapsed = time.monotonic() - started_at
             result = json.loads(resp.read())
+            if result.get("success"):
+                logger.info(
+                    "MuseTalk service success route=%s stage=%s run_id=%s "
+                    "project_id=%s job_id=%s segment_index=%s "
+                    "elapsed=%.3fs timeout_budget_seconds=%.1f",
+                    route_label,
+                    stage_name,
+                    run_id,
+                    str(params.get("env_overrides", {}).get("AVATAR_PROJECT_ID") or "0"),
+                    str(params.get("env_overrides", {}).get("AVATAR_JOB_ID") or "0"),
+                    str(params.get("env_overrides", {}).get("AVATAR_SEGMENT_INDEX") or "0"),
+                    elapsed,
+                    stage_budget_timeout_seconds,
+                )
     except SoftTimeLimitExceeded:
         raise
     except urllib.error.HTTPError as exc:
@@ -1286,10 +1301,14 @@ def _run_via_musetalk_service_chunked(
             chunk_metadata.append(metadata)
             logger.info(
                 "MuseTalk service chunk_timing run_id=%s chunk_index=%s chunk_count=%s "
-                "audio_duration_seconds=%.4f frame_count=%s elapsed_seconds=%.4f success=%s",
+                "project_id=%s job_id=%s segment_index=%s "
+                "audio_duration_seconds=%.4f frame_count=%s elapsed_seconds=%.4f success=%s route=service_chunked",
                 chunk_run_id,
                 int(chunk_index),
                 int(chunk_count),
+                str(params.get("env_overrides", {}).get("AVATAR_PROJECT_ID") or "0"),
+                str(params.get("env_overrides", {}).get("AVATAR_JOB_ID") or "0"),
+                str(params.get("env_overrides", {}).get("AVATAR_SEGMENT_INDEX") or "0"),
                 float(metadata["audio_duration_seconds"]),
                 int(metadata["frame_count"]),
                 float(metadata["elapsed_seconds"]),
