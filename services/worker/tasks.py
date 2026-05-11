@@ -366,6 +366,158 @@ def _worker_protection_mode() -> str:
     return mode if mode in {"public", "secure_stream", "drm_protected"} else fallback
 
 
+def _normalise_protection_mode(protection_mode: str | None) -> str:
+    mode = str(protection_mode or "").strip().lower()
+    return mode if mode in {"public", "secure_stream", "drm_protected"} else "secure_stream"
+
+
+def should_package_hls_for_lesson(protection_mode: str | None, *, streaming_enabled: bool | None = None) -> bool:
+    mode = _normalise_protection_mode(protection_mode)
+    if mode in {"secure_stream", "drm_protected"}:
+        return True
+    configured_streaming = DRM_STREAMING_ENABLED if streaming_enabled is None else bool(streaming_enabled)
+    return bool(configured_streaming)
+
+
+def _drm_metadata_configured_for_worker() -> bool:
+    legacy_enabled = _settings_bool("DRM_ENABLED", False)
+    legacy_key_system = _settings_str("DRM_KEY_SYSTEM", "")
+    legacy_license_url = _settings_str("DRM_LICENSE_URL", "")
+    legacy_certificate_url = _settings_str("DRM_CERTIFICATE_URL", "")
+    preferred_system = _settings_str("DRM_PREFERRED_SYSTEM", "").lower()
+    inferred_legacy_system = {
+        "com.widevine.alpha": "widevine",
+        "com.microsoft.playready": "playready",
+        "com.apple.fps.1_0": "fairplay",
+    }.get(legacy_key_system.lower(), "")
+
+    for name, requires_certificate in (("widevine", False), ("playready", False), ("fairplay", True)):
+        env_prefix = f"DRM_{name.upper()}"
+        system_enabled = _settings_bool(f"{env_prefix}_ENABLED", False)
+        key_system = _settings_str(f"{env_prefix}_KEY_SYSTEM", "")
+        license_url = _settings_str(f"{env_prefix}_LICENSE_URL", "")
+        certificate_url = _settings_str(f"{env_prefix}_CERTIFICATE_URL", "")
+
+        if not any((key_system, license_url, certificate_url)) and legacy_enabled:
+            if preferred_system == name or inferred_legacy_system == name:
+                system_enabled = True
+                key_system = legacy_key_system
+                license_url = legacy_license_url
+                certificate_url = legacy_certificate_url
+
+        if not system_enabled and legacy_enabled and (preferred_system == name or inferred_legacy_system == name):
+            system_enabled = bool(key_system or license_url or certificate_url)
+
+        if system_enabled and key_system and license_url and (not requires_certificate or certificate_url):
+            return True
+    return False
+
+
+def _dedupe_warnings(warnings: list[str] | tuple[str, ...] | None) -> list[str]:
+    return [
+        warning
+        for warning in dict.fromkeys(str(item or "").strip() for item in (warnings or []))
+        if warning
+    ]
+
+
+def _hls_sidecar_payload(
+    *,
+    enabled: bool,
+    manifest_rel_path: str = "",
+    encrypted: bool = False,
+    packaging_status: str,
+    warnings: list[str] | None = None,
+    segment_glob: str = "",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "manifest_rel_path": str(manifest_rel_path or ""),
+        "encrypted": bool(encrypted),
+        "packaging_status": str(packaging_status or "unknown"),
+        "warnings": _dedupe_warnings(warnings),
+    }
+    if segment_glob:
+        payload["segment_glob"] = segment_glob
+    if encrypted:
+        payload["drm_scheme"] = "hls-aes-128"
+    elif enabled:
+        payload["drm_scheme"] = "none"
+    return payload
+
+
+def _package_hls_assets_for_playback(
+    *,
+    project_id: str | int,
+    final_video: str,
+    output_dir: Path,
+    output_rel_prefix: str,
+    protection_mode: str | None,
+    package_hls_stream_func,
+    streaming_enabled: bool | None = None,
+    hls_encryption_enabled: bool | None = None,
+    hls_key_hex: str | None = None,
+) -> dict[str, Any]:
+    mode = _normalise_protection_mode(protection_mode)
+    hls_required = mode in {"secure_stream", "drm_protected"}
+    encrypt_hls = DRM_HLS_ENCRYPTION_ENABLED if hls_encryption_enabled is None else bool(hls_encryption_enabled)
+    warnings: list[str] = []
+
+    if mode == "drm_protected":
+        if _settings_bool("LESSON_PROTECTION_REQUIRE_HLS_ENCRYPTION_FOR_DRM", True) and not encrypt_hls:
+            warnings.append("drm_hls_encryption_required_but_disabled")
+        if _settings_bool("LESSON_PROTECTION_REQUIRE_DRM_METADATA_FOR_DRM", True) and not _drm_metadata_configured_for_worker():
+            warnings.append("drm_metadata_required_but_missing")
+
+    if not should_package_hls_for_lesson(mode, streaming_enabled=streaming_enabled):
+        return _hls_sidecar_payload(
+            enabled=False,
+            encrypted=False,
+            packaging_status="not_required",
+            warnings=warnings,
+        )
+
+    hls_dir = output_dir / "drm" / "hls"
+    hls_rel_dir = f"{output_rel_prefix}/drm/hls"
+    try:
+        package_result = package_hls_stream_func(
+            final_video,
+            str(hls_dir),
+            playlist_name="index.m3u8",
+            segment_pattern="seg_%05d.ts",
+            segment_time=6,
+            encrypt=encrypt_hls,
+            key_hex=DRM_HLS_KEY_HEX if hls_key_hex is None else hls_key_hex,
+            key_uri="enc.key" if encrypt_hls else None,
+            key_filename="enc.key",
+        )
+    except Exception as hls_exc:
+        warnings.append("hls_packaging_failed")
+        if hls_required:
+            warnings.append("hls_required_but_missing")
+        logger.warning("HLS packaging failed for project=%s: %s", project_id, hls_exc, exc_info=True)
+        return _hls_sidecar_payload(
+            enabled=False,
+            encrypted=False,
+            packaging_status="failed",
+            warnings=warnings,
+        )
+
+    encrypted = bool(package_result.get("encrypted"))
+    if mode == "drm_protected" and _settings_bool("LESSON_PROTECTION_REQUIRE_HLS_ENCRYPTION_FOR_DRM", True) and not encrypted:
+        warnings.append("drm_hls_encryption_required_but_disabled")
+
+    logger.info("HLS packaging complete for project=%s", project_id)
+    return _hls_sidecar_payload(
+        enabled=True,
+        manifest_rel_path=f"{hls_rel_dir}/index.m3u8",
+        encrypted=encrypted,
+        packaging_status="packaged",
+        warnings=warnings,
+        segment_glob=f"{hls_rel_dir}/seg_*.ts",
+    )
+
+
 def _write_json_sidecar(project_id: str | int, file_name: str, payload: dict[str, Any]) -> str:
     target = Path(STORAGE_ROOT) / str(project_id) / str(file_name)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -5280,15 +5432,16 @@ def concat_and_finalize(
                 for detail in list(item.get("details") or [])
             ]
         )
+        protection_mode = _worker_protection_mode()
         playback_assets: dict[str, Any] = {
             "asset_id": f"{DRM_ASSET_ID_PREFIX}{project_id}",
             "content_id": f"{DRM_CONTENT_ID_PREFIX}{project_id}",
             "mp4_rel_path": result_url_rel,
             "srt_rel_path": srt_url_rel,
             "vtt_rel_path": vtt_url_rel,
-            "protection_mode": _worker_protection_mode(),
+            "protection_mode": protection_mode,
             "timeline": page_timeline,
-            "hls": None,
+            "hls": _hls_sidecar_payload(enabled=False, packaging_status="not_required"),
             "avatar": None,
             "source_render_metadata": source_render_metadata,
             "source_render_warnings": source_render_warnings,
@@ -5410,31 +5563,14 @@ def concat_and_finalize(
             except Exception:
                 logger.warning("Avatar track concat failed for project=%s", project_id, exc_info=True)
 
-        if DRM_STREAMING_ENABLED:
-            try:
-                hls_dir = output_dir / "drm" / "hls"
-                hls_rel_dir = f"{output_rel_prefix}/drm/hls"
-                package_result = package_hls_stream(
-                    final_video,
-                    str(hls_dir),
-                    playlist_name="index.m3u8",
-                    segment_pattern="seg_%05d.ts",
-                    segment_time=6,
-                    encrypt=DRM_HLS_ENCRYPTION_ENABLED,
-                    key_hex=DRM_HLS_KEY_HEX,
-                    key_uri="enc.key" if DRM_HLS_ENCRYPTION_ENABLED else None,
-                    key_filename="enc.key",
-                )
-                playback_assets["hls"] = {
-                    "manifest_rel_path": f"{hls_rel_dir}/index.m3u8",
-                    "segment_glob": f"{hls_rel_dir}/seg_*.ts",
-                    "encrypted": bool(package_result.get("encrypted")),
-                    "key_rel_path": f"{hls_rel_dir}/enc.key" if package_result.get("encrypted") else None,
-                    "drm_scheme": "hls-aes-128" if package_result.get("encrypted") else "none",
-                }
-                logger.info("HLS packaging complete for project=%s", project_id)
-            except Exception as hls_exc:
-                logger.warning("HLS packaging skipped for project=%s: %s", project_id, hls_exc)
+        playback_assets["hls"] = _package_hls_assets_for_playback(
+            project_id=project_id,
+            final_video=final_video,
+            output_dir=output_dir,
+            output_rel_prefix=output_rel_prefix,
+            protection_mode=protection_mode,
+            package_hls_stream_func=package_hls_stream,
+        )
 
         if use_draft:
             try:
@@ -5480,8 +5616,17 @@ def concat_and_finalize(
                 playback_assets["avatar_status"],
                 json.dumps(avatar_failures, ensure_ascii=True, sort_keys=True),
             )
+        hls_warning_message = ""
+        hls_warnings = list((playback_assets.get("hls") or {}).get("warnings") or [])
+        if hls_warnings:
+            hls_warning_message = "hls:" + ";".join(hls_warnings)
+            logger.warning(
+                "Lesson finalized with HLS warnings project=%s warnings=%s",
+                project_id,
+                json.dumps(hls_warnings, ensure_ascii=True),
+            )
         completion_warning_message = "; ".join(
-            warning for warning in [render_warning_message, avatar_warning_message] if warning
+            warning for warning in [render_warning_message, avatar_warning_message, hls_warning_message] if warning
         )
 
         # Mark the Job as done and record relative file paths

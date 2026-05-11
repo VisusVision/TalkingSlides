@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -10,8 +11,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
+SERVICES_ROOT = REPO_ROOT / "services"
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICES_ROOT))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
@@ -22,6 +26,7 @@ from django.contrib.auth.models import User  # noqa: E402
 from django.core.cache import cache  # noqa: E402
 from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
+from worker import tasks as worker_tasks  # noqa: E402
 
 
 class _DummyRequest:
@@ -83,6 +88,121 @@ def _make_teacher(username: str):
     user = User.objects.create_user(username=username, password="pass")
     UserProfile.objects.create(user=user, role="teacher")
     return user
+
+
+def test_worker_hls_sidecar_public_mode_does_not_package_without_streaming_config(tmp_path):
+    calls = []
+
+    def fake_package_hls_stream(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"encrypted": False}
+
+    payload = worker_tasks._package_hls_assets_for_playback(
+        project_id=101,
+        final_video=str(tmp_path / "101.mp4"),
+        output_dir=tmp_path,
+        output_rel_prefix="101",
+        protection_mode="public",
+        package_hls_stream_func=fake_package_hls_stream,
+        streaming_enabled=False,
+    )
+
+    assert calls == []
+    assert payload == {
+        "enabled": False,
+        "manifest_rel_path": "",
+        "encrypted": False,
+        "packaging_status": "not_required",
+        "warnings": [],
+    }
+
+
+def test_worker_hls_sidecar_secure_stream_packages_manifest_and_filters_keys(tmp_path):
+    calls = []
+    raw_key = "00112233445566778899aabbccddeeff"
+
+    def fake_package_hls_stream(input_video_path, output_dir, **kwargs):
+        calls.append({"input_video_path": input_video_path, "output_dir": output_dir, "kwargs": kwargs})
+        return {
+            "playlist": str(Path(output_dir) / "index.m3u8"),
+            "encrypted": True,
+            "key_hex": raw_key,
+            "key_file": str(Path(output_dir) / "enc.key"),
+        }
+
+    payload = worker_tasks._package_hls_assets_for_playback(
+        project_id=202,
+        final_video=str(tmp_path / "202.mp4"),
+        output_dir=tmp_path,
+        output_rel_prefix="202",
+        protection_mode="secure_stream",
+        package_hls_stream_func=fake_package_hls_stream,
+        streaming_enabled=False,
+        hls_encryption_enabled=True,
+        hls_key_hex=raw_key,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["encrypt"] is True
+    assert payload["enabled"] is True
+    assert payload["manifest_rel_path"] == "202/drm/hls/index.m3u8"
+    assert payload["encrypted"] is True
+    assert payload["packaging_status"] == "packaged"
+    assert payload["warnings"] == []
+    serialized = json.dumps(payload)
+    assert raw_key not in serialized
+    assert "key_hex" not in serialized
+    assert "key_file" not in serialized
+    assert "key_rel_path" not in serialized
+
+
+def test_worker_hls_sidecar_secure_stream_packaging_failure_records_required_warning(tmp_path):
+    def fake_package_hls_stream(*args, **kwargs):
+        raise RuntimeError("ffmpeg failed")
+
+    payload = worker_tasks._package_hls_assets_for_playback(
+        project_id=303,
+        final_video=str(tmp_path / "303.mp4"),
+        output_dir=tmp_path,
+        output_rel_prefix="303",
+        protection_mode="secure_stream",
+        package_hls_stream_func=fake_package_hls_stream,
+        streaming_enabled=False,
+    )
+
+    assert payload["enabled"] is False
+    assert payload["manifest_rel_path"] == ""
+    assert payload["packaging_status"] == "failed"
+    assert "hls_packaging_failed" in payload["warnings"]
+    assert "hls_required_but_missing" in payload["warnings"]
+
+
+def test_worker_hls_sidecar_drm_protected_records_missing_encryption_and_metadata(tmp_path):
+    def fake_package_hls_stream(input_video_path, output_dir, **kwargs):
+        return {"playlist": str(Path(output_dir) / "index.m3u8"), "encrypted": False}
+
+    with override_settings(
+        DRM_ENABLED=False,
+        LESSON_PROTECTION_REQUIRE_HLS_ENCRYPTION_FOR_DRM=True,
+        LESSON_PROTECTION_REQUIRE_DRM_METADATA_FOR_DRM=True,
+    ):
+        payload = worker_tasks._package_hls_assets_for_playback(
+            project_id=404,
+            final_video=str(tmp_path / "404.mp4"),
+            output_dir=tmp_path,
+            output_rel_prefix="404",
+            protection_mode="drm_protected",
+            package_hls_stream_func=fake_package_hls_stream,
+            streaming_enabled=False,
+            hls_encryption_enabled=False,
+        )
+
+    assert payload["enabled"] is True
+    assert payload["manifest_rel_path"] == "404/drm/hls/index.m3u8"
+    assert payload["encrypted"] is False
+    assert payload["packaging_status"] == "packaged"
+    assert "drm_hls_encryption_required_but_disabled" in payload["warnings"]
+    assert "drm_metadata_required_but_missing" in payload["warnings"]
 
 
 def test_media_token_roundtrip_with_and_without_rel_path():
@@ -409,6 +529,48 @@ def test_playback_token_view_rejects_drm_protected_lesson_without_drm_config(tmp
 
     assert response.status_code == 409
     assert response.data["error"] == "DRM-protected lesson requires DRM metadata configuration."
+
+
+def test_playback_token_view_rejects_drm_protected_lesson_without_hls_manifest(tmp_path, monkeypatch):
+    project_id = 905
+    job = _DummyJob(906, project_id, result_url=f"{project_id}/{project_id}.mp4")
+
+    class _Project:
+        id = project_id
+        jobs = _DummyJobsCollection(job)
+        avatar_render_jobs = _DummyAvatarRenderJobsCollection()
+
+    sidecar_path = tmp_path / str(project_id) / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "asset_id": "lesson-905",
+                "content_id": "project-905",
+                "protection_mode": "drm_protected",
+                "hls": {
+                    "enabled": False,
+                    "manifest_rel_path": "",
+                    "encrypted": False,
+                    "packaging_status": "failed",
+                    "warnings": ["hls_required_but_missing"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(views.Project.objects, "get", lambda pk: _Project())
+
+    request = APIRequestFactory().get(f"/api/v1/projects/{project_id}/playback-token/")
+    request.user = _DummyRequest._DummyUser()
+    request.session = _DummyRequest._DummySession()
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.PlaybackTokenView.as_view()(request, project_id=project_id)
+
+    assert response.status_code == 409
+    assert response.data["error"] == "DRM-protected lesson requires HLS manifest."
 
 
 def test_playback_token_view_returns_hls_payload_for_drm_protected_lesson(tmp_path, monkeypatch):
