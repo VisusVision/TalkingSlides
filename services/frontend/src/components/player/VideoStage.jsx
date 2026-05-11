@@ -114,6 +114,8 @@ export default function VideoStage({
   selectedSubtitleKey,
   onSubtitleKeyChange,
   onPlaybackTimeChange,
+  onPlaybackStarted,
+  onPlaybackStopped,
   videoRef,
   asSurface = true,
   captionMissingLabel = 'No captions yet',
@@ -251,12 +253,14 @@ export default function VideoStage({
   }, [avatarOverlayEnabled]);
 
   const handleVideoPlay = useCallback((event) => {
+    onPlaybackStarted?.();
     syncAvatarPlayback(event.currentTarget);
-  }, [syncAvatarPlayback]);
+  }, [onPlaybackStarted, syncAvatarPlayback]);
 
   const handleVideoPause = useCallback(() => {
     avatarVideoRef.current?.pause();
-  }, []);
+    onPlaybackStopped?.();
+  }, [onPlaybackStopped]);
 
   const handleVideoSeeked = useCallback((event) => {
     syncAvatarPlayback(event.currentTarget);
@@ -292,6 +296,7 @@ export default function VideoStage({
               onLoadedMetadata={handleCaptionTrackReady}
               onPlay={handleVideoPlay}
               onPause={handleVideoPause}
+              onEnded={handleVideoPause}
               onSeeked={handleVideoSeeked}
               onRateChange={handleVideoRateChange}
               onTimeUpdate={handleVideoTimeUpdate}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check, Focus, Heart, Layers3, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -17,6 +17,9 @@ import {
   toggleFollowPublisher,
 } from '../api';
 import VideoStage from '../components/player/VideoStage';
+import UnavailableStage from '../components/player/UnavailableStage';
+import WatermarkOverlay from '../components/player/WatermarkOverlay';
+import { PLAYER_MODES, resolvePlayerMode } from '../components/player/playerMode';
 import ChapterList from '../components/player/ChapterList';
 import TranscriptPanel from '../components/player/TranscriptPanel';
 import NotesPanel from '../components/player/NotesPanel';
@@ -25,8 +28,10 @@ import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
 import { buildChapters, buildTranscriptLines } from '../lib/watch';
+import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 
 const COMMENT_PREVIEW_LIMIT = 5;
+const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
 function normalizeCatalogList(payload) {
   const list = Array.isArray(payload) ? payload : payload.results || [];
@@ -257,6 +262,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [selectedSubtitleKey, setSelectedSubtitleKey] = useState('off');
   const [pendingSubtitleRequest, setPendingSubtitleRequest] = useState(null);
   const [playbackTime, setPlaybackTime] = useState(0);
+  const [playbackActive, setPlaybackActive] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [notesCollapsed, setNotesCollapsed] = useState(false);
   const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
@@ -348,9 +354,12 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
               avatar_available: playbackData.avatar_available ?? lessonData.avatar_available,
               avatar_updated_at: playbackData.avatar_updated_at || lessonData.avatar_updated_at,
               final_avatar_engine_chain: playbackData.final_avatar_engine_chain || lessonData.final_avatar_engine_chain,
+              protection_mode: playbackData.protection_mode || lessonData.protection_mode,
+              allow_mp4_fallback: playbackData.allow_mp4_fallback ?? lessonData.allow_mp4_fallback,
               playback_status: playbackData.playback_status || lessonData.playback_status,
               protection: playbackData.protection || lessonData.protection,
               streaming: playbackData.streaming || lessonData.streaming,
+              drm: playbackData.drm || lessonData.drm,
               watermark: playbackData.watermark || lessonData.watermark,
             }
           : lessonData;
@@ -365,6 +374,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         setSelectedSubtitleKey('off');
         setPendingSubtitleRequest(null);
         setPlaybackTime(0);
+        setPlaybackActive(false);
         progressSavedAtRef.current = 0;
         setLikeError('');
         setFollowError('');
@@ -554,6 +564,71 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     [lesson, subtitleTracks],
   );
   const selectedSubtitleOption = subtitleOptions.find((option) => option.key === selectedSubtitleKey) || null;
+  const playerCapabilities = useMemo(() => {
+    if (typeof document === 'undefined') {
+      return {
+        nativeHlsSupported: false,
+        hlsJsSupported: false,
+        emeSupported: false,
+        hlsEnabled: import.meta.env.VITE_PLAYER_ENABLE_HLS !== 'false',
+        drmShakaEnabled: import.meta.env.VITE_PLAYER_ENABLE_DRM_SHAKA === 'true',
+      };
+    }
+
+    const probe = document.createElement('video');
+    const mediaSource = typeof window !== 'undefined' ? (window.MediaSource || window.WebKitMediaSource) : null;
+    return {
+      nativeHlsSupported: Boolean(probe.canPlayType('application/vnd.apple.mpegurl')),
+      hlsJsSupported: Boolean(
+        mediaSource
+        && typeof mediaSource.isTypeSupported === 'function'
+        && mediaSource.isTypeSupported('video/mp4; codecs="avc1.42E01E,mp4a.40.2"'),
+      ),
+      emeSupported: typeof navigator !== 'undefined' && typeof navigator.requestMediaKeySystemAccess === 'function',
+      hlsEnabled: import.meta.env.VITE_PLAYER_ENABLE_HLS !== 'false',
+      drmShakaEnabled: import.meta.env.VITE_PLAYER_ENABLE_DRM_SHAKA === 'true',
+    };
+  }, []);
+  const playerMode = useMemo(
+    () => resolvePlayerMode(lesson, playerCapabilities),
+    [lesson, playerCapabilities],
+  );
+  const playbackLesson = useMemo(() => {
+    if (!lesson) return lesson;
+    if (playerMode.mode !== PLAYER_MODES.PUBLIC_MP4) return lesson;
+    return {
+      ...lesson,
+      stream_url: playerMode.fallbackUrl || lesson.stream_url || lesson.video_url || '',
+    };
+  }, [lesson, playerMode]);
+  const playableMode = playerMode.mode === PLAYER_MODES.PUBLIC_MP4 || playerMode.mode === PLAYER_MODES.SECURE_HLS;
+  const playbackSourceKey = useMemo(
+    () => [
+      activeLessonId || '',
+      playerMode.mode || '',
+      playbackLesson?.stream_url || '',
+      playerMode.manifestUrl || '',
+      playerMode.fallbackUrl || '',
+    ].join('|'),
+    [activeLessonId, playbackLesson?.stream_url, playerMode.fallbackUrl, playerMode.manifestUrl, playerMode.mode],
+  );
+  const handlePlaybackStarted = useCallback(() => {
+    setPlaybackActive(true);
+  }, []);
+  const handlePlaybackStopped = useCallback(() => {
+    setPlaybackActive(false);
+  }, []);
+  const handlePlaybackDenied = useCallback(() => {
+    setPlaybackActive(false);
+  }, []);
+  const playbackHeartbeat = usePlaybackHeartbeat({
+    lessonId: activeLessonId,
+    active: Boolean(playbackActive && playableMode && !loadingLesson),
+    videoRef,
+    sourceKey: playbackSourceKey,
+    visibilityLock: Boolean(lesson?.protection?.visibility_lock),
+    onDenied: handlePlaybackDenied,
+  });
 
   const userProgressPct = Math.max(0, Math.min(100, Number(lesson?.user_progress || 0)));
   const likedByMe = Boolean(lesson?.user_liked || lesson?.liked_by_me);
@@ -578,7 +653,12 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   }, [preferredSubtitleLanguage, subtitleOptions]);
 
   useEffect(() => {
-    if (!resumeRequested || !user || !activeLessonId || loadingLesson || !lesson?.stream_url) return undefined;
+    setPlaybackActive(false);
+  }, [playbackSourceKey]);
+
+  useEffect(() => {
+    const canResumePlayback = playerMode.mode === PLAYER_MODES.PUBLIC_MP4 || playerMode.mode === PLAYER_MODES.SECURE_HLS;
+    if (!resumeRequested || !user || !activeLessonId || loadingLesson || !canResumePlayback) return undefined;
     if (userProgressPct <= 0 || userProgressPct >= 95) return undefined;
 
     const resumeKey = `${activeLessonId}:${userProgressPct}`;
@@ -606,7 +686,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     return () => {
       video.removeEventListener('loadedmetadata', applyResume);
     };
-  }, [activeLessonId, lesson?.stream_url, loadingLesson, resumeRequested, user, userProgressPct]);
+  }, [activeLessonId, loadingLesson, playerMode.mode, resumeRequested, user, userProgressPct]);
 
   useEffect(() => {
     if (pendingSubtitleRequest) return;
@@ -818,6 +898,78 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
   };
 
+  const renderWatermarkedStage = (stage) => (
+    <div className="relative overflow-hidden rounded-3xl">
+      {stage}
+      <WatermarkOverlay lesson={lesson} />
+    </div>
+  );
+
+  const renderPlayerStage = () => {
+    if (playbackHeartbeat.error) {
+      return (
+        <UnavailableStage
+          message={playbackHeartbeat.error}
+          reason="playback_session_denied"
+          mode={PLAYER_MODES.UNAVAILABLE}
+        />
+      );
+    }
+
+    if (playerMode.mode === PLAYER_MODES.PUBLIC_MP4) {
+      return renderWatermarkedStage(
+        <VideoStage
+          lesson={playbackLesson}
+          subtitleTracks={subtitleTracks}
+          preferredSubtitleLanguage={preferredSubtitleLanguage}
+          selectedSubtitleKey={selectedSubtitleKey}
+          onSubtitleKeyChange={setSelectedSubtitleKey}
+          onPlaybackTimeChange={handlePlaybackTimeChange}
+          onPlaybackStarted={handlePlaybackStarted}
+          onPlaybackStopped={handlePlaybackStopped}
+          videoRef={videoRef}
+          showSubtitleControls={false}
+          showLessonDetails={false}
+        />,
+      );
+    }
+
+    if (playerMode.mode === PLAYER_MODES.SECURE_HLS) {
+      return renderWatermarkedStage(
+        <Suspense
+          fallback={(
+            <SurfaceCard elevated className="p-4 sm:p-5">
+              <p className="body-md">Loading secure player...</p>
+            </SurfaceCard>
+          )}
+        >
+          <HlsPlayer
+            lesson={lesson}
+            videoRef={videoRef}
+            manifestUrl={playerMode.manifestUrl}
+            fallbackUrl={playerMode.fallbackUrl}
+            fallbackAllowed={playerMode.fallbackAllowed}
+            onPlaybackTimeChange={handlePlaybackTimeChange}
+            onPlaybackStarted={handlePlaybackStarted}
+            onPlaybackStopped={handlePlaybackStopped}
+            subtitleTracks={subtitleTracks}
+            preferredSubtitleLanguage={preferredSubtitleLanguage}
+            selectedSubtitleKey={selectedSubtitleKey}
+            onSubtitleKeyChange={setSelectedSubtitleKey}
+          />
+        </Suspense>,
+      );
+    }
+
+    return (
+      <UnavailableStage
+        message={playerMode.message}
+        reason={playerMode.reason}
+        mode={playerMode.mode}
+      />
+    );
+  };
+
   return (
     <div className="space-y-5">
       <SurfaceCard className="token-glass flex flex-wrap items-center justify-between gap-3">
@@ -887,17 +1039,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
               </SurfaceCard>
             ) : (
               <>
-                <VideoStage
-                  lesson={lesson}
-                  subtitleTracks={subtitleTracks}
-                  preferredSubtitleLanguage={preferredSubtitleLanguage}
-                  selectedSubtitleKey={selectedSubtitleKey}
-                  onSubtitleKeyChange={setSelectedSubtitleKey}
-                  onPlaybackTimeChange={handlePlaybackTimeChange}
-                  videoRef={videoRef}
-                  showSubtitleControls={false}
-                  showLessonDetails={false}
-                />
+                {renderPlayerStage()}
 
                 <SurfaceCard className="space-y-3 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
