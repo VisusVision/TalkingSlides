@@ -601,7 +601,7 @@ class ProjectSerializer(serializers.ModelSerializer):
         ]
 
     def get_latest_job(self, obj):
-        job = obj.jobs.order_by("-created_at").first()
+        job = obj.jobs.filter(job_type="video_export").order_by("-created_at", "-id").first()
         if job is None:
             return None
         return JobSerializer(job).data
@@ -776,7 +776,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
         return obj.user.publisher_followers.filter(follower=user).exists()
 
     def get_has_video(self, obj):
-        return obj.jobs.filter(status="done").exists()
+        return obj.jobs.filter(job_type="video_export", status="done").exists()
 
     def get_cover_url(self, obj):
         return _project_cover_url(obj, self.context)

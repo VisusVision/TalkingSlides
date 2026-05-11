@@ -546,3 +546,277 @@ def test_watch_payload_exposes_avatar_only_when_visible_and_ready(tmp_path):
     assert ready_response.status_code == 200
     assert ready_response.data["avatar_available"] is True
     assert ready_response.data["avatar_overlay"]["enabled"] is True
+
+
+def _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch, runtime_settings=None):
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"avatar_only_{suffix}", password="pass")
+    source_rel = f"avatars/{suffix}/processed.png"
+    UserProfile.objects.create(
+        user=teacher,
+        role="teacher",
+        avatar_enabled=True,
+        avatar_consent_confirmed=True,
+        avatar_image_processed=source_rel,
+        avatar_source_valid=True,
+        avatar_source_hash="source-hash",
+        avatar_moderation_status="approved",
+    )
+    source_path = tmp_path / source_rel
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(b"avatar-source")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
+    monkeypatch.setenv("AVATAR_MUSETALK_CMD", "echo musetalk")
+    monkeypatch.setattr(
+        views,
+        "stored_avatar_source_state",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "validation_current": True,
+            "error": "",
+            "source_hash": "source-hash",
+            "preview_stale": False,
+            "preview_source_hash": "preview-hash",
+        },
+    )
+
+    metadata = {"dirty": False}
+    if runtime_settings:
+        metadata["avatar_runtime_settings"] = runtime_settings
+    lesson = Project.objects.create(
+        title=f"Avatar only {suffix}",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+        avatar_enabled_override=True,
+        avatar_processing_status="ready",
+        avatar_visible=True,
+        draft_data={"metadata": metadata},
+    )
+    base_dir = tmp_path / str(lesson.id)
+    audio_path = base_dir / "audio" / "slide_001.mp3"
+    slide_path = base_dir / "images" / "slide_001.png"
+    video_path = base_dir / f"{lesson.id}.mp4"
+    for path in [audio_path, slide_path, video_path]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    sidecar = {
+        "mp4_rel_path": f"{lesson.id}/{lesson.id}.mp4",
+        "hls": {"enabled": False, "packaging_status": "not_required"},
+        "avatar": None,
+        "final_segments": [
+            {
+                "index": 0,
+                "slide": f"{lesson.id}/images/slide_001.png",
+                "transcript": "Avatar only segment.",
+                "tts_audio": f"{lesson.id}/audio/slide_001.mp3",
+                "duration": 1.25,
+                "pause_seconds": 0.0,
+                "part_rel_path": f"{lesson.id}/parts/part_001.mp4",
+            }
+        ],
+    }
+    (base_dir / "playback_assets.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    base_job = Job.objects.create(
+        project=lesson,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{lesson.id}/{lesson.id}.mp4",
+    )
+    return teacher, lesson, base_job
+
+
+def test_avatar_only_rerender_enqueues_avatar_task_without_base_rerender(tmp_path, monkeypatch):
+    runtime_settings = {
+        "motion_preset": "subtle_gaze",
+        "restoration_enabled": True,
+        "liveportrait_enabled": False,
+    }
+    teacher, lesson, base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch, runtime_settings)
+    pref = AvatarOverlayPreference.objects.create(
+        user=teacher,
+        lesson=lesson,
+        anchor="bottom-left",
+        x_percent=4,
+        y_percent=74,
+        width_percent=30,
+    )
+    captured = {}
+
+    def fake_dispatch(task_name, *, args=None, kwargs=None, queue=None):
+        captured["task_name"] = task_name
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        captured["queue"] = queue
+        return type("AsyncResult", (), {"id": "avatar-only-task-1"})()
+
+    monkeypatch.setattr(views, "_dispatch_celery_task", fake_dispatch)
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/projects/{lesson.id}/avatar/rerender/", {}, format="json")
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path), CELERY_AVATAR_QUEUE="avatar"):
+        response = views.ProjectAvatarRerenderView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 202
+    assert response.data["avatar_processing_status"] == "queued"
+    assert response.data["avatar_job_id"]
+    assert captured["task_name"] == "worker.tasks.render_lesson_avatar_overlay"
+    assert captured["queue"] == "avatar"
+    assert Job.objects.filter(project=lesson, job_type="video_export").count() == 1
+    avatar_job = Job.objects.get(project=lesson, job_type="avatar_render")
+    assert avatar_job.celery_task_id == "avatar-only-task-1"
+    task_kwargs = captured["kwargs"]
+    assert task_kwargs["base_job_id"] == base_job.id
+    assert "render_results" not in task_kwargs
+    assert "avatar_options" not in task_kwargs
+
+    manifest = json.loads(Path(task_kwargs["handoff_manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["base_job_id"] == base_job.id
+    assert manifest["avatar_job_id"] == avatar_job.id
+    assert manifest["avatar_settings"]["motion_preset"] == "subtle_gaze"
+    assert manifest["avatar_settings"]["restoration_enabled"] is True
+    assert manifest["avatar_settings"]["liveportrait_enabled"] is False
+    assert manifest["avatar_settings"]["avatar_runtime_settings"] == runtime_settings
+    assert Path(manifest["ordered_results"][0]["tts_audio_path"]).exists()
+    assert manifest["render_metadata"]["avatar_only_rerender"] is True
+
+    lesson.refresh_from_db()
+    assert lesson.avatar_processing_status == "queued"
+    assert lesson.avatar_last_job_id == str(avatar_job.id)
+    pref.refresh_from_db()
+    assert pref.anchor == "bottom-left"
+    assert float(pref.width_percent) == 30.0
+
+
+def test_avatar_only_rerender_rejects_missing_playback_assets(tmp_path, monkeypatch):
+    teacher, lesson, _base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    (tmp_path / str(lesson.id) / "playback_assets.json").unlink()
+    monkeypatch.setattr(
+        views,
+        "_dispatch_celery_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("avatar task should not be queued")),
+    )
+
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/projects/{lesson.id}/avatar/rerender/", {}, format="json")
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.ProjectAvatarRerenderView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 409
+    assert response.data["error"] == "Playback assets are not ready."
+    assert Job.objects.filter(project=lesson, job_type="avatar_render").count() == 0
+
+
+def test_avatar_only_rerender_rejects_missing_base_render(tmp_path, monkeypatch):
+    teacher, lesson, base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    base_job.delete()
+    monkeypatch.setattr(
+        views,
+        "_dispatch_celery_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("avatar task should not be queued")),
+    )
+
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/projects/{lesson.id}/avatar/rerender/", {}, format="json")
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.ProjectAvatarRerenderView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 409
+    assert response.data["error"] == "Base lesson render is not ready."
+    assert Job.objects.filter(project=lesson, job_type="avatar_render").count() == 0
+
+
+def test_avatar_only_rerender_does_not_duplicate_active_avatar_job(tmp_path, monkeypatch):
+    teacher, lesson, _base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    lesson.avatar_processing_status = "processing"
+    lesson.avatar_last_job_id = "existing-avatar-job"
+    lesson.save(update_fields=["avatar_processing_status", "avatar_last_job_id"])
+    monkeypatch.setattr(
+        views,
+        "_dispatch_celery_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate avatar task should not be queued")),
+    )
+
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/projects/{lesson.id}/avatar/rerender/", {}, format="json")
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.ProjectAvatarRerenderView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["avatar_processing_status"] == "processing"
+    assert response.data["avatar_job_id"] == "existing-avatar-job"
+    assert Job.objects.filter(project=lesson, job_type="avatar_render").count() == 0
+
+
+def test_avatar_only_rerender_rejects_invalid_avatar_prerequisites(tmp_path, monkeypatch):
+    teacher, lesson, _base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        views,
+        "_resolve_avatar_options_for_project",
+        lambda *_args, **_kwargs: {
+            "requested": True,
+            "enabled": False,
+            "disabled_reason": "avatar_source_invalid",
+            "teacher_id": teacher.id,
+        },
+    )
+    monkeypatch.setattr(
+        views,
+        "_dispatch_celery_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("invalid avatar should not be queued")),
+    )
+
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/projects/{lesson.id}/avatar/rerender/", {}, format="json")
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.ProjectAvatarRerenderView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 400
+    assert response.data["error"] == "avatar_source_invalid"
+    assert Job.objects.filter(project=lesson, job_type="avatar_render").count() == 0
+    lesson.refresh_from_db()
+    assert lesson.avatar_processing_status == "failed"
+
+
+def test_playback_token_uses_base_video_job_while_avatar_rerender_is_queued(tmp_path, monkeypatch):
+    teacher, lesson, base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    Job.objects.create(
+        project=lesson,
+        job_type="avatar_render",
+        status="pending",
+        progress=0,
+        result_url=f"{lesson.id}/avatar/avatar_track.mp4",
+    )
+    lesson.avatar_processing_status = "queued"
+    lesson.avatar_last_job_id = "avatar-job"
+    lesson.save(update_fields=["avatar_processing_status", "avatar_last_job_id"])
+    issued_tokens = []
+
+    def fake_generate_media_token(job_id, file_type, **kwargs):
+        issued_tokens.append({"job_id": job_id, "file_type": file_type, **kwargs})
+        return f"{file_type}-token"
+
+    monkeypatch.setattr(views, "generate_media_token", fake_generate_media_token)
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["video_url"]
+    assert response.data["avatar_processing_status"] == "queued"
+    video_tokens = [token for token in issued_tokens if token["file_type"] == "video"]
+    assert video_tokens
+    assert video_tokens[0]["job_id"] == base_job.id

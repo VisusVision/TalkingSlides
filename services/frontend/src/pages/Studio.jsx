@@ -30,6 +30,7 @@ import {
   fetchAvatarOverlayPreference,
   fetchSubtitleTrackBundle,
   requestProjectAdminReview,
+  rerenderProjectAvatar,
   rerenderProject,
   rescanProjectModeration,
   updateTranscriptPageScene,
@@ -497,8 +498,9 @@ function avatarStatusLabel(project) {
 }
 
 function projectRenderReady(project) {
-  const raw = normalizedStatus(project?.latest_job?.status || project?.status);
-  return raw === 'done' || raw === 'ready';
+  const projectStatus = normalizedStatus(project?.status);
+  const jobStatus = projectLatestJobStatus(project);
+  return projectStatus === 'ready' || jobStatus === 'done' || jobStatus === 'ready';
 }
 
 function studioLessonNeedsPolling({
@@ -529,6 +531,7 @@ function studioLessonNeedsPolling({
     || (moderationStatus === 'not_scanned' && projectInFlight);
   const transcriptWaiting = projectInFlight && transcriptPageCount === 0;
   const rerenderInFlight = UNSTABLE_JOB_STATUSES.has(normalizedStatus(activeRerenderStatus));
+  const avatarInFlight = ['queued', 'processing'].includes(avatarProcessingStatus(project));
   const subtitleInFlight = Boolean(pendingSubtitleGeneration) || Boolean(generatingSubtitleTrack);
 
   return Boolean(
@@ -536,6 +539,7 @@ function studioLessonNeedsPolling({
       || moderationInFlight
       || transcriptWaiting
       || rerenderInFlight
+      || avatarInFlight
       || subtitleInFlight
       || moderationStale
       || (!STABLE_MODERATION_STATUSES.has(moderationStatus) && moderationStatus !== 'not_scanned')
@@ -1044,6 +1048,8 @@ export default function Studio({ user, onLoginRequest }) {
   const [avatarRuntimeSettings, setAvatarRuntimeSettings] = useState(DEFAULT_AVATAR_RUNTIME_SETTINGS);
   const [avatarRuntimeSaving, setAvatarRuntimeSaving] = useState(false);
   const [avatarRuntimeMessage, setAvatarRuntimeMessage] = useState('');
+  const [avatarRerendering, setAvatarRerendering] = useState(false);
+  const [avatarRerenderMessage, setAvatarRerenderMessage] = useState('');
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -1542,6 +1548,8 @@ export default function Studio({ user, onLoginRequest }) {
   useEffect(() => {
     setAvatarRuntimeSettings(normalizeAvatarRuntimeSettings(selectedLesson?.avatar_runtime_settings));
     setAvatarRuntimeMessage('');
+    setAvatarRerenderMessage('');
+    setAvatarRerendering(false);
   }, [selectedLesson?.avatar_runtime_settings, selectedLesson?.id]);
 
   const handleCreateProject = async ({
@@ -1735,6 +1743,28 @@ export default function Studio({ user, onLoginRequest }) {
     }));
     setSelectedLessonId((previous) => previous || updatedProject.id);
   }, []);
+
+  const handleAvatarOnlyRerender = async () => {
+    if (!selectedLesson?.id || avatarRerendering) return;
+    setAvatarRerendering(true);
+    setAvatarRerenderMessage('');
+    try {
+      const result = await rerenderProjectAvatar(selectedLesson.id);
+      handleProjectUpdated({
+        ...selectedLesson,
+        avatar_processing_status: result.avatar_processing_status || 'queued',
+        avatar_processing_message: result.message || 'Avatar rerender queued.',
+        avatar_last_job_id: String(result.avatar_job_id || selectedLesson.avatar_last_job_id || ''),
+        avatar_runtime_settings: result.avatar_runtime_settings || selectedLesson.avatar_runtime_settings,
+      });
+      setAvatarRerenderMessage(result.message || 'Avatar rerender queued.');
+      refreshSelectedLessonState(selectedLesson.id, { showLoading: false, preserveOnError: true }).catch(() => {});
+    } catch (err) {
+      setAvatarRerenderMessage(err.message || 'Avatar rerender failed to start.');
+    } finally {
+      setAvatarRerendering(false);
+    }
+  };
 
   const handleGeneratePreviewSubtitles = async () => {
     const projectId = selectedLesson?.id;
@@ -2108,6 +2138,14 @@ export default function Studio({ user, onLoginRequest }) {
     [selectedSceneFullText, selectedSceneTextScale],
   );
   const latestRenderStatus = activeRerenderStatus || selectedLesson?.latest_job || null;
+  const avatarJobInFlight = ['queued', 'processing'].includes(avatarProcessingStatus(selectedLesson));
+  const avatarOnlyRerenderDisabled = (
+    !selectedLesson
+    || avatarRerendering
+    || avatarJobInFlight
+    || !projectRenderReady(selectedLesson)
+    || !projectAvatarEnabled(selectedLesson)
+  );
 
   const handleSelectScene = useCallback((scene, index) => {
     if (!scene) return;
@@ -2613,14 +2651,23 @@ export default function Studio({ user, onLoginRequest }) {
                             />
                           </label>
                         </div>
-                        <Button variant="secondary" onClick={handleAvatarRuntimeSave} disabled={avatarRuntimeSaving}>
-                          <Save size={16} />
-                          <span>{avatarRuntimeSaving ? 'Saving' : 'Save avatar settings'}</span>
-                        </Button>
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="secondary" onClick={handleAvatarRuntimeSave} disabled={avatarRuntimeSaving}>
+                            <Save size={16} />
+                            <span>{avatarRuntimeSaving ? 'Saving' : 'Save avatar settings'}</span>
+                          </Button>
+                          <Button variant="secondary" onClick={handleAvatarOnlyRerender} disabled={avatarOnlyRerenderDisabled}>
+                            <RefreshCcw size={16} />
+                            <span>{avatarRerendering ? 'Queueing' : 'Rerender avatar only'}</span>
+                          </Button>
+                        </div>
                       </div>
 
                       {avatarRuntimeMessage && (
                         <p className="text-xs font-medium text-[var(--text-primary)]">{avatarRuntimeMessage}</p>
+                      )}
+                      {avatarRerenderMessage && (
+                        <p className="text-xs font-medium text-[var(--text-primary)]">{avatarRerenderMessage}</p>
                       )}
 
                       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-end">
