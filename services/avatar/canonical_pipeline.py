@@ -4017,15 +4017,24 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 audio_path=str(getattr(request, "audio_path", "") or ""),
             )
 
+        final_validation_context = {
+            "liveportrait_driver_source": stage_paths.get("liveportrait_driver_source"),
+            "liveportrait_motion_preset": stage_paths.get("liveportrait_motion_preset"),
+            "liveportrait_succeeded": stage_paths.get("liveportrait_succeeded"),
+            "liveportrait_fallback_used": stage_paths.get("liveportrait_fallback_used"),
+            "musetalk_source_kind": stage_paths.get("musetalk_source_kind"),
+        }
         if is_preview_request:
             final_validation = legacy_pipeline.validate_avatar_render_with_audio(
                 str(output_path),
                 str(getattr(request, "audio_path", "") or ""),
+                validation_context=final_validation_context,
             )
         else:
             final_validation = legacy_pipeline.validate_avatar_lesson_segment_with_audio(
                 str(output_path),
                 str(getattr(request, "audio_path", "") or ""),
+                validation_context=final_validation_context,
             )
         strict_pass = (
             legacy_pipeline.accept_avatar_render(final_validation)
@@ -4039,6 +4048,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         stage_paths["final_validation_warning_only"] = bool(final_validation.get("validation_warning_only"))
         stage_paths["final_validation_warnings"] = list(final_validation.get("validation_warnings") or [])
         stage_paths["final_validation_failure_reason"] = str(final_validation.get("failure_reason") or "")
+        stage_paths["avatar_validation_profile"] = str(final_validation.get("avatar_validation_profile") or "strict")
+        stage_paths["eye_blink_threshold_used"] = float(final_validation.get("eye_blink_threshold_used") or 0.0)
+        stage_paths["low_eye_blink_change_warning"] = bool(final_validation.get("low_eye_blink_change_warning"))
+        stage_paths["face_roi_artifact_source"] = str(final_validation.get("face_roi_artifact_source") or "none")
+        stage_paths["invalid_eye_motion_source"] = str(final_validation.get("invalid_eye_motion_source") or "none")
         if bool(final_validation.get("whole_frame_drift_diagnostic_only")):
             logger.warning(
                 "Avatar lesson segment whole_frame_drift diagnostic-only output=%s face_drift_ratio=%s audio_match=%s",
