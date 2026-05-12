@@ -61,6 +61,26 @@ def test_subtle_gaze_preset_uses_small_recentering_side_glance():
     assert max(abs(float(evt.get("dx_px") or 0.0)) for evt in gaze_events) <= 0.48
 
 
+def test_natural_visible_preset_adds_safe_visible_motion_without_boosted_retry():
+    recipe = _build_motion_recipe(30.0, seed=42, motion_preset="natural_visible")
+    conservative = _build_motion_recipe(30.0, seed=42, motion_preset="natural_conservative")
+    gaze_events = list(recipe.get("gaze_events") or [])
+
+    assert resolve_motion_preset("natural_visible") == "natural_visible"
+    assert recipe["motion_preset"] == "natural_visible"
+    assert recipe["boosted_profile"] is False
+    assert recipe["whole_frame_drift_guard"] is True
+    assert recipe["recenter_enabled"] is True
+    assert profile_sequence_for_preset(motion_preset="natural_visible") == ["default"]
+    assert float(recipe["blink_shift_px"]) > float(conservative["blink_shift_px"])
+    assert float(recipe["head_shift_max_px"]) > float(conservative["head_shift_max_px"])
+    assert float(recipe["base_sway_x_px"]) > float(conservative["base_sway_x_px"])
+    assert gaze_events
+    assert all(str(evt.get("direction")) in {"left", "right"} for evt in gaze_events)
+    assert all(bool(evt.get("recenter_enabled")) for evt in gaze_events)
+    assert max(abs(float(evt.get("dx_px") or 0.0)) for evt in gaze_events) <= 1.10
+
+
 def test_expressive_debug_allows_boosted_profiles():
     assert profile_sequence_for_preset(motion_preset="expressive_debug") == ["default", "boosted", "boosted_strong"]
 

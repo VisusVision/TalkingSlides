@@ -33,7 +33,7 @@ _COMPOSER_LONG_CLIP_MIN_UNIQUE_FRAMES = int(
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 _DEFAULT_MOTION_PRESET = "natural_conservative"
-_ALLOWED_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
+_ALLOWED_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze", "expressive_debug"}
 _BOOSTED_PROFILES = {"boosted", "boosted_strong", "stronger", "strong"}
 
 
@@ -489,6 +489,58 @@ def _preserve_rejected_driver_video(
         return token
     except Exception as exc:
         print(f"[LivePortrait] rejected_driver_preserve_failed reason={exc}", file=sys.stderr)
+        return ""
+
+
+def _should_preserve_selected_driver_video(output_path: Path) -> bool:
+    raw = str(os.environ.get("AVATAR_LIVEPORTRAIT_PRESERVE_DRIVER_DEBUG", "")).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return any(str(part).strip().lower() == "preview" for part in output_path.parts)
+
+
+def _preserve_selected_driver_video(
+    *,
+    candidate_video: Path,
+    output_path: Path,
+    profile: str,
+    driver_source_policy: str,
+    metrics: dict[str, object],
+) -> str:
+    try:
+        if not _should_preserve_selected_driver_video(output_path):
+            return ""
+        if (
+            not candidate_video.exists()
+            or not candidate_video.is_file()
+            or candidate_video.stat().st_size <= 0
+        ):
+            return ""
+        safe_profile = (
+            re.sub(r"[^A-Za-z0-9_.-]+", "_", str(profile or "default")).strip("._")
+            or "default"
+        )
+        debug_dir = output_path.parent / "liveportrait_debug" / "selected_drivers"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        target = debug_dir / f"{output_path.stem}.driver_{safe_profile}.selected.mp4"
+        shutil.copy2(candidate_video, target)
+        token = _safe_artifact_token(target)
+        print(
+            "[LivePortrait] selected_driver_preserved "
+            f"liveportrait_driver_source_policy={driver_source_policy} "
+            "liveportrait_driver_source=composer "
+            "liveportrait_composer_used=1 "
+            f"liveportrait_motion_profile={safe_profile} "
+            f"liveportrait_selected_driver_video={token} "
+            f"liveportrait_driver_unique_ratio={float(metrics.get('unique_ratio') or 0.0):.6f} "
+            f"liveportrait_driver_mean_mad={float(metrics.get('mean_mad') or 0.0):.6f}",
+            file=sys.stderr,
+        )
+        return token
+    except Exception as exc:
+        print(f"[LivePortrait] selected_driver_preserve_failed reason={exc}", file=sys.stderr)
         return ""
 
 
@@ -1062,7 +1114,7 @@ def main() -> int:
         _boosted_retry_used = False
         _driver_source = "source_video" if input_kind == "video" else "pending"
         _selected_profile = ""
-        _recenter_enabled = _motion_preset in {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
+        _recenter_enabled = _motion_preset in {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze", "expressive_debug"}
         _whole_frame_drift_guard = _motion_preset != "expressive_debug"
         _driving_action = "passed_through"
         _resolved_driving_duration_seconds = 0.0
@@ -1324,6 +1376,13 @@ def main() -> int:
                 _driver_source = "composer"
                 source_video = _candidate_video
                 _motion_source = f"image_composed:{_selected_profile}"
+                _preserve_selected_driver_video(
+                    candidate_video=Path(_candidate_video),
+                    output_path=output_path,
+                    profile=str(_selected_profile),
+                    driver_source_policy=str(_driver_source_policy),
+                    metrics=dict(_driver_metrics),
+                )
                 break
 
             if source_video is None and not _compose_succeeded_once and not _template_candidates:

@@ -322,6 +322,9 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", raising=False)
     default_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
 
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "natural_visible")
+    natural_visible_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "subtle_gaze")
     subtle_gaze_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
 
@@ -330,8 +333,11 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
 
     assert default_keys["liveportrait_motion_preset"] == "natural_conservative"
     assert default_keys["liveportrait_composer_validation_mode"] == "localized"
+    assert natural_visible_keys["liveportrait_motion_preset"] == "natural_visible"
+    assert natural_visible_keys["liveportrait_boosted_retry_allowed"] == "0"
     assert subtle_gaze_keys["liveportrait_motion_preset"] == "subtle_gaze"
     assert default_keys != subtle_gaze_keys
+    assert natural_visible_keys != subtle_gaze_keys
     assert subtle_gaze_keys["liveportrait_boosted_retry_allowed"] == "0"
     assert boosted_allowed_keys["liveportrait_boosted_retry_allowed"] == "1"
     assert subtle_gaze_keys != boosted_allowed_keys
@@ -943,13 +949,14 @@ def test_validate_avatar_animation_passes_for_dynamic_video(monkeypatch):
     assert result["animation_score"] >= result["min_score"]
 
 
-def _final_quality(*, eye_blink_change=0.0020, eye_movement_score=8.4, structural_artifact=False):
+def _final_quality(*, eye_blink_change=0.0020, eye_movement_score=8.4, head_motion_score=0.0038, structural_artifact=False):
     return {
         "unique_frames": 50,
         "lip_movement_score": 8.5,
         "eye_movement_score": eye_movement_score,
         "mouth_openness_change": 0.0064,
         "eye_blink_change": eye_blink_change,
+        "head_motion_score": head_motion_score,
         "loop_detected": False,
         "drift_detected": False,
         "glitch_detected": False,
@@ -1086,6 +1093,92 @@ def test_restoration_output_slight_blink_gain_is_accepted_for_composer(monkeypat
     assert result["low_eye_blink_change_warning"] is True
     assert result["failure_reason"] == ""
     assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+def test_natural_visible_uses_composer_subtle_validation_profile(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.8))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "natural-visible.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(liveportrait_motion_preset="natural_visible"),
+    )
+
+    assert result["avatar_validation_profile"] == "composer_subtle_motion"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0015)
+    assert result["failure_reason"] == ""
+    assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+def test_visual_quality_warning_is_not_a_hard_validation_failure(monkeypatch):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4, head_motion_score=0.0020),
+    )
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "restored.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(),
+    )
+
+    summary = avatar_pipeline.evaluate_avatar_visual_quality(
+        result,
+        validation_context={
+            **_composer_subtle_context(),
+            "liveportrait_driver_mean_mad": 0.0007,
+        },
+        stage_metrics={
+            "liveportrait": {
+                "frame_count": 491,
+                "animated": False,
+                "global_frame_diff_mean": 0.08,
+                "quality_checks": _final_quality(
+                    eye_blink_change=0.0004,
+                    eye_movement_score=1.2,
+                    head_motion_score=0.0004,
+                ),
+            },
+            "musetalk": result,
+            "restored": result,
+            "final": result,
+        },
+    )
+
+    assert avatar_pipeline.accept_avatar_render(result) is True
+    assert summary["avatar_quality_profile"] == "composer_visible_motion"
+    assert summary["avatar_visual_motion_target_met"] is False
+    assert "low_visible_motion" in summary["avatar_quality_warning"]
+    assert summary["motion_loss_stage"] == "composer"
+    assert summary["avatar_stage_quality_summary"]["liveportrait"]["visual_motion_score"] < 1.0
+
+
+def test_static_fallback_does_not_count_as_production_quality(monkeypatch):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _final_quality(eye_blink_change=0.0040, eye_movement_score=8.4, head_motion_score=0.0060),
+    )
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "static-fallback.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(
+            liveportrait_fallback_used=True,
+            musetalk_source_kind="static_fallback",
+        ),
+    )
+
+    summary = avatar_pipeline.evaluate_avatar_visual_quality(
+        result,
+        validation_context=_composer_subtle_context(
+            liveportrait_fallback_used=True,
+            musetalk_source_kind="static_fallback",
+        ),
+        stage_metrics={"final": result},
+    )
+
+    assert avatar_pipeline.accept_avatar_render(result) is True
+    assert summary["avatar_visual_motion_target_met"] is False
+    assert summary["avatar_quality_warning"] == "static_fallback_not_production_quality"
+    assert summary["motion_loss_stage"] == "liveportrait"
 
 
 def test_render_avatar_segment_cache_is_invalidated_when_audio_changes(tmp_path, monkeypatch):
@@ -1718,6 +1811,11 @@ def test_liveportrait_output_is_normalized_before_gate_and_musetalk(tmp_path, mo
     assert stage_paths["low_eye_blink_change_warning"] is True
     assert stage_paths["face_roi_artifact_source"] == "cascade_removed"
     assert stage_paths["invalid_eye_motion_source"] == "none"
+    assert stage_paths["avatar_quality_profile"] == "strict_motion_quality"
+    assert "avatar_stage_quality_summary" in stage_paths
+    assert "liveportrait" in stage_paths["avatar_stage_quality_summary"]
+    assert "avatar_visual_motion_score" in stage_paths
+    assert "motion_loss_stage" in stage_paths
     assert musetalk_calls == [str(normalized_handoff)]
     assert raw_liveportrait.exists()
     assert musetalk_output.exists()

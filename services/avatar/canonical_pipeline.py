@@ -189,6 +189,39 @@ def _safe_validation(video_path: str, audio_path: str, *, fallback_reason: str) 
         }
 
 
+def _safe_stage_motion_metrics(
+    video_path: str,
+    *,
+    validation_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    path = Path(str(video_path or ""))
+    if not path.exists() or not path.is_file():
+        return {
+            "path": str(path),
+            "animated": False,
+            "frame_count": 0,
+            "failure_reason": "stage_quality_probe_missing",
+            "quality_checks": {},
+        }
+    try:
+        try:
+            metrics = legacy_pipeline.validate_avatar_animation(str(path), validation_context=validation_context)
+        except TypeError as type_exc:
+            if "validation_context" not in str(type_exc):
+                raise
+            metrics = legacy_pipeline.validate_avatar_animation(str(path))
+        metrics["path"] = str(path)
+        return metrics
+    except Exception as exc:
+        return {
+            "path": str(path),
+            "animated": False,
+            "frame_count": 0,
+            "failure_reason": f"stage_quality_probe_failed:{exc}",
+            "quality_checks": {},
+        }
+
+
 def _liveportrait_motion_gate(
     video_path: str,
     *,
@@ -1256,6 +1289,20 @@ def _liveportrait_output_contract_fields(stage_paths: dict[str, Any]) -> dict[st
     }
 
 
+def _avatar_quality_fields(stage_paths: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "avatar_quality_profile": str(stage_paths.get("avatar_quality_profile") or "strict_motion_quality"),
+        "avatar_quality_warning": str(stage_paths.get("avatar_quality_warning") or ""),
+        "avatar_visual_motion_score": float(stage_paths.get("avatar_visual_motion_score") or 0.0),
+        "avatar_visual_motion_target_met": bool(stage_paths.get("avatar_visual_motion_target_met")),
+        "avatar_stage_quality_summary": dict(stage_paths.get("avatar_stage_quality_summary") or {}),
+        "lp_visual_motion_score": float(stage_paths.get("lp_visual_motion_score") or 0.0),
+        "mt_visual_motion_score": float(stage_paths.get("mt_visual_motion_score") or 0.0),
+        "restored_visual_motion_score": float(stage_paths.get("restored_visual_motion_score") or 0.0),
+        "motion_loss_stage": str(stage_paths.get("motion_loss_stage") or "none"),
+    }
+
+
 def _apply_liveportrait_output_contract_info(stage_paths: dict[str, Any], info: dict[str, Any]) -> None:
     stage_paths["liveportrait_output_normalized"] = bool(info.get("normalized"))
     stage_paths["liveportrait_output_normalization_failed"] = bool(info.get("normalization_failed"))
@@ -1475,10 +1522,12 @@ def _env_enabled(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-_LIVEPORTRAIT_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
-_LIVEPORTRAIT_SAFE_REQUEST_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze"}
+_LIVEPORTRAIT_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze", "expressive_debug"}
+_LIVEPORTRAIT_SAFE_REQUEST_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze"}
 _LIVEPORTRAIT_REQUEST_PRESET_ALIASES = {
     "natural": "natural_conservative",
+    "visible": "natural_visible",
+    "natural_visible": "natural_visible",
     "blink": "subtle_blink",
     "blink_only": "subtle_blink",
     "gaze": "subtle_gaze",
@@ -1562,6 +1611,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_driver_source_policy",
         "liveportrait_driver_source",
         "liveportrait_rejected_driver_video",
+        "liveportrait_selected_driver_video",
         "liveportrait_driver_rejection_reason",
         "liveportrait_driver_validation_mode",
         "liveportrait_driver_near_static_threshold_profile",
@@ -2261,6 +2311,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_driver_recipe_blink_events": int(cached_stage_paths.get("liveportrait_driver_recipe_blink_events") or 0),
         "liveportrait_driver_recipe_gaze_events": int(cached_stage_paths.get("liveportrait_driver_recipe_gaze_events") or 0),
         "liveportrait_rejected_driver_video": str(cached_stage_paths.get("liveportrait_rejected_driver_video") or ""),
+        "liveportrait_selected_driver_video": str(cached_stage_paths.get("liveportrait_selected_driver_video") or ""),
         "liveportrait_driver_rejection_reason": str(cached_stage_paths.get("liveportrait_driver_rejection_reason") or ""),
         "liveportrait_driver_rejection_unique_ratio": float(cached_stage_paths.get("liveportrait_driver_rejection_unique_ratio") or 0.0),
         "liveportrait_driver_rejection_mean_mad": float(cached_stage_paths.get("liveportrait_driver_rejection_mean_mad") or 0.0),
@@ -2277,6 +2328,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_fallback_used": bool(cached_stage_paths.get("liveportrait_fallback_used")),
         "liveportrait_fallback_reason": str(cached_stage_paths.get("liveportrait_fallback_reason") or ""),
         **_liveportrait_output_contract_fields(cached_stage_paths),
+        **_avatar_quality_fields(cached_stage_paths),
         "musetalk_source_video": str(cached_stage_paths.get("musetalk_source_video") or ""),
         "musetalk_source_kind": str(cached_stage_paths.get("musetalk_source_kind") or ""),
         "restoration_enabled": bool(cached_stage_paths.get("restoration_enabled")),
@@ -2335,6 +2387,7 @@ def _write_meta(
         "liveportrait_driver_recipe_blink_events": int(stage_paths.get("liveportrait_driver_recipe_blink_events") or 0),
         "liveportrait_driver_recipe_gaze_events": int(stage_paths.get("liveportrait_driver_recipe_gaze_events") or 0),
         "liveportrait_rejected_driver_video": str(stage_paths.get("liveportrait_rejected_driver_video") or ""),
+        "liveportrait_selected_driver_video": str(stage_paths.get("liveportrait_selected_driver_video") or ""),
         "liveportrait_driver_rejection_reason": str(stage_paths.get("liveportrait_driver_rejection_reason") or ""),
         "liveportrait_driver_rejection_unique_ratio": float(stage_paths.get("liveportrait_driver_rejection_unique_ratio") or 0.0),
         "liveportrait_driver_rejection_mean_mad": float(stage_paths.get("liveportrait_driver_rejection_mean_mad") or 0.0),
@@ -2351,6 +2404,7 @@ def _write_meta(
         "liveportrait_fallback_used": bool(stage_paths.get("liveportrait_fallback_used")),
         "liveportrait_fallback_reason": str(stage_paths.get("liveportrait_fallback_reason") or ""),
         **_liveportrait_output_contract_fields(stage_paths),
+        **_avatar_quality_fields(stage_paths),
         "musetalk_source_video": str(stage_paths.get("musetalk_source_video") or ""),
         "musetalk_source_kind": str(stage_paths.get("musetalk_source_kind") or ""),
         "restoration_enabled": bool(stage_paths.get("restoration_enabled")),
@@ -2419,6 +2473,7 @@ def _final_payload(
         "liveportrait_driver_recipe_blink_events": int(stage_paths.get("liveportrait_driver_recipe_blink_events") or 0),
         "liveportrait_driver_recipe_gaze_events": int(stage_paths.get("liveportrait_driver_recipe_gaze_events") or 0),
         "liveportrait_rejected_driver_video": str(stage_paths.get("liveportrait_rejected_driver_video") or ""),
+        "liveportrait_selected_driver_video": str(stage_paths.get("liveportrait_selected_driver_video") or ""),
         "liveportrait_driver_rejection_reason": str(stage_paths.get("liveportrait_driver_rejection_reason") or ""),
         "liveportrait_driver_rejection_unique_ratio": float(stage_paths.get("liveportrait_driver_rejection_unique_ratio") or 0.0),
         "liveportrait_driver_rejection_mean_mad": float(stage_paths.get("liveportrait_driver_rejection_mean_mad") or 0.0),
@@ -2435,6 +2490,7 @@ def _final_payload(
         "liveportrait_fallback_used": bool(stage_paths.get("liveportrait_fallback_used")),
         "liveportrait_fallback_reason": str(stage_paths.get("liveportrait_fallback_reason") or ""),
         **_liveportrait_output_contract_fields(stage_paths),
+        **_avatar_quality_fields(stage_paths),
         "musetalk_source_video": str(stage_paths.get("musetalk_source_video") or ""),
         "musetalk_source_kind": str(stage_paths.get("musetalk_source_kind") or ""),
         "restoration_enabled": bool(stage_paths.get("restoration_enabled")),
@@ -2650,6 +2706,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_driver_recipe_blink_events": 0,
         "liveportrait_driver_recipe_gaze_events": 0,
         "liveportrait_rejected_driver_video": "",
+        "liveportrait_selected_driver_video": "",
         "liveportrait_driver_rejection_reason": "",
         "liveportrait_driver_rejection_unique_ratio": 0.0,
         "liveportrait_driver_rejection_mean_mad": 0.0,
@@ -2674,6 +2731,15 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "restoration_failure_reason": "",
         "final_output_path": str(output_path),
         "final_avatar_engine_chain": [],
+        "avatar_quality_profile": "strict_motion_quality",
+        "avatar_quality_warning": "",
+        "avatar_visual_motion_score": 0.0,
+        "avatar_visual_motion_target_met": False,
+        "avatar_stage_quality_summary": {},
+        "lp_visual_motion_score": 0.0,
+        "mt_visual_motion_score": 0.0,
+        "restored_visual_motion_score": 0.0,
+        "motion_loss_stage": "none",
     }
     canonical_input_payload = {
         "request_trace": dict(request_trace),
@@ -2748,6 +2814,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "liveportrait_driver_recipe_blink_events": stage_paths.get("liveportrait_driver_recipe_blink_events"),
                     "liveportrait_driver_recipe_gaze_events": stage_paths.get("liveportrait_driver_recipe_gaze_events"),
                     "liveportrait_rejected_driver_video": stage_paths.get("liveportrait_rejected_driver_video"),
+                    "liveportrait_selected_driver_video": stage_paths.get("liveportrait_selected_driver_video"),
                     "liveportrait_driver_rejection_reason": stage_paths.get("liveportrait_driver_rejection_reason"),
                     "liveportrait_driver_rejection_unique_ratio": stage_paths.get("liveportrait_driver_rejection_unique_ratio"),
                     "liveportrait_driver_rejection_mean_mad": stage_paths.get("liveportrait_driver_rejection_mean_mad"),
@@ -2828,6 +2895,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "liveportrait_driver_recipe_blink_events": stage_paths.get("liveportrait_driver_recipe_blink_events"),
                     "liveportrait_driver_recipe_gaze_events": stage_paths.get("liveportrait_driver_recipe_gaze_events"),
                     "liveportrait_rejected_driver_video": stage_paths.get("liveportrait_rejected_driver_video"),
+                    "liveportrait_selected_driver_video": stage_paths.get("liveportrait_selected_driver_video"),
                     "liveportrait_driver_rejection_reason": stage_paths.get("liveportrait_driver_rejection_reason"),
                     "liveportrait_driver_rejection_unique_ratio": stage_paths.get("liveportrait_driver_rejection_unique_ratio"),
                     "liveportrait_driver_rejection_mean_mad": stage_paths.get("liveportrait_driver_rejection_mean_mad"),
@@ -4023,6 +4091,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             "liveportrait_succeeded": stage_paths.get("liveportrait_succeeded"),
             "liveportrait_fallback_used": stage_paths.get("liveportrait_fallback_used"),
             "musetalk_source_kind": stage_paths.get("musetalk_source_kind"),
+            "liveportrait_driver_mean_mad": stage_paths.get("liveportrait_driver_mean_mad"),
         }
         if is_preview_request:
             final_validation = legacy_pipeline.validate_avatar_render_with_audio(
@@ -4053,6 +4122,29 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         stage_paths["low_eye_blink_change_warning"] = bool(final_validation.get("low_eye_blink_change_warning"))
         stage_paths["face_roi_artifact_source"] = str(final_validation.get("face_roi_artifact_source") or "none")
         stage_paths["invalid_eye_motion_source"] = str(final_validation.get("invalid_eye_motion_source") or "none")
+        final_validation["path"] = str(output_path)
+        stage_quality_metrics: dict[str, dict[str, Any]] = {"final": dict(final_validation)}
+        if is_preview_request:
+            quality_context = dict(final_validation_context)
+            quality_context["whole_frame_drift"] = "whole_frame_drift" in str(final_validation.get("failure_reason") or "")
+            stage_probe_specs = [
+                ("liveportrait", Path(str(stage_paths.get("liveportrait_output_path") or ""))),
+                ("musetalk", musetalk_output),
+            ]
+            if bool(stage_paths.get("restoration_succeeded")):
+                stage_probe_specs.append(("restored", restoration_output))
+            for stage_name, stage_path in stage_probe_specs:
+                if stage_path.exists() and stage_path.is_file():
+                    stage_quality_metrics[stage_name] = _safe_stage_motion_metrics(
+                        str(stage_path),
+                        validation_context=final_validation_context,
+                    )
+            quality_summary = legacy_pipeline.evaluate_avatar_visual_quality(
+                final_validation,
+                validation_context=quality_context,
+                stage_metrics=stage_quality_metrics,
+            )
+            stage_paths.update(quality_summary)
         if bool(final_validation.get("whole_frame_drift_diagnostic_only")):
             logger.warning(
                 "Avatar lesson segment whole_frame_drift diagnostic-only output=%s face_drift_ratio=%s audio_match=%s",
@@ -4068,7 +4160,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             and not bool(final_validation.get("duration_mismatch"))
         )
         stage_paths["preview_usable"] = bool(stage_paths.get("preview_file_exists") and stage_paths.get("final_output_playable_motion"))
-        preview_warning = _combined_warning(*warning_parts)
+        preview_warning = _combined_warning(*warning_parts, str(stage_paths.get("avatar_quality_warning") or ""))
         if not strict_pass:
             debug_path = legacy_pipeline._save_failed_render_debug(
                 output_path=output_path,

@@ -49,7 +49,7 @@ _CONTINUOUS_EYE_WANDER_ENABLED = str(
 
 _DIRECTIONS = ["left", "right", "up", "down", "top-left", "top-right", "bottom-left", "bottom-right"]
 _DEFAULT_MOTION_PRESET = "natural_conservative"
-_ALLOWED_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze", "expressive_debug"}
+_ALLOWED_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze", "expressive_debug"}
 _BOOSTED_PROFILES = {"boosted", "boosted_strong", "stronger", "strong"}
 
 
@@ -126,6 +126,27 @@ def _preset_settings(preset: str, *, motion_profile: str = "default") -> dict[st
             "gaze_duration_scale": 0.78,
             "short_gaze_scale": 0.62,
             "short_gaze_min_px": 0.22,
+            "recenter_enabled": True,
+            "whole_frame_drift_guard": True,
+        }
+    if resolved == "natural_visible":
+        return {
+            "preset": resolved,
+            "gaze_enabled": True,
+            "directions": ["left", "right"],
+            "head_shift_cap_px": 1.10,
+            "boosted_head_shift_cap_px": 1.15,
+            "head_shift_min_px": 0.42,
+            "blink_duration_s": max(float(_BLINK_DUR), 0.34),
+            "blink_shift_base_px": max(float(_BLINK_SHIFT_PX), 0.68),
+            "blink_shift_cap_px": 0.72 if not boosted_profile else 0.82,
+            "blink_shift_min_px": 0.34,
+            "base_sway_x_cap_px": 0.085,
+            "base_sway_y_cap_px": 0.060,
+            "gaze_interval_scale": 0.28,
+            "gaze_duration_scale": 0.92,
+            "short_gaze_scale": 0.72,
+            "short_gaze_min_px": 0.42,
             "recenter_enabled": True,
             "whole_frame_drift_guard": True,
         }
@@ -263,7 +284,10 @@ def _build_motion_recipe(
     effective_blink_min = max(float(_BLINK_MIN) * float(scales["blink_interval"]), 0.9)
     effective_blink_max = max(float(_BLINK_MAX) * float(scales["blink_interval"]), effective_blink_min + 0.2)
     effective_gaze_min = max(float(_GAZE_MIN) * float(scales["gaze_interval"]) * float(preset_settings["gaze_interval_scale"]), 1.2)
-    effective_gaze_max = max(float(_GAZE_MAX) * float(scales["gaze_interval"]), effective_gaze_min + 0.6)
+    effective_gaze_max = max(
+        float(_GAZE_MAX) * float(scales["gaze_interval"]) * float(preset_settings["gaze_interval_scale"]),
+        effective_gaze_min + 0.6,
+    )
     head_cap = float(preset_settings["boosted_head_shift_cap_px"] if boosted_profile else preset_settings["head_shift_cap_px"])
     effective_head_shift_max_px = _bounded(
         float(_HEAD_SHIFT_MAX_PX) * float(scales["head_shift"]),

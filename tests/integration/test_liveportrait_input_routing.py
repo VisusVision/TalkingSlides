@@ -1168,3 +1168,54 @@ def test_image_input_forces_composer_when_policy_is_composer_for_image(tmp_path,
     stderr_text = capsys.readouterr().err
     assert "liveportrait_driver_source_policy=composer_for_image" in stderr_text
     assert "liveportrait_driver_source=composer" in stderr_text
+
+
+def test_natural_visible_uses_composer_without_boosted_retry_and_preserves_driver(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {}
+    compose_kwargs: dict[str, object] = {}
+
+    def _fake_compose(target_duration_s, output_path, **kwargs):
+        compose_kwargs.update(kwargs)
+        Path(output_path).write_bytes(b"natural-visible-driver")
+        return True
+
+    _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "natural_visible")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", "0")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PRESERVE_DRIVER_DEBUG", "1")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert compose_kwargs.get("motion_preset") == "natural_visible"
+    assert compose_kwargs.get("motion_profile") == "default"
+    assert list((paths["output_path"].parent / "liveportrait_debug" / "selected_drivers").glob("*.selected.mp4"))
+
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_motion_preset=natural_visible" in stderr_text
+    assert "liveportrait_driver_source_policy=composer_for_image" in stderr_text
+    assert "liveportrait_driver_source=composer" in stderr_text
+    assert "liveportrait_boosted_retry_used=0" in stderr_text
+    assert "liveportrait_whole_frame_drift_guard=1" in stderr_text
+    assert "liveportrait_selected_driver_video=" in stderr_text

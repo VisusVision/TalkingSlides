@@ -9,7 +9,7 @@ from typing import Any
 from django.utils import timezone
 
 
-SAFE_AVATAR_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze"}
+SAFE_AVATAR_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze"}
 DEFAULT_AVATAR_MOTION_PRESET = "natural_conservative"
 AVATAR_RUNTIME_SETTINGS_KEY = "avatar_runtime_settings"
 
@@ -17,6 +17,8 @@ _MOTION_ALIASES = {
     "": DEFAULT_AVATAR_MOTION_PRESET,
     "natural": DEFAULT_AVATAR_MOTION_PRESET,
     "natural_conservative": DEFAULT_AVATAR_MOTION_PRESET,
+    "visible": "natural_visible",
+    "natural_visible": "natural_visible",
     "blink": "subtle_blink",
     "blink_only": "subtle_blink",
     "subtle_blink": "subtle_blink",

@@ -21,6 +21,7 @@ from django.test.utils import override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
+from core.avatar_runtime_settings import normalize_safe_avatar_motion_preset  # noqa: E402
 from core.models import AvatarOverlayPreference, AvatarRenderJob, Job, Project, UserProfile  # noqa: E402
 
 pytestmark = pytest.mark.django_db
@@ -303,6 +304,11 @@ def test_avatar_runtime_settings_patch_normalizes_unsafe_values_without_base_rer
     lesson.refresh_from_db()
     assert lesson.draft_data["metadata"]["dirty"] is False
     assert list(Job.objects.filter(project=lesson).values_list("id", flat=True)) == [job.id]
+
+
+def test_avatar_runtime_settings_allow_natural_visible_but_not_expressive_debug():
+    assert normalize_safe_avatar_motion_preset("natural_visible") == "natural_visible"
+    assert normalize_safe_avatar_motion_preset("expressive_debug") == "natural_conservative"
 
 
 def test_per_project_runtime_settings_are_passed_to_avatar_options(monkeypatch):

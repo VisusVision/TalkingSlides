@@ -24,7 +24,7 @@ from .preprocess import AvatarValidationError, preprocess_avatar_image
 logger = logging.getLogger(__name__)
 
 _LIVEPORTRAIT_HEALTH_CACHE: dict[str, bool] = {}
-_COMPOSER_SUBTLE_MOTION_PRESETS = {"natural_conservative", "subtle_blink", "subtle_gaze"}
+_COMPOSER_SUBTLE_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze"}
 
 
 @dataclass
@@ -616,6 +616,185 @@ def _apply_avatar_validation_profile(
         else ("cascade_removed" if low_blink_under_strict or low_mouth else "none")
     )
     return adjusted
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _visual_quality_targets() -> dict[str, float]:
+    return {
+        "eye_blink_change": _safe_float(os.environ.get("AVATAR_VISUAL_EYE_BLINK_TARGET"), 0.0023),
+        "head_motion_score": _safe_float(os.environ.get("AVATAR_VISUAL_HEAD_MOTION_TARGET"), 0.0045),
+        "global_frame_diff_mean": _safe_float(os.environ.get("AVATAR_VISUAL_GLOBAL_FRAME_DIFF_TARGET"), 0.35),
+        "eye_movement_score": _safe_float(os.environ.get("AVATAR_VISUAL_EYE_MOVEMENT_TARGET"), 3.0),
+        "visual_motion_score": _safe_float(os.environ.get("AVATAR_VISUAL_MOTION_SCORE_TARGET"), 1.0),
+        "driver_mean_mad": _safe_float(os.environ.get("AVATAR_VISUAL_DRIVER_MEAN_MAD_TARGET"), 0.001),
+    }
+
+
+def _quality_checks_from_metrics(metrics: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metrics, dict):
+        return {}
+    quality = metrics.get("quality_checks")
+    return dict(quality) if isinstance(quality, dict) else {}
+
+
+def _avatar_visual_motion_score(metrics: dict[str, Any] | None) -> float:
+    quality = _quality_checks_from_metrics(metrics)
+    targets = _visual_quality_targets()
+
+    def ratio(value: float, target: float, cap: float = 1.5) -> float:
+        return min(max(float(value) / max(float(target), 1e-9), 0.0), float(cap))
+
+    score = (
+        ratio(_safe_float(quality.get("eye_blink_change")), targets["eye_blink_change"]) * 0.42
+        + ratio(_safe_float(quality.get("head_motion_score")), targets["head_motion_score"]) * 0.25
+        + ratio(_safe_float((metrics or {}).get("global_frame_diff_mean")), targets["global_frame_diff_mean"], cap=1.2) * 0.20
+        + ratio(_safe_float(quality.get("eye_movement_score")), targets["eye_movement_score"]) * 0.13
+    )
+    return round(float(score), 6)
+
+
+def _avatar_stage_quality_entry(stage: str, metrics: dict[str, Any] | None) -> dict[str, Any]:
+    metric_payload = dict(metrics or {})
+    quality = _quality_checks_from_metrics(metric_payload)
+    failure_reason = str(metric_payload.get("failure_reason") or "")
+    drift = bool(quality.get("drift_detected")) or "whole_frame_drift" in failure_reason
+    artifact = bool(
+        quality.get("face_artifact_detected")
+        or quality.get("structural_face_artifact_detected")
+        or quality.get("mouth_artifact_detected")
+        or quality.get("eye_artifact_detected")
+        or quality.get("face_warp_detected")
+        or "face_roi_artifact" in failure_reason
+    )
+    return {
+        "stage": str(stage),
+        "path": str(metric_payload.get("path") or ""),
+        "frame_count": int(metric_payload.get("frame_count") or 0),
+        "animated": bool(metric_payload.get("animated")),
+        "failure_reason": failure_reason,
+        "visual_motion_score": _avatar_visual_motion_score(metric_payload),
+        "eye_blink_change": round(_safe_float(quality.get("eye_blink_change")), 6),
+        "eye_movement_score": round(_safe_float(quality.get("eye_movement_score")), 6),
+        "lip_movement_score": round(_safe_float(quality.get("lip_movement_score")), 6),
+        "mouth_openness_change": round(_safe_float(quality.get("mouth_openness_change")), 6),
+        "head_motion_score": round(_safe_float(quality.get("head_motion_score")), 6),
+        "global_frame_diff_mean": round(_safe_float(metric_payload.get("global_frame_diff_mean")), 6),
+        "whole_frame_drift": bool(drift),
+        "face_roi_artifact": bool(artifact),
+    }
+
+
+def evaluate_avatar_visual_quality(
+    validation: dict[str, Any],
+    *,
+    validation_context: dict[str, Any] | None = None,
+    stage_metrics: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Warning-only production visual target layer; hard validation remains separate."""
+    context = dict(validation_context or {})
+    stages = {
+        str(name): _avatar_stage_quality_entry(str(name), metrics)
+        for name, metrics in dict(stage_metrics or {}).items()
+    }
+    final_entry = _avatar_stage_quality_entry("final", validation)
+    stages.setdefault("final", final_entry)
+    targets = _visual_quality_targets()
+    quality = _quality_checks_from_metrics(validation)
+    if not quality:
+        return {
+            "avatar_quality_profile": "strict_motion_quality",
+            "avatar_quality_warning": "",
+            "avatar_visual_motion_score": 0.0,
+            "avatar_visual_motion_target_met": False,
+            "avatar_visual_motion_targets": {key: round(float(value), 6) for key, value in targets.items()},
+            "avatar_stage_quality_summary": stages,
+            "lp_visual_motion_score": round(float(stages.get("liveportrait", {}).get("visual_motion_score") or 0.0), 6),
+            "mt_visual_motion_score": round(float(stages.get("musetalk", {}).get("visual_motion_score") or 0.0), 6),
+            "restored_visual_motion_score": round(float(stages.get("restored", stages.get("final", {})).get("visual_motion_score") or 0.0), 6),
+            "motion_loss_stage": "none",
+        }
+
+    composer_liveportrait = bool(
+        str(context.get("liveportrait_driver_source") or "").strip().lower() == "composer"
+        and str(context.get("musetalk_source_kind") or "").strip().lower() == "liveportrait"
+        and _truthy(context.get("liveportrait_succeeded"))
+        and not _truthy(context.get("liveportrait_fallback_used"))
+    )
+    static_fallback = bool(
+        str(context.get("musetalk_source_kind") or "").strip().lower() == "static_fallback"
+        or _truthy(context.get("liveportrait_fallback_used"))
+    )
+    hard_artifact = bool(final_entry.get("whole_frame_drift") or final_entry.get("face_roi_artifact"))
+    hard_validation_passed = bool(
+        validation.get("motion_real")
+        and validation.get("animated")
+        and not str(validation.get("failure_reason") or "").strip()
+    )
+
+    score = float(final_entry.get("visual_motion_score") or 0.0)
+    blink = _safe_float(quality.get("eye_blink_change"))
+    head = _safe_float(quality.get("head_motion_score"))
+    profile = "composer_visible_motion" if composer_liveportrait else "strict_motion_quality"
+
+    warning_reasons: list[str] = []
+    if static_fallback:
+        warning_reasons.append("static_fallback_not_production_quality")
+    if not hard_artifact:
+        if score < targets["visual_motion_score"]:
+            warning_reasons.append("low_visible_motion")
+        if blink < targets["eye_blink_change"]:
+            warning_reasons.append("low_visible_blink")
+        if head < targets["head_motion_score"]:
+            warning_reasons.append("low_head_motion")
+
+    target_met = bool(
+        hard_validation_passed
+        and not static_fallback
+        and not hard_artifact
+        and score >= targets["visual_motion_score"]
+        and blink >= targets["eye_blink_change"]
+        and head >= targets["head_motion_score"]
+    )
+    if target_met:
+        warning_reasons = []
+
+    stage_scores = {name: float(entry.get("visual_motion_score") or 0.0) for name, entry in stages.items()}
+    lp_score = float(stage_scores.get("liveportrait") or stage_scores.get("lp") or 0.0)
+    mt_score = float(stage_scores.get("musetalk") or stage_scores.get("mt") or 0.0)
+    restored_score = float(stage_scores.get("restored") or stage_scores.get("final") or 0.0)
+    driver_mean_mad = _safe_float(context.get("liveportrait_driver_mean_mad"))
+    motion_loss_stage = "none"
+    if static_fallback:
+        motion_loss_stage = "liveportrait"
+    elif not target_met:
+        if composer_liveportrait and lp_score > 0.0 and lp_score < targets["visual_motion_score"] and 0.0 < driver_mean_mad < targets["driver_mean_mad"]:
+            motion_loss_stage = "composer"
+        elif lp_score > 0.0 and lp_score < targets["visual_motion_score"]:
+            motion_loss_stage = "liveportrait"
+        elif lp_score > 0.0 and mt_score > 0.0 and mt_score < max(lp_score * 0.75, targets["visual_motion_score"]):
+            motion_loss_stage = "musetalk"
+        elif mt_score > 0.0 and restored_score > 0.0 and restored_score < mt_score * 0.75:
+            motion_loss_stage = "restoration"
+
+    warning = ",".join(dict.fromkeys(warning_reasons)) if warning_reasons else ""
+    return {
+        "avatar_quality_profile": profile,
+        "avatar_quality_warning": warning if hard_validation_passed or static_fallback else "",
+        "avatar_visual_motion_score": round(float(score), 6),
+        "avatar_visual_motion_target_met": bool(target_met),
+        "avatar_visual_motion_targets": {key: round(float(value), 6) for key, value in targets.items()},
+        "avatar_stage_quality_summary": stages,
+        "lp_visual_motion_score": round(float(lp_score), 6),
+        "mt_visual_motion_score": round(float(mt_score), 6),
+        "restored_visual_motion_score": round(float(restored_score), 6),
+        "motion_loss_stage": motion_loss_stage,
+    }
 
 
 def _analyze_avatar_motion_quality(video_path: str, max_samples: int = 64) -> dict[str, Any]:
@@ -1967,6 +2146,7 @@ __all__ = [
     "has_valid_lip_motion",
     "has_valid_eye_motion",
     "has_face_artifacts",
+    "evaluate_avatar_visual_quality",
     "accept_avatar_render",
     "accept_avatar_lesson_segment_render",
     "apply_lesson_segment_validation_policy",

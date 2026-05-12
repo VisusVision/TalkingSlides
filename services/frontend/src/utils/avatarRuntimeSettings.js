@@ -1,4 +1,4 @@
-const SAFE_MOTION_PRESETS = new Set(['natural_conservative', 'subtle_blink', 'subtle_gaze']);
+const SAFE_MOTION_PRESETS = new Set(['natural_conservative', 'natural_visible', 'subtle_blink', 'subtle_gaze']);
 
 export const DEFAULT_AVATAR_RUNTIME_SETTINGS = {
   motion_preset: 'natural_conservative',
@@ -8,6 +8,7 @@ export const DEFAULT_AVATAR_RUNTIME_SETTINGS = {
 
 export const AVATAR_MOTION_STYLE_OPTIONS = [
   { value: 'natural_conservative', label: 'Natural' },
+  { value: 'natural_visible', label: 'Visible natural' },
   { value: 'subtle_blink', label: 'Blink only' },
   { value: 'subtle_gaze', label: 'Subtle gaze' },
 ];
