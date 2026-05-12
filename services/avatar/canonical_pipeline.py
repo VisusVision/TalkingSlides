@@ -84,6 +84,58 @@ def _file_debug_info(path: Path) -> dict[str, Any]:
     return info
 
 
+def _parse_ffprobe_rate(raw_value: str) -> float:
+    raw = str(raw_value or "").strip()
+    if not raw or raw == "0/0":
+        return 0.0
+    if "/" in raw:
+        num, den = raw.split("/", 1)
+        try:
+            denominator = float(den)
+            return float(num) / denominator if denominator else 0.0
+        except Exception:
+            return 0.0
+    try:
+        return float(raw)
+    except Exception:
+        return 0.0
+
+
+def _probe_video_fps(path: str | Path) -> float:
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=avg_frame_rate,r_frame_rate",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except Exception:
+        return 0.0
+    if proc.returncode != 0:
+        return 0.0
+    try:
+        payload = json.loads(proc.stdout or "{}")
+        stream = (payload.get("streams") or [{}])[0] or {}
+    except Exception:
+        return 0.0
+    avg_fps = _parse_ffprobe_rate(str(stream.get("avg_frame_rate") or ""))
+    if avg_fps > 0.0:
+        return round(float(avg_fps), 6)
+    return round(float(_parse_ffprobe_rate(str(stream.get("r_frame_rate") or ""))), 6)
+
+
 def _shared_liveportrait_video_motion_probe(path: Path) -> dict[str, Any]:
     try:
         from scripts.liveportrait_runner import _probe_driving_clip_variation
@@ -1169,6 +1221,179 @@ def _normalize_preview_video_for_musetalk(
     }
 
 
+_LIVEPORTRAIT_OUTPUT_CONTRACT_FIELD_DEFAULTS: dict[str, Any] = {
+    "liveportrait_output_normalized": False,
+    "liveportrait_output_normalization_failed": False,
+    "liveportrait_output_normalization_reason": "",
+    "liveportrait_original_fps": 0.0,
+    "liveportrait_original_frame_count": 0,
+    "liveportrait_original_duration": 0.0,
+    "liveportrait_normalized_fps": 0.0,
+    "liveportrait_normalized_frame_count": 0,
+    "liveportrait_normalized_duration": 0.0,
+    "liveportrait_expected_fps": 0.0,
+    "liveportrait_expected_frame_count": 0,
+    "liveportrait_expected_duration": 0.0,
+    "liveportrait_normalized_output_video": "",
+}
+
+
+def _liveportrait_output_contract_fields(stage_paths: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "liveportrait_output_normalized": bool(stage_paths.get("liveportrait_output_normalized")),
+        "liveportrait_output_normalization_failed": bool(stage_paths.get("liveportrait_output_normalization_failed")),
+        "liveportrait_output_normalization_reason": str(stage_paths.get("liveportrait_output_normalization_reason") or ""),
+        "liveportrait_original_fps": float(stage_paths.get("liveportrait_original_fps") or 0.0),
+        "liveportrait_original_frame_count": int(stage_paths.get("liveportrait_original_frame_count") or 0),
+        "liveportrait_original_duration": float(stage_paths.get("liveportrait_original_duration") or 0.0),
+        "liveportrait_normalized_fps": float(stage_paths.get("liveportrait_normalized_fps") or 0.0),
+        "liveportrait_normalized_frame_count": int(stage_paths.get("liveportrait_normalized_frame_count") or 0),
+        "liveportrait_normalized_duration": float(stage_paths.get("liveportrait_normalized_duration") or 0.0),
+        "liveportrait_expected_fps": float(stage_paths.get("liveportrait_expected_fps") or 0.0),
+        "liveportrait_expected_frame_count": int(stage_paths.get("liveportrait_expected_frame_count") or 0),
+        "liveportrait_expected_duration": float(stage_paths.get("liveportrait_expected_duration") or 0.0),
+        "liveportrait_normalized_output_video": str(stage_paths.get("liveportrait_normalized_output_video") or ""),
+    }
+
+
+def _apply_liveportrait_output_contract_info(stage_paths: dict[str, Any], info: dict[str, Any]) -> None:
+    stage_paths["liveportrait_output_normalized"] = bool(info.get("normalized"))
+    stage_paths["liveportrait_output_normalization_failed"] = bool(info.get("normalization_failed"))
+    stage_paths["liveportrait_output_normalization_reason"] = str(info.get("reason") or "")
+    stage_paths["liveportrait_original_fps"] = float(info.get("original_fps") or 0.0)
+    stage_paths["liveportrait_original_frame_count"] = int(info.get("original_frame_count") or 0)
+    stage_paths["liveportrait_original_duration"] = float(info.get("original_duration") or 0.0)
+    stage_paths["liveportrait_normalized_fps"] = float(info.get("normalized_fps") or 0.0)
+    stage_paths["liveportrait_normalized_frame_count"] = int(info.get("normalized_frame_count") or 0)
+    stage_paths["liveportrait_normalized_duration"] = float(info.get("normalized_duration") or 0.0)
+    stage_paths["liveportrait_expected_fps"] = float(info.get("expected_fps") or 0.0)
+    stage_paths["liveportrait_expected_frame_count"] = int(info.get("expected_frame_count") or 0)
+    stage_paths["liveportrait_expected_duration"] = float(info.get("expected_duration") or 0.0)
+    stage_paths["liveportrait_normalized_output_video"] = str(info.get("normalized_output_video") or "")
+
+
+def _normalize_liveportrait_output_for_contract(
+    *,
+    video_path: str,
+    normalized_video_path: str,
+    target_frame_count: int,
+    target_duration_seconds: float,
+    expected_fps: float = 0.0,
+    preview_teacher_id: int = 0,
+    preview_job_id: int = 0,
+) -> dict[str, Any]:
+    source = Path(video_path)
+    expected_frames = max(int(target_frame_count or 0), 0)
+    expected_duration = max(float(target_duration_seconds or 0.0), 0.0)
+    expected_fps_value = max(float(expected_fps or 0.0), 0.0)
+    if expected_fps_value <= 0.0 and expected_duration > 0.0 and expected_frames > 0:
+        expected_fps_value = float(expected_frames) / float(expected_duration)
+    if expected_frames <= 0 and expected_duration > 0.0 and expected_fps_value > 0.0:
+        expected_frames = int(round(float(expected_duration) * float(expected_fps_value)))
+
+    try:
+        original_contract = legacy_pipeline._assert_video_contract(str(source), stage_name="liveportrait_original")
+    except Exception as exc:
+        return {
+            "normalized": False,
+            "normalization_failed": True,
+            "reason": f"liveportrait_original_output_unreadable:{exc}",
+            "original_fps": 0.0,
+            "original_frame_count": 0,
+            "original_duration": 0.0,
+            "normalized_fps": 0.0,
+            "normalized_frame_count": 0,
+            "normalized_duration": 0.0,
+            "expected_fps": round(float(expected_fps_value), 6),
+            "expected_frame_count": int(expected_frames),
+            "expected_duration": round(float(expected_duration), 4),
+            "normalized_output_video": "",
+            "normalization_info": {},
+        }
+    original_frame_count = int(original_contract.get("frame_count") or 0)
+    original_duration = float(original_contract.get("duration_seconds") or 0.0)
+    original_fps = float(_probe_video_fps(source) or 0.0)
+    result: dict[str, Any] = {
+        "normalized": False,
+        "normalization_failed": False,
+        "reason": "",
+        "original_fps": round(float(original_fps), 6),
+        "original_frame_count": int(original_frame_count),
+        "original_duration": round(float(original_duration), 4),
+        "normalized_fps": 0.0,
+        "normalized_frame_count": 0,
+        "normalized_duration": 0.0,
+        "expected_fps": round(float(expected_fps_value), 6),
+        "expected_frame_count": int(expected_frames),
+        "expected_duration": round(float(expected_duration), 4),
+        "normalized_output_video": "",
+        "normalization_info": {},
+    }
+
+    if original_frame_count <= 0 or original_duration <= 0.0:
+        result["normalization_failed"] = True
+        result["reason"] = "liveportrait_original_output_unreadable"
+        return result
+
+    if expected_frames <= 0 or expected_duration <= 0.0:
+        result["reason"] = "skipped_missing_expected_contract"
+        result["normalized_fps"] = round(float(original_fps), 6)
+        result["normalized_frame_count"] = int(original_frame_count)
+        result["normalized_duration"] = round(float(original_duration), 4)
+        result["normalized_output_video"] = str(source)
+        return result
+
+    duration_tolerance = max(
+        1.0,
+        float(expected_duration) * 0.10,
+        (2.0 / float(expected_fps_value)) if expected_fps_value > 0.0 else 0.0,
+    )
+    if abs(float(original_duration) - float(expected_duration)) > duration_tolerance:
+        result["normalization_failed"] = True
+        result["reason"] = (
+            "liveportrait_original_duration_out_of_contract:"
+            f"{round(float(original_duration), 4)}!=expected_{round(float(expected_duration), 4)}+/-{round(float(duration_tolerance), 4)}"
+        )
+        return result
+
+    try:
+        normalization_info = _normalize_preview_video_for_musetalk(
+            video_path=str(source),
+            handoff_video_path=str(normalized_video_path),
+            target_frame_count=int(expected_frames),
+            target_duration_seconds=float(expected_duration),
+            preview_teacher_id=int(preview_teacher_id),
+            preview_job_id=int(preview_job_id),
+        )
+    except Exception as exc:
+        result["normalization_failed"] = True
+        result["reason"] = f"liveportrait_output_normalization_failed:{exc}"
+        return result
+
+    normalized_path = Path(str(normalization_info.get("video_path") or normalized_video_path or source))
+    try:
+        normalized_contract = legacy_pipeline._assert_video_contract(str(normalized_path), stage_name="liveportrait_normalized")
+    except Exception as exc:
+        result["normalization_failed"] = True
+        result["reason"] = f"liveportrait_output_normalization_failed:normalized_unreadable:{exc}"
+        return result
+    normalized_frame_count = int(normalized_contract.get("frame_count") or 0)
+    normalized_duration = float(normalized_contract.get("duration_seconds") or 0.0)
+    normalized_fps = float(_probe_video_fps(normalized_path) or 0.0)
+    result.update(
+        {
+            "normalized": bool(normalization_info.get("normalized")),
+            "reason": str(normalization_info.get("strategy") or "unchanged"),
+            "normalized_fps": round(float(normalized_fps), 6),
+            "normalized_frame_count": int(normalized_frame_count),
+            "normalized_duration": round(float(normalized_duration), 4),
+            "normalized_output_video": str(normalized_path),
+            "normalization_info": dict(normalization_info or {}),
+        }
+    )
+    return result
+
+
 def _stage_record(stage: str, result: EngineResult, *, input_path: str) -> dict[str, Any]:
     return {
         "stage": stage,
@@ -2051,6 +2276,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_technical_valid": bool(cached_stage_paths.get("liveportrait_technical_valid")),
         "liveportrait_fallback_used": bool(cached_stage_paths.get("liveportrait_fallback_used")),
         "liveportrait_fallback_reason": str(cached_stage_paths.get("liveportrait_fallback_reason") or ""),
+        **_liveportrait_output_contract_fields(cached_stage_paths),
         "musetalk_source_video": str(cached_stage_paths.get("musetalk_source_video") or ""),
         "musetalk_source_kind": str(cached_stage_paths.get("musetalk_source_kind") or ""),
         "restoration_enabled": bool(cached_stage_paths.get("restoration_enabled")),
@@ -2124,6 +2350,7 @@ def _write_meta(
         "liveportrait_technical_valid": bool(stage_paths.get("liveportrait_technical_valid")),
         "liveportrait_fallback_used": bool(stage_paths.get("liveportrait_fallback_used")),
         "liveportrait_fallback_reason": str(stage_paths.get("liveportrait_fallback_reason") or ""),
+        **_liveportrait_output_contract_fields(stage_paths),
         "musetalk_source_video": str(stage_paths.get("musetalk_source_video") or ""),
         "musetalk_source_kind": str(stage_paths.get("musetalk_source_kind") or ""),
         "restoration_enabled": bool(stage_paths.get("restoration_enabled")),
@@ -2207,6 +2434,7 @@ def _final_payload(
         "liveportrait_technical_valid": bool(stage_paths.get("liveportrait_technical_valid")),
         "liveportrait_fallback_used": bool(stage_paths.get("liveportrait_fallback_used")),
         "liveportrait_fallback_reason": str(stage_paths.get("liveportrait_fallback_reason") or ""),
+        **_liveportrait_output_contract_fields(stage_paths),
         "musetalk_source_video": str(stage_paths.get("musetalk_source_video") or ""),
         "musetalk_source_kind": str(stage_paths.get("musetalk_source_kind") or ""),
         "restoration_enabled": bool(stage_paths.get("restoration_enabled")),
@@ -2360,6 +2588,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
     liveportrait_output = output_path.with_suffix(output_path.suffix + ".liveportrait.mp4")
     liveportrait_reconciled_output = output_path.with_suffix(output_path.suffix + ".liveportrait.reconciled.mp4")
     musetalk_handoff_output = output_path.with_suffix(output_path.suffix + ".musetalk_handoff.mp4")
+    liveportrait_validated_output = liveportrait_output
     musetalk_output = output_path.with_suffix(output_path.suffix + ".musetalk.mp4")
     restoration_output = output_path.with_suffix(output_path.suffix + ".restored.mp4")
     liveportrait_runtime_enabled = _liveportrait_enabled_for_request(request)
@@ -2401,6 +2630,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_quality_warning": "",
         "liveportrait_motion_passed": False,
         "liveportrait_technical_valid": False,
+        **_LIVEPORTRAIT_OUTPUT_CONTRACT_FIELD_DEFAULTS,
         "liveportrait_fallback_used": False,
         "liveportrait_fallback_reason": "",
         "liveportrait_low_motion_fallback_to_static": bool(lp_low_motion_fallback_to_static),
@@ -2929,8 +3159,45 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     motion_source_marker,
                 )
 
+            normalization_info = _normalize_liveportrait_output_for_contract(
+                video_path=str(liveportrait_output),
+                normalized_video_path=str(musetalk_handoff_output),
+                target_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
+                target_duration_seconds=float(contract_duration_seconds),
+                expected_fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
+                preview_teacher_id=int(getattr(request, "preview_teacher_id", 0) or 0),
+                preview_job_id=int(getattr(request, "preview_job_id", 0) or 0),
+            )
+            _apply_liveportrait_output_contract_info(stage_paths, normalization_info)
+            attempt_payload["liveportrait_output_normalization"] = dict(normalization_info)
+            stage_outputs[-1]["liveportrait_output_normalization"] = dict(normalization_info)
+            if bool(normalization_info.get("normalization_failed")):
+                rejection_reason = str(normalization_info.get("reason") or "liveportrait_output_normalization_failed")
+                if not rejection_reason.startswith("liveportrait_output_normalization_failed"):
+                    rejection_reason = f"liveportrait_output_normalization_failed:{rejection_reason}"
+                liveportrait_failed = True
+                liveportrait_failure_reason = rejection_reason
+                stage_paths["liveportrait_failed"] = True
+                stage_paths["liveportrait_failure_reason"] = rejection_reason
+                stage_paths["liveportrait_technical_valid"] = False
+                stage_paths["liveportrait_motion_passed"] = False
+                attempt_payload["result"] = "rejected"
+                attempt_payload["failure_reason"] = rejection_reason
+                liveportrait_rejections.append(dict(attempt_payload))
+                logger.warning(
+                    "Avatar liveportrait source candidate rejected teacher_id=%s job_id=%s attempt=%s source_key=%s reason=%s",
+                    int(getattr(request, "preview_teacher_id", 0) or 0),
+                    int(getattr(request, "preview_job_id", 0) or 0),
+                    int(attempt_index),
+                    candidate_source_key,
+                    rejection_reason,
+                )
+                continue
+            candidate_liveportrait_output = Path(str(normalization_info.get("normalized_output_video") or liveportrait_output))
+            stage_paths["liveportrait_output_path"] = str(candidate_liveportrait_output)
+
             try:
-                liveportrait_contract = legacy_pipeline._assert_video_contract(str(liveportrait_output), stage_name="liveportrait")
+                liveportrait_contract = legacy_pipeline._assert_video_contract(str(candidate_liveportrait_output), stage_name="liveportrait")
             except Exception as contract_exc:
                 rejection_reason = f"liveportrait_technical_invalid:{contract_exc}"
                 liveportrait_failed = True
@@ -2956,12 +3223,12 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
 
             try:
                 motion_gate = _liveportrait_motion_gate(
-                    str(liveportrait_output),
+                    str(candidate_liveportrait_output),
                     is_preview_request=is_preview_request,
                     expected_duration_seconds=float(contract_duration_seconds),
                     expected_fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
                     expected_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
-                    stage_name="liveportrait_motion_gate_raw",
+                    stage_name="liveportrait_motion_gate_normalized",
                 )
             except Exception as motion_gate_exc:
                 rejection_reason = f"liveportrait_technical_invalid:motion_gate_error:{motion_gate_exc}"
@@ -2994,7 +3261,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 int(getattr(request, "preview_job_id", 0) or 0),
                 int(attempt_index),
                 candidate_source_key,
-                str(motion_gate.get("analyzed_path") or liveportrait_output),
+                str(motion_gate.get("analyzed_path") or candidate_liveportrait_output),
                 bool(motion_gate.get("passed")),
                 float(motion_gate.get("duration") or 0.0),
                 float(motion_gate.get("fps") or 0.0),
@@ -3063,6 +3330,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             source_key_for_canonical = candidate_source_key
             source_image_primary = candidate_source_image
             source_video_primary = candidate_source_video
+            liveportrait_validated_output = candidate_liveportrait_output
 
             stage_paths["resolved_source_key"] = str(source_key_for_canonical)
             stage_paths["resolved_source_image_path"] = str(source_image_primary)
@@ -3177,7 +3445,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "handoff": dict(getattr(canonical_input, "handoff", {}) or {}),
                 }
 
-        musetalk_handoff_video = liveportrait_output
+        musetalk_handoff_video = liveportrait_validated_output
 
         def _use_static_handoff(*, reason: str, source_kind: str, stage_name: str) -> None:
             nonlocal liveportrait_fallback_used, liveportrait_fallback_reason, musetalk_handoff_video, musetalk_source_kind
@@ -3222,7 +3490,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 handoff_source_for_reconciliation = (
                     musetalk_handoff_video
                     if (liveportrait_bypassed or liveportrait_fallback_used)
-                    else liveportrait_output
+                    else liveportrait_validated_output
                 )
                 try:
                     reconciliation_info = _reconcile_duration_contract(
@@ -3252,7 +3520,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 stage_paths["duration_reconciliation_adjustment_seconds"] = float(reconciliation_info.get("adjustment_seconds", 0.0))
                 stage_paths["duration_reconciliation_contract_duration_seconds"] = round(float(contract_duration_seconds), 4)
                 stage_paths["duration_reconciliation_video_path"] = str(reconciliation_info.get("reconciled_video_path", ""))
-                stage_paths["liveportrait_reconciled_output_path"] = str(reconciliation_info.get("reconciled_video_path", "") or liveportrait_output)
+                stage_paths["liveportrait_reconciled_output_path"] = str(reconciliation_info.get("reconciled_video_path", "") or liveportrait_validated_output)
                 stage_paths["duration_reconciliation_audio_path"] = str(reconciliation_info.get("reconciled_audio_path", ""))
                 stage_paths["reconciliation_final_video_duration"] = float(reconciliation_info.get("final_video_duration_seconds", 0.0))
                 stage_paths["reconciliation_final_audio_duration"] = float(reconciliation_info.get("final_audio_duration_seconds", 0.0))
@@ -3318,10 +3586,14 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 )
         elif should_enforce_exact_duration:
             if not liveportrait_bypassed and not liveportrait_fallback_used:
-                shutil.copy2(str(liveportrait_output), str(musetalk_handoff_output))
-                musetalk_handoff_video = musetalk_handoff_output
+                liveportrait_source_for_handoff = liveportrait_validated_output
+                if liveportrait_source_for_handoff.resolve() != musetalk_handoff_output.resolve():
+                    shutil.copy2(str(liveportrait_source_for_handoff), str(musetalk_handoff_output))
+                    musetalk_handoff_video = musetalk_handoff_output
+                else:
+                    musetalk_handoff_video = liveportrait_source_for_handoff
                 stage_paths["musetalk_handoff_video_path"] = str(musetalk_handoff_video)
-                stage_paths["liveportrait_reconciled_output_path"] = str(liveportrait_output)
+                stage_paths["liveportrait_reconciled_output_path"] = str(liveportrait_source_for_handoff)
             liveportrait_trim_info = legacy_pipeline._trim_video_to_exact_audio_duration(
                 video_path=str(musetalk_handoff_video),
                 audio_path=str(getattr(request, "audio_path", "") or ""),
@@ -3346,12 +3618,15 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 dict(liveportrait_trim_info or {}),
             )
         else:
-            if not liveportrait_bypassed and not liveportrait_fallback_used and liveportrait_output.exists():
-                shutil.copy2(str(liveportrait_output), str(musetalk_handoff_output))
-                musetalk_handoff_video = musetalk_handoff_output
+            if not liveportrait_bypassed and not liveportrait_fallback_used and liveportrait_validated_output.exists():
+                if liveportrait_validated_output.resolve() != musetalk_handoff_output.resolve():
+                    shutil.copy2(str(liveportrait_validated_output), str(musetalk_handoff_output))
+                    musetalk_handoff_video = musetalk_handoff_output
+                else:
+                    musetalk_handoff_video = liveportrait_validated_output
                 stage_paths["musetalk_handoff_video_path"] = str(musetalk_handoff_video)
             stage_paths["liveportrait_reconciled_output_path"] = str(
-                musetalk_handoff_video if (liveportrait_bypassed or liveportrait_fallback_used) else liveportrait_output
+                musetalk_handoff_video if (liveportrait_bypassed or liveportrait_fallback_used) else liveportrait_validated_output
             )
 
         if liveportrait_bypassed or liveportrait_fallback_used:
@@ -3427,7 +3702,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         if current_audio_hash != expected_audio_hash:
             raise RuntimeError("preview_audio_hash_changed_before_musetalk")
 
-        final_stage_path = musetalk_handoff_video if (liveportrait_bypassed or liveportrait_fallback_used) else liveportrait_output
+        final_stage_path = musetalk_handoff_video if (liveportrait_bypassed or liveportrait_fallback_used) else liveportrait_validated_output
         engine_used_for_output = MUSETALK_ONLY_ENGINE if requested_engine == MUSETALK_ONLY_ENGINE else CANONICAL_ENGINE
         restoration_warning = ""
         stage_paths["musetalk_stage_state"] = "running"

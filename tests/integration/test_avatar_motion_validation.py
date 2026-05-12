@@ -677,13 +677,13 @@ def test_low_motion_liveportrait_can_fallback_to_static_when_enabled(tmp_path, m
     monkeypatch.setattr(
         avatar_canonical_pipeline,
         "_normalize_preview_video_for_musetalk",
-        lambda **_kwargs: {
+        lambda **kwargs: {
             "normalized": False,
             "strategy": "unchanged",
             "frame_count_before": 25,
             "frame_count_after": 25,
             "duration_after_seconds": 1.0,
-            "video_path": str(static_handoff),
+            "video_path": str(kwargs["video_path"]),
         },
     )
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
@@ -806,7 +806,7 @@ def test_liveportrait_missing_output_falls_back_to_static_handoff_and_runs_muset
     assert result["stage_paths"]["liveportrait_failed"] is True
     assert result["stage_paths"]["liveportrait_fallback_used"] is True
     assert result["stage_paths"]["musetalk_source_kind"] == "static_fallback"
-    assert "liveportrait_technical_invalid" in result["stage_paths"]["liveportrait_failure_reason"]
+    assert "liveportrait_output_normalization_failed" in result["stage_paths"]["liveportrait_failure_reason"]
     assert Path(result["output_path"]).exists()
 
 
@@ -952,9 +952,25 @@ def test_render_avatar_segment_cache_is_invalidated_when_audio_changes(tmp_path,
 
     monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0, "frame_count": 25})
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_trim_video_to_exact_audio_duration", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_normalize_preview_video_for_musetalk",
+        lambda **kwargs: {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": int(kwargs["target_frame_count"]),
+            "target_duration_seconds": float(kwargs["target_duration_seconds"]),
+            "target_fps": int(round(float(kwargs["target_frame_count"]) / float(kwargs["target_duration_seconds"]))),
+            "frame_count_before": int(kwargs["target_frame_count"]),
+            "frame_count_after": int(kwargs["target_frame_count"]),
+            "duration_before_seconds": float(kwargs["target_duration_seconds"]),
+            "duration_after_seconds": float(kwargs["target_duration_seconds"]),
+            "video_path": kwargs["video_path"],
+        },
+    )
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
 
@@ -1003,9 +1019,25 @@ def test_render_avatar_segment_cache_is_invalidated_when_preview_contract_change
 
     monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0})
-    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0})
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0, "frame_count": 25})
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_trim_video_to_exact_audio_duration", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_normalize_preview_video_for_musetalk",
+        lambda **kwargs: {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": int(kwargs["target_frame_count"]),
+            "target_duration_seconds": float(kwargs["target_duration_seconds"]),
+            "target_fps": int(round(float(kwargs["target_frame_count"]) / float(kwargs["target_duration_seconds"]))),
+            "frame_count_before": int(kwargs["target_frame_count"]),
+            "frame_count_after": int(kwargs["target_frame_count"]),
+            "duration_before_seconds": float(kwargs["target_duration_seconds"]),
+            "duration_after_seconds": float(kwargs["target_duration_seconds"]),
+            "video_path": kwargs["video_path"],
+        },
+    )
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
 
@@ -1182,14 +1214,24 @@ def test_preview_pipeline_preserves_liveportrait_when_musetalk_times_out(tmp_pat
         "preview_teacher_id": 12,
         "preview_job_id": 34,
     }]
-    assert handoff_normalization_calls == [{
-        "video_path": str(output.with_suffix(output.suffix + ".liveportrait.mp4")),
-        "handoff_video_path": str(output.with_suffix(output.suffix + ".musetalk_handoff.mp4")),
-        "target_frame_count": 25,
-        "target_duration_seconds": 1.0,
-        "preview_teacher_id": 12,
-        "preview_job_id": 34,
-    }]
+    assert handoff_normalization_calls == [
+        {
+            "video_path": str(output.with_suffix(output.suffix + ".liveportrait.mp4")),
+            "handoff_video_path": str(output.with_suffix(output.suffix + ".musetalk_handoff.mp4")),
+            "target_frame_count": 25,
+            "target_duration_seconds": 1.0,
+            "preview_teacher_id": 12,
+            "preview_job_id": 34,
+        },
+        {
+            "video_path": str(output.with_suffix(output.suffix + ".liveportrait.mp4")),
+            "handoff_video_path": str(output.with_suffix(output.suffix + ".musetalk_handoff.mp4")),
+            "target_frame_count": 25,
+            "target_duration_seconds": 1.0,
+            "preview_teacher_id": 12,
+            "preview_job_id": 34,
+        },
+    ]
     assert not output.exists()
 
 
@@ -1334,6 +1376,266 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     assert result["stage_paths"]["final_playable_path"] == str(output)
     assert result["stage_outputs"][-1]["stage"] == "musetalk"
     assert Path(result["output_path"]).exists()
+
+
+def test_liveportrait_output_is_normalized_before_gate_and_musetalk(tmp_path, monkeypatch):
+    audio = tmp_path / "a.wav"
+    image = tmp_path / "face.png"
+    output = tmp_path / "preview.mp4"
+    raw_liveportrait = output.with_suffix(output.suffix + ".liveportrait.mp4")
+    normalized_handoff = output.with_suffix(output.suffix + ".musetalk_handoff.mp4")
+    musetalk_output = output.with_suffix(output.suffix + ".musetalk.mp4")
+    expected_duration = 491 / 16
+    audio.write_bytes(b"audio")
+    image.write_bytes(b"image")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {"duration_seconds": expected_duration})
+
+    def fake_assert_video_contract(path, *, stage_name="video"):
+        current = Path(path)
+        if not current.exists():
+            raise RuntimeError(f"{stage_name}_missing")
+        if current == raw_liveportrait:
+            return {"duration_seconds": 30.68, "frame_count": 767}
+        return {"duration_seconds": expected_duration, "frame_count": 491}
+
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", fake_assert_video_contract)
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_animation", lambda _path: {
+        "animated": True,
+        "motion_real": True,
+        "quality_checks": {
+            "frames_sampled": 64,
+            "unique_frames": 32,
+            "start_end_frame_diff": 0.4,
+            "head_motion_score": 0.02,
+            "mouth_openness_change": 0.02,
+            "face_detection_frames": 64,
+            "mouth_roi_frames": 64,
+            "eye_roi_frames": 64,
+            "landmark_valid_frames": 64,
+        },
+    })
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_probe_video_fps",
+        lambda path: 25.0 if Path(path) == raw_liveportrait else 16.0,
+    )
+
+    probed_motion_paths: list[str] = []
+
+    def fake_shared_probe(path):
+        probed_motion_paths.append(str(path))
+        return _shared_motion_probe_metrics(
+            path,
+            duration_seconds=expected_duration,
+            fps=16.0,
+            frame_count=491,
+            unique_frames=64,
+            unique_ratio=0.8,
+            mean_mad=0.7,
+            near_static=False,
+        )
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "_shared_liveportrait_video_motion_probe", fake_shared_probe)
+
+    def fake_normalize(**kwargs):
+        source = Path(kwargs["video_path"])
+        handoff = Path(kwargs["handoff_video_path"])
+        if source == raw_liveportrait:
+            handoff.write_bytes(b"normalized-liveportrait")
+            return {
+                "normalized": True,
+                "strategy": "normalize_contract_fps",
+                "target_frame_count": 491,
+                "target_duration_seconds": expected_duration,
+                "target_fps": 16,
+                "frame_count_before": 767,
+                "frame_count_after": 491,
+                "duration_before_seconds": 30.68,
+                "duration_after_seconds": expected_duration,
+                "video_path": str(handoff),
+            }
+        return {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": 491,
+            "target_duration_seconds": expected_duration,
+            "target_fps": 16,
+            "frame_count_before": 491,
+            "frame_count_after": 491,
+            "duration_before_seconds": expected_duration,
+            "duration_after_seconds": expected_duration,
+            "video_path": str(source),
+        }
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "_normalize_preview_video_for_musetalk", fake_normalize)
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_reconcile_duration_contract",
+        lambda **kwargs: {
+            "contract_duration_seconds": expected_duration,
+            "original_video_duration_seconds": expected_duration,
+            "original_audio_duration_seconds": expected_duration,
+            "final_video_duration_seconds": expected_duration,
+            "final_audio_duration_seconds": expected_duration,
+            "duration_delta_seconds": 0.0,
+            "adjustment_seconds": 0.0,
+            "strategy": "unchanged",
+            "video_changed": False,
+            "audio_changed": False,
+            "reconciled_video_path": kwargs["video_path"],
+            "reconciled_audio_path": kwargs["audio_path"],
+        },
+    )
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
+
+    def fake_liveportrait(*, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"raw-liveportrait")
+        return EngineResult(True, "liveportrait", output_path, "")
+
+    musetalk_calls: list[str] = []
+
+    def fake_musetalk(*, output_path, source_video="", **_kwargs):
+        musetalk_calls.append(str(source_video))
+        Path(output_path).write_bytes(b"musetalk")
+        return EngineResult(True, "musetalk", output_path, "")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_liveportrait", fake_liveportrait)
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_musetalk", fake_musetalk)
+
+    result = avatar_pipeline.render_avatar_segment_local(
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(output),
+            target_frame_count=491,
+            target_duration_seconds=expected_duration,
+            preview_teacher_id=326,
+            preview_job_id=469,
+        )
+    )
+
+    stage_paths = result["stage_paths"]
+    assert stage_paths["liveportrait_output_normalized"] is True
+    assert stage_paths["liveportrait_output_normalization_failed"] is False
+    assert stage_paths["liveportrait_output_normalization_reason"] == "normalize_contract_fps"
+    assert stage_paths["liveportrait_original_fps"] == pytest.approx(25.0)
+    assert stage_paths["liveportrait_original_frame_count"] == 767
+    assert stage_paths["liveportrait_original_duration"] == pytest.approx(30.68)
+    assert stage_paths["liveportrait_normalized_fps"] == pytest.approx(16.0)
+    assert stage_paths["liveportrait_normalized_frame_count"] == 491
+    assert stage_paths["liveportrait_normalized_duration"] == pytest.approx(expected_duration)
+    assert stage_paths["liveportrait_expected_fps"] == pytest.approx(16.0)
+    assert stage_paths["liveportrait_expected_frame_count"] == 491
+    assert stage_paths["liveportrait_expected_duration"] == pytest.approx(expected_duration)
+    assert stage_paths["liveportrait_normalized_output_video"] == str(normalized_handoff)
+    assert stage_paths["liveportrait_motion_gate"]["analyzed_path"] == str(normalized_handoff)
+    assert probed_motion_paths[0] == str(normalized_handoff)
+    assert stage_paths["liveportrait_succeeded"] is True
+    assert stage_paths["liveportrait_fallback_used"] is False
+    assert stage_paths["musetalk_source_kind"] == "liveportrait"
+    assert stage_paths["musetalk_source_video"] == str(normalized_handoff)
+    assert musetalk_calls == [str(normalized_handoff)]
+    assert raw_liveportrait.exists()
+    assert musetalk_output.exists()
+
+
+def test_liveportrait_output_normalization_failure_falls_back_to_static(tmp_path, monkeypatch):
+    audio = tmp_path / "a.wav"
+    image = tmp_path / "face.png"
+    output = tmp_path / "preview.mp4"
+    raw_liveportrait = output.with_suffix(output.suffix + ".liveportrait.mp4")
+    static_handoff = output.with_suffix(output.suffix + ".musetalk_handoff.mp4")
+    audio.write_bytes(b"audio")
+    image.write_bytes(b"image")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
+    monkeypatch.setattr(avatar_canonical_pipeline, "_build_static_handoff_loop", _write_static_handoff_stub)
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0})
+    monkeypatch.setattr(
+        avatar_canonical_pipeline.legacy_pipeline,
+        "_assert_video_contract",
+        lambda path, *, stage_name="video": {"duration_seconds": 1.0, "frame_count": 25} if Path(path).exists() else (_ for _ in ()).throw(RuntimeError(f"{stage_name}_missing")),
+    )
+    monkeypatch.setattr(avatar_canonical_pipeline, "_probe_video_fps", lambda _path: 25.0)
+    monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("motion gate should not inspect failed normalization")))
+
+    def fake_normalize(**kwargs):
+        if Path(kwargs["video_path"]) == raw_liveportrait:
+            raise RuntimeError("ffmpeg_preview_contract_normalization_failed:1")
+        return {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": 25,
+            "target_duration_seconds": 1.0,
+            "target_fps": 25,
+            "frame_count_before": 25,
+            "frame_count_after": 25,
+            "duration_before_seconds": 1.0,
+            "duration_after_seconds": 1.0,
+            "video_path": kwargs["video_path"],
+        }
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "_normalize_preview_video_for_musetalk", fake_normalize)
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_reconcile_duration_contract",
+        lambda **kwargs: {
+            "contract_duration_seconds": 1.0,
+            "original_video_duration_seconds": 1.0,
+            "original_audio_duration_seconds": 1.0,
+            "final_video_duration_seconds": 1.0,
+            "final_audio_duration_seconds": 1.0,
+            "duration_delta_seconds": 0.0,
+            "adjustment_seconds": 0.0,
+            "strategy": "unchanged",
+            "video_changed": False,
+            "audio_changed": False,
+            "reconciled_video_path": kwargs["video_path"],
+            "reconciled_audio_path": kwargs["audio_path"],
+        },
+    )
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
+
+    def fake_liveportrait(*, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"raw-liveportrait")
+        return EngineResult(True, "liveportrait", output_path, "")
+
+    musetalk_calls: list[str] = []
+
+    def fake_musetalk(*, output_path, source_video="", **_kwargs):
+        musetalk_calls.append(str(source_video))
+        Path(output_path).write_bytes(b"musetalk")
+        return EngineResult(True, "musetalk", output_path, "")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_liveportrait", fake_liveportrait)
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_musetalk", fake_musetalk)
+
+    result = avatar_pipeline.render_avatar_segment_local(
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(output),
+            target_frame_count=25,
+            target_duration_seconds=1.0,
+            preview_teacher_id=326,
+            preview_job_id=470,
+        )
+    )
+
+    stage_paths = result["stage_paths"]
+    assert stage_paths["liveportrait_output_normalization_failed"] is True
+    assert "ffmpeg_preview_contract_normalization_failed:1" in stage_paths["liveportrait_output_normalization_reason"]
+    assert "liveportrait_output_normalization_failed" in stage_paths["liveportrait_failure_reason"]
+    assert stage_paths["liveportrait_succeeded"] is False
+    assert stage_paths["liveportrait_fallback_used"] is True
+    assert stage_paths["musetalk_source_kind"] == "static_fallback"
+    assert stage_paths["musetalk_source_video"] == str(static_handoff)
+    assert musetalk_calls == [str(static_handoff)]
+    assert raw_liveportrait.exists()
 
 
 @pytest.mark.parametrize("restoration_enabled", [False, True])
@@ -1547,7 +1849,7 @@ def test_preview_pipeline_returns_warning_when_strict_validation_fails(tmp_path,
     monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
     monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0, "frame_count": 25})
     monkeypatch.setattr(
         avatar_canonical_pipeline,
         "_reconcile_duration_contract",
