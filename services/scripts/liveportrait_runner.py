@@ -25,6 +25,10 @@ _MAX_COMPOSE_DUR = float(os.environ.get("LP_MOTION_COMPOSE_MAX_S", "0.0"))
 _DRIVER_MIN_UNIQUE_FRAMES = int(os.environ.get("LP_DRIVER_MIN_UNIQUE_FRAMES", "6"))
 _DRIVER_MIN_UNIQUE_RATIO = float(os.environ.get("LP_DRIVER_MIN_UNIQUE_RATIO", "0.16"))
 _DRIVER_MIN_MAD = float(os.environ.get("LP_DRIVER_MIN_MAD", "0.35"))
+_COMPOSER_MIN_UNIQUE_RATIO = float(os.environ.get("AVATAR_LIVEPORTRAIT_COMPOSER_MIN_UNIQUE_RATIO", "0.05"))
+_COMPOSER_LONG_CLIP_MIN_UNIQUE_FRAMES = int(
+    os.environ.get("AVATAR_LIVEPORTRAIT_COMPOSER_LONG_CLIP_MIN_UNIQUE_FRAMES", "20")
+)
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".webp"}
 _VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
@@ -60,6 +64,15 @@ def _boosted_retry_allowed(motion_preset: str) -> bool:
         except Exception:
             pass
     return motion_preset == "expressive_debug" or _truthy(os.environ.get("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"), "0")
+
+
+def _composer_validation_env_mode(raw_value: str | None = None) -> str:
+    raw = str(
+        raw_value
+        if raw_value is not None
+        else os.environ.get("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", "localized")
+    ).strip().lower()
+    return "strict_global" if raw == "strict_global" else "localized"
 
 
 def _compose_profiles_for_preset(motion_preset: str, allow_boosted_retry: bool) -> list[str]:
@@ -390,6 +403,15 @@ def _format_driver_metrics(metrics: dict[str, object]) -> str:
         f"unique_frames={int(metrics.get('unique_frames') or 0)} "
         f"unique_ratio={float(metrics.get('unique_ratio') or 0.0):.6f} "
         f"mean_mad={float(metrics.get('mean_mad') or 0.0):.6f} "
+        f"liveportrait_driver_validation_mode={str(metrics.get('liveportrait_driver_validation_mode') or 'global')} "
+        f"liveportrait_driver_localized_motion_passed={int(bool(metrics.get('liveportrait_driver_localized_motion_passed')))} "
+        f"liveportrait_driver_near_static_threshold_profile={str(metrics.get('liveportrait_driver_near_static_threshold_profile') or 'global')} "
+        f"composer_localized_motion_override={int(bool(metrics.get('composer_localized_motion_override')))} "
+        f"liveportrait_driver_unique_ratio={float(metrics.get('liveportrait_driver_unique_ratio') or metrics.get('unique_ratio') or 0.0):.6f} "
+        f"liveportrait_driver_unique_frames={int(metrics.get('liveportrait_driver_unique_frames') or metrics.get('unique_frames') or 0)} "
+        f"liveportrait_driver_mean_mad={float(metrics.get('liveportrait_driver_mean_mad') or metrics.get('mean_mad') or 0.0):.6f} "
+        f"liveportrait_driver_recipe_blink_events={int(metrics.get('liveportrait_driver_recipe_blink_events') or 0)} "
+        f"liveportrait_driver_recipe_gaze_events={int(metrics.get('liveportrait_driver_recipe_gaze_events') or 0)} "
         f"near_static={bool(metrics.get('near_static'))} "
         f"valid={bool(metrics.get('valid'))} "
         f"failure_reason={str(metrics.get('failure_reason') or '')} "
@@ -468,6 +490,106 @@ def _preserve_rejected_driver_video(
     except Exception as exc:
         print(f"[LivePortrait] rejected_driver_preserve_failed reason={exc}", file=sys.stderr)
         return ""
+
+
+def _composer_recipe_motion_metadata(
+    *,
+    target_duration_s: float,
+    seed: int,
+    motion_preset: str,
+    motion_profile: str,
+) -> dict[str, object]:
+    metadata = {
+        "recipe_available": False,
+        "blink_events": 0,
+        "gaze_events": 0,
+    }
+    if _motion_composer is None or not hasattr(_motion_composer, "_build_motion_recipe"):
+        return metadata
+    try:
+        recipe = _motion_composer._build_motion_recipe(  # type: ignore[attr-defined]
+            float(target_duration_s),
+            seed=int(seed),
+            motion_profile=str(motion_profile or "default"),
+            motion_preset=str(motion_preset or _DEFAULT_MOTION_PRESET),
+        )
+    except Exception:
+        return metadata
+    blink_events = list(recipe.get("blink_events_s") or [])
+    gaze_events = list(recipe.get("gaze_events") or [])
+    metadata.update(
+        {
+            "recipe_available": True,
+            "blink_events": len(blink_events),
+            "gaze_events": len(gaze_events),
+        }
+    )
+    return metadata
+
+
+def _apply_composer_localized_validation(
+    metrics: dict[str, object],
+    *,
+    recipe_motion: dict[str, object],
+    validation_mode: str,
+) -> dict[str, object]:
+    updated = dict(metrics)
+    unique_frames = int(updated.get("unique_frames") or 0)
+    unique_ratio = float(updated.get("unique_ratio") or 0.0)
+    mean_mad = float(updated.get("mean_mad") or 0.0)
+    duration_seconds = float(updated.get("duration_seconds") or 0.0)
+    frame_count = int(updated.get("frame_count") or 0)
+    blink_events = int(recipe_motion.get("blink_events") or 0)
+    gaze_events = int(recipe_motion.get("gaze_events") or 0)
+    technical_failure_reason = str(updated.get("technical_failure_reason") or "")
+    technical_valid = bool(updated.get("technical_valid", not technical_failure_reason))
+    env_mode = _composer_validation_env_mode(validation_mode)
+
+    updated.update(
+        {
+            "liveportrait_driver_unique_ratio": unique_ratio,
+            "liveportrait_driver_unique_frames": unique_frames,
+            "liveportrait_driver_mean_mad": mean_mad,
+            "liveportrait_driver_recipe_blink_events": blink_events,
+            "liveportrait_driver_recipe_gaze_events": gaze_events,
+            "liveportrait_driver_localized_motion_passed": False,
+            "composer_localized_motion_override": False,
+            "liveportrait_driver_validation_mode": (
+                "composer_localized_motion" if env_mode == "localized" else "strict_global"
+            ),
+            "liveportrait_driver_near_static_threshold_profile": (
+                "composer_localized_motion" if env_mode == "localized" else "global"
+            ),
+        }
+    )
+    if env_mode != "localized":
+        return updated
+
+    min_unique_frames = int(_DRIVER_MIN_UNIQUE_FRAMES)
+    if duration_seconds >= 10.0 or frame_count >= 160:
+        min_unique_frames = max(min_unique_frames, int(_COMPOSER_LONG_CLIP_MIN_UNIQUE_FRAMES))
+
+    has_recipe_motion = (blink_events + gaze_events) > 0
+    has_frame_variation = (
+        unique_frames >= min_unique_frames
+        and unique_ratio >= float(_COMPOSER_MIN_UNIQUE_RATIO)
+    )
+    localized_passed = bool(technical_valid and has_recipe_motion and has_frame_variation)
+    updated["liveportrait_driver_localized_motion_passed"] = localized_passed
+    if not localized_passed:
+        return updated
+
+    global_near_static = bool(updated.get("near_static"))
+    global_invalid = not bool(updated.get("valid"))
+    low_global_mad = mean_mad < float(_DRIVER_MIN_MAD)
+    updated["global_near_static"] = global_near_static
+    updated["global_validation_failure_reason"] = str(updated.get("validation_failure_reason") or "")
+    updated["composer_localized_motion_override"] = bool(global_near_static or global_invalid or low_global_mad)
+    updated["near_static"] = False
+    updated["valid"] = True
+    updated["failure_reason"] = ""
+    updated["validation_failure_reason"] = ""
+    return updated
 
 
 def _probe_video_frame_count(path: Path) -> int:
@@ -680,6 +802,10 @@ def _validate_driving_clip(
             f"frame_count_delta={int(frame_count - target_frames)}"
             f"(actual={int(frame_count)} requested={int(target_frames)})"
         )
+
+    technical_reasons = list(reasons)
+    metrics["technical_valid"] = not technical_reasons
+    metrics["technical_failure_reason"] = ";".join(technical_reasons)
 
     if bool(metrics.get("near_static")):
         reasons.append(str(metrics.get("failure_reason") or "driver_near_static"))
@@ -926,6 +1052,7 @@ def main() -> int:
         _driver_source_policy = str(
             os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "template_first")
         ).strip().lower()
+        _composer_validation_mode = _composer_validation_env_mode()
         _motion_source = "real_video" if input_kind == "video" else "image_pending"
         _source_mode = "video_reuse" if input_kind == "video" else "image_driven_composition"
         _motion_preset = _resolve_motion_preset(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_PRESET"))
@@ -1101,12 +1228,19 @@ def main() -> int:
                 if source_video is not None:
                     break
                 _composed_ok = False
+                _composer_seed = int(os.environ.get("LP_MOTION_SEED", "42"))
+                _recipe_motion = _composer_recipe_motion_metadata(
+                    target_duration_s=float(_target_dur),
+                    seed=int(_composer_seed),
+                    motion_profile=str(_profile),
+                    motion_preset=str(_motion_preset),
+                )
                 if _motion_composer is not None:
                     try:
                         _composed_ok = _motion_composer.compose(
                             _target_dur,
                             _composed_out,
-                            seed=int(os.environ.get("LP_MOTION_SEED", "42")),
+                            seed=int(_composer_seed),
                             verbose=True,
                             source_kind="image",
                             source_image_path=source_image,
@@ -1140,12 +1274,24 @@ def main() -> int:
                     target_frame_count=int(_target_frame_count),
                     fps_validation_mode=_driver_validation_mode,
                 )
+                _driver_metrics = _apply_composer_localized_validation(
+                    _driver_metrics,
+                    recipe_motion=_recipe_motion,
+                    validation_mode=str(_composer_validation_mode),
+                )
                 print(
                     "[LivePortrait] driver_variation "
                     f"candidate=image_composed profile={_profile} "
                     + _format_driver_metrics(_driver_metrics),
                     file=sys.stderr,
                 )
+                if bool(_driver_metrics.get("composer_localized_motion_override")):
+                    print(
+                        "[LivePortrait] composer_localized_motion_override=true "
+                        f"profile={_profile} "
+                        + _format_driver_metrics(_driver_metrics),
+                        file=sys.stderr,
+                    )
                 if not bool(_driver_metrics.get("valid")):
                     _rejection_reason = str(
                         _driver_metrics.get("validation_failure_reason")

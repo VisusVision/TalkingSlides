@@ -319,6 +319,7 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
 
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", raising=False)
     default_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "subtle_gaze")
@@ -328,6 +329,7 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     boosted_allowed_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
 
     assert default_keys["liveportrait_motion_preset"] == "natural_conservative"
+    assert default_keys["liveportrait_composer_validation_mode"] == "localized"
     assert subtle_gaze_keys["liveportrait_motion_preset"] == "subtle_gaze"
     assert default_keys != subtle_gaze_keys
     assert subtle_gaze_keys["liveportrait_boosted_retry_allowed"] == "0"
@@ -343,9 +345,15 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     assert request_override_keys["liveportrait_enabled"] == "0"
     assert request_override_keys != boosted_allowed_keys
 
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", "strict_global")
+    strict_global_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+    assert strict_global_keys["liveportrait_composer_validation_mode"] == "strict_global"
+    assert strict_global_keys != request_override_keys
+
 
 def test_stage_env_uses_safe_runtime_motion_request_over_env(tmp_path, monkeypatch):
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "expressive_debug")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", "strict_global")
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
     image.write_bytes(b"image")
@@ -365,6 +373,7 @@ def test_stage_env_uses_safe_runtime_motion_request_over_env(tmp_path, monkeypat
 
     assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "subtle_gaze"
     assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE"] == "strict_global"
     assert env["AVATAR_LIVEPORTRAIT_ENABLED"] == "0"
 
 
@@ -1122,6 +1131,15 @@ def test_preview_pipeline_preserves_liveportrait_when_musetalk_times_out(tmp_pat
                     "liveportrait_driver_source=composer "
                     "liveportrait_composer_used=1 "
                     "liveportrait_boosted_retry_used=0 "
+                    "liveportrait_driver_validation_mode=composer_localized_motion "
+                    "liveportrait_driver_localized_motion_passed=1 "
+                    "liveportrait_driver_near_static_threshold_profile=composer_localized_motion "
+                    "composer_localized_motion_override=1 "
+                    "liveportrait_driver_unique_ratio=0.106910 "
+                    "liveportrait_driver_unique_frames=82 "
+                    "liveportrait_driver_mean_mad=0.000775 "
+                    "liveportrait_driver_recipe_blink_events=6 "
+                    "liveportrait_driver_recipe_gaze_events=0 "
                     "liveportrait_recenter_enabled=1 "
                     "liveportrait_whole_frame_drift_guard=1"
                 ),
@@ -1244,6 +1262,15 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
                     "liveportrait_driver_source=composer "
                     "liveportrait_composer_used=1 "
                     "liveportrait_boosted_retry_used=0 "
+                    "liveportrait_driver_validation_mode=composer_localized_motion "
+                    "liveportrait_driver_localized_motion_passed=1 "
+                    "liveportrait_driver_near_static_threshold_profile=composer_localized_motion "
+                    "composer_localized_motion_override=1 "
+                    "liveportrait_driver_unique_ratio=0.106910 "
+                    "liveportrait_driver_unique_frames=82 "
+                    "liveportrait_driver_mean_mad=0.000775 "
+                    "liveportrait_driver_recipe_blink_events=6 "
+                    "liveportrait_driver_recipe_gaze_events=0 "
                     "liveportrait_recenter_enabled=1 "
                     "liveportrait_whole_frame_drift_guard=1"
                 ),
@@ -1286,6 +1313,15 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     assert result["stage_paths"]["liveportrait_driver_source"] == "composer"
     assert result["stage_paths"]["liveportrait_composer_used"] is True
     assert result["stage_paths"]["liveportrait_boosted_retry_used"] is False
+    assert result["stage_paths"]["liveportrait_driver_validation_mode"] == "composer_localized_motion"
+    assert result["stage_paths"]["liveportrait_driver_localized_motion_passed"] is True
+    assert result["stage_paths"]["liveportrait_driver_near_static_threshold_profile"] == "composer_localized_motion"
+    assert result["stage_paths"]["composer_localized_motion_override"] is True
+    assert result["stage_paths"]["liveportrait_driver_unique_ratio"] == pytest.approx(0.106910)
+    assert result["stage_paths"]["liveportrait_driver_unique_frames"] == 82
+    assert result["stage_paths"]["liveportrait_driver_mean_mad"] == pytest.approx(0.000775)
+    assert result["stage_paths"]["liveportrait_driver_recipe_blink_events"] == 6
+    assert result["stage_paths"]["liveportrait_driver_recipe_gaze_events"] == 0
     assert result["stage_paths"]["liveportrait_recenter_enabled"] is True
     assert result["stage_paths"]["liveportrait_whole_frame_drift_guard"] is True
     assert result["stage_paths"]["musetalk_started"] is True

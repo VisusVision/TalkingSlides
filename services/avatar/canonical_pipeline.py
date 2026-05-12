@@ -755,6 +755,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING": preview_temporal_smoothing,
         "AVATAR_LIVEPORTRAIT_MOTION_PRESET": liveportrait_motion_preset,
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
+        "AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE": _liveportrait_composer_validation_mode(),
         "AVATAR_LIVEPORTRAIT_ENABLED": "1" if _liveportrait_enabled_for_request(request) else "0",
         "MUSETALK_BBOX_SHIFT": str(int(params.get("bbox_shift", (0 if is_preview else 0)))),
         "MUSETALK_EXTRA_MARGIN": str(int(params.get("extra_margin", (6 if is_preview else 10)))),
@@ -1196,6 +1197,7 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     pipeline_mode = "preview_canonical_liveportrait_then_musetalk" if _is_preview_request(request) else "lesson_canonical_liveportrait_then_musetalk"
     liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
+    liveportrait_composer_validation_mode = _liveportrait_composer_validation_mode()
     liveportrait_enabled = _liveportrait_enabled_for_request(request)
     restoration_enabled = _restore_enabled(_is_preview_request(request), request)
     return {
@@ -1215,6 +1217,7 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "liveportrait_enabled": "1" if liveportrait_enabled else "0",
         "restoration_enabled": "1" if restoration_enabled else "0",
         "liveportrait_boosted_retry_allowed": "1" if liveportrait_boosted_retry_allowed else "0",
+        "liveportrait_composer_validation_mode": liveportrait_composer_validation_mode,
         "liveportrait_motion_profile_policy": "boosted_retry_allowed" if liveportrait_boosted_retry_allowed else "conservative_only",
     }
 
@@ -1285,6 +1288,11 @@ def _liveportrait_boosted_retry_allowed(preset: str | None = None) -> bool:
     return resolved == "expressive_debug" or _env_enabled("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", False)
 
 
+def _liveportrait_composer_validation_mode() -> str:
+    raw = str(os.environ.get("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", "localized")).strip().lower()
+    return "strict_global" if raw == "strict_global" else "localized"
+
+
 def _stderr_token(stderr_text: str, key: str) -> str:
     pattern = re.compile(r"(?:^|\s)" + re.escape(str(key)) + r"=([^\s]+)")
     match = pattern.search(str(stderr_text or ""))
@@ -1308,6 +1316,16 @@ def _stderr_float_token(stderr_text: str, key: str, default: float = 0.0) -> flo
         return float(default)
 
 
+def _stderr_int_token(stderr_text: str, key: str, default: int = 0) -> int:
+    raw = _stderr_token(stderr_text, key)
+    if not raw:
+        return int(default)
+    try:
+        return int(float(raw))
+    except Exception:
+        return int(default)
+
+
 def _apply_liveportrait_driver_stderr_observability(
     stage_paths: dict[str, Any],
     stderr_text: str,
@@ -1320,6 +1338,8 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_driver_source",
         "liveportrait_rejected_driver_video",
         "liveportrait_driver_rejection_reason",
+        "liveportrait_driver_validation_mode",
+        "liveportrait_driver_near_static_threshold_profile",
     ]:
         value = _stderr_token(stderr, key)
         if value:
@@ -1329,13 +1349,23 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_boosted_retry_used",
         "liveportrait_recenter_enabled",
         "liveportrait_whole_frame_drift_guard",
+        "liveportrait_driver_localized_motion_passed",
+        "composer_localized_motion_override",
     ]:
         stage_paths[key] = _stderr_bool_token(stderr, key, bool(stage_paths.get(key)))
     for key in [
         "liveportrait_driver_rejection_unique_ratio",
         "liveportrait_driver_rejection_mean_mad",
+        "liveportrait_driver_unique_ratio",
+        "liveportrait_driver_mean_mad",
     ]:
         stage_paths[key] = _stderr_float_token(stderr, key, float(stage_paths.get(key) or 0.0))
+    for key in [
+        "liveportrait_driver_unique_frames",
+        "liveportrait_driver_recipe_blink_events",
+        "liveportrait_driver_recipe_gaze_events",
+    ]:
+        stage_paths[key] = _stderr_int_token(stderr, key, int(stage_paths.get(key) or 0))
 
 
 def _env_float_first(names: list[str], default: float) -> tuple[float, str]:
@@ -1996,6 +2026,15 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_driver_source": str(cached_stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_composer_used": bool(cached_stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(cached_stage_paths.get("liveportrait_boosted_retry_used")),
+        "liveportrait_driver_validation_mode": str(cached_stage_paths.get("liveportrait_driver_validation_mode") or ""),
+        "liveportrait_driver_localized_motion_passed": bool(cached_stage_paths.get("liveportrait_driver_localized_motion_passed")),
+        "liveportrait_driver_near_static_threshold_profile": str(cached_stage_paths.get("liveportrait_driver_near_static_threshold_profile") or ""),
+        "composer_localized_motion_override": bool(cached_stage_paths.get("composer_localized_motion_override")),
+        "liveportrait_driver_unique_ratio": float(cached_stage_paths.get("liveportrait_driver_unique_ratio") or 0.0),
+        "liveportrait_driver_unique_frames": int(cached_stage_paths.get("liveportrait_driver_unique_frames") or 0),
+        "liveportrait_driver_mean_mad": float(cached_stage_paths.get("liveportrait_driver_mean_mad") or 0.0),
+        "liveportrait_driver_recipe_blink_events": int(cached_stage_paths.get("liveportrait_driver_recipe_blink_events") or 0),
+        "liveportrait_driver_recipe_gaze_events": int(cached_stage_paths.get("liveportrait_driver_recipe_gaze_events") or 0),
         "liveportrait_rejected_driver_video": str(cached_stage_paths.get("liveportrait_rejected_driver_video") or ""),
         "liveportrait_driver_rejection_reason": str(cached_stage_paths.get("liveportrait_driver_rejection_reason") or ""),
         "liveportrait_driver_rejection_unique_ratio": float(cached_stage_paths.get("liveportrait_driver_rejection_unique_ratio") or 0.0),
@@ -2060,6 +2099,15 @@ def _write_meta(
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_composer_used": bool(stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(stage_paths.get("liveportrait_boosted_retry_used")),
+        "liveportrait_driver_validation_mode": str(stage_paths.get("liveportrait_driver_validation_mode") or ""),
+        "liveportrait_driver_localized_motion_passed": bool(stage_paths.get("liveportrait_driver_localized_motion_passed")),
+        "liveportrait_driver_near_static_threshold_profile": str(stage_paths.get("liveportrait_driver_near_static_threshold_profile") or ""),
+        "composer_localized_motion_override": bool(stage_paths.get("composer_localized_motion_override")),
+        "liveportrait_driver_unique_ratio": float(stage_paths.get("liveportrait_driver_unique_ratio") or 0.0),
+        "liveportrait_driver_unique_frames": int(stage_paths.get("liveportrait_driver_unique_frames") or 0),
+        "liveportrait_driver_mean_mad": float(stage_paths.get("liveportrait_driver_mean_mad") or 0.0),
+        "liveportrait_driver_recipe_blink_events": int(stage_paths.get("liveportrait_driver_recipe_blink_events") or 0),
+        "liveportrait_driver_recipe_gaze_events": int(stage_paths.get("liveportrait_driver_recipe_gaze_events") or 0),
         "liveportrait_rejected_driver_video": str(stage_paths.get("liveportrait_rejected_driver_video") or ""),
         "liveportrait_driver_rejection_reason": str(stage_paths.get("liveportrait_driver_rejection_reason") or ""),
         "liveportrait_driver_rejection_unique_ratio": float(stage_paths.get("liveportrait_driver_rejection_unique_ratio") or 0.0),
@@ -2134,6 +2182,15 @@ def _final_payload(
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_composer_used": bool(stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(stage_paths.get("liveportrait_boosted_retry_used")),
+        "liveportrait_driver_validation_mode": str(stage_paths.get("liveportrait_driver_validation_mode") or ""),
+        "liveportrait_driver_localized_motion_passed": bool(stage_paths.get("liveportrait_driver_localized_motion_passed")),
+        "liveportrait_driver_near_static_threshold_profile": str(stage_paths.get("liveportrait_driver_near_static_threshold_profile") or ""),
+        "composer_localized_motion_override": bool(stage_paths.get("composer_localized_motion_override")),
+        "liveportrait_driver_unique_ratio": float(stage_paths.get("liveportrait_driver_unique_ratio") or 0.0),
+        "liveportrait_driver_unique_frames": int(stage_paths.get("liveportrait_driver_unique_frames") or 0),
+        "liveportrait_driver_mean_mad": float(stage_paths.get("liveportrait_driver_mean_mad") or 0.0),
+        "liveportrait_driver_recipe_blink_events": int(stage_paths.get("liveportrait_driver_recipe_blink_events") or 0),
+        "liveportrait_driver_recipe_gaze_events": int(stage_paths.get("liveportrait_driver_recipe_gaze_events") or 0),
         "liveportrait_rejected_driver_video": str(stage_paths.get("liveportrait_rejected_driver_video") or ""),
         "liveportrait_driver_rejection_reason": str(stage_paths.get("liveportrait_driver_rejection_reason") or ""),
         "liveportrait_driver_rejection_unique_ratio": float(stage_paths.get("liveportrait_driver_rejection_unique_ratio") or 0.0),
@@ -2353,6 +2410,15 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_driver_source": "",
         "liveportrait_composer_used": False,
         "liveportrait_boosted_retry_used": False,
+        "liveportrait_driver_validation_mode": "",
+        "liveportrait_driver_localized_motion_passed": False,
+        "liveportrait_driver_near_static_threshold_profile": "",
+        "composer_localized_motion_override": False,
+        "liveportrait_driver_unique_ratio": 0.0,
+        "liveportrait_driver_unique_frames": 0,
+        "liveportrait_driver_mean_mad": 0.0,
+        "liveportrait_driver_recipe_blink_events": 0,
+        "liveportrait_driver_recipe_gaze_events": 0,
         "liveportrait_rejected_driver_video": "",
         "liveportrait_driver_rejection_reason": "",
         "liveportrait_driver_rejection_unique_ratio": 0.0,
@@ -2442,6 +2508,15 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "liveportrait_driver_source": stage_paths.get("liveportrait_driver_source"),
                     "liveportrait_composer_used": stage_paths.get("liveportrait_composer_used"),
                     "liveportrait_boosted_retry_used": stage_paths.get("liveportrait_boosted_retry_used"),
+                    "liveportrait_driver_validation_mode": stage_paths.get("liveportrait_driver_validation_mode"),
+                    "liveportrait_driver_localized_motion_passed": stage_paths.get("liveportrait_driver_localized_motion_passed"),
+                    "liveportrait_driver_near_static_threshold_profile": stage_paths.get("liveportrait_driver_near_static_threshold_profile"),
+                    "composer_localized_motion_override": stage_paths.get("composer_localized_motion_override"),
+                    "liveportrait_driver_unique_ratio": stage_paths.get("liveportrait_driver_unique_ratio"),
+                    "liveportrait_driver_unique_frames": stage_paths.get("liveportrait_driver_unique_frames"),
+                    "liveportrait_driver_mean_mad": stage_paths.get("liveportrait_driver_mean_mad"),
+                    "liveportrait_driver_recipe_blink_events": stage_paths.get("liveportrait_driver_recipe_blink_events"),
+                    "liveportrait_driver_recipe_gaze_events": stage_paths.get("liveportrait_driver_recipe_gaze_events"),
                     "liveportrait_rejected_driver_video": stage_paths.get("liveportrait_rejected_driver_video"),
                     "liveportrait_driver_rejection_reason": stage_paths.get("liveportrait_driver_rejection_reason"),
                     "liveportrait_driver_rejection_unique_ratio": stage_paths.get("liveportrait_driver_rejection_unique_ratio"),
@@ -2513,6 +2588,15 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "liveportrait_driver_source": stage_paths.get("liveportrait_driver_source"),
                     "liveportrait_composer_used": stage_paths.get("liveportrait_composer_used"),
                     "liveportrait_boosted_retry_used": stage_paths.get("liveportrait_boosted_retry_used"),
+                    "liveportrait_driver_validation_mode": stage_paths.get("liveportrait_driver_validation_mode"),
+                    "liveportrait_driver_localized_motion_passed": stage_paths.get("liveportrait_driver_localized_motion_passed"),
+                    "liveportrait_driver_near_static_threshold_profile": stage_paths.get("liveportrait_driver_near_static_threshold_profile"),
+                    "composer_localized_motion_override": stage_paths.get("composer_localized_motion_override"),
+                    "liveportrait_driver_unique_ratio": stage_paths.get("liveportrait_driver_unique_ratio"),
+                    "liveportrait_driver_unique_frames": stage_paths.get("liveportrait_driver_unique_frames"),
+                    "liveportrait_driver_mean_mad": stage_paths.get("liveportrait_driver_mean_mad"),
+                    "liveportrait_driver_recipe_blink_events": stage_paths.get("liveportrait_driver_recipe_blink_events"),
+                    "liveportrait_driver_recipe_gaze_events": stage_paths.get("liveportrait_driver_recipe_gaze_events"),
                     "liveportrait_rejected_driver_video": stage_paths.get("liveportrait_rejected_driver_video"),
                     "liveportrait_driver_rejection_reason": stage_paths.get("liveportrait_driver_rejection_reason"),
                     "liveportrait_driver_rejection_unique_ratio": stage_paths.get("liveportrait_driver_rejection_unique_ratio"),
