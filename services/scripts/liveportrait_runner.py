@@ -1050,7 +1050,7 @@ def main() -> int:
         # Image input: generate driving from image composition.
         # Video input: reuse the provided source video as real driving input.
         _driver_source_policy = str(
-            os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "template_first")
+            os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
         ).strip().lower()
         _composer_validation_mode = _composer_validation_env_mode()
         _motion_source = "real_video" if input_kind == "video" else "image_pending"

@@ -248,6 +248,7 @@ def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, caps
 
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
     _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
 
     monkeypatch.setattr(
         sys,
@@ -284,6 +285,7 @@ def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, caps
 
     stderr_text = capsys.readouterr().err
     assert "motion_source=image_composed" in stderr_text
+    assert "liveportrait_driver_source_policy=composer_for_image" in stderr_text
     assert "liveportrait_driver_source=composer" in stderr_text
     assert "liveportrait_composer_used=1" in stderr_text
     assert "liveportrait_boosted_retry_used=0" in stderr_text
@@ -679,7 +681,7 @@ def test_template_driver_still_uses_global_near_static_validation(tmp_path, monk
     template_path.write_bytes(b"template")
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_IMAGE_DRIVING_TEMPLATE", str(template_path))
-    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "template_first")
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=lambda *_args, **_kwargs: False))
 
     def _fake_validate(*, path, expected_duration_seconds, requested_fps, target_frame_count, fps_validation_mode):
@@ -992,6 +994,7 @@ def test_image_input_prefers_template_and_materializes_exact_requested_contract(
         )
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_IMAGE_DRIVING_TEMPLATE", str(template_path))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "template_first")
     _patch_runner_execution(monkeypatch, captured)
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
     monkeypatch.setattr(runner, "_ensure_driving_clip_contract", _fake_ensure)
@@ -1086,6 +1089,7 @@ def test_image_input_prefers_strongest_valid_asset_template(tmp_path, monkeypatc
         )
 
     _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "template_first")
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
     monkeypatch.setattr(runner, "_discover_image_driving_templates", _fake_discover)
     monkeypatch.setattr(runner, "_ensure_driving_clip_contract", _fake_ensure)
