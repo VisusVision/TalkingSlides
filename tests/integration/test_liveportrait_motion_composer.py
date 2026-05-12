@@ -20,6 +20,23 @@ def test_default_motion_preset_is_natural_conservative(monkeypatch):
     assert profile_sequence_for_preset(motion_preset=recipe["motion_preset"]) == ["default"]
 
 
+def test_natural_conservative_motion_floor_is_localized_and_drift_guarded(monkeypatch):
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+
+    recipe = _build_motion_recipe(4.0, seed=42, motion_preset="natural_conservative")
+
+    assert recipe["motion_preset"] == "natural_conservative"
+    assert recipe["motion_profile"] == "default"
+    assert recipe["blink_duration_s"] == 0.32
+    assert recipe["blink_shift_px"] == 0.48
+    assert recipe["head_shift_max_px"] == 0.95
+    assert recipe["base_sway_x_px"] <= 0.060
+    assert recipe["base_sway_y_px"] <= 0.045
+    assert recipe["recenter_enabled"] is True
+    assert recipe["whole_frame_drift_guard"] is True
+    assert profile_sequence_for_preset(motion_preset="natural_conservative") == ["default"]
+
+
 def test_subtle_blink_preset_is_blink_dominant():
     recipe = _build_motion_recipe(4.0, seed=42, motion_preset="subtle_blink")
 

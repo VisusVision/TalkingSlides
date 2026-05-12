@@ -436,9 +436,10 @@ def test_image_input_never_reuses_image_as_video_driving_path(tmp_path, monkeypa
     assert driving_arg.endswith("composed_drive.mp4")
 
 
-def test_image_input_rejects_near_static_driver_before_liveportrait(tmp_path, monkeypatch):
+def test_image_input_rejects_near_static_driver_before_liveportrait(tmp_path, monkeypatch, capsys):
     paths = _make_runtime_layout(tmp_path)
     captured: dict[str, object] = {"run_called": False}
+    monkeypatch.setenv("AVATAR_STORAGE_ROOT", str(tmp_path))
 
     def _fake_compose(_target_duration_s, output_path, **_kwargs):
         Path(output_path).write_bytes(b"driving")
@@ -502,6 +503,14 @@ def test_image_input_rejects_near_static_driver_before_liveportrait(tmp_path, mo
         assert "liveportrait_invalid_driving_clip" in str(exc)
 
     assert captured["run_called"] is False
+    stderr_text = capsys.readouterr().err
+    assert "rejected_driver_preserved" in stderr_text
+    assert "liveportrait_rejected_driver_video=" in stderr_text
+    assert "liveportrait_driver_rejection_reason=driver_invalid:driver_near_static:unique_frames=1<min_6" in stderr_text
+    assert "liveportrait_driver_rejection_unique_ratio=0.040000" in stderr_text
+    assert "liveportrait_driver_rejection_mean_mad=0.010000" in stderr_text
+    token = stderr_text.split("liveportrait_rejected_driver_video=", 1)[1].split()[0]
+    assert (tmp_path / token).exists()
 
 
 def test_image_input_regenerates_driver_until_variation_is_valid(tmp_path, monkeypatch, capsys):
@@ -812,3 +821,47 @@ def test_image_input_prefers_strongest_valid_asset_template(tmp_path, monkeypatc
 
     driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
     assert driving_arg == str(candidate_b)
+
+
+def test_image_input_forces_composer_when_policy_is_composer_for_image(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {}
+    template_path = tmp_path / "template.mp4"
+    template_path.write_bytes(b"template")
+
+    def _fake_compose(target_duration_s, output_path, **kwargs):
+        captured["compose_called"] = True
+        Path(output_path).write_bytes(b"composed")
+        return True
+
+    _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_IMAGE_DRIVING_TEMPLATE", str(template_path))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert captured.get("compose_called") is True
+
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_driver_source_policy=composer_for_image" in stderr_text
+    assert "liveportrait_driver_source=composer" in stderr_text

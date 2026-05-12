@@ -397,6 +397,79 @@ def _format_driver_metrics(metrics: dict[str, object]) -> str:
     )
 
 
+def _safe_artifact_token(path: Path) -> str:
+    roots = [
+        os.environ.get("AVATAR_STORAGE_ROOT"),
+        os.environ.get("STORAGE_ROOT"),
+    ]
+    for root_value in roots:
+        root_text = str(root_value or "").strip()
+        if not root_text:
+            continue
+        try:
+            return path.resolve().relative_to(Path(root_text).resolve()).as_posix()
+        except Exception:
+            continue
+    return path.name
+
+
+def _cleanup_rejected_driver_debug_dir(debug_dir: Path, *, keep: int = 12) -> None:
+    try:
+        candidates = sorted(
+            [path for path in debug_dir.glob("*.mp4") if path.is_file()],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for stale_path in candidates[max(int(keep), 1):]:
+            stale_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _preserve_rejected_driver_video(
+    *,
+    candidate_video: Path,
+    output_path: Path,
+    profile: str,
+    driver_source_policy: str,
+    metrics: dict[str, object],
+    rejection_reason: str,
+) -> str:
+    try:
+        if (
+            not candidate_video.exists()
+            or not candidate_video.is_file()
+            or candidate_video.stat().st_size <= 0
+        ):
+            return ""
+        safe_profile = (
+            re.sub(r"[^A-Za-z0-9_.-]+", "_", str(profile or "default")).strip("._")
+            or "default"
+        )
+        debug_dir = output_path.parent / "liveportrait_debug" / "rejected_drivers"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        target = debug_dir / f"{output_path.stem}.driver_{safe_profile}.rejected.mp4"
+        shutil.copy2(candidate_video, target)
+        _cleanup_rejected_driver_debug_dir(debug_dir)
+        token = _safe_artifact_token(target)
+        print(
+            "[LivePortrait] rejected_driver_preserved "
+            f"liveportrait_driver_source_policy={driver_source_policy} "
+            "liveportrait_driver_source=composer "
+            "liveportrait_composer_used=1 "
+            f"liveportrait_motion_profile={safe_profile} "
+            f"liveportrait_rejected_driver_video={token} "
+            f"liveportrait_driver_rejection_reason={rejection_reason} "
+            f"liveportrait_driver_rejection_unique_ratio={float(metrics.get('unique_ratio') or 0.0):.6f} "
+            f"liveportrait_driver_rejection_mean_mad={float(metrics.get('mean_mad') or 0.0):.6f}",
+            file=sys.stderr,
+        )
+        return token
+    except Exception as exc:
+        print(f"[LivePortrait] rejected_driver_preserve_failed reason={exc}", file=sys.stderr)
+        return ""
+
+
 def _probe_video_frame_count(path: Path) -> int:
     proc = subprocess.run(
         [
@@ -850,6 +923,9 @@ def main() -> int:
         # ── Motion source policy ─────────────────────────────────────────────
         # Image input: generate driving from image composition.
         # Video input: reuse the provided source video as real driving input.
+        _driver_source_policy = str(
+            os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "template_first")
+        ).strip().lower()
         _motion_source = "real_video" if input_kind == "video" else "image_pending"
         _source_mode = "video_reuse" if input_kind == "video" else "image_driven_composition"
         _motion_preset = _resolve_motion_preset(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_PRESET"))
@@ -904,10 +980,13 @@ def main() -> int:
             _composed_out = temp_dir / "composed_drive.mp4"
             _driver_rejections: list[str] = []
             _compose_succeeded_once = False
-            _template_candidates = _discover_image_driving_templates(
-                liveportrait_home=liveportrait_home,
-                repo_root=repo_root,
-            )
+            _template_candidates = []
+            if _driver_source_policy != "composer_for_image":
+                _template_candidates = _discover_image_driving_templates(
+                    liveportrait_home=liveportrait_home,
+                    repo_root=repo_root,
+                )
+
             _template_override_candidates = [
                 (origin, candidate_path)
                 for origin, candidate_path in _template_candidates
@@ -1073,6 +1152,15 @@ def main() -> int:
                         or _driver_metrics.get("failure_reason")
                         or "driver_invalid"
                     )
+                    if bool(_driver_metrics.get("near_static")):
+                        _preserve_rejected_driver_video(
+                            candidate_video=Path(_candidate_video),
+                            output_path=output_path,
+                            profile=str(_profile),
+                            driver_source_policy=str(_driver_source_policy),
+                            metrics=dict(_driver_metrics),
+                            rejection_reason=_rejection_reason,
+                        )
                     _driver_rejections.append(
                         f"{_profile}:{_rejection_reason}:{_format_driver_metrics(_driver_metrics)}"
                     )
@@ -1105,6 +1193,7 @@ def main() -> int:
                 f"motion_source={_motion_source} "
                 f"liveportrait_motion_preset={_motion_preset} "
                 f"liveportrait_motion_profile={_selected_profile or 'template'} "
+                f"liveportrait_driver_source_policy={_driver_source_policy} "
                 f"liveportrait_driver_source={_driver_source} "
                 f"liveportrait_composer_used={int(bool(_composer_used))} "
                 f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
@@ -1163,6 +1252,7 @@ def main() -> int:
             f"motion_source={_motion_source} "
             f"liveportrait_motion_preset={_motion_preset} "
             f"liveportrait_motion_profile={_selected_profile or ('source_video' if input_kind == 'video' else 'template')} "
+            f"liveportrait_driver_source_policy={_driver_source_policy} "
             f"liveportrait_driver_source={_driver_source} "
             f"liveportrait_composer_used={int(bool(_composer_used))} "
             f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
@@ -1266,6 +1356,7 @@ def main() -> int:
                 f"motion_source={_motion_source} "
                 f"liveportrait_motion_preset={_motion_preset} "
                 f"liveportrait_motion_profile={_selected_profile or ('source_video' if input_kind == 'video' else 'template')} "
+                f"liveportrait_driver_source_policy={_driver_source_policy} "
                 f"liveportrait_driver_source={_driver_source} "
                 f"liveportrait_composer_used={int(bool(_composer_used))} "
                 f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
