@@ -53,6 +53,20 @@ def test_liveportrait_runner_timeout_kills_process_group(monkeypatch):
     assert "start_new_session" in killed["popen_kwargs"] or "creationflags" in killed["popen_kwargs"]
 
 
+def test_liveportrait_runner_appends_stage_motion_strength(monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "3e-6")
+
+    tuned = runner._append_tuning_args(
+        "--fps --driving-multiplier --driving-smooth-observation-variance",
+        ["python", "inference.py"],
+        fps=16,
+    )
+
+    assert tuned[tuned.index("--driving-multiplier") + 1] == "1.0"
+    assert tuned[tuned.index("--driving-smooth-observation-variance") + 1] == "3e-6"
+
+
 def _make_runtime_layout(tmp_path: Path) -> dict[str, Path]:
     source_image = tmp_path / "face.png"
     source_video = tmp_path / "drive.mp4"

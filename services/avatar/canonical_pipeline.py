@@ -796,8 +796,12 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         except Exception:
             derived_fps = 25
 
-    preview_motion_strength = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")).strip() if is_preview else ""
-    preview_temporal_smoothing = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.00")).strip() if is_preview else ""
+    if is_preview:
+        liveportrait_motion_strength = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")).strip() or "1.0"
+        liveportrait_temporal_smoothing = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.00")).strip() or "0.00"
+    else:
+        liveportrait_motion_strength = str(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")).strip() or "1.0"
+        liveportrait_temporal_smoothing = str(os.environ.get("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "3e-6")).strip() or "3e-6"
     preview_fast_musetalk = str(os.environ.get("AVATAR_PREVIEW_MUSETALK_FAST_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
     liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
@@ -836,8 +840,8 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_CANONICAL_TOP_MARGIN_RATIO": f"{float(metrics.get('top_margin_ratio') or 0.0):.6f}",
         "AVATAR_CANONICAL_BOTTOM_MARGIN_RATIO": f"{float(metrics.get('bottom_margin_ratio') or 0.0):.6f}",
         "AVATAR_LIVEPORTRAIT_FPS": str(int(derived_fps)),
-        "AVATAR_LIVEPORTRAIT_MOTION_STRENGTH": preview_motion_strength,
-        "AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING": preview_temporal_smoothing,
+        "AVATAR_LIVEPORTRAIT_MOTION_STRENGTH": liveportrait_motion_strength,
+        "AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING": liveportrait_temporal_smoothing,
         "AVATAR_LIVEPORTRAIT_MOTION_PRESET": liveportrait_motion_preset,
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
         "AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE": _liveportrait_composer_validation_mode(),

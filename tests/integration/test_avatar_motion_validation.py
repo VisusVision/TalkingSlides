@@ -284,6 +284,7 @@ def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypa
 
 
 def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.91")
     monkeypatch.setenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.37")
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
@@ -302,6 +303,55 @@ def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, 
     )
 
     assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.37"
+
+
+def test_non_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypatch):
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input(tmp_path, image),
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(tmp_path / "segment.mp4"),
+        ),
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.0"
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] != ""
+    assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] == "3e-6"
+    assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] != ""
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+
+
+def test_non_preview_liveportrait_motion_strength_preserves_env_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.22")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.000004")
+    monkeypatch.setenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.77")
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input(tmp_path, image),
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(tmp_path / "segment.mp4"),
+        ),
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.22"
+    assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] == "0.000004"
 
 
 def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch):
