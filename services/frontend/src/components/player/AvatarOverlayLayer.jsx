@@ -107,6 +107,13 @@ function controlButtonClassName(extra = '') {
   ].filter(Boolean).join(' ');
 }
 
+function controlsVisibilityClassName(visible) {
+  return [
+    'transition-opacity duration-200 ease-out',
+    visible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0',
+  ].join(' ');
+}
+
 function AvatarControls({
   visible,
   theater,
@@ -190,10 +197,17 @@ export default function AvatarOverlayLayer({
   const frameRef = useRef(null);
   const avatarVideoRef = useRef(null);
   const dragStateRef = useRef(null);
+  const autoHideTimerRef = useRef(null);
+  const hoverWithinRef = useRef(false);
+  const focusWithinRef = useRef(false);
+  const draggingRef = useRef(false);
+  const theaterOpenRef = useRef(false);
   const [avatarVisible, setAvatarVisible] = useState(() => readStoredVisible(lessonId));
   const defaultPlacement = useMemo(() => normalizeAvatarPlacement(placement || DEFAULT_AVATAR_PLACEMENT), [placement]);
   const [currentPlacement, setCurrentPlacement] = useState(() => placementFromStorage(lessonId, defaultPlacement));
   const [dragging, setDragging] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(false);
+  const [focusWithin, setFocusWithin] = useState(false);
   const [theaterOpen, setTheaterOpen] = useState(false);
   const isStudyPanel = mode === 'study-panel';
 
@@ -201,11 +215,96 @@ export default function AvatarOverlayLayer({
     setAvatarVisible(readStoredVisible(lessonId));
     setCurrentPlacement(placementFromStorage(lessonId, defaultPlacement));
     setTheaterOpen(false);
+    setControlsVisible(false);
+    setFocusWithin(false);
+    hoverWithinRef.current = false;
+    focusWithinRef.current = false;
+    draggingRef.current = false;
+    theaterOpenRef.current = false;
   }, [defaultPlacement, lessonId, src]);
 
   useEffect(() => {
     writeStoredVisible(lessonId, avatarVisible);
   }, [avatarVisible, lessonId]);
+
+  useEffect(() => {
+    focusWithinRef.current = focusWithin;
+  }, [focusWithin]);
+
+  useEffect(() => {
+    draggingRef.current = dragging;
+  }, [dragging]);
+
+  useEffect(() => {
+    theaterOpenRef.current = theaterOpen;
+  }, [theaterOpen]);
+
+  useEffect(() => () => {
+    if (autoHideTimerRef.current) {
+      window.clearTimeout(autoHideTimerRef.current);
+    }
+  }, []);
+
+  const clearAutoHideTimer = useCallback(() => {
+    if (autoHideTimerRef.current) {
+      window.clearTimeout(autoHideTimerRef.current);
+      autoHideTimerRef.current = null;
+    }
+  }, []);
+
+  const showControls = useCallback(({ autoHide = false } = {}) => {
+    clearAutoHideTimer();
+    setControlsVisible(true);
+    if (!autoHide) return;
+    autoHideTimerRef.current = window.setTimeout(() => {
+      if (
+        !hoverWithinRef.current
+        && !focusWithinRef.current
+        && !draggingRef.current
+        && !theaterOpenRef.current
+        && !dragStateRef.current
+      ) {
+        setControlsVisible(false);
+      }
+      autoHideTimerRef.current = null;
+    }, 2600);
+  }, [clearAutoHideTimer]);
+
+  const handleFramePointerEnter = useCallback((event) => {
+    if (event.pointerType === 'mouse') {
+      hoverWithinRef.current = true;
+      showControls();
+    }
+  }, [showControls]);
+
+  const handleFramePointerLeave = useCallback((event) => {
+    if (event.pointerType === 'mouse') {
+      hoverWithinRef.current = false;
+      if (!focusWithinRef.current && !draggingRef.current && !theaterOpenRef.current) {
+        setControlsVisible(false);
+      }
+    }
+  }, []);
+
+  const handleFramePointerDown = useCallback((event) => {
+    if (event.target?.closest?.('[data-avatar-controls="true"]')) return;
+    showControls({ autoHide: event.pointerType !== 'mouse' });
+  }, [showControls]);
+
+  const handleFrameFocus = useCallback(() => {
+    focusWithinRef.current = true;
+    setFocusWithin(true);
+    showControls();
+  }, [showControls]);
+
+  const handleFrameBlur = useCallback((event) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return;
+    focusWithinRef.current = false;
+    setFocusWithin(false);
+    if (!dragging && !theaterOpen) {
+      setControlsVisible(false);
+    }
+  }, [dragging, theaterOpen]);
 
   const syncAvatarPlayback = useCallback(() => {
     const mainVideo = videoRef?.current;
@@ -259,10 +358,14 @@ export default function AvatarOverlayLayer({
       bounds,
       offsetX: event.clientX - frame.left,
       offsetY: event.clientY - frame.top,
+      pointerType: event.pointerType || 'mouse',
     };
     event.currentTarget.setPointerCapture?.(event.pointerId);
+    clearAutoHideTimer();
+    setControlsVisible(true);
+    draggingRef.current = true;
     setDragging(true);
-  }, []);
+  }, [clearAutoHideTimer]);
 
   useEffect(() => {
     if (!dragging) return undefined;
@@ -281,8 +384,11 @@ export default function AvatarOverlayLayer({
     };
 
     const handlePointerUp = () => {
+      const pointerType = dragStateRef.current?.pointerType || 'mouse';
       dragStateRef.current = null;
+      draggingRef.current = false;
       setDragging(false);
+      showControls({ autoHide: pointerType !== 'mouse' });
     };
 
     window.addEventListener('pointermove', handlePointerMove);
@@ -293,7 +399,7 @@ export default function AvatarOverlayLayer({
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
     };
-  }, [currentPlacement, dragging, persistPlacement]);
+  }, [currentPlacement, dragging, persistPlacement, showControls]);
 
   const handleReset = useCallback(() => {
     setCurrentPlacement(defaultPlacement);
@@ -303,9 +409,17 @@ export default function AvatarOverlayLayer({
   const handleShow = useCallback(() => setAvatarVisible(true), []);
   const handleHide = useCallback(() => {
     setAvatarVisible(false);
+    setControlsVisible(false);
     setTheaterOpen(false);
   }, []);
-  const handleTheaterToggle = useCallback(() => setTheaterOpen((previous) => !previous), []);
+  const handleTheaterToggle = useCallback(() => {
+    clearAutoHideTimer();
+    setControlsVisible(true);
+    setTheaterOpen((previous) => {
+      theaterOpenRef.current = !previous;
+      return !previous;
+    });
+  }, [clearAutoHideTimer]);
 
   if (!enabled || !src) return null;
 
@@ -347,7 +461,24 @@ export default function AvatarOverlayLayer({
                   Avatar theater open
                 </div>
               ) : renderAvatarVideo()}
-              <div className="absolute right-2 top-2" style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}>
+              <div
+                tabIndex={0}
+                role="group"
+                aria-label="Avatar overlay"
+                className="absolute inset-0 pointer-events-auto"
+                onPointerEnter={handleFramePointerEnter}
+                onPointerLeave={handleFramePointerLeave}
+                onPointerDown={handleFramePointerDown}
+                onFocus={handleFrameFocus}
+                onBlur={handleFrameBlur}
+              />
+              <div
+                data-testid="avatar-overlay-controls"
+                data-avatar-controls="true"
+                data-controls-visible={theaterOpen || controlsVisible ? 'true' : 'false'}
+                className={`absolute right-2 top-2 ${controlsVisibilityClassName(theaterOpen || controlsVisible)}`}
+                style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
+              >
                 <AvatarControls
                   visible
                   compact
@@ -368,7 +499,11 @@ export default function AvatarOverlayLayer({
                   <div className="aspect-video overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
                     {renderAvatarVideo()}
                   </div>
-                  <div className="absolute right-3 top-3" style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}>
+                  <div
+                    data-avatar-controls="true"
+                    className="absolute right-3 top-3"
+                    style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
+                  >
                     <AvatarControls
                       visible
                       compact
@@ -410,7 +545,11 @@ export default function AvatarOverlayLayer({
             <div className="aspect-video overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
               {renderAvatarVideo()}
             </div>
-            <div className="absolute right-3 top-3" style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}>
+            <div
+              data-avatar-controls="true"
+              className="absolute right-3 top-3"
+              style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
+            >
               <AvatarControls
                 visible
                 compact
@@ -425,11 +564,25 @@ export default function AvatarOverlayLayer({
       ) : (
         <div
           ref={frameRef}
-          className="pointer-events-none absolute aspect-video rounded-lg border border-black/30 bg-black shadow-xl"
+          tabIndex={0}
+          role="group"
+          aria-label="Avatar overlay"
+          className="pointer-events-auto absolute aspect-video rounded-lg border border-black/30 bg-black shadow-xl"
           style={floatingPlacementStyle(currentPlacement)}
+          onPointerEnter={handleFramePointerEnter}
+          onPointerLeave={handleFramePointerLeave}
+          onPointerDown={handleFramePointerDown}
+          onFocus={handleFrameFocus}
+          onBlur={handleFrameBlur}
         >
           {renderAvatarVideo()}
-          <div className="absolute right-1 top-1" style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}>
+          <div
+            data-testid="avatar-overlay-controls"
+            data-avatar-controls="true"
+            data-controls-visible={controlsVisible || dragging ? 'true' : 'false'}
+            className={`absolute right-1 top-1 ${controlsVisibilityClassName(controlsVisible || dragging)}`}
+            style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
+          >
             <AvatarControls
               visible
               theater={false}

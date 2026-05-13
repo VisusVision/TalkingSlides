@@ -71,6 +71,7 @@ def test_frontend_caption_layer_stays_above_avatar_overlay_and_theater():
     hls_source = _frontend_source("components", "player", "HlsPlayer.jsx")
 
     assert "avatar: 20" in layer_source
+    assert "playerControls: 30" in layer_source
     assert "avatarTheater: 40" in layer_source
     assert "captions: 60" in layer_source
     assert "data-testid=\"player-caption-layer\"" in video_stage_source
@@ -81,6 +82,26 @@ def test_frontend_caption_layer_stays_above_avatar_overlay_and_theater():
     assert "selectedTextTrack.mode = 'hidden'" in hls_source
 
 
+def test_frontend_avatar_controls_are_hidden_by_default():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "data-testid=\"avatar-overlay-controls\"" in source
+    assert "data-controls-visible={controlsVisible || dragging ? 'true' : 'false'}" in source
+    assert "visible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'" in source
+    assert "transition-opacity duration-200 ease-out" in source
+
+
+def test_frontend_avatar_controls_appear_on_hover_focus_and_tap():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "onPointerEnter={handleFramePointerEnter}" in source
+    assert "onPointerDown={handleFramePointerDown}" in source
+    assert "onFocus={handleFrameFocus}" in source
+    assert "showControls({ autoHide: event.pointerType !== 'mouse' })" in source
+    assert "window.setTimeout" in source
+    assert "2600" in source
+
+
 def test_frontend_avatar_overlay_hide_show_persists_locally():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
@@ -89,6 +110,15 @@ def test_frontend_avatar_overlay_hide_show_persists_locally():
     assert "setAvatarVisible(false)" in source
     assert "Show avatar" in source
     assert "Hide avatar" in source
+
+
+def test_frontend_hidden_avatar_renders_compact_show_control():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "title=\"Show avatar\"" in source
+    assert "aria-label=\"Show avatar\"" in source
+    assert "right-3 top-3" in source
+    assert "pointer-events-auto inline-flex items-center gap-2 rounded-full" in source
 
 
 def test_frontend_avatar_drag_position_is_clamped():
@@ -162,6 +192,14 @@ def test_frontend_secure_playback_path_keeps_hls_and_heartbeat():
     assert "import Hls from 'hls.js'" in hls_source
     assert "hls.loadSource(sourceUrl)" in hls_source
     assert "new Hls({ enableWorker: true })" in hls_source
+    assert "avatarOverlayMode = 'floating'" in hls_source
+    assert "avatarOverlay?.enabled && avatarStreamUrl" in hls_source
+
+
+def test_frontend_no_avatar_lesson_does_not_render_overlay_layer():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "if (!enabled || !src) return null;" in source
 
 
 def test_avatar_overlay_preference_persists_per_user_and_lesson():
