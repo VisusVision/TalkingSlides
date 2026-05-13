@@ -284,9 +284,9 @@ def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypa
     assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.0"
     assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
     assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
-    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH"] == "0.35"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH"] == "0.45"
     assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING"] == "1e-4"
-    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED"] == "0.5"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED"] == "0.75"
 
 
 def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, monkeypatch):
@@ -485,16 +485,16 @@ def test_liveportrait_stderr_records_vetted_template_calm_profile():
         (
             "liveportrait_driver_source_policy=vetted_template_for_image "
             "liveportrait_driver_source=template "
-            "liveportrait_template_motion_strength=0.35 "
+            "liveportrait_template_motion_strength=0.45 "
             "liveportrait_template_temporal_smoothing=1e-4 "
-            "liveportrait_template_speed=0.5 "
+            "liveportrait_template_speed=0.75 "
             "liveportrait_template_calm_profile=true"
         ),
     )
 
-    assert stage_paths["liveportrait_template_motion_strength"] == "0.35"
+    assert stage_paths["liveportrait_template_motion_strength"] == "0.45"
     assert stage_paths["liveportrait_template_temporal_smoothing"] == "1e-4"
-    assert stage_paths["liveportrait_template_speed"] == "0.5"
+    assert stage_paths["liveportrait_template_speed"] == "0.75"
     assert stage_paths["liveportrait_template_calm_profile"] is True
 
 

@@ -359,12 +359,12 @@ def test_default_image_policy_uses_vetted_d11_when_available(tmp_path, monkeypat
     assert captured["ensure_source_video"] == str(vetted_template)
     assert captured["ensure_target_fps"] == 16.0
     assert captured["ensure_always_materialize"] is True
-    assert captured["ensure_playback_speed"] == 0.5
+    assert captured["ensure_playback_speed"] == 0.75
 
     driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
     assert driving_arg == str(vetted_template)
     cmd = list(captured.get("cmd") or [])
-    assert cmd[cmd.index("--driving-multiplier") + 1] == "0.35"
+    assert cmd[cmd.index("--driving-multiplier") + 1] == "0.45"
     assert cmd[cmd.index("--driving-smooth-observation-variance") + 1] == "1e-4"
     stderr_text = capsys.readouterr().err
     assert "liveportrait_driver_source_policy=vetted_template_for_image" in stderr_text
@@ -372,9 +372,9 @@ def test_default_image_policy_uses_vetted_d11_when_available(tmp_path, monkeypat
     assert "liveportrait_template_used=d11.mp4" in stderr_text
     assert "liveportrait_vetted_template_path=d11.mp4" in stderr_text
     assert "liveportrait_vetted_template_missing=0" in stderr_text
-    assert "liveportrait_template_motion_strength=0.35" in stderr_text
+    assert "liveportrait_template_motion_strength=0.45" in stderr_text
     assert "liveportrait_template_temporal_smoothing=1e-4" in stderr_text
-    assert "liveportrait_template_speed=0.5" in stderr_text
+    assert "liveportrait_template_speed=0.75" in stderr_text
     assert "liveportrait_template_calm_profile=true" in stderr_text
 
 
