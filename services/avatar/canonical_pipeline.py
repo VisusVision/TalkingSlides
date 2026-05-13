@@ -57,6 +57,39 @@ def _video_is_playable(path: Path, *, stage_name: str) -> bool:
     return True
 
 
+def _probe_video_has_audio_stream(path: Path) -> bool | None:
+    try:
+        if not path.exists() or not path.is_file():
+            return None
+        ffprobe = shutil.which("ffprobe")
+        if not ffprobe:
+            return None
+        proc = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "a",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if proc.returncode != 0:
+            return None
+        return bool(str(proc.stdout or "").strip())
+    except Exception:
+        return None
+
+
 def _file_debug_info(path: Path) -> dict[str, Any]:
     info: dict[str, Any] = {
         "path": str(path),
@@ -807,6 +840,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
     liveportrait_driver_source_policy = _liveportrait_driver_source_policy()
     liveportrait_vetted_image_template = _liveportrait_vetted_image_template_path()
+    liveportrait_vetted_template_motion = _liveportrait_vetted_template_motion_settings()
     preview_max_width_default = "384" if is_preview else "512"
     default_batch_size = 2 if is_preview else 8
 
@@ -848,6 +882,9 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
         "AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY": liveportrait_driver_source_policy,
         "AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE": liveportrait_vetted_image_template,
+        "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH": liveportrait_vetted_template_motion["motion_strength"],
+        "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING": liveportrait_vetted_template_motion["temporal_smoothing"],
+        "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED": liveportrait_vetted_template_motion["speed"],
         "AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE": _liveportrait_composer_validation_mode(),
         "AVATAR_LIVEPORTRAIT_ENABLED": "1" if _liveportrait_enabled_for_request(request) else "0",
         "MUSETALK_BBOX_SHIFT": str(int(params.get("bbox_shift", (0 if is_preview else 0)))),
@@ -1480,6 +1517,8 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     liveportrait_composer_validation_mode = _liveportrait_composer_validation_mode()
     liveportrait_driver_source_policy = _liveportrait_driver_source_policy()
     vetted_template_identity = _liveportrait_template_identity(_liveportrait_vetted_image_template_path())
+    vetted_template_motion = _liveportrait_vetted_template_motion_settings()
+    vetted_template_calm_profile = liveportrait_driver_source_policy == "vetted_template_for_image"
     image_template_identity = _liveportrait_template_identity(
         str(os.environ.get("AVATAR_LIVEPORTRAIT_IMAGE_DRIVING_TEMPLATE", "")).strip()
     )
@@ -1506,6 +1545,14 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "liveportrait_driver_source_policy": liveportrait_driver_source_policy,
         "liveportrait_vetted_image_template_basename": vetted_template_identity["basename"],
         "liveportrait_vetted_image_template_hash": vetted_template_identity["hash"],
+        "liveportrait_template_motion_strength": (
+            vetted_template_motion["motion_strength"] if vetted_template_calm_profile else ""
+        ),
+        "liveportrait_template_temporal_smoothing": (
+            vetted_template_motion["temporal_smoothing"] if vetted_template_calm_profile else ""
+        ),
+        "liveportrait_template_speed": vetted_template_motion["speed"] if vetted_template_calm_profile else "1.0",
+        "liveportrait_template_calm_profile": "1" if vetted_template_calm_profile else "0",
         "liveportrait_image_driving_template_basename": image_template_identity["basename"],
         "liveportrait_image_driving_template_hash": image_template_identity["hash"],
         "liveportrait_motion_profile_policy": "boosted_retry_allowed" if liveportrait_boosted_retry_allowed else "conservative_only",
@@ -1533,6 +1580,17 @@ def _env_float(name: str, default: float) -> float:
     return float(value)
 
 
+def _env_float_text(name: str, default: str, *, min_value: float, max_value: float) -> str:
+    raw = str(os.environ.get(name, "")).strip() or str(default)
+    try:
+        value = float(raw)
+    except Exception:
+        return str(default)
+    if value < float(min_value) or value > float(max_value):
+        return str(default)
+    return raw
+
+
 def _env_enabled(name: str, default: bool = False) -> bool:
     raw = str(os.environ.get(name, "")).strip().lower()
     if not raw:
@@ -1550,6 +1608,9 @@ _LIVEPORTRAIT_DRIVER_SOURCE_POLICIES = {
     "source_video_only",
 }
 _DEFAULT_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE_NAME = "d11.mp4"
+_DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH = "0.35"
+_DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING = "1e-4"
+_DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED = "0.5"
 _LIVEPORTRAIT_REQUEST_PRESET_ALIASES = {
     "natural": "natural_conservative",
     "visible": "natural_visible",
@@ -1606,6 +1667,29 @@ def _liveportrait_vetted_image_template_path() -> str:
         return raw
     liveportrait_home = str(os.environ.get("AVATAR_LIVEPORTRAIT_HOME", "/opt/liveportrait") or "/opt/liveportrait").strip()
     return str(Path(liveportrait_home) / "assets" / "examples" / "driving" / _DEFAULT_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE_NAME)
+
+
+def _liveportrait_vetted_template_motion_settings() -> dict[str, str]:
+    return {
+        "motion_strength": _env_float_text(
+            "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH",
+            _DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH,
+            min_value=0.05,
+            max_value=2.0,
+        ),
+        "temporal_smoothing": _env_float_text(
+            "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING",
+            _DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING,
+            min_value=0.0,
+            max_value=0.05,
+        ),
+        "speed": _env_float_text(
+            "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED",
+            _DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED,
+            min_value=0.1,
+            max_value=4.0,
+        ),
+    }
 
 
 def _liveportrait_template_identity(raw_path: str) -> dict[str, str]:
@@ -1672,6 +1756,9 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_template_used",
         "liveportrait_vetted_template_path",
         "liveportrait_fallback_driver_source",
+        "liveportrait_template_motion_strength",
+        "liveportrait_template_temporal_smoothing",
+        "liveportrait_template_speed",
     ]:
         value = _stderr_token(stderr, key)
         if value:
@@ -1685,6 +1772,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "composer_localized_motion_override",
         "liveportrait_vetted_template_missing",
         "liveportrait_vetted_template_failed",
+        "liveportrait_template_calm_profile",
     ]:
         stage_paths[key] = _stderr_bool_token(stderr, key, bool(stage_paths.get(key)))
     for key in [
@@ -2363,6 +2451,10 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_vetted_template_missing": bool(cached_stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(cached_stage_paths.get("liveportrait_vetted_template_failed")),
         "liveportrait_fallback_driver_source": str(cached_stage_paths.get("liveportrait_fallback_driver_source") or ""),
+        "liveportrait_template_motion_strength": str(cached_stage_paths.get("liveportrait_template_motion_strength") or ""),
+        "liveportrait_template_temporal_smoothing": str(cached_stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
+        "liveportrait_template_speed": str(cached_stage_paths.get("liveportrait_template_speed") or "1.0"),
+        "liveportrait_template_calm_profile": bool(cached_stage_paths.get("liveportrait_template_calm_profile")),
         "liveportrait_composer_used": bool(cached_stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(cached_stage_paths.get("liveportrait_boosted_retry_used")),
         "liveportrait_driver_validation_mode": str(cached_stage_paths.get("liveportrait_driver_validation_mode") or ""),
@@ -2402,6 +2494,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "final_avatar_engine_chain": list(cached_stage_paths.get("final_avatar_engine_chain") or ["cache"]),
         "audio_hash": expected_cache["audio_hash"],
         "video_hash": str(meta_payload.get("video_hash") or sha256_file(str(output_path))),
+        "final_output_has_audio_stream": cached_stage_paths.get("final_output_has_audio_stream"),
         "motion_validation": validation,
         "strict_validation_passed": bool(strict_pass),
         "preview_warning": preview_warning,
@@ -2444,6 +2537,10 @@ def _write_meta(
         "liveportrait_vetted_template_missing": bool(stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(stage_paths.get("liveportrait_vetted_template_failed")),
         "liveportrait_fallback_driver_source": str(stage_paths.get("liveportrait_fallback_driver_source") or ""),
+        "liveportrait_template_motion_strength": str(stage_paths.get("liveportrait_template_motion_strength") or ""),
+        "liveportrait_template_temporal_smoothing": str(stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
+        "liveportrait_template_speed": str(stage_paths.get("liveportrait_template_speed") or "1.0"),
+        "liveportrait_template_calm_profile": bool(stage_paths.get("liveportrait_template_calm_profile")),
         "liveportrait_composer_used": bool(stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(stage_paths.get("liveportrait_boosted_retry_used")),
         "liveportrait_driver_validation_mode": str(stage_paths.get("liveportrait_driver_validation_mode") or ""),
@@ -2479,6 +2576,7 @@ def _write_meta(
         "restoration_enabled": bool(stage_paths.get("restoration_enabled")),
         "restoration_succeeded": bool(stage_paths.get("restoration_succeeded")),
         "restoration_failed": bool(stage_paths.get("restoration_failed")),
+        "final_output_has_audio_stream": stage_paths.get("final_output_has_audio_stream"),
         "strict_validation_passed": bool(strict_pass),
         "preview_warning": str(preview_warning or ""),
         "motion_validation": validation,
@@ -2530,6 +2628,10 @@ def _final_payload(
         "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
+        "liveportrait_template_motion_strength": str(stage_paths.get("liveportrait_template_motion_strength") or ""),
+        "liveportrait_template_temporal_smoothing": str(stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
+        "liveportrait_template_speed": str(stage_paths.get("liveportrait_template_speed") or "1.0"),
+        "liveportrait_template_calm_profile": bool(stage_paths.get("liveportrait_template_calm_profile")),
         "liveportrait_composer_used": bool(stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(stage_paths.get("liveportrait_boosted_retry_used")),
         "liveportrait_driver_validation_mode": str(stage_paths.get("liveportrait_driver_validation_mode") or ""),
@@ -2577,6 +2679,7 @@ def _final_payload(
         "preview_warning": str(preview_warning or ""),
         "preview_file_exists": bool(stage_paths.get("preview_file_exists")),
         "preview_usable": bool(stage_paths.get("preview_usable")),
+        "final_output_has_audio_stream": stage_paths.get("final_output_has_audio_stream"),
         "ui_returned_playable_file": str(stage_paths.get("ui_returned_playable_file") or ""),
         "preview_status": (
             "warning"
@@ -2768,6 +2871,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_vetted_template_missing": False,
         "liveportrait_vetted_template_failed": False,
         "liveportrait_fallback_driver_source": "",
+        "liveportrait_template_motion_strength": "",
+        "liveportrait_template_temporal_smoothing": "",
+        "liveportrait_template_speed": "1.0",
+        "liveportrait_template_calm_profile": False,
         "liveportrait_composer_used": False,
         "liveportrait_boosted_retry_used": False,
         "liveportrait_driver_validation_mode": "",
@@ -2803,6 +2910,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "restoration_succeeded": False,
         "restoration_failed": False,
         "restoration_failure_reason": "",
+        "final_output_has_audio_stream": None,
         "final_output_path": str(output_path),
         "final_avatar_engine_chain": [],
         "avatar_quality_profile": "strict_motion_quality",
@@ -4183,6 +4291,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             str(final_stage_path),
         )
         legacy_pipeline._assert_video_contract(str(output_path), stage_name="final_render")
+        final_output_has_audio_stream = _probe_video_has_audio_stream(output_path)
+        stage_paths["final_output_has_audio_stream"] = final_output_has_audio_stream
+        if is_preview_request and final_output_has_audio_stream is False:
+            raise RuntimeError("preview_final_audio_stream_missing")
 
         if should_enforce_exact_duration and not is_preview_request:
             legacy_pipeline._trim_video_to_exact_audio_duration(

@@ -83,7 +83,7 @@ def _make_runtime_layout(tmp_path: Path) -> dict[str, Path]:
     lp_entrypoint.write_text(
         "import sys\n"
         "if '--help' in sys.argv:\n"
-        "    print('--source --driving --output_path --model_path')\n",
+        "    print('--source --driving --output_path --model_path --driving-multiplier --driving-smooth-observation-variance')\n",
         encoding="utf-8",
     )
 
@@ -145,6 +145,7 @@ def _patch_runner_execution(monkeypatch, captured: dict) -> None:
         target_fps=0.0,
         output_name="driving_contract.mp4",
         always_materialize=False,
+        playback_speed=1.0,
     ):
         captured.setdefault("ensure_calls", []).append(
             {
@@ -154,6 +155,7 @@ def _patch_runner_execution(monkeypatch, captured: dict) -> None:
                 "target_fps": float(target_fps),
                 "output_name": str(output_name),
                 "always_materialize": bool(always_materialize),
+                "playback_speed": float(playback_speed),
             }
         )
         captured["ensure_source_video"] = str(source_video)
@@ -162,6 +164,7 @@ def _patch_runner_execution(monkeypatch, captured: dict) -> None:
         captured["ensure_target_fps"] = float(target_fps)
         captured["ensure_output_name"] = str(output_name)
         captured["ensure_always_materialize"] = bool(always_materialize)
+        captured["ensure_playback_speed"] = float(playback_speed)
         return source_video, "passed_through", float(target_duration_seconds)
 
     def _fake_run(cmd, *, timeout_seconds):
@@ -321,6 +324,9 @@ def test_default_image_policy_uses_vetted_d11_when_available(tmp_path, monkeypat
 
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED", raising=False)
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
     _patch_runner_execution(monkeypatch, captured)
 
@@ -353,15 +359,23 @@ def test_default_image_policy_uses_vetted_d11_when_available(tmp_path, monkeypat
     assert captured["ensure_source_video"] == str(vetted_template)
     assert captured["ensure_target_fps"] == 16.0
     assert captured["ensure_always_materialize"] is True
+    assert captured["ensure_playback_speed"] == 0.5
 
     driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
     assert driving_arg == str(vetted_template)
+    cmd = list(captured.get("cmd") or [])
+    assert cmd[cmd.index("--driving-multiplier") + 1] == "0.35"
+    assert cmd[cmd.index("--driving-smooth-observation-variance") + 1] == "1e-4"
     stderr_text = capsys.readouterr().err
     assert "liveportrait_driver_source_policy=vetted_template_for_image" in stderr_text
     assert "liveportrait_driver_source=template" in stderr_text
     assert "liveportrait_template_used=d11.mp4" in stderr_text
     assert "liveportrait_vetted_template_path=d11.mp4" in stderr_text
     assert "liveportrait_vetted_template_missing=0" in stderr_text
+    assert "liveportrait_template_motion_strength=0.35" in stderr_text
+    assert "liveportrait_template_temporal_smoothing=1e-4" in stderr_text
+    assert "liveportrait_template_speed=0.5" in stderr_text
+    assert "liveportrait_template_calm_profile=true" in stderr_text
 
 
 def test_vetted_template_failure_falls_back_to_composer_without_random_templates(tmp_path, monkeypatch, capsys):
@@ -1122,7 +1136,7 @@ def test_image_input_does_not_auto_boost_without_flag(tmp_path, monkeypatch):
     assert captured.get("run_called") is not True
 
 
-def test_image_input_prefers_template_and_materializes_exact_requested_contract(tmp_path, monkeypatch):
+def test_image_input_prefers_template_and_materializes_exact_requested_contract(tmp_path, monkeypatch, capsys):
     paths = _make_runtime_layout(tmp_path)
     captured: dict[str, object] = {"compose_called": False}
     template_path = tmp_path / "template.mp4"
@@ -1151,6 +1165,10 @@ def test_image_input_prefers_template_and_materializes_exact_requested_contract(
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_IMAGE_DRIVING_TEMPLATE", str(template_path))
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "template_first")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "0.91")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.000003")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", "0.2")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", "0.0002")
     _patch_runner_execution(monkeypatch, captured)
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
     monkeypatch.setattr(runner, "_ensure_driving_clip_contract", _fake_ensure)
@@ -1188,10 +1206,17 @@ def test_image_input_prefers_template_and_materializes_exact_requested_contract(
     assert ensure_kwargs.get("target_duration_seconds") == 37.25
     assert ensure_kwargs.get("target_fps") == 16.0
     assert ensure_kwargs.get("always_materialize") is True
+    assert ensure_kwargs.get("playback_speed") == 1.0
     assert str(ensure_kwargs.get("output_name") or "").startswith("image_template_drive_")
 
     driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
     assert driving_arg == str(materialized_path)
+    cmd = list(captured.get("cmd") or [])
+    assert cmd[cmd.index("--driving-multiplier") + 1] == "0.91"
+    assert cmd[cmd.index("--driving-smooth-observation-variance") + 1] == "0.000003"
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_driver_source_policy=template_first" in stderr_text
+    assert "liveportrait_template_calm_profile=false" in stderr_text
 
 
 def test_image_input_prefers_strongest_valid_asset_template(tmp_path, monkeypatch):
@@ -1297,6 +1322,10 @@ def test_image_input_forces_composer_when_policy_is_composer_for_image(tmp_path,
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_IMAGE_DRIVING_TEMPLATE", str(template_path))
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "3e-6")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", "0.2")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", "0.0002")
 
     monkeypatch.setattr(
         sys,
@@ -1320,10 +1349,14 @@ def test_image_input_forces_composer_when_policy_is_composer_for_image(tmp_path,
 
     assert runner.main() == 0
     assert captured.get("compose_called") is True
+    cmd = list(captured.get("cmd") or [])
+    assert cmd[cmd.index("--driving-multiplier") + 1] == "1.0"
+    assert cmd[cmd.index("--driving-smooth-observation-variance") + 1] == "3e-6"
 
     stderr_text = capsys.readouterr().err
     assert "liveportrait_driver_source_policy=composer_for_image" in stderr_text
     assert "liveportrait_driver_source=composer" in stderr_text
+    assert "liveportrait_template_calm_profile=false" in stderr_text
 
 
 def test_natural_visible_uses_composer_without_boosted_retry_and_preserves_driver(tmp_path, monkeypatch, capsys):

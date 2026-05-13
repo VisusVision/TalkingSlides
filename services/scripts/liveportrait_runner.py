@@ -43,11 +43,53 @@ _SUPPORTED_DRIVER_SOURCE_POLICIES = {
     "source_video_only",
 }
 _VETTED_IMAGE_TEMPLATE_NAME = "d11.mp4"
+_DEFAULT_VETTED_TEMPLATE_MOTION_STRENGTH = "0.35"
+_DEFAULT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING = "1e-4"
+_DEFAULT_VETTED_TEMPLATE_SPEED = "0.5"
 
 
 def _truthy(value: str | None, default: str = "0") -> bool:
     raw = str(value if value is not None else default).strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _env_text(name: str, default: str) -> str:
+    raw = str(os.environ.get(name, "")).strip()
+    return raw if raw else str(default)
+
+
+def _env_float_text(name: str, default: str, *, min_value: float, max_value: float) -> str:
+    raw = _env_text(name, default)
+    try:
+        value = float(raw)
+    except Exception:
+        return str(default)
+    if value < float(min_value) or value > float(max_value):
+        return str(default)
+    return raw
+
+
+def _vetted_template_motion_settings() -> dict[str, str]:
+    return {
+        "motion_strength": _env_float_text(
+            "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH",
+            _DEFAULT_VETTED_TEMPLATE_MOTION_STRENGTH,
+            min_value=0.05,
+            max_value=2.0,
+        ),
+        "temporal_smoothing": _env_float_text(
+            "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING",
+            _DEFAULT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING,
+            min_value=0.0,
+            max_value=0.05,
+        ),
+        "speed": _env_float_text(
+            "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED",
+            _DEFAULT_VETTED_TEMPLATE_SPEED,
+            min_value=0.1,
+            max_value=4.0,
+        ),
+    }
 
 
 def _resolve_motion_preset(raw_value: str | None = None) -> str:
@@ -909,10 +951,13 @@ def _ensure_driving_clip_contract(
     target_fps: float = 0.0,
     output_name: str = "driving_contract.mp4",
     always_materialize: bool = False,
+    playback_speed: float = 1.0,
 ) -> tuple[Path, str, float]:
     current_duration_seconds = _probe_duration_seconds(source_video, stream_selector="v:0")
     current_fps = _probe_video_fps(source_video)
     requested_fps = max(float(target_fps or 0.0), 0.0)
+    speed = max(float(playback_speed or 1.0), 0.01)
+    speed_close = abs(speed - 1.0) <= 1e-6
 
     if target_duration_seconds <= 0.0 or current_duration_seconds <= 0.0:
         if always_materialize:
@@ -926,11 +971,13 @@ def _ensure_driving_clip_contract(
     fps_close = requested_fps <= 0.0 or (
         current_fps > 0.0 and abs(current_fps - requested_fps) <= 0.25
     )
-    if not always_materialize and duration_close and fps_close:
+    if not always_materialize and duration_close and fps_close and speed_close:
         return source_video, "passed_through", current_duration_seconds
 
     output_path = work_dir / str(output_name)
     vf_filters: list[str] = []
+    if not speed_close:
+        vf_filters.append(f"setpts=PTS/{speed:.6f}")
     if requested_fps > 0.0:
         vf_filters.append(f"fps={requested_fps:.6f}")
     vf_filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
@@ -985,7 +1032,14 @@ def _ensure_driving_clip_contract(
     return source_video, "extension_failed_passthrough", current_duration_seconds
 
 
-def _append_tuning_args(help_text: str, cmd: list[str], *, fps: float = 0.0) -> list[str]:
+def _append_tuning_args(
+    help_text: str,
+    cmd: list[str],
+    *,
+    fps: float = 0.0,
+    motion_strength: str | None = None,
+    temporal_smoothing: str | None = None,
+) -> list[str]:
     tuned = list(cmd)
 
     if fps > 0.0:
@@ -996,20 +1050,28 @@ def _append_tuning_args(help_text: str, cmd: list[str], *, fps: float = 0.0) -> 
     # driving-multiplier (motion strength for expression-friendly mode).
     # LP flag is --driving-multiplier (hyphenated), not --driving_multiplier.
     # Default to a subtle motion strength when not explicitly configured.
-    motion_strength = str(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "0.35")).strip()
-    if motion_strength and motion_strength.lower() not in ("0", "false"):
+    resolved_motion_strength = str(
+        motion_strength
+        if motion_strength is not None
+        else os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "0.35")
+    ).strip()
+    if resolved_motion_strength and resolved_motion_strength.lower() not in ("0", "false"):
         motion_flag = _pick_flag(
             help_text,
             ["--driving-multiplier", "--driving_multiplier", "--motion_scale", "--driving_scale"],
         )
         if motion_flag:
-            tuned.extend([motion_flag, motion_strength])
+            tuned.extend([motion_flag, resolved_motion_strength])
 
     # Temporal smoothing variance — LP flag: --driving-smooth-observation-variance.
     # Higher values = smoother but less accurate. 3e-6 is a good natural balance.
     # Temporal smoothing: default to a small positive variance for smoother motion
-    temporal_smoothing = str(os.environ.get("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "3e-6")).strip()
-    if temporal_smoothing and temporal_smoothing.lower() not in ("0", "false"):
+    resolved_temporal_smoothing = str(
+        temporal_smoothing
+        if temporal_smoothing is not None
+        else os.environ.get("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "3e-6")
+    ).strip()
+    if resolved_temporal_smoothing and resolved_temporal_smoothing.lower() not in ("0", "false"):
         temporal_flag = _pick_flag(
             help_text,
             [
@@ -1021,7 +1083,7 @@ def _append_tuning_args(help_text: str, cmd: list[str], *, fps: float = 0.0) -> 
             ],
         )
         if temporal_flag:
-            tuned.extend([temporal_flag, temporal_smoothing])
+            tuned.extend([temporal_flag, resolved_temporal_smoothing])
 
     # Animation region: exp, pose, lip, eyes, or all.
     # Default "all" gives natural head+eye+mouth motion.
@@ -1157,6 +1219,11 @@ def main() -> int:
         _vetted_template_missing = False
         _vetted_template_failed = False
         _fallback_driver_source = ""
+        _vetted_motion_settings = _vetted_template_motion_settings()
+        _template_motion_strength = ""
+        _template_temporal_smoothing = ""
+        _template_speed = "1.0"
+        _template_calm_profile = False
 
         _audio_path = Path(str(args.audio_path)) if str(args.audio_path or "").strip() else None
         _duration_contract = _derive_duration_contract(
@@ -1241,6 +1308,11 @@ def main() -> int:
             for _template_index, (_template_origin, _template_path) in enumerate(_template_candidates):
                 _candidate_template_name = _safe_path_label(_template_path)
                 try:
+                    _candidate_playback_speed = (
+                        float(_vetted_motion_settings["speed"])
+                        if str(_template_origin).startswith("vetted_")
+                        else 1.0
+                    )
                     _candidate_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
                         source_video=_template_path,
                         target_duration_seconds=float(_target_contract_duration_seconds),
@@ -1248,6 +1320,7 @@ def main() -> int:
                         target_fps=float(_requested_fps),
                         output_name=f"image_template_drive_{_template_index:02d}.mp4",
                         always_materialize=True,
+                        playback_speed=float(_candidate_playback_speed),
                     )
                 except Exception as _template_exc:
                     if str(_template_origin).startswith("vetted_"):
@@ -1307,6 +1380,11 @@ def main() -> int:
                     _motion_source = f"image_template:{_template_origin}"
                     _driver_source = "template"
                     _template_used = _candidate_template_name
+                    if str(_template_origin).startswith("vetted_"):
+                        _template_motion_strength = _vetted_motion_settings["motion_strength"]
+                        _template_temporal_smoothing = _vetted_motion_settings["temporal_smoothing"]
+                        _template_speed = _vetted_motion_settings["speed"]
+                        _template_calm_profile = True
                     break
 
                 _template_score = (
@@ -1477,6 +1555,10 @@ def main() -> int:
                 f"liveportrait_vetted_template_missing={int(bool(_vetted_template_missing))} "
                 f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
                 f"liveportrait_fallback_driver_source={_fallback_driver_source or 'none'} "
+                f"liveportrait_template_motion_strength={_template_motion_strength or 'none'} "
+                f"liveportrait_template_temporal_smoothing={_template_temporal_smoothing or 'none'} "
+                f"liveportrait_template_speed={_template_speed} "
+                f"liveportrait_template_calm_profile={'true' if _template_calm_profile else 'false'} "
                 f"liveportrait_composer_used={int(bool(_composer_used))} "
                 f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
                 f"liveportrait_recenter_enabled={int(bool(_recenter_enabled))} "
@@ -1551,6 +1633,10 @@ def main() -> int:
             f"driving_duration_seconds={_resolved_driving_duration_seconds:.4f} "
             f"resolved_source_path={_resolved_source_path} "
             f"resolved_motion_source_path={source_video} "
+            f"liveportrait_template_motion_strength={_template_motion_strength or 'none'} "
+            f"liveportrait_template_temporal_smoothing={_template_temporal_smoothing or 'none'} "
+            f"liveportrait_template_speed={_template_speed} "
+            f"liveportrait_template_calm_profile={'true' if _template_calm_profile else 'false'} "
             f"source_image={source_image} "
             f"driving_input={source_video} "
             f"final_output_path={output_path}",
@@ -1574,7 +1660,13 @@ def main() -> int:
             used_dir_output = True
             cmd.extend(["--output-dir", str(temp_dir)])
 
-        cmd = _append_tuning_args(help_text, cmd, fps=float(args.fps))
+        cmd = _append_tuning_args(
+            help_text,
+            cmd,
+            fps=float(args.fps),
+            motion_strength=(_template_motion_strength if _template_calm_profile else None),
+            temporal_smoothing=(_template_temporal_smoothing if _template_calm_profile else None),
+        )
 
         ok, err, run_details = _run(cmd, timeout_seconds=int(args.timeout_seconds))
         if not ok:
@@ -1654,6 +1746,10 @@ def main() -> int:
                 f"driving_action={_driving_action} "
                 f"resolved_source_path={_resolved_source_path} "
                 f"resolved_motion_source_path={source_video} "
+                f"liveportrait_template_motion_strength={_template_motion_strength or 'none'} "
+                f"liveportrait_template_temporal_smoothing={_template_temporal_smoothing or 'none'} "
+                f"liveportrait_template_speed={_template_speed} "
+                f"liveportrait_template_calm_profile={'true' if _template_calm_profile else 'false'} "
                 f"final_output_path={output_path}",
                 file=sys.stderr,
             )
