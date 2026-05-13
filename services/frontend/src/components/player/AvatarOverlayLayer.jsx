@@ -6,9 +6,12 @@ const HEIGHT_RATIO = 9 / 16;
 const STORAGE_PREFIX = 'visus-avatar-overlay';
 
 export const AVATAR_OVERLAY_Z_INDEX = Object.freeze({
-  avatar: 20,
-  playerControls: 30,
-  avatarTheater: 40,
+  baseVideo: 0,
+  watermark: 20,
+  avatar: 25,
+  avatarTheater: 30,
+  avatarControls: 40,
+  videoControls: 50,
   captions: 60,
 });
 
@@ -455,12 +458,16 @@ export default function AvatarOverlayLayer({
           </div>
         ) : (
           <>
-            <div className="relative aspect-video overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-black shadow-sm">
-              {theaterOpen ? (
-                <div className="flex h-full w-full items-center justify-center text-xs font-semibold text-white/70">
-                  Avatar theater open
-                </div>
-              ) : renderAvatarVideo()}
+            <div
+              data-avatar-theater-frame={theaterOpen ? 'true' : undefined}
+              className={[
+                'relative aspect-video overflow-hidden rounded-lg border bg-black shadow-sm transition-shadow duration-200',
+                theaterOpen
+                  ? 'border-white/30 shadow-xl ring-2 ring-white/25'
+                  : 'border-[var(--border-subtle)]',
+              ].join(' ')}
+            >
+              {renderAvatarVideo()}
               <div
                 tabIndex={0}
                 role="group"
@@ -477,7 +484,7 @@ export default function AvatarOverlayLayer({
                 data-avatar-controls="true"
                 data-controls-visible={theaterOpen || controlsVisible ? 'true' : 'false'}
                 className={`absolute right-2 top-2 ${controlsVisibilityClassName(theaterOpen || controlsVisible)}`}
-                style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
+                style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarControls }}
               >
                 <AvatarControls
                   visible
@@ -489,33 +496,6 @@ export default function AvatarOverlayLayer({
                 />
               </div>
             </div>
-            {theaterOpen && (
-              <div
-                data-testid="avatar-theater-overlay"
-                className="fixed inset-0 flex items-center justify-center bg-black/90 p-4"
-                style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarTheater }}
-              >
-                <div className="relative w-full max-w-5xl">
-                  <div className="aspect-video overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
-                    {renderAvatarVideo()}
-                  </div>
-                  <div
-                    data-avatar-controls="true"
-                    className="absolute right-3 top-3"
-                    style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
-                  >
-                    <AvatarControls
-                      visible
-                      compact
-                      theater
-                      onHide={handleHide}
-                      onReset={handleReset}
-                      onTheaterToggle={handleTheaterToggle}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
           </>
         )}
       </div>
@@ -532,23 +512,26 @@ export default function AvatarOverlayLayer({
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatar }}
     >
       {!avatarVisible ? (
-        <div className="absolute right-3 top-3" style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}>
+        <div className="absolute right-3 top-3" style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarControls }}>
           <AvatarControls visible={false} onShow={handleShow} />
         </div>
       ) : theaterOpen ? (
         <div
           data-testid="avatar-theater-overlay"
-          className="pointer-events-auto absolute inset-0 flex items-center justify-center bg-black/90 p-4"
+          className="pointer-events-none absolute inset-x-4 top-4 bottom-20 flex items-center justify-center sm:inset-x-8 sm:top-8 sm:bottom-24"
           style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarTheater }}
         >
-          <div className="relative w-full max-w-[86%]">
+          <div
+            data-avatar-theater-frame="true"
+            className="pointer-events-auto relative w-full max-w-[86%]"
+          >
             <div className="aspect-video overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
               {renderAvatarVideo()}
             </div>
             <div
               data-avatar-controls="true"
               className="absolute right-3 top-3"
-              style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
+              style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarControls }}
             >
               <AvatarControls
                 visible
@@ -581,7 +564,7 @@ export default function AvatarOverlayLayer({
             data-avatar-controls="true"
             data-controls-visible={controlsVisible || dragging ? 'true' : 'false'}
             className={`absolute right-1 top-1 ${controlsVisibilityClassName(controlsVisible || dragging)}`}
-            style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.playerControls }}
+            style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarControls }}
           >
             <AvatarControls
               visible

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpenText, Check, Focus, Heart, Layers3, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
+import { Check, Focus, Heart, Layers3, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   addComment,
@@ -19,7 +19,6 @@ import {
 import VideoStage from '../components/player/VideoStage';
 import AvatarOverlayLayer from '../components/player/AvatarOverlayLayer';
 import UnavailableStage from '../components/player/UnavailableStage';
-import WatermarkOverlay from '../components/player/WatermarkOverlay';
 import { PLAYER_MODES, resolvePlayerMode } from '../components/player/playerMode';
 import ChapterList from '../components/player/ChapterList';
 import TranscriptPanel from '../components/player/TranscriptPanel';
@@ -57,8 +56,8 @@ function draftNoteKey(lessonId) {
   return `visus-notes-draft-${lessonId || 'none'}`;
 }
 
-function studyModeKey(lessonId) {
-  return `visus-study-mode-${lessonId || 'none'}`;
+function focusModeKey(lessonId) {
+  return `visus-focus-mode-${lessonId || 'none'}`;
 }
 
 function subtitleTrackCode(track) {
@@ -342,7 +341,6 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [playbackTime, setPlaybackTime] = useState(0);
   const [playbackActive, setPlaybackActive] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
-  const [studyMode, setStudyMode] = useState(false);
   const [notesCollapsed, setNotesCollapsed] = useState(false);
   const [transcriptCollapsed, setTranscriptCollapsed] = useState(false);
   const [chaptersCollapsed, setChaptersCollapsed] = useState(false);
@@ -370,17 +368,17 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
   useEffect(() => {
     if (!activeLessonId) {
-      setStudyMode(false);
+      setFocusMode(false);
       return;
     }
-    setStudyMode(window.localStorage.getItem(studyModeKey(activeLessonId)) === 'true');
+    setFocusMode(window.localStorage.getItem(focusModeKey(activeLessonId)) === 'true');
   }, [activeLessonId]);
 
-  const handleStudyModeToggle = useCallback(() => {
-    setStudyMode((previous) => {
+  const handleFocusModeToggle = useCallback(() => {
+    setFocusMode((previous) => {
       const next = !previous;
       if (activeLessonId) {
-        window.localStorage.setItem(studyModeKey(activeLessonId), next ? 'true' : 'false');
+        window.localStorage.setItem(focusModeKey(activeLessonId), next ? 'true' : 'false');
       }
       return next;
     });
@@ -995,13 +993,6 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
   };
 
-  const renderWatermarkedStage = (stage) => (
-    <div className="relative overflow-hidden rounded-3xl">
-      {stage}
-      <WatermarkOverlay lesson={lesson} />
-    </div>
-  );
-
   const renderPlayerStage = () => {
     if (playbackHeartbeat.error) {
       return (
@@ -1014,7 +1005,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
 
     if (playerMode.mode === PLAYER_MODES.PUBLIC_MP4) {
-      return renderWatermarkedStage(
+      return (
         <VideoStage
           lesson={playbackLesson}
           subtitleTracks={subtitleTracks}
@@ -1027,13 +1018,14 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           videoRef={videoRef}
           showSubtitleControls={false}
           showLessonDetails={false}
-          avatarOverlayMode={studyMode ? 'disabled' : 'floating'}
-        />,
+          avatarOverlayMode={focusMode ? 'disabled' : 'floating'}
+          watermarkLesson={lesson}
+        />
       );
     }
 
     if (playerMode.mode === PLAYER_MODES.SECURE_HLS) {
-      return renderWatermarkedStage(
+      return (
         <Suspense
           fallback={(
             <SurfaceCard elevated className="p-4 sm:p-5">
@@ -1054,9 +1046,10 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             preferredSubtitleLanguage={preferredSubtitleLanguage}
             selectedSubtitleKey={selectedSubtitleKey}
             onSubtitleKeyChange={setSelectedSubtitleKey}
-            avatarOverlayMode={studyMode ? 'disabled' : 'floating'}
+            avatarOverlayMode={focusMode ? 'disabled' : 'floating'}
+            watermarkLesson={lesson}
           />
-        </Suspense>,
+        </Suspense>
       );
     }
 
@@ -1101,13 +1094,9 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             </select>
           </label>
 
-          <Button variant={focusMode ? 'primary' : 'secondary'} onClick={() => setFocusMode((prev) => !prev)}>
+          <Button variant={focusMode ? 'primary' : 'secondary'} onClick={handleFocusModeToggle} disabled={!activeLessonId}>
             <Focus size={15} />
             <span>{focusMode ? 'Exit Focus' : 'Focus Mode'}</span>
-          </Button>
-          <Button variant={studyMode ? 'primary' : 'secondary'} onClick={handleStudyModeToggle} disabled={!activeLessonId}>
-            <BookOpenText size={15} />
-            <span>{studyMode ? 'Exit Study' : 'Study Mode'}</span>
           </Button>
         </div>
       </SurfaceCard>
@@ -1134,8 +1123,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       )}
 
       {activeLessonId && !lessonError && (
-        <section className={studyMode ? 'grid gap-5 xl:grid-cols-[minmax(0,4fr)_minmax(16rem,1fr)]' : 'layout-grid-12'}>
-          <div className={studyMode ? 'space-y-5' : `${focusMode ? 'lg:col-span-7' : 'lg:col-span-8'} space-y-5`}>
+        <section className={focusMode ? 'grid gap-5 xl:grid-cols-[minmax(0,4fr)_minmax(16rem,1fr)]' : 'layout-grid-12'}>
+          <div className={focusMode ? 'space-y-5' : 'lg:col-span-8 space-y-5'}>
             {loadingLesson ? (
               <SurfaceCard elevated>
                 <p className="body-md">Loading lesson player...</p>
@@ -1385,8 +1374,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             )}
           </div>
 
-          <aside className={studyMode ? 'space-y-5' : `${focusMode ? 'lg:col-span-5' : 'lg:col-span-4'} space-y-5`}>
-            {studyMode ? (
+          <aside className={focusMode ? 'space-y-5' : 'lg:col-span-4 space-y-5'}>
+            {focusMode ? (
               <WatchStudyPanel
                 lesson={lesson}
                 videoRef={videoRef}
@@ -1398,49 +1387,44 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                 saveActionLabel={user ? 'Save Note' : 'Sign In To Save'}
                 saveHint={saveHint || (!user ? 'Drafts remain cached locally while you sign in.' : '')}
               />
-            ) : null}
-            <WatchContextPanel
-              context={playlistContext}
-              currentLessonId={activeLessonId}
-              onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
-            />
-            {!studyMode && (
-              <NotesPanel
-                notes={notes}
-                onNotesChange={setNotes}
-                onSave={saveNotes}
-                savedAtLabel={savedAtLabel}
-                unsaved={hasUnsavedNotes}
-                saveActionLabel={user ? 'Save Note' : 'Sign In To Save'}
-                saveHint={saveHint || (!user ? 'Drafts remain cached locally while you sign in.' : '')}
-                collapsed={notesCollapsed}
-                onToggle={() => setNotesCollapsed((prev) => !prev)}
-              />
+            ) : (
+              <>
+                <WatchContextPanel
+                  context={playlistContext}
+                  currentLessonId={activeLessonId}
+                  onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
+                />
+                <NotesPanel
+                  notes={notes}
+                  onNotesChange={setNotes}
+                  onSave={saveNotes}
+                  savedAtLabel={savedAtLabel}
+                  unsaved={hasUnsavedNotes}
+                  saveActionLabel={user ? 'Save Note' : 'Sign In To Save'}
+                  saveHint={saveHint || (!user ? 'Drafts remain cached locally while you sign in.' : '')}
+                  collapsed={notesCollapsed}
+                  onToggle={() => setNotesCollapsed((prev) => !prev)}
+                />
+                <TranscriptPanel
+                  lines={transcriptLines}
+                  playbackTime={playbackTime}
+                  onJump={jumpToTime}
+                  collapsed={transcriptCollapsed}
+                  onToggle={() => setTranscriptCollapsed((prev) => !prev)}
+                />
+                <ChapterList
+                  chapters={chapters}
+                  activeChapterId={activeChapterId}
+                  onJump={jumpToTime}
+                  collapsed={chaptersCollapsed}
+                  onToggle={() => setChaptersCollapsed((prev) => !prev)}
+                />
+              </>
             )}
-            <TranscriptPanel
-              lines={transcriptLines}
-              playbackTime={playbackTime}
-              onJump={jumpToTime}
-              collapsed={transcriptCollapsed}
-              onToggle={() => setTranscriptCollapsed((prev) => !prev)}
-            />
-            <ChapterList
-              chapters={chapters}
-              activeChapterId={activeChapterId}
-              onJump={jumpToTime}
-              collapsed={chaptersCollapsed}
-              onToggle={() => setChaptersCollapsed((prev) => !prev)}
-            />
           </aside>
         </section>
       )}
 
-      {focusMode && (
-        <RelatedLessonsRow
-          lessons={relatedLessons}
-          onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
-        />
-      )}
     </div>
   );
 }

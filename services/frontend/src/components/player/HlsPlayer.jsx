@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle, Maximize2, Minimize2 } from 'lucide-react';
 import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer';
+import WatermarkOverlay from './WatermarkOverlay';
 import SurfaceCard from '../ui/SurfaceCard';
 
 function vttUrlForLesson(lesson) {
@@ -113,6 +114,22 @@ function CaptionLayer({ text }) {
   );
 }
 
+function PlayerShellFullscreenButton({ active, onClick }) {
+  return (
+    <button
+      type="button"
+      data-testid="player-shell-fullscreen"
+      aria-label={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
+      title={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
+      onClick={onClick}
+      className="focus-ring absolute left-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm transition hover:bg-black/85"
+      style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.videoControls }}
+    >
+      {active ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+    </button>
+  );
+}
+
 export default function HlsPlayer({
   lesson,
   videoRef,
@@ -128,12 +145,15 @@ export default function HlsPlayer({
   preferredSubtitleLanguage = '',
   onSubtitleKeyChange,
   avatarOverlayMode = 'floating',
+  watermarkLesson = null,
 }) {
   const internalVideoRef = useRef(null);
+  const playerShellRef = useRef(null);
   const activeVideoRef = videoRef || internalVideoRef;
   const [playbackError, setPlaybackError] = useState('');
   const [usingFallback, setUsingFallback] = useState(false);
   const [activeCaptionText, setActiveCaptionText] = useState('');
+  const [fullscreenActive, setFullscreenActive] = useState(false);
 
   const sourceUrl = usingFallback ? String(fallbackUrl || '').trim() : String(manifestUrl || '').trim();
   const canUseFallback = Boolean(fallbackAllowed && fallbackUrl);
@@ -295,17 +315,54 @@ export default function HlsPlayer({
     setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
   }, [onPlaybackTimeChange, selectedTrack]);
 
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setFullscreenActive(document.fullscreenElement === playerShellRef.current);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    handleFullscreenChange();
+    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+  }, []);
+
+  const handlePlayerShellFullscreenToggle = useCallback(() => {
+    const target = playerShellRef.current;
+    if (!target || typeof document === 'undefined') return;
+    try {
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.().catch?.(() => {});
+        return;
+      }
+      target.requestFullscreen?.().catch?.(() => {});
+    } catch {
+      // Fullscreen can be blocked by embedded browser surfaces.
+    }
+  }, []);
+
+  const playerShellClassName = [
+    'relative overflow-hidden bg-[color:var(--video-stage-bg)]',
+    fullscreenActive ? 'flex h-screen items-center justify-center rounded-none' : 'rounded-xl',
+  ].join(' ');
+  const videoClassName = fullscreenActive
+    ? 'h-full w-full bg-black object-contain'
+    : 'aspect-video w-full bg-black';
+
   return (
     <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
-      <div className="relative overflow-hidden rounded-xl bg-[color:var(--video-stage-bg)]">
+      <div
+        ref={playerShellRef}
+        data-testid="player-fullscreen-shell"
+        data-fullscreen-active={fullscreenActive ? 'true' : 'false'}
+        className={playerShellClassName}
+      >
         {sourceUrl ? (
           <>
             <video
               key={`${lesson?.id || 'lesson'}-${usingFallback ? 'mp4' : 'hls'}`}
               ref={activeVideoRef}
-              className="aspect-video w-full bg-black"
+              className={videoClassName}
+              style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.baseVideo }}
               controls
-              controlsList="nodownload noplaybackrate noremoteplayback"
+              controlsList="nodownload nofullscreen noplaybackrate noremoteplayback"
               disablePictureInPicture
               onContextMenu={(event) => event.preventDefault()}
               playsInline
@@ -330,6 +387,7 @@ export default function HlsPlayer({
                 />
               ))}
             </video>
+            <WatermarkOverlay lesson={watermarkLesson} />
             {avatarOverlayEnabled && (
               <AvatarOverlayLayer
                 lessonId={lesson?.id}
@@ -340,6 +398,10 @@ export default function HlsPlayer({
               />
             )}
             <CaptionLayer text={activeCaptionText} />
+            <PlayerShellFullscreenButton
+              active={fullscreenActive}
+              onClick={handlePlayerShellFullscreenToggle}
+            />
           </>
         ) : (
           <div className="flex aspect-video items-center justify-center gap-2 text-sm text-[color:var(--media-text-on-image)] opacity-80">

@@ -55,6 +55,18 @@ def test_frontend_video_stage_uses_separate_avatar_overlay_layer():
     assert source.count("<video") == 1
 
 
+def test_frontend_video_stage_fullscreen_targets_player_shell():
+    source = _frontend_source("components", "player", "VideoStage.jsx")
+
+    assert "data-testid=\"player-fullscreen-shell\"" in source
+    assert "playerShellRef.current" in source
+    assert "target.requestFullscreen?.()" in source
+    assert "activeVideoRef.current.requestFullscreen" not in source
+    assert "controlsList=\"nodownload nofullscreen noplaybackrate noremoteplayback\"" in source
+    assert "<WatermarkOverlay lesson={watermarkLesson} />" in source
+    assert source.index("data-testid=\"player-fullscreen-shell\"") < source.index("<AvatarOverlayLayer")
+
+
 def test_frontend_hls_player_uses_separate_avatar_overlay_layer():
     source = _frontend_source("components", "player", "HlsPlayer.jsx")
 
@@ -65,14 +77,29 @@ def test_frontend_hls_player_uses_separate_avatar_overlay_layer():
     assert source.count("<video") == 1
 
 
+def test_frontend_hls_player_fullscreen_targets_player_shell():
+    source = _frontend_source("components", "player", "HlsPlayer.jsx")
+
+    assert "data-testid=\"player-fullscreen-shell\"" in source
+    assert "playerShellRef.current" in source
+    assert "target.requestFullscreen?.()" in source
+    assert "activeVideoRef.current.requestFullscreen" not in source
+    assert "controlsList=\"nodownload nofullscreen noplaybackrate noremoteplayback\"" in source
+    assert "<WatermarkOverlay lesson={watermarkLesson} />" in source
+    assert source.index("data-testid=\"player-fullscreen-shell\"") < source.index("<AvatarOverlayLayer")
+
+
 def test_frontend_caption_layer_stays_above_avatar_overlay_and_theater():
     layer_source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
     video_stage_source = _frontend_source("components", "player", "VideoStage.jsx")
     hls_source = _frontend_source("components", "player", "HlsPlayer.jsx")
 
-    assert "avatar: 20" in layer_source
-    assert "playerControls: 30" in layer_source
-    assert "avatarTheater: 40" in layer_source
+    assert "baseVideo: 0" in layer_source
+    assert "watermark: 20" in layer_source
+    assert "avatar: 25" in layer_source
+    assert "avatarTheater: 30" in layer_source
+    assert "avatarControls: 40" in layer_source
+    assert "videoControls: 50" in layer_source
     assert "captions: 60" in layer_source
     assert "data-testid=\"player-caption-layer\"" in video_stage_source
     assert "style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions }}" in video_stage_source
@@ -143,22 +170,30 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "data-testid=\"avatar-theater-overlay\"" in source
+    assert "pointer-events-none absolute inset-x-4 top-4 bottom-20" in source
+    assert "data-avatar-theater-frame=\"true\"" in source
+    assert "fixed inset-0" not in source
     assert "setTheaterOpen(false)" in source
-    assert "avatarTheater: 40" in source
+    assert "avatarTheater: 30" in source
+    assert "videoControls: 50" in source
     assert "captions: 60" in source
     assert "storageKey(lessonId, 'theater')" not in source
 
 
-def test_frontend_watch_study_mode_renders_avatar_and_local_notes():
+def test_frontend_watch_exposes_single_focus_mode_for_study_layout():
     source = _frontend_source("pages", "Watch.jsx")
 
-    assert "Study Mode" in source
-    assert "studyModeKey" in source
+    assert "Focus Mode" in source
+    assert source.count("Focus Mode") == 1
+    assert "focusModeKey" in source
+    assert "Study Mode" not in source
+    assert "handleStudyModeToggle" not in source
+    assert "setStudyMode" not in source
     assert "xl:grid-cols-[minmax(0,4fr)_minmax(16rem,1fr)]" in source
     assert "mode=\"study-panel\"" in source
     assert "data-testid=\"study-mode-panel\"" in source
     assert "data-testid=\"study-mode-notes\"" in source
-    assert "avatarOverlayMode={studyMode ? 'disabled' : 'floating'}" in source
+    assert "avatarOverlayMode={focusMode ? 'disabled' : 'floating'}" in source
 
 
 def test_frontend_studio_hides_advanced_avatar_runtime_and_placement_controls():
