@@ -27,7 +27,6 @@ import {
   fetchProjects,
   getProjectModeration,
   generateSubtitleTrack,
-  fetchAvatarOverlayPreference,
   fetchSubtitleTrackBundle,
   requestProjectAdminReview,
   rerenderProjectAvatar,
@@ -39,24 +38,9 @@ import {
   uploadProjectCover,
   uploadTranscriptPageBackground,
   updateProjectAvatarVisible,
-  updateProjectAvatarRuntimeSettings,
-  saveAvatarOverlayPreference,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
-import {
-  AVATAR_PLACEMENT_OPTIONS,
-  AVATAR_SIZE_OPTIONS,
-  AVATAR_SIZE_WIDTHS,
-  DEFAULT_AVATAR_PLACEMENT,
-  avatarPlacementStyle,
-  normalizeAvatarPlacement,
-} from '../utils/avatarPlacement';
-import {
-  AVATAR_MOTION_STYLE_OPTIONS,
-  DEFAULT_AVATAR_RUNTIME_SETTINGS,
-  avatarRuntimeStatusMessage,
-  normalizeAvatarRuntimeSettings,
-} from '../utils/avatarRuntimeSettings';
+import { avatarRuntimeStatusMessage } from '../utils/avatarRuntimeSettings';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
@@ -1042,12 +1026,6 @@ export default function Studio({ user, onLoginRequest }) {
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
   const [avatarVisibilitySaving, setAvatarVisibilitySaving] = useState(false);
-  const [avatarPlacement, setAvatarPlacement] = useState(DEFAULT_AVATAR_PLACEMENT);
-  const [avatarPlacementSaving, setAvatarPlacementSaving] = useState(false);
-  const [avatarPlacementMessage, setAvatarPlacementMessage] = useState('');
-  const [avatarRuntimeSettings, setAvatarRuntimeSettings] = useState(DEFAULT_AVATAR_RUNTIME_SETTINGS);
-  const [avatarRuntimeSaving, setAvatarRuntimeSaving] = useState(false);
-  const [avatarRuntimeMessage, setAvatarRuntimeMessage] = useState('');
   const [avatarRerendering, setAvatarRerendering] = useState(false);
   const [avatarRerenderMessage, setAvatarRerenderMessage] = useState('');
 
@@ -1519,38 +1497,9 @@ export default function Studio({ user, onLoginRequest }) {
   }, [selectedLesson?.avatar_active, selectedLesson?.avatar_enabled_override, selectedLesson?.category_name, selectedLesson?.description, selectedLesson?.id, selectedLesson?.title]);
 
   useEffect(() => {
-    let cancelled = false;
-    const fallbackPlacement = normalizeAvatarPlacement(selectedLesson?.avatar_placement || selectedLesson?.avatar_overlay);
-    setAvatarPlacement(fallbackPlacement);
-    setAvatarPlacementMessage('');
-
-    if (!selectedLesson?.id) return () => {
-      cancelled = true;
-    };
-
-    fetchAvatarOverlayPreference(selectedLesson.id)
-      .then((payload) => {
-        if (!cancelled) {
-          setAvatarPlacement(normalizeAvatarPlacement(payload?.avatar_placement || payload));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setAvatarPlacement(fallbackPlacement);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedLesson?.avatar_overlay, selectedLesson?.avatar_placement, selectedLesson?.id]);
-
-  useEffect(() => {
-    setAvatarRuntimeSettings(normalizeAvatarRuntimeSettings(selectedLesson?.avatar_runtime_settings));
-    setAvatarRuntimeMessage('');
     setAvatarRerenderMessage('');
     setAvatarRerendering(false);
-  }, [selectedLesson?.avatar_runtime_settings, selectedLesson?.id]);
+  }, [selectedLesson?.id]);
 
   const handleCreateProject = async ({
     file,
@@ -1656,72 +1605,6 @@ export default function Studio({ user, onLoginRequest }) {
       window.alert(err.message || 'Avatar visibility update failed.');
     } finally {
       setAvatarVisibilitySaving(false);
-    }
-  };
-
-  const updateAvatarPlacementDraft = (patch) => {
-    setAvatarPlacement((previous) => {
-      const nextPatch = { ...patch };
-      if (patch.size && AVATAR_SIZE_WIDTHS[patch.size]) {
-        nextPatch.width = AVATAR_SIZE_WIDTHS[patch.size];
-      }
-      return normalizeAvatarPlacement({ ...previous, ...nextPatch }, previous);
-    });
-    setAvatarPlacementMessage('');
-  };
-
-  const handleAvatarPlacementSave = async () => {
-    if (!selectedLesson?.id || avatarPlacementSaving) return;
-    setAvatarPlacementSaving(true);
-    setAvatarPlacementMessage('');
-    try {
-      const normalized = normalizeAvatarPlacement(avatarPlacement);
-      const saved = await saveAvatarOverlayPreference(selectedLesson.id, {
-        avatar_placement: normalized,
-      });
-      const nextPlacement = normalizeAvatarPlacement(saved?.avatar_placement || saved || normalized);
-      setAvatarPlacement(nextPlacement);
-      handleProjectUpdated({
-        id: selectedLesson.id,
-        avatar_placement: nextPlacement,
-        avatar_overlay: {
-          ...(selectedLesson.avatar_overlay || {}),
-          placement: nextPlacement,
-          defaults: {
-            ...((selectedLesson.avatar_overlay || {}).defaults || {}),
-            ...nextPlacement,
-            avatar_placement: nextPlacement,
-          },
-        },
-      });
-      setAvatarPlacementMessage('Placement saved.');
-    } catch (err) {
-      window.alert(err.message || 'Avatar placement update failed.');
-    } finally {
-      setAvatarPlacementSaving(false);
-    }
-  };
-
-  const updateAvatarRuntimeDraft = (patch) => {
-    setAvatarRuntimeSettings((previous) => normalizeAvatarRuntimeSettings({ ...previous, ...patch }, previous));
-    setAvatarRuntimeMessage('');
-  };
-
-  const handleAvatarRuntimeSave = async () => {
-    if (!selectedLesson?.id || avatarRuntimeSaving) return;
-    setAvatarRuntimeSaving(true);
-    setAvatarRuntimeMessage('');
-    try {
-      const normalized = normalizeAvatarRuntimeSettings(avatarRuntimeSettings);
-      const updated = await updateProjectAvatarRuntimeSettings(selectedLesson.id, normalized);
-      const nextSettings = normalizeAvatarRuntimeSettings(updated?.avatar_runtime_settings || normalized);
-      setAvatarRuntimeSettings(nextSettings);
-      handleProjectUpdated(updated);
-      setAvatarRuntimeMessage('Avatar settings saved.');
-    } catch (err) {
-      window.alert(err.message || 'Avatar runtime settings update failed.');
-    } finally {
-      setAvatarRuntimeSaving(false);
     }
   };
 
@@ -2597,7 +2480,7 @@ export default function Studio({ user, onLoginRequest }) {
                           <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
                         </div>
                         <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
-                          <span>{avatarVisible(selectedLesson) ? 'Show avatar' : 'Hide avatar'}</span>
+                          <span>{avatarVisible(selectedLesson) ? 'Avatar visible' : 'Avatar hidden'}</span>
                           <input
                             type="checkbox"
                             className="sr-only"
@@ -2617,142 +2500,15 @@ export default function Studio({ user, onLoginRequest }) {
                         </label>
                       </div>
 
-                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-                        <div className="grid gap-3 sm:grid-cols-3">
-                          <label className="text-xs font-medium text-[var(--text-secondary)]">
-                            Motion style
-                            <select
-                              value={avatarRuntimeSettings.motion_preset}
-                              onChange={(event) => updateAvatarRuntimeDraft({ motion_preset: event.target.value })}
-                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
-                            >
-                              {AVATAR_MOTION_STYLE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="inline-flex items-center justify-between gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-2 text-sm font-medium text-[var(--text-primary)]">
-                            <span>Restoration</span>
-                            <input
-                              type="checkbox"
-                              checked={avatarRuntimeSettings.restoration_enabled}
-                              onChange={(event) => updateAvatarRuntimeDraft({ restoration_enabled: event.target.checked })}
-                            />
-                          </label>
-                          <label className="inline-flex items-center justify-between gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-2 text-sm font-medium text-[var(--text-primary)]">
-                            <span>
-                              <span className="block">LivePortrait</span>
-                              <span className="block text-xs font-normal text-[var(--text-secondary)]">Off uses lip-sync fallback</span>
-                            </span>
-                            <input
-                              type="checkbox"
-                              checked={avatarRuntimeSettings.liveportrait_enabled}
-                              onChange={(event) => updateAvatarRuntimeDraft({ liveportrait_enabled: event.target.checked })}
-                            />
-                          </label>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <Button variant="secondary" onClick={handleAvatarRuntimeSave} disabled={avatarRuntimeSaving}>
-                            <Save size={16} />
-                            <span>{avatarRuntimeSaving ? 'Saving' : 'Save avatar settings'}</span>
-                          </Button>
-                          <Button variant="secondary" onClick={handleAvatarOnlyRerender} disabled={avatarOnlyRerenderDisabled}>
-                            <RefreshCcw size={16} />
-                            <span>{avatarRerendering ? 'Queueing' : 'Rerender avatar only'}</span>
-                          </Button>
-                        </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="secondary" onClick={handleAvatarOnlyRerender} disabled={avatarOnlyRerenderDisabled}>
+                          <RefreshCcw size={16} />
+                          <span>{avatarRerendering ? 'Queueing' : 'Rerender avatar only'}</span>
+                        </Button>
                       </div>
 
-                      {avatarRuntimeMessage && (
-                        <p className="text-xs font-medium text-[var(--text-primary)]">{avatarRuntimeMessage}</p>
-                      )}
                       {avatarRerenderMessage && (
                         <p className="text-xs font-medium text-[var(--text-primary)]">{avatarRerenderMessage}</p>
-                      )}
-
-                      <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_12rem] lg:items-end">
-                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                          <label className="text-xs font-medium text-[var(--text-secondary)]">
-                            Position
-                            <select
-                              value={avatarPlacement.position}
-                              onChange={(event) => updateAvatarPlacementDraft({ position: event.target.value })}
-                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
-                            >
-                              {AVATAR_PLACEMENT_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <label className="text-xs font-medium text-[var(--text-secondary)]">
-                            Size
-                            <select
-                              value={avatarPlacement.size}
-                              onChange={(event) => updateAvatarPlacementDraft({ size: event.target.value })}
-                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
-                            >
-                              {AVATAR_SIZE_OPTIONS.map((option) => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </select>
-                          </label>
-                          <Button variant="secondary" onClick={handleAvatarPlacementSave} disabled={avatarPlacementSaving}>
-                            <Save size={16} />
-                            <span>{avatarPlacementSaving ? 'Saving' : 'Save placement'}</span>
-                          </Button>
-                        </div>
-
-                        <div className="relative aspect-video overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-black/80">
-                          <div
-                            className="absolute aspect-video rounded border border-white/60 bg-white/30"
-                            style={avatarPlacementStyle(avatarPlacement)}
-                          />
-                        </div>
-                      </div>
-
-                      {avatarPlacement.position === 'custom' && (
-                        <div className="grid gap-3 sm:grid-cols-3">
-                          <label className="text-xs font-medium text-[var(--text-secondary)]">
-                            X
-                            <input
-                              type="number"
-                              min="0"
-                              max="1"
-                              step="0.01"
-                              value={avatarPlacement.x}
-                              onChange={(event) => updateAvatarPlacementDraft({ position: 'custom', x: event.target.value })}
-                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
-                            />
-                          </label>
-                          <label className="text-xs font-medium text-[var(--text-secondary)]">
-                            Y
-                            <input
-                              type="number"
-                              min="0"
-                              max="1"
-                              step="0.01"
-                              value={avatarPlacement.y}
-                              onChange={(event) => updateAvatarPlacementDraft({ position: 'custom', y: event.target.value })}
-                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
-                            />
-                          </label>
-                          <label className="text-xs font-medium text-[var(--text-secondary)]">
-                            Width
-                            <input
-                              type="number"
-                              min="0.12"
-                              max="0.35"
-                              step="0.01"
-                              value={avatarPlacement.width}
-                              onChange={(event) => updateAvatarPlacementDraft({ position: 'custom', width: event.target.value })}
-                              className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)]"
-                            />
-                          </label>
-                        </div>
-                      )}
-
-                      {avatarPlacementMessage && (
-                        <p className="text-xs font-medium text-[var(--text-primary)]">{avatarPlacementMessage}</p>
                       )}
                     </div>
                   )}

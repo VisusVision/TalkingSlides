@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, ShieldCheck } from 'lucide-react';
 import { formatDuration } from '../../lib/content';
-import { avatarPlacementStyle } from '../../utils/avatarPlacement';
+import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer';
 import SurfaceCard from '../ui/SurfaceCard';
 
 function vttUrlForLesson(lesson) {
@@ -63,8 +63,34 @@ function setActiveTextTrack(video, captionTrack) {
 
   const selectedTextTrack = tracks.find((textTrack) => textTrackMatchesCaptionTrack(textTrack, captionTrack));
   if (selectedTextTrack) {
-    selectedTextTrack.mode = 'showing';
+    selectedTextTrack.mode = 'hidden';
   }
+}
+
+function captionTextForVideo(video, captionTrack) {
+  if (!video || !captionTrack) return '';
+  const selectedTextTrack = textTracksForVideo(video).find((textTrack) => textTrackMatchesCaptionTrack(textTrack, captionTrack));
+  const cues = selectedTextTrack?.activeCues;
+  if (!cues) return '';
+  return Array.from({ length: cues.length }, (_, index) => String(cues[index]?.text || '').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function CaptionLayer({ text }) {
+  if (!text) return null;
+  return (
+    <div
+      data-testid="player-caption-layer"
+      data-caption-layer="subtitles"
+      className="pointer-events-none absolute inset-x-3 bottom-14 flex justify-center px-2 text-center sm:bottom-16"
+      style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions }}
+    >
+      <span className="max-w-[92%] whitespace-pre-line rounded-md bg-black/78 px-3 py-1.5 text-sm font-semibold leading-snug text-white shadow-lg sm:text-base">
+        {text}
+      </span>
+    </div>
+  );
 }
 
 function normalizeTrack(track) {
@@ -107,12 +133,13 @@ export default function VideoStage({
   captionMissingLabel = 'No captions yet',
   showSubtitleControls = true,
   showLessonDetails = true,
+  avatarOverlayMode = 'floating',
 }) {
   const internalVideoRef = useRef(null);
-  const avatarVideoRef = useRef(null);
   const activeVideoRef = videoRef || internalVideoRef;
   const [internalSelectedTrackKey, setInternalSelectedTrackKey] = useState('off');
   const [captionLoadFailed, setCaptionLoadFailed] = useState(false);
+  const [activeCaptionText, setActiveCaptionText] = useState('');
   const selectionControlled = selectedSubtitleKey !== undefined;
   const selectedTrackKey = selectionControlled ? selectedSubtitleKey : internalSelectedTrackKey;
   const setSelectedTrackKeyValue = useCallback((nextKey) => {
@@ -128,7 +155,7 @@ export default function VideoStage({
   const avatarOverlay = lesson?.avatar_overlay || {};
   const avatarPlacement = avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {};
   const avatarStreamUrl = String(avatarOverlay?.stream_url || '').trim();
-  const avatarOverlayEnabled = Boolean(avatarOverlay?.enabled && avatarStreamUrl);
+  const avatarOverlayEnabled = Boolean(avatarOverlayMode !== 'disabled' && avatarOverlay?.enabled && avatarStreamUrl);
   const avatarStatus = String(lesson?.avatar_processing_status || 'none').trim().toLowerCase();
   const avatarProcessing = !avatarOverlayEnabled && ['queued', 'processing'].includes(avatarStatus);
 
@@ -200,6 +227,31 @@ export default function VideoStage({
     setActiveTextTrack(video, selectedTrack);
   }, [activeVideoRef, selectedTrack]);
 
+  useEffect(() => {
+    const video = activeVideoRef.current;
+    if (!video || !selectedTrack) {
+      setActiveCaptionText('');
+      return undefined;
+    }
+
+    const updateCaptionText = () => {
+      setActiveCaptionText(captionTextForVideo(video, selectedTrack));
+    };
+    const selectedTextTrack = textTracksForVideo(video).find((textTrack) => textTrackMatchesCaptionTrack(textTrack, selectedTrack));
+    selectedTextTrack?.addEventListener?.('cuechange', updateCaptionText);
+    video.addEventListener('timeupdate', updateCaptionText);
+    video.addEventListener('seeked', updateCaptionText);
+    video.addEventListener('loadedmetadata', updateCaptionText);
+    updateCaptionText();
+
+    return () => {
+      selectedTextTrack?.removeEventListener?.('cuechange', updateCaptionText);
+      video.removeEventListener('timeupdate', updateCaptionText);
+      video.removeEventListener('seeked', updateCaptionText);
+      video.removeEventListener('loadedmetadata', updateCaptionText);
+    };
+  }, [activeVideoRef, selectedTrack]);
+
   const handleCaptionTrackReady = useCallback(() => {
     setCaptionLoadFailed(false);
     const video = activeVideoRef.current;
@@ -220,47 +272,23 @@ export default function VideoStage({
     setSelectedTrackKeyValue(nextKey);
   }, [activeVideoRef, availableTracks, setSelectedTrackKeyValue]);
 
-  const syncAvatarPlayback = useCallback((video) => {
-    const avatarVideo = avatarVideoRef.current;
-    if (!video || !avatarVideo || !avatarOverlayEnabled) return;
-    if (Number.isFinite(video.currentTime) && Math.abs((avatarVideo.currentTime || 0) - video.currentTime) > 0.25) {
-      try {
-        avatarVideo.currentTime = video.currentTime;
-      } catch {
-        // Some browsers reject seeks before avatar metadata is ready.
-      }
-    }
-    avatarVideo.playbackRate = video.playbackRate || 1;
-    if (video.paused || video.ended) {
-      avatarVideo.pause();
-      return;
-    }
-    avatarVideo.play().catch(() => {});
-  }, [avatarOverlayEnabled]);
-
   const handleVideoPlay = useCallback((event) => {
     onPlaybackStarted?.();
-    syncAvatarPlayback(event.currentTarget);
-  }, [onPlaybackStarted, syncAvatarPlayback]);
+    setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
+  }, [onPlaybackStarted, selectedTrack]);
 
   const handleVideoPause = useCallback(() => {
-    avatarVideoRef.current?.pause();
     onPlaybackStopped?.();
   }, [onPlaybackStopped]);
 
   const handleVideoSeeked = useCallback((event) => {
-    syncAvatarPlayback(event.currentTarget);
-  }, [syncAvatarPlayback]);
-
-  const handleVideoRateChange = useCallback((event) => {
-    const avatarVideo = avatarVideoRef.current;
-    if (avatarVideo) avatarVideo.playbackRate = event.currentTarget.playbackRate || 1;
-  }, []);
+    setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
+  }, [selectedTrack]);
 
   const handleVideoTimeUpdate = useCallback((event) => {
     onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0));
-    syncAvatarPlayback(event.currentTarget);
-  }, [onPlaybackTimeChange, syncAvatarPlayback]);
+    setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
+  }, [onPlaybackTimeChange, selectedTrack]);
 
   const content = (
     <>
@@ -284,7 +312,6 @@ export default function VideoStage({
               onPause={handleVideoPause}
               onEnded={handleVideoPause}
               onSeeked={handleVideoSeeked}
-              onRateChange={handleVideoRateChange}
               onTimeUpdate={handleVideoTimeUpdate}
             >
               {availableTracks.map((track) => (
@@ -300,18 +327,15 @@ export default function VideoStage({
               ))}
             </video>
             {avatarOverlayEnabled && (
-              <video
-                ref={avatarVideoRef}
+              <AvatarOverlayLayer
+                lessonId={lesson?.id}
                 src={avatarStreamUrl}
-                className="pointer-events-none absolute aspect-video rounded-lg border border-black/30 bg-black object-cover shadow-xl"
-                style={avatarPlacementStyle(avatarPlacement)}
-                muted
-                playsInline
-                preload="metadata"
-                crossOrigin="anonymous"
-                onLoadedMetadata={() => syncAvatarPlayback(activeVideoRef.current)}
+                enabled={avatarOverlayEnabled}
+                placement={avatarPlacement}
+                videoRef={activeVideoRef}
               />
             )}
+            <CaptionLayer text={activeCaptionText} />
           </>
         ) : (
           <div className="flex aspect-video items-center justify-center gap-2 text-sm text-[color:var(--media-text-on-image)] opacity-80">

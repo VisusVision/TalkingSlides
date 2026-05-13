@@ -41,6 +41,129 @@ def _table_has_column(table_name, column_name):
     return any(row[1] == column_name for row in rows)
 
 
+def _frontend_source(*parts):
+    return (REPO_ROOT / "services" / "frontend" / "src" / Path(*parts)).read_text(encoding="utf-8")
+
+
+def test_frontend_video_stage_uses_separate_avatar_overlay_layer():
+    source = _frontend_source("components", "player", "VideoStage.jsx")
+
+    assert "import AvatarOverlayLayer" in source
+    assert "<AvatarOverlayLayer" in source
+    assert "src={lesson.stream_url}" in source
+    assert "src={avatarStreamUrl}" in source
+    assert source.count("<video") == 1
+
+
+def test_frontend_hls_player_uses_separate_avatar_overlay_layer():
+    source = _frontend_source("components", "player", "HlsPlayer.jsx")
+
+    assert "import AvatarOverlayLayer" in source
+    assert "<AvatarOverlayLayer" in source
+    assert "hls.loadSource(sourceUrl)" in source
+    assert "src={avatarStreamUrl}" in source
+    assert source.count("<video") == 1
+
+
+def test_frontend_caption_layer_stays_above_avatar_overlay_and_theater():
+    layer_source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+    video_stage_source = _frontend_source("components", "player", "VideoStage.jsx")
+    hls_source = _frontend_source("components", "player", "HlsPlayer.jsx")
+
+    assert "avatar: 20" in layer_source
+    assert "avatarTheater: 40" in layer_source
+    assert "captions: 60" in layer_source
+    assert "data-testid=\"player-caption-layer\"" in video_stage_source
+    assert "style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions }}" in video_stage_source
+    assert "data-testid=\"player-caption-layer\"" in hls_source
+    assert "style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions }}" in hls_source
+    assert "selectedTextTrack.mode = 'hidden'" in video_stage_source
+    assert "selectedTextTrack.mode = 'hidden'" in hls_source
+
+
+def test_frontend_avatar_overlay_hide_show_persists_locally():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "storageKey(lessonId, 'visible')" in source
+    assert "setAvatarVisible(true)" in source
+    assert "setAvatarVisible(false)" in source
+    assert "Show avatar" in source
+    assert "Hide avatar" in source
+
+
+def test_frontend_avatar_drag_position_is_clamped():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "export function clampAvatarPlacement" in source
+    assert "Math.max(0, 1 - width)" in source
+    assert "window.addEventListener('pointermove'" in source
+    assert "data-testid=\"avatar-drag-handle\"" in source
+    assert "writeStoredPlacement(lessonId, clamped)" in source
+
+
+def test_frontend_avatar_reset_restores_default_position():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "Reset avatar position" in source
+    assert "setCurrentPlacement(defaultPlacement)" in source
+    assert "clearStoredPlacement(lessonId)" in source
+
+
+def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "data-testid=\"avatar-theater-overlay\"" in source
+    assert "setTheaterOpen(false)" in source
+    assert "avatarTheater: 40" in source
+    assert "captions: 60" in source
+    assert "storageKey(lessonId, 'theater')" not in source
+
+
+def test_frontend_watch_study_mode_renders_avatar_and_local_notes():
+    source = _frontend_source("pages", "Watch.jsx")
+
+    assert "Study Mode" in source
+    assert "studyModeKey" in source
+    assert "xl:grid-cols-[minmax(0,4fr)_minmax(16rem,1fr)]" in source
+    assert "mode=\"study-panel\"" in source
+    assert "data-testid=\"study-mode-panel\"" in source
+    assert "data-testid=\"study-mode-notes\"" in source
+    assert "avatarOverlayMode={studyMode ? 'disabled' : 'floating'}" in source
+
+
+def test_frontend_studio_hides_advanced_avatar_runtime_and_placement_controls():
+    source = _frontend_source("pages", "Studio.jsx")
+
+    assert "Motion style" not in source
+    assert "Restoration" not in source
+    assert "LivePortrait" not in source
+    assert "Save avatar settings" not in source
+    assert "Save placement" not in source
+    assert "avatarPlacement" not in source
+    assert "const [avatarRuntimeSettings" not in source
+    assert "setAvatarRuntimeSettings" not in source
+
+
+def test_frontend_studio_keeps_avatar_only_rerender_button():
+    source = _frontend_source("pages", "Studio.jsx")
+
+    assert "rerenderProjectAvatar" in source
+    assert "handleAvatarOnlyRerender" in source
+    assert "Rerender avatar only" in source
+
+
+def test_frontend_secure_playback_path_keeps_hls_and_heartbeat():
+    watch_source = _frontend_source("pages", "Watch.jsx")
+    hls_source = _frontend_source("components", "player", "HlsPlayer.jsx")
+
+    assert "usePlaybackHeartbeat" in watch_source
+    assert "PLAYER_MODES.SECURE_HLS" in watch_source
+    assert "<HlsPlayer" in watch_source
+    assert "import Hls from 'hls.js'" in hls_source
+    assert "hls.loadSource(sourceUrl)" in hls_source
+    assert "new Hls({ enableWorker: true })" in hls_source
+
+
 def test_avatar_overlay_preference_persists_per_user_and_lesson():
     if not _table_has_column("core_project", "avatar_enabled_override"):
         pytest.skip("Local DB schema is stale; run migrations to execute this test.")
