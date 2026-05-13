@@ -805,6 +805,8 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
     preview_fast_musetalk = str(os.environ.get("AVATAR_PREVIEW_MUSETALK_FAST_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
     liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
+    liveportrait_driver_source_policy = _liveportrait_driver_source_policy()
+    liveportrait_vetted_image_template = _liveportrait_vetted_image_template_path()
     preview_max_width_default = "384" if is_preview else "512"
     default_batch_size = 2 if is_preview else 8
 
@@ -844,6 +846,8 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING": liveportrait_temporal_smoothing,
         "AVATAR_LIVEPORTRAIT_MOTION_PRESET": liveportrait_motion_preset,
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
+        "AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY": liveportrait_driver_source_policy,
+        "AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE": liveportrait_vetted_image_template,
         "AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE": _liveportrait_composer_validation_mode(),
         "AVATAR_LIVEPORTRAIT_ENABLED": "1" if _liveportrait_enabled_for_request(request) else "0",
         "MUSETALK_BBOX_SHIFT": str(int(params.get("bbox_shift", (0 if is_preview else 0)))),
@@ -1474,6 +1478,11 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
     liveportrait_composer_validation_mode = _liveportrait_composer_validation_mode()
+    liveportrait_driver_source_policy = _liveportrait_driver_source_policy()
+    vetted_template_identity = _liveportrait_template_identity(_liveportrait_vetted_image_template_path())
+    image_template_identity = _liveportrait_template_identity(
+        str(os.environ.get("AVATAR_LIVEPORTRAIT_IMAGE_DRIVING_TEMPLATE", "")).strip()
+    )
     liveportrait_enabled = _liveportrait_enabled_for_request(request)
     restoration_enabled = _restore_enabled(_is_preview_request(request), request)
     return {
@@ -1494,6 +1503,11 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "restoration_enabled": "1" if restoration_enabled else "0",
         "liveportrait_boosted_retry_allowed": "1" if liveportrait_boosted_retry_allowed else "0",
         "liveportrait_composer_validation_mode": liveportrait_composer_validation_mode,
+        "liveportrait_driver_source_policy": liveportrait_driver_source_policy,
+        "liveportrait_vetted_image_template_basename": vetted_template_identity["basename"],
+        "liveportrait_vetted_image_template_hash": vetted_template_identity["hash"],
+        "liveportrait_image_driving_template_basename": image_template_identity["basename"],
+        "liveportrait_image_driving_template_hash": image_template_identity["hash"],
         "liveportrait_motion_profile_policy": "boosted_retry_allowed" if liveportrait_boosted_retry_allowed else "conservative_only",
     }
 
@@ -1528,6 +1542,14 @@ def _env_enabled(name: str, default: bool = False) -> bool:
 
 _LIVEPORTRAIT_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze", "expressive_debug"}
 _LIVEPORTRAIT_SAFE_REQUEST_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze"}
+_DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY = "vetted_template_for_image"
+_LIVEPORTRAIT_DRIVER_SOURCE_POLICIES = {
+    "vetted_template_for_image",
+    "composer_for_image",
+    "template_first",
+    "source_video_only",
+}
+_DEFAULT_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE_NAME = "d11.mp4"
 _LIVEPORTRAIT_REQUEST_PRESET_ALIASES = {
     "natural": "natural_conservative",
     "visible": "natural_visible",
@@ -1569,6 +1591,34 @@ def _liveportrait_boosted_retry_allowed(preset: str | None = None) -> bool:
 def _liveportrait_composer_validation_mode() -> str:
     raw = str(os.environ.get("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", "localized")).strip().lower()
     return "strict_global" if raw == "strict_global" else "localized"
+
+
+def _liveportrait_driver_source_policy() -> str:
+    raw = str(
+        os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", _DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY)
+    ).strip().lower()
+    return raw if raw in _LIVEPORTRAIT_DRIVER_SOURCE_POLICIES else _DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY
+
+
+def _liveportrait_vetted_image_template_path() -> str:
+    raw = str(os.environ.get("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", "")).strip()
+    if raw:
+        return raw
+    liveportrait_home = str(os.environ.get("AVATAR_LIVEPORTRAIT_HOME", "/opt/liveportrait") or "/opt/liveportrait").strip()
+    return str(Path(liveportrait_home) / "assets" / "examples" / "driving" / _DEFAULT_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE_NAME)
+
+
+def _liveportrait_template_identity(raw_path: str) -> dict[str, str]:
+    path_text = str(raw_path or "").strip()
+    basename = Path(path_text).name if path_text else ""
+    path_hash = ""
+    try:
+        path_obj = Path(path_text)
+        if path_obj.exists() and path_obj.is_file():
+            path_hash = sha256_file(str(path_obj))
+    except Exception:
+        path_hash = ""
+    return {"basename": basename, "hash": path_hash}
 
 
 def _stderr_token(stderr_text: str, key: str) -> str:
@@ -1619,6 +1669,9 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_driver_rejection_reason",
         "liveportrait_driver_validation_mode",
         "liveportrait_driver_near_static_threshold_profile",
+        "liveportrait_template_used",
+        "liveportrait_vetted_template_path",
+        "liveportrait_fallback_driver_source",
     ]:
         value = _stderr_token(stderr, key)
         if value:
@@ -1630,6 +1683,8 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_whole_frame_drift_guard",
         "liveportrait_driver_localized_motion_passed",
         "composer_localized_motion_override",
+        "liveportrait_vetted_template_missing",
+        "liveportrait_vetted_template_failed",
     ]:
         stage_paths[key] = _stderr_bool_token(stderr, key, bool(stage_paths.get(key)))
     for key in [
@@ -2303,6 +2358,11 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_motion_preset": str(cached_stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(cached_stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(cached_stage_paths.get("liveportrait_driver_source") or ""),
+        "liveportrait_template_used": str(cached_stage_paths.get("liveportrait_template_used") or ""),
+        "liveportrait_vetted_template_path": str(cached_stage_paths.get("liveportrait_vetted_template_path") or ""),
+        "liveportrait_vetted_template_missing": bool(cached_stage_paths.get("liveportrait_vetted_template_missing")),
+        "liveportrait_vetted_template_failed": bool(cached_stage_paths.get("liveportrait_vetted_template_failed")),
+        "liveportrait_fallback_driver_source": str(cached_stage_paths.get("liveportrait_fallback_driver_source") or ""),
         "liveportrait_composer_used": bool(cached_stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(cached_stage_paths.get("liveportrait_boosted_retry_used")),
         "liveportrait_driver_validation_mode": str(cached_stage_paths.get("liveportrait_driver_validation_mode") or ""),
@@ -2379,6 +2439,11 @@ def _write_meta(
         "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
+        "liveportrait_template_used": str(stage_paths.get("liveportrait_template_used") or ""),
+        "liveportrait_vetted_template_path": str(stage_paths.get("liveportrait_vetted_template_path") or ""),
+        "liveportrait_vetted_template_missing": bool(stage_paths.get("liveportrait_vetted_template_missing")),
+        "liveportrait_vetted_template_failed": bool(stage_paths.get("liveportrait_vetted_template_failed")),
+        "liveportrait_fallback_driver_source": str(stage_paths.get("liveportrait_fallback_driver_source") or ""),
         "liveportrait_composer_used": bool(stage_paths.get("liveportrait_composer_used")),
         "liveportrait_boosted_retry_used": bool(stage_paths.get("liveportrait_boosted_retry_used")),
         "liveportrait_driver_validation_mode": str(stage_paths.get("liveportrait_driver_validation_mode") or ""),
@@ -2698,6 +2763,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_motion_profile": "",
         "liveportrait_driver_source_policy": "",
         "liveportrait_driver_source": "",
+        "liveportrait_template_used": "",
+        "liveportrait_vetted_template_path": "",
+        "liveportrait_vetted_template_missing": False,
+        "liveportrait_vetted_template_failed": False,
+        "liveportrait_fallback_driver_source": "",
         "liveportrait_composer_used": False,
         "liveportrait_boosted_retry_used": False,
         "liveportrait_driver_validation_mode": "",
@@ -3059,6 +3129,28 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             )
 
         liveportrait_candidates = [] if liveportrait_bypassed else source_candidates
+
+        def _queue_vetted_template_composer_fallback(
+            candidate: dict[str, str],
+            stage_env: dict[str, str],
+            reason: str,
+        ) -> bool:
+            if str(stage_env.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY") or "").strip().lower() != "vetted_template_for_image":
+                return False
+            if str(candidate.get("driver_source_policy_override") or "").strip().lower() == "composer_for_image":
+                return False
+            if str(stage_paths.get("liveportrait_driver_source") or "").strip().lower() != "template":
+                return False
+            retry_candidate = dict(candidate)
+            retry_candidate["driver_source_policy_override"] = "composer_for_image"
+            retry_candidate["candidate_reason"] = "vetted_template_fallback_to_composer" + (
+                f":{reason}" if reason else ""
+            )
+            liveportrait_candidates.append(retry_candidate)
+            stage_paths["liveportrait_vetted_template_failed"] = True
+            stage_paths["liveportrait_fallback_driver_source"] = "composer"
+            return True
+
         for attempt_index, candidate in enumerate(liveportrait_candidates, start=1):
             candidate_source_key = str(candidate.get("resolved_source_key") or "")
             candidate_source_image = str(candidate.get("source_image_primary") or "")
@@ -3120,6 +3212,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 continue
 
             stage_env = _build_stage_env(candidate_canonical_input, request)
+            driver_policy_override = str(candidate.get("driver_source_policy_override") or "").strip().lower()
+            if driver_policy_override:
+                stage_env["AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY"] = driver_policy_override
+                attempt_payload["driver_source_policy_override"] = driver_policy_override
             candidate_warning = str(getattr(candidate_canonical_input, "warning", "") or "").strip()
             if candidate_warning:
                 attempt_payload["input_warning"] = candidate_warning
@@ -3201,6 +3297,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     candidate_source_key,
                     rejection_reason,
                 )
+                _queue_vetted_template_composer_fallback(candidate, stage_env, rejection_reason)
                 continue
 
             liveportrait_stderr = str((liveportrait_result.details or {}).get("stderr") or "")
@@ -3264,6 +3361,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     candidate_source_key,
                     rejection_reason,
                 )
+                _queue_vetted_template_composer_fallback(candidate, stage_env, rejection_reason)
                 continue
             candidate_liveportrait_output = Path(str(normalization_info.get("normalized_output_video") or liveportrait_output))
             stage_paths["liveportrait_output_path"] = str(candidate_liveportrait_output)
@@ -3289,6 +3387,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     candidate_source_key,
                     rejection_reason,
                 )
+                _queue_vetted_template_composer_fallback(candidate, stage_env, rejection_reason)
                 continue
             stage_outputs[-1]["duration_seconds"] = round(float(liveportrait_contract.get("duration_seconds") or 0.0), 4)
             stage_paths["liveportrait_output_duration_seconds"] = round(float(liveportrait_contract.get("duration_seconds") or 0.0), 4)
@@ -3321,6 +3420,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     candidate_source_key,
                     rejection_reason,
                 )
+                _queue_vetted_template_composer_fallback(candidate, stage_env, rejection_reason)
                 continue
             stage_outputs[-1]["motion_gate"] = dict(motion_gate)
             stage_paths["liveportrait_motion_gate"] = dict(motion_gate)
@@ -3381,6 +3481,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     candidate_source_key,
                     rejection_reason,
                 )
+                _queue_vetted_template_composer_fallback(candidate, stage_env, rejection_reason)
                 continue
             if not liveportrait_motion_passed:
                 liveportrait_quality_warning = str(

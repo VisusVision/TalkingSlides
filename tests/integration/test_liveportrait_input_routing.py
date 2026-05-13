@@ -299,11 +299,153 @@ def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, caps
 
     stderr_text = capsys.readouterr().err
     assert "motion_source=image_composed" in stderr_text
-    assert "liveportrait_driver_source_policy=composer_for_image" in stderr_text
+    assert "liveportrait_driver_source_policy=vetted_template_for_image" in stderr_text
+    assert "liveportrait_vetted_template_missing=1" in stderr_text
+    assert "liveportrait_fallback_driver_source=composer" in stderr_text
     assert "liveportrait_driver_source=composer" in stderr_text
     assert "liveportrait_composer_used=1" in stderr_text
     assert "liveportrait_boosted_retry_used=0" in stderr_text
     assert "input_kind=image" in stderr_text
+
+
+def test_default_image_policy_uses_vetted_d11_when_available(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {"compose_called": False}
+    vetted_template = paths["lp_home"] / "assets" / "examples" / "driving" / "d11.mp4"
+    vetted_template.parent.mkdir(parents=True, exist_ok=True)
+    vetted_template.write_bytes(b"d11")
+
+    def _should_not_compose(*_args, **_kwargs):
+        captured["compose_called"] = True
+        return False
+
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
+    _patch_runner_execution(monkeypatch, captured)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+            "--fps",
+            "16",
+            "--target_frame_count",
+            "596",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert captured["compose_called"] is False
+    assert captured["ensure_source_video"] == str(vetted_template)
+    assert captured["ensure_target_fps"] == 16.0
+    assert captured["ensure_always_materialize"] is True
+
+    driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
+    assert driving_arg == str(vetted_template)
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_driver_source_policy=vetted_template_for_image" in stderr_text
+    assert "liveportrait_driver_source=template" in stderr_text
+    assert "liveportrait_template_used=d11.mp4" in stderr_text
+    assert "liveportrait_vetted_template_path=d11.mp4" in stderr_text
+    assert "liveportrait_vetted_template_missing=0" in stderr_text
+
+
+def test_vetted_template_failure_falls_back_to_composer_without_random_templates(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {}
+    vetted_template = paths["lp_home"] / "assets" / "examples" / "driving" / "d11.mp4"
+    vetted_template.parent.mkdir(parents=True, exist_ok=True)
+    vetted_template.write_bytes(b"d11")
+
+    def _fake_discover(**_kwargs):
+        raise AssertionError("vetted policy must not use generic template discovery")
+
+    def _fake_compose(_target_duration_s, output_path, **_kwargs):
+        captured["compose_called"] = True
+        Path(output_path).write_bytes(b"composed")
+        return True
+
+    def _fake_validate(*, path, expected_duration_seconds, requested_fps, target_frame_count, fps_validation_mode):
+        if Path(path) == vetted_template:
+            return _driver_metrics(
+                path,
+                duration_seconds=expected_duration_seconds,
+                fps=requested_fps or 16.0,
+                frame_count=target_frame_count or 25,
+                requested_fps=requested_fps,
+                target_frame_count=target_frame_count,
+                unique_frames=1,
+                unique_ratio=0.01,
+                mean_mad=0.01,
+                near_static=True,
+                valid=False,
+                failure_reason="driver_near_static",
+                validation_failure_reason="driver_invalid:driver_near_static",
+            )
+        return _driver_metrics(
+            path,
+            duration_seconds=expected_duration_seconds,
+            fps=requested_fps or 16.0,
+            frame_count=target_frame_count or 25,
+            requested_fps=requested_fps,
+            target_frame_count=target_frame_count,
+            valid=True,
+        )
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "vetted_template_for_image")
+    monkeypatch.setattr(runner, "_discover_image_driving_templates", _fake_discover)
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
+    _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setattr(runner, "_validate_driving_clip", _fake_validate)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+            "--fps",
+            "16",
+            "--target_frame_count",
+            "596",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert captured["compose_called"] is True
+    driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
+    assert driving_arg.endswith("composed_drive.mp4")
+
+    stderr_text = capsys.readouterr().err
+    assert "candidate=image_template origin=vetted_default" in stderr_text
+    assert "liveportrait_vetted_template_failed=1" in stderr_text
+    assert "liveportrait_fallback_driver_source=composer" in stderr_text
+    assert "liveportrait_driver_source=composer" in stderr_text
 
 
 def test_duration_contract_uses_requested_fps_not_internal_composer_fps(tmp_path, monkeypatch, capsys):

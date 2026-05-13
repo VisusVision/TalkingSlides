@@ -330,6 +330,8 @@ def test_non_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monk
     assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] != ""
     assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
     assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY"] == "vetted_template_for_image"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE"].endswith("d11.mp4")
 
 
 def test_non_preview_liveportrait_motion_strength_preserves_env_value(tmp_path, monkeypatch):
@@ -383,6 +385,8 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
 
     assert default_keys["liveportrait_motion_preset"] == "natural_conservative"
     assert default_keys["liveportrait_composer_validation_mode"] == "localized"
+    assert default_keys["liveportrait_driver_source_policy"] == "vetted_template_for_image"
+    assert default_keys["liveportrait_vetted_image_template_basename"] == "d11.mp4"
     assert natural_visible_keys["liveportrait_motion_preset"] == "natural_visible"
     assert natural_visible_keys["liveportrait_boosted_retry_allowed"] == "0"
     assert subtle_gaze_keys["liveportrait_motion_preset"] == "subtle_gaze"
@@ -405,6 +409,44 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     strict_global_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
     assert strict_global_keys["liveportrait_composer_validation_mode"] == "strict_global"
     assert strict_global_keys != request_override_keys
+
+
+def test_liveportrait_driver_policy_and_template_affect_cache_identity(tmp_path, monkeypatch):
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    template_a = tmp_path / "d11_a.mp4"
+    template_b = tmp_path / "d11_b.mp4"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    template_a.write_bytes(b"template-a")
+    template_b.write_bytes(b"template-b")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        audio_path=str(audio),
+        output_path=str(tmp_path / "preview.mp4"),
+        preview_teacher_id=1,
+        preview_job_id=2,
+    )
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "vetted_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", str(template_a))
+    keys_a = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", str(template_b))
+    keys_b = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
+    composer_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    assert keys_a["liveportrait_driver_source_policy"] == "vetted_template_for_image"
+    assert keys_a["liveportrait_vetted_image_template_basename"] == "d11_a.mp4"
+    assert keys_b["liveportrait_vetted_image_template_basename"] == "d11_b.mp4"
+    assert keys_a["liveportrait_vetted_image_template_hash"]
+    assert keys_b["liveportrait_vetted_image_template_hash"]
+    assert keys_a["liveportrait_vetted_image_template_hash"] != keys_b["liveportrait_vetted_image_template_hash"]
+    assert keys_a != keys_b
+    assert composer_keys["liveportrait_driver_source_policy"] == "composer_for_image"
+    assert composer_keys != keys_b
 
 
 def test_stage_env_uses_safe_runtime_motion_request_over_env(tmp_path, monkeypatch):
