@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SERVICES_ROOT = REPO_ROOT / "services"
@@ -252,7 +254,7 @@ def test_probe_driving_clip_variation_parses_mean_mad_from_ffmpeg_metadata(tmp_p
     assert metrics["mean_mad"] == 0.5
 
 
-def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, capsys):
+def test_image_input_routes_to_image_driven_composer_when_fallback_allowed(tmp_path, monkeypatch, capsys):
     paths = _make_runtime_layout(tmp_path)
     captured: dict[str, object] = {}
 
@@ -266,6 +268,8 @@ def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, caps
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
     _patch_runner_execution(monkeypatch, captured)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", "1")
 
     monkeypatch.setattr(
         sys,
@@ -305,6 +309,7 @@ def test_image_input_routes_to_image_driven_composer(tmp_path, monkeypatch, caps
     assert "liveportrait_driver_source_policy=vetted_template_for_image" in stderr_text
     assert "liveportrait_vetted_template_missing=1" in stderr_text
     assert "liveportrait_fallback_driver_source=composer" in stderr_text
+    assert "liveportrait_composer_fallback_used=1" in stderr_text
     assert "liveportrait_driver_source=composer" in stderr_text
     assert "liveportrait_composer_used=1" in stderr_text
     assert "liveportrait_boosted_retry_used=0" in stderr_text
@@ -323,6 +328,8 @@ def test_default_image_policy_uses_vetted_d11_when_available(tmp_path, monkeypat
         return False
 
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", raising=False)
@@ -370,12 +377,172 @@ def test_default_image_policy_uses_vetted_d11_when_available(tmp_path, monkeypat
     assert "liveportrait_driver_source_policy=vetted_template_for_image" in stderr_text
     assert "liveportrait_driver_source=template" in stderr_text
     assert "liveportrait_template_used=d11.mp4" in stderr_text
+    assert "liveportrait_calm_template_used=0" in stderr_text
+    assert "liveportrait_composer_used=0" in stderr_text
     assert "liveportrait_vetted_template_path=d11.mp4" in stderr_text
     assert "liveportrait_vetted_template_missing=0" in stderr_text
     assert "liveportrait_template_motion_strength=0.45" in stderr_text
     assert "liveportrait_template_temporal_smoothing=1e-4" in stderr_text
     assert "liveportrait_template_speed=0.75" in stderr_text
     assert "liveportrait_template_calm_profile=true" in stderr_text
+
+
+def test_default_image_policy_uses_valid_calm_template_when_configured(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {"compose_called": False}
+    calm_template = tmp_path / "calm_lecture_driver.mp4"
+    calm_template.write_bytes(b"calm-template")
+    vetted_template = paths["lp_home"] / "assets" / "examples" / "driving" / "d11.mp4"
+    vetted_template.parent.mkdir(parents=True, exist_ok=True)
+    vetted_template.write_bytes(b"d11")
+
+    def _should_not_compose(*_args, **_kwargs):
+        captured["compose_called"] = True
+        return False
+
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(calm_template))
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
+    _patch_runner_execution(monkeypatch, captured)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+            "--fps",
+            "16",
+            "--target_frame_count",
+            "596",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert captured["compose_called"] is False
+    assert captured["ensure_source_video"] == str(calm_template)
+
+    driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
+    assert driving_arg == str(calm_template)
+
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_driver_source_policy=calm_template_for_image" in stderr_text
+    assert "liveportrait_driver_source=template" in stderr_text
+    assert "liveportrait_template_used=calm_lecture_driver.mp4" in stderr_text
+    assert "liveportrait_calm_template_path=calm_lecture_driver.mp4" in stderr_text
+    assert "liveportrait_calm_template_used=1" in stderr_text
+    assert "liveportrait_vetted_template_fallback_used=0" in stderr_text
+    assert "liveportrait_composer_used=0" in stderr_text
+
+
+def test_calm_policy_missing_template_falls_back_to_vetted_d11(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {"compose_called": False}
+    missing_calm_template = tmp_path / "missing_calm_driver.mp4"
+    vetted_template = paths["lp_home"] / "assets" / "examples" / "driving" / "d11.mp4"
+    vetted_template.parent.mkdir(parents=True, exist_ok=True)
+    vetted_template.write_bytes(b"d11")
+
+    def _should_not_compose(*_args, **_kwargs):
+        captured["compose_called"] = True
+        return False
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "calm_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(missing_calm_template))
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
+    _patch_runner_execution(monkeypatch, captured)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+            "--fps",
+            "16",
+            "--target_frame_count",
+            "596",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert captured["compose_called"] is False
+    assert captured["ensure_source_video"] == str(vetted_template)
+
+    driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
+    assert driving_arg == str(vetted_template)
+
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_driver_source_policy=calm_template_for_image" in stderr_text
+    assert "liveportrait_calm_template_missing=1" in stderr_text
+    assert "liveportrait_vetted_template_fallback_used=1" in stderr_text
+    assert "liveportrait_template_used=d11.mp4" in stderr_text
+    assert "liveportrait_composer_used=0" in stderr_text
+
+
+def test_calm_policy_missing_template_does_not_use_composer_unless_allowed(tmp_path, monkeypatch):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {"compose_called": False}
+    missing_calm_template = tmp_path / "missing_calm_driver.mp4"
+
+    def _should_not_compose(*_args, **_kwargs):
+        captured["compose_called"] = True
+        return False
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "calm_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(missing_calm_template))
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_should_not_compose))
+    _patch_runner_execution(monkeypatch, captured)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="composer fallback is disabled"):
+        runner.main()
+    assert captured["compose_called"] is False
 
 
 def test_vetted_template_failure_falls_back_to_composer_without_random_templates(tmp_path, monkeypatch, capsys):
@@ -421,6 +588,7 @@ def test_vetted_template_failure_falls_back_to_composer_without_random_templates
         )
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "vetted_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", "1")
     monkeypatch.setattr(runner, "_discover_image_driving_templates", _fake_discover)
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
     _patch_runner_execution(monkeypatch, captured)
@@ -452,6 +620,7 @@ def test_vetted_template_failure_falls_back_to_composer_without_random_templates
 
     assert runner.main() == 0
     assert captured["compose_called"] is True
+    assert captured["ensure_calls"][0]["source_video"] == str(vetted_template)
     driving_arg = _driving_arg_from_command(list(captured.get("cmd") or []))
     assert driving_arg.endswith("composed_drive.mp4")
 
@@ -474,6 +643,7 @@ def test_duration_contract_uses_requested_fps_not_internal_composer_fps(tmp_path
 
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
     _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
 
     monkeypatch.setattr(
         sys,
@@ -574,6 +744,7 @@ def test_image_input_never_reuses_image_as_video_driving_path(tmp_path, monkeypa
 
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
     _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
 
     # Regression case: source_video argument accidentally receives an image path.
     monkeypatch.setattr(
@@ -622,6 +793,7 @@ def test_image_input_rejects_near_static_driver_before_liveportrait(tmp_path, mo
         return True, "", {"cmd": "", "return_code": "0", "stderr_summary": ""}
 
     monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=_fake_compose))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
     monkeypatch.setattr(runner, "_run", _fake_run)
     monkeypatch.setattr(
         runner,
@@ -989,6 +1161,7 @@ def test_image_input_regenerates_driver_until_variation_is_valid(tmp_path, monke
     captured: dict[str, object] = {}
     compose_profiles: list[str] = []
     probe_calls = {"count": 0}
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", "1")
 
     def _fake_compose(_target_duration_s, output_path, **kwargs):
@@ -1074,6 +1247,7 @@ def test_image_input_does_not_auto_boost_without_flag(tmp_path, monkeypatch):
 
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
 
     def _fake_compose(_target_duration_s, output_path, **kwargs):
         compose_profiles.append(str(kwargs.get("motion_profile") or "default"))

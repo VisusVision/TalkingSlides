@@ -187,8 +187,11 @@ Columns:
 | `MUSETALK_HOME`, `MUSETALK_MODEL_PATH`, `MUSETALK_ENGINE_VERSION` | worker-avatar | If avatar | If avatar | `/opt/musetalk`, model path | MuseTalk runtime/model config. |
 | `AVATAR_LIVEPORTRAIT_HOME`, `AVATAR_LIVEPORTRAIT_MODEL_PATH`, `AVATAR_LIVEPORTRAIT_ENTRYPOINT` | worker-avatar | If avatar | If avatar | `/opt/liveportrait` paths | LivePortrait runtime/model config. |
 | `AVATAR_LIVEPORTRAIT_CMD`, `AVATAR_MUSETALK_CMD` | worker-avatar | If avatar | If avatar | runner commands | Real engine command templates. |
-| `AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE` | worker-avatar | If avatar | If avatar | d11 template path | Vetted image driving template. |
-| `AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY` | worker-avatar | Optional | Recommended | `vetted_template_for_image` | Driver source policy. |
+| `AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE` | worker-avatar | Optional | Recommended when available | `storage_local/avatar_templates/calm_lecture_driver.mp4` | External calm lecture driving template. This is media and must not be committed. |
+| `AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE` | worker-avatar | If avatar | If avatar | d11 template path | Vetted placeholder image driving template fallback. |
+| `AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY` | worker-avatar | Optional | Recommended blank unless overriding | blank, `calm_template_for_image`, `vetted_template_for_image`, `composer_for_image` | Blank auto-selects a valid calm template, otherwise falls back to d11. Composer is explicit/debug-only. |
+| `AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK` | worker-avatar | Optional | Optional/debug | `0` | Allows composer fallback when no usable template is available. Keep off for production calm-template routing. |
+| `AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK` | worker-avatar | Optional | Recommended until calm template is proven | `1` | Allows d11 fallback when a configured calm template is missing or invalid. |
 | `AVATAR_MUSETALK_SERVICE_ENABLED`, `AVATAR_MUSETALK_SERVICE_PORT`, `AVATAR_MUSETALK_ROUTE` | worker-avatar | If avatar | If avatar | service route values | Persistent MuseTalk service behavior. |
 | `AVATAR_PREVIEW_USE_LIVEPORTRAIT`, `AVATAR_PREVIEW_USE_MUSETALK`, `AVATAR_PREVIEW_USE_RESTORATION` | worker-avatar | Optional | Recommended | `1`, `1`, `0` | Preview stage toggles. |
 | `AVATAR_ENABLE_COMPOSITE_LESSON`, `AVATAR_ALLOW_COMPOSITE_FALLBACK` | worker-avatar | Optional | Optional | `0`, `0` | Composite lesson controls. |

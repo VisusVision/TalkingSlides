@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -839,8 +840,11 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
     liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
     liveportrait_driver_source_policy = _liveportrait_driver_source_policy()
+    liveportrait_calm_image_template = _liveportrait_calm_image_template_path()
     liveportrait_vetted_image_template = _liveportrait_vetted_image_template_path()
     liveportrait_vetted_template_motion = _liveportrait_vetted_template_motion_settings()
+    liveportrait_composer_fallback_allowed = _liveportrait_allow_composer_fallback()
+    liveportrait_vetted_template_fallback_allowed = _liveportrait_allow_vetted_template_fallback()
     preview_max_width_default = "384" if is_preview else "512"
     default_batch_size = 2 if is_preview else 8
 
@@ -881,7 +885,10 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_LIVEPORTRAIT_MOTION_PRESET": liveportrait_motion_preset,
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
         "AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY": liveportrait_driver_source_policy,
+        "AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE": liveportrait_calm_image_template,
         "AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE": liveportrait_vetted_image_template,
+        "AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK": "1" if liveportrait_composer_fallback_allowed else "0",
+        "AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK": "1" if liveportrait_vetted_template_fallback_allowed else "0",
         "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH": liveportrait_vetted_template_motion["motion_strength"],
         "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING": liveportrait_vetted_template_motion["temporal_smoothing"],
         "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED": liveportrait_vetted_template_motion["speed"],
@@ -1516,6 +1523,8 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
     liveportrait_composer_validation_mode = _liveportrait_composer_validation_mode()
     liveportrait_driver_source_policy = _liveportrait_driver_source_policy()
+    calm_template_path = _liveportrait_calm_image_template_path()
+    calm_template_identity = _liveportrait_template_identity(calm_template_path)
     vetted_template_identity = _liveportrait_template_identity(_liveportrait_vetted_image_template_path())
     vetted_template_motion = _liveportrait_vetted_template_motion_settings()
     vetted_template_calm_profile = liveportrait_driver_source_policy == "vetted_template_for_image"
@@ -1543,6 +1552,11 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "liveportrait_boosted_retry_allowed": "1" if liveportrait_boosted_retry_allowed else "0",
         "liveportrait_composer_validation_mode": liveportrait_composer_validation_mode,
         "liveportrait_driver_source_policy": liveportrait_driver_source_policy,
+        "liveportrait_calm_template_basename": calm_template_identity["basename"],
+        "liveportrait_calm_template_hash": calm_template_identity["hash"],
+        "liveportrait_calm_template_path_marker": _liveportrait_template_path_marker(calm_template_path),
+        "liveportrait_vetted_template_fallback_allowed": "1" if _liveportrait_allow_vetted_template_fallback() else "0",
+        "liveportrait_composer_fallback_allowed": "1" if _liveportrait_allow_composer_fallback() else "0",
         "liveportrait_vetted_image_template_basename": vetted_template_identity["basename"],
         "liveportrait_vetted_image_template_hash": vetted_template_identity["hash"],
         "liveportrait_template_motion_strength": (
@@ -1602,11 +1616,13 @@ _LIVEPORTRAIT_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subt
 _LIVEPORTRAIT_SAFE_REQUEST_PRESETS = {"natural_conservative", "natural_visible", "subtle_blink", "subtle_gaze"}
 _DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY = "vetted_template_for_image"
 _LIVEPORTRAIT_DRIVER_SOURCE_POLICIES = {
+    "calm_template_for_image",
     "vetted_template_for_image",
     "composer_for_image",
     "template_first",
     "source_video_only",
 }
+_LIVEPORTRAIT_TEMPLATE_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
 _DEFAULT_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE_NAME = "d11.mp4"
 _DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH = "0.45"
 _DEFAULT_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING = "1e-4"
@@ -1655,10 +1671,16 @@ def _liveportrait_composer_validation_mode() -> str:
 
 
 def _liveportrait_driver_source_policy() -> str:
-    raw = str(
-        os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", _DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY)
-    ).strip().lower()
-    return raw if raw in _LIVEPORTRAIT_DRIVER_SOURCE_POLICIES else _DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY
+    raw = str(os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "")).strip().lower()
+    if raw:
+        return raw if raw in _LIVEPORTRAIT_DRIVER_SOURCE_POLICIES else _DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY
+    if _liveportrait_template_exists(_liveportrait_calm_image_template_path()):
+        return "calm_template_for_image"
+    return _DEFAULT_LIVEPORTRAIT_DRIVER_SOURCE_POLICY
+
+
+def _liveportrait_calm_image_template_path() -> str:
+    return str(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", "")).strip()
 
 
 def _liveportrait_vetted_image_template_path() -> str:
@@ -1667,6 +1689,43 @@ def _liveportrait_vetted_image_template_path() -> str:
         return raw
     liveportrait_home = str(os.environ.get("AVATAR_LIVEPORTRAIT_HOME", "/opt/liveportrait") or "/opt/liveportrait").strip()
     return str(Path(liveportrait_home) / "assets" / "examples" / "driving" / _DEFAULT_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE_NAME)
+
+
+def _liveportrait_allow_composer_fallback() -> bool:
+    return _env_enabled("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", False)
+
+
+def _liveportrait_allow_vetted_template_fallback() -> bool:
+    return _env_enabled("AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK", True)
+
+
+def _liveportrait_resolve_template_path(raw_path: str) -> Path | None:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return None
+    candidates = [Path(path_text)]
+    if not Path(path_text).is_absolute():
+        repo_root = Path(__file__).resolve().parents[2]
+        liveportrait_home = Path(
+            str(os.environ.get("AVATAR_LIVEPORTRAIT_HOME", "/opt/liveportrait") or "/opt/liveportrait").strip()
+        )
+        candidates.extend([repo_root / path_text, liveportrait_home / path_text])
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            if (
+                resolved.exists()
+                and resolved.is_file()
+                and str(resolved.suffix or "").strip().lower() in _LIVEPORTRAIT_TEMPLATE_VIDEO_EXTS
+            ):
+                return resolved
+        except Exception:
+            continue
+    return None
+
+
+def _liveportrait_template_exists(raw_path: str) -> bool:
+    return _liveportrait_resolve_template_path(raw_path) is not None
 
 
 def _liveportrait_vetted_template_motion_settings() -> dict[str, str]:
@@ -1697,12 +1756,19 @@ def _liveportrait_template_identity(raw_path: str) -> dict[str, str]:
     basename = Path(path_text).name if path_text else ""
     path_hash = ""
     try:
-        path_obj = Path(path_text)
-        if path_obj.exists() and path_obj.is_file():
+        path_obj = _liveportrait_resolve_template_path(path_text)
+        if path_obj is not None:
             path_hash = sha256_file(str(path_obj))
     except Exception:
         path_hash = ""
     return {"basename": basename, "hash": path_hash}
+
+
+def _liveportrait_template_path_marker(raw_path: str) -> str:
+    path_text = str(raw_path or "").strip()
+    if not path_text:
+        return ""
+    return hashlib.sha256(path_text.encode("utf-8")).hexdigest()[:16]
 
 
 def _stderr_token(stderr_text: str, key: str) -> str:
@@ -1754,6 +1820,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_driver_validation_mode",
         "liveportrait_driver_near_static_threshold_profile",
         "liveportrait_template_used",
+        "liveportrait_calm_template_path",
         "liveportrait_vetted_template_path",
         "liveportrait_fallback_driver_source",
         "liveportrait_template_motion_strength",
@@ -1770,8 +1837,13 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_whole_frame_drift_guard",
         "liveportrait_driver_localized_motion_passed",
         "composer_localized_motion_override",
+        "liveportrait_calm_template_used",
+        "liveportrait_calm_template_missing",
+        "liveportrait_calm_template_failed",
         "liveportrait_vetted_template_missing",
         "liveportrait_vetted_template_failed",
+        "liveportrait_vetted_template_fallback_used",
+        "liveportrait_composer_fallback_used",
         "liveportrait_template_calm_profile",
     ]:
         stage_paths[key] = _stderr_bool_token(stderr, key, bool(stage_paths.get(key)))
@@ -2447,9 +2519,15 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_motion_profile": str(cached_stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(cached_stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_template_used": str(cached_stage_paths.get("liveportrait_template_used") or ""),
+        "liveportrait_calm_template_path": str(cached_stage_paths.get("liveportrait_calm_template_path") or ""),
+        "liveportrait_calm_template_used": bool(cached_stage_paths.get("liveportrait_calm_template_used")),
+        "liveportrait_calm_template_missing": bool(cached_stage_paths.get("liveportrait_calm_template_missing")),
+        "liveportrait_calm_template_failed": bool(cached_stage_paths.get("liveportrait_calm_template_failed")),
         "liveportrait_vetted_template_path": str(cached_stage_paths.get("liveportrait_vetted_template_path") or ""),
         "liveportrait_vetted_template_missing": bool(cached_stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(cached_stage_paths.get("liveportrait_vetted_template_failed")),
+        "liveportrait_vetted_template_fallback_used": bool(cached_stage_paths.get("liveportrait_vetted_template_fallback_used")),
+        "liveportrait_composer_fallback_used": bool(cached_stage_paths.get("liveportrait_composer_fallback_used")),
         "liveportrait_fallback_driver_source": str(cached_stage_paths.get("liveportrait_fallback_driver_source") or ""),
         "liveportrait_template_motion_strength": str(cached_stage_paths.get("liveportrait_template_motion_strength") or ""),
         "liveportrait_template_temporal_smoothing": str(cached_stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
@@ -2533,9 +2611,15 @@ def _write_meta(
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
         "liveportrait_template_used": str(stage_paths.get("liveportrait_template_used") or ""),
+        "liveportrait_calm_template_path": str(stage_paths.get("liveportrait_calm_template_path") or ""),
+        "liveportrait_calm_template_used": bool(stage_paths.get("liveportrait_calm_template_used")),
+        "liveportrait_calm_template_missing": bool(stage_paths.get("liveportrait_calm_template_missing")),
+        "liveportrait_calm_template_failed": bool(stage_paths.get("liveportrait_calm_template_failed")),
         "liveportrait_vetted_template_path": str(stage_paths.get("liveportrait_vetted_template_path") or ""),
         "liveportrait_vetted_template_missing": bool(stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(stage_paths.get("liveportrait_vetted_template_failed")),
+        "liveportrait_vetted_template_fallback_used": bool(stage_paths.get("liveportrait_vetted_template_fallback_used")),
+        "liveportrait_composer_fallback_used": bool(stage_paths.get("liveportrait_composer_fallback_used")),
         "liveportrait_fallback_driver_source": str(stage_paths.get("liveportrait_fallback_driver_source") or ""),
         "liveportrait_template_motion_strength": str(stage_paths.get("liveportrait_template_motion_strength") or ""),
         "liveportrait_template_temporal_smoothing": str(stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
@@ -2628,6 +2712,17 @@ def _final_payload(
         "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
+        "liveportrait_template_used": str(stage_paths.get("liveportrait_template_used") or ""),
+        "liveportrait_calm_template_path": str(stage_paths.get("liveportrait_calm_template_path") or ""),
+        "liveportrait_calm_template_used": bool(stage_paths.get("liveportrait_calm_template_used")),
+        "liveportrait_calm_template_missing": bool(stage_paths.get("liveportrait_calm_template_missing")),
+        "liveportrait_calm_template_failed": bool(stage_paths.get("liveportrait_calm_template_failed")),
+        "liveportrait_vetted_template_path": str(stage_paths.get("liveportrait_vetted_template_path") or ""),
+        "liveportrait_vetted_template_missing": bool(stage_paths.get("liveportrait_vetted_template_missing")),
+        "liveportrait_vetted_template_failed": bool(stage_paths.get("liveportrait_vetted_template_failed")),
+        "liveportrait_vetted_template_fallback_used": bool(stage_paths.get("liveportrait_vetted_template_fallback_used")),
+        "liveportrait_composer_fallback_used": bool(stage_paths.get("liveportrait_composer_fallback_used")),
+        "liveportrait_fallback_driver_source": str(stage_paths.get("liveportrait_fallback_driver_source") or ""),
         "liveportrait_template_motion_strength": str(stage_paths.get("liveportrait_template_motion_strength") or ""),
         "liveportrait_template_temporal_smoothing": str(stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
         "liveportrait_template_speed": str(stage_paths.get("liveportrait_template_speed") or "1.0"),
@@ -2867,9 +2962,15 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_driver_source_policy": "",
         "liveportrait_driver_source": "",
         "liveportrait_template_used": "",
+        "liveportrait_calm_template_path": "",
+        "liveportrait_calm_template_used": False,
+        "liveportrait_calm_template_missing": False,
+        "liveportrait_calm_template_failed": False,
         "liveportrait_vetted_template_path": "",
         "liveportrait_vetted_template_missing": False,
         "liveportrait_vetted_template_failed": False,
+        "liveportrait_vetted_template_fallback_used": False,
+        "liveportrait_composer_fallback_used": False,
         "liveportrait_fallback_driver_source": "",
         "liveportrait_template_motion_strength": "",
         "liveportrait_template_temporal_smoothing": "",
@@ -2984,6 +3085,14 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "liveportrait_motion_profile": stage_paths.get("liveportrait_motion_profile"),
                     "liveportrait_driver_source_policy": stage_paths.get("liveportrait_driver_source_policy"),
                     "liveportrait_driver_source": stage_paths.get("liveportrait_driver_source"),
+                    "liveportrait_template_used": stage_paths.get("liveportrait_template_used"),
+                    "liveportrait_calm_template_path": stage_paths.get("liveportrait_calm_template_path"),
+                    "liveportrait_calm_template_used": stage_paths.get("liveportrait_calm_template_used"),
+                    "liveportrait_calm_template_missing": stage_paths.get("liveportrait_calm_template_missing"),
+                    "liveportrait_calm_template_failed": stage_paths.get("liveportrait_calm_template_failed"),
+                    "liveportrait_vetted_template_path": stage_paths.get("liveportrait_vetted_template_path"),
+                    "liveportrait_vetted_template_fallback_used": stage_paths.get("liveportrait_vetted_template_fallback_used"),
+                    "liveportrait_composer_fallback_used": stage_paths.get("liveportrait_composer_fallback_used"),
                     "liveportrait_composer_used": stage_paths.get("liveportrait_composer_used"),
                     "liveportrait_boosted_retry_used": stage_paths.get("liveportrait_boosted_retry_used"),
                     "liveportrait_driver_validation_mode": stage_paths.get("liveportrait_driver_validation_mode"),
@@ -3065,6 +3174,14 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                     "liveportrait_motion_profile": stage_paths.get("liveportrait_motion_profile"),
                     "liveportrait_driver_source_policy": stage_paths.get("liveportrait_driver_source_policy"),
                     "liveportrait_driver_source": stage_paths.get("liveportrait_driver_source"),
+                    "liveportrait_template_used": stage_paths.get("liveportrait_template_used"),
+                    "liveportrait_calm_template_path": stage_paths.get("liveportrait_calm_template_path"),
+                    "liveportrait_calm_template_used": stage_paths.get("liveportrait_calm_template_used"),
+                    "liveportrait_calm_template_missing": stage_paths.get("liveportrait_calm_template_missing"),
+                    "liveportrait_calm_template_failed": stage_paths.get("liveportrait_calm_template_failed"),
+                    "liveportrait_vetted_template_path": stage_paths.get("liveportrait_vetted_template_path"),
+                    "liveportrait_vetted_template_fallback_used": stage_paths.get("liveportrait_vetted_template_fallback_used"),
+                    "liveportrait_composer_fallback_used": stage_paths.get("liveportrait_composer_fallback_used"),
                     "liveportrait_composer_used": stage_paths.get("liveportrait_composer_used"),
                     "liveportrait_boosted_retry_used": stage_paths.get("liveportrait_boosted_retry_used"),
                     "liveportrait_driver_validation_mode": stage_paths.get("liveportrait_driver_validation_mode"),
@@ -3243,6 +3360,10 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             stage_env: dict[str, str],
             reason: str,
         ) -> bool:
+            if not _env_enabled("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", False) and str(
+                stage_env.get("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK") or ""
+            ).strip().lower() not in {"1", "true", "yes", "on"}:
+                return False
             if str(stage_env.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY") or "").strip().lower() != "vetted_template_for_image":
                 return False
             if str(candidate.get("driver_source_policy_override") or "").strip().lower() == "composer_for_image":
@@ -4304,6 +4425,9 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
 
         final_validation_context = {
             "liveportrait_driver_source": stage_paths.get("liveportrait_driver_source"),
+            "liveportrait_calm_template_used": stage_paths.get("liveportrait_calm_template_used"),
+            "liveportrait_vetted_template_fallback_used": stage_paths.get("liveportrait_vetted_template_fallback_used"),
+            "liveportrait_composer_fallback_used": stage_paths.get("liveportrait_composer_fallback_used"),
             "liveportrait_motion_preset": stage_paths.get("liveportrait_motion_preset"),
             "liveportrait_succeeded": stage_paths.get("liveportrait_succeeded"),
             "liveportrait_fallback_used": stage_paths.get("liveportrait_fallback_used"),
