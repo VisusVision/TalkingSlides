@@ -1,7 +1,7 @@
 """Root URL configuration for AI_ACADEMY API."""
 
 from django.contrib import admin
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.urls import path, include
 
 
@@ -10,9 +10,14 @@ def health(request):
     return HttpResponse("ok", content_type="text/plain")
 
 
+def ready(request):
+    """Lightweight API readiness endpoint for production load balancers."""
+    return JsonResponse({"status": "ok"})
+
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("health/", health, name="health"),
+    path("api/v1/ready/", ready, name="api-ready"),
     path("api/v1/", include("core.urls")),
 ]
-

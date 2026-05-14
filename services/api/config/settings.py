@@ -8,12 +8,101 @@ for local development when DATABASE_URL is not set.
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
+
+DEV_SECRET_KEY = "dev-insecure-secret-key-change-me"
+DEV_MEDIA_TOKEN_SECRET = "media-token-dev-secret-change-in-prod"
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     raw_value = os.environ.get(name)
     if raw_value is None:
         return default
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_bool_from(env, name: str, default: bool = False) -> bool:
+    raw_value = env.get(name)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _split_csv(raw_value: str | None) -> list[str]:
+    if raw_value is None:
+        return []
+    return [item.strip() for item in str(raw_value).split(",") if item.strip()]
+
+
+def _env_list(name: str, default: list[str] | None = None) -> list[str]:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return list(default or [])
+    return _split_csv(raw_value)
+
+
+def validate_production_settings(
+    *,
+    env=None,
+    debug: bool | None = None,
+    secret_key: str | None = None,
+    postgres_host: str | None = None,
+    media_token_secret: str | None = None,
+    allowed_hosts: list[str] | None = None,
+    cors_allowed_origins: list[str] | None = None,
+    cors_allow_all_origins: bool | None = None,
+) -> None:
+    """Fail fast for configuration that is unsafe when DEBUG=False."""
+
+    env = os.environ if env is None else env
+    resolved_debug = DEBUG if debug is None else bool(debug)
+    if resolved_debug:
+        return
+
+    resolved_secret_key = str(
+        secret_key if secret_key is not None else env.get("SECRET_KEY", SECRET_KEY)
+    ).strip()
+    resolved_postgres_host = str(
+        postgres_host if postgres_host is not None else env.get("POSTGRES_HOST", _pg_host)
+    ).strip()
+    resolved_media_token_secret = str(
+        media_token_secret
+        if media_token_secret is not None
+        else env.get("MEDIA_TOKEN_SECRET", MEDIA_TOKEN_SECRET)
+    ).strip()
+    resolved_allowed_hosts = list(
+        allowed_hosts if allowed_hosts is not None else _split_csv(env.get("ALLOWED_HOSTS"))
+    )
+    resolved_cors_origins = list(
+        cors_allowed_origins
+        if cors_allowed_origins is not None
+        else _split_csv(env.get("CORS_ALLOWED_ORIGINS"))
+    )
+    requested_cors_allow_all = _env_bool_from(env, "CORS_ALLOW_ALL_ORIGINS", default=False)
+    resolved_cors_allow_all = bool(cors_allow_all_origins) if cors_allow_all_origins is not None else False
+
+    errors: list[str] = []
+    if not resolved_secret_key or resolved_secret_key == DEV_SECRET_KEY:
+        errors.append("SECRET_KEY must be set to a non-development value when DEBUG=False.")
+    if not resolved_postgres_host:
+        errors.append("POSTGRES_HOST must be set when DEBUG=False; production cannot fall back to SQLite.")
+    if not resolved_media_token_secret or resolved_media_token_secret == DEV_MEDIA_TOKEN_SECRET:
+        errors.append("MEDIA_TOKEN_SECRET must be set to a non-development value when DEBUG=False.")
+    if not env.get("ALLOWED_HOSTS") or not resolved_allowed_hosts:
+        errors.append("ALLOWED_HOSTS must be explicitly set when DEBUG=False.")
+    if "*" in resolved_allowed_hosts and not (
+        _env_bool_from(env, "ALLOW_WILDCARD_HOSTS", default=False)
+        or _env_bool_from(env, "DJANGO_ALLOW_WILDCARD_HOSTS", default=False)
+    ):
+        errors.append("ALLOWED_HOSTS='*' is not allowed when DEBUG=False unless ALLOW_WILDCARD_HOSTS=true.")
+    if requested_cors_allow_all or resolved_cors_allow_all:
+        errors.append("CORS_ALLOW_ALL_ORIGINS must not be true when DEBUG=False.")
+    if not env.get("CORS_ALLOWED_ORIGINS") or not resolved_cors_origins:
+        errors.append("CORS_ALLOWED_ORIGINS must be explicitly set when DEBUG=False.")
+
+    if errors:
+        raise ImproperlyConfigured("Invalid production settings: " + " ".join(errors))
 
 
 # ---------------------------------------------------------------------------
@@ -24,9 +113,13 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 # Core settings
 # ---------------------------------------------------------------------------
-SECRET_KEY = os.environ.get("SECRET_KEY", "dev-insecure-secret-key-change-me")
-DEBUG = os.environ.get("DEBUG", "True") == "True"
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+SECRET_KEY = os.environ.get("SECRET_KEY", DEV_SECRET_KEY)
+DEBUG = _env_bool("DEBUG", default=True)
+ALLOWED_HOSTS = _env_list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
+CSRF_TRUSTED_ORIGINS = _env_list("CSRF_TRUSTED_ORIGINS")
+CORS_ALLOWED_ORIGINS = _env_list("CORS_ALLOWED_ORIGINS")
+_CORS_ALLOW_ALL_ORIGINS_REQUESTED = _env_bool("CORS_ALLOW_ALL_ORIGINS", default=DEBUG)
+CORS_ALLOW_ALL_ORIGINS = bool(DEBUG and _CORS_ALLOW_ALL_ORIGINS_REQUESTED)
 
 # ---------------------------------------------------------------------------
 # Applications
@@ -80,9 +173,6 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = "config.wsgi.application"
-
-# dev only: allow all origins (NOT SECURE for production)
-CORS_ALLOW_ALL_ORIGINS = True
 
 # ---------------------------------------------------------------------------
 # Database – reads individual POSTGRES_* env vars (Docker env_file does NOT
@@ -203,7 +293,7 @@ API_PUBLIC_BASE_URL = os.environ.get("API_PUBLIC_BASE_URL", "").strip().rstrip("
 # Secret used to HMAC-sign short-lived media playback tokens.
 # Override via env var in production.
 MEDIA_TOKEN_SECRET = os.environ.get(
-    "MEDIA_TOKEN_SECRET", "media-token-dev-secret-change-in-prod"
+    "MEDIA_TOKEN_SECRET", DEV_MEDIA_TOKEN_SECRET
 )
 # How long (seconds) a playback token is valid. Default 4 hours.
 MEDIA_TOKEN_TTL_SECONDS = int(os.environ.get("MEDIA_TOKEN_TTL_SECONDS", "14400"))
@@ -267,13 +357,24 @@ LESSON_PROTECTION_RISK_MEDIUM_THRESHOLD = int(os.environ.get("LESSON_PROTECTION_
 LESSON_PROTECTION_RISK_HIGH_THRESHOLD = int(os.environ.get("LESSON_PROTECTION_RISK_HIGH_THRESHOLD", "5"))
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
-SECURE_REFERRER_POLICY = "same-origin"
-X_FRAME_OPTIONS = "DENY"
+SECURE_SSL_REDIRECT = _env_bool("SECURE_SSL_REDIRECT", default=not DEBUG)
+SESSION_COOKIE_SECURE = True if not DEBUG else _env_bool("SESSION_COOKIE_SECURE", default=False)
+CSRF_COOKIE_SECURE = True if not DEBUG else _env_bool("CSRF_COOKIE_SECURE", default=False)
+SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", "31536000" if not DEBUG else "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True if not DEBUG else _env_bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", default=False)
+SECURE_HSTS_PRELOAD = True if not DEBUG else _env_bool("SECURE_HSTS_PRELOAD", default=False)
+SECURE_REFERRER_POLICY = os.environ.get("SECURE_REFERRER_POLICY", "same-origin")
+X_FRAME_OPTIONS = os.environ.get("X_FRAME_OPTIONS", "DENY")
 
-# ---------------------------------------------------------------------------
-# CORS (permissive in dev)
-# ---------------------------------------------------------------------------
-CORS_ALLOW_ALL_ORIGINS = DEBUG
+validate_production_settings(
+    debug=DEBUG,
+    secret_key=SECRET_KEY,
+    postgres_host=_pg_host,
+    media_token_secret=MEDIA_TOKEN_SECRET,
+    allowed_hosts=ALLOWED_HOSTS,
+    cors_allowed_origins=CORS_ALLOWED_ORIGINS,
+    cors_allow_all_origins=CORS_ALLOW_ALL_ORIGINS,
+)
 
 # ---------------------------------------------------------------------------
 # Misc
