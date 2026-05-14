@@ -63,6 +63,8 @@ def test_frontend_video_stage_fullscreen_targets_player_shell():
     assert "target.requestFullscreen?.()" in source
     assert "activeVideoRef.current.requestFullscreen" not in source
     assert "controlsList=\"nodownload nofullscreen noplaybackrate noremoteplayback\"" in source
+    assert "visus-shell-video::-webkit-media-controls-fullscreen-button" in source
+    assert "data-testid=\"player-shell-fullscreen\"" in source
     assert "<WatermarkOverlay lesson={watermarkLesson} />" in source
     assert source.index("data-testid=\"player-fullscreen-shell\"") < source.index("<AvatarOverlayLayer")
 
@@ -85,6 +87,8 @@ def test_frontend_hls_player_fullscreen_targets_player_shell():
     assert "target.requestFullscreen?.()" in source
     assert "activeVideoRef.current.requestFullscreen" not in source
     assert "controlsList=\"nodownload nofullscreen noplaybackrate noremoteplayback\"" in source
+    assert "visus-shell-video::-webkit-media-controls-fullscreen-button" in source
+    assert "data-testid=\"player-shell-fullscreen\"" in source
     assert "<WatermarkOverlay lesson={watermarkLesson} />" in source
     assert source.index("data-testid=\"player-fullscreen-shell\"") < source.index("<AvatarOverlayLayer")
 
@@ -170,7 +174,7 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "data-testid=\"avatar-theater-overlay\"" in source
-    assert "pointer-events-none absolute inset-x-4 top-4 bottom-20" in source
+    assert "pointer-events-none absolute inset-x-3 top-3 bottom-16" in source
     assert "data-avatar-theater-frame=\"true\"" in source
     assert "fixed inset-0" not in source
     assert "setTheaterOpen(false)" in source
@@ -178,6 +182,15 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
     assert "videoControls: 50" in source
     assert "captions: 60" in source
     assert "storageKey(lessonId, 'theater')" not in source
+
+
+def test_frontend_avatar_theater_uses_larger_safe_crop():
+    source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
+
+    assert "data-avatar-video-mode={theater ? 'theater' : 'pip'}" in source
+    assert "theater ? 'scale-110 object-[50%_32%]' : ''" in source
+    assert "max-w-[96%]" in source
+    assert "aspect-video max-h-full w-full" in source
 
 
 def test_frontend_watch_exposes_single_focus_mode_for_study_layout():

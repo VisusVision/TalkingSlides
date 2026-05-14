@@ -426,12 +426,16 @@ export default function AvatarOverlayLayer({
 
   if (!enabled || !src) return null;
 
-  const renderAvatarVideo = () => (
+  const renderAvatarVideo = ({ theater = false } = {}) => (
     <video
       ref={avatarVideoRef}
       src={src}
       data-testid="avatar-overlay-video"
-      className="pointer-events-none h-full w-full rounded-lg bg-black object-cover"
+      data-avatar-video-mode={theater ? 'theater' : 'pip'}
+      className={[
+        'pointer-events-none h-full w-full rounded-lg bg-black object-cover',
+        theater ? 'scale-110 object-[50%_32%]' : '',
+      ].filter(Boolean).join(' ')}
       muted
       playsInline
       preload="metadata"
@@ -467,7 +471,7 @@ export default function AvatarOverlayLayer({
                   : 'border-[var(--border-subtle)]',
               ].join(' ')}
             >
-              {renderAvatarVideo()}
+              {renderAvatarVideo({ theater: theaterOpen })}
               <div
                 tabIndex={0}
                 role="group"
@@ -518,15 +522,15 @@ export default function AvatarOverlayLayer({
       ) : theaterOpen ? (
         <div
           data-testid="avatar-theater-overlay"
-          className="pointer-events-none absolute inset-x-4 top-4 bottom-20 flex items-center justify-center sm:inset-x-8 sm:top-8 sm:bottom-24"
+          className="pointer-events-none absolute inset-x-3 top-3 bottom-16 flex items-center justify-center sm:inset-x-5 sm:top-5 sm:bottom-20"
           style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarTheater }}
         >
           <div
             data-avatar-theater-frame="true"
-            className="pointer-events-auto relative w-full max-w-[86%]"
+            className="pointer-events-auto relative flex h-full w-full max-w-[96%] items-center justify-center"
           >
-            <div className="aspect-video overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
-              {renderAvatarVideo()}
+            <div className="aspect-video max-h-full w-full overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
+              {renderAvatarVideo({ theater: true })}
             </div>
             <div
               data-avatar-controls="true"

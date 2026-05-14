@@ -5,6 +5,12 @@ import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer
 import WatermarkOverlay from './WatermarkOverlay';
 import SurfaceCard from '../ui/SurfaceCard';
 
+const NATIVE_FULLSCREEN_CONTROL_HIDE_CSS = `
+.visus-shell-video::-webkit-media-controls-fullscreen-button {
+  display: none;
+}
+`;
+
 function vttUrlForLesson(lesson) {
   return [lesson?.vtt_url, lesson?.subtitle_vtt_url]
     .map((value) => String(value || '').trim())
@@ -108,6 +114,10 @@ function PlayerShellFullscreenButton({ active, onClick }) {
       {active ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
     </button>
   );
+}
+
+function NativeVideoControlStyles() {
+  return <style>{NATIVE_FULLSCREEN_CONTROL_HIDE_CSS}</style>;
 }
 
 function normalizeTrack(track) {
@@ -338,8 +348,8 @@ export default function VideoStage({
     fullscreenActive ? 'flex h-screen items-center justify-center rounded-none' : 'rounded-xl',
   ].join(' ');
   const videoClassName = fullscreenActive
-    ? 'h-full w-full bg-black object-contain'
-    : 'aspect-video w-full bg-black';
+    ? 'visus-shell-video h-full w-full bg-black object-contain'
+    : 'visus-shell-video aspect-video w-full bg-black';
 
   const content = (
     <>
@@ -351,6 +361,7 @@ export default function VideoStage({
       >
         {hasVideo ? (
           <>
+            <NativeVideoControlStyles />
             <video
               key={lesson.id}
               ref={activeVideoRef}
