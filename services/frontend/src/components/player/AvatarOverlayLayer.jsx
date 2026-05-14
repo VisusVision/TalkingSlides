@@ -4,9 +4,14 @@ import { DEFAULT_AVATAR_PLACEMENT, normalizeAvatarPlacement } from '../../utils/
 
 const HEIGHT_RATIO = 9 / 16;
 const STORAGE_PREFIX = 'visus-avatar-overlay';
-const theaterObjectPosition = '50% 42%';
-const theaterBackgroundClass = 'absolute inset-0 h-full w-full bg-black object-cover opacity-45';
-const theaterForegroundClass = 'h-full w-full bg-transparent object-cover';
+const theaterStageBackgroundStyle = {
+  background: 'radial-gradient(circle at center, rgba(255,255,255,0.12), rgba(16,16,20,0.86) 42%, rgba(0,0,0,0.95) 100%)',
+};
+const theaterForegroundFrameClass = [
+  'relative z-10 flex h-[92%] w-[92%] items-center justify-center overflow-hidden',
+  'rounded-lg border border-white/25 bg-black/25 shadow-2xl',
+].join(' ');
+const theaterForegroundClass = 'h-full w-full bg-transparent object-contain';
 
 export const AVATAR_OVERLAY_Z_INDEX = Object.freeze({
   baseVideo: 0,
@@ -202,7 +207,6 @@ export default function AvatarOverlayLayer({
   const containerRef = useRef(null);
   const frameRef = useRef(null);
   const avatarVideoRef = useRef(null);
-  const backgroundAvatarVideoRef = useRef(null);
   const dragStateRef = useRef(null);
   const autoHideTimerRef = useRef(null);
   const hoverWithinRef = useRef(false);
@@ -315,28 +319,26 @@ export default function AvatarOverlayLayer({
 
   const syncAvatarPlayback = useCallback(() => {
     const mainVideo = videoRef?.current;
-    const avatarVideos = [avatarVideoRef.current, backgroundAvatarVideoRef.current].filter(Boolean);
-    if (!mainVideo || avatarVideos.length === 0 || !enabled || !src || !avatarVisible) return;
+    const avatarVideo = avatarVideoRef.current;
+    if (!mainVideo || !avatarVideo || !enabled || !src || !avatarVisible) return;
 
-    avatarVideos.forEach((avatarVideo) => {
-      if (
-        Number.isFinite(mainVideo.currentTime)
-        && Math.abs((avatarVideo.currentTime || 0) - mainVideo.currentTime) > 0.25
-      ) {
-        try {
-          avatarVideo.currentTime = mainVideo.currentTime;
-        } catch {
-          // Browsers can reject seeks until the overlay video has metadata.
-        }
+    if (
+      Number.isFinite(mainVideo.currentTime)
+      && Math.abs((avatarVideo.currentTime || 0) - mainVideo.currentTime) > 0.25
+    ) {
+      try {
+        avatarVideo.currentTime = mainVideo.currentTime;
+      } catch {
+        // Browsers can reject seeks until the overlay video has metadata.
       }
+    }
 
-      avatarVideo.playbackRate = mainVideo.playbackRate || 1;
-      if (mainVideo.paused || mainVideo.ended) {
-        avatarVideo.pause();
-        return;
-      }
-      avatarVideo.play().catch(() => {});
-    });
+    avatarVideo.playbackRate = mainVideo.playbackRate || 1;
+    if (mainVideo.paused || mainVideo.ended) {
+      avatarVideo.pause();
+      return;
+    }
+    avatarVideo.play().catch(() => {});
   }, [avatarVisible, enabled, src, videoRef]);
 
   useEffect(() => {
@@ -432,22 +434,16 @@ export default function AvatarOverlayLayer({
 
   if (!enabled || !src) return null;
 
-  const renderAvatarVideo = ({ theater = false, background = false } = {}) => (
+  const renderAvatarVideo = ({ theater = false } = {}) => (
     <video
-      ref={background ? backgroundAvatarVideoRef : avatarVideoRef}
+      ref={avatarVideoRef}
       src={src}
-      data-testid={background ? 'avatar-theater-background-video' : 'avatar-overlay-video'}
-      data-avatar-video-mode={background ? 'theater-background' : theater ? 'theater' : 'pip'}
-      aria-hidden={background ? 'true' : undefined}
+      data-testid="avatar-overlay-video"
+      data-avatar-video-mode={theater ? 'theater' : 'pip'}
       className={[
         'pointer-events-none rounded-lg',
-        background
-          ? theaterBackgroundClass
-          : 'h-full w-full',
-        theater && !background ? theaterForegroundClass : '',
-        !theater && !background ? 'bg-black object-cover' : '',
+        theater ? theaterForegroundClass : 'h-full w-full bg-black object-cover',
       ].join(' ')}
-      style={theater ? { objectPosition: theaterObjectPosition } : undefined}
       muted
       playsInline
       preload="metadata"
@@ -541,11 +537,10 @@ export default function AvatarOverlayLayer({
             data-avatar-theater-frame="true"
             className="pointer-events-auto relative flex aspect-video max-h-full w-full max-w-[96%] items-center justify-center overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl"
           >
-            {renderAvatarVideo({ theater: true, background: true })}
-            <div className="pointer-events-none absolute inset-0 bg-black/35" aria-hidden="true" />
+            <div className="pointer-events-none absolute inset-0" style={theaterStageBackgroundStyle} aria-hidden="true" />
             <div
               data-avatar-theater-foreground-frame="true"
-              className="relative z-10 aspect-[3/2] h-[88%] max-h-[min(78vh,620px)] max-w-[min(78vw,900px)] overflow-hidden rounded-lg border border-white/25 bg-black/30 shadow-2xl"
+              className={theaterForegroundFrameClass}
             >
               {renderAvatarVideo({ theater: true })}
             </div>
