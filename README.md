@@ -1,130 +1,57 @@
-# TalkingSlides
-Converts PowerPoint presentations and speaker notes into narrated videos using the presenter's cloned voice and avatar (or default voice/avatar when unavailable). AI automatically detects key content in slides and applies visual effects (bold, highlight boxes, etc.). Generated videos are published on an integrated content delivery platform.
+# VISUS VidLab / AI_ACADEMY
 
-[![Python](https://img.shields.io/badge/Python-3.10-blue.svg)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.0.1-EE4C2C.svg)](https://pytorch.org/)
-[![CUDA](https://img.shields.io/badge/CUDA-11.8-76B900.svg)](https://developer.nvidia.com/cuda-toolkit)
-[![License](https://img.shields.io/badge/License-TBD-lightgrey.svg)](#license)
+VISUS VidLab, also known in the repository as AI_ACADEMY, turns source lesson material into narrated video lessons with secure playback and optional avatar overlay support. It combines a Django API, Celery workers, a FastAPI TTS service, and a Vite React frontend for Studio, Watch, Catalog, and settings workflows.
 
----
+## Core Features
 
-## Overview
+- Upload PPTX, PDF, DOCX, TXT, and image-based lesson sources.
+- Extract lesson text, speaker notes, pages, and slide images for render jobs.
+- Generate narration through XTTS, with local fallback behavior for development.
+- Render MP4 lessons and original subtitle tracks.
+- Support tokenized playback, secure stream mode, HLS packaging, and a DRM-ready playback contract.
+- Run a non-blocking avatar overlay pipeline using LivePortrait, MuseTalk, and optional restoration.
+- Provide teacher Studio, student Watch, public Catalog, library, settings, and analytics screens.
 
-**TalkingSlides** converts `.pptx` files together with their speaker notes into fully narrated videos. The system uses the presenter's cloned voice and avatar to deliver the slide content; when no personalized voice or face is provided, a default voice and avatar are used as a fallback.
+## Quick Start
 
-In addition to narration, an AI module analyzes each slide's content and the corresponding speaker notes to automatically apply visual emphasis effects — such as **bold text**, highlight boxes, and callouts — so that the viewer's attention is guided to the key points exactly when the narrator mentions them.
+- Windows setup: [docs/INSTALL_WINDOWS.md](docs/INSTALL_WINDOWS.md)
+- Daily local workflow: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md)
 
-The generated videos are published through an integrated content delivery platform, where they can be browsed, organized, and shared.
 
-## Key Features
-
-- **Slide-to-Video Pipeline** — Renders each slide as a video segment synchronized with the narration of its speaker notes.
-- **Voice Cloning** — Reproduces the presenter's voice from a short reference sample (multilingual support).
-- **Talking-Head Avatar** — Generates a lip-synced video of the presenter's face driven by the synthesized speech.
-- **Default Mode** — Falls back to a standard voice and a generic avatar when personalized assets are not provided.
-- **AI-Driven Visual Emphasis** — Automatically detects key phrases, terms, and concepts in slides and applies effects (bold, highlight box, underline, color accent) timed to the narration.
-- **Multilingual Output** — Supports multiple narration languages out of the box.
-- **Content Platform Integration** — Generated videos are delivered through a built-in content presentation platform with browsing, search, and sharing capabilities.
-
-## How It Works
-
-```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  .pptx + notes  │ ──▶ │  Content Parser  │ ──▶ │  Key-Phrase AI  │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                                          │
-                                                          ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│  Slide Renderer │ ◀── │  Effect Planner  │ ◀── │   Slide + Tags  │
-│  (with effects) │     └──────────────────┘     └─────────────────┘
-└─────────────────┘
-        │
-        ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   TTS / Voice   │ ──▶ │   Talking-Head   │ ──▶ │  Video Composer │
-│     Cloning     │     │     Avatar       │     │  (slide + face) │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                                                          │
-                                                          ▼
-                                                 ┌─────────────────┐
-                                                 │ Content Platform│
-                                                 └─────────────────┘
+```powershell
+.\scripts\windows-dev-setup.ps1
 ```
 
-1. **Parse** — Slides and speaker notes are extracted from the `.pptx` file.
-2. **Analyze** — A language model identifies emphasis-worthy phrases per slide based on the notes.
-3. **Render** — Slides are rendered with timed visual effects applied to the detected phrases.
-4. **Synthesize Speech** — Speaker notes are converted to speech using the cloned voice (or a default voice).
-5. **Generate Avatar** — A talking-head video is produced with lip movement synced to the audio.
-6. **Compose** — Slide visuals, narrator avatar, and audio are combined into the final video.
-7. **Publish** — The video is uploaded to the content delivery platform.
+To start the default local stack:
 
-## Tech Stack
-
-| Layer            | Technology                                                  |
-|------------------|-------------------------------------------------------------|
-| Runtime          | Python 3.10                                                 |
-| Deep Learning    | PyTorch 2.0.1 + CUDA 11.8                                   |
-| Voice Cloning    | Chatterbox Multilingual TTS                                 |
-| Talking Head     | MuseTalk 1.5 (with LivePortrait / Linly-Talker evaluated)   |
-| Slide Processing | python-pptx, Pillow, FFmpeg                                 |
-| AI Emphasis      | LLM-based key-phrase extraction                             |
-| Deployment       | Modal.com (GPU inference) / GCP                             |
-| Delivery         | Integrated web-based content platform                       |
-
-## Installation
-
-> ⚠️ Setup instructions will be finalized after the public release of the inference and platform components.
-
-```bash
-# Clone the repository
-git clone https://github.com/VisusVision/TalkingSlides.git
-cd TalkingSlides
-
-# Create a virtual environment (recommended)
-python3.10 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
+```powershell
+.\scripts\windows-dev-start.ps1
 ```
 
-GPU with CUDA 11.8 support is recommended for talking-head generation.
+## Documentation Map
 
-## Usage
+- Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- Environment variables: [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)
+- Production deployment: [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md)
+- Secure playback and DRM: [docs/SECURE_PLAYBACK_DRM.md](docs/SECURE_PLAYBACK_DRM.md)
+- Avatar pipeline: [docs/AVATAR_PIPELINE.md](docs/AVATAR_PIPELINE.md)
+- Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
-```bash
-python talkingslides.py \
-    --input  presentation.pptx \
-    --voice  reference_voice.wav \
-    --face   presenter.jpg \
-    --lang   en \
-    --output ./out
-```
+Internal roadmaps and technical planning documents live on the `developer` branch.
 
-| Argument    | Description                                                      |
-|-------------|------------------------------------------------------------------|
-| `--input`   | Path to the `.pptx` file (required).                             |
-| `--voice`   | Reference audio for voice cloning. Optional — default if omitted. |
-| `--face`    | Reference image for the avatar. Optional — default if omitted.   |
-| `--lang`    | Narration language code (e.g. `en`, `tr`, `de`).                 |
-| `--output`  | Output directory for the generated video.                        |
 
-## Roadmap
+## Local URLs
 
-- [ ] Public alpha release
-- [ ] Web UI for upload and configuration
-- [ ] Batch processing of multiple presentations
-- [ ] Speaker-style adaptation (formal / casual / instructional)
-- [ ] Slide-level analytics on the content platform
-- [ ] Multi-presenter mode (different avatars per section)
+When using the Docker Compose development stack:
 
-## License
+- Frontend: `http://localhost:3000`
+- API: `http://localhost:8000`
+- API readiness: `http://localhost:8000/api/v1/ready/`
+- TTS service: `http://localhost:8001`
+- MinIO console: `http://localhost:9001`
 
-License terms to be announced. Until then, all rights reserved by the project owner.
+## Production Notes
 
-## Contact
+Production must not use committed env files, SQLite fallback, development secrets, wildcard hosts, or CORS allow-all. Start with [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) and [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md), then configure secrets through your deployment platform or secret manager.
 
-**VisusVision** — Visus Artificial Vision and Automation Systems
-
-For questions, partnership, or commercial inquiries, please open an issue or reach out via the organization page.
+The stable production shape is API, frontend, render worker, TTS service, Redis, Postgres, storage, and a separately sized GPU avatar worker when avatar generation is enabled.
