@@ -1,4 +1,4 @@
-# VISUS VidLab / AI_ACADEMY
+# VISUS VidLab 
 
 VISUS VidLab, also known in the repository as AI_ACADEMY, turns source lesson material into narrated video lessons with secure playback and optional avatar overlay support. It combines a Django API, Celery workers, a FastAPI TTS service, and a Vite React frontend for Studio, Watch, Catalog, and settings workflows.
 
