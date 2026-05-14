@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Eye, EyeOff, Maximize2, Minimize2, Move, RotateCcw } from 'lucide-react';
+import { Eye, EyeOff, Maximize2, Minimize2, Minus, Move, Plus, RotateCcw } from 'lucide-react';
 import { DEFAULT_AVATAR_PLACEMENT, normalizeAvatarPlacement } from '../../utils/avatarPlacement';
 
 const HEIGHT_RATIO = 9 / 16;
 const STORAGE_PREFIX = 'visus-avatar-overlay';
-const theaterStageBackgroundStyle = {
-  background: 'radial-gradient(circle at center, rgba(255,255,255,0.12), rgba(16,16,20,0.86) 42%, rgba(0,0,0,0.95) 100%)',
-};
-const theaterForegroundFrameClass = [
-  'relative z-10 flex h-[92%] w-[92%] items-center justify-center overflow-hidden',
-  'rounded-lg border border-white/25 bg-black/25 shadow-2xl',
-].join(' ');
-const theaterForegroundClass = 'h-full w-full bg-transparent object-contain';
+const THEATER_SCALE_DEFAULT = 1;
+const THEATER_SCALE_MIN = 0.75;
+const THEATER_SCALE_MAX = 1.8;
+const THEATER_SCALE_STEP = 0.1;
+const THEATER_BASE_WIDTH_VW = 42;
+const THEATER_BASE_WIDTH_PX = 520;
+const theaterForegroundClass = 'h-auto w-full max-h-full max-w-full rounded-lg bg-transparent object-contain shadow-2xl';
 
 export const AVATAR_OVERLAY_Z_INDEX = Object.freeze({
   baseVideo: 0,
@@ -62,6 +61,30 @@ function clearStoredPlacement(lessonId) {
   window.localStorage.removeItem(storageKey(lessonId, 'position'));
 }
 
+function clampTheaterScale(value) {
+  return Number(clamp(
+    Number(value || THEATER_SCALE_DEFAULT),
+    THEATER_SCALE_MIN,
+    THEATER_SCALE_MAX,
+  ).toFixed(2));
+}
+
+function readStoredTheaterScale(lessonId) {
+  if (typeof window === 'undefined') return THEATER_SCALE_DEFAULT;
+  const value = Number(window.localStorage.getItem(storageKey(lessonId, 'theater-scale')));
+  return Number.isFinite(value) ? clampTheaterScale(value) : THEATER_SCALE_DEFAULT;
+}
+
+function writeStoredTheaterScale(lessonId, scale) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(storageKey(lessonId, 'theater-scale'), String(clampTheaterScale(scale)));
+}
+
+function clearStoredTheaterScale(lessonId) {
+  if (typeof window === 'undefined') return;
+  window.localStorage.removeItem(storageKey(lessonId, 'theater-scale'));
+}
+
 function placementFromStorage(lessonId, fallbackPlacement) {
   const stored = readStoredJson(storageKey(lessonId, 'position'));
   return normalizeAvatarPlacement(stored || fallbackPlacement, fallbackPlacement);
@@ -110,6 +133,15 @@ function floatingPlacementStyle(placement) {
   return { ...base, right: '4%', top: '8%' };
 }
 
+function theaterPlacementStyle(scale) {
+  const clampedScale = clampTheaterScale(scale);
+  return {
+    width: `min(${(THEATER_BASE_WIDTH_VW * clampedScale).toFixed(1)}vw, ${Math.round(THEATER_BASE_WIDTH_PX * clampedScale)}px)`,
+    maxWidth: 'calc(100% - 1rem)',
+    maxHeight: '100%',
+  };
+}
+
 function controlButtonClassName(extra = '') {
   return [
     'focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full',
@@ -133,6 +165,9 @@ function AvatarControls({
   onReset,
   onTheaterToggle,
   onDragPointerDown,
+  onTheaterSizeDecrease,
+  onTheaterSizeIncrease,
+  onTheaterSizeReset,
   compact = false,
 }) {
   if (!visible) {
@@ -162,6 +197,39 @@ function AvatarControls({
           className={`${controlButtonClassName()} cursor-grab active:cursor-grabbing`}
         >
           <Move size={15} />
+        </button>
+      )}
+      {theater && typeof onTheaterSizeDecrease === 'function' && (
+        <button
+          type="button"
+          title="Make avatar smaller"
+          aria-label="Make avatar smaller"
+          onClick={onTheaterSizeDecrease}
+          className={controlButtonClassName()}
+        >
+          <Minus size={15} />
+        </button>
+      )}
+      {theater && typeof onTheaterSizeIncrease === 'function' && (
+        <button
+          type="button"
+          title="Make avatar larger"
+          aria-label="Make avatar larger"
+          onClick={onTheaterSizeIncrease}
+          className={controlButtonClassName()}
+        >
+          <Plus size={15} />
+        </button>
+      )}
+      {theater && typeof onTheaterSizeReset === 'function' && (
+        <button
+          type="button"
+          title="Reset avatar theater size"
+          aria-label="Reset avatar theater size"
+          onClick={onTheaterSizeReset}
+          className={controlButtonClassName()}
+        >
+          <RotateCcw size={15} />
         </button>
       )}
       <button
@@ -220,11 +288,13 @@ export default function AvatarOverlayLayer({
   const [controlsVisible, setControlsVisible] = useState(false);
   const [focusWithin, setFocusWithin] = useState(false);
   const [theaterOpen, setTheaterOpen] = useState(false);
+  const [theaterScale, setTheaterScale] = useState(() => readStoredTheaterScale(lessonId));
   const isStudyPanel = mode === 'study-panel';
 
   useEffect(() => {
     setAvatarVisible(readStoredVisible(lessonId));
     setCurrentPlacement(placementFromStorage(lessonId, defaultPlacement));
+    setTheaterScale(readStoredTheaterScale(lessonId));
     setTheaterOpen(false);
     setControlsVisible(false);
     setFocusWithin(false);
@@ -417,6 +487,31 @@ export default function AvatarOverlayLayer({
     clearStoredPlacement(lessonId);
   }, [defaultPlacement, lessonId]);
 
+  const updateTheaterScale = useCallback((delta) => {
+    clearAutoHideTimer();
+    setControlsVisible(true);
+    setTheaterScale((previous) => {
+      const next = clampTheaterScale(previous + delta);
+      writeStoredTheaterScale(lessonId, next);
+      return next;
+    });
+  }, [clearAutoHideTimer, lessonId]);
+
+  const handleTheaterSizeDecrease = useCallback(() => {
+    updateTheaterScale(-THEATER_SCALE_STEP);
+  }, [updateTheaterScale]);
+
+  const handleTheaterSizeIncrease = useCallback(() => {
+    updateTheaterScale(THEATER_SCALE_STEP);
+  }, [updateTheaterScale]);
+
+  const handleTheaterSizeReset = useCallback(() => {
+    clearAutoHideTimer();
+    clearStoredTheaterScale(lessonId);
+    setControlsVisible(true);
+    setTheaterScale(THEATER_SCALE_DEFAULT);
+  }, [clearAutoHideTimer, lessonId]);
+
   const handleShow = useCallback(() => setAvatarVisible(true), []);
   const handleHide = useCallback(() => {
     setAvatarVisible(false);
@@ -535,12 +630,12 @@ export default function AvatarOverlayLayer({
         >
           <div
             data-avatar-theater-frame="true"
-            className="pointer-events-auto relative flex aspect-video max-h-full w-full max-w-[96%] items-center justify-center overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl"
+            className="pointer-events-auto relative flex items-center justify-center"
+            style={theaterPlacementStyle(theaterScale)}
           >
-            <div className="pointer-events-none absolute inset-0" style={theaterStageBackgroundStyle} aria-hidden="true" />
             <div
               data-avatar-theater-foreground-frame="true"
-              className={theaterForegroundFrameClass}
+              className="flex h-auto w-full items-center justify-center"
             >
               {renderAvatarVideo({ theater: true })}
             </div>
@@ -556,6 +651,9 @@ export default function AvatarOverlayLayer({
                 onHide={handleHide}
                 onReset={handleReset}
                 onTheaterToggle={handleTheaterToggle}
+                onTheaterSizeDecrease={handleTheaterSizeDecrease}
+                onTheaterSizeIncrease={handleTheaterSizeIncrease}
+                onTheaterSizeReset={handleTheaterSizeReset}
               />
             </div>
           </div>

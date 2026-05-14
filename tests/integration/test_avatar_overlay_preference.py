@@ -184,26 +184,36 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
     assert "storageKey(lessonId, 'theater')" not in source
 
 
-def test_frontend_avatar_theater_uses_larger_uncropped_frame():
+def test_frontend_avatar_theater_is_transparent_resizable_overlay():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
-    assert "const theaterStageBackgroundStyle" in source
-    assert "radial-gradient(circle at center" in source
-    assert "'relative z-10 flex h-[92%] w-[92%] items-center justify-center overflow-hidden'" in source
-    assert "const theaterForegroundClass = 'h-full w-full bg-transparent object-contain';" in source
+    assert "const THEATER_SCALE_DEFAULT = 1;" in source
+    assert "const THEATER_SCALE_MIN = 0.75;" in source
+    assert "const THEATER_SCALE_MAX = 1.8;" in source
+    assert "const THEATER_SCALE_STEP = 0.1;" in source
+    assert "const THEATER_BASE_WIDTH_VW = 42;" in source
+    assert "const THEATER_BASE_WIDTH_PX = 520;" in source
+    assert "const theaterForegroundClass = 'h-auto w-full max-h-full max-w-full rounded-lg bg-transparent object-contain shadow-2xl';" in source
+    assert "function theaterPlacementStyle(scale)" in source
+    assert "storageKey(lessonId, 'theater-scale')" in source
     assert "data-testid=\"avatar-overlay-video\"" in source
     assert "data-avatar-video-mode={theater ? 'theater' : 'pip'}" in source
     assert "theater ? theaterForegroundClass : 'h-full w-full bg-black object-cover'" in source
     assert "data-avatar-theater-foreground-frame=\"true\"" in source
-    assert "style={theaterStageBackgroundStyle}" in source
+    assert "style={theaterPlacementStyle(theaterScale)}" in source
+    assert "Make avatar smaller" in source
+    assert "Make avatar larger" in source
+    assert "Reset avatar theater size" in source
+    assert "onTheaterSizeDecrease={handleTheaterSizeDecrease}" in source
+    assert "onTheaterSizeIncrease={handleTheaterSizeIncrease}" in source
+    assert "onTheaterSizeReset={handleTheaterSizeReset}" in source
     assert "avatar-theater-background-video" not in source
     assert "backgroundAvatarVideoRef" not in source
     assert "theater-background" not in source
+    assert "radial-gradient" not in source
     assert "blur-xl" not in source
     assert "scale-110" not in source
     assert "object-[50%_32%]" not in source
-    assert "max-w-[96%]" in source
-    assert "aspect-video max-h-full w-full" in source
 
 
 def test_frontend_watch_exposes_single_focus_mode_for_study_layout():
