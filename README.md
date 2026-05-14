@@ -35,7 +35,10 @@ To start the default local stack:
 
 - Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - Environment variables: [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)
+- Deployment profiles: [docs/DEPLOYMENT_PROFILES.md](docs/DEPLOYMENT_PROFILES.md)
 - Production deployment: [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md)
+- Release checklist: [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
+- Operations runbook: [docs/OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md)
 - Secure playback and DRM: [docs/SECURE_PLAYBACK_DRM.md](docs/SECURE_PLAYBACK_DRM.md)
 - Avatar pipeline: [docs/AVATAR_PIPELINE.md](docs/AVATAR_PIPELINE.md)
 - Troubleshooting: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
