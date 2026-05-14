@@ -29,6 +29,7 @@ import {
   generateSubtitleTrack,
   fetchSubtitleTrackBundle,
   requestProjectAdminReview,
+  rerenderProjectAvatar,
   rerenderProject,
   rescanProjectModeration,
   updateTranscriptPageScene,
@@ -39,6 +40,7 @@ import {
   updateProjectAvatarVisible,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
+import { avatarRuntimeStatusMessage } from '../utils/avatarRuntimeSettings';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
@@ -476,17 +478,13 @@ function avatarVisible(project) {
 
 function avatarStatusLabel(project) {
   if (!projectAvatarEnabled(project)) return 'Avatar disabled.';
-  const status = avatarProcessingStatus(project);
-  if (status === 'queued') return 'Avatar queued.';
-  if (status === 'processing') return 'Avatar is still processing and will be added when ready.';
-  if (status === 'ready') return 'Avatar ready.';
-  if (status === 'failed') return 'Avatar failed. Base video is still published.';
-  return 'Avatar disabled.';
+  return avatarRuntimeStatusMessage(project);
 }
 
 function projectRenderReady(project) {
-  const raw = normalizedStatus(project?.latest_job?.status || project?.status);
-  return raw === 'done' || raw === 'ready';
+  const projectStatus = normalizedStatus(project?.status);
+  const jobStatus = projectLatestJobStatus(project);
+  return projectStatus === 'ready' || jobStatus === 'done' || jobStatus === 'ready';
 }
 
 function studioLessonNeedsPolling({
@@ -517,6 +515,7 @@ function studioLessonNeedsPolling({
     || (moderationStatus === 'not_scanned' && projectInFlight);
   const transcriptWaiting = projectInFlight && transcriptPageCount === 0;
   const rerenderInFlight = UNSTABLE_JOB_STATUSES.has(normalizedStatus(activeRerenderStatus));
+  const avatarInFlight = ['queued', 'processing'].includes(avatarProcessingStatus(project));
   const subtitleInFlight = Boolean(pendingSubtitleGeneration) || Boolean(generatingSubtitleTrack);
 
   return Boolean(
@@ -524,6 +523,7 @@ function studioLessonNeedsPolling({
       || moderationInFlight
       || transcriptWaiting
       || rerenderInFlight
+      || avatarInFlight
       || subtitleInFlight
       || moderationStale
       || (!STABLE_MODERATION_STATUSES.has(moderationStatus) && moderationStatus !== 'not_scanned')
@@ -1026,6 +1026,8 @@ export default function Studio({ user, onLoginRequest }) {
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
   const [avatarVisibilitySaving, setAvatarVisibilitySaving] = useState(false);
+  const [avatarRerendering, setAvatarRerendering] = useState(false);
+  const [avatarRerenderMessage, setAvatarRerenderMessage] = useState('');
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -1494,6 +1496,11 @@ export default function Studio({ user, onLoginRequest }) {
     setEditorSavedAtLabel('');
   }, [selectedLesson?.avatar_active, selectedLesson?.avatar_enabled_override, selectedLesson?.category_name, selectedLesson?.description, selectedLesson?.id, selectedLesson?.title]);
 
+  useEffect(() => {
+    setAvatarRerenderMessage('');
+    setAvatarRerendering(false);
+  }, [selectedLesson?.id]);
+
   const handleCreateProject = async ({
     file,
     coverFile,
@@ -1619,6 +1626,28 @@ export default function Studio({ user, onLoginRequest }) {
     }));
     setSelectedLessonId((previous) => previous || updatedProject.id);
   }, []);
+
+  const handleAvatarOnlyRerender = async () => {
+    if (!selectedLesson?.id || avatarRerendering) return;
+    setAvatarRerendering(true);
+    setAvatarRerenderMessage('');
+    try {
+      const result = await rerenderProjectAvatar(selectedLesson.id);
+      handleProjectUpdated({
+        ...selectedLesson,
+        avatar_processing_status: result.avatar_processing_status || 'queued',
+        avatar_processing_message: result.message || 'Avatar rerender queued.',
+        avatar_last_job_id: String(result.avatar_job_id || selectedLesson.avatar_last_job_id || ''),
+        avatar_runtime_settings: result.avatar_runtime_settings || selectedLesson.avatar_runtime_settings,
+      });
+      setAvatarRerenderMessage(result.message || 'Avatar rerender queued.');
+      refreshSelectedLessonState(selectedLesson.id, { showLoading: false, preserveOnError: true }).catch(() => {});
+    } catch (err) {
+      setAvatarRerenderMessage(err.message || 'Avatar rerender failed to start.');
+    } finally {
+      setAvatarRerendering(false);
+    }
+  };
 
   const handleGeneratePreviewSubtitles = async () => {
     const projectId = selectedLesson?.id;
@@ -1992,6 +2021,14 @@ export default function Studio({ user, onLoginRequest }) {
     [selectedSceneFullText, selectedSceneTextScale],
   );
   const latestRenderStatus = activeRerenderStatus || selectedLesson?.latest_job || null;
+  const avatarJobInFlight = ['queued', 'processing'].includes(avatarProcessingStatus(selectedLesson));
+  const avatarOnlyRerenderDisabled = (
+    !selectedLesson
+    || avatarRerendering
+    || avatarJobInFlight
+    || !projectRenderReady(selectedLesson)
+    || !projectAvatarEnabled(selectedLesson)
+  );
 
   const handleSelectScene = useCallback((scene, index) => {
     if (!scene) return;
@@ -2436,30 +2473,43 @@ export default function Studio({ user, onLoginRequest }) {
                   </div>
 
                   {selectedLesson && (
-                    <div className="flex flex-col gap-3 border-y border-[var(--border-subtle)] py-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">Avatar</p>
-                        <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
+                    <div className="space-y-3 border-y border-[var(--border-subtle)] py-3">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-[var(--text-primary)]">Avatar</p>
+                          <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
+                        </div>
+                        <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
+                          <span>{avatarVisible(selectedLesson) ? 'Avatar visible' : 'Avatar hidden'}</span>
+                          <input
+                            type="checkbox"
+                            className="sr-only"
+                            checked={avatarVisible(selectedLesson)}
+                            disabled={avatarVisibilitySaving}
+                            onChange={(event) => handleAvatarVisibilityToggle(selectedLesson, event.target.checked)}
+                          />
+                          <span className={`relative h-6 w-11 rounded-full transition ${
+                            avatarVisible(selectedLesson)
+                              ? 'bg-[var(--accent-primary)]'
+                              : 'bg-[var(--surface-container-highest)]'
+                          }`}>
+                            <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${
+                              avatarVisible(selectedLesson) ? 'left-6' : 'left-1'
+                            }`} />
+                          </span>
+                        </label>
                       </div>
-                      <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
-                        <span>{avatarVisible(selectedLesson) ? 'Show avatar' : 'Hide avatar'}</span>
-                        <input
-                          type="checkbox"
-                          className="sr-only"
-                          checked={avatarVisible(selectedLesson)}
-                          disabled={avatarVisibilitySaving}
-                          onChange={(event) => handleAvatarVisibilityToggle(selectedLesson, event.target.checked)}
-                        />
-                        <span className={`relative h-6 w-11 rounded-full transition ${
-                          avatarVisible(selectedLesson)
-                            ? 'bg-[var(--accent-primary)]'
-                            : 'bg-[var(--surface-container-highest)]'
-                        }`}>
-                          <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${
-                            avatarVisible(selectedLesson) ? 'left-6' : 'left-1'
-                          }`} />
-                        </span>
-                      </label>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="secondary" onClick={handleAvatarOnlyRerender} disabled={avatarOnlyRerenderDisabled}>
+                          <RefreshCcw size={16} />
+                          <span>{avatarRerendering ? 'Queueing' : 'Rerender avatar only'}</span>
+                        </Button>
+                      </div>
+
+                      {avatarRerenderMessage && (
+                        <p className="text-xs font-medium text-[var(--text-primary)]">{avatarRerenderMessage}</p>
+                      )}
                     </div>
                   )}
 

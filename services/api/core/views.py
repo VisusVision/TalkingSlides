@@ -113,6 +113,15 @@ from core.drafts import (
 )
 from core.tts_llm_suggestions import pronunciation_suggestion_response
 from core.avatar_readiness import avatar_preview_readiness, normalize_avatar_engine
+from core.avatar_placement import (
+    apply_avatar_placement_to_preference,
+    normalize_avatar_placement,
+    project_avatar_placement,
+)
+from core.avatar_runtime_settings import (
+    project_avatar_runtime_settings,
+    save_project_avatar_runtime_settings,
+)
 from core.avatar_image_moderation import (
     avatar_image_moderation_auto_enabled,
     avatar_image_moderation_gate,
@@ -157,6 +166,7 @@ _celery_app = Celery(broker=_BROKER_URL)
 _PROCESS_PROJECT_RENDER_TASK = "worker.tasks.process_pptx_to_video"
 _RUN_PROJECT_MODERATION_TASK = "worker.tasks.run_project_moderation"
 _AVATAR_PREVIEW_TASK = "worker.tasks.render_avatar_preview"
+_AVATAR_OVERLAY_TASK = "worker.tasks.render_lesson_avatar_overlay"
 _SUBTITLE_TRANSLATION_TASK = "worker.tasks.generate_translated_subtitle_track_task"
 
 
@@ -1599,17 +1609,26 @@ def _playback_payload(
         "token_renewal_enabled": bool(playback_session_id),
         "secure_hls_active": bool(hls_manifest_token),
     }
+    avatar_defaults = dict(avatar_overlay_defaults or {})
+    avatar_placement = normalize_avatar_placement(
+        avatar_defaults.get("avatar_placement") if isinstance(avatar_defaults.get("avatar_placement"), dict) else avatar_defaults
+    )
+    avatar_defaults.update(avatar_placement)
+    avatar_defaults["avatar_placement"] = avatar_placement
+
     if avatar_token:
         payload["avatar_overlay"] = {
             "enabled": True,
             "stream_url": _stream_url(request, avatar_token),
-            "defaults": avatar_overlay_defaults or {},
+            "placement": avatar_placement,
+            "defaults": avatar_defaults,
         }
     else:
         payload["avatar_overlay"] = {
             "enabled": False,
             "stream_url": "",
-            "defaults": avatar_overlay_defaults or {},
+            "placement": avatar_placement,
+            "defaults": avatar_defaults,
         }
     payload.update(_avatar_playback_state_payload(project, avatar_available=bool(avatar_token)))
     payload["mode_debug"] = mode_debug or {}
@@ -2523,7 +2542,7 @@ class PlaybackTokenView(APIView):
         if not _can_access_lesson_playback(request, project):
             return Response({"error": "Lesson not available."}, status=status.HTTP_404_NOT_FOUND)
 
-        job = project.jobs.filter(status="done").order_by("-created_at").first()
+        job = _latest_completed_video_export_job(project)
         if not job:
             return Response({"error": "No ready video for this project."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2684,7 +2703,7 @@ class ProjectSubtitleTrackListView(APIView):
         if not _can_access_subtitle_tracks(request, project):
             return Response({"error": "Lesson not available."}, status=status.HTTP_404_NOT_FOUND)
 
-        latest_job = project.jobs.filter(status="done").order_by("-created_at").first()
+        latest_job = _latest_completed_video_export_job(project)
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
         sidecar = _playback_sidecar_for_job(storage_root, project.id)
         language_payload = _language_detection_sidecar_for_job(storage_root, project.id)
@@ -2807,7 +2826,7 @@ class ProjectSubtitleTrackListView(APIView):
         if is_public_request:
             provider = str(getattr(settings, "SUBTITLE_TRANSLATION_PROVIDER", "auto") or "auto").strip().lower()
 
-        latest_job = project.jobs.filter(status="done").order_by("-created_at").first()
+        latest_job = _latest_completed_video_export_job(project)
         existing_track = (
             TranslatedSubtitleTrack.objects.filter(
                 project=project,
@@ -3026,7 +3045,7 @@ class PlaybackSessionHeartbeatView(APIView):
         if not _can_access_lesson_playback(request, project):
             return Response({"error": "Lesson not available."}, status=status.HTTP_404_NOT_FOUND)
 
-        job = project.jobs.filter(status="done").order_by("-created_at").first()
+        job = _latest_completed_video_export_job(project)
         if not job:
             return Response({"error": "No ready video for this project."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -3204,6 +3223,18 @@ def _can_manage_project(user, project: Project) -> bool:
     return bool(project.user_id and int(project.user_id) == int(user.id) and _is_verified_teacher(user))
 
 
+def _latest_completed_video_export_job(project: Project) -> Job | None:
+    return (
+        project.jobs.filter(job_type="video_export", status="done")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+
+def _project_has_completed_video_export(project: Project) -> bool:
+    return bool(project.jobs.filter(job_type="video_export", status="done").exists())
+
+
 def _project_tts_settings(project: Project) -> dict[str, Any]:
     return canonical_project_tts_settings(getattr(project, "tts_settings", None))
 
@@ -3230,17 +3261,17 @@ def _is_public_lesson(project: Project) -> bool:
     if hasattr(project, "status") and str(getattr(project, "status", "") or "") != "ready":
         return False
     try:
-        return bool(project.jobs.filter(status="done").exists())
+        return _project_has_completed_video_export(project)
     except AttributeError:
-        latest_job = project.jobs.filter(status="done").order_by("-created_at").first()
+        latest_job = _latest_completed_video_export_job(project)
         return bool(latest_job)
 
 
 def _project_has_completed_render(project: Project) -> bool:
     try:
-        return bool(project.jobs.filter(status="done").exists())
+        return _project_has_completed_video_export(project)
     except AttributeError:
-        latest_job = project.jobs.filter(status="done").order_by("-created_at").first()
+        latest_job = _latest_completed_video_export_job(project)
         return bool(latest_job)
 
 
@@ -3719,6 +3750,7 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
 
     lesson_engine = selected_engine
     composite_fallback_allowed = _composite_fallback_allowed()
+    runtime_settings = project_avatar_runtime_settings(project)
 
     return {
         "requested": bool(avatar_enabled),
@@ -3728,7 +3760,10 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
         "source_image_original_rel_path": profile.avatar_image_original or profile.avatar_image_processed,
         "source_video_rel_path": profile.avatar_video_processed or profile.avatar_video_original,
         "avatar_reference_type": resolved_ref,
-        "motion_preset": profile.avatar_motion_preset or "natural",
+        "motion_preset": runtime_settings["motion_preset"],
+        "avatar_runtime_settings": runtime_settings,
+        "restoration_enabled": bool(runtime_settings["restoration_enabled"]),
+        "liveportrait_enabled": bool(runtime_settings["liveportrait_enabled"]),
         "lipsync_engine": lesson_engine,
         "avatar_engine_selected": lesson_engine,
         "normalized_engine": lesson_engine,
@@ -3757,9 +3792,10 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
 def _avatar_overlay_defaults_for_project(project: Project) -> dict:
     project_user = getattr(project, "user", None)
     teacher_profile = getattr(project_user, "profile", None) if project_user else None
+    placement = project_avatar_placement(project)
     return {
-        "position": getattr(teacher_profile, "avatar_overlay_default_position", "top-right") or "top-right",
-        "size": getattr(teacher_profile, "avatar_overlay_size", "medium") or "medium",
+        **placement,
+        "avatar_placement": placement,
         "visible": bool(getattr(teacher_profile, "avatar_overlay_visible", True)),
     }
 
@@ -3822,6 +3858,29 @@ def _avatar_engine_selected_for_project(project: Project) -> str:
     return _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE"))
 
 
+def _avatar_runtime_status_for_project(project: Project) -> dict[str, Any]:
+    latest = project.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+    metadata = latest.metadata if latest is not None and isinstance(latest.metadata, dict) else {}
+    source_kind = str(metadata.get("musetalk_source_kind") or "")
+    selected = str(metadata.get("avatar_engine_selected") or metadata.get("normalized_engine") or getattr(latest, "engine_used", "") or "")
+    static_fallback = bool(metadata.get("liveportrait_fallback_used")) or source_kind in {"static_fallback", "static_source"}
+    warning = ""
+    if source_kind == "static_fallback" or bool(metadata.get("liveportrait_fallback_used")):
+        warning = "Avatar used static fallback because motion stage failed."
+    elif source_kind == "static_source" or bool(metadata.get("liveportrait_bypassed")):
+        warning = "Avatar lip-sync completed; motion fallback was used."
+    elif bool(metadata.get("restoration_failed")):
+        warning = "Avatar restoration failed; lip-sync output was used."
+    return {
+        "liveportrait_used": bool(metadata.get("liveportrait_succeeded")) and source_kind == "liveportrait",
+        "static_fallback_used": static_fallback,
+        "musetalk_only_used": selected == "musetalk_only_fast" or source_kind == "static_source",
+        "musetalk_source_kind": source_kind,
+        "restoration_failed": bool(metadata.get("restoration_failed")),
+        "warning": warning,
+    }
+
+
 def _avatar_playback_state_payload(project: Project, *, avatar_available: bool | None = None) -> dict[str, Any]:
     available = bool(avatar_available) if avatar_available is not None else _avatar_artifact_available(project)[0]
     updated_at = getattr(project, "avatar_updated_at", None)
@@ -3835,6 +3894,8 @@ def _avatar_playback_state_payload(project: Project, *, avatar_available: bool |
         "avatar_engine_selected": avatar_engine_selected,
         "normalized_engine": avatar_engine_selected,
         "final_avatar_engine_chain": _avatar_engine_chain_for_project(project),
+        "avatar_runtime_settings": project_avatar_runtime_settings(project),
+        "avatar_runtime_status": _avatar_runtime_status_for_project(project),
     }
 
 
@@ -3909,6 +3970,112 @@ def _resolve_storage_file(storage_root: Path, rel_path: str) -> Path | None:
     if not full_path.exists() or not full_path.is_file():
         return None
     return full_path
+
+
+def _avatar_rerender_output_prefix(project_id: int, base_job: Job, sidecar: dict) -> str:
+    rel_path = _normalize_rel_storage_path(
+        str((sidecar or {}).get("mp4_rel_path") or getattr(base_job, "result_url", "") or "")
+    )
+    if not rel_path:
+        return str(project_id)
+    parent = str(Path(rel_path).parent).replace("\\", "/").strip("/")
+    return parent if parent and parent != "." else str(project_id)
+
+
+def _sidecar_text_value(value: Any) -> str:
+    if isinstance(value, dict):
+        for key in ("spoken_text", "text", "narration_text", "original_text"):
+            if str(value.get(key) or "").strip():
+                return str(value.get(key) or "")
+        return ""
+    return str(value or "")
+
+
+def _avatar_rerender_ordered_results_from_sidecar(
+    *,
+    sidecar: dict,
+    storage_root: Path,
+) -> tuple[list[dict[str, Any]], str]:
+    final_segments = sidecar.get("final_segments") if isinstance(sidecar, dict) else None
+    if not isinstance(final_segments, list) or not final_segments:
+        return [], "playback_assets_missing_final_segments"
+
+    ordered_results: list[dict[str, Any]] = []
+    missing_audio: list[int] = []
+    for position, segment in enumerate(final_segments, start=1):
+        if not isinstance(segment, dict):
+            continue
+        index = int(segment.get("index") or position - 1)
+        tts_rel = _normalize_rel_storage_path(
+            str(segment.get("tts_audio") or segment.get("tts_audio_path") or "")
+        )
+        audio_path = _resolve_storage_file(storage_root, tts_rel) if tts_rel else None
+        if audio_path is None:
+            missing_audio.append(index)
+            continue
+
+        slide_rel = _normalize_rel_storage_path(
+            str(segment.get("slide") or segment.get("slide_path") or "")
+        )
+        slide_path = _resolve_storage_file(storage_root, slide_rel) if slide_rel else None
+        try:
+            duration = max(0.0, float(segment.get("duration") or 0.0))
+        except (TypeError, ValueError):
+            duration = 0.0
+        try:
+            pause_seconds = max(0.0, float(segment.get("pause_seconds") or 0.0))
+        except (TypeError, ValueError):
+            pause_seconds = 0.0
+
+        ordered_results.append(
+            {
+                "index": index,
+                "slide_num": int(segment.get("slide_num") or position),
+                "page_key": str(segment.get("page_key") or ""),
+                "text": _sidecar_text_value(segment.get("transcript")),
+                "tts_audio_path": str(audio_path),
+                "slide_path": str(slide_path or ""),
+                "duration": duration,
+                "pause_seconds": pause_seconds,
+            }
+        )
+
+    if missing_audio:
+        return [], "avatar_rerender_audio_missing"
+    if not ordered_results:
+        return [], "playback_assets_missing_render_segments"
+    return sorted(ordered_results, key=lambda item: int(item.get("index") or 0)), ""
+
+
+def _update_project_avatar_api_state(
+    project: Project,
+    *,
+    avatar_status: str,
+    message: str,
+    job_id: str | int | None = None,
+) -> None:
+    updates: dict[str, Any] = {
+        "avatar_processing_status": str(avatar_status or "none"),
+        "avatar_processing_message": str(message or ""),
+        "avatar_updated_at": timezone.now(),
+        "updated_at": timezone.now(),
+    }
+    if job_id is not None:
+        updates["avatar_last_job_id"] = str(job_id or "")
+    Project.objects.filter(pk=project.pk).update(**updates)
+
+
+def _write_avatar_rerender_handoff_manifest(
+    *,
+    storage_root: Path,
+    project_id: int,
+    base_job_id: int,
+    payload: dict[str, Any],
+) -> str:
+    target = storage_root / "projects" / str(project_id) / "renders" / str(base_job_id or "unknown") / "avatar_handoff.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    return str(target)
 
 
 # ---------------------------------------------------------------------------
@@ -4090,12 +4257,23 @@ class ProjectDetailView(APIView):
         has_category_name = "category_name" in request.data or "category" in request.data
         has_avatar_enabled = "avatar_enabled" in request.data
         has_avatar_visible = "avatar_visible" in request.data or "show_avatar" in request.data
+        has_avatar_placement = "avatar_placement" in request.data
+        has_avatar_runtime_settings = "avatar_runtime_settings" in request.data
         has_is_published = "is_published" in request.data
         has_tts_settings = "tts_settings" in request.data
         draft_only = _truthy_request_value(request.data.get("draft_only"))
-        if not has_category_id and not has_category_name and not has_avatar_enabled and not has_avatar_visible and not has_is_published and not has_tts_settings:
+        if (
+            not has_category_id
+            and not has_category_name
+            and not has_avatar_enabled
+            and not has_avatar_visible
+            and not has_avatar_placement
+            and not has_avatar_runtime_settings
+            and not has_is_published
+            and not has_tts_settings
+        ):
             return Response(
-                {"error": "category_id, category_name, avatar_enabled, avatar_visible, is_published, or tts_settings is required for updates."},
+                {"error": "category_id, category_name, avatar_enabled, avatar_visible, avatar_placement, avatar_runtime_settings, is_published, or tts_settings is required for updates."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -4114,7 +4292,7 @@ class ProjectDetailView(APIView):
                     {"error": "Invalid tts_settings.", "details": exc.detail},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_is_published):
+            if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_avatar_placement or has_avatar_runtime_settings or has_is_published):
                 draft_data = ensure_project_draft_data(project)
                 draft_data.setdefault("project", {})["tts_settings"] = updates["tts_settings"]
                 save_project_draft_data(project, draft_data, dirty=True)
@@ -4181,7 +4359,15 @@ class ProjectDetailView(APIView):
 
             for field_name, value in updates.items():
                 setattr(project, field_name, value)
-            project.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
+            if update_fields:
+                project.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
+            if has_avatar_placement:
+                pref, _ = AvatarOverlayPreference.objects.get_or_create(user=project.user, lesson=project)
+                apply_avatar_placement_to_preference(pref, request.data.get("avatar_placement"))
+                pref.save(update_fields=["anchor", "x_percent", "y_percent", "width_percent", "updated_at"])
+            if has_avatar_runtime_settings:
+                save_project_avatar_runtime_settings(project, request.data.get("avatar_runtime_settings"))
+                project.refresh_from_db()
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
 
@@ -5753,6 +5939,187 @@ class ProjectRerenderView(APIView):
         return Response(data, status=status.HTTP_202_ACCEPTED)
 
 
+class ProjectAvatarRerenderView(APIView):
+    """POST /api/v1/projects/<project_id>/avatar/rerender/"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.select_related("user").get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        force = _truthy_request_value(request.data.get("force") or request.query_params.get("force"))
+        current_avatar_status = str(getattr(project, "avatar_processing_status", "") or "none").strip().lower()
+        if current_avatar_status in {"queued", "processing"} and not force:
+            return Response(
+                {
+                    "avatar_processing_status": current_avatar_status,
+                    "avatar_job_id": str(getattr(project, "avatar_last_job_id", "") or ""),
+                    "avatar_runtime_settings": project_avatar_runtime_settings(project),
+                    "message": "Avatar rerender is already queued or processing.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        base_job = _latest_completed_video_export_job(project)
+        if base_job is None or not str(getattr(base_job, "result_url", "") or "").strip():
+            return Response(
+                {
+                    "error": "Base lesson render is not ready.",
+                    "avatar_processing_status": current_avatar_status,
+                    "message": "Render the lesson before rerendering the avatar overlay.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        sidecar = _playback_sidecar_for_job(str(storage_root), project.id)
+        if not sidecar:
+            return Response(
+                {
+                    "error": "Playback assets are not ready.",
+                    "avatar_processing_status": current_avatar_status,
+                    "message": "The latest base render is missing playback assets.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        ordered_results, segment_error = _avatar_rerender_ordered_results_from_sidecar(
+            sidecar=sidecar,
+            storage_root=storage_root,
+        )
+        if segment_error:
+            return Response(
+                {
+                    "error": "Playback assets are incomplete.",
+                    "reason": segment_error,
+                    "avatar_processing_status": current_avatar_status,
+                    "message": "Avatar rerender requires the latest render audio segments.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        avatar_options = _resolve_avatar_options_for_project(project, request)
+        if not bool(avatar_options.get("requested", avatar_options.get("enabled", False))):
+            return Response(
+                {
+                    "error": "Avatar is disabled for this lesson.",
+                    "avatar_processing_status": current_avatar_status,
+                    "avatar_runtime_settings": project_avatar_runtime_settings(project),
+                    "message": "Enable the avatar before rerendering the avatar overlay.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not bool(avatar_options.get("enabled")):
+            reason = str(
+                avatar_options.get("disabled_reason")
+                or avatar_options.get("avatar_source_validation_error")
+                or avatar_options.get("avatar_moderation_error_code")
+                or "avatar_prerequisites_missing"
+            )
+            message = "Avatar rerender could not start because avatar prerequisites are missing."
+            _update_project_avatar_api_state(project, avatar_status="failed", message=message, job_id="")
+            return Response(
+                {
+                    "error": reason,
+                    "avatar_processing_status": "failed",
+                    "avatar_runtime_settings": project_avatar_runtime_settings(project),
+                    "message": message,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        avatar_cfg = {**avatar_options, "base_job_id": int(base_job.id)}
+        output_rel_prefix = _avatar_rerender_output_prefix(project.id, base_job, sidecar)
+        avatar_job = Job.objects.create(project=project, job_type="avatar_render", status="pending", progress=0)
+        handoff_manifest_path = _write_avatar_rerender_handoff_manifest(
+            storage_root=storage_root,
+            project_id=project.id,
+            base_job_id=int(base_job.id),
+            payload={
+                "schema_version": 1,
+                "project_id": int(project.id),
+                "base_job_id": int(base_job.id),
+                "avatar_job_id": int(avatar_job.id),
+                "created_at": timezone.now().isoformat(),
+                "ordered_results": ordered_results,
+                "avatar_settings": avatar_cfg,
+                "source_hashes": {
+                    "avatar_source_hash": str(avatar_cfg.get("avatar_source_hash") or ""),
+                    "avatar_preview_source_hash": str(avatar_cfg.get("avatar_preview_source_hash") or ""),
+                },
+                "render_metadata": {
+                    "output_rel_prefix": output_rel_prefix,
+                    "slide_count": len(ordered_results),
+                    "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or ""),
+                    "model_version": str(avatar_cfg.get("model_version") or ""),
+                    "avatar_only_rerender": True,
+                },
+                "status": "created",
+            },
+        )
+        _update_project_avatar_api_state(
+            project,
+            avatar_status="queued",
+            message="Avatar is still processing and will be added when ready.",
+            job_id=avatar_job.id,
+        )
+        try:
+            async_result = _dispatch_celery_task(
+                _AVATAR_OVERLAY_TASK,
+                kwargs={
+                    "project_id": int(project.id),
+                    "teacher_id": int(avatar_cfg.get("teacher_id") or 0),
+                    "output_rel_prefix": output_rel_prefix,
+                    "avatar_job_id": int(avatar_job.id),
+                    "handoff_manifest_path": handoff_manifest_path,
+                    "base_job_id": int(base_job.id),
+                },
+                queue=_avatar_queue_name(),
+            )
+            task_id = str(getattr(async_result, "id", "") or "")
+            if task_id:
+                avatar_job.celery_task_id = task_id
+                avatar_job.save(update_fields=["celery_task_id", "updated_at"])
+        except Exception:
+            logger.warning("Avatar-only rerender enqueue failed for project=%s", project.id, exc_info=True)
+            avatar_job.status = "failed"
+            avatar_job.error_message = "Avatar rerender could not be queued."
+            avatar_job.progress = 100
+            avatar_job.save(update_fields=["status", "error_message", "progress", "updated_at"])
+            _update_project_avatar_api_state(
+                project,
+                avatar_status="failed",
+                message="Avatar rerender could not be queued.",
+                job_id=avatar_job.id,
+            )
+            return Response(
+                {
+                    "error": "avatar_rerender_enqueue_failed",
+                    "avatar_processing_status": "failed",
+                    "avatar_job_id": avatar_job.id,
+                    "message": "Avatar rerender could not be queued.",
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        project.refresh_from_db()
+        return Response(
+            {
+                "avatar_processing_status": "queued",
+                "avatar_job_id": avatar_job.id,
+                "base_job_id": base_job.id,
+                "avatar_runtime_settings": project_avatar_runtime_settings(project),
+                "message": "Avatar rerender queued.",
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
 class JobStatusView(APIView):
     """GET /api/v1/projects/<project_id>/jobs/<job_id>/"""
     permission_classes = [permissions.IsAuthenticated]
@@ -6575,10 +6942,7 @@ class AvatarOverlayPreferenceView(APIView):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         pref, _ = AvatarOverlayPreference.objects.get_or_create(user=request.user, lesson=project)
-        pref.anchor = str(request.data.get("anchor") or pref.anchor)
-        pref.x_percent = float(request.data.get("x_percent", pref.x_percent))
-        pref.y_percent = float(request.data.get("y_percent", pref.y_percent))
-        pref.width_percent = float(request.data.get("width_percent", pref.width_percent))
+        apply_avatar_placement_to_preference(pref, request.data)
         pref.visible = self._to_bool(request.data.get("visible"), pref.visible)
         pref.pinned = self._to_bool(request.data.get("pinned"), pref.pinned)
         pref.save(update_fields=["anchor", "x_percent", "y_percent", "width_percent", "visible", "pinned", "updated_at"])
@@ -7267,7 +7631,7 @@ class CatalogDetailView(APIView):
         if not _can_access_lesson_playback(request, project):
             return Response({"error": "Lesson not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        job = project.jobs.filter(status="done").order_by("-created_at").first()
+        job = _latest_completed_video_export_job(project)
         if not job:
             return Response({"error": "Lesson video not ready."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -7390,6 +7754,7 @@ class CatalogDetailView(APIView):
         data["protection"] = playback["protection"]
         data["drm"] = playback["drm"]
         data["avatar_overlay"] = playback.get("avatar_overlay", {"enabled": False, "stream_url": "", "defaults": {}})
+        data["avatar_placement"] = data["avatar_overlay"].get("placement") or normalize_avatar_placement()
         data["avatar_active_for_lesson"] = _avatar_active_for_project(project)
         data["avatar_processing_status"] = playback.get("avatar_processing_status", "none")
         data["avatar_processing_message"] = playback.get("avatar_processing_message", "")
@@ -7399,6 +7764,8 @@ class CatalogDetailView(APIView):
         data["avatar_engine_selected"] = playback.get("avatar_engine_selected", "")
         data["normalized_engine"] = playback.get("normalized_engine", data["avatar_engine_selected"])
         data["final_avatar_engine_chain"] = playback.get("final_avatar_engine_chain", [])
+        data["avatar_runtime_settings"] = playback.get("avatar_runtime_settings", project_avatar_runtime_settings(project))
+        data["avatar_runtime_status"] = playback.get("avatar_runtime_status", _avatar_runtime_status_for_project(project))
         data["playback_status"] = playback.get("playback_status")
         data["mode_debug"] = playback.get("mode_debug")
         data["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})

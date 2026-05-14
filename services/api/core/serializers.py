@@ -12,6 +12,12 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from core.avatar_readiness import normalize_avatar_engine
 from core.avatar_image_moderation import avatar_image_moderation_gate
+from core.avatar_placement import (
+    normalize_avatar_placement,
+    placement_from_overlay_preference,
+    project_avatar_placement,
+)
+from core.avatar_runtime_settings import project_avatar_runtime_settings
 from core.models import (
     AvatarRenderJob,
     AvatarOverlayPreference,
@@ -564,6 +570,9 @@ class ProjectSerializer(serializers.ModelSerializer):
     avatar_available = serializers.SerializerMethodField()
     avatar_engine_selected = serializers.SerializerMethodField()
     final_avatar_engine_chain = serializers.SerializerMethodField()
+    avatar_placement = serializers.SerializerMethodField()
+    avatar_runtime_settings = serializers.SerializerMethodField()
+    avatar_runtime_status = serializers.SerializerMethodField()
     tts_settings = serializers.SerializerMethodField()
     has_draft = serializers.SerializerMethodField()
     draft_metadata = serializers.SerializerMethodField()
@@ -576,7 +585,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
             "is_published", "avatar_enabled_override", "avatar_active", "avatar_processing_status",
             "avatar_processing_message", "avatar_visible", "avatar_available", "avatar_last_job_id",
-            "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "category_id", "category_name",
+            "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
+            "avatar_runtime_settings", "avatar_runtime_status", "category_id", "category_name",
             "category_slug", "has_draft", "draft_metadata", "created_at", "updated_at", "latest_job",
         ]
         read_only_fields = [
@@ -584,13 +594,14 @@ class ProjectSerializer(serializers.ModelSerializer):
             "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings", "status",
             "moderation_status", "moderation_summary", "last_moderation_run_id",
             "avatar_processing_status", "avatar_processing_message", "avatar_available",
-            "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain",
+            "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
+            "avatar_runtime_settings", "avatar_runtime_status",
             "category_id", "category_name", "category_slug", "has_draft", "draft_metadata",
             "created_at", "updated_at", "latest_job",
         ]
 
     def get_latest_job(self, obj):
-        job = obj.jobs.order_by("-created_at").first()
+        job = obj.jobs.filter(job_type="video_export").order_by("-created_at", "-id").first()
         if job is None:
             return None
         return JobSerializer(job).data
@@ -634,6 +645,35 @@ class ProjectSerializer(serializers.ModelSerializer):
         metadata = latest.metadata if isinstance(latest.metadata, Mapping) else {}
         chain = metadata.get("final_avatar_engine_chain") or metadata.get("fallback_chain_used") or latest.fallback_chain_used
         return list(chain or [])
+
+    def get_avatar_placement(self, obj):
+        return project_avatar_placement(obj)
+
+    def get_avatar_runtime_settings(self, obj):
+        return project_avatar_runtime_settings(obj)
+
+    def get_avatar_runtime_status(self, obj):
+        latest = obj.avatar_render_jobs.exclude(render_status="pending").order_by("-created_at").first()
+        metadata = latest.metadata if latest is not None and isinstance(latest.metadata, Mapping) else {}
+        source_kind = str(metadata.get("musetalk_source_kind") or "")
+        selected = str(metadata.get("avatar_engine_selected") or metadata.get("normalized_engine") or getattr(latest, "engine_used", "") or "")
+        static_fallback = bool(metadata.get("liveportrait_fallback_used")) or source_kind in {"static_fallback", "static_source"}
+        musetalk_only = selected == "musetalk_only_fast" or source_kind == "static_source"
+        warning = ""
+        if source_kind == "static_fallback" or bool(metadata.get("liveportrait_fallback_used")):
+            warning = "Avatar used static fallback because motion stage failed."
+        elif source_kind == "static_source" or bool(metadata.get("liveportrait_bypassed")):
+            warning = "Avatar lip-sync completed; motion fallback was used."
+        elif bool(metadata.get("restoration_failed")):
+            warning = "Avatar restoration failed; lip-sync output was used."
+        return {
+            "liveportrait_used": bool(metadata.get("liveportrait_succeeded")) and source_kind == "liveportrait",
+            "static_fallback_used": static_fallback,
+            "musetalk_only_used": musetalk_only,
+            "musetalk_source_kind": source_kind,
+            "restoration_failed": bool(metadata.get("restoration_failed")),
+            "warning": warning,
+        }
 
     def get_tts_settings(self, obj):
         draft_data = getattr(obj, "draft_data", None)
@@ -736,7 +776,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
         return obj.user.publisher_followers.filter(follower=user).exists()
 
     def get_has_video(self, obj):
-        return obj.jobs.filter(status="done").exists()
+        return obj.jobs.filter(job_type="video_export", status="done").exists()
 
     def get_cover_url(self, obj):
         return _project_cover_url(obj, self.context)
@@ -952,6 +992,13 @@ class AvatarRenderJobSerializer(serializers.ModelSerializer):
 
 
 class AvatarOverlayPreferenceSerializer(serializers.ModelSerializer):
+    position = serializers.SerializerMethodField()
+    size = serializers.SerializerMethodField()
+    x = serializers.SerializerMethodField()
+    y = serializers.SerializerMethodField()
+    width = serializers.SerializerMethodField()
+    avatar_placement = serializers.SerializerMethodField()
+
     class Meta:
         model = AvatarOverlayPreference
         fields = [
@@ -962,11 +1009,38 @@ class AvatarOverlayPreferenceSerializer(serializers.ModelSerializer):
             "x_percent",
             "y_percent",
             "width_percent",
+            "position",
+            "size",
+            "x",
+            "y",
+            "width",
+            "avatar_placement",
             "visible",
             "pinned",
             "updated_at",
         ]
         read_only_fields = ["id", "user", "lesson", "updated_at"]
+
+    def _placement(self, obj):
+        return placement_from_overlay_preference(obj)
+
+    def get_position(self, obj):
+        return self._placement(obj)["position"]
+
+    def get_size(self, obj):
+        return self._placement(obj)["size"]
+
+    def get_x(self, obj):
+        return self._placement(obj)["x"]
+
+    def get_y(self, obj):
+        return self._placement(obj)["y"]
+
+    def get_width(self, obj):
+        return self._placement(obj)["width"]
+
+    def get_avatar_placement(self, obj):
+        return normalize_avatar_placement(self._placement(obj))
 
 
 class LessonSegmentSerializer(serializers.ModelSerializer):

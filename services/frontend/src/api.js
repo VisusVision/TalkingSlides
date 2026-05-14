@@ -234,6 +234,23 @@ export async function rerenderProject(projectId, options = {}) {
   return res.json();
 }
 
+export async function rerenderProjectAvatar(projectId, options = {}) {
+  const body = {};
+  if (Object.prototype.hasOwnProperty.call(options, "force")) {
+    body.force = Boolean(options.force);
+  }
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/avatar/rerender/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || data.message || "Failed to rerender avatar");
+  }
+  return data;
+}
+
 export async function updateProjectTtsSettings(projectId, ttsSettings, options = {}) {
   const draftOnly = options.draftOnly !== false;
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, {
@@ -290,6 +307,19 @@ export async function updateProjectAvatarVisible(projectId, avatarVisible) {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || "Failed to update avatar visibility");
+  }
+  return res.json();
+}
+
+export async function updateProjectAvatarRuntimeSettings(projectId, avatarRuntimeSettings) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ avatar_runtime_settings: avatarRuntimeSettings || {} }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Failed to update avatar runtime settings");
   }
   return res.json();
 }

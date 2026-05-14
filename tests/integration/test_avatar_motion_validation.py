@@ -260,6 +260,11 @@ def _stub_canonical_input_for_source_key(tmp_path: Path, image: Path, source_key
 
 def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypatch):
     monkeypatch.delenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED", raising=False)
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
     image.write_bytes(b"image")
@@ -277,10 +282,19 @@ def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypa
     )
 
     assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.0"
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH"] == "0.45"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING"] == "1e-4"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED"] == "0.75"
 
 
 def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.91")
     monkeypatch.setenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.37")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", "0.45")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", "0.0002")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED", "0.75")
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
     image.write_bytes(b"image")
@@ -298,6 +312,216 @@ def test_preview_liveportrait_motion_strength_env_override_still_wins(tmp_path, 
     )
 
     assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.37"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH"] == "0.45"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING"] == "0.0002"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED"] == "0.75"
+
+
+def test_non_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypatch):
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input(tmp_path, image),
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(tmp_path / "segment.mp4"),
+        ),
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.0"
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] != ""
+    assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] == "3e-6"
+    assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] != ""
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY"] == "vetted_template_for_image"
+    assert env["AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE"].endswith("d11.mp4")
+
+
+def test_non_preview_liveportrait_motion_strength_preserves_env_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.22")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "0.000004")
+    monkeypatch.setenv("AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH", "1.77")
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input(tmp_path, image),
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(tmp_path / "segment.mp4"),
+        ),
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.22"
+    assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] == "0.000004"
+
+
+def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch):
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        audio_path=str(audio),
+        output_path=str(tmp_path / "preview.mp4"),
+        preview_teacher_id=1,
+        preview_job_id=2,
+    )
+
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", raising=False)
+    default_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "natural_visible")
+    natural_visible_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "subtle_gaze")
+    subtle_gaze_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", "1")
+    boosted_allowed_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    assert default_keys["liveportrait_motion_preset"] == "natural_conservative"
+    assert default_keys["liveportrait_composer_validation_mode"] == "localized"
+    assert default_keys["liveportrait_driver_source_policy"] == "vetted_template_for_image"
+    assert default_keys["liveportrait_vetted_image_template_basename"] == "d11.mp4"
+    assert natural_visible_keys["liveportrait_motion_preset"] == "natural_visible"
+    assert natural_visible_keys["liveportrait_boosted_retry_allowed"] == "0"
+    assert subtle_gaze_keys["liveportrait_motion_preset"] == "subtle_gaze"
+    assert default_keys != subtle_gaze_keys
+    assert natural_visible_keys != subtle_gaze_keys
+    assert subtle_gaze_keys["liveportrait_boosted_retry_allowed"] == "0"
+    assert boosted_allowed_keys["liveportrait_boosted_retry_allowed"] == "1"
+    assert subtle_gaze_keys != boosted_allowed_keys
+
+    request.motion_preset = "subtle_blink"
+    request.restoration_enabled = True
+    request.liveportrait_enabled = False
+    request_override_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+    assert request_override_keys["liveportrait_motion_preset"] == "subtle_blink"
+    assert request_override_keys["restoration_enabled"] == "1"
+    assert request_override_keys["liveportrait_enabled"] == "0"
+    assert request_override_keys != boosted_allowed_keys
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", "strict_global")
+    strict_global_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+    assert strict_global_keys["liveportrait_composer_validation_mode"] == "strict_global"
+    assert strict_global_keys != request_override_keys
+
+
+def test_liveportrait_driver_policy_and_template_affect_cache_identity(tmp_path, monkeypatch):
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    template_a = tmp_path / "d11_a.mp4"
+    template_b = tmp_path / "d11_b.mp4"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    template_a.write_bytes(b"template-a")
+    template_b.write_bytes(b"template-b")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        audio_path=str(audio),
+        output_path=str(tmp_path / "preview.mp4"),
+        preview_teacher_id=1,
+        preview_job_id=2,
+    )
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "vetted_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", str(template_a))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", "0.45")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", "0.0002")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED", "0.75")
+    keys_a = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE", str(template_b))
+    keys_b = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
+    composer_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    assert keys_a["liveportrait_driver_source_policy"] == "vetted_template_for_image"
+    assert keys_a["liveportrait_vetted_image_template_basename"] == "d11_a.mp4"
+    assert keys_a["liveportrait_template_motion_strength"] == "0.45"
+    assert keys_a["liveportrait_template_temporal_smoothing"] == "0.0002"
+    assert keys_a["liveportrait_template_speed"] == "0.75"
+    assert keys_a["liveportrait_template_calm_profile"] == "1"
+    assert keys_b["liveportrait_vetted_image_template_basename"] == "d11_b.mp4"
+    assert keys_a["liveportrait_vetted_image_template_hash"]
+    assert keys_b["liveportrait_vetted_image_template_hash"]
+    assert keys_a["liveportrait_vetted_image_template_hash"] != keys_b["liveportrait_vetted_image_template_hash"]
+    assert keys_a != keys_b
+    assert composer_keys["liveportrait_driver_source_policy"] == "composer_for_image"
+    assert composer_keys["liveportrait_template_motion_strength"] == ""
+    assert composer_keys["liveportrait_template_temporal_smoothing"] == ""
+    assert composer_keys["liveportrait_template_speed"] == "1.0"
+    assert composer_keys["liveportrait_template_calm_profile"] == "0"
+    assert composer_keys != keys_b
+
+
+def test_liveportrait_stderr_records_vetted_template_calm_profile():
+    stage_paths = {
+        "liveportrait_template_motion_strength": "",
+        "liveportrait_template_temporal_smoothing": "",
+        "liveportrait_template_speed": "1.0",
+        "liveportrait_template_calm_profile": False,
+    }
+
+    avatar_canonical_pipeline._apply_liveportrait_driver_stderr_observability(
+        stage_paths,
+        (
+            "liveportrait_driver_source_policy=vetted_template_for_image "
+            "liveportrait_driver_source=template "
+            "liveportrait_template_motion_strength=0.45 "
+            "liveportrait_template_temporal_smoothing=1e-4 "
+            "liveportrait_template_speed=0.75 "
+            "liveportrait_template_calm_profile=true"
+        ),
+    )
+
+    assert stage_paths["liveportrait_template_motion_strength"] == "0.45"
+    assert stage_paths["liveportrait_template_temporal_smoothing"] == "1e-4"
+    assert stage_paths["liveportrait_template_speed"] == "0.75"
+    assert stage_paths["liveportrait_template_calm_profile"] is True
+
+
+def test_stage_env_uses_safe_runtime_motion_request_over_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "expressive_debug")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", "strict_global")
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        audio_path=str(audio),
+        output_path=str(tmp_path / "preview.mp4"),
+        motion_preset="subtle_gaze",
+        restoration_enabled=True,
+        liveportrait_enabled=False,
+        preview_teacher_id=1,
+        preview_job_id=2,
+    )
+
+    env = avatar_canonical_pipeline._build_stage_env(_stub_canonical_input(tmp_path, image), request)
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "subtle_gaze"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE"] == "strict_global"
+    assert env["AVATAR_LIVEPORTRAIT_ENABLED"] == "0"
 
 
 def test_musetalk_chunk_timing_metrics_are_shape_stable():
@@ -600,13 +824,13 @@ def test_low_motion_liveportrait_can_fallback_to_static_when_enabled(tmp_path, m
     monkeypatch.setattr(
         avatar_canonical_pipeline,
         "_normalize_preview_video_for_musetalk",
-        lambda **_kwargs: {
+        lambda **kwargs: {
             "normalized": False,
             "strategy": "unchanged",
             "frame_count_before": 25,
             "frame_count_after": 25,
             "duration_after_seconds": 1.0,
-            "video_path": str(static_handoff),
+            "video_path": str(kwargs["video_path"]),
         },
     )
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
@@ -729,7 +953,7 @@ def test_liveportrait_missing_output_falls_back_to_static_handoff_and_runs_muset
     assert result["stage_paths"]["liveportrait_failed"] is True
     assert result["stage_paths"]["liveportrait_fallback_used"] is True
     assert result["stage_paths"]["musetalk_source_kind"] == "static_fallback"
-    assert "liveportrait_technical_invalid" in result["stage_paths"]["liveportrait_failure_reason"]
+    assert "liveportrait_output_normalization_failed" in result["stage_paths"]["liveportrait_failure_reason"]
     assert Path(result["output_path"]).exists()
 
 
@@ -852,6 +1076,8 @@ def test_validate_avatar_animation_passes_for_dynamic_video(monkeypatch):
             "unique_frames": 30,
             "lip_movement_score": 1.7,
             "eye_movement_score": 0.8,
+            "mouth_openness_change": 0.006,
+            "eye_blink_change": 0.004,
             "drift_detected": False,
             "glitch_detected": False,
         },
@@ -862,6 +1088,238 @@ def test_validate_avatar_animation_passes_for_dynamic_video(monkeypatch):
     assert result["animated"] is True
     assert result["global_frame_diff_mean"] == 3.4
     assert result["animation_score"] >= result["min_score"]
+
+
+def _final_quality(*, eye_blink_change=0.0020, eye_movement_score=8.4, head_motion_score=0.0038, structural_artifact=False):
+    return {
+        "unique_frames": 50,
+        "lip_movement_score": 8.5,
+        "eye_movement_score": eye_movement_score,
+        "mouth_openness_change": 0.0064,
+        "eye_blink_change": eye_blink_change,
+        "head_motion_score": head_motion_score,
+        "loop_detected": False,
+        "drift_detected": False,
+        "glitch_detected": False,
+        "mouth_artifact_detected": False,
+        "eye_artifact_detected": False,
+        "face_warp_detected": structural_artifact,
+        "landmark_stable": True,
+        "structural_face_artifact_detected": structural_artifact,
+        "face_artifact_detected": structural_artifact,
+    }
+
+
+def _patch_final_validation_inputs(monkeypatch, quality):
+    monkeypatch.setattr(avatar_pipeline, "_video_frame_count", lambda _path: 492)
+    monkeypatch.setattr(avatar_pipeline, "_animation_score", lambda _path: 4.1)
+    monkeypatch.setattr(avatar_pipeline, "_probe_video_duration_seconds", lambda _path: 30.6875)
+    monkeypatch.setattr(avatar_pipeline, "_probe_audio_duration_seconds", lambda _path: 30.6875)
+    monkeypatch.setattr(avatar_pipeline, "_analyze_avatar_motion_quality", lambda _path: dict(quality))
+
+
+def _composer_subtle_context(**overrides):
+    context = {
+        "liveportrait_driver_source": "composer",
+        "liveportrait_motion_preset": "natural_conservative",
+        "liveportrait_succeeded": True,
+        "liveportrait_fallback_used": False,
+        "musetalk_source_kind": "liveportrait",
+    }
+    context.update(overrides)
+    return context
+
+
+def test_composer_subtle_profile_accepts_low_blink_with_strong_eye_motion(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "restored.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(),
+    )
+
+    assert result["avatar_validation_profile"] == "composer_subtle_motion"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0015)
+    assert result["low_eye_blink_change_warning"] is True
+    assert "low_eye_blink_change" in result["validation_warnings"]
+    assert result["failure_reason"] == ""
+    assert result["eye_motion_valid"] is True
+    assert result["invalid_eye_motion_source"] == "none"
+    assert result["face_artifacts_detected"] is False
+    assert result["face_roi_artifact_source"] == "cascade_removed"
+    assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+def test_face_roi_artifact_is_not_set_by_low_eye_blink_alone(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio("strict.mp4", "preview.wav")
+
+    assert result["avatar_validation_profile"] == "strict"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0025)
+    assert "low_eye_blink_change" in result["failure_reason"]
+    assert "invalid_eye_motion" in result["failure_reason"]
+    assert "face_roi_artifact" not in result["failure_reason"]
+    assert result["face_artifacts_detected"] is False
+    assert result["face_roi_artifact_source"] == "cascade_removed"
+    assert result["invalid_eye_motion_source"] == "blink_amplitude"
+
+
+def test_actual_face_roi_artifact_still_fails_under_composer_profile(monkeypatch):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4, structural_artifact=True),
+    )
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "artifact.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(),
+    )
+
+    assert result["avatar_validation_profile"] == "strict"
+    assert result["face_artifacts_detected"] is True
+    assert result["face_roi_artifact_source"] == "actual_roi"
+    assert "face_roi_artifact" in result["failure_reason"]
+    assert "face_warp" in result["failure_reason"]
+    assert avatar_pipeline.accept_avatar_render(result) is False
+
+
+def test_static_fallback_low_blink_does_not_get_composer_relaxation(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "static-fallback.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(
+            liveportrait_fallback_used=True,
+            musetalk_source_kind="static_fallback",
+        ),
+    )
+
+    assert result["avatar_validation_profile"] == "strict"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0025)
+    assert result["invalid_eye_motion_source"] == "blink_amplitude"
+    assert "low_eye_blink_change" in result["failure_reason"]
+    assert avatar_pipeline.accept_avatar_render(result) is False
+
+
+def test_non_composer_outputs_keep_strict_blink_threshold(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "template.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(liveportrait_driver_source="template"),
+    )
+
+    assert result["avatar_validation_profile"] == "strict"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0025)
+    assert "low_eye_blink_change" in result["failure_reason"]
+    assert "invalid_eye_motion" in result["failure_reason"]
+
+
+def test_restoration_output_slight_blink_gain_is_accepted_for_composer(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.00201, eye_movement_score=8.8))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "restored.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(liveportrait_motion_preset="subtle_blink"),
+    )
+
+    assert result["avatar_validation_profile"] == "composer_subtle_motion"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0015)
+    assert result["low_eye_blink_change_warning"] is True
+    assert result["failure_reason"] == ""
+    assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+def test_natural_visible_uses_composer_subtle_validation_profile(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.8))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "natural-visible.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(liveportrait_motion_preset="natural_visible"),
+    )
+
+    assert result["avatar_validation_profile"] == "composer_subtle_motion"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0015)
+    assert result["failure_reason"] == ""
+    assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+def test_visual_quality_warning_is_not_a_hard_validation_failure(monkeypatch):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4, head_motion_score=0.0020),
+    )
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "restored.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(),
+    )
+
+    summary = avatar_pipeline.evaluate_avatar_visual_quality(
+        result,
+        validation_context={
+            **_composer_subtle_context(),
+            "liveportrait_driver_mean_mad": 0.0007,
+        },
+        stage_metrics={
+            "liveportrait": {
+                "frame_count": 491,
+                "animated": False,
+                "global_frame_diff_mean": 0.08,
+                "quality_checks": _final_quality(
+                    eye_blink_change=0.0004,
+                    eye_movement_score=1.2,
+                    head_motion_score=0.0004,
+                ),
+            },
+            "musetalk": result,
+            "restored": result,
+            "final": result,
+        },
+    )
+
+    assert avatar_pipeline.accept_avatar_render(result) is True
+    assert summary["avatar_quality_profile"] == "composer_visible_motion"
+    assert summary["avatar_visual_motion_target_met"] is False
+    assert "low_visible_motion" in summary["avatar_quality_warning"]
+    assert summary["motion_loss_stage"] == "composer"
+    assert summary["avatar_stage_quality_summary"]["liveportrait"]["visual_motion_score"] < 1.0
+
+
+def test_static_fallback_does_not_count_as_production_quality(monkeypatch):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _final_quality(eye_blink_change=0.0040, eye_movement_score=8.4, head_motion_score=0.0060),
+    )
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "static-fallback.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(
+            liveportrait_fallback_used=True,
+            musetalk_source_kind="static_fallback",
+        ),
+    )
+
+    summary = avatar_pipeline.evaluate_avatar_visual_quality(
+        result,
+        validation_context=_composer_subtle_context(
+            liveportrait_fallback_used=True,
+            musetalk_source_kind="static_fallback",
+        ),
+        stage_metrics={"final": result},
+    )
+
+    assert avatar_pipeline.accept_avatar_render(result) is True
+    assert summary["avatar_visual_motion_target_met"] is False
+    assert summary["avatar_quality_warning"] == "static_fallback_not_production_quality"
+    assert summary["motion_loss_stage"] == "liveportrait"
 
 
 def test_render_avatar_segment_cache_is_invalidated_when_audio_changes(tmp_path, monkeypatch):
@@ -875,9 +1333,25 @@ def test_render_avatar_segment_cache_is_invalidated_when_audio_changes(tmp_path,
 
     monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0, "frame_count": 25})
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_trim_video_to_exact_audio_duration", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_normalize_preview_video_for_musetalk",
+        lambda **kwargs: {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": int(kwargs["target_frame_count"]),
+            "target_duration_seconds": float(kwargs["target_duration_seconds"]),
+            "target_fps": int(round(float(kwargs["target_frame_count"]) / float(kwargs["target_duration_seconds"]))),
+            "frame_count_before": int(kwargs["target_frame_count"]),
+            "frame_count_after": int(kwargs["target_frame_count"]),
+            "duration_before_seconds": float(kwargs["target_duration_seconds"]),
+            "duration_after_seconds": float(kwargs["target_duration_seconds"]),
+            "video_path": kwargs["video_path"],
+        },
+    )
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
 
@@ -926,9 +1400,25 @@ def test_render_avatar_segment_cache_is_invalidated_when_preview_contract_change
 
     monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0})
-    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0})
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0, "frame_count": 25})
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_trim_video_to_exact_audio_duration", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_normalize_preview_video_for_musetalk",
+        lambda **kwargs: {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": int(kwargs["target_frame_count"]),
+            "target_duration_seconds": float(kwargs["target_duration_seconds"]),
+            "target_fps": int(round(float(kwargs["target_frame_count"]) / float(kwargs["target_duration_seconds"]))),
+            "frame_count_before": int(kwargs["target_frame_count"]),
+            "frame_count_after": int(kwargs["target_frame_count"]),
+            "duration_before_seconds": float(kwargs["target_duration_seconds"]),
+            "duration_after_seconds": float(kwargs["target_duration_seconds"]),
+            "video_path": kwargs["video_path"],
+        },
+    )
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
 
@@ -1041,7 +1531,33 @@ def test_preview_pipeline_preserves_liveportrait_when_musetalk_times_out(tmp_pat
 
     def fake_liveportrait(*, output_path, **_kwargs):
         Path(output_path).write_bytes(b"liveportrait")
-        return EngineResult(True, "liveportrait", output_path, "")
+        return EngineResult(
+            True,
+            "liveportrait",
+            output_path,
+            "",
+            details={
+                "stderr": (
+                    "[LivePortrait] final_driver_recipe motion_source=image_composed:default "
+                    "liveportrait_motion_preset=natural_conservative "
+                    "liveportrait_motion_profile=default "
+                    "liveportrait_driver_source=composer "
+                    "liveportrait_composer_used=1 "
+                    "liveportrait_boosted_retry_used=0 "
+                    "liveportrait_driver_validation_mode=composer_localized_motion "
+                    "liveportrait_driver_localized_motion_passed=1 "
+                    "liveportrait_driver_near_static_threshold_profile=composer_localized_motion "
+                    "composer_localized_motion_override=1 "
+                    "liveportrait_driver_unique_ratio=0.106910 "
+                    "liveportrait_driver_unique_frames=82 "
+                    "liveportrait_driver_mean_mad=0.000775 "
+                    "liveportrait_driver_recipe_blink_events=6 "
+                    "liveportrait_driver_recipe_gaze_events=0 "
+                    "liveportrait_recenter_enabled=1 "
+                    "liveportrait_whole_frame_drift_guard=1"
+                ),
+            },
+        )
 
     def fake_musetalk(*, output_path, timeout_seconds=None, stage_name="musetalk", **_kwargs):
         assert reconciliation_calls
@@ -1079,14 +1595,24 @@ def test_preview_pipeline_preserves_liveportrait_when_musetalk_times_out(tmp_pat
         "preview_teacher_id": 12,
         "preview_job_id": 34,
     }]
-    assert handoff_normalization_calls == [{
-        "video_path": str(output.with_suffix(output.suffix + ".liveportrait.mp4")),
-        "handoff_video_path": str(output.with_suffix(output.suffix + ".musetalk_handoff.mp4")),
-        "target_frame_count": 25,
-        "target_duration_seconds": 1.0,
-        "preview_teacher_id": 12,
-        "preview_job_id": 34,
-    }]
+    assert handoff_normalization_calls == [
+        {
+            "video_path": str(output.with_suffix(output.suffix + ".liveportrait.mp4")),
+            "handoff_video_path": str(output.with_suffix(output.suffix + ".musetalk_handoff.mp4")),
+            "target_frame_count": 25,
+            "target_duration_seconds": 1.0,
+            "preview_teacher_id": 12,
+            "preview_job_id": 34,
+        },
+        {
+            "video_path": str(output.with_suffix(output.suffix + ".liveportrait.mp4")),
+            "handoff_video_path": str(output.with_suffix(output.suffix + ".musetalk_handoff.mp4")),
+            "target_frame_count": 25,
+            "target_duration_seconds": 1.0,
+            "preview_teacher_id": 12,
+            "preview_job_id": 34,
+        },
+    ]
     assert not output.exists()
 
 
@@ -1146,7 +1672,33 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
 
     def fake_liveportrait(*, output_path, **_kwargs):
         Path(output_path).write_bytes(b"liveportrait")
-        return EngineResult(True, "liveportrait", output_path, "")
+        return EngineResult(
+            True,
+            "liveportrait",
+            output_path,
+            "",
+            details={
+                "stderr": (
+                    "[LivePortrait] final_driver_recipe motion_source=image_composed:default "
+                    "liveportrait_motion_preset=natural_conservative "
+                    "liveportrait_motion_profile=default "
+                    "liveportrait_driver_source=composer "
+                    "liveportrait_composer_used=1 "
+                    "liveportrait_boosted_retry_used=0 "
+                    "liveportrait_driver_validation_mode=composer_localized_motion "
+                    "liveportrait_driver_localized_motion_passed=1 "
+                    "liveportrait_driver_near_static_threshold_profile=composer_localized_motion "
+                    "composer_localized_motion_override=1 "
+                    "liveportrait_driver_unique_ratio=0.106910 "
+                    "liveportrait_driver_unique_frames=82 "
+                    "liveportrait_driver_mean_mad=0.000775 "
+                    "liveportrait_driver_recipe_blink_events=6 "
+                    "liveportrait_driver_recipe_gaze_events=0 "
+                    "liveportrait_recenter_enabled=1 "
+                    "liveportrait_whole_frame_drift_guard=1"
+                ),
+            },
+        )
 
     musetalk_calls = []
 
@@ -1179,6 +1731,22 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     assert result["stage_paths"]["musetalk_stage_state"] == "completed"
     assert result["stage_paths"]["liveportrait_started"] is True
     assert result["stage_paths"]["liveportrait_succeeded"] is True
+    assert result["stage_paths"]["liveportrait_motion_preset"] == "natural_conservative"
+    assert result["stage_paths"]["liveportrait_motion_profile"] == "default"
+    assert result["stage_paths"]["liveportrait_driver_source"] == "composer"
+    assert result["stage_paths"]["liveportrait_composer_used"] is True
+    assert result["stage_paths"]["liveportrait_boosted_retry_used"] is False
+    assert result["stage_paths"]["liveportrait_driver_validation_mode"] == "composer_localized_motion"
+    assert result["stage_paths"]["liveportrait_driver_localized_motion_passed"] is True
+    assert result["stage_paths"]["liveportrait_driver_near_static_threshold_profile"] == "composer_localized_motion"
+    assert result["stage_paths"]["composer_localized_motion_override"] is True
+    assert result["stage_paths"]["liveportrait_driver_unique_ratio"] == pytest.approx(0.106910)
+    assert result["stage_paths"]["liveportrait_driver_unique_frames"] == 82
+    assert result["stage_paths"]["liveportrait_driver_mean_mad"] == pytest.approx(0.000775)
+    assert result["stage_paths"]["liveportrait_driver_recipe_blink_events"] == 6
+    assert result["stage_paths"]["liveportrait_driver_recipe_gaze_events"] == 0
+    assert result["stage_paths"]["liveportrait_recenter_enabled"] is True
+    assert result["stage_paths"]["liveportrait_whole_frame_drift_guard"] is True
     assert result["stage_paths"]["musetalk_started"] is True
     assert result["stage_paths"]["musetalk_succeeded"] is True
     assert result["stage_paths"]["musetalk_source_kind"] == "liveportrait"
@@ -1189,6 +1757,305 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     assert result["stage_paths"]["final_playable_path"] == str(output)
     assert result["stage_outputs"][-1]["stage"] == "musetalk"
     assert Path(result["output_path"]).exists()
+
+
+def test_liveportrait_output_is_normalized_before_gate_and_musetalk(tmp_path, monkeypatch):
+    audio = tmp_path / "a.wav"
+    image = tmp_path / "face.png"
+    output = tmp_path / "preview.mp4"
+    raw_liveportrait = output.with_suffix(output.suffix + ".liveportrait.mp4")
+    normalized_handoff = output.with_suffix(output.suffix + ".musetalk_handoff.mp4")
+    musetalk_output = output.with_suffix(output.suffix + ".musetalk.mp4")
+    expected_duration = 491 / 16
+    audio.write_bytes(b"audio")
+    image.write_bytes(b"image")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {"duration_seconds": expected_duration})
+
+    def fake_assert_video_contract(path, *, stage_name="video"):
+        current = Path(path)
+        if not current.exists():
+            raise RuntimeError(f"{stage_name}_missing")
+        if current == raw_liveportrait:
+            return {"duration_seconds": 30.68, "frame_count": 767}
+        return {"duration_seconds": expected_duration, "frame_count": 491}
+
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", fake_assert_video_contract)
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_animation", lambda _path: {
+        "animated": True,
+        "motion_real": True,
+        "quality_checks": {
+            "frames_sampled": 64,
+            "unique_frames": 32,
+            "start_end_frame_diff": 0.4,
+            "head_motion_score": 0.02,
+            "mouth_openness_change": 0.02,
+            "face_detection_frames": 64,
+            "mouth_roi_frames": 64,
+            "eye_roi_frames": 64,
+            "landmark_valid_frames": 64,
+        },
+    })
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_probe_video_fps",
+        lambda path: 25.0 if Path(path) == raw_liveportrait else 16.0,
+    )
+
+    probed_motion_paths: list[str] = []
+
+    def fake_shared_probe(path):
+        probed_motion_paths.append(str(path))
+        return _shared_motion_probe_metrics(
+            path,
+            duration_seconds=expected_duration,
+            fps=16.0,
+            frame_count=491,
+            unique_frames=64,
+            unique_ratio=0.8,
+            mean_mad=0.7,
+            near_static=False,
+        )
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "_shared_liveportrait_video_motion_probe", fake_shared_probe)
+
+    def fake_normalize(**kwargs):
+        source = Path(kwargs["video_path"])
+        handoff = Path(kwargs["handoff_video_path"])
+        if source == raw_liveportrait:
+            handoff.write_bytes(b"normalized-liveportrait")
+            return {
+                "normalized": True,
+                "strategy": "normalize_contract_fps",
+                "target_frame_count": 491,
+                "target_duration_seconds": expected_duration,
+                "target_fps": 16,
+                "frame_count_before": 767,
+                "frame_count_after": 491,
+                "duration_before_seconds": 30.68,
+                "duration_after_seconds": expected_duration,
+                "video_path": str(handoff),
+            }
+        return {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": 491,
+            "target_duration_seconds": expected_duration,
+            "target_fps": 16,
+            "frame_count_before": 491,
+            "frame_count_after": 491,
+            "duration_before_seconds": expected_duration,
+            "duration_after_seconds": expected_duration,
+            "video_path": str(source),
+        }
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "_normalize_preview_video_for_musetalk", fake_normalize)
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_reconcile_duration_contract",
+        lambda **kwargs: {
+            "contract_duration_seconds": expected_duration,
+            "original_video_duration_seconds": expected_duration,
+            "original_audio_duration_seconds": expected_duration,
+            "final_video_duration_seconds": expected_duration,
+            "final_audio_duration_seconds": expected_duration,
+            "duration_delta_seconds": 0.0,
+            "adjustment_seconds": 0.0,
+            "strategy": "unchanged",
+            "video_changed": False,
+            "audio_changed": False,
+            "reconciled_video_path": kwargs["video_path"],
+            "reconciled_audio_path": kwargs["audio_path"],
+        },
+    )
+    captured_validation_context: dict[str, Any] = {}
+
+    def fake_final_validation(*_args, **kwargs):
+        captured_validation_context.update(dict(kwargs.get("validation_context") or {}))
+        payload = _strict_validation_pass()
+        payload.update(
+            {
+                "avatar_validation_profile": "composer_subtle_motion",
+                "eye_blink_threshold_used": 0.0015,
+                "low_eye_blink_change_warning": True,
+                "face_roi_artifact_source": "cascade_removed",
+                "invalid_eye_motion_source": "none",
+                "validation_warnings": ["low_eye_blink_change"],
+            }
+        )
+        return payload
+
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", fake_final_validation)
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
+
+    def fake_liveportrait(*, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"raw-liveportrait")
+        stderr = (
+            "motion_source=image_composed:default "
+            "liveportrait_motion_preset=natural_conservative "
+            "liveportrait_driver_source_policy=composer_for_image "
+            "liveportrait_driver_source=composer "
+            "liveportrait_composer_used=1"
+        )
+        return EngineResult(True, "liveportrait", output_path, "", details={"stderr": stderr})
+
+    musetalk_calls: list[str] = []
+
+    def fake_musetalk(*, output_path, source_video="", **_kwargs):
+        musetalk_calls.append(str(source_video))
+        Path(output_path).write_bytes(b"musetalk")
+        return EngineResult(True, "musetalk", output_path, "")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_liveportrait", fake_liveportrait)
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_musetalk", fake_musetalk)
+
+    result = avatar_pipeline.render_avatar_segment_local(
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(output),
+            target_frame_count=491,
+            target_duration_seconds=expected_duration,
+            preview_teacher_id=326,
+            preview_job_id=469,
+        )
+    )
+
+    stage_paths = result["stage_paths"]
+    assert stage_paths["liveportrait_output_normalized"] is True
+    assert stage_paths["liveportrait_output_normalization_failed"] is False
+    assert stage_paths["liveportrait_output_normalization_reason"] == "normalize_contract_fps"
+    assert stage_paths["liveportrait_original_fps"] == pytest.approx(25.0)
+    assert stage_paths["liveportrait_original_frame_count"] == 767
+    assert stage_paths["liveportrait_original_duration"] == pytest.approx(30.68)
+    assert stage_paths["liveportrait_normalized_fps"] == pytest.approx(16.0)
+    assert stage_paths["liveportrait_normalized_frame_count"] == 491
+    assert stage_paths["liveportrait_normalized_duration"] == pytest.approx(expected_duration)
+    assert stage_paths["liveportrait_expected_fps"] == pytest.approx(16.0)
+    assert stage_paths["liveportrait_expected_frame_count"] == 491
+    assert stage_paths["liveportrait_expected_duration"] == pytest.approx(expected_duration)
+    assert stage_paths["liveportrait_normalized_output_video"] == str(normalized_handoff)
+    assert stage_paths["liveportrait_motion_gate"]["analyzed_path"] == str(normalized_handoff)
+    assert probed_motion_paths[0] == str(normalized_handoff)
+    assert stage_paths["liveportrait_succeeded"] is True
+    assert stage_paths["liveportrait_fallback_used"] is False
+    assert stage_paths["musetalk_source_kind"] == "liveportrait"
+    assert stage_paths["musetalk_source_video"] == str(normalized_handoff)
+    assert captured_validation_context["liveportrait_driver_source"] == "composer"
+    assert captured_validation_context["liveportrait_motion_preset"] == "natural_conservative"
+    assert captured_validation_context["liveportrait_succeeded"] is True
+    assert captured_validation_context["liveportrait_fallback_used"] is False
+    assert captured_validation_context["musetalk_source_kind"] == "liveportrait"
+    assert stage_paths["avatar_validation_profile"] == "composer_subtle_motion"
+    assert stage_paths["eye_blink_threshold_used"] == pytest.approx(0.0015)
+    assert stage_paths["low_eye_blink_change_warning"] is True
+    assert stage_paths["face_roi_artifact_source"] == "cascade_removed"
+    assert stage_paths["invalid_eye_motion_source"] == "none"
+    assert stage_paths["avatar_quality_profile"] == "strict_motion_quality"
+    assert "avatar_stage_quality_summary" in stage_paths
+    assert "liveportrait" in stage_paths["avatar_stage_quality_summary"]
+    assert "avatar_visual_motion_score" in stage_paths
+    assert "motion_loss_stage" in stage_paths
+    assert musetalk_calls == [str(normalized_handoff)]
+    assert raw_liveportrait.exists()
+    assert musetalk_output.exists()
+
+
+def test_liveportrait_output_normalization_failure_falls_back_to_static(tmp_path, monkeypatch):
+    audio = tmp_path / "a.wav"
+    image = tmp_path / "face.png"
+    output = tmp_path / "preview.mp4"
+    raw_liveportrait = output.with_suffix(output.suffix + ".liveportrait.mp4")
+    static_handoff = output.with_suffix(output.suffix + ".musetalk_handoff.mp4")
+    audio.write_bytes(b"audio")
+    image.write_bytes(b"image")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
+    monkeypatch.setattr(avatar_canonical_pipeline, "_build_static_handoff_loop", _write_static_handoff_stub)
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0})
+    monkeypatch.setattr(
+        avatar_canonical_pipeline.legacy_pipeline,
+        "_assert_video_contract",
+        lambda path, *, stage_name="video": {"duration_seconds": 1.0, "frame_count": 25} if Path(path).exists() else (_ for _ in ()).throw(RuntimeError(f"{stage_name}_missing")),
+    )
+    monkeypatch.setattr(avatar_canonical_pipeline, "_probe_video_fps", lambda _path: 25.0)
+    monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("motion gate should not inspect failed normalization")))
+
+    def fake_normalize(**kwargs):
+        if Path(kwargs["video_path"]) == raw_liveportrait:
+            raise RuntimeError("ffmpeg_preview_contract_normalization_failed:1")
+        return {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": 25,
+            "target_duration_seconds": 1.0,
+            "target_fps": 25,
+            "frame_count_before": 25,
+            "frame_count_after": 25,
+            "duration_before_seconds": 1.0,
+            "duration_after_seconds": 1.0,
+            "video_path": kwargs["video_path"],
+        }
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "_normalize_preview_video_for_musetalk", fake_normalize)
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_reconcile_duration_contract",
+        lambda **kwargs: {
+            "contract_duration_seconds": 1.0,
+            "original_video_duration_seconds": 1.0,
+            "original_audio_duration_seconds": 1.0,
+            "final_video_duration_seconds": 1.0,
+            "final_audio_duration_seconds": 1.0,
+            "duration_delta_seconds": 0.0,
+            "adjustment_seconds": 0.0,
+            "strategy": "unchanged",
+            "video_changed": False,
+            "audio_changed": False,
+            "reconciled_video_path": kwargs["video_path"],
+            "reconciled_audio_path": kwargs["audio_path"],
+        },
+    )
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
+
+    def fake_liveportrait(*, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"raw-liveportrait")
+        return EngineResult(True, "liveportrait", output_path, "")
+
+    musetalk_calls: list[str] = []
+
+    def fake_musetalk(*, output_path, source_video="", **_kwargs):
+        musetalk_calls.append(str(source_video))
+        Path(output_path).write_bytes(b"musetalk")
+        return EngineResult(True, "musetalk", output_path, "")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_liveportrait", fake_liveportrait)
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_musetalk", fake_musetalk)
+
+    result = avatar_pipeline.render_avatar_segment_local(
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(output),
+            target_frame_count=25,
+            target_duration_seconds=1.0,
+            preview_teacher_id=326,
+            preview_job_id=470,
+        )
+    )
+
+    stage_paths = result["stage_paths"]
+    assert stage_paths["liveportrait_output_normalization_failed"] is True
+    assert "ffmpeg_preview_contract_normalization_failed:1" in stage_paths["liveportrait_output_normalization_reason"]
+    assert "liveportrait_output_normalization_failed" in stage_paths["liveportrait_failure_reason"]
+    assert stage_paths["liveportrait_succeeded"] is False
+    assert stage_paths["liveportrait_fallback_used"] is True
+    assert stage_paths["musetalk_source_kind"] == "static_fallback"
+    assert stage_paths["musetalk_source_video"] == str(static_handoff)
+    assert musetalk_calls == [str(static_handoff)]
+    assert raw_liveportrait.exists()
 
 
 @pytest.mark.parametrize("restoration_enabled", [False, True])
@@ -1249,6 +2116,13 @@ def test_preview_pipeline_stage_order_and_optional_restoration(tmp_path, monkeyp
     )
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
+    audio_stream_checks: list[str] = []
+
+    def fake_probe_final_audio_stream(path):
+        audio_stream_checks.append(str(path))
+        return True
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "_probe_video_has_audio_stream", fake_probe_final_audio_stream)
 
     call_order: list[str] = []
 
@@ -1299,10 +2173,94 @@ def test_preview_pipeline_stage_order_and_optional_restoration(tmp_path, monkeyp
         assert result["stage_outputs"][-1]["stage"] == "musetalk"
     assert Path(result["output_path"]).exists()
     assert result["stage_paths"]["final_playable_path"] == str(output)
+    assert audio_stream_checks == [str(output)]
+    assert result["stage_paths"]["final_output_has_audio_stream"] is True
+    assert result["final_output_has_audio_stream"] is True
     if restoration_enabled:
         assert result["stage_paths"]["ui_returned_playable_file"] == str(restored_output)
     else:
         assert result["stage_paths"]["ui_returned_playable_file"] == str(musetalk_output)
+
+
+def test_preview_pipeline_rejects_final_output_when_audio_mux_missing(tmp_path, monkeypatch):
+    audio = tmp_path / "a.wav"
+    image = tmp_path / "face.png"
+    output = tmp_path / "preview.mp4"
+    liveportrait_output = output.with_suffix(output.suffix + ".liveportrait.mp4")
+    audio.write_bytes(b"audio")
+    image.write_bytes(b"image")
+
+    monkeypatch.setenv("AVATAR_PREVIEW_USE_RESTORATION", "0")
+    monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
+    monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0})
+    monkeypatch.setattr(
+        avatar_canonical_pipeline.legacy_pipeline,
+        "_assert_video_contract",
+        lambda path, *, stage_name="video": {"duration_seconds": 1.0, "frame_count": 25}
+        if Path(path).exists()
+        else (_ for _ in ()).throw(RuntimeError(f"{stage_name}_missing")),
+    )
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_reconcile_duration_contract",
+        lambda **_kwargs: {
+            "contract_duration_seconds": 1.0,
+            "original_video_duration_seconds": 1.0,
+            "original_audio_duration_seconds": 1.0,
+            "final_video_duration_seconds": 1.0,
+            "final_audio_duration_seconds": 1.0,
+            "duration_delta_seconds": 0.0,
+            "adjustment_seconds": 0.0,
+            "strategy": "unchanged",
+            "video_changed": False,
+            "audio_changed": False,
+            "reconciled_video_path": str(liveportrait_output),
+            "reconciled_audio_path": str(audio),
+        },
+    )
+    monkeypatch.setattr(
+        avatar_canonical_pipeline,
+        "_normalize_preview_video_for_musetalk",
+        lambda **_kwargs: {
+            "normalized": False,
+            "strategy": "unchanged",
+            "target_frame_count": 25,
+            "target_duration_seconds": 1.0,
+            "target_fps": 25,
+            "frame_count_before": 25,
+            "frame_count_after": 25,
+            "duration_before_seconds": 1.0,
+            "duration_after_seconds": 1.0,
+            "video_path": str(liveportrait_output),
+        },
+    )
+    monkeypatch.setattr(avatar_canonical_pipeline, "_probe_video_has_audio_stream", lambda path: False if Path(path) == output else None)
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
+
+    def fake_liveportrait(*, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"liveportrait")
+        return EngineResult(True, "liveportrait", output_path, "")
+
+    def fake_musetalk(*, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"musetalk-video-only")
+        return EngineResult(True, "musetalk", output_path, "")
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_liveportrait", fake_liveportrait)
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_musetalk", fake_musetalk)
+
+    with pytest.raises(RuntimeError, match="preview_final_audio_stream_missing"):
+        avatar_pipeline.render_avatar_segment_local(
+            avatar_pipeline.AvatarRenderRequest(
+                source_image_path=str(image),
+                audio_path=str(audio),
+                output_path=str(output),
+                target_frame_count=25,
+                target_duration_seconds=1.0,
+                preview_teacher_id=18,
+                preview_job_id=78,
+            )
+        )
 
 
 def test_preview_pipeline_uses_musetalk_output_when_restoration_fails(tmp_path, monkeypatch):
@@ -1402,7 +2360,7 @@ def test_preview_pipeline_returns_warning_when_strict_validation_fails(tmp_path,
     monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
     monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_audio_contract", lambda *_args, **_kwargs: {})
-    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: {"duration_seconds": 1.0, "frame_count": 25})
     monkeypatch.setattr(
         avatar_canonical_pipeline,
         "_reconcile_duration_contract",

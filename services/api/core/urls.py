@@ -28,6 +28,7 @@ Teacher pipeline:
   GET    /api/v1/projects/<project_id>/               ProjectDetailView
   DELETE /api/v1/projects/<project_id>/               ProjectDetailView
   POST   /api/v1/projects/<project_id>/rerender/      ProjectRerenderView
+  POST   /api/v1/projects/<project_id>/avatar/rerender/ ProjectAvatarRerenderView
   GET    /api/v1/projects/<project_id>/jobs/<job_id>/ JobStatusView
   POST   /api/v1/users/<user_id>/voice/               VoiceUploadView
 
@@ -49,6 +50,7 @@ from .views import (
   AdminStatsDashboardView,
   AvatarPreviewRegenerateView,
   AvatarPrepareView,
+  ProjectAvatarRerenderView,
   AvatarPreviewStatusView,
   AvatarPreviewDeleteView,
   AvatarOverlayPreferenceView,
@@ -192,6 +194,7 @@ urlpatterns = [
     path("projects/<int:project_id>/transcript-pages/<str:page_ref>/background/<str:kind>/", TranscriptPageBackgroundImageView.as_view(), name="project-transcript-page-background-image-ref"),
     path("projects/<int:project_id>/background/apply-all/", ProjectBackgroundApplyAllView.as_view(), name="project-background-apply-all"),
     path("projects/<int:project_id>/rerender/", ProjectRerenderView.as_view(), name="project-rerender"),
+    path("projects/<int:project_id>/avatar/rerender/", ProjectAvatarRerenderView.as_view(), name="project-avatar-rerender"),
     path("projects/<int:project_id>/jobs/<int:job_id>/", JobStatusView.as_view(), name="job-status"),
     path("users/<int:user_id>/voice/", VoiceUploadView.as_view(), name="voice-upload"),
     path("users/<int:user_id>/avatar/", AvatarProfileView.as_view(), name="avatar-profile"),
