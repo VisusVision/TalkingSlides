@@ -433,9 +433,9 @@ export default function AvatarOverlayLayer({
       data-testid="avatar-overlay-video"
       data-avatar-video-mode={theater ? 'theater' : 'pip'}
       className={[
-        'pointer-events-none h-full w-full rounded-lg bg-black object-cover',
-        theater ? 'scale-110 object-[50%_32%]' : '',
-      ].filter(Boolean).join(' ')}
+        'pointer-events-none h-full w-full rounded-lg',
+        theater ? 'bg-transparent object-contain' : 'bg-black object-cover',
+      ].join(' ')}
       muted
       playsInline
       preload="metadata"
@@ -529,7 +529,10 @@ export default function AvatarOverlayLayer({
             data-avatar-theater-frame="true"
             className="pointer-events-auto relative flex h-full w-full max-w-[96%] items-center justify-center"
           >
-            <div className="aspect-video max-h-full w-full overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl">
+            <div
+              className="aspect-video max-h-full w-full overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl"
+              style={{ background: 'radial-gradient(circle at center, rgba(255,255,255,0.10), rgba(0,0,0,0.92) 64%)' }}
+            >
               {renderAvatarVideo({ theater: true })}
             </div>
             <div

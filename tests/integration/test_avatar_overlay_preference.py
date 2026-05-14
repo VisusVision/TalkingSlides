@@ -184,13 +184,16 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
     assert "storageKey(lessonId, 'theater')" not in source
 
 
-def test_frontend_avatar_theater_uses_larger_safe_crop():
+def test_frontend_avatar_theater_uses_larger_uncropped_frame():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "data-avatar-video-mode={theater ? 'theater' : 'pip'}" in source
-    assert "theater ? 'scale-110 object-[50%_32%]' : ''" in source
+    assert "theater ? 'bg-transparent object-contain' : 'bg-black object-cover'" in source
+    assert "scale-110" not in source
+    assert "object-[50%_32%]" not in source
     assert "max-w-[96%]" in source
     assert "aspect-video max-h-full w-full" in source
+    assert "radial-gradient(circle at center" in source
 
 
 def test_frontend_watch_exposes_single_focus_mode_for_study_layout():
