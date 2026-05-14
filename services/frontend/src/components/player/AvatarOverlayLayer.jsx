@@ -4,6 +4,9 @@ import { DEFAULT_AVATAR_PLACEMENT, normalizeAvatarPlacement } from '../../utils/
 
 const HEIGHT_RATIO = 9 / 16;
 const STORAGE_PREFIX = 'visus-avatar-overlay';
+const theaterObjectPosition = '50% 42%';
+const theaterBackgroundClass = 'absolute inset-0 h-full w-full bg-black object-cover opacity-45';
+const theaterForegroundClass = 'h-full w-full bg-transparent object-cover';
 
 export const AVATAR_OVERLAY_Z_INDEX = Object.freeze({
   baseVideo: 0,
@@ -439,11 +442,12 @@ export default function AvatarOverlayLayer({
       className={[
         'pointer-events-none rounded-lg',
         background
-          ? 'absolute inset-0 h-full w-full scale-125 bg-black object-cover opacity-35 blur-xl'
+          ? theaterBackgroundClass
           : 'h-full w-full',
-        theater && !background ? 'relative z-10 bg-transparent object-contain' : '',
+        theater && !background ? theaterForegroundClass : '',
         !theater && !background ? 'bg-black object-cover' : '',
       ].join(' ')}
+      style={theater ? { objectPosition: theaterObjectPosition } : undefined}
       muted
       playsInline
       preload="metadata"
@@ -535,13 +539,14 @@ export default function AvatarOverlayLayer({
         >
           <div
             data-avatar-theater-frame="true"
-            className="pointer-events-auto relative flex h-full w-full max-w-[96%] items-center justify-center"
+            className="pointer-events-auto relative flex aspect-video max-h-full w-full max-w-[96%] items-center justify-center overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl"
           >
+            {renderAvatarVideo({ theater: true, background: true })}
+            <div className="pointer-events-none absolute inset-0 bg-black/35" aria-hidden="true" />
             <div
-              className="aspect-video max-h-full w-full overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl"
-              style={{ background: 'radial-gradient(circle at center, rgba(255,255,255,0.10), rgba(0,0,0,0.92) 64%)' }}
+              data-avatar-theater-foreground-frame="true"
+              className="relative z-10 aspect-[3/2] h-[88%] max-h-[min(78vh,620px)] max-w-[min(78vw,900px)] overflow-hidden rounded-lg border border-white/25 bg-black/30 shadow-2xl"
             >
-              {renderAvatarVideo({ theater: true, background: true })}
               {renderAvatarVideo({ theater: true })}
             </div>
             <div

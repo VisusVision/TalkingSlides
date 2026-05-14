@@ -187,15 +187,22 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
 def test_frontend_avatar_theater_uses_larger_uncropped_frame():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
+    assert "const theaterObjectPosition = '50% 42%';" in source
+    assert "const theaterBackgroundClass = 'absolute inset-0 h-full w-full bg-black object-cover opacity-45';" in source
+    assert "const theaterForegroundClass = 'h-full w-full bg-transparent object-cover';" in source
     assert "data-testid={background ? 'avatar-theater-background-video' : 'avatar-overlay-video'}" in source
     assert "data-avatar-video-mode={background ? 'theater-background' : theater ? 'theater' : 'pip'}" in source
-    assert "theater && !background ? 'relative z-10 bg-transparent object-contain' : ''" in source
-    assert "absolute inset-0 h-full w-full scale-125 bg-black object-cover opacity-35 blur-xl" in source
+    assert "theater && !background ? theaterForegroundClass : ''" in source
+    assert "background\n          ? theaterBackgroundClass" in source
+    assert "data-avatar-theater-foreground-frame=\"true\"" in source
+    assert "aspect-[3/2] h-[88%] max-h-[min(78vh,620px)] max-w-[min(78vw,900px)]" in source
+    assert "style={theater ? { objectPosition: theaterObjectPosition } : undefined}" in source
+    assert "blur-xl" not in source
     assert "scale-110" not in source
     assert "object-[50%_32%]" not in source
+    assert "object-contain" not in source
     assert "max-w-[96%]" in source
     assert "aspect-video max-h-full w-full" in source
-    assert "radial-gradient(circle at center" in source
     assert "backgroundAvatarVideoRef.current" in source
     assert "[avatarVideoRef.current, backgroundAvatarVideoRef.current].filter(Boolean)" in source
 
