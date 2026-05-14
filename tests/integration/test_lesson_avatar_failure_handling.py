@@ -1,10 +1,12 @@
 import importlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import django
 import pytest
 
 
@@ -16,7 +18,90 @@ for path in [SERVICES_ROOT, API_ROOT, WORKER_ROOT]:
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
+django.setup()
+
 worker_tasks = importlib.import_module("worker.tasks")  # noqa: E402
+
+from django.contrib.auth.models import User  # noqa: E402
+from django.test.utils import override_settings  # noqa: E402
+from rest_framework.test import APIRequestFactory  # noqa: E402
+
+from core import views  # noqa: E402
+from core.models import Job, Project, UserProfile  # noqa: E402
+
+
+class _DummySession(dict):
+    session_key = "test-session"
+
+    def save(self):
+        self.session_key = self.session_key or "test-session"
+
+
+def _make_avatar_enabled_teacher(username: str):
+    user = User.objects.create_user(username=username, password="pass")
+    UserProfile.objects.create(
+        user=user,
+        role="teacher",
+        avatar_enabled=True,
+        avatar_consent_confirmed=True,
+        avatar_image_processed=f"avatars/{username}/processed.png",
+        avatar_source_valid=True,
+        avatar_moderation_status="approved",
+    )
+    return user
+
+
+def _create_published_ready_avatar_lesson(teacher, *, title: str, avatar_processing_status: str):
+    project = Project.objects.create(
+        title=title,
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+        avatar_enabled_override=True,
+        avatar_processing_status=avatar_processing_status,
+        avatar_visible=True,
+    )
+    Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+    )
+    return project
+
+
+@pytest.mark.django_db
+def test_avatar_failure_does_not_block_published_lesson():
+    teacher = _make_avatar_enabled_teacher("avatar_failed_public_teacher")
+    project = _create_published_ready_avatar_lesson(
+        teacher,
+        title="Published Lesson With Failed Avatar",
+        avatar_processing_status="failed",
+    )
+
+    factory = APIRequestFactory()
+    catalog_response = views.CatalogListView.as_view()(factory.get("/api/v1/catalog/"))
+
+    assert catalog_response.status_code == 200
+    assert project.id in {item["id"] for item in catalog_response.data}
+
+    token_request = factory.get(f"/api/v1/projects/{project.id}/playback-token/")
+    token_request.session = _DummySession()
+    with override_settings(LESSON_PROTECTION_DEFAULT_MODE="public"):
+        token_response = views.PlaybackTokenView.as_view()(token_request, project_id=project.id)
+
+    assert token_response.status_code == 200
+    assert token_response.data["video_url"]
+    assert token_response.data["avatar_processing_status"] == "failed"
+    assert token_response.data["avatar_available"] is False
+    assert token_response.data["avatar_overlay"]["enabled"] is False
+
+    project.refresh_from_db()
+    assert project.status == "ready"
+    assert project.is_published is True
 
 
 @pytest.fixture

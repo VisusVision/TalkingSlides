@@ -1072,3 +1072,31 @@ def test_playback_token_uses_base_video_job_while_avatar_rerender_is_queued(tmp_
     video_tokens = [token for token in issued_tokens if token["file_type"] == "video"]
     assert video_tokens
     assert video_tokens[0]["job_id"] == base_job.id
+
+
+def test_playback_payload_works_with_queued_avatar(tmp_path, monkeypatch):
+    _teacher, lesson, _base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    lesson.avatar_processing_status = "queued"
+    lesson.avatar_last_job_id = "avatar-job"
+    lesson.avatar_output_path = ""
+    lesson.avatar_visible = True
+    lesson.save(
+        update_fields=[
+            "avatar_processing_status",
+            "avatar_last_job_id",
+            "avatar_output_path",
+            "avatar_visible",
+        ]
+    )
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    assert response.data["video_url"]
+    assert response.data["avatar_processing_status"] == "queued"
+    assert response.data["avatar_available"] is False
+    assert response.data["avatar_overlay"]["enabled"] is False
+    assert response.data["avatar_overlay"]["stream_url"] == ""
