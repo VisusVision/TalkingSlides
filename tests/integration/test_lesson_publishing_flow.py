@@ -61,6 +61,52 @@ class _DummySession(dict):
         self.session_key = self.session_key or "test-session"
 
 
+def _enable_avatar_for_teacher(user):
+    profile = user.profile
+    profile.avatar_enabled = True
+    profile.avatar_consent_confirmed = True
+    profile.avatar_image_processed = f"avatars/{user.username}/processed.png"
+    profile.avatar_source_valid = True
+    profile.avatar_moderation_status = "approved"
+    profile.save(
+        update_fields=[
+            "avatar_enabled",
+            "avatar_consent_confirmed",
+            "avatar_image_processed",
+            "avatar_source_valid",
+            "avatar_moderation_status",
+        ]
+    )
+
+
+def _create_published_ready_lesson(
+    teacher,
+    *,
+    title: str,
+    avatar_enabled: bool = False,
+    avatar_processing_status: str = "none",
+    moderation_status: str = "approved",
+):
+    project = Project.objects.create(
+        title=title,
+        user=teacher,
+        status="ready",
+        moderation_status=moderation_status,
+        is_published=True,
+        avatar_enabled_override=avatar_enabled,
+        avatar_processing_status=avatar_processing_status,
+        avatar_visible=True,
+    )
+    Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+    )
+    return project
+
+
 # ---------------------------------------------------------------------------
 # Existing tests (preserved)
 # ---------------------------------------------------------------------------
@@ -174,6 +220,37 @@ def test_public_catalog_requires_published_done_project():
 
 
 @pytest.mark.django_db
+def test_published_lesson_visible_before_avatar_completes():
+    teacher = _make_teacher("avatar_publish_teacher")
+    _enable_avatar_for_teacher(teacher)
+    project = _create_published_ready_lesson(
+        teacher,
+        title="Queued Avatar Published Lesson",
+        avatar_enabled=True,
+        avatar_processing_status="queued",
+        moderation_status="approved",
+    )
+
+    factory = APIRequestFactory()
+    catalog_response = views.CatalogListView.as_view()(factory.get("/api/v1/catalog/"))
+
+    assert catalog_response.status_code == 200
+    assert project.id in {item["id"] for item in catalog_response.data}
+
+    token_request = factory.get(f"/api/v1/projects/{project.id}/playback-token/")
+    token_request.session = _DummySession()
+    with override_settings(LESSON_PROTECTION_DEFAULT_MODE="public"):
+        token_response = views.PlaybackTokenView.as_view()(token_request, project_id=project.id)
+
+    assert token_response.status_code == 200
+    assert token_response.data["video_url"]
+    assert token_response.data["avatar_processing_status"] == "queued"
+    assert token_response.data["avatar_available"] is False
+    assert token_response.data["avatar_overlay"]["enabled"] is False
+    assert token_response.data["avatar_overlay"]["stream_url"] == ""
+
+
+@pytest.mark.django_db
 def test_teacher_project_list_includes_own_unpublished_processing_project():
     teacher = _make_teacher("studio_list_teacher")
     own_draft = Project.objects.create(title="Own Draft", user=teacher, is_published=False)
@@ -224,6 +301,45 @@ def test_owner_can_preview_unpublished_done_lesson():
 
     assert token_response.status_code == 200
     assert token_response.data["video_url"]
+
+
+@pytest.mark.django_db
+def test_legacy_lesson_without_avatar_state():
+    teacher = _make_teacher("legacy_no_avatar_teacher")
+    project = _create_published_ready_lesson(
+        teacher,
+        title="Legacy Lesson Without Avatar State",
+        avatar_enabled=False,
+        avatar_processing_status="none",
+        moderation_status="not_scanned",
+    )
+
+    factory = APIRequestFactory()
+    catalog_response = views.CatalogListView.as_view()(factory.get("/api/v1/catalog/"))
+
+    assert catalog_response.status_code == 200
+    assert project.id in {item["id"] for item in catalog_response.data}
+
+    detail_request = factory.get(f"/api/v1/catalog/{project.id}/")
+    detail_request.session = _DummySession()
+    with override_settings(LESSON_PROTECTION_DEFAULT_MODE="public"):
+        detail_response = views.CatalogDetailView.as_view()(detail_request, project_id=project.id)
+
+    assert detail_response.status_code == 200
+    assert detail_response.data["stream_url"]
+    assert detail_response.data["avatar_processing_status"] == "none"
+    assert detail_response.data["avatar_available"] is False
+    assert detail_response.data["avatar_overlay"]["enabled"] is False
+
+    token_request = factory.get(f"/api/v1/projects/{project.id}/playback-token/")
+    token_request.session = _DummySession()
+    with override_settings(LESSON_PROTECTION_DEFAULT_MODE="public"):
+        token_response = views.PlaybackTokenView.as_view()(token_request, project_id=project.id)
+
+    assert token_response.status_code == 200
+    assert token_response.data["video_url"]
+    assert token_response.data["avatar_available"] is False
+    assert token_response.data["avatar_overlay"]["enabled"] is False
 
 
 @pytest.mark.django_db
