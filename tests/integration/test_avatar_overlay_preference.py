@@ -187,13 +187,17 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
 def test_frontend_avatar_theater_uses_larger_uncropped_frame():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
-    assert "data-avatar-video-mode={theater ? 'theater' : 'pip'}" in source
-    assert "theater ? 'bg-transparent object-contain' : 'bg-black object-cover'" in source
+    assert "data-testid={background ? 'avatar-theater-background-video' : 'avatar-overlay-video'}" in source
+    assert "data-avatar-video-mode={background ? 'theater-background' : theater ? 'theater' : 'pip'}" in source
+    assert "theater && !background ? 'relative z-10 bg-transparent object-contain' : ''" in source
+    assert "absolute inset-0 h-full w-full scale-125 bg-black object-cover opacity-35 blur-xl" in source
     assert "scale-110" not in source
     assert "object-[50%_32%]" not in source
     assert "max-w-[96%]" in source
     assert "aspect-video max-h-full w-full" in source
     assert "radial-gradient(circle at center" in source
+    assert "backgroundAvatarVideoRef.current" in source
+    assert "[avatarVideoRef.current, backgroundAvatarVideoRef.current].filter(Boolean)" in source
 
 
 def test_frontend_watch_exposes_single_focus_mode_for_study_layout():

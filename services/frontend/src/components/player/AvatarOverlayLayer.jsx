@@ -199,6 +199,7 @@ export default function AvatarOverlayLayer({
   const containerRef = useRef(null);
   const frameRef = useRef(null);
   const avatarVideoRef = useRef(null);
+  const backgroundAvatarVideoRef = useRef(null);
   const dragStateRef = useRef(null);
   const autoHideTimerRef = useRef(null);
   const hoverWithinRef = useRef(false);
@@ -311,26 +312,28 @@ export default function AvatarOverlayLayer({
 
   const syncAvatarPlayback = useCallback(() => {
     const mainVideo = videoRef?.current;
-    const avatarVideo = avatarVideoRef.current;
-    if (!mainVideo || !avatarVideo || !enabled || !src || !avatarVisible) return;
+    const avatarVideos = [avatarVideoRef.current, backgroundAvatarVideoRef.current].filter(Boolean);
+    if (!mainVideo || avatarVideos.length === 0 || !enabled || !src || !avatarVisible) return;
 
-    if (
-      Number.isFinite(mainVideo.currentTime)
-      && Math.abs((avatarVideo.currentTime || 0) - mainVideo.currentTime) > 0.25
-    ) {
-      try {
-        avatarVideo.currentTime = mainVideo.currentTime;
-      } catch {
-        // Browsers can reject seeks until the overlay video has metadata.
+    avatarVideos.forEach((avatarVideo) => {
+      if (
+        Number.isFinite(mainVideo.currentTime)
+        && Math.abs((avatarVideo.currentTime || 0) - mainVideo.currentTime) > 0.25
+      ) {
+        try {
+          avatarVideo.currentTime = mainVideo.currentTime;
+        } catch {
+          // Browsers can reject seeks until the overlay video has metadata.
+        }
       }
-    }
 
-    avatarVideo.playbackRate = mainVideo.playbackRate || 1;
-    if (mainVideo.paused || mainVideo.ended) {
-      avatarVideo.pause();
-      return;
-    }
-    avatarVideo.play().catch(() => {});
+      avatarVideo.playbackRate = mainVideo.playbackRate || 1;
+      if (mainVideo.paused || mainVideo.ended) {
+        avatarVideo.pause();
+        return;
+      }
+      avatarVideo.play().catch(() => {});
+    });
   }, [avatarVisible, enabled, src, videoRef]);
 
   useEffect(() => {
@@ -426,15 +429,20 @@ export default function AvatarOverlayLayer({
 
   if (!enabled || !src) return null;
 
-  const renderAvatarVideo = ({ theater = false } = {}) => (
+  const renderAvatarVideo = ({ theater = false, background = false } = {}) => (
     <video
-      ref={avatarVideoRef}
+      ref={background ? backgroundAvatarVideoRef : avatarVideoRef}
       src={src}
-      data-testid="avatar-overlay-video"
-      data-avatar-video-mode={theater ? 'theater' : 'pip'}
+      data-testid={background ? 'avatar-theater-background-video' : 'avatar-overlay-video'}
+      data-avatar-video-mode={background ? 'theater-background' : theater ? 'theater' : 'pip'}
+      aria-hidden={background ? 'true' : undefined}
       className={[
-        'pointer-events-none h-full w-full rounded-lg',
-        theater ? 'bg-transparent object-contain' : 'bg-black object-cover',
+        'pointer-events-none rounded-lg',
+        background
+          ? 'absolute inset-0 h-full w-full scale-125 bg-black object-cover opacity-35 blur-xl'
+          : 'h-full w-full',
+        theater && !background ? 'relative z-10 bg-transparent object-contain' : '',
+        !theater && !background ? 'bg-black object-cover' : '',
       ].join(' ')}
       muted
       playsInline
@@ -533,6 +541,7 @@ export default function AvatarOverlayLayer({
               className="aspect-video max-h-full w-full overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl"
               style={{ background: 'radial-gradient(circle at center, rgba(255,255,255,0.10), rgba(0,0,0,0.92) 64%)' }}
             >
+              {renderAvatarVideo({ theater: true, background: true })}
               {renderAvatarVideo({ theater: true })}
             </div>
             <div
