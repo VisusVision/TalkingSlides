@@ -120,6 +120,7 @@ def test_frontend_avatar_controls_are_hidden_by_default():
     assert "data-controls-visible={controlsVisible || dragging ? 'true' : 'false'}" in source
     assert "visible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'" in source
     assert "transition-opacity duration-200 ease-out" in source
+    assert "theaterOpen || controlsVisible" not in source
 
 
 def test_frontend_avatar_controls_appear_on_hover_focus_and_tap():
@@ -188,25 +189,38 @@ def test_frontend_avatar_theater_is_transparent_resizable_overlay():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "const THEATER_SCALE_DEFAULT = 1;" in source
-    assert "const THEATER_SCALE_MIN = 0.75;" in source
-    assert "const THEATER_SCALE_MAX = 1.8;" in source
-    assert "const THEATER_SCALE_STEP = 0.1;" in source
-    assert "const THEATER_BASE_WIDTH_VW = 42;" in source
-    assert "const THEATER_BASE_WIDTH_PX = 520;" in source
-    assert "const theaterForegroundClass = 'h-auto w-full max-h-full max-w-full rounded-lg bg-transparent object-contain shadow-2xl';" in source
+    assert "const THEATER_SCALE_MIN = 0.72;" in source
+    assert "const THEATER_SCALE_MAX = 1.35;" in source
+    assert "const THEATER_SCALE_STEP = 0.08;" in source
+    assert "const THEATER_BASE_WIDTH_VW = 82;" in source
+    assert "const THEATER_BASE_WIDTH_PX = 980;" in source
+    assert "const THEATER_MAX_HEIGHT_VH = 82;" in source
+    assert "const THEATER_OBJECT_POSITION = '50% 45%';" in source
+    assert "const theaterFrameClass = [" in source
+    assert "'pointer-events-auto relative flex aspect-video items-center justify-center overflow-hidden'" in source
+    assert "'rounded-xl border border-white/30 bg-white/5 shadow-2xl ring-1 ring-black/30'" in source
+    assert "'transition-all duration-200 ease-out'" in source
+    assert "const theaterForegroundFrameClass = 'flex h-full w-full items-center justify-center overflow-hidden rounded-xl';" in source
+    assert "const theaterForegroundClass = 'h-full w-full bg-transparent object-cover';" in source
     assert "function theaterPlacementStyle(scale)" in source
+    assert "aspectRatio: '16 / 9'" in source
     assert "storageKey(lessonId, 'theater-scale')" in source
     assert "data-testid=\"avatar-overlay-video\"" in source
     assert "data-avatar-video-mode={theater ? 'theater' : 'pip'}" in source
     assert "theater ? theaterForegroundClass : 'h-full w-full bg-black object-cover'" in source
+    assert "style={theater ? { objectPosition: THEATER_OBJECT_POSITION } : undefined}" in source
     assert "data-avatar-theater-foreground-frame=\"true\"" in source
     assert "style={theaterPlacementStyle(theaterScale)}" in source
+    assert "className={theaterFrameClass}" in source
+    assert "className={theaterForegroundFrameClass}" in source
     assert "Make avatar smaller" in source
     assert "Make avatar larger" in source
-    assert "Reset avatar theater size" in source
+    assert "Reset avatar theater" in source
+    assert source.count("'Reset avatar theater'") == 1
     assert "onTheaterSizeDecrease={handleTheaterSizeDecrease}" in source
     assert "onTheaterSizeIncrease={handleTheaterSizeIncrease}" in source
-    assert "onTheaterSizeReset={handleTheaterSizeReset}" in source
+    assert "onTheaterReset={handleTheaterReset}" in source
+    assert "onTheaterSizeReset" not in source
     assert "avatar-theater-background-video" not in source
     assert "backgroundAvatarVideoRef" not in source
     assert "theater-background" not in source

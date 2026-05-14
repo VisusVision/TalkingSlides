@@ -5,12 +5,20 @@ import { DEFAULT_AVATAR_PLACEMENT, normalizeAvatarPlacement } from '../../utils/
 const HEIGHT_RATIO = 9 / 16;
 const STORAGE_PREFIX = 'visus-avatar-overlay';
 const THEATER_SCALE_DEFAULT = 1;
-const THEATER_SCALE_MIN = 0.75;
-const THEATER_SCALE_MAX = 1.8;
-const THEATER_SCALE_STEP = 0.1;
-const THEATER_BASE_WIDTH_VW = 42;
-const THEATER_BASE_WIDTH_PX = 520;
-const theaterForegroundClass = 'h-auto w-full max-h-full max-w-full rounded-lg bg-transparent object-contain shadow-2xl';
+const THEATER_SCALE_MIN = 0.72;
+const THEATER_SCALE_MAX = 1.35;
+const THEATER_SCALE_STEP = 0.08;
+const THEATER_BASE_WIDTH_VW = 82;
+const THEATER_BASE_WIDTH_PX = 980;
+const THEATER_MAX_HEIGHT_VH = 82;
+const THEATER_OBJECT_POSITION = '50% 45%';
+const theaterFrameClass = [
+  'pointer-events-auto relative flex aspect-video items-center justify-center overflow-hidden',
+  'rounded-xl border border-white/30 bg-white/5 shadow-2xl ring-1 ring-black/30',
+  'transition-all duration-200 ease-out',
+].join(' ');
+const theaterForegroundFrameClass = 'flex h-full w-full items-center justify-center overflow-hidden rounded-xl';
+const theaterForegroundClass = 'h-full w-full bg-transparent object-cover';
 
 export const AVATAR_OVERLAY_Z_INDEX = Object.freeze({
   baseVideo: 0,
@@ -136,9 +144,9 @@ function floatingPlacementStyle(placement) {
 function theaterPlacementStyle(scale) {
   const clampedScale = clampTheaterScale(scale);
   return {
-    width: `min(${(THEATER_BASE_WIDTH_VW * clampedScale).toFixed(1)}vw, ${Math.round(THEATER_BASE_WIDTH_PX * clampedScale)}px)`,
-    maxWidth: 'calc(100% - 1rem)',
-    maxHeight: '100%',
+    aspectRatio: '16 / 9',
+    width: `min(${(THEATER_BASE_WIDTH_VW * clampedScale).toFixed(1)}vw, ${Math.round(THEATER_BASE_WIDTH_PX * clampedScale)}px, ${((THEATER_MAX_HEIGHT_VH * 16) / 9).toFixed(1)}vh, calc(100% - 1rem))`,
+    maxHeight: `${THEATER_MAX_HEIGHT_VH}vh`,
   };
 }
 
@@ -167,7 +175,7 @@ function AvatarControls({
   onDragPointerDown,
   onTheaterSizeDecrease,
   onTheaterSizeIncrease,
-  onTheaterSizeReset,
+  onTheaterReset,
   compact = false,
 }) {
   if (!visible) {
@@ -221,26 +229,24 @@ function AvatarControls({
           <Plus size={15} />
         </button>
       )}
-      {theater && typeof onTheaterSizeReset === 'function' && (
-        <button
-          type="button"
-          title="Reset avatar theater size"
-          aria-label="Reset avatar theater size"
-          onClick={onTheaterSizeReset}
-          className={controlButtonClassName()}
-        >
-          <RotateCcw size={15} />
-        </button>
-      )}
-      <button
-        type="button"
-        title="Reset avatar position"
-        aria-label="Reset avatar position"
-        onClick={onReset}
-        className={controlButtonClassName()}
-      >
-        <RotateCcw size={15} />
-      </button>
+      {(() => {
+        const resetHandler = theater && typeof onTheaterReset === 'function' ? onTheaterReset : onReset;
+        const resetLabel = theater && typeof onTheaterReset === 'function'
+          ? 'Reset avatar theater'
+          : 'Reset avatar position';
+        if (typeof resetHandler !== 'function') return null;
+        return (
+          <button
+            type="button"
+            title={resetLabel}
+            aria-label={resetLabel}
+            onClick={resetHandler}
+            className={controlButtonClassName()}
+          >
+            <RotateCcw size={15} />
+          </button>
+        );
+      })()}
       <button
         type="button"
         title={theater ? 'Exit avatar theater' : 'Open avatar theater'}
@@ -280,7 +286,6 @@ export default function AvatarOverlayLayer({
   const hoverWithinRef = useRef(false);
   const focusWithinRef = useRef(false);
   const draggingRef = useRef(false);
-  const theaterOpenRef = useRef(false);
   const [avatarVisible, setAvatarVisible] = useState(() => readStoredVisible(lessonId));
   const defaultPlacement = useMemo(() => normalizeAvatarPlacement(placement || DEFAULT_AVATAR_PLACEMENT), [placement]);
   const [currentPlacement, setCurrentPlacement] = useState(() => placementFromStorage(lessonId, defaultPlacement));
@@ -301,7 +306,6 @@ export default function AvatarOverlayLayer({
     hoverWithinRef.current = false;
     focusWithinRef.current = false;
     draggingRef.current = false;
-    theaterOpenRef.current = false;
   }, [defaultPlacement, lessonId, src]);
 
   useEffect(() => {
@@ -315,10 +319,6 @@ export default function AvatarOverlayLayer({
   useEffect(() => {
     draggingRef.current = dragging;
   }, [dragging]);
-
-  useEffect(() => {
-    theaterOpenRef.current = theaterOpen;
-  }, [theaterOpen]);
 
   useEffect(() => () => {
     if (autoHideTimerRef.current) {
@@ -342,7 +342,6 @@ export default function AvatarOverlayLayer({
         !hoverWithinRef.current
         && !focusWithinRef.current
         && !draggingRef.current
-        && !theaterOpenRef.current
         && !dragStateRef.current
       ) {
         setControlsVisible(false);
@@ -361,7 +360,7 @@ export default function AvatarOverlayLayer({
   const handleFramePointerLeave = useCallback((event) => {
     if (event.pointerType === 'mouse') {
       hoverWithinRef.current = false;
-      if (!focusWithinRef.current && !draggingRef.current && !theaterOpenRef.current) {
+      if (!focusWithinRef.current && !draggingRef.current) {
         setControlsVisible(false);
       }
     }
@@ -382,10 +381,10 @@ export default function AvatarOverlayLayer({
     if (event.currentTarget.contains(event.relatedTarget)) return;
     focusWithinRef.current = false;
     setFocusWithin(false);
-    if (!dragging && !theaterOpen) {
+    if (!dragging) {
       setControlsVisible(false);
     }
-  }, [dragging, theaterOpen]);
+  }, [dragging]);
 
   const syncAvatarPlayback = useCallback(() => {
     const mainVideo = videoRef?.current;
@@ -488,14 +487,13 @@ export default function AvatarOverlayLayer({
   }, [defaultPlacement, lessonId]);
 
   const updateTheaterScale = useCallback((delta) => {
-    clearAutoHideTimer();
-    setControlsVisible(true);
+    showControls({ autoHide: true });
     setTheaterScale((previous) => {
       const next = clampTheaterScale(previous + delta);
       writeStoredTheaterScale(lessonId, next);
       return next;
     });
-  }, [clearAutoHideTimer, lessonId]);
+  }, [lessonId, showControls]);
 
   const handleTheaterSizeDecrease = useCallback(() => {
     updateTheaterScale(-THEATER_SCALE_STEP);
@@ -505,27 +503,29 @@ export default function AvatarOverlayLayer({
     updateTheaterScale(THEATER_SCALE_STEP);
   }, [updateTheaterScale]);
 
-  const handleTheaterSizeReset = useCallback(() => {
-    clearAutoHideTimer();
+  const handleTheaterReset = useCallback(() => {
+    handleReset();
     clearStoredTheaterScale(lessonId);
-    setControlsVisible(true);
+    showControls({ autoHide: true });
     setTheaterScale(THEATER_SCALE_DEFAULT);
-  }, [clearAutoHideTimer, lessonId]);
+  }, [handleReset, lessonId, showControls]);
 
   const handleShow = useCallback(() => setAvatarVisible(true), []);
   const handleHide = useCallback(() => {
     setAvatarVisible(false);
     setControlsVisible(false);
     setTheaterOpen(false);
+    hoverWithinRef.current = false;
+    focusWithinRef.current = false;
+    setFocusWithin(false);
   }, []);
   const handleTheaterToggle = useCallback(() => {
-    clearAutoHideTimer();
-    setControlsVisible(true);
-    setTheaterOpen((previous) => {
-      theaterOpenRef.current = !previous;
-      return !previous;
-    });
-  }, [clearAutoHideTimer]);
+    hoverWithinRef.current = false;
+    focusWithinRef.current = false;
+    setFocusWithin(false);
+    setTheaterOpen((previous) => !previous);
+    showControls({ autoHide: true });
+  }, [showControls]);
 
   if (!enabled || !src) return null;
 
@@ -539,6 +539,7 @@ export default function AvatarOverlayLayer({
         'pointer-events-none rounded-lg',
         theater ? theaterForegroundClass : 'h-full w-full bg-black object-cover',
       ].join(' ')}
+      style={theater ? { objectPosition: THEATER_OBJECT_POSITION } : undefined}
       muted
       playsInline
       preload="metadata"
@@ -589,8 +590,8 @@ export default function AvatarOverlayLayer({
               <div
                 data-testid="avatar-overlay-controls"
                 data-avatar-controls="true"
-                data-controls-visible={theaterOpen || controlsVisible ? 'true' : 'false'}
-                className={`absolute right-2 top-2 ${controlsVisibilityClassName(theaterOpen || controlsVisible)}`}
+                data-controls-visible={controlsVisible || dragging ? 'true' : 'false'}
+                className={`absolute right-2 top-2 ${controlsVisibilityClassName(controlsVisible || dragging)}`}
                 style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarControls }}
               >
                 <AvatarControls
@@ -600,6 +601,7 @@ export default function AvatarOverlayLayer({
                   onHide={handleHide}
                   onReset={handleReset}
                   onTheaterToggle={handleTheaterToggle}
+                  onTheaterReset={handleTheaterReset}
                 />
               </div>
             </div>
@@ -629,19 +631,30 @@ export default function AvatarOverlayLayer({
           style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarTheater }}
         >
           <div
+            ref={frameRef}
             data-avatar-theater-frame="true"
-            className="pointer-events-auto relative flex items-center justify-center"
+            tabIndex={0}
+            role="group"
+            aria-label="Avatar overlay"
+            className={theaterFrameClass}
             style={theaterPlacementStyle(theaterScale)}
+            onPointerEnter={handleFramePointerEnter}
+            onPointerLeave={handleFramePointerLeave}
+            onPointerDown={handleFramePointerDown}
+            onFocus={handleFrameFocus}
+            onBlur={handleFrameBlur}
           >
             <div
               data-avatar-theater-foreground-frame="true"
-              className="flex h-auto w-full items-center justify-center"
+              className={theaterForegroundFrameClass}
             >
               {renderAvatarVideo({ theater: true })}
             </div>
             <div
+              data-testid="avatar-overlay-controls"
               data-avatar-controls="true"
-              className="absolute right-3 top-3"
+              data-controls-visible={controlsVisible || dragging ? 'true' : 'false'}
+              className={`absolute bottom-3 left-1/2 -translate-x-1/2 ${controlsVisibilityClassName(controlsVisible || dragging)}`}
               style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.avatarControls }}
             >
               <AvatarControls
@@ -653,7 +666,7 @@ export default function AvatarOverlayLayer({
                 onTheaterToggle={handleTheaterToggle}
                 onTheaterSizeDecrease={handleTheaterSizeDecrease}
                 onTheaterSizeIncrease={handleTheaterSizeIncrease}
-                onTheaterSizeReset={handleTheaterSizeReset}
+                onTheaterReset={handleTheaterReset}
               />
             </div>
           </div>
