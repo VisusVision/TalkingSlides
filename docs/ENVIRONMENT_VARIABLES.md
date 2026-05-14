@@ -2,6 +2,15 @@
 
 This reference is based on `infra/.env.example`. Never commit real values, real `.env` files, provider credentials, signing keys, OAuth secrets, DRM secrets, or generated media paths.
 
+Profile-specific placeholder examples live in:
+
+- `infra/env.local.example`
+- `infra/env.staging.example`
+- `infra/env.production-secure-stream.example`
+- `infra/env.production-drm-protected.example`
+
+Use `scripts/check-production-env.ps1` to validate staging and production-like examples before adapting them to real deployment secrets.
+
 Columns:
 
 - Local: required for ordinary local development.

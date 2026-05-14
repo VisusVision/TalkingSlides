@@ -11,12 +11,15 @@
 
 - [Architecture](ARCHITECTURE.md)
 - [Environment variables](ENVIRONMENT_VARIABLES.md)
+- [Deployment profiles](DEPLOYMENT_PROFILES.md)
 - [Production deployment](PRODUCTION_DEPLOYMENT.md)
+- [Release checklist](RELEASE_CHECKLIST.md)
 - [Secure playback and DRM](SECURE_PLAYBACK_DRM.md)
 - [Avatar pipeline](AVATAR_PIPELINE.md)
 
 ## Operations
 
+- [Operations runbook](OPERATIONS_RUNBOOK.md)
 - [Moderation operations](MODERATION_OPERATIONS.md)
 - [Moderation smoke testing](MODERATION_SMOKE_TESTING.md)
 - [Prometheus and retry runbook](PROMETHEUS_AND_RETRY_RUNBOOK.md)
