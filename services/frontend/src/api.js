@@ -1,5 +1,32 @@
-export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000/api/v1").replace(/\/+$/, "");
-const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, "");
+// ---------------------------------------------------------------------------
+// API Base URL normalization
+// ---------------------------------------------------------------------------
+// Ensures API_BASE_URL always ends with /api/v1 exactly once, supporting
+// both bare origin (http://localhost:8000) and versioned styles
+// (http://localhost:8000/api/v1).
+
+const DEFAULT_API_BASE_URL = "http://localhost:8000/api/v1";
+
+/**
+ * Normalize API base URL to always end with /api/v1.
+ * @param {string} value - Raw API base from env or default
+ * @returns {string} Normalized API base ending in /api/v1
+ *
+ * Examples:
+ *   normalizeApiBaseUrl("http://localhost:8000") -> "http://localhost:8000/api/v1"
+ *   normalizeApiBaseUrl("http://localhost:8000/api/v1") -> "http://localhost:8000/api/v1"
+ *   normalizeApiBaseUrl("https://api.example.com") -> "https://api.example.com/api/v1"
+ */
+export function normalizeApiBaseUrl(value) {
+  const raw = String(value || DEFAULT_API_BASE_URL).trim().replace(/\/+$/, "");
+  if (!raw) return DEFAULT_API_BASE_URL;
+  // Case-insensitive check for existing /api/v1 suffix
+  if (/\/api\/v1$/i.test(raw)) return raw;
+  return `${raw}/api/v1`;
+}
+
+export const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
+const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/i, "");
 const AUTH_USER_STORAGE_KEY = "auth_user";
 
 function toAbsoluteApiUrl(url) {
