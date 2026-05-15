@@ -8,7 +8,7 @@ The stable local production path is:
 
 ```text
 TTS audio
-  -> LivePortrait with vetted d11 motion template
+  -> LivePortrait with calm external motion template when configured
   -> MuseTalk lip sync
   -> optional restoration
   -> avatar track
@@ -25,14 +25,23 @@ When avatar output is ready, active, visible, and backed by an existing artifact
 
 ## LivePortrait
 
-LivePortrait supplies natural face and head motion. The current safe image path favors a vetted d11 template for image-driven avatars:
+LivePortrait supplies face and head motion. For lecture avatars, the preferred image path is an external calm driving template that is not committed to git:
 
 ```text
-AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY=vetted_template_for_image
-AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE=/opt/liveportrait/assets/examples/driving/d11.mp4
+AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE=storage_local/avatar_templates/calm_lecture_driver.mp4
+AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY=
 ```
 
-Head-motion tuning remains an area for polish. The goal is professional teaching posture, natural blinking, and stable low-motion output rather than exaggerated movement.
+When the policy is blank, the runner uses `calm_template_for_image` only if `AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE` points to a valid video. If the calm template is missing, the current vetted d11 template remains the placeholder fallback for now:
+
+```text
+AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE=/opt/liveportrait/assets/examples/driving/d11.mp4
+AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK=1
+```
+
+`composer_for_image` remains available as an explicit debug policy or with `AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK=1`, but it is not the production default because its blink path is not a real eyelid/keypoint driver.
+
+Head-motion tuning remains an area for polish. The goal is professional teaching posture, natural blinking, and stable low-motion output rather than exaggerated movement. Calm template media should live under local or object storage, such as `storage_local/avatar_templates/`, and must not be committed.
 
 ## MuseTalk
 

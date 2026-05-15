@@ -265,6 +265,10 @@ def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypa
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK", raising=False)
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
     image.write_bytes(b"image")
@@ -284,6 +288,10 @@ def test_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monkeypa
     assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "1.0"
     assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
     assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY"] == "vetted_template_for_image"
+    assert env["AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE"] == ""
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK"] == "1"
     assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH"] == "0.45"
     assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING"] == "1e-4"
     assert env["AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED"] == "0.75"
@@ -322,6 +330,10 @@ def test_non_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monk
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK", raising=False)
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
     image.write_bytes(b"image")
@@ -343,6 +355,9 @@ def test_non_preview_liveportrait_motion_strength_defaults_to_one(tmp_path, monk
     assert env["AVATAR_LIVEPORTRAIT_MOTION_PRESET"] == "natural_conservative"
     assert env["AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY"] == "0"
     assert env["AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY"] == "vetted_template_for_image"
+    assert env["AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE"] == ""
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK"] == "1"
     assert env["AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE"].endswith("d11.mp4")
 
 
@@ -368,6 +383,32 @@ def test_non_preview_liveportrait_motion_strength_preserves_env_value(tmp_path, 
     assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] == "0.000004"
 
 
+def test_stage_env_auto_selects_calm_template_when_valid(tmp_path, monkeypatch):
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    calm_template = tmp_path / "calm_lecture_driver.mp4"
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    calm_template.write_bytes(b"calm-template")
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(calm_template))
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input(tmp_path, image),
+        avatar_pipeline.AvatarRenderRequest(
+            source_image_path=str(image),
+            audio_path=str(audio),
+            output_path=str(tmp_path / "segment.mp4"),
+        ),
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY"] == "calm_template_for_image"
+    assert env["AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE"] == str(calm_template)
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK"] == "0"
+    assert env["AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK"] == "1"
+
+
 def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch):
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
@@ -384,6 +425,10 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_COMPOSER_VALIDATION_MODE", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK", raising=False)
     default_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "natural_visible")
@@ -399,6 +444,9 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     assert default_keys["liveportrait_composer_validation_mode"] == "localized"
     assert default_keys["liveportrait_driver_source_policy"] == "vetted_template_for_image"
     assert default_keys["liveportrait_vetted_image_template_basename"] == "d11.mp4"
+    assert default_keys["liveportrait_calm_template_basename"] == ""
+    assert default_keys["liveportrait_composer_fallback_allowed"] == "0"
+    assert default_keys["liveportrait_vetted_template_fallback_allowed"] == "1"
     assert natural_visible_keys["liveportrait_motion_preset"] == "natural_visible"
     assert natural_visible_keys["liveportrait_boosted_retry_allowed"] == "0"
     assert subtle_gaze_keys["liveportrait_motion_preset"] == "subtle_gaze"
@@ -428,10 +476,14 @@ def test_liveportrait_driver_policy_and_template_affect_cache_identity(tmp_path,
     audio = tmp_path / "a.wav"
     template_a = tmp_path / "d11_a.mp4"
     template_b = tmp_path / "d11_b.mp4"
+    calm_template_a = tmp_path / "calm_a.mp4"
+    calm_template_b = tmp_path / "calm_b.mp4"
     image.write_bytes(b"image")
     audio.write_bytes(b"audio")
     template_a.write_bytes(b"template-a")
     template_b.write_bytes(b"template-b")
+    calm_template_a.write_bytes(b"calm-template-a")
+    calm_template_b.write_bytes(b"calm-template-b")
     request = avatar_pipeline.AvatarRenderRequest(
         source_image_path=str(image),
         audio_path=str(audio),
@@ -453,6 +505,19 @@ def test_liveportrait_driver_policy_and_template_affect_cache_identity(tmp_path,
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "composer_for_image")
     composer_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
 
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "calm_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(calm_template_a))
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK", raising=False)
+    calm_keys_a = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(calm_template_b))
+    calm_keys_b = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", "1")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK", "0")
+    calm_flags_changed_keys = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+
     assert keys_a["liveportrait_driver_source_policy"] == "vetted_template_for_image"
     assert keys_a["liveportrait_vetted_image_template_basename"] == "d11_a.mp4"
     assert keys_a["liveportrait_template_motion_strength"] == "0.45"
@@ -470,10 +535,28 @@ def test_liveportrait_driver_policy_and_template_affect_cache_identity(tmp_path,
     assert composer_keys["liveportrait_template_speed"] == "1.0"
     assert composer_keys["liveportrait_template_calm_profile"] == "0"
     assert composer_keys != keys_b
+    assert calm_keys_a["liveportrait_driver_source_policy"] == "calm_template_for_image"
+    assert calm_keys_a["liveportrait_calm_template_basename"] == "calm_a.mp4"
+    assert calm_keys_b["liveportrait_calm_template_basename"] == "calm_b.mp4"
+    assert calm_keys_a["liveportrait_calm_template_hash"]
+    assert calm_keys_b["liveportrait_calm_template_hash"]
+    assert calm_keys_a["liveportrait_calm_template_hash"] != calm_keys_b["liveportrait_calm_template_hash"]
+    assert calm_keys_a["liveportrait_calm_template_path_marker"] != calm_keys_b["liveportrait_calm_template_path_marker"]
+    assert calm_keys_a["liveportrait_vetted_template_fallback_allowed"] == "1"
+    assert calm_keys_a["liveportrait_composer_fallback_allowed"] == "0"
+    assert calm_flags_changed_keys["liveportrait_vetted_template_fallback_allowed"] == "0"
+    assert calm_flags_changed_keys["liveportrait_composer_fallback_allowed"] == "1"
+    assert calm_keys_a != calm_keys_b
+    assert calm_flags_changed_keys != calm_keys_b
 
 
 def test_liveportrait_stderr_records_vetted_template_calm_profile():
     stage_paths = {
+        "liveportrait_calm_template_used": False,
+        "liveportrait_calm_template_missing": False,
+        "liveportrait_calm_template_failed": False,
+        "liveportrait_vetted_template_fallback_used": False,
+        "liveportrait_composer_fallback_used": False,
         "liveportrait_template_motion_strength": "",
         "liveportrait_template_temporal_smoothing": "",
         "liveportrait_template_speed": "1.0",
@@ -485,6 +568,12 @@ def test_liveportrait_stderr_records_vetted_template_calm_profile():
         (
             "liveportrait_driver_source_policy=vetted_template_for_image "
             "liveportrait_driver_source=template "
+            "liveportrait_calm_template_path=calm_lecture_driver.mp4 "
+            "liveportrait_calm_template_used=1 "
+            "liveportrait_calm_template_missing=0 "
+            "liveportrait_calm_template_failed=0 "
+            "liveportrait_vetted_template_fallback_used=1 "
+            "liveportrait_composer_fallback_used=0 "
             "liveportrait_template_motion_strength=0.45 "
             "liveportrait_template_temporal_smoothing=1e-4 "
             "liveportrait_template_speed=0.75 "
@@ -493,6 +582,12 @@ def test_liveportrait_stderr_records_vetted_template_calm_profile():
     )
 
     assert stage_paths["liveportrait_template_motion_strength"] == "0.45"
+    assert stage_paths["liveportrait_calm_template_path"] == "calm_lecture_driver.mp4"
+    assert stage_paths["liveportrait_calm_template_used"] is True
+    assert stage_paths["liveportrait_calm_template_missing"] is False
+    assert stage_paths["liveportrait_calm_template_failed"] is False
+    assert stage_paths["liveportrait_vetted_template_fallback_used"] is True
+    assert stage_paths["liveportrait_composer_fallback_used"] is False
     assert stage_paths["liveportrait_template_temporal_smoothing"] == "1e-4"
     assert stage_paths["liveportrait_template_speed"] == "0.75"
     assert stage_paths["liveportrait_template_calm_profile"] is True

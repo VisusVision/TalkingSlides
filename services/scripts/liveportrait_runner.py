@@ -37,6 +37,7 @@ _ALLOWED_MOTION_PRESETS = {"natural_conservative", "natural_visible", "subtle_bl
 _BOOSTED_PROFILES = {"boosted", "boosted_strong", "stronger", "strong"}
 _DEFAULT_DRIVER_SOURCE_POLICY = "vetted_template_for_image"
 _SUPPORTED_DRIVER_SOURCE_POLICIES = {
+    "calm_template_for_image",
     "vetted_template_for_image",
     "composer_for_image",
     "template_first",
@@ -125,13 +126,32 @@ def _composer_validation_env_mode(raw_value: str | None = None) -> str:
     return "strict_global" if raw == "strict_global" else "localized"
 
 
-def _resolve_driver_source_policy(raw_value: str | None = None) -> str:
+def _resolve_driver_source_policy(
+    raw_value: str | None = None,
+    *,
+    liveportrait_home: Path | None = None,
+    repo_root: Path | None = None,
+) -> str:
     raw = str(
         raw_value
         if raw_value is not None
-        else os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", _DEFAULT_DRIVER_SOURCE_POLICY)
+        else os.environ.get("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "")
     ).strip().lower()
-    return raw if raw in _SUPPORTED_DRIVER_SOURCE_POLICIES else _DEFAULT_DRIVER_SOURCE_POLICY
+    if raw:
+        return raw if raw in _SUPPORTED_DRIVER_SOURCE_POLICIES else _DEFAULT_DRIVER_SOURCE_POLICY
+
+    if liveportrait_home is not None and repo_root is not None:
+        try:
+            _, calm_template_path, _ = _resolve_calm_image_template(
+                liveportrait_home=liveportrait_home,
+                repo_root=repo_root,
+            )
+            if calm_template_path is not None:
+                return "calm_template_for_image"
+        except Exception:
+            pass
+
+    return _DEFAULT_DRIVER_SOURCE_POLICY
 
 
 def _compose_profiles_for_preset(motion_preset: str, allow_boosted_retry: bool) -> list[str]:
@@ -406,6 +426,18 @@ def _resolve_existing_path(raw_path: str, *, base_dirs: list[Path]) -> Path | No
 def _safe_path_label(raw_path: str | Path) -> str:
     label = Path(str(raw_path or "")).name or str(raw_path or "").strip() or "unknown"
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", label)
+
+
+def _resolve_calm_image_template(*, liveportrait_home: Path, repo_root: Path) -> tuple[str, Path | None, str]:
+    raw_override = str(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", "")).strip()
+    if not raw_override:
+        return "calm_env:AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", None, ""
+
+    resolved = _resolve_existing_path(raw_override, base_dirs=[repo_root, liveportrait_home])
+    label = _safe_path_label(raw_override)
+    if resolved is None or not resolved.is_file() or str(resolved.suffix or "").lower() not in _VIDEO_EXTS:
+        return "calm_env:AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", None, label
+    return "calm_env:AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", resolved, label
 
 
 def _resolve_vetted_image_template(*, liveportrait_home: Path, repo_root: Path) -> tuple[str, Path | None, str]:
@@ -1197,7 +1229,18 @@ def main() -> int:
         # ── Motion source policy ─────────────────────────────────────────────
         # Image input: generate driving from image composition.
         # Video input: reuse the provided source video as real driving input.
-        _driver_source_policy = _resolve_driver_source_policy()
+        _driver_source_policy = _resolve_driver_source_policy(
+            liveportrait_home=liveportrait_home,
+            repo_root=repo_root,
+        )
+        _composer_fallback_allowed = (
+            _driver_source_policy == "composer_for_image"
+            or _truthy(os.environ.get("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK"), "0")
+        )
+        _vetted_template_fallback_allowed = _truthy(
+            os.environ.get("AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK"),
+            "1",
+        )
         _composer_validation_mode = _composer_validation_env_mode()
         _motion_source = "real_video" if input_kind == "video" else "image_pending"
         _source_mode = "video_reuse" if input_kind == "video" else "image_driven_composition"
@@ -1215,9 +1258,15 @@ def main() -> int:
         _driver_metrics: dict[str, object] = {}
         _driver_validation_mode = "informational"
         _template_used = ""
+        _calm_template_path = ""
+        _calm_template_used = False
+        _calm_template_missing = False
+        _calm_template_failed = False
         _vetted_template_path = _VETTED_IMAGE_TEMPLATE_NAME
         _vetted_template_missing = False
         _vetted_template_failed = False
+        _vetted_template_fallback_used = False
+        _composer_fallback_used = False
         _fallback_driver_source = ""
         _vetted_motion_settings = _vetted_template_motion_settings()
         _template_motion_strength = ""
@@ -1264,7 +1313,50 @@ def main() -> int:
             _driver_rejections: list[str] = []
             _compose_succeeded_once = False
             _template_candidates = []
-            if _driver_source_policy == "vetted_template_for_image":
+            if _driver_source_policy == "calm_template_for_image":
+                _calm_origin, _calm_path, _calm_template_path = _resolve_calm_image_template(
+                    liveportrait_home=liveportrait_home,
+                    repo_root=repo_root,
+                )
+                if _calm_path is not None:
+                    _template_candidates = [(_calm_origin, _calm_path)]
+                else:
+                    _calm_template_missing = True
+                    if _vetted_template_fallback_allowed:
+                        _fallback_driver_source = "vetted_template"
+                    elif _composer_fallback_allowed:
+                        _fallback_driver_source = "composer"
+                    print(
+                        "[LivePortrait] calm_template_status "
+                        f"liveportrait_driver_source_policy={_driver_source_policy} "
+                        f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                        "liveportrait_calm_template_missing=1 "
+                        "liveportrait_calm_template_failed=0 "
+                        "liveportrait_vetted_template_fallback_used=0 "
+                        "liveportrait_composer_fallback_used=0 "
+                        f"liveportrait_fallback_driver_source={_fallback_driver_source or 'none'}",
+                        file=sys.stderr,
+                    )
+                if _vetted_template_fallback_allowed:
+                    _vetted_origin, _vetted_path, _vetted_template_path = _resolve_vetted_image_template(
+                        liveportrait_home=liveportrait_home,
+                        repo_root=repo_root,
+                    )
+                    if _vetted_path is not None:
+                        _template_candidates.append((_vetted_origin, _vetted_path))
+                    else:
+                        _vetted_template_missing = True
+                        if _calm_path is None:
+                            print(
+                                "[LivePortrait] vetted_template_status "
+                                f"liveportrait_driver_source_policy={_driver_source_policy} "
+                                f"liveportrait_vetted_template_path={_vetted_template_path} "
+                                "liveportrait_vetted_template_missing=1 "
+                                "liveportrait_vetted_template_failed=0 "
+                                f"liveportrait_fallback_driver_source={'composer' if _composer_fallback_allowed else 'none'}",
+                                file=sys.stderr,
+                            )
+            elif _driver_source_policy == "vetted_template_for_image":
                 _vetted_origin, _vetted_path, _vetted_template_path = _resolve_vetted_image_template(
                     liveportrait_home=liveportrait_home,
                     repo_root=repo_root,
@@ -1279,7 +1371,7 @@ def main() -> int:
                         f"liveportrait_vetted_template_path={_vetted_template_path} "
                         "liveportrait_vetted_template_missing=1 "
                         "liveportrait_vetted_template_failed=0 "
-                        "liveportrait_fallback_driver_source=composer",
+                        f"liveportrait_fallback_driver_source={'composer' if _composer_fallback_allowed else 'none'}",
                         file=sys.stderr,
                     )
             elif _driver_source_policy == "template_first":
@@ -1323,6 +1415,8 @@ def main() -> int:
                         playback_speed=float(_candidate_playback_speed),
                     )
                 except Exception as _template_exc:
+                    if str(_template_origin).startswith("calm_"):
+                        _calm_template_failed = True
                     if str(_template_origin).startswith("vetted_"):
                         _vetted_template_failed = True
                     _driver_rejections.append(
@@ -1332,9 +1426,11 @@ def main() -> int:
                         "[LivePortrait] driver candidate rejected "
                         f"candidate=image_template origin={_template_origin} "
                         f"path={_template_path} reason=materialize_failed:{_template_exc} "
+                        f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                        f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                         f"liveportrait_vetted_template_path={_vetted_template_path} "
                         f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
-                        f"liveportrait_fallback_driver_source={'composer' if str(_template_origin).startswith('vetted_') else ''}",
+                        f"liveportrait_fallback_driver_source={'composer' if _composer_fallback_allowed else 'none'}",
                         file=sys.stderr,
                     )
                     continue
@@ -1354,6 +1450,8 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 if not bool(_driver_metrics.get("valid")):
+                    if str(_template_origin).startswith("calm_"):
+                        _calm_template_failed = True
                     if str(_template_origin).startswith("vetted_"):
                         _vetted_template_failed = True
                     _rejection_reason = str(
@@ -1368,19 +1466,32 @@ def main() -> int:
                         "[LivePortrait] driver candidate rejected "
                         f"candidate=image_template origin={_template_origin} "
                         f"reason={_rejection_reason} metrics={_format_driver_metrics(_driver_metrics)} "
+                        f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                        f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                         f"liveportrait_vetted_template_path={_vetted_template_path} "
                         f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
-                        f"liveportrait_fallback_driver_source={'composer' if str(_template_origin).startswith('vetted_') else ''}",
+                        f"liveportrait_fallback_driver_source={'composer' if _composer_fallback_allowed else 'none'}",
                         file=sys.stderr,
                     )
                     continue
 
-                if str(_template_origin).startswith("env:") or str(_template_origin).startswith("vetted_"):
+                if (
+                    str(_template_origin).startswith("calm_")
+                    or str(_template_origin).startswith("env:")
+                    or str(_template_origin).startswith("vetted_")
+                ):
                     source_video = _candidate_video
                     _motion_source = f"image_template:{_template_origin}"
                     _driver_source = "template"
                     _template_used = _candidate_template_name
+                    if str(_template_origin).startswith("calm_"):
+                        _calm_template_used = True
                     if str(_template_origin).startswith("vetted_"):
+                        if _driver_source_policy == "calm_template_for_image" and (
+                            _calm_template_missing or _calm_template_failed
+                        ):
+                            _vetted_template_fallback_used = True
+                            _fallback_driver_source = "vetted_template"
                         _template_motion_strength = _vetted_motion_settings["motion_strength"]
                         _template_temporal_smoothing = _vetted_motion_settings["temporal_smoothing"]
                         _template_speed = _vetted_motion_settings["speed"]
@@ -1424,7 +1535,7 @@ def main() -> int:
                     file=sys.stderr,
                 )
 
-            for _profile in _compose_profiles:
+            for _profile in (_compose_profiles if _composer_fallback_allowed else []):
                 if source_video is not None:
                     break
                 _composed_ok = False
@@ -1520,11 +1631,13 @@ def main() -> int:
 
                 _selected_profile = str(_profile)
                 _composer_used = True
+                if _driver_source_policy != "composer_for_image":
+                    _composer_fallback_used = True
                 _boosted_retry_used = str(_profile).strip().lower() in _BOOSTED_PROFILES
                 _driver_source = "composer"
                 source_video = _candidate_video
                 _motion_source = f"image_composed:{_selected_profile}"
-                if _driver_source_policy == "vetted_template_for_image" or _template_candidates:
+                if _driver_source_policy != "composer_for_image" or _template_candidates:
                     _fallback_driver_source = "composer"
                 _preserve_selected_driver_video(
                     candidate_video=Path(_candidate_video),
@@ -1536,6 +1649,11 @@ def main() -> int:
                 break
 
             if source_video is None and not _compose_succeeded_once and not _template_candidates:
+                if not _composer_fallback_allowed:
+                    raise RuntimeError(
+                        "liveportrait_no_driving_source: no image driving template available and "
+                        "composer fallback is disabled."
+                    )
                 raise RuntimeError(
                     "liveportrait_no_driving_source: no image driving template available and "
                     "motion_composer failed to produce image-driven composition."
@@ -1551,9 +1669,15 @@ def main() -> int:
                 f"liveportrait_driver_source_policy={_driver_source_policy} "
                 f"liveportrait_driver_source={_driver_source} "
                 f"liveportrait_template_used={_template_used or 'none'} "
+                f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                f"liveportrait_calm_template_used={int(bool(_calm_template_used))} "
+                f"liveportrait_calm_template_missing={int(bool(_calm_template_missing))} "
+                f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                 f"liveportrait_vetted_template_path={_vetted_template_path} "
                 f"liveportrait_vetted_template_missing={int(bool(_vetted_template_missing))} "
                 f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
+                f"liveportrait_vetted_template_fallback_used={int(bool(_vetted_template_fallback_used))} "
+                f"liveportrait_composer_fallback_used={int(bool(_composer_fallback_used))} "
                 f"liveportrait_fallback_driver_source={_fallback_driver_source or 'none'} "
                 f"liveportrait_template_motion_strength={_template_motion_strength or 'none'} "
                 f"liveportrait_template_temporal_smoothing={_template_temporal_smoothing or 'none'} "
@@ -1618,6 +1742,17 @@ def main() -> int:
             f"liveportrait_motion_profile={_selected_profile or ('source_video' if input_kind == 'video' else 'template')} "
             f"liveportrait_driver_source_policy={_driver_source_policy} "
             f"liveportrait_driver_source={_driver_source} "
+            f"liveportrait_template_used={_template_used or 'none'} "
+            f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+            f"liveportrait_calm_template_used={int(bool(_calm_template_used))} "
+            f"liveportrait_calm_template_missing={int(bool(_calm_template_missing))} "
+            f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
+            f"liveportrait_vetted_template_path={_vetted_template_path} "
+            f"liveportrait_vetted_template_missing={int(bool(_vetted_template_missing))} "
+            f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
+            f"liveportrait_vetted_template_fallback_used={int(bool(_vetted_template_fallback_used))} "
+            f"liveportrait_composer_fallback_used={int(bool(_composer_fallback_used))} "
+            f"liveportrait_fallback_driver_source={_fallback_driver_source or 'none'} "
             f"liveportrait_composer_used={int(bool(_composer_used))} "
             f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
             f"liveportrait_recenter_enabled={int(bool(_recenter_enabled))} "
@@ -1733,9 +1868,15 @@ def main() -> int:
                 f"liveportrait_driver_source_policy={_driver_source_policy} "
                 f"liveportrait_driver_source={_driver_source} "
                 f"liveportrait_template_used={_template_used or 'none'} "
+                f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                f"liveportrait_calm_template_used={int(bool(_calm_template_used))} "
+                f"liveportrait_calm_template_missing={int(bool(_calm_template_missing))} "
+                f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                 f"liveportrait_vetted_template_path={_vetted_template_path} "
                 f"liveportrait_vetted_template_missing={int(bool(_vetted_template_missing))} "
                 f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
+                f"liveportrait_vetted_template_fallback_used={int(bool(_vetted_template_fallback_used))} "
+                f"liveportrait_composer_fallback_used={int(bool(_composer_fallback_used))} "
                 f"liveportrait_fallback_driver_source={_fallback_driver_source or 'none'} "
                 f"liveportrait_composer_used={int(bool(_composer_used))} "
                 f"liveportrait_boosted_retry_used={int(bool(_boosted_retry_used))} "
