@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import signal
@@ -975,6 +976,143 @@ def _validate_driving_clip(
     return metrics
 
 
+def _calm_window_selection_enabled() -> bool:
+    return _truthy(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_ENABLED"), "1")
+
+
+def _calm_window_cache_version() -> str:
+    return str(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_CACHE_VERSION", "1") or "1").strip() or "1"
+
+
+def _deterministic_calm_window_seed(*, segment_index: int, audio_hash: str, page_key: str, template_path: Path) -> int:
+    template_marker = _safe_path_label(template_path)
+    raw = "|".join(
+        [
+            str(int(segment_index)),
+            str(audio_hash or "").strip(),
+            str(page_key or "").strip(),
+            template_marker,
+            _calm_window_cache_version(),
+        ]
+    )
+    return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12], 16)
+
+
+def _probe_clip_mean_mad_segment(
+    *,
+    source_video: Path,
+    start_seconds: float,
+    duration_seconds: float,
+) -> float:
+    if duration_seconds <= 0.0:
+        return 0.0
+    cmd = [
+        "ffmpeg",
+        "-hide_banner",
+        "-nostdin",
+    ]
+    if start_seconds > 0.0:
+        cmd.extend(["-ss", f"{float(start_seconds):.6f}"])
+    cmd.extend(
+        [
+            "-i",
+            str(source_video),
+            "-t",
+            f"{float(duration_seconds):.6f}",
+            "-vf",
+            "tblend=all_mode=difference,signalstats,metadata=print",
+            "-frames:v",
+            "36",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ]
+    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=45)
+    if proc.returncode != 0:
+        return 0.0
+    mad_values: list[float] = []
+    mad_output = "\n".join(part for part in [proc.stdout or "", proc.stderr or ""] if part)
+    for line in mad_output.splitlines():
+        if (
+            "lavfi.td.field0.mean" in line
+            or "lavfi.td.mean" in line
+            or "lavfi.signalstats.YAVG" in line
+            or "lavfi.signalstats.YDIF" in line
+        ):
+            try:
+                mad_values.append(float(str(line).strip().split("=")[-1]))
+            except Exception:
+                continue
+    if not mad_values:
+        return 0.0
+    return round(sum(mad_values) / len(mad_values), 6)
+
+
+def _select_calm_template_window_start(
+    *,
+    source_video: Path,
+    target_duration_seconds: float,
+    segment_index: int = 0,
+    audio_hash: str = "",
+    page_key: str = "",
+) -> dict[str, object]:
+    source_duration = float(_probe_duration_seconds(source_video, stream_selector="v:0"))
+    target_duration = max(float(target_duration_seconds or 0.0), 0.5)
+    min_source_seconds = max(float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MIN_SOURCE_SECONDS", "12.0")), target_duration + 0.5)
+    preferred_min_mad = float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MIN_MAD", "0.40"))
+    preferred_max_mad = float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MAX_MAD", "0.70"))
+    step_seconds = max(float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_STEP_SECONDS", "2.0")), 0.5)
+    fallback = {
+        "start_seconds": 0.0,
+        "duration_seconds": target_duration,
+        "mean_mad": 0.0,
+        "source": "default_start",
+    }
+    if not _calm_window_selection_enabled() or source_duration < min_source_seconds:
+        return fallback
+
+    max_start = max(source_duration - target_duration, 0.0)
+    candidates: list[tuple[float, float, int]] = []
+    offset = 0.0
+    while offset <= max_start + 1e-6:
+        mean_mad = _probe_clip_mean_mad_segment(
+            source_video=source_video,
+            start_seconds=offset,
+            duration_seconds=target_duration,
+        )
+        in_band = preferred_min_mad <= mean_mad <= preferred_max_mad
+        score_bucket = 0 if in_band else (1 if mean_mad >= preferred_min_mad else 2)
+        candidates.append((float(score_bucket), -float(mean_mad), float(offset)))
+        offset += step_seconds
+
+    if not candidates:
+        return fallback
+
+    seed = _deterministic_calm_window_seed(
+        segment_index=int(segment_index),
+        audio_hash=str(audio_hash or ""),
+        page_key=str(page_key or ""),
+        template_path=source_video,
+    )
+    ranked = sorted(candidates)
+    best_bucket = ranked[0][0]
+    bucket_offsets = [item[2] for item in ranked if item[0] == best_bucket]
+    chosen_offset = bucket_offsets[seed % len(bucket_offsets)]
+    chosen_mad = _probe_clip_mean_mad_segment(
+        source_video=source_video,
+        start_seconds=chosen_offset,
+        duration_seconds=target_duration,
+    )
+    return {
+        "start_seconds": round(float(chosen_offset), 6),
+        "duration_seconds": round(float(target_duration), 6),
+        "mean_mad": round(float(chosen_mad), 6),
+        "source": "sliding_window_probe",
+    }
+
+
 def _ensure_driving_clip_contract(
     *,
     source_video: Path,
@@ -984,6 +1122,7 @@ def _ensure_driving_clip_contract(
     output_name: str = "driving_contract.mp4",
     always_materialize: bool = False,
     playback_speed: float = 1.0,
+    start_offset_seconds: float = 0.0,
 ) -> tuple[Path, str, float]:
     current_duration_seconds = _probe_duration_seconds(source_video, stream_selector="v:0")
     current_fps = _probe_video_fps(source_video)
@@ -1016,11 +1155,17 @@ def _ensure_driving_clip_contract(
     normalize_cmd = [
         "ffmpeg",
         "-y",
-        "-stream_loop",
-        "-1",
-        "-i",
-        str(source_video),
     ]
+    if float(start_offset_seconds or 0.0) > 0.0:
+        normalize_cmd.extend(["-ss", f"{float(start_offset_seconds):.6f}"])
+    normalize_cmd.extend(
+        [
+            "-stream_loop",
+            "-1",
+            "-i",
+            str(source_video),
+        ]
+    )
     if vf_filters:
         normalize_cmd.extend(["-vf", ",".join(vf_filters)])
     normalize_cmd.extend(
@@ -1262,6 +1407,10 @@ def main() -> int:
         _calm_template_used = False
         _calm_template_missing = False
         _calm_template_failed = False
+        _calm_template_window_start = 0.0
+        _calm_template_window_duration = 0.0
+        _calm_template_window_mean_mad = 0.0
+        _calm_template_window_source = "default_start"
         _vetted_template_path = _VETTED_IMAGE_TEMPLATE_NAME
         _vetted_template_missing = False
         _vetted_template_failed = False
@@ -1405,6 +1554,31 @@ def main() -> int:
                         if str(_template_origin).startswith("vetted_")
                         else 1.0
                     )
+                    _window_start_seconds = 0.0
+                    if (
+                        str(_template_origin).startswith("calm_")
+                        and _driver_source_policy == "calm_template_for_image"
+                    ):
+                        _window_choice = _select_calm_template_window_start(
+                            source_video=_template_path,
+                            target_duration_seconds=float(_target_contract_duration_seconds),
+                            segment_index=int(os.environ.get("AVATAR_SEGMENT_INDEX", "0") or 0),
+                            audio_hash=str(os.environ.get("AVATAR_AUDIO_HASH", "") or ""),
+                            page_key=str(os.environ.get("AVATAR_PAGE_KEY", "") or ""),
+                        )
+                        _window_start_seconds = float(_window_choice.get("start_seconds") or 0.0)
+                        _calm_template_window_start = _window_start_seconds
+                        _calm_template_window_duration = float(_window_choice.get("duration_seconds") or _target_contract_duration_seconds)
+                        _calm_template_window_mean_mad = float(_window_choice.get("mean_mad") or 0.0)
+                        _calm_template_window_source = str(_window_choice.get("source") or "default_start")
+                        print(
+                            "[LivePortrait] calm_template_window "
+                            f"liveportrait_calm_template_window_start={_calm_template_window_start:.6f} "
+                            f"liveportrait_calm_template_window_duration={_calm_template_window_duration:.6f} "
+                            f"liveportrait_calm_template_window_mean_mad={_calm_template_window_mean_mad:.6f} "
+                            f"liveportrait_calm_template_window_source={_calm_template_window_source}",
+                            file=sys.stderr,
+                        )
                     _candidate_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
                         source_video=_template_path,
                         target_duration_seconds=float(_target_contract_duration_seconds),
@@ -1413,6 +1587,7 @@ def main() -> int:
                         output_name=f"image_template_drive_{_template_index:02d}.mp4",
                         always_materialize=True,
                         playback_speed=float(_candidate_playback_speed),
+                        start_offset_seconds=float(_window_start_seconds),
                     )
                 except Exception as _template_exc:
                     if str(_template_origin).startswith("calm_"):
@@ -1671,6 +1846,10 @@ def main() -> int:
                 f"liveportrait_template_used={_template_used or 'none'} "
                 f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
                 f"liveportrait_calm_template_used={int(bool(_calm_template_used))} "
+                f"liveportrait_calm_template_window_start={_calm_template_window_start:.6f} "
+                f"liveportrait_calm_template_window_duration={_calm_template_window_duration:.6f} "
+                f"liveportrait_calm_template_window_mean_mad={_calm_template_window_mean_mad:.6f} "
+                f"liveportrait_calm_template_window_source={_calm_template_window_source} "
                 f"liveportrait_calm_template_missing={int(bool(_calm_template_missing))} "
                 f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                 f"liveportrait_vetted_template_path={_vetted_template_path} "
@@ -1870,6 +2049,10 @@ def main() -> int:
                 f"liveportrait_template_used={_template_used or 'none'} "
                 f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
                 f"liveportrait_calm_template_used={int(bool(_calm_template_used))} "
+                f"liveportrait_calm_template_window_start={_calm_template_window_start:.6f} "
+                f"liveportrait_calm_template_window_duration={_calm_template_window_duration:.6f} "
+                f"liveportrait_calm_template_window_mean_mad={_calm_template_window_mean_mad:.6f} "
+                f"liveportrait_calm_template_window_source={_calm_template_window_source} "
                 f"liveportrait_calm_template_missing={int(bool(_calm_template_missing))} "
                 f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                 f"liveportrait_vetted_template_path={_vetted_template_path} "

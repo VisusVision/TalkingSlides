@@ -267,6 +267,23 @@ def _media_duration_seconds(path: str | Path) -> float:
     return float(info.get("duration_seconds") or info.get("stream_duration_seconds") or 0.0)
 
 
+def _landmark_cache_dir() -> Path | None:
+    raw = str(os.environ.get("MUSETALK_LANDMARK_CACHE_DIR", "") or "").strip()
+    if not raw:
+        return None
+    cache_dir = Path(raw)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _landmark_cache_path(*, source_sha256: str, bbox_shift: int, parsing_mode: str, version: str) -> Path | None:
+    cache_dir = _landmark_cache_dir()
+    if cache_dir is None or not source_sha256:
+        return None
+    key = f"{source_sha256}_{bbox_shift}_{parsing_mode}_{version}.pkl"
+    return cache_dir / key
+
+
 def _prepare_preview_fast_source(
     *,
     source_path: Path,
@@ -276,10 +293,17 @@ def _prepare_preview_fast_source(
 ) -> tuple[Path, dict[str, Any]]:
     before = _probe_media(source_path)
     requested = _truthy(params.get("preview_fast_mode"), False)
+    auto_downscale = _truthy(params.get("auto_downscale"), False) or _truthy(
+        os.environ.get("MUSETALK_AUTO_DOWNSCALE"),
+        False,
+    )
     max_width = max(_int_param(params, "preview_max_width", 512), 256)
+    source_width = int(before.get("width") or 0)
+    should_downscale = bool(requested or (auto_downscale and source_width > max_width))
     info: dict[str, Any] = {
-        "enabled": bool(requested),
+        "enabled": bool(should_downscale),
         "max_width": int(max_width),
+        "auto_downscale": bool(auto_downscale),
         "original_path": str(source_path),
         "prepared_path": str(source_path),
         "source_kind": str(source_kind),
@@ -288,7 +312,7 @@ def _prepare_preview_fast_source(
         "used": False,
         "error": "",
     }
-    if not requested:
+    if not should_downscale:
         return source_path, info
 
     scaled_path = work_dir / ("preview_source_fast.mp4" if source_kind == "video" else "preview_source_fast.png")
@@ -984,8 +1008,30 @@ def _infer(
                 # — Landmark detection (DWPose) —
                 t_lm = time.monotonic()
                 logger.info("MuseTalk service: stage_start face_landmark_extraction")
+                landmark_cache_path = _landmark_cache_path(
+                    source_sha256=_sha256_file(Path(video_path)),
+                    bbox_shift=int(bbox_shift),
+                    parsing_mode=str(params.get("parsing_mode") or "jaw"),
+                    version=str(version),
+                )
+                landmark_cache_hit = False
                 try:
-                    coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
+                    if landmark_cache_path is not None and landmark_cache_path.exists():
+                        with open(landmark_cache_path, "rb") as cache_file:
+                            coord_list = pickle.load(cache_file)
+                        frame_list = [cv2.imread(str(frame_path)) for frame_path in input_img_list]
+                        landmark_cache_hit = True
+                        logger.info(
+                            "MuseTalk service: landmark_cache_hit path=%s frames=%s",
+                            landmark_cache_path,
+                            len(frame_list),
+                        )
+                    else:
+                        coord_list, frame_list = get_landmark_and_bbox(input_img_list, bbox_shift)
+                        if landmark_cache_path is not None:
+                            landmark_cache_path.parent.mkdir(parents=True, exist_ok=True)
+                            with open(landmark_cache_path, "wb") as cache_file:
+                                pickle.dump(coord_list, cache_file)
                 except ZeroDivisionError:
                     raise RuntimeError(
                         "no_face_detected: DWPose found no valid face bounding boxes in the input. "

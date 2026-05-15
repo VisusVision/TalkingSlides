@@ -586,6 +586,87 @@ def _cache_payload_mismatches(meta_payload: dict[str, Any], expected: dict[str, 
     return mismatches
 
 
+def _stage_cache_meta_path(artifact_path: Path) -> Path:
+    return artifact_path.with_suffix(artifact_path.suffix + ".stage_cache.json")
+
+
+def _write_stage_cache_meta(*, artifact_path: Path, stage: str, cache_keys: dict[str, str]) -> None:
+    if not artifact_path.exists() or artifact_path.stat().st_size <= 0:
+        return
+    payload = {
+        "stage": str(stage),
+        "cache_keys": dict(cache_keys or {}),
+        "artifact_sha256": sha256_file(str(artifact_path)),
+    }
+    _stage_cache_meta_path(artifact_path).write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _stage_cache_matches(*, artifact_path: Path, cache_keys: dict[str, str]) -> bool:
+    if not artifact_path.exists() or artifact_path.stat().st_size <= 0:
+        return False
+    meta_path = _stage_cache_meta_path(artifact_path)
+    if not meta_path.exists():
+        return False
+    try:
+        meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if str(meta_payload.get("artifact_sha256") or "") != sha256_file(str(artifact_path)):
+        return False
+    stored_keys = dict(meta_payload.get("cache_keys") or {})
+    return _cache_payload_matches(stored_keys, cache_keys)
+
+
+def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
+    keys = _expected_cache_keys(request, requested_engine)
+    keep = [
+        "audio_hash",
+        "source_image_hash",
+        "source_image_original_hash",
+        "request_source_key",
+        "target_frame_count",
+        "target_duration_seconds",
+        "liveportrait_motion_preset",
+        "liveportrait_driver_source_policy",
+        "liveportrait_calm_template_hash",
+        "liveportrait_calm_template_basename",
+        "liveportrait_calm_window_cache_version",
+        "liveportrait_vetted_image_template_hash",
+        "liveportrait_template_motion_strength",
+        "liveportrait_template_temporal_smoothing",
+        "liveportrait_template_speed",
+    ]
+    return {key: str(keys.get(key) or "") for key in keep}
+
+
+def _musetalk_stage_cache_keys(
+    request: Any,
+    requested_engine: str,
+    *,
+    handoff_video_hash: str,
+) -> dict[str, str]:
+    keys = _expected_cache_keys(request, requested_engine)
+    keep = [
+        "audio_hash",
+        "source_image_hash",
+        "source_image_original_hash",
+        "target_frame_count",
+        "target_duration_seconds",
+        "liveportrait_calm_window_cache_version",
+        "liveportrait_calm_template_hash",
+    ]
+    payload = {key: str(keys.get(key) or "") for key in keep}
+    payload["musetalk_handoff_video_hash"] = str(handoff_video_hash or "")
+    payload["musetalk_fps"] = str(int(os.environ.get("MUSETALK_FPS", "25") or 25))
+    payload["musetalk_version"] = str(os.environ.get("MUSETALK_VERSION", "v15") or "v15")
+    payload["musetalk_parsing_mode"] = str(os.environ.get("MUSETALK_PARSING_MODE", "jaw") or "jaw")
+    payload["musetalk_batch_size"] = str(int(os.environ.get("MUSETALK_BATCH_SIZE", "8") or 8))
+    payload["musetalk_preview_fast_mode"] = str(keys.get("musetalk_preview_fast_mode") or "")
+    payload["musetalk_auto_downscale"] = str(keys.get("musetalk_auto_downscale") or "")
+    payload["musetalk_preview_max_width"] = str(keys.get("musetalk_preview_max_width") or "")
+    return payload
+
+
 def _clear_preview_stage_artifacts(output_path: Path) -> list[str]:
     removed: list[str] = []
     candidates = [
@@ -911,6 +992,12 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_JOB_ID": str(int(getattr(request, "_avatar_job_id", 0) or getattr(request, "preview_job_id", 0) or 0)),
         "AVATAR_LP_FAILURE_FALLBACK_TO_MUSETALK": str(os.environ.get("AVATAR_LP_FAILURE_FALLBACK_TO_MUSETALK", "1")),
         "AVATAR_SEGMENT_INDEX": str(int(getattr(request, "_segment_index", 0) or 0)),
+        "AVATAR_AUDIO_HASH": str(
+            sha256_file(str(getattr(request, "audio_path", "") or ""))
+            if Path(str(getattr(request, "audio_path", "") or "")).exists()
+            else ""
+        ),
+        "AVATAR_PAGE_KEY": str(getattr(request, "page_key", "") or getattr(request, "_page_key", "") or ""),
         "AVATAR_PREVIEW_JOB_ID": str(int(getattr(request, "preview_job_id", 0) or 0)),
         "AVATAR_PREVIEW_TEACHER_ID": str(int(getattr(request, "preview_teacher_id", 0) or 0)),
     }
@@ -1570,6 +1657,13 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "liveportrait_image_driving_template_basename": image_template_identity["basename"],
         "liveportrait_image_driving_template_hash": image_template_identity["hash"],
         "liveportrait_motion_profile_policy": "boosted_retry_allowed" if liveportrait_boosted_retry_allowed else "conservative_only",
+        "liveportrait_calm_window_cache_version": str(
+            os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_CACHE_VERSION", "1") or "1"
+        ).strip()
+        or "1",
+        "musetalk_preview_fast_mode": "1" if _env_enabled("MUSETALK_PREVIEW_FAST_MODE", False) else "0",
+        "musetalk_auto_downscale": "1" if _env_enabled("MUSETALK_AUTO_DOWNSCALE", True) else "0",
+        "musetalk_preview_max_width": str(int(os.environ.get("MUSETALK_PREVIEW_MAX_WIDTH", "512") or 512)),
     }
 
 
@@ -1821,6 +1915,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_driver_near_static_threshold_profile",
         "liveportrait_template_used",
         "liveportrait_calm_template_path",
+        "liveportrait_calm_template_window_source",
         "liveportrait_vetted_template_path",
         "liveportrait_fallback_driver_source",
         "liveportrait_template_motion_strength",
@@ -1852,6 +1947,9 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_driver_rejection_mean_mad",
         "liveportrait_driver_unique_ratio",
         "liveportrait_driver_mean_mad",
+        "liveportrait_calm_template_window_start",
+        "liveportrait_calm_template_window_duration",
+        "liveportrait_calm_template_window_mean_mad",
     ]:
         stage_paths[key] = _stderr_float_token(stderr, key, float(stage_paths.get(key) or 0.0))
     for key in [
@@ -2101,6 +2199,13 @@ def _musetalk_history_timeout_estimate(
         observed_frames = max(int(record.get("frame_count") or 0), 1)
         observed_duration = max(float(record.get("audio_duration_seconds") or 0.0), 0.001)
         observed_chunks = max(int(record.get("chunk_count") or 1), 1)
+        per_frame_seconds = elapsed / max(observed_frames, 1)
+        outlier_cap_seconds = max(
+            float(os.environ.get("AVATAR_MUSETALK_TIMEOUT_HISTORY_MAX_ELAPSED_SECONDS", "3600") or 3600),
+            120.0,
+        )
+        if elapsed > outlier_cap_seconds or per_frame_seconds > 15.0:
+            continue
         scaled = max(
             elapsed * (max(int(frame_count), 1) / float(observed_frames)),
             elapsed * (max(float(duration_seconds), 0.001) / observed_duration),
@@ -2914,6 +3019,24 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
     liveportrait_validated_output = liveportrait_output
     musetalk_output = output_path.with_suffix(output_path.suffix + ".musetalk.mp4")
     restoration_output = output_path.with_suffix(output_path.suffix + ".restored.mp4")
+    liveportrait_stage_cache_keys = _liveportrait_stage_cache_keys(request, requested_engine)
+    reuse_liveportrait_stage = (
+        not is_preview_request
+        and _stage_cache_matches(artifact_path=liveportrait_output, cache_keys=liveportrait_stage_cache_keys)
+        and _stage_cache_matches(artifact_path=musetalk_handoff_output, cache_keys=liveportrait_stage_cache_keys)
+    )
+    musetalk_stage_cache_keys: dict[str, str] = {}
+    reuse_musetalk_stage = False
+    if reuse_liveportrait_stage:
+        musetalk_stage_cache_keys = _musetalk_stage_cache_keys(
+            request,
+            requested_engine,
+            handoff_video_hash=sha256_file(str(musetalk_handoff_output)),
+        )
+        reuse_musetalk_stage = _stage_cache_matches(
+            artifact_path=musetalk_output,
+            cache_keys=musetalk_stage_cache_keys,
+        )
     liveportrait_runtime_enabled = _liveportrait_enabled_for_request(request)
     lp_low_motion_fallback_to_static = _env_enabled("AVATAR_LP_LOW_MOTION_FALLBACK_TO_STATIC", False)
     restoration_runtime_enabled = _restore_enabled(is_preview_request, request)
@@ -2925,6 +3048,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "stage_order": ["tts", "liveportrait", "musetalk", "restoration_optional"],
         "cache_meta_path": str(meta_path),
         "cache_policy": ("disabled_current_run_required" if is_preview_request else "strict_hash_match"),
+        "reuse_liveportrait_stage": bool(reuse_liveportrait_stage),
+        "reuse_musetalk_stage": bool(reuse_musetalk_stage),
         "runtime_resources_start": runtime_resources_start,
         "resolved_source_key": str(source_key_for_canonical or ""),
         "resolved_source_image_path": str(source_image_primary),
@@ -3460,16 +3585,25 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 stage_timeout_budget_seconds=round(float(liveportrait_timeout_seconds), 4),
             )
             try:
-                liveportrait_result = run_liveportrait(
-                    input_path=str(candidate_canonical_input.normalized_input_path),
-                    output_path=str(liveportrait_output),
-                    audio_path=str(getattr(request, "audio_path", "") or ""),
-                    source_video=str(candidate_source_video or ""),
-                    fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
-                    target_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
-                    env_overrides=stage_env,
-                    timeout_seconds=float(liveportrait_timeout_seconds),
-                )
+                if reuse_liveportrait_stage and attempt_index == 1 and _video_is_playable(liveportrait_output, stage_name="liveportrait_reuse"):
+                    liveportrait_result = EngineResult(
+                        True,
+                        "liveportrait",
+                        str(liveportrait_output),
+                        "",
+                        details={"reused_stage_cache": True, "stderr": ""},
+                    )
+                else:
+                    liveportrait_result = run_liveportrait(
+                        input_path=str(candidate_canonical_input.normalized_input_path),
+                        output_path=str(liveportrait_output),
+                        audio_path=str(getattr(request, "audio_path", "") or ""),
+                        source_video=str(candidate_source_video or ""),
+                        fps=float(stage_env.get("AVATAR_LIVEPORTRAIT_FPS", "0") or 0),
+                        target_frame_count=int(getattr(request, "target_frame_count", 0) or 0),
+                        env_overrides=stage_env,
+                        timeout_seconds=float(liveportrait_timeout_seconds),
+                    )
             except Exception as liveportrait_exc:
                 liveportrait_result = EngineResult(
                     False,
@@ -4099,6 +4233,22 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         cleanup_after_liveportrait = release_stage_resources(reason="after_liveportrait_before_musetalk")
         stage_paths["cleanup_after_liveportrait"] = _cleanup_summary(cleanup_after_liveportrait)
         stage_paths["runtime_resources_before_musetalk"] = probe_runtime_resources()
+        if (
+            not liveportrait_bypassed
+            and not liveportrait_fallback_used
+            and liveportrait_output.exists()
+            and musetalk_handoff_output.exists()
+        ):
+            _write_stage_cache_meta(
+                artifact_path=liveportrait_output,
+                stage="liveportrait",
+                cache_keys=liveportrait_stage_cache_keys,
+            )
+            _write_stage_cache_meta(
+                artifact_path=musetalk_handoff_output,
+                stage="liveportrait_handoff",
+                cache_keys=liveportrait_stage_cache_keys,
+            )
 
         current_audio_hash = sha256_file(str(getattr(request, "audio_path", "") or ""))
         if current_audio_hash != expected_audio_hash:
@@ -4134,6 +4284,19 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             f"preview-{int(getattr(request, 'preview_teacher_id', 0) or 0)}-"
             f"{int(getattr(request, 'preview_job_id', 0) or 0)}-{int(time.time() * 1000)}"
         )
+        musetalk_stage_cache_keys = _musetalk_stage_cache_keys(
+            request,
+            requested_engine,
+            handoff_video_hash=sha256_file(str(musetalk_handoff_video)),
+        )
+        gpu_before_musetalk = _selected_gpu_snapshot(runtime_resources_before_musetalk)
+        gpu_free_before_musetalk = int(gpu_before_musetalk.get("free_mib") or 0)
+        auto_downscale_threshold = int(os.environ.get("MUSETALK_AUTO_DOWNSCALE_FREE_MIB", "2048") or 2048)
+        musetalk_auto_downscale = _env_enabled("MUSETALK_AUTO_DOWNSCALE", True) and (
+            gpu_free_before_musetalk > 0 and gpu_free_before_musetalk < auto_downscale_threshold
+        )
+        stage_env["MUSETALK_AUTO_DOWNSCALE"] = "1" if musetalk_auto_downscale else "0"
+        stage_paths["musetalk_auto_downscale"] = bool(musetalk_auto_downscale)
         _update_preview_task_context(
             request,
             current_stage=("preview_musetalk" if is_preview_request else "musetalk"),
@@ -4206,15 +4369,29 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             stage_timeout_budget_seconds=round(float(musetalk_timeout_budget), 4),
             musetalk_started=True,
         )
-        musetalk_result = run_musetalk(
-            source_image=str(canonical_input.normalized_input_path),
-            source_video=str(musetalk_handoff_video),
-            audio_path=str(getattr(request, "audio_path", "") or ""),
-            output_path=str(musetalk_output),
-            env_overrides=stage_env,
-            timeout_seconds=float(musetalk_timeout_budget),
-            stage_name=("preview_musetalk" if is_preview_request else "musetalk"),
-        )
+        if reuse_musetalk_stage and _video_is_playable(musetalk_output, stage_name="musetalk_reuse"):
+            musetalk_result = EngineResult(
+                True,
+                "musetalk",
+                str(musetalk_output),
+                "",
+                details={
+                    "reused_stage_cache": True,
+                    "route": "reused_stage_cache",
+                    "route_reason": "reused_stage_cache",
+                    "elapsed_seconds": 0.0,
+                },
+            )
+        else:
+            musetalk_result = run_musetalk(
+                source_image=str(canonical_input.normalized_input_path),
+                source_video=str(musetalk_handoff_video),
+                audio_path=str(getattr(request, "audio_path", "") or ""),
+                output_path=str(musetalk_output),
+                env_overrides=stage_env,
+                timeout_seconds=float(musetalk_timeout_budget),
+                stage_name=("preview_musetalk" if is_preview_request else "musetalk"),
+            )
         stage_outputs.append(_stage_record("musetalk", musetalk_result, input_path=str(musetalk_handoff_video)))
         musetalk_elapsed_seconds_total = time.monotonic() - musetalk_started_at
         stage_outputs[-1]["elapsed_seconds"] = round(float(musetalk_elapsed_seconds_total), 4)
@@ -4319,6 +4496,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         if musetalk_result.success:
             stage_paths["musetalk_stage_state"] = "completed"
             stage_paths["musetalk_succeeded"] = True
+            _write_stage_cache_meta(
+                artifact_path=musetalk_output,
+                stage="musetalk",
+                cache_keys=musetalk_stage_cache_keys,
+            )
             musetalk_contract = legacy_pipeline._assert_video_contract(str(musetalk_output), stage_name="musetalk")
             stage_outputs[-1]["duration_seconds"] = round(float(musetalk_contract.get("duration_seconds") or 0.0), 4)
             
@@ -4511,6 +4693,20 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 attempts=[record.get("stage") for record in stage_outputs],
                 result_error=str(final_validation.get("failure_reason") or "strict_validation_failed"),
                 stage_traces={"paths": stage_paths, "stages": stage_outputs, "canonical_input": canonical_input_payload},
+            )
+            _write_meta(
+                meta_path=meta_path,
+                request=request,
+                requested_engine=requested_engine,
+                output_path=output_path,
+                video_hash=sha256_file(str(output_path)) if output_path.exists() else "",
+                validation=final_validation,
+                strict_pass=False,
+                preview_warning=preview_warning,
+                engine_used=engine_used_for_output,
+                stage_paths=stage_paths,
+                stage_outputs=stage_outputs,
+                canonical_input=canonical_input_payload,
             )
             raise RuntimeError(
                 f"strict_validation_failed:{final_validation.get('failure_reason') or 'unknown'}"

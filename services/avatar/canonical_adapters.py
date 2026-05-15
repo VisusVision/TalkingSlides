@@ -802,6 +802,7 @@ def _build_musetalk_service_params(
         "target_frame_count": max(_read_int_value(_service_env_value(env_overrides, "MUSETALK_TARGET_FRAME_COUNT", "0"), 0), 0),
         "target_duration_seconds": max(_read_float_value(_service_env_value(env_overrides, "MUSETALK_TARGET_DURATION_SECONDS", "0"), 0.0), 0.0),
         "preview_fast_mode": _read_bool_value(_service_env_value(env_overrides, "MUSETALK_PREVIEW_FAST_MODE", "0"), False),
+        "auto_downscale": _read_bool_value(_service_env_value(env_overrides, "MUSETALK_AUTO_DOWNSCALE", "0"), False),
         "preview_max_width": max(_read_int_value(_service_env_value(env_overrides, "MUSETALK_PREVIEW_MAX_WIDTH", "512"), 512), 1),
         "chunk_max_seconds": max(_read_float_value(_service_env_value(env_overrides, "MUSETALK_CHUNK_MAX_SECONDS", "0"), 0.0), 0.0),
         "chunk_timeout_seconds": max(_read_float_value(_service_env_value(env_overrides, "MUSETALK_CHUNK_TIMEOUT_SECONDS", "0"), 0.0), 0.0),
