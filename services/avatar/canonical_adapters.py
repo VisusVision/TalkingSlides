@@ -644,6 +644,38 @@ def _run_media_command(command: list[str], *, stage_name: str, timeout_seconds: 
         raise RuntimeError(f"{stage_name}_missing_output:{expected_output}")
 
 
+def ensure_writable_dir(path: Path, *, mode: int = 0o777) -> Path:
+    """Create a transient runtime directory and make it writable across container UIDs.
+
+    This is intentionally narrow: callers should use it only for generated
+    scratch/output directories that may be shared between worker and service
+    processes with different effective users.
+    """
+    target = Path(path)
+    target.mkdir(parents=True, exist_ok=True)
+
+    def _chmod(candidate: Path) -> None:
+        try:
+            if candidate.exists() and candidate.is_dir():
+                os.chmod(candidate, mode)
+        except Exception as exc:
+            logger.warning(
+                "MuseTalk writable directory chmod skipped path=%s mode=%s error=%s",
+                candidate,
+                oct(int(mode)),
+                exc,
+            )
+
+    _chmod(target)
+    try:
+        for child in target.iterdir():
+            if child.is_dir():
+                _chmod(child)
+    except Exception as exc:
+        logger.debug("MuseTalk writable child directory scan skipped path=%s error=%s", target, exc)
+    return target
+
+
 def _prepare_service_chunk_media(
     *,
     source_video: str,
@@ -1208,7 +1240,7 @@ def _run_via_musetalk_service_chunked(
     started_epoch = time.time()
     output = Path(output_path)
     work_dir = output.parent / f"{output.stem}.service_chunks_{run_id.replace('/', '_').replace(':', '_')}"
-    work_dir.mkdir(parents=True, exist_ok=True)
+    ensure_writable_dir(work_dir)
     try:
         run_marker = _prepare_musetalk_service_current_run(
             source_image=source_image,
