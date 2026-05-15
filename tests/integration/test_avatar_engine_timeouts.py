@@ -13,6 +13,26 @@ sys.modules.pop("avatar", None)
 adapters = importlib.import_module("avatar.canonical_adapters")  # noqa: E402
 
 
+def _has_cross_uid_write(path: Path) -> bool:
+    if os.name == "nt":
+        return os.access(path, os.W_OK)
+    return bool(path.stat().st_mode & 0o002)
+
+
+def test_musetalk_service_writable_dir_helper_scopes_to_generated_dir(tmp_path):
+    work_dir = tmp_path / "preview.mp4.musetalk.service_chunks_preview-326-0"
+    child_dir = work_dir / "chunk_tmp"
+
+    adapters.ensure_writable_dir(work_dir)
+    child_dir.mkdir()
+    adapters.ensure_writable_dir(work_dir)
+
+    assert work_dir.exists()
+    assert child_dir.exists()
+    assert _has_cross_uid_write(work_dir)
+    assert _has_cross_uid_write(child_dir)
+
+
 def test_musetalk_runner_reports_timeout(monkeypatch):
     monkeypatch.setenv("AVATAR_MUSETALK_SERVICE_ENABLED", "0")
     monkeypatch.setenv("AVATAR_MUSETALK_STANDALONE_FALLBACK", "1")
@@ -389,6 +409,7 @@ def test_musetalk_service_chunked_route_stitches_long_lesson_segment(monkeypatch
     source_video.write_bytes(b"source-video")
     audio.write_bytes(b"audio")
     chunk_calls: list[dict] = []
+    chunk_output_dirs: list[Path] = []
 
     monkeypatch.setenv("AVATAR_MUSETALK_SERVICE_ENABLED", "1")
     monkeypatch.setenv("AVATAR_MUSETALK_STANDALONE_FALLBACK", "0")
@@ -411,6 +432,9 @@ def test_musetalk_service_chunked_route_stitches_long_lesson_segment(monkeypatch
 
     def fake_service(*_args, **kwargs):
         out = Path(kwargs["output_path"])
+        chunk_output_dirs.append(out.parent)
+        assert ".service_chunks_" in out.parent.name
+        assert _has_cross_uid_write(out.parent)
         out.write_bytes(b"chunk-output")
         adapters._musetalk_debug_sidecar_path(out).write_text(
             json.dumps(
@@ -448,6 +472,8 @@ def test_musetalk_service_chunked_route_stitches_long_lesson_segment(monkeypatch
     assert result.details["route"] == "service_chunked"
     assert result.details["chunk_count"] == 3
     assert len(chunk_calls) == 3
+    assert chunk_output_dirs
+    assert all(_has_cross_uid_write(path) for path in chunk_output_dirs)
     assert output.exists()
     debug = json.loads(adapters._musetalk_debug_sidecar_path(output).read_text(encoding="utf-8"))
     assert debug["route"] == "service_chunked"
