@@ -875,6 +875,41 @@ export async function fetchPlaybackToken(projectId) {
   };
 }
 
+/**
+ * GET /api/v1/projects/<id>/studio-preview-token/
+ * Authenticated owner/staff only preview for draft lessons.
+ */
+export async function fetchStudioPreviewToken(projectId) {
+  const res = await fetch(
+    `${API_BASE_URL}/projects/${projectId}/studio-preview-token/`,
+    { headers: authHeaders() },
+  );
+  if (!res.ok) {
+    const payload = await res.json().catch(() => ({}));
+    const error = new Error(payload.error || 'Failed to get studio preview token');
+    error.status = res.status;
+    error.reason = payload.reason || '';
+    error.payload = payload;
+    throw error;
+  }
+  const data = await res.json();
+  return {
+    ...data,
+    video_url: toAbsoluteApiUrl(data.video_url),
+    stream_url: toAbsoluteApiUrl(data.video_url),
+    srt_url: toAbsoluteApiUrl(data.srt_url),
+    vtt_url: toAbsoluteApiUrl(data.vtt_url || data.subtitle_vtt_url),
+    subtitle_vtt_url: toAbsoluteApiUrl(data.subtitle_vtt_url || data.vtt_url),
+    avatar_token: data.avatar_token,
+    avatar_overlay: data.avatar_overlay
+      ? {
+          ...data.avatar_overlay,
+          stream_url: toAbsoluteApiUrl(data.avatar_overlay.stream_url),
+        }
+      : null,
+  };
+}
+
 export async function heartbeatPlaybackSession(projectId, visibility = 'visible') {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/playback-session/heartbeat/`, {
     method: 'POST',

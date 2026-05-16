@@ -106,6 +106,7 @@ from .views import (
     UserHistoryView,
     UserLikedLessonsView,
     UserSavedPlaylistsView,
+    StudioPreviewTokenView,
     UserViewSet,
     VoiceUploadView,
 )
@@ -130,6 +131,7 @@ urlpatterns = [
 
 # Playback token issuance - no login required for published lessons
     path("projects/<int:project_id>/playback-token/", PlaybackTokenView.as_view(), name="playback-token"),
+    path("projects/<int:project_id>/studio-preview-token/", StudioPreviewTokenView.as_view(), name="studio-preview-token"),
     path("projects/<int:project_id>/subtitle-tracks/", ProjectSubtitleTrackListView.as_view(), name="project-subtitle-tracks"),
     path("projects/<int:project_id>/cover/", ProjectCoverImageView.as_view(), name="project-cover"),
     path(

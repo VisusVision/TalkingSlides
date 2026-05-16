@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, Eye, EyeOff, ListPlus, Plus, Trash2, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronUp, Eye, EyeOff, ListPlus, Plus, Search, Trash2, X } from 'lucide-react';
 import {
   addPlaylistItem,
   createPlaylist,
@@ -29,6 +29,13 @@ function projectLabel(project) {
   return `${project?.title || `Lesson #${project?.id}`} - ${status}`;
 }
 
+function lessonImageUrl(project) {
+  const url = String(project?.thumbnail_url || project?.cover_url || '').trim();
+  if (!url) return '';
+  if (/storage_local|\/api\/v1\/stream\/|\.mp4(?:[?#]|$)/i.test(url)) return '';
+  return url;
+}
+
 export default function PlaylistManager({ projects = [] }) {
   const [playlists, setPlaylists] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +46,9 @@ export default function PlaylistManager({ projects = [] }) {
   const [isPublic, setIsPublic] = useState(true);
   const [drafts, setDrafts] = useState({});
   const [selectedProjectByPlaylist, setSelectedProjectByPlaylist] = useState({});
+  const [expandedPlaylistIds, setExpandedPlaylistIds] = useState(new Set());
+  const [lessonSearchQuery, setLessonSearchQuery] = useState({});
+  const [showPickerFor, setShowPickerFor] = useState(null);
 
   const lessonOptions = useMemo(
     () => [...projects].sort((a, b) => String(a.title || '').localeCompare(String(b.title || ''))),
@@ -147,17 +157,24 @@ export default function PlaylistManager({ projects = [] }) {
     }
   };
 
-  const handleAddLesson = async (playlist) => {
-    const projectId = Number(selectedProjectByPlaylist[playlist.id] || 0);
-    if (!projectId || busy) return;
+  const handleAddLesson = async (playlist, projectIdOverride) => {
+    const projectId = Number(projectIdOverride ?? selectedProjectByPlaylist[playlist.id] ?? 0);
+    if (!projectId || busy) return false;
+    const existingIds = new Set((playlist.items || []).map(itemProjectId));
+    if (existingIds.has(projectId)) {
+      setSelectedProjectByPlaylist((current) => ({ ...current, [playlist.id]: '' }));
+      return false;
+    }
     setBusy(`add:${playlist.id}`);
     setError('');
     try {
       const updated = await addPlaylistItem(playlist.id, projectId);
       replacePlaylist(updated);
       setSelectedProjectByPlaylist((current) => ({ ...current, [playlist.id]: '' }));
+      return true;
     } catch (err) {
       setError(err.message || 'Could not add lesson.');
+      return false;
     } finally {
       setBusy('');
     }
@@ -210,6 +227,18 @@ export default function PlaylistManager({ projects = [] }) {
         ...patch,
       },
     }));
+  };
+
+  const toggleExpanded = (playlistId) => {
+    setExpandedPlaylistIds((current) => {
+      const next = new Set(current);
+      if (next.has(playlistId)) {
+        next.delete(playlistId);
+      } else {
+        next.add(playlistId);
+      }
+      return next;
+    });
   };
 
   return (
@@ -265,98 +294,267 @@ export default function PlaylistManager({ projects = [] }) {
           <p className="body-md mt-1">Create one to publish a sequence on your channel.</p>
         </SurfaceCard>
       ) : (
-        <div className="grid gap-4">
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
           {playlists.map((playlist) => {
             const draft = drafts[playlist.id] || {};
+            const isExpanded = expandedPlaylistIds.has(playlist.id);
+            const searchQuery = lessonSearchQuery[playlist.id] || '';
             const existingIds = new Set((playlist.items || []).map(itemProjectId));
-            const availableLessons = lessonOptions.filter((project) => !existingIds.has(Number(project.id)));
+            const availableLessons = lessonOptions.filter((project) => {
+              if (existingIds.has(Number(project.id))) return false;
+              if (!searchQuery) return true;
+              const q = searchQuery.toLowerCase();
+              return (
+                String(project.title || '').toLowerCase().includes(q)
+                || String(project.id).includes(q)
+              );
+            });
+
             return (
-              <SurfaceCard key={playlist.id} className="space-y-4">
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto]">
-                  <label className="text-sm text-[var(--text-secondary)]">
-                    Title
-                    <input
-                      value={draft.title || ''}
-                      onChange={(event) => updateDraft(playlist.id, { title: event.target.value })}
-                      maxLength={255}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                  <label className="text-sm text-[var(--text-secondary)]">
-                    Description
-                    <input
-                      value={draft.description || ''}
-                      onChange={(event) => updateDraft(playlist.id, { description: event.target.value })}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                  <label className="mt-6 inline-flex h-10 items-center gap-2 rounded-xl token-surface px-3 text-sm text-[var(--text-secondary)]">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(draft.is_public)}
-                      onChange={(event) => updateDraft(playlist.id, { is_public: event.target.checked })}
-                    />
-                    {draft.is_public ? <Eye size={14} /> : <EyeOff size={14} />}
-                    {publicLabel({ is_public: draft.is_public })}
-                  </label>
+              <SurfaceCard
+                key={playlist.id}
+                className={`flex flex-col transition-all duration-300 ${isExpanded ? 'md:col-span-2 xl:col-span-3' : ''}`}
+                elevated={isExpanded}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <h3 className="truncate title-md text-[var(--text-primary)]">
+                        {draft.title || playlist.title || 'Untitled Playlist'}
+                      </h3>
+                      <span className="shrink-0 rounded-full bg-[var(--surface-container-high)] px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-wider text-[var(--text-secondary)]">
+                        {playlist.item_count || 0} Lessons
+                      </span>
+                    </div>
+                    {!isExpanded && (
+                      <p className="mt-1 line-clamp-1 text-xs text-[var(--text-secondary)]">
+                        {draft.description || playlist.description || 'No description provided.'}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <div className={`flex h-8 items-center gap-1.5 rounded-full px-2.5 text-[0.65rem] font-bold uppercase tracking-wider ${
+                      draft.is_public ? 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]' : 'bg-[var(--surface-container-high)] text-[var(--text-secondary)]'
+                    }`}>
+                      {draft.is_public ? <Eye size={12} /> : <EyeOff size={12} />}
+                      <span>{publicLabel({ is_public: draft.is_public })}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => toggleExpanded(playlist.id)}
+                      className="focus-ring flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)] hover:text-[var(--text-primary)]"
+                    >
+                      {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                    </button>
+                  </div>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  <Button size="sm" onClick={() => handleUpdate(playlist)} disabled={busy === `update:${playlist.id}` || !draft.title?.trim()}>
-                    <span>{busy === `update:${playlist.id}` ? 'Saving...' : 'Save playlist'}</span>
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => handleDelete(playlist)} disabled={busy === `delete:${playlist.id}`}>
-                    <Trash2 size={14} />
-                    <span>Delete</span>
-                  </Button>
-                </div>
+                {isExpanded ? (
+                  <div className="mt-6 space-y-6 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <div className="grid gap-4 lg:grid-cols-[1fr_1.5fr_auto]">
+                      <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
+                        Title
+                        <input
+                          value={draft.title || ''}
+                          onChange={(event) => updateDraft(playlist.id, { title: event.target.value })}
+                          maxLength={255}
+                          className="focus-ring mt-1.5 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
+                        />
+                      </label>
+                      <label className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">
+                        Description
+                        <input
+                          value={draft.description || ''}
+                          onChange={(event) => updateDraft(playlist.id, { description: event.target.value })}
+                          className="focus-ring mt-1.5 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
+                        />
+                      </label>
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Visibility</span>
+                        <label className="flex h-10 items-center gap-2 rounded-xl token-surface px-3 text-sm text-[var(--text-secondary)]">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(draft.is_public)}
+                            onChange={(event) => updateDraft(playlist.id, { is_public: event.target.checked })}
+                          />
+                          <span>Public visible</span>
+                        </label>
+                      </div>
+                    </div>
 
-                <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
-                  <select
-                    value={selectedProjectByPlaylist[playlist.id] || ''}
-                    onChange={(event) => setSelectedProjectByPlaylist((current) => ({ ...current, [playlist.id]: event.target.value }))}
-                    disabled={!availableLessons.length}
-                    className="focus-ring h-10 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <option value="">{availableLessons.length ? 'Select a lesson to add' : 'All lessons added'}</option>
-                    {availableLessons.map((project) => (
-                      <option key={project.id} value={project.id}>{projectLabel(project)}</option>
-                    ))}
-                  </select>
-                  <Button size="sm" onClick={() => handleAddLesson(playlist)} disabled={!selectedProjectByPlaylist[playlist.id] || busy === `add:${playlist.id}`}>
-                    <Plus size={14} />
-                    <span>Add lesson</span>
-                  </Button>
-                </div>
+                    <div className="flex flex-wrap items-center justify-between gap-4 border-t border-[var(--border-subtle)] pt-4">
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" onClick={() => handleUpdate(playlist)} disabled={busy === `update:${playlist.id}` || !draft.title?.trim()}>
+                          <span>{busy === `update:${playlist.id}` ? 'Saving...' : 'Save Changes'}</span>
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => handleDelete(playlist)} disabled={busy === `delete:${playlist.id}`}>
+                          <Trash2 size={14} className="text-[color:var(--feedback-danger-fg)]" />
+                          <span className="text-[color:var(--feedback-danger-fg)]">Delete Playlist</span>
+                        </Button>
+                      </div>
+                      <div className="relative">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => setShowPickerFor(showPickerFor === playlist.id ? null : playlist.id)}
+                        >
+                          <Plus size={14} />
+                          <span>Add Lessons</span>
+                        </Button>
 
-                {(playlist.items || []).length === 0 ? (
-                  <p className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">No lessons in this playlist yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {(playlist.items || []).map((item, index) => {
-                      const project = item.project || {};
-                      const projectId = itemProjectId(item);
-                      return (
-                        <div key={`${playlist.id}-${projectId}`} className="flex flex-col gap-2 rounded-xl bg-[var(--surface-container-high)] p-3 sm:flex-row sm:items-center sm:justify-between">
-                          <div className="min-w-0">
-                            <p className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">{project.title || `Lesson #${projectId}`}</p>
-                            <p className="mt-1 text-xs text-[var(--text-secondary)]">{projectLabel(project)}</p>
+                        {showPickerFor === playlist.id && (
+                          <div className="absolute right-0 top-full z-20 mt-2 w-80 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3 shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+                            <div className="relative mb-3 flex items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3">
+                              <Search size={14} className="text-[var(--text-secondary)]" />
+                              <input
+                                autoFocus
+                                value={searchQuery}
+                                onChange={(e) => setLessonSearchQuery((prev) => ({ ...prev, [playlist.id]: e.target.value }))}
+                                placeholder="Search your lessons..."
+                                className="h-9 w-full bg-transparent text-sm text-[var(--text-primary)] outline-none"
+                              />
+                            </div>
+                            <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
+                              {availableLessons.length === 0 ? (
+                                <p className="py-8 text-center text-xs text-[var(--text-secondary)]">
+                                  {searchQuery ? 'No lessons match your search.' : 'All your lessons are already in this playlist.'}
+                                </p>
+                              ) : (
+                                availableLessons.map((project) => {
+                                  const imageUrl = lessonImageUrl(project);
+                                  return (
+                                    <button
+                                      key={project.id}
+                                      type="button"
+                                      onClick={async () => {
+                                        setSelectedProjectByPlaylist((prev) => ({ ...prev, [playlist.id]: project.id }));
+                                        const added = await handleAddLesson(playlist, project.id);
+                                        if (added) {
+                                          setShowPickerFor(null);
+                                          setLessonSearchQuery((prev) => ({ ...prev, [playlist.id]: '' }));
+                                        }
+                                      }}
+                                      className="flex w-full items-center gap-3 rounded-lg p-2 text-left transition hover:bg-[color:var(--hover-surface-strong)]"
+                                    >
+                                      <div className="h-10 w-16 shrink-0 overflow-hidden rounded bg-[var(--surface-container-highest)]">
+                                        {imageUrl ? (
+                                          <img
+                                            src={imageUrl}
+                                            alt=""
+                                            className="h-full w-full object-cover"
+                                            onError={(event) => {
+                                              event.currentTarget.hidden = true;
+                                            }}
+                                          />
+                                        ) : (
+                                          <div className="h-full w-full bg-[var(--surface-container-highest)]" />
+                                        )}
+                                      </div>
+                                      <div className="min-w-0">
+                                        <p className="truncate text-sm font-medium text-[var(--text-primary)]">{project.title || `Project #${project.id}`}</p>
+                                        <p className="mt-0.5 text-[0.65rem] text-[var(--text-secondary)] uppercase font-bold tracking-tight">
+                                          {project.is_published ? 'Published' : 'Draft'}
+                                        </p>
+                                      </div>
+                                    </button>
+                                  );
+                                })
+                              )}
+                            </div>
                           </div>
-                          <div className="flex shrink-0 flex-wrap gap-2">
-                            <Button size="sm" variant="secondary" onClick={() => handleMoveLesson(playlist, index, -1)} disabled={index === 0 || busy === `reorder:${playlist.id}`}>
-                              <ArrowUp size={14} />
-                            </Button>
-                            <Button size="sm" variant="secondary" onClick={() => handleMoveLesson(playlist, index, 1)} disabled={index === (playlist.items || []).length - 1 || busy === `reorder:${playlist.id}`}>
-                              <ArrowDown size={14} />
-                            </Button>
-                            <Button size="sm" variant="ghost" onClick={() => handleRemoveLesson(playlist, projectId)} disabled={busy === `remove:${playlist.id}:${projectId}`}>
-                              <X size={14} />
-                              <span>Remove</span>
-                            </Button>
-                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-[var(--text-secondary)]">Lessons</p>
+                      {(playlist.items || []).length === 0 ? (
+                        <div className="rounded-2xl border-2 border-dashed border-[var(--border-subtle)] py-12 text-center">
+                          <p className="text-sm text-[var(--text-secondary)]">No lessons in this playlist yet.</p>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="mt-2"
+                            onClick={() => setShowPickerFor(playlist.id)}
+                          >
+                            Add your first lesson
+                          </Button>
                         </div>
-                      );
-                    })}
+                      ) : (
+                        <div className="space-y-2">
+                          {(playlist.items || []).map((item, index) => {
+                            const project = item.project || {};
+                            const projectId = itemProjectId(item);
+                            const imageUrl = lessonImageUrl(project);
+                            return (
+                              <div key={`${playlist.id}-${projectId}`} className="flex items-center gap-4 rounded-2xl bg-[var(--surface-container-high)] p-3">
+                                <div className="h-12 w-20 shrink-0 overflow-hidden rounded-lg bg-[var(--surface-container-highest)]">
+                                  {imageUrl ? (
+                                    <img
+                                      src={imageUrl}
+                                      alt=""
+                                      className="h-full w-full object-cover"
+                                      onError={(event) => {
+                                        event.currentTarget.hidden = true;
+                                      }}
+                                    />
+                                  ) : (
+                                    <div className="h-full w-full flex items-center justify-center text-[var(--text-secondary)]">
+                                      <ListPlus size={18} />
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate text-sm font-semibold text-[var(--text-primary)]">{project.title || `Lesson #${projectId}`}</p>
+                                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                                    {project.is_published ? 'Published' : 'Draft'} • {project.category_name || 'Uncategorized'}
+                                  </p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveLesson(playlist, index, -1)}
+                                    disabled={index === 0 || busy === `reorder:${playlist.id}`}
+                                    className="focus-ring flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)] hover:text-[var(--text-primary)] disabled:opacity-30"
+                                  >
+                                    <ArrowUp size={16} />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleMoveLesson(playlist, index, 1)}
+                                    disabled={index === (playlist.items || []).length - 1 || busy === `reorder:${playlist.id}`}
+                                    className="focus-ring flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)] hover:text-[var(--text-primary)] disabled:opacity-30"
+                                  >
+                                    <ArrowDown size={16} />
+                                  </button>
+                                  <div className="mx-1 h-6 w-[1px] bg-[var(--border-subtle)]" />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveLesson(playlist, projectId)}
+                                    disabled={busy === `remove:${playlist.id}:${projectId}`}
+                                    className="focus-ring flex h-8 w-8 items-center justify-center rounded-full text-[color:var(--feedback-danger-fg)] transition hover:bg-[color:var(--hover-surface-strong)] disabled:opacity-30"
+                                    title="Remove from playlist"
+                                  >
+                                    <X size={16} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-auto pt-4">
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      fullWidth
+                      onClick={() => toggleExpanded(playlist.id)}
+                    >
+                      Manage Playlist
+                    </Button>
                   </div>
                 )}
               </SurfaceCard>

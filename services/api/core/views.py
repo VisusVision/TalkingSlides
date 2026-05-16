@@ -232,7 +232,7 @@ def _protection_mode_default() -> str:
 def _token_ttl_for_mode(mode: str) -> int:
     if mode == "drm_protected":
         return int(getattr(settings, "LESSON_PROTECTION_TOKEN_TTL_DRM_SECONDS", 7200))
-    if mode == "secure_stream":
+    if mode in {"secure_stream", "studio_preview"}:
         return int(getattr(settings, "LESSON_PROTECTION_TOKEN_TTL_SECURE_SECONDS", _token_ttl()))
     return int(getattr(settings, "LESSON_PROTECTION_TOKEN_TTL_PUBLIC_SECONDS", _token_ttl()))
 
@@ -351,9 +351,20 @@ def _enforce_playback_concurrency(lesson_id: int, request, mode: str) -> tuple[b
     return False, "concurrency_active_elsewhere"
 
 
-def _issue_playback_grant(lesson_id: int, request, mode: str, ttl_seconds: int) -> tuple[str, str]:
+def _issue_playback_grant(
+    lesson_id: int,
+    request,
+    mode: str,
+    ttl_seconds: int,
+    *,
+    bind_to_session: bool | None = None,
+) -> tuple[str, str]:
     identity = _playback_identity(request)
-    session_binding_active = bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True))
+    session_binding_active = (
+        bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True))
+        if bind_to_session is None
+        else bool(bind_to_session)
+    )
     bind_key = _bind_key_for_request(request) if session_binding_active else None
     scope_key = _scope_key_for(lesson_id, identity, mode)
     now = int(time.time())
@@ -502,10 +513,74 @@ def _grant_usage_limit(file_type: str, mode: str) -> int:
     if mode == "drm_protected":
         limits = {"hls_manifest": 8, "hls_key": 24, "hls_segment": 800, "video": 0, "avatar": 600, "srt": 80, "vtt": 80}
         return limits.get(file_type, 60)
-    if mode == "secure_stream":
+    if mode in {"secure_stream", "studio_preview"}:
         limits = {"hls_manifest": 20, "hls_key": 60, "hls_segment": 2000, "video": 200, "avatar": 1200, "srt": 150, "vtt": 150}
         return limits.get(file_type, 120)
     return 10_000
+
+
+def _check_studio_preview_grant_access(
+    *,
+    grant_id: str,
+    grant_payload: dict,
+    lesson_id: int,
+    bind_key: str | None,
+    file_type: str,
+) -> bool:
+    mode = "studio_preview"
+    if bind_key or grant_payload.get("bind_key"):
+        logger.warning("Studio preview grant unexpectedly bound to session: lesson=%s", lesson_id)
+        return False
+    if int(grant_payload.get("lesson_id") or 0) != int(lesson_id):
+        logger.warning("Studio preview grant lesson mismatch: lesson=%s", lesson_id)
+        return False
+
+    now = int(time.time())
+    expires_at = int(grant_payload.get("expires_at") or 0)
+    if expires_at and now > expires_at:
+        logger.warning("Studio preview grant expired for lesson=%s", lesson_id)
+        _revoke_grant(grant_id, reason="expired", lesson_id=lesson_id, mode=mode)
+        return False
+
+    issuer_identity = str(grant_payload.get("identity") or "")
+    logout_epoch = cache.get(_logout_epoch_key_for(issuer_identity)) if issuer_identity else 0
+    if issuer_identity and int(grant_payload.get("issued_at") or 0) <= int(logout_epoch or 0):
+        logger.warning("Studio preview grant denied after issuer logout for lesson=%s", lesson_id)
+        return False
+
+    last_seen = int(grant_payload.get("last_seen_at") or grant_payload.get("issued_at") or now)
+    if now - last_seen > _playback_inactivity_ttl():
+        logger.warning("Studio preview grant inactive too long for lesson=%s", lesson_id)
+        _revoke_grant(grant_id, reason="inactive", lesson_id=lesson_id, mode=mode)
+        return False
+
+    hidden_since = grant_payload.get("hidden_since")
+    if hidden_since and (now - int(hidden_since) > _playback_hidden_grace_ttl()):
+        logger.warning("Studio preview grant hidden too long for lesson=%s", lesson_id)
+        _revoke_grant(grant_id, reason="hidden_too_long", lesson_id=lesson_id, mode=mode)
+        return False
+
+    usage_key = f"playback:usage:{grant_id}:{file_type}"
+    usage = int(cache.get(usage_key) or 0) + 1
+    cache.set(usage_key, usage, timeout=_token_ttl_for_mode(mode))
+    max_usage = _grant_usage_limit(file_type, mode)
+    if usage > max_usage:
+        logger.warning(
+            "Suspicious studio preview usage: lesson=%s file_type=%s usage=%s limit=%s",
+            lesson_id,
+            file_type,
+            usage,
+            max_usage,
+        )
+        return False
+
+    _touch_grant_activity(
+        grant_id=grant_id,
+        grant_payload=grant_payload,
+        ttl_seconds=_token_ttl_for_mode(mode),
+        hidden=False,
+    )
+    return True
 
 
 def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_key: str | None, mode: str, file_type: str) -> bool:
@@ -515,13 +590,6 @@ def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_k
         logger.info("Legacy token access without playback grant: lesson=%s mode=%s file_type=%s", lesson_id, mode, file_type)
         return True
 
-    identity = _playback_identity(request)
-    scope_key = _scope_key_for(lesson_id, identity, mode)
-    current_grant_id = cache.get(scope_key)
-    if current_grant_id != grant_id:
-        logger.warning("Playback grant invalidated or mismatched for lesson=%s mode=%s", lesson_id, mode)
-        return False
-
     grant_payload = cache.get(_grant_key_for(grant_id))
     if not grant_payload:
         logger.warning("Playback grant missing/expired for lesson=%s mode=%s", lesson_id, mode)
@@ -529,6 +597,23 @@ def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_k
 
     if grant_payload.get("revoked"):
         logger.warning("Playback grant revoked for lesson=%s mode=%s", lesson_id, mode)
+        return False
+
+    grant_mode = str(grant_payload.get("mode") or "").strip().lower()
+    if grant_mode == "studio_preview":
+        return _check_studio_preview_grant_access(
+            grant_id=grant_id,
+            grant_payload=grant_payload,
+            lesson_id=lesson_id,
+            bind_key=bind_key,
+            file_type=file_type,
+        )
+
+    identity = _playback_identity(request)
+    scope_key = _scope_key_for(lesson_id, identity, mode)
+    current_grant_id = cache.get(scope_key)
+    if current_grant_id != grant_id:
+        logger.warning("Playback grant invalidated or mismatched for lesson=%s mode=%s", lesson_id, mode)
         return False
 
     if bind_key and bind_key != _bind_key_for_request(request):
@@ -2703,7 +2788,132 @@ class PlaybackTokenView(APIView):
         return Response(payload)
 
 
+
+class StudioPreviewTokenView(APIView):
+    """
+    GET /api/v1/projects/<project_id>/studio-preview-token/
+
+    Issues playback tokens for Studio preview.
+    - Requires owner/staff/admin permissions.
+    - Works for unpublished/draft lessons if ready.
+    - Skips public playback concurrency locks to allow preview while editing.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        job = _latest_completed_video_export_job(project)
+        if not job:
+            return Response({"error": "No ready video for this project."}, status=status.HTTP_404_NOT_FOUND)
+
+        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+
+        # Force a non-DRM, secure stream mode for Studio preview
+        protection_mode = "secure_stream"
+        mode_debug = {
+            "effective_mode": "secure_stream",
+            "source": "studio_preview",
+            "draft_preview_forced_secure_stream": True,
+        }
+
+        ttl_seconds = _token_ttl_for_mode(protection_mode)
+        # Studio preview bypasses public session locks and session binding at
+        # grant issuance; the signed stream token still expires and stays scoped
+        # to this lesson's media resources.
+        grant_id, _scope_key = _issue_playback_grant(
+            project.id,
+            request,
+            mode="studio_preview",
+            ttl_seconds=ttl_seconds,
+            bind_to_session=False,
+        )
+        bind_key = None
+        playback_session_id = _playback_session_id(job.id, grant_id)
+
+        hls_payload = sidecar.get("hls") if isinstance(sidecar, dict) else None
+        hls_manifest_token = None
+        if hls_payload and hls_payload.get("manifest_rel_path"):
+            hls_manifest_token = generate_media_token(
+                job.id,
+                "hls_manifest",
+                rel_path=hls_payload["manifest_rel_path"],
+                ttl_seconds=ttl_seconds,
+                grant_id=grant_id,
+                bind_key=bind_key,
+            )
+
+        avatar_artifact_state = _avatar_artifact_state(project, sidecar)
+        avatar_token = None
+        if bool(avatar_artifact_state.get("available")) and avatar_artifact_state.get("rel_path") and _avatar_active_for_project(project):
+            avatar_token = generate_media_token(
+                job.id,
+                "avatar",
+                rel_path=str(avatar_artifact_state.get("rel_path")),
+                ttl_seconds=ttl_seconds,
+                grant_id=grant_id,
+                bind_key=bind_key,
+            )
+
+        video_token = generate_media_token(
+            job.id,
+            "video",
+            ttl_seconds=ttl_seconds,
+            grant_id=grant_id,
+            bind_key=bind_key,
+        )
+
+        srt_token = generate_media_token(
+            job.id,
+            "srt",
+            ttl_seconds=ttl_seconds,
+            grant_id=grant_id,
+            bind_key=bind_key,
+        ) if job.srt_url else None
+
+        vtt_token = _generate_vtt_media_token_for_job(
+            job,
+            storage_root=storage_root,
+            ttl_seconds=ttl_seconds,
+            grant_id=grant_id,
+            bind_key=bind_key,
+        ) if job.srt_url else None
+
+        payload = _playback_payload(
+            request,
+            project,
+            job,
+            video_token,
+            srt_token,
+            vtt_token=vtt_token,
+            hls_manifest_token=hls_manifest_token,
+            hls_encrypted=bool(hls_payload.get("encrypted")) if hls_payload else False,
+            asset_id=_default_asset_id(project.id),
+            content_id=_default_content_id(project.id),
+            protection_mode=protection_mode,
+            mode_debug=mode_debug,
+            allow_mp4_fallback=True,
+            playback_session_id=playback_session_id,
+            session_binding_active=False,
+            avatar_token=avatar_token,
+            avatar_overlay_defaults=_avatar_overlay_defaults_for_project(project),
+            avatar_artifact_state=avatar_artifact_state,
+        )
+        payload["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})
+        payload["is_studio_preview"] = True
+
+        return Response(payload)
+
+
 class ProjectSubtitleTrackListView(APIView):
+
     """
     GET/POST /api/v1/projects/<project_id>/subtitle-tracks/
 

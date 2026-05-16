@@ -23,6 +23,7 @@ import {
   applyProjectBackgroundToAll,
   fetchCategories,
   fetchPlaybackToken,
+  fetchStudioPreviewToken,
   fetchProjectTranscript,
   fetchProjects,
   getProjectModeration,
@@ -978,7 +979,7 @@ function ModerationPanel({
   );
 }
 
-export default function Studio({ user, onLoginRequest }) {
+export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const navigate = useNavigate();
   const previewVideoRef = useRef(null);
   const previewSectionRef = useRef(null);
@@ -1028,6 +1029,25 @@ export default function Studio({ user, onLoginRequest }) {
   const [avatarVisibilitySaving, setAvatarVisibilitySaving] = useState(false);
   const [avatarRerendering, setAvatarRerendering] = useState(false);
   const [avatarRerenderMessage, setAvatarRerenderMessage] = useState('');
+
+  const filteredProjects = useMemo(() => {
+    if (!searchQuery) return projects;
+    const q = searchQuery.toLowerCase();
+    return projects.filter((project) => {
+      const title = String(project.title || `Project #${project.id}`).toLowerCase();
+      const desc = String(project.description || '').toLowerCase();
+      const cat = String(project.category_name || '').toLowerCase();
+      const statusLabel = projectStatusLabel(project).toLowerCase();
+      const pubLabel = projectPublicationLabel(project).toLowerCase();
+      return (
+        title.includes(q)
+        || desc.includes(q)
+        || cat.includes(q)
+        || statusLabel.includes(q)
+        || pubLabel.includes(q)
+      );
+    });
+  }, [projects, searchQuery]);
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -1353,7 +1373,7 @@ export default function Studio({ user, onLoginRequest }) {
     setPreviewError('');
 
     Promise.all([
-      fetchPlaybackToken(selectedLesson.id),
+      fetchStudioPreviewToken(selectedLesson.id),
       fetchSubtitleTrackBundle(selectedLesson.id).catch(() => ({ tracks: [], requestableLanguages: [] }))
     ])
       .then(([payload, tracksPayload]) => {
@@ -2857,15 +2877,13 @@ export default function Studio({ user, onLoginRequest }) {
             <SurfaceCard className="max-h-[72vh] space-y-3 overflow-y-auto p-4">
               <div className="flex items-center justify-between">
                 <p className="label-sm">My Lessons</p>
-                <span className="text-xs text-[var(--text-secondary)]">{projects.length}</span>
+                <span className="text-xs text-[var(--text-secondary)]">{filteredProjects.length}</span>
               </div>
 
               {loadingProjects ? (
                 <p className="text-sm text-[var(--text-secondary)]">Loading lessons...</p>
-              ) : projects.length === 0 ? (
-                <p className="text-sm text-[var(--text-secondary)]">No lesson drafts yet.</p>
               ) : (
-                projects.map((project) => {
+                filteredProjects.map((project) => {
                   const projectModeration = moderationByProject[project.id] || null;
                   return (
                   <article

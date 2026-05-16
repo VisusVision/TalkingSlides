@@ -79,7 +79,7 @@ function draftAdminResponse(responsesById, review, detail) {
   return savedAdminResponse(review, detail);
 }
 
-export default function ModerationDashboard() {
+export default function ModerationDashboard({ searchQuery = '' }) {
   const [reviewRequests, setReviewRequests] = useState([]);
   const [detailsById, setDetailsById] = useState({});
   const [expandedId, setExpandedId] = useState(null);
@@ -96,6 +96,28 @@ export default function ModerationDashboard() {
     () => REVIEW_STATUS_TABS.find((tab) => tab.key === activeStatus) || REVIEW_STATUS_TABS[0],
     [activeStatus],
   );
+  
+  const filteredReviewRequests = useMemo(() => {
+    if (!searchQuery) return reviewRequests;
+    const q = searchQuery.toLowerCase();
+    return reviewRequests.filter((review) => {
+      const title = String(review.project_title || `Project #${review.project_id}`).toLowerCase();
+      const publisher = String(review.requested_by_username || '').toLowerCase();
+      const status = String(review.status || '').toLowerCase();
+      const message = String(review.publisher_message || '').toLowerCase();
+      const idStr = String(review.id);
+      const projIdStr = String(review.project_id);
+      
+      return (
+        title.includes(q)
+        || publisher.includes(q)
+        || status.includes(q)
+        || message.includes(q)
+        || idStr.includes(q)
+        || projIdStr.includes(q)
+      );
+    });
+  }, [reviewRequests, searchQuery]);
 
   const loadReviewRequests = useCallback(async () => {
     setLoading(true);
@@ -239,7 +261,7 @@ export default function ModerationDashboard() {
             </h2>
           </div>
           <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-            {reviewRequests.length} {activeTab.countLabel}
+            {filteredReviewRequests.length} {activeTab.countLabel}
           </span>
         </div>
 
@@ -283,7 +305,7 @@ export default function ModerationDashboard() {
           </div>
         ) : (
           <div className="space-y-3">
-            {reviewRequests.map((review) => {
+            {filteredReviewRequests.map((review) => {
               const detail = detailsById[review.id] || null;
               const expanded = expandedId === review.id;
               const findings = reviewSummaryFindings(review, detail);

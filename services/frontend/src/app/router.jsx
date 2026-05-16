@@ -31,7 +31,7 @@ export default function AppRouter({
             requireStudioRole
             redirectUnauthorizedTo="/"
           >
-            <Studio user={user} onLoginRequest={onLoginRequest} />
+            <Studio user={user} searchQuery={searchQuery} onLoginRequest={onLoginRequest} />
           </ProtectedRoute>
         )}
       />
@@ -84,7 +84,7 @@ export default function AppRouter({
             requireStaffRole
             redirectUnauthorizedTo="/"
           >
-            <ModerationDashboard user={user} />
+            <ModerationDashboard user={user} searchQuery={searchQuery} />
           </ProtectedRoute>
         )}
       />

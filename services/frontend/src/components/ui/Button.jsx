@@ -21,6 +21,7 @@ export default function Button({
   type = 'button',
   variant = 'primary',
   size = 'md',
+  fullWidth = false,
   className,
   children,
   ...props
@@ -32,6 +33,7 @@ export default function Button({
         'focus-ring inline-flex items-center justify-center gap-2 rounded-full font-medium transition duration-200 disabled:cursor-not-allowed disabled:opacity-60',
         VARIANT_STYLES[variant] || VARIANT_STYLES.primary,
         SIZE_STYLES[size] || SIZE_STYLES.md,
+        fullWidth && 'w-full',
         className,
       )}
       {...props}

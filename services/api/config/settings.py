@@ -213,6 +213,14 @@ else:
 # Cache / Celery
 # ---------------------------------------------------------------------------
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+CACHE_URL = os.environ.get("CACHE_URL") or os.environ.get("REDIS_URL")
+if CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": CACHE_URL,
+        }
+    }
 
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", REDIS_URL)
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", REDIS_URL)
