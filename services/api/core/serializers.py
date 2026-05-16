@@ -29,6 +29,7 @@ from core.models import (
     PlaylistItem,
     Project,
     SavedPlaylist,
+    SiteHelpContent,
     Slide,
     TranscriptPage,
     TranslatedSubtitleTrack,
@@ -514,6 +515,61 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]
+
+
+class SiteHelpContentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SiteHelpContent
+        fields = [
+            "title",
+            "slug",
+            "body",
+            "contact_email",
+            "contact_phone",
+            "company_name",
+            "company_address",
+            "support_url",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class CurrentUserProfileSerializer(serializers.Serializer):
+    first_name = serializers.CharField(max_length=150, allow_blank=True, required=False, trim_whitespace=True)
+    last_name = serializers.CharField(max_length=150, allow_blank=True, required=False, trim_whitespace=True)
+    bio = serializers.CharField(allow_blank=True, required=False, trim_whitespace=True)
+
+    def to_representation(self, user):
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "student"})
+        first_name = user.first_name or ""
+        last_name = user.last_name or ""
+        display_name = user.get_full_name() or user.username
+        return {
+            "id": user.id,
+            "username": user.username,
+            "first_name": first_name,
+            "last_name": last_name,
+            "display_name": display_name,
+            "bio": profile.bio or "",
+            "role": profile.role,
+        }
+
+    def update(self, user, validated_data):
+        user_update_fields = []
+        if "first_name" in validated_data:
+            user.first_name = validated_data["first_name"]
+            user_update_fields.append("first_name")
+        if "last_name" in validated_data:
+            user.last_name = validated_data["last_name"]
+            user_update_fields.append("last_name")
+        if user_update_fields:
+            user.save(update_fields=user_update_fields)
+
+        if "bio" in validated_data:
+            profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "student"})
+            profile.bio = validated_data["bio"]
+            profile.save(update_fields=["bio", "updated_at"])
+        return user
 
 
 class UserSerializer(serializers.ModelSerializer):

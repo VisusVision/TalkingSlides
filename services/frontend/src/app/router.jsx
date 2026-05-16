@@ -7,6 +7,7 @@ import Channel from '../pages/Channel';
 import Playlist from '../pages/Playlist';
 import Library from '../pages/Library';
 import History from '../pages/History';
+import Help from '../pages/Help';
 import Analytics from '../pages/Analytics';
 import ModerationDashboard from '../pages/ModerationDashboard';
 import Settings from '../pages/Settings';
@@ -89,6 +90,7 @@ export default function AppRouter({
         )}
       />
       <Route path="/settings" element={<Settings user={user} onUserRefresh={onUserRefresh} />} />
+      <Route path="/help" element={<Help />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

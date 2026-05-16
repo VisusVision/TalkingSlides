@@ -212,7 +212,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           </Link>
 
           <Link
-            to="/settings#help"
+            to="/help"
             className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >

@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   ChevronDown,
   CircleHelp,
+  MonitorPlay,
   MoonStar,
   Save,
   Sparkles,
   Sun,
   Trash2,
   Upload,
+  UserCircle2,
 } from 'lucide-react';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
@@ -17,9 +20,11 @@ import {
   deleteAvatarPreview,
   fetchAvatarPreviewStatus,
   fetchAvatarProfile,
+  fetchMyProfile,
   prepareAvatarProfile,
   regenerateAvatarPreview,
   updateAvatarProfile,
+  updateMyProfile,
   uploadAvatarImage,
   uploadAvatarVideo,
   uploadVoiceSample,
@@ -33,13 +38,13 @@ const THEME_OPTIONS = [
   {
     id: 'light',
     title: 'Light',
-    caption: 'Editorial day mode with bright surfaces.',
+    caption: 'Bright surfaces for reading and review.',
     icon: Sun,
   },
   {
     id: 'dark',
     title: 'Dark',
-    caption: 'Cinematic night mode for focus sessions.',
+    caption: 'Low-glare surfaces for focus sessions.',
     icon: MoonStar,
   },
 ];
@@ -77,6 +82,27 @@ function resolvePreviewVideoUrl(payload) {
   return toAbsoluteMediaUrl(candidate);
 }
 
+function profileDraftFromUser(user) {
+  return {
+    first_name: String(user?.first_name || ''),
+    last_name: String(user?.last_name || ''),
+    bio: String(user?.profile?.bio || ''),
+  };
+}
+
+function profileDraftFromPayload(payload) {
+  return {
+    first_name: String(payload?.first_name || ''),
+    last_name: String(payload?.last_name || ''),
+    bio: String(payload?.bio || ''),
+  };
+}
+
+function displayNameFromDraft(draft, user) {
+  const fullName = [draft.first_name, draft.last_name].map((value) => String(value || '').trim()).filter(Boolean).join(' ');
+  return fullName || user?.username || 'VISUS User';
+}
+
 function CollapsibleSection({ title, caption, defaultOpen = false, children }) {
   return (
     <details open={defaultOpen} className="group rounded-2xl token-surface px-4 py-3">
@@ -98,6 +124,10 @@ export default function Settings({ user, onUserRefresh }) {
   const [reducedMotion, setReducedMotion] = useState(
     () => window.localStorage.getItem(REDUCED_MOTION_KEY) === 'true',
   );
+  const [profileDraft, setProfileDraft] = useState(() => profileDraftFromUser(user));
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState('');
+  const [profileError, setProfileError] = useState('');
   const [voiceFile, setVoiceFile] = useState(null);
   const [voicePreviewUrl, setVoicePreviewUrl] = useState('');
   const [imageFile, setImageFile] = useState(null);
@@ -111,11 +141,31 @@ export default function Settings({ user, onUserRefresh }) {
   const [previewJobId, setPreviewJobId] = useState('');
   const [previewStatusLabel, setPreviewStatusLabel] = useState('idle');
   const [previewVideoUrl, setPreviewVideoUrl] = useState('');
+  const [localDataMessage, setLocalDataMessage] = useState('');
 
   useEffect(() => {
     window.localStorage.setItem(REDUCED_MOTION_KEY, String(reducedMotion));
     document.documentElement.classList.toggle('reduced-motion', reducedMotion);
   }, [reducedMotion]);
+
+  useEffect(() => {
+    setProfileDraft(profileDraftFromUser(user));
+    setProfileMessage('');
+    setProfileError('');
+
+    if (!user?.id) return undefined;
+    let active = true;
+    fetchMyProfile()
+      .then((payload) => {
+        if (active) setProfileDraft(profileDraftFromPayload(payload));
+      })
+      .catch(() => {
+        if (active) setProfileError('Unable to refresh public profile details.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (!voiceFile) {
@@ -144,11 +194,15 @@ export default function Settings({ user, onUserRefresh }) {
 
   const toneDescription = useMemo(() => {
     return resolvedTheme === 'dark'
-      ? 'Dark theme active: low-glare cinematic surfaces.'
-      : 'Light theme active: editorial clarity and high readability.';
+      ? 'Dark theme active.'
+      : 'Light theme active.';
   }, [resolvedTheme]);
 
   const activeTheme = resolvedTheme === 'dark' ? 'dark' : 'light';
+  const publicDisplayName = useMemo(
+    () => displayNameFromDraft(profileDraft, user),
+    [profileDraft, user],
+  );
 
   const loadAvatarProfile = useCallback(async () => {
     if (!teacherMode || !user?.id) return;
@@ -230,6 +284,7 @@ export default function Settings({ user, onUserRefresh }) {
       }
     }
     noteKeys.forEach((key) => window.localStorage.removeItem(key));
+    setLocalDataMessage(noteKeys.length ? 'Local notes cleared for this browser.' : 'No local notes were stored in this browser.');
   };
 
   const runTeacherAction = async (action, successMessage) => {
@@ -253,6 +308,31 @@ export default function Settings({ user, onUserRefresh }) {
       // Keep settings flow resilient even if auth/me refresh fails.
     }
   }, [onUserRefresh]);
+
+  const updateProfileDraftField = (field, value) => {
+    setProfileDraft((previous) => ({ ...previous, [field]: value }));
+    setProfileMessage('');
+    setProfileError('');
+  };
+
+  const handleSavePublicProfile = async (event) => {
+    event.preventDefault();
+    if (!user?.id) return;
+
+    setProfileSaving(true);
+    setProfileMessage('');
+    setProfileError('');
+    try {
+      const payload = await updateMyProfile(profileDraft);
+      setProfileDraft(profileDraftFromPayload(payload));
+      await refreshSessionUser();
+      setProfileMessage('Public profile saved.');
+    } catch (error) {
+      setProfileError(error.message || 'Unable to save public profile.');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
 
   const handleUploadVoice = async () => {
     if (!user?.id || !voiceFile) return;
@@ -321,296 +401,384 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <section className="layout-grid-12">
         <SurfaceCard elevated className="lg:col-span-8">
           <p className="label-sm">Settings</p>
-          <h1 className="display-lg mt-2 text-[var(--text-primary)]">Personalize VidLab</h1>
+          <h1 className="display-lg mt-2 text-[var(--text-primary)]">Workspace preferences</h1>
           <p className="body-md mt-3 max-w-2xl">
-            Control theme behavior, motion preference, and local study data.
+            Manage account details, public profile text, playback accessibility, and publisher avatar preferences.
           </p>
         </SurfaceCard>
 
         <SurfaceCard className="lg:col-span-4">
           <p className="label-sm">Current Theme</p>
-          <div className="mt-3 inline-flex items-center gap-2 rounded-full token-surface px-3 py-1.5 text-sm text-[var(--text-primary)]">
+          <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-[var(--surface-container-high)] px-3 py-1.5 text-sm text-[var(--text-primary)]">
             {resolvedTheme === 'dark' ? <MoonStar size={14} /> : <Sun size={14} />}
             <span>{toneDescription}</span>
           </div>
         </SurfaceCard>
       </section>
 
-      <SurfaceCard className="space-y-4">
-        <div>
-          <p className="label-sm">Theme Controls</p>
-          <h2 className="headline-md mt-1 text-[var(--text-primary)]">Theme Mode</h2>
-        </div>
-
-        <div className="inline-flex rounded-full token-surface p-1">
-          {THEME_OPTIONS.map((option) => {
-            const Icon = option.icon;
-            const selected = activeTheme === option.id;
-
-            return (
-              <button
-                key={option.id}
-                type="button"
-                onClick={() => setMode(option.id)}
-                className={`focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
-                  selected
-                    ? 'bg-[color:rgba(107,56,212,0.12)] text-[var(--text-primary)] dark:bg-[color:rgba(208,188,255,0.2)]'
-                    : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-                }`}
-              >
-                <Icon size={15} />
-                <span>{option.title}</span>
-              </button>
-            );
-          })}
-        </div>
-
-        <p className="text-sm text-[var(--text-secondary)]">
-          Theme choice is persisted to local storage and applied through the global theme provider.
-        </p>
-
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          {THEME_OPTIONS.map((option) => (
-            <div key={option.id} className="rounded-2xl token-surface px-4 py-3">
-              <p className="title-lg text-[var(--text-primary)]">{option.title}</p>
-              <p className="mt-1 text-sm text-[var(--text-secondary)]">{option.caption}</p>
-            </div>
-          ))}
-        </div>
-      </SurfaceCard>
-
-      <SurfaceCard className="space-y-3">
-        <div>
-          <p className="label-sm">Accessibility</p>
-          <h2 className="headline-md mt-1 text-[var(--text-primary)]">Motion Preferences</h2>
-        </div>
-
-        <label className="inline-flex items-center gap-2 rounded-2xl token-surface px-3 py-2 text-sm text-[var(--text-secondary)]">
-          <input
-            type="checkbox"
-            checked={reducedMotion}
-            onChange={(event) => setReducedMotion(event.target.checked)}
-          />
-          <span>Reduce motion and transitions</span>
-        </label>
-      </SurfaceCard>
-
-      <SurfaceCard className="space-y-3">
-        <div>
-          <p className="label-sm">Data</p>
-          <h2 className="headline-md mt-1 text-[var(--text-primary)]">Local Storage</h2>
-          <p className="body-md mt-2">
-            This removes saved watch notes from this browser only.
-          </p>
-        </div>
-
-        <Button variant="secondary" onClick={clearLocalNotes}>
-          <Trash2 size={15} />
-          <span>Clear Local Notes</span>
-        </Button>
-      </SurfaceCard>
-
-      <SurfaceCard>
-        <p className="label-sm">Session</p>
-        <p className="mt-2 text-sm text-[var(--text-secondary)]">
-          {user ? `Signed in as ${user.username}.` : 'Browsing as guest.'}
-        </p>
-      </SurfaceCard>
-
-      <SurfaceCard id="help" className="space-y-2">
-        <div className="inline-flex items-center gap-2">
-          <CircleHelp size={15} className="text-[var(--text-secondary)]" />
-          <p className="label-sm">Help</p>
-        </div>
-        <p className="title-lg text-[var(--text-primary)]">Need Assistance?</p>
-        <p className="body-md">
-          Use Studio as a teacher account for publishing access, and use Watch for transcript-first study with local note drafts.
-        </p>
-      </SurfaceCard>
-
-      {teacherMode && (
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
         <SurfaceCard className="space-y-4">
           <div>
-            <p className="label-sm">Teacher Setup</p>
-            <h2 className="headline-md mt-1 text-[var(--text-primary)]">Avatar And Voice Samples</h2>
-            <p className="body-md mt-2">
-              Upload voice and visual references, then regenerate preview clips from one minimal settings workspace.
+            <div className="inline-flex items-center gap-2">
+              <UserCircle2 size={16} className="text-[var(--accent-primary)]" />
+              <p className="label-sm">Account/Profile</p>
+            </div>
+            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Theme mode</h2>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              Theme choice is stored locally and applied across the workspace.
             </p>
           </div>
 
-          <CollapsibleSection
-            title="Voice Sample"
-            caption="Upload one audio sample and preview it locally before saving."
-            defaultOpen
-          >
-            <label className="block text-sm text-[var(--text-secondary)]">
-              Voice audio
-              <input
-                type="file"
-                accept="audio/*"
-                onChange={(event) => setVoiceFile(event.target.files?.[0] || null)}
-                className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-              />
-            </label>
+          <div className="inline-flex rounded-full bg-[var(--surface-container-high)] p-1">
+            {THEME_OPTIONS.map((option) => {
+              const Icon = option.icon;
+              const selected = activeTheme === option.id;
 
-            {voicePreviewUrl && (
-              <audio controls src={voicePreviewUrl} className="w-full" />
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={handleUploadVoice} disabled={teacherBusy || !voiceFile}>
-                <Upload size={15} />
-                <span>{teacherBusy ? 'Uploading...' : 'Upload Voice Sample'}</span>
-              </Button>
-            </div>
-          </CollapsibleSection>
-
-          <CollapsibleSection
-            title="Picture Or Video Sample"
-            caption="Upload an image or short video source and preview before submit."
-          >
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Portrait image
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => setImageFile(event.target.files?.[0] || null)}
-                  className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                />
-              </label>
-
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Portrait video
-                <input
-                  type="file"
-                  accept="video/*"
-                  onChange={(event) => setVideoFile(event.target.files?.[0] || null)}
-                  className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                />
-              </label>
-            </div>
-
-            {mediaPreviewUrl && mediaPreviewType === 'image' && (
-              <img
-                src={mediaPreviewUrl}
-                alt="Uploaded avatar sample"
-                className="max-h-56 w-full rounded-2xl object-cover token-surface"
-              />
-            )}
-
-            {mediaPreviewUrl && mediaPreviewType === 'video' && (
-              <video
-                src={mediaPreviewUrl}
-                controls
-                className="max-h-56 w-full rounded-2xl object-cover token-surface"
-              />
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={handleUploadVisualSample} disabled={teacherBusy || (!imageFile && !videoFile)}>
-                <Upload size={15} />
-                <span>{teacherBusy ? 'Uploading...' : 'Upload Visual Sample'}</span>
-              </Button>
-            </div>
-          </CollapsibleSection>
-
-          <CollapsibleSection
-            title="Avatar Preview"
-            caption="Prepare profile, queue preview, and monitor render state."
-          >
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Motion preset
-                <select
-                  value={avatarSettings.avatar_motion_preset}
-                  onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_motion_preset: event.target.value }))}
-                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => setMode(option.id)}
+                  className={`focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
+                    selected
+                      ? 'bg-[color:rgba(107,56,212,0.12)] text-[var(--text-primary)] dark:bg-[color:rgba(208,188,255,0.2)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                  }`}
                 >
-                  <option value="natural">Natural</option>
-                  <option value="expressive">Expressive</option>
-                  <option value="calm">Calm</option>
-                </select>
-              </label>
+                  <Icon size={15} />
+                  <span>{option.title}</span>
+                </button>
+              );
+            })}
+          </div>
 
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Quality preset
-                <select
-                  value={avatarSettings.avatar_quality_preset}
-                  onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_quality_preset: event.target.value }))}
-                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                >
-                  <option value="high">High</option>
-                  <option value="balanced">Balanced</option>
-                  <option value="fast">Fast</option>
-                </select>
-              </label>
-            </div>
-
-            <label className="inline-flex items-center gap-2 rounded-xl token-surface px-3 py-2 text-sm text-[var(--text-secondary)]">
-              <input
-                type="checkbox"
-                checked={avatarSettings.composite_fallback_allowed}
-                onChange={(event) => {
-                  setAvatarSettings((prev) => ({
-                    ...prev,
-                    composite_fallback_allowed: event.target.checked,
-                  }));
-                }}
-              />
-              <span>Allow composite fallback for preview preparation</span>
-            </label>
-
-            <div className="flex flex-wrap gap-2">
-              <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
-                <Save size={15} />
-                <span>Save Defaults</span>
-              </Button>
-              <Button variant="secondary" onClick={handlePrepareAvatar} disabled={teacherBusy}>
-                <Sparkles size={15} />
-                <span>Prepare Avatar</span>
-              </Button>
-              <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
-                <Sparkles size={15} />
-                <span>Generate Preview</span>
-              </Button>
-              <Button variant="ghost" onClick={handleDeletePreview} disabled={teacherBusy}>
-                <Trash2 size={15} />
-                <span>Delete Preview</span>
-              </Button>
-            </div>
-
-            <div className="rounded-xl token-surface px-3 py-2 text-sm text-[var(--text-secondary)]">
-              <p>
-                Preview status: <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
+          <div className="space-y-2 text-sm text-[var(--text-secondary)]">
+            {THEME_OPTIONS.map((option) => (
+              <p key={option.id}>
+                <span className="font-semibold text-[var(--text-primary)]">{option.title}:</span> {option.caption}
               </p>
-              {avatarProfilePayload?.readiness?.missing_requirements?.length > 0 && (
-                <p className="mt-1 text-xs">
-                  Missing requirements: {avatarProfilePayload.readiness.missing_requirements.join(', ')}
-                </p>
-              )}
+            ))}
+          </div>
+        </SurfaceCard>
+
+        <SurfaceCard as="form" onSubmit={handleSavePublicProfile} className="space-y-4 md:col-span-2 2xl:col-span-1">
+          <div>
+            <p className="label-sm">Public Profile</p>
+            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Display name and bio</h2>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              This updates only your existing first name, last name, and bio fields.
+            </p>
+          </div>
+
+          <fieldset disabled={!user || profileSaving} className="space-y-3 disabled:opacity-60">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <label className="block text-sm text-[var(--text-secondary)]">
+                First name
+                <input
+                  type="text"
+                  value={profileDraft.first_name}
+                  onChange={(event) => updateProfileDraftField('first_name', event.target.value)}
+                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                />
+              </label>
+
+              <label className="block text-sm text-[var(--text-secondary)]">
+                Last name
+                <input
+                  type="text"
+                  value={profileDraft.last_name}
+                  onChange={(event) => updateProfileDraftField('last_name', event.target.value)}
+                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                />
+              </label>
             </div>
 
-            {previewVideoUrl && (
-              <video
-                src={previewVideoUrl}
-                controls
-                className="max-h-[22rem] w-full rounded-2xl token-surface object-contain"
+            <label className="block text-sm text-[var(--text-secondary)]">
+              Bio
+              <textarea
+                value={profileDraft.bio}
+                onChange={(event) => updateProfileDraftField('bio', event.target.value)}
+                rows={5}
+                className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
               />
-            )}
-          </CollapsibleSection>
+            </label>
+          </fieldset>
 
-          {teacherMessage && (
-            <p className="rounded-xl bg-[color:color-mix(in_srgb,var(--surface-muted),transparent_6%)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-              {teacherMessage}
+          <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+            <p>
+              Preview name: <span className="font-semibold text-[var(--text-primary)]">{publicDisplayName}</span>
             </p>
+            <p className="mt-1 text-xs">
+              Banner, logo, social links, contact fields, and public visibility controls are planned separately.
+            </p>
+          </div>
+
+          {!user && (
+            <p className="text-sm text-[var(--text-secondary)]">Sign in to edit your public profile.</p>
+          )}
+          {profileMessage && (
+            <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{profileMessage}</p>
+          )}
+          {profileError && (
+            <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{profileError}</p>
+          )}
+
+          <Button type="submit" disabled={!user || profileSaving}>
+            <Save size={15} />
+            <span>{profileSaving ? 'Saving...' : 'Save Profile'}</span>
+          </Button>
+        </SurfaceCard>
+
+        <SurfaceCard className="space-y-4">
+          <div>
+            <div className="inline-flex items-center gap-2">
+              <MonitorPlay size={16} className="text-[var(--accent-primary)]" />
+              <p className="label-sm">Playback/Accessibility</p>
+            </div>
+            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Reduce UI Motion</h2>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              Reduces interface animations and video-like UI motion. Does not affect generated avatar videos.
+            </p>
+          </div>
+
+          <label className="inline-flex items-center gap-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={reducedMotion}
+              onChange={(event) => setReducedMotion(event.target.checked)}
+            />
+            <span>Reduce UI Motion</span>
+          </label>
+        </SurfaceCard>
+
+        <SurfaceCard className="space-y-4">
+          <div>
+            <p className="label-sm">Browser Data</p>
+            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Local notes</h2>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              This removes saved watch notes from this browser only.
+            </p>
+          </div>
+
+          <Button variant="secondary" onClick={clearLocalNotes}>
+            <Trash2 size={15} />
+            <span>Clear Local Notes</span>
+          </Button>
+
+          {localDataMessage && (
+            <p className="text-sm text-[var(--text-secondary)]">{localDataMessage}</p>
           )}
         </SurfaceCard>
-      )}
+
+        <SurfaceCard className="space-y-4">
+          <div>
+            <p className="label-sm">Security/Auth</p>
+            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Session</h2>
+          </div>
+          <p className="text-sm text-[var(--text-secondary)]">
+            {user ? `Signed in as ${user.username}.` : 'Browsing as guest.'}
+          </p>
+        </SurfaceCard>
+
+        <SurfaceCard className="space-y-4">
+          <div className="inline-flex items-center gap-2">
+            <CircleHelp size={16} className="text-[var(--accent-primary)]" />
+            <p className="label-sm">Help</p>
+          </div>
+          <h2 className="title-lg text-[var(--text-primary)]">Support content</h2>
+          <p className="text-sm text-[var(--text-secondary)]">
+            Open support guidance and contact details.
+          </p>
+          <Link
+            to="/help"
+            className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-5 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
+          >
+            <CircleHelp size={15} />
+            <span>Open Help</span>
+          </Link>
+        </SurfaceCard>
+
+        {teacherMode && (
+          <SurfaceCard className="space-y-4 md:col-span-2 2xl:col-span-3">
+            <div>
+              <p className="label-sm">Avatar Preferences</p>
+              <h2 className="title-lg mt-2 text-[var(--text-primary)]">Voice and avatar samples</h2>
+              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+              <CollapsibleSection
+                title="Voice Sample"
+                caption="Upload one audio sample and preview it locally before saving."
+              >
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Voice audio
+                  <input
+                    type="file"
+                    accept="audio/*"
+                    onChange={(event) => setVoiceFile(event.target.files?.[0] || null)}
+                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+
+                {voicePreviewUrl && (
+                  <audio controls src={voicePreviewUrl} className="w-full" />
+                )}
+
+                <Button onClick={handleUploadVoice} disabled={teacherBusy || !voiceFile}>
+                  <Upload size={15} />
+                  <span>{teacherBusy ? 'Uploading...' : 'Upload Voice Sample'}</span>
+                </Button>
+              </CollapsibleSection>
+
+              <CollapsibleSection
+                title="Picture Or Video Sample"
+                caption="Upload an image or short video source and preview before submit."
+              >
+                <div className="grid gap-3">
+                  <label className="block text-sm text-[var(--text-secondary)]">
+                    Portrait image
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => setImageFile(event.target.files?.[0] || null)}
+                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+                    />
+                  </label>
+
+                  <label className="block text-sm text-[var(--text-secondary)]">
+                    Portrait video
+                    <input
+                      type="file"
+                      accept="video/*"
+                      onChange={(event) => setVideoFile(event.target.files?.[0] || null)}
+                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+                    />
+                  </label>
+                </div>
+
+                {mediaPreviewUrl && mediaPreviewType === 'image' && (
+                  <img
+                    src={mediaPreviewUrl}
+                    alt="Uploaded avatar sample"
+                    className="max-h-56 w-full rounded-2xl object-cover token-surface"
+                  />
+                )}
+
+                {mediaPreviewUrl && mediaPreviewType === 'video' && (
+                  <video
+                    src={mediaPreviewUrl}
+                    controls
+                    className="max-h-56 w-full rounded-2xl object-cover token-surface"
+                  />
+                )}
+
+                <Button onClick={handleUploadVisualSample} disabled={teacherBusy || (!imageFile && !videoFile)}>
+                  <Upload size={15} />
+                  <span>{teacherBusy ? 'Uploading...' : 'Upload Visual Sample'}</span>
+                </Button>
+              </CollapsibleSection>
+
+              <CollapsibleSection
+                title="Avatar Preview"
+                caption="Prepare profile, queue preview, and monitor render state."
+              >
+                <div className="grid gap-3">
+                  <label className="block text-sm text-[var(--text-secondary)]">
+                    Motion preset
+                    <select
+                      value={avatarSettings.avatar_motion_preset}
+                      onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_motion_preset: event.target.value }))}
+                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                    >
+                      <option value="natural">Natural</option>
+                      <option value="expressive">Expressive</option>
+                      <option value="calm">Calm</option>
+                    </select>
+                  </label>
+
+                  <label className="block text-sm text-[var(--text-secondary)]">
+                    Quality preset
+                    <select
+                      value={avatarSettings.avatar_quality_preset}
+                      onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_quality_preset: event.target.value }))}
+                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                    >
+                      <option value="high">High</option>
+                      <option value="balanced">Balanced</option>
+                      <option value="fast">Fast</option>
+                    </select>
+                  </label>
+                </div>
+
+                <label className="inline-flex items-center gap-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+                  <input
+                    type="checkbox"
+                    checked={avatarSettings.composite_fallback_allowed}
+                    onChange={(event) => {
+                      setAvatarSettings((prev) => ({
+                        ...prev,
+                        composite_fallback_allowed: event.target.checked,
+                      }));
+                    }}
+                  />
+                  <span>Allow composite fallback for preview preparation</span>
+                </label>
+
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
+                    <Save size={15} />
+                    <span>Save Defaults</span>
+                  </Button>
+                  <Button variant="secondary" onClick={handlePrepareAvatar} disabled={teacherBusy}>
+                    <Sparkles size={15} />
+                    <span>Prepare Avatar</span>
+                  </Button>
+                  <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
+                    <Sparkles size={15} />
+                    <span>Generate Preview</span>
+                  </Button>
+                  <Button variant="ghost" onClick={handleDeletePreview} disabled={teacherBusy}>
+                    <Trash2 size={15} />
+                    <span>Delete Preview</span>
+                  </Button>
+                </div>
+
+                <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+                  <p>
+                    Preview status: <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
+                  </p>
+                  {avatarProfilePayload?.readiness?.missing_requirements?.length > 0 && (
+                    <p className="mt-1 text-xs">
+                      Missing requirements: {avatarProfilePayload.readiness.missing_requirements.join(', ')}
+                    </p>
+                  )}
+                </div>
+
+                {previewVideoUrl && (
+                  <video
+                    src={previewVideoUrl}
+                    controls
+                    className="max-h-[22rem] w-full rounded-2xl token-surface object-contain"
+                  />
+                )}
+              </CollapsibleSection>
+            </div>
+
+            {teacherMessage && (
+              <p className="rounded-xl bg-[color:color-mix(in_srgb,var(--surface-muted),transparent_6%)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+                {teacherMessage}
+              </p>
+            )}
+          </SurfaceCard>
+        )}
+      </section>
     </div>
   );
 }
