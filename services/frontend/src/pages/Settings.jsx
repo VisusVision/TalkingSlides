@@ -118,6 +118,48 @@ function CollapsibleSection({ title, caption, defaultOpen = false, children }) {
   );
 }
 
+function SettingsSection({
+  eyebrow,
+  title,
+  caption,
+  icon: Icon,
+  defaultOpen = false,
+  className = '',
+  contentClassName = 'space-y-4',
+  children,
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+
+  useEffect(() => {
+    setOpen(defaultOpen);
+  }, [defaultOpen]);
+
+  return (
+    <SurfaceCard className={`space-y-4 ${className}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        className="focus-ring flex w-full items-start justify-between gap-3 rounded-2xl text-left"
+        aria-expanded={open}
+      >
+        <span className="min-w-0">
+          <span className="inline-flex items-center gap-2">
+            {Icon ? <Icon size={16} className="text-[var(--accent-primary)]" /> : null}
+            <span className="label-sm">{eyebrow}</span>
+          </span>
+          <span className="title-lg mt-2 block text-[var(--text-primary)]">{title}</span>
+          {caption ? (
+            <span className="mt-1 block text-sm font-normal text-[var(--text-secondary)]">{caption}</span>
+          ) : null}
+        </span>
+        <ChevronDown size={18} className={`mt-1 shrink-0 text-[var(--text-secondary)] transition ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open ? <div className={contentClassName}>{children}</div> : null}
+    </SurfaceCard>
+  );
+}
+
 export default function Settings({ user, onUserRefresh }) {
   const { resolvedTheme, setMode } = useTheme();
   const teacherMode = canAccessStudio(user);
@@ -421,18 +463,13 @@ export default function Settings({ user, onUserRefresh }) {
       </section>
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
-        <SurfaceCard className="space-y-4">
-          <div>
-            <div className="inline-flex items-center gap-2">
-              <UserCircle2 size={16} className="text-[var(--accent-primary)]" />
-              <p className="label-sm">Account/Profile</p>
-            </div>
-            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Theme mode</h2>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              Theme choice is stored locally and applied across the workspace.
-            </p>
-          </div>
-
+        <SettingsSection
+          eyebrow="Account/Profile"
+          title="Theme mode"
+          caption="Theme choice is stored locally and applied across the workspace."
+          icon={UserCircle2}
+          defaultOpen
+        >
           <div className="inline-flex rounded-full bg-[var(--surface-container-high)] p-1">
             {THEME_OPTIONS.map((option) => {
               const Icon = option.icon;
@@ -463,88 +500,83 @@ export default function Settings({ user, onUserRefresh }) {
               </p>
             ))}
           </div>
-        </SurfaceCard>
+        </SettingsSection>
 
-        <SurfaceCard as="form" onSubmit={handleSavePublicProfile} className="space-y-4 md:col-span-2 2xl:col-span-1">
-          <div>
-            <p className="label-sm">Public Profile</p>
-            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Display name and bio</h2>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              This updates only your existing first name, last name, and bio fields.
-            </p>
-          </div>
+        <SettingsSection
+          eyebrow="Publisher/Public Profile"
+          title="Display name and bio"
+          caption="This updates only your existing first name, last name, and bio fields."
+          icon={UserCircle2}
+          defaultOpen={teacherMode}
+          className="md:col-span-2 2xl:col-span-1"
+        >
+          <form onSubmit={handleSavePublicProfile} className="space-y-4">
+            <fieldset disabled={!user || profileSaving} className="space-y-3 disabled:opacity-60">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  First name
+                  <input
+                    type="text"
+                    value={profileDraft.first_name}
+                    onChange={(event) => updateProfileDraftField('first_name', event.target.value)}
+                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
 
-          <fieldset disabled={!user || profileSaving} className="space-y-3 disabled:opacity-60">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Last name
+                  <input
+                    type="text"
+                    value={profileDraft.last_name}
+                    onChange={(event) => updateProfileDraftField('last_name', event.target.value)}
+                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+              </div>
+
               <label className="block text-sm text-[var(--text-secondary)]">
-                First name
-                <input
-                  type="text"
-                  value={profileDraft.first_name}
-                  onChange={(event) => updateProfileDraftField('first_name', event.target.value)}
-                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                Bio
+                <textarea
+                  value={profileDraft.bio}
+                  onChange={(event) => updateProfileDraftField('bio', event.target.value)}
+                  rows={5}
+                  className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
                 />
               </label>
+            </fieldset>
 
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Last name
-                <input
-                  type="text"
-                  value={profileDraft.last_name}
-                  onChange={(event) => updateProfileDraftField('last_name', event.target.value)}
-                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                />
-              </label>
+            <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+              <p>
+                Preview name: <span className="font-semibold text-[var(--text-primary)]">{publicDisplayName}</span>
+              </p>
+              <p className="mt-1 text-xs">
+                Banner, logo, social links, contact fields, and public visibility controls are planned separately.
+              </p>
             </div>
 
-            <label className="block text-sm text-[var(--text-secondary)]">
-              Bio
-              <textarea
-                value={profileDraft.bio}
-                onChange={(event) => updateProfileDraftField('bio', event.target.value)}
-                rows={5}
-                className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
-              />
-            </label>
-          </fieldset>
+            {!user && (
+              <p className="text-sm text-[var(--text-secondary)]">Sign in to edit your public profile.</p>
+            )}
+            {profileMessage && (
+              <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{profileMessage}</p>
+            )}
+            {profileError && (
+              <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{profileError}</p>
+            )}
 
-          <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-            <p>
-              Preview name: <span className="font-semibold text-[var(--text-primary)]">{publicDisplayName}</span>
-            </p>
-            <p className="mt-1 text-xs">
-              Banner, logo, social links, contact fields, and public visibility controls are planned separately.
-            </p>
-          </div>
+            <Button type="submit" disabled={!user || profileSaving}>
+              <Save size={15} />
+              <span>{profileSaving ? 'Saving...' : 'Save Profile'}</span>
+            </Button>
+          </form>
+        </SettingsSection>
 
-          {!user && (
-            <p className="text-sm text-[var(--text-secondary)]">Sign in to edit your public profile.</p>
-          )}
-          {profileMessage && (
-            <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{profileMessage}</p>
-          )}
-          {profileError && (
-            <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{profileError}</p>
-          )}
-
-          <Button type="submit" disabled={!user || profileSaving}>
-            <Save size={15} />
-            <span>{profileSaving ? 'Saving...' : 'Save Profile'}</span>
-          </Button>
-        </SurfaceCard>
-
-        <SurfaceCard className="space-y-4">
-          <div>
-            <div className="inline-flex items-center gap-2">
-              <MonitorPlay size={16} className="text-[var(--accent-primary)]" />
-              <p className="label-sm">Playback/Accessibility</p>
-            </div>
-            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Reduce UI Motion</h2>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              Reduces interface animations and video-like UI motion. Does not affect generated avatar videos.
-            </p>
-          </div>
-
+        <SettingsSection
+          eyebrow="Playback/Accessibility"
+          title="Reduce UI Motion"
+          caption="Reduces interface animations and UI motion. Does not affect generated avatar videos."
+          icon={MonitorPlay}
+        >
           <label className="inline-flex items-center gap-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
             <input
               type="checkbox"
@@ -553,17 +585,14 @@ export default function Settings({ user, onUserRefresh }) {
             />
             <span>Reduce UI Motion</span>
           </label>
-        </SurfaceCard>
+        </SettingsSection>
 
-        <SurfaceCard className="space-y-4">
-          <div>
-            <p className="label-sm">Browser Data</p>
-            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Local notes</h2>
-            <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              This removes saved watch notes from this browser only.
-            </p>
-          </div>
-
+        <SettingsSection
+          eyebrow="Browser Data"
+          title="Local notes"
+          caption="This removes saved watch notes from this browser only."
+          icon={Trash2}
+        >
           <Button variant="secondary" onClick={clearLocalNotes}>
             <Trash2 size={15} />
             <span>Clear Local Notes</span>
@@ -572,17 +601,17 @@ export default function Settings({ user, onUserRefresh }) {
           {localDataMessage && (
             <p className="text-sm text-[var(--text-secondary)]">{localDataMessage}</p>
           )}
-        </SurfaceCard>
+        </SettingsSection>
 
-        <SurfaceCard className="space-y-4">
-          <div>
-            <p className="label-sm">Security/Auth</p>
-            <h2 className="title-lg mt-2 text-[var(--text-primary)]">Session</h2>
-          </div>
+        <SettingsSection
+          eyebrow="Security/Auth"
+          title="Session"
+          icon={UserCircle2}
+        >
           <p className="text-sm text-[var(--text-secondary)]">
             {user ? `Signed in as ${user.username}.` : 'Browsing as guest.'}
           </p>
-        </SurfaceCard>
+        </SettingsSection>
 
         <SurfaceCard className="space-y-4">
           <div className="inline-flex items-center gap-2">
@@ -603,15 +632,14 @@ export default function Settings({ user, onUserRefresh }) {
         </SurfaceCard>
 
         {teacherMode && (
-          <SurfaceCard className="space-y-4 md:col-span-2 2xl:col-span-3">
-            <div>
-              <p className="label-sm">Avatar Preferences</p>
-              <h2 className="title-lg mt-2 text-[var(--text-primary)]">Voice and avatar samples</h2>
-              <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.
-              </p>
-            </div>
-
+          <SettingsSection
+            eyebrow="Avatar Preferences"
+            title="Voice and avatar samples"
+            caption="Advanced avatar controls are collapsed by default and remain separate from UI motion preferences."
+            icon={Sparkles}
+            className="md:col-span-2 2xl:col-span-3"
+            contentClassName="space-y-4"
+          >
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
               <CollapsibleSection
                 title="Voice Sample"
@@ -776,7 +804,7 @@ export default function Settings({ user, onUserRefresh }) {
                 {teacherMessage}
               </p>
             )}
-          </SurfaceCard>
+          </SettingsSection>
         )}
       </section>
     </div>
