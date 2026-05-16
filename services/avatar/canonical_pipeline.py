@@ -40,7 +40,7 @@ def _restore_enabled(is_preview_request: bool, request: Any | None = None) -> bo
     if request_value is not None:
         return bool(request_value)
     if not is_preview_request:
-        return False
+        return str(os.environ.get("AVATAR_LESSON_AVATAR_USE_RESTORATION", "0")).strip().lower() in {"1", "true", "yes", "on"}
     return str(os.environ.get("AVATAR_PREVIEW_USE_RESTORATION", "0")).strip().lower() in {"1", "true", "yes", "on"}
 
 
@@ -590,36 +590,235 @@ def _stage_cache_meta_path(artifact_path: Path) -> Path:
     return artifact_path.with_suffix(artifact_path.suffix + ".stage_cache.json")
 
 
-def _write_stage_cache_meta(*, artifact_path: Path, stage: str, cache_keys: dict[str, str]) -> None:
+_STAGE_CACHE_PROVENANCE_STRING_FIELDS = [
+    "liveportrait_driver_source_policy",
+    "liveportrait_driver_source",
+    "liveportrait_template_used",
+    "liveportrait_calm_template_path",
+    "liveportrait_calm_template_window_source",
+    "liveportrait_calm_template_failure_reason",
+    "liveportrait_vetted_template_path",
+    "liveportrait_fallback_driver_source",
+    "liveportrait_selected_driver_video",
+    "liveportrait_template_motion_strength",
+    "liveportrait_template_temporal_smoothing",
+    "liveportrait_template_speed",
+    "musetalk_source_kind",
+    "musetalk_source_video",
+]
+_STAGE_CACHE_PROVENANCE_BOOL_FIELDS = [
+    "liveportrait_calm_template_used",
+    "liveportrait_calm_template_missing",
+    "liveportrait_calm_template_failed",
+    "liveportrait_vetted_template_missing",
+    "liveportrait_vetted_template_failed",
+    "liveportrait_vetted_template_fallback_used",
+    "liveportrait_composer_used",
+    "liveportrait_composer_fallback_used",
+    "liveportrait_template_calm_profile",
+    "liveportrait_calm_template_window_accepted_by_profile",
+    "liveportrait_succeeded",
+    "liveportrait_motion_passed",
+    "liveportrait_technical_valid",
+    "liveportrait_fallback_used",
+]
+_STAGE_CACHE_PROVENANCE_FLOAT_FIELDS = [
+    "liveportrait_driver_unique_ratio",
+    "liveportrait_driver_mean_mad",
+    "liveportrait_calm_template_window_start",
+    "liveportrait_calm_template_window_duration",
+    "liveportrait_calm_template_window_mean_mad",
+    "liveportrait_calm_template_window_materialized_mean_mad",
+    "liveportrait_calm_template_min_mad",
+]
+_STAGE_CACHE_PROVENANCE_INT_FIELDS = [
+    "liveportrait_driver_unique_frames",
+    "liveportrait_driver_recipe_blink_events",
+    "liveportrait_driver_recipe_gaze_events",
+]
+_STAGE_CACHE_PROVENANCE_FIELDS = (
+    _STAGE_CACHE_PROVENANCE_STRING_FIELDS
+    + _STAGE_CACHE_PROVENANCE_BOOL_FIELDS
+    + _STAGE_CACHE_PROVENANCE_FLOAT_FIELDS
+    + _STAGE_CACHE_PROVENANCE_INT_FIELDS
+)
+
+
+def _stage_cache_driver_provenance(stage_paths: dict[str, Any] | None) -> dict[str, Any]:
+    source = dict(stage_paths or {})
+    payload: dict[str, Any] = {}
+    for key in _STAGE_CACHE_PROVENANCE_STRING_FIELDS:
+        payload[key] = str(source.get(key) or "")
+    for key in _STAGE_CACHE_PROVENANCE_BOOL_FIELDS:
+        payload[key] = bool(source.get(key))
+    for key in _STAGE_CACHE_PROVENANCE_FLOAT_FIELDS:
+        try:
+            payload[key] = float(source.get(key) or 0.0)
+        except Exception:
+            payload[key] = 0.0
+    for key in _STAGE_CACHE_PROVENANCE_INT_FIELDS:
+        try:
+            payload[key] = int(source.get(key) or 0)
+        except Exception:
+            payload[key] = 0
+    return payload
+
+
+def _stage_cache_meta_provenance(meta_payload: dict[str, Any] | None) -> dict[str, Any]:
+    source = dict(meta_payload or {})
+    provenance = dict(source.get("stage_provenance") or {})
+    for key in _STAGE_CACHE_PROVENANCE_FIELDS:
+        if key in source and key not in provenance:
+            provenance[key] = source.get(key)
+    return provenance
+
+
+def _truthy_cache_value(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cache_float_value(payload: dict[str, Any], key: str) -> float | None:
+    if key not in payload:
+        return None
+    try:
+        return float(payload.get(key))
+    except Exception:
+        return None
+
+
+def _stage_cache_driver_provenance_matches(
+    *,
+    meta_payload: dict[str, Any],
+    cache_keys: dict[str, str],
+) -> bool:
+    expected_policy = str(cache_keys.get("liveportrait_driver_source_policy") or "").strip().lower()
+    if expected_policy != "calm_template_for_image":
+        return True
+
+    provenance = _stage_cache_meta_provenance(meta_payload)
+    if str(provenance.get("liveportrait_driver_source_policy") or "").strip().lower() != "calm_template_for_image":
+        return False
+    if not _truthy_cache_value(provenance.get("liveportrait_calm_template_used")):
+        return False
+    if _truthy_cache_value(provenance.get("liveportrait_vetted_template_fallback_used")):
+        return False
+    if _truthy_cache_value(provenance.get("liveportrait_composer_used")):
+        return False
+    if _truthy_cache_value(provenance.get("liveportrait_composer_fallback_used")):
+        return False
+
+    expected_basename = str(cache_keys.get("liveportrait_calm_template_basename") or "").strip()
+    template_used = str(provenance.get("liveportrait_template_used") or "").strip()
+    template_used_name = Path(template_used).name
+    if not template_used_name:
+        return False
+    if template_used_name.lower() == _DEFAULT_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE_NAME.lower():
+        return False
+    if expected_basename and template_used_name.lower() != expected_basename.lower():
+        return False
+
+    calm_template_path = str(provenance.get("liveportrait_calm_template_path") or "").strip()
+    if not calm_template_path or calm_template_path.lower() == "none":
+        return False
+    if expected_basename and Path(calm_template_path).name.lower() != expected_basename.lower():
+        return False
+
+    window_start = _cache_float_value(provenance, "liveportrait_calm_template_window_start")
+    window_duration = _cache_float_value(provenance, "liveportrait_calm_template_window_duration")
+    materialized_mad = _cache_float_value(provenance, "liveportrait_calm_template_window_materialized_mean_mad")
+    if window_start is None or window_start < 0.0:
+        return False
+    if window_duration is None or window_duration <= 0.0:
+        return False
+    if materialized_mad is None or materialized_mad <= 0.0:
+        return False
+
+    return True
+
+
+def _load_matching_stage_cache_meta(
+    *,
+    artifact_path: Path,
+    cache_keys: dict[str, str],
+    stage: str = "",
+    require_driver_provenance: bool = False,
+) -> dict[str, Any] | None:
+    if not artifact_path.exists() or artifact_path.stat().st_size <= 0:
+        return None
+    meta_path = _stage_cache_meta_path(artifact_path)
+    if not meta_path.exists():
+        return None
+    try:
+        meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if stage and str(meta_payload.get("stage") or "") != str(stage):
+        return None
+    if str(meta_payload.get("artifact_sha256") or "") != sha256_file(str(artifact_path)):
+        return None
+    stored_keys = dict(meta_payload.get("cache_keys") or {})
+    if not _cache_payload_matches(stored_keys, cache_keys):
+        return None
+    if require_driver_provenance and not _stage_cache_driver_provenance_matches(
+        meta_payload=meta_payload,
+        cache_keys=cache_keys,
+    ):
+        return None
+    return meta_payload
+
+
+def _apply_stage_cache_driver_provenance(
+    stage_paths: dict[str, Any],
+    meta_payload: dict[str, Any] | None,
+) -> None:
+    provenance = _stage_cache_meta_provenance(meta_payload)
+    for key in _STAGE_CACHE_PROVENANCE_FIELDS:
+        if key in provenance:
+            stage_paths[key] = provenance[key]
+
+
+def _write_stage_cache_meta(
+    *,
+    artifact_path: Path,
+    stage: str,
+    cache_keys: dict[str, str],
+    stage_paths: dict[str, Any] | None = None,
+) -> None:
     if not artifact_path.exists() or artifact_path.stat().st_size <= 0:
         return
+    provenance = _stage_cache_driver_provenance(stage_paths)
     payload = {
         "stage": str(stage),
         "cache_keys": dict(cache_keys or {}),
         "artifact_sha256": sha256_file(str(artifact_path)),
+        "artifact_path": str(artifact_path),
+        "stage_provenance": provenance,
+        **provenance,
     }
     _stage_cache_meta_path(artifact_path).write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
-def _stage_cache_matches(*, artifact_path: Path, cache_keys: dict[str, str]) -> bool:
-    if not artifact_path.exists() or artifact_path.stat().st_size <= 0:
-        return False
-    meta_path = _stage_cache_meta_path(artifact_path)
-    if not meta_path.exists():
-        return False
-    try:
-        meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    if str(meta_payload.get("artifact_sha256") or "") != sha256_file(str(artifact_path)):
-        return False
-    stored_keys = dict(meta_payload.get("cache_keys") or {})
-    return _cache_payload_matches(stored_keys, cache_keys)
+def _stage_cache_matches(
+    *,
+    artifact_path: Path,
+    cache_keys: dict[str, str],
+    stage: str = "",
+    require_driver_provenance: bool = False,
+) -> bool:
+    return _load_matching_stage_cache_meta(
+        artifact_path=artifact_path,
+        cache_keys=cache_keys,
+        stage=stage,
+        require_driver_provenance=require_driver_provenance,
+    ) is not None
 
 
 def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     keys = _expected_cache_keys(request, requested_engine)
     keep = [
+        "avatar_stage_cache_version",
         "audio_hash",
         "source_image_hash",
         "source_image_original_hash",
@@ -630,7 +829,11 @@ def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[
         "liveportrait_driver_source_policy",
         "liveportrait_calm_template_hash",
         "liveportrait_calm_template_basename",
+        "liveportrait_calm_template_path_marker",
+        "liveportrait_calm_template_min_mad",
         "liveportrait_calm_window_cache_version",
+        "liveportrait_vetted_template_fallback_allowed",
+        "liveportrait_composer_fallback_allowed",
         "liveportrait_vetted_image_template_hash",
         "liveportrait_template_motion_strength",
         "liveportrait_template_temporal_smoothing",
@@ -647,13 +850,20 @@ def _musetalk_stage_cache_keys(
 ) -> dict[str, str]:
     keys = _expected_cache_keys(request, requested_engine)
     keep = [
+        "avatar_stage_cache_version",
         "audio_hash",
         "source_image_hash",
         "source_image_original_hash",
         "target_frame_count",
         "target_duration_seconds",
+        "liveportrait_driver_source_policy",
+        "liveportrait_calm_template_basename",
+        "liveportrait_calm_template_path_marker",
+        "liveportrait_calm_template_min_mad",
         "liveportrait_calm_window_cache_version",
         "liveportrait_calm_template_hash",
+        "liveportrait_vetted_template_fallback_allowed",
+        "liveportrait_composer_fallback_allowed",
     ]
     payload = {key: str(keys.get(key) or "") for key in keep}
     payload["musetalk_handoff_video_hash"] = str(handoff_video_hash or "")
@@ -1633,6 +1843,7 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "requested_engine": requested_engine,
         "pipeline_engine": CANONICAL_ENGINE,
         "pipeline_mode": pipeline_mode,
+        "avatar_stage_cache_version": str(os.environ.get("AVATAR_STAGE_CACHE_VERSION", "1") or "1").strip() or "1",
         "liveportrait_motion_preset": liveportrait_motion_preset,
         "liveportrait_enabled": "1" if liveportrait_enabled else "0",
         "restoration_enabled": "1" if restoration_enabled else "0",
@@ -1642,6 +1853,12 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "liveportrait_calm_template_basename": calm_template_identity["basename"],
         "liveportrait_calm_template_hash": calm_template_identity["hash"],
         "liveportrait_calm_template_path_marker": _liveportrait_template_path_marker(calm_template_path),
+        "liveportrait_calm_template_min_mad": _env_float_text(
+            "AVATAR_LIVEPORTRAIT_CALM_TEMPLATE_MIN_MAD",
+            "0.32",
+            min_value=0.0,
+            max_value=10.0,
+        ),
         "liveportrait_vetted_template_fallback_allowed": "1" if _liveportrait_allow_vetted_template_fallback() else "0",
         "liveportrait_composer_fallback_allowed": "1" if _liveportrait_allow_composer_fallback() else "0",
         "liveportrait_vetted_image_template_basename": vetted_template_identity["basename"],
@@ -1916,6 +2133,8 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_template_used",
         "liveportrait_calm_template_path",
         "liveportrait_calm_template_window_source",
+        "liveportrait_calm_template_window_materialized_mean_mad",
+        "liveportrait_calm_template_failure_reason",
         "liveportrait_vetted_template_path",
         "liveportrait_fallback_driver_source",
         "liveportrait_template_motion_strength",
@@ -1932,6 +2151,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_whole_frame_drift_guard",
         "liveportrait_driver_localized_motion_passed",
         "composer_localized_motion_override",
+        "liveportrait_calm_template_window_accepted_by_profile",
         "liveportrait_calm_template_used",
         "liveportrait_calm_template_missing",
         "liveportrait_calm_template_failed",
@@ -1950,6 +2170,8 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_calm_template_window_start",
         "liveportrait_calm_template_window_duration",
         "liveportrait_calm_template_window_mean_mad",
+        "liveportrait_calm_template_window_materialized_mean_mad",
+        "liveportrait_calm_template_min_mad",
     ]:
         stage_paths[key] = _stderr_float_token(stderr, key, float(stage_paths.get(key) or 0.0))
     for key in [
@@ -2592,6 +2814,24 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
     if not _video_is_playable(output_path, stage_name="cached_output"):
         return None
 
+    cached_stage_paths = dict(meta_payload.get("stage_paths") or {})
+    if str(expected_cache.get("liveportrait_driver_source_policy") or "").strip().lower() == "calm_template_for_image":
+        full_cache_provenance_payload = {
+            **cached_stage_paths,
+            "stage_provenance": cached_stage_paths,
+        }
+        if not _stage_cache_driver_provenance_matches(
+            meta_payload=full_cache_provenance_payload,
+            cache_keys=expected_cache,
+        ):
+            logger.info(
+                "Avatar canonical pipeline cache reject output=%s meta_path=%s reason=%s",
+                str(output_path),
+                str(meta_path),
+                "calm_template_provenance_mismatch",
+            )
+            return None
+
     logger.info(
         "Avatar canonical pipeline cache hit output=%s meta_path=%s requested_engine=%s request_source_key=%s text_hash=%s audio_hash=%s",
         str(output_path),
@@ -2611,7 +2851,6 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
 
     preview_warning = str(meta_payload.get("preview_warning") or "").strip()
     preview_status = "warning" if (is_preview_request and preview_warning) else ("ready" if is_preview_request else "ok")
-    cached_stage_paths = dict(meta_payload.get("stage_paths") or {})
     return {
         "output_path": str(output_path),
         "engine_used": str(meta_payload.get("engine_used") or CANONICAL_ENGINE),
@@ -2628,6 +2867,12 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_calm_template_used": bool(cached_stage_paths.get("liveportrait_calm_template_used")),
         "liveportrait_calm_template_missing": bool(cached_stage_paths.get("liveportrait_calm_template_missing")),
         "liveportrait_calm_template_failed": bool(cached_stage_paths.get("liveportrait_calm_template_failed")),
+        "liveportrait_calm_template_min_mad": float(cached_stage_paths.get("liveportrait_calm_template_min_mad") or 0.0),
+        "liveportrait_calm_template_window_accepted_by_profile": bool(cached_stage_paths.get("liveportrait_calm_template_window_accepted_by_profile")),
+        "liveportrait_calm_template_window_start": float(cached_stage_paths.get("liveportrait_calm_template_window_start") or 0.0),
+        "liveportrait_calm_template_window_duration": float(cached_stage_paths.get("liveportrait_calm_template_window_duration") or 0.0),
+        "liveportrait_calm_template_window_mean_mad": float(cached_stage_paths.get("liveportrait_calm_template_window_mean_mad") or 0.0),
+        "liveportrait_calm_template_window_materialized_mean_mad": float(cached_stage_paths.get("liveportrait_calm_template_window_materialized_mean_mad") or 0.0),
         "liveportrait_vetted_template_path": str(cached_stage_paths.get("liveportrait_vetted_template_path") or ""),
         "liveportrait_vetted_template_missing": bool(cached_stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(cached_stage_paths.get("liveportrait_vetted_template_failed")),
@@ -2678,6 +2923,8 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "audio_hash": expected_cache["audio_hash"],
         "video_hash": str(meta_payload.get("video_hash") or sha256_file(str(output_path))),
         "final_output_has_audio_stream": cached_stage_paths.get("final_output_has_audio_stream"),
+        "reused_liveportrait_stage_cache": bool(cached_stage_paths.get("reused_liveportrait_stage_cache")),
+        "reused_musetalk_stage_cache": bool(cached_stage_paths.get("reused_musetalk_stage_cache")),
         "motion_validation": validation,
         "strict_validation_passed": bool(strict_pass),
         "preview_warning": preview_warning,
@@ -2720,6 +2967,12 @@ def _write_meta(
         "liveportrait_calm_template_used": bool(stage_paths.get("liveportrait_calm_template_used")),
         "liveportrait_calm_template_missing": bool(stage_paths.get("liveportrait_calm_template_missing")),
         "liveportrait_calm_template_failed": bool(stage_paths.get("liveportrait_calm_template_failed")),
+        "liveportrait_calm_template_min_mad": float(stage_paths.get("liveportrait_calm_template_min_mad") or 0.0),
+        "liveportrait_calm_template_window_accepted_by_profile": bool(stage_paths.get("liveportrait_calm_template_window_accepted_by_profile")),
+        "liveportrait_calm_template_window_start": float(stage_paths.get("liveportrait_calm_template_window_start") or 0.0),
+        "liveportrait_calm_template_window_duration": float(stage_paths.get("liveportrait_calm_template_window_duration") or 0.0),
+        "liveportrait_calm_template_window_mean_mad": float(stage_paths.get("liveportrait_calm_template_window_mean_mad") or 0.0),
+        "liveportrait_calm_template_window_materialized_mean_mad": float(stage_paths.get("liveportrait_calm_template_window_materialized_mean_mad") or 0.0),
         "liveportrait_vetted_template_path": str(stage_paths.get("liveportrait_vetted_template_path") or ""),
         "liveportrait_vetted_template_missing": bool(stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(stage_paths.get("liveportrait_vetted_template_failed")),
@@ -2766,6 +3019,8 @@ def _write_meta(
         "restoration_succeeded": bool(stage_paths.get("restoration_succeeded")),
         "restoration_failed": bool(stage_paths.get("restoration_failed")),
         "final_output_has_audio_stream": stage_paths.get("final_output_has_audio_stream"),
+        "reused_liveportrait_stage_cache": bool(stage_paths.get("reused_liveportrait_stage_cache")),
+        "reused_musetalk_stage_cache": bool(stage_paths.get("reused_musetalk_stage_cache")),
         "strict_validation_passed": bool(strict_pass),
         "preview_warning": str(preview_warning or ""),
         "motion_validation": validation,
@@ -2822,6 +3077,12 @@ def _final_payload(
         "liveportrait_calm_template_used": bool(stage_paths.get("liveportrait_calm_template_used")),
         "liveportrait_calm_template_missing": bool(stage_paths.get("liveportrait_calm_template_missing")),
         "liveportrait_calm_template_failed": bool(stage_paths.get("liveportrait_calm_template_failed")),
+        "liveportrait_calm_template_min_mad": float(stage_paths.get("liveportrait_calm_template_min_mad") or 0.0),
+        "liveportrait_calm_template_window_accepted_by_profile": bool(stage_paths.get("liveportrait_calm_template_window_accepted_by_profile")),
+        "liveportrait_calm_template_window_start": float(stage_paths.get("liveportrait_calm_template_window_start") or 0.0),
+        "liveportrait_calm_template_window_duration": float(stage_paths.get("liveportrait_calm_template_window_duration") or 0.0),
+        "liveportrait_calm_template_window_mean_mad": float(stage_paths.get("liveportrait_calm_template_window_mean_mad") or 0.0),
+        "liveportrait_calm_template_window_materialized_mean_mad": float(stage_paths.get("liveportrait_calm_template_window_materialized_mean_mad") or 0.0),
         "liveportrait_vetted_template_path": str(stage_paths.get("liveportrait_vetted_template_path") or ""),
         "liveportrait_vetted_template_missing": bool(stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(stage_paths.get("liveportrait_vetted_template_failed")),
@@ -2880,6 +3141,8 @@ def _final_payload(
         "preview_file_exists": bool(stage_paths.get("preview_file_exists")),
         "preview_usable": bool(stage_paths.get("preview_usable")),
         "final_output_has_audio_stream": stage_paths.get("final_output_has_audio_stream"),
+        "reused_liveportrait_stage_cache": bool(stage_paths.get("reused_liveportrait_stage_cache")),
+        "reused_musetalk_stage_cache": bool(stage_paths.get("reused_musetalk_stage_cache")),
         "ui_returned_playable_file": str(stage_paths.get("ui_returned_playable_file") or ""),
         "preview_status": (
             "warning"
@@ -3020,23 +3283,42 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
     musetalk_output = output_path.with_suffix(output_path.suffix + ".musetalk.mp4")
     restoration_output = output_path.with_suffix(output_path.suffix + ".restored.mp4")
     liveportrait_stage_cache_keys = _liveportrait_stage_cache_keys(request, requested_engine)
-    reuse_liveportrait_stage = (
-        not is_preview_request
-        and _stage_cache_matches(artifact_path=liveportrait_output, cache_keys=liveportrait_stage_cache_keys)
-        and _stage_cache_matches(artifact_path=musetalk_handoff_output, cache_keys=liveportrait_stage_cache_keys)
+    liveportrait_requires_driver_provenance = (
+        str(liveportrait_stage_cache_keys.get("liveportrait_driver_source_policy") or "").strip().lower()
+        == "calm_template_for_image"
     )
+    liveportrait_stage_cache_meta = None
+    liveportrait_handoff_stage_cache_meta = None
+    if not is_preview_request:
+        liveportrait_stage_cache_meta = _load_matching_stage_cache_meta(
+            artifact_path=liveportrait_output,
+            cache_keys=liveportrait_stage_cache_keys,
+            stage="liveportrait",
+            require_driver_provenance=liveportrait_requires_driver_provenance,
+        )
+        liveportrait_handoff_stage_cache_meta = _load_matching_stage_cache_meta(
+            artifact_path=musetalk_handoff_output,
+            cache_keys=liveportrait_stage_cache_keys,
+            stage="liveportrait_handoff",
+            require_driver_provenance=liveportrait_requires_driver_provenance,
+        )
+    reuse_liveportrait_stage = bool(liveportrait_stage_cache_meta and liveportrait_handoff_stage_cache_meta)
     musetalk_stage_cache_keys: dict[str, str] = {}
     reuse_musetalk_stage = False
+    musetalk_stage_cache_meta = None
     if reuse_liveportrait_stage:
         musetalk_stage_cache_keys = _musetalk_stage_cache_keys(
             request,
             requested_engine,
             handoff_video_hash=sha256_file(str(musetalk_handoff_output)),
         )
-        reuse_musetalk_stage = _stage_cache_matches(
+        musetalk_stage_cache_meta = _load_matching_stage_cache_meta(
             artifact_path=musetalk_output,
             cache_keys=musetalk_stage_cache_keys,
+            stage="musetalk",
+            require_driver_provenance=liveportrait_requires_driver_provenance,
         )
+        reuse_musetalk_stage = bool(musetalk_stage_cache_meta)
     liveportrait_runtime_enabled = _liveportrait_enabled_for_request(request)
     lp_low_motion_fallback_to_static = _env_enabled("AVATAR_LP_LOW_MOTION_FALLBACK_TO_STATIC", False)
     restoration_runtime_enabled = _restore_enabled(is_preview_request, request)
@@ -3050,6 +3332,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "cache_policy": ("disabled_current_run_required" if is_preview_request else "strict_hash_match"),
         "reuse_liveportrait_stage": bool(reuse_liveportrait_stage),
         "reuse_musetalk_stage": bool(reuse_musetalk_stage),
+        "reused_liveportrait_stage_cache": bool(reuse_liveportrait_stage),
+        "reused_musetalk_stage_cache": bool(reuse_musetalk_stage),
         "runtime_resources_start": runtime_resources_start,
         "resolved_source_key": str(source_key_for_canonical or ""),
         "resolved_source_image_path": str(source_image_primary),
@@ -3091,6 +3375,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_calm_template_used": False,
         "liveportrait_calm_template_missing": False,
         "liveportrait_calm_template_failed": False,
+        "liveportrait_calm_template_min_mad": 0.0,
+        "liveportrait_calm_template_window_accepted_by_profile": False,
         "liveportrait_vetted_template_path": "",
         "liveportrait_vetted_template_missing": False,
         "liveportrait_vetted_template_failed": False,
@@ -3149,6 +3435,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "restored_visual_motion_score": 0.0,
         "motion_loss_stage": "none",
     }
+    if reuse_liveportrait_stage:
+        _apply_stage_cache_driver_provenance(stage_paths, liveportrait_stage_cache_meta)
+        _apply_stage_cache_driver_provenance(stage_paths, liveportrait_handoff_stage_cache_meta)
+    if reuse_musetalk_stage:
+        _apply_stage_cache_driver_provenance(stage_paths, musetalk_stage_cache_meta)
     canonical_input_payload = {
         "request_trace": dict(request_trace),
         "source_candidates": candidate_trace,
@@ -3680,8 +3971,12 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 liveportrait_stderr,
                 "liveportrait_motion_profile",
             ) or _stderr_token(liveportrait_stderr, "profile")
-            stage_paths["liveportrait_driver_source_policy"] = _stderr_token(liveportrait_stderr, "liveportrait_driver_source_policy")
-            stage_paths["liveportrait_driver_source"] = _stderr_token(liveportrait_stderr, "liveportrait_driver_source")
+            driver_source_policy_token = _stderr_token(liveportrait_stderr, "liveportrait_driver_source_policy")
+            if driver_source_policy_token:
+                stage_paths["liveportrait_driver_source_policy"] = driver_source_policy_token
+            driver_source_token = _stderr_token(liveportrait_stderr, "liveportrait_driver_source")
+            if driver_source_token:
+                stage_paths["liveportrait_driver_source"] = driver_source_token
             _apply_liveportrait_driver_stderr_observability(stage_paths, liveportrait_stderr)
             if motion_source_marker:
                 logger.info(
@@ -4243,11 +4538,13 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 artifact_path=liveportrait_output,
                 stage="liveportrait",
                 cache_keys=liveportrait_stage_cache_keys,
+                stage_paths=stage_paths,
             )
             _write_stage_cache_meta(
                 artifact_path=musetalk_handoff_output,
                 stage="liveportrait_handoff",
                 cache_keys=liveportrait_stage_cache_keys,
+                stage_paths=stage_paths,
             )
 
         current_audio_hash = sha256_file(str(getattr(request, "audio_path", "") or ""))
@@ -4500,6 +4797,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 artifact_path=musetalk_output,
                 stage="musetalk",
                 cache_keys=musetalk_stage_cache_keys,
+                stage_paths=stage_paths,
             )
             musetalk_contract = legacy_pipeline._assert_video_contract(str(musetalk_output), stage_name="musetalk")
             stage_outputs[-1]["duration_seconds"] = round(float(musetalk_contract.get("duration_seconds") or 0.0), 4)
@@ -4609,12 +4907,15 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             "liveportrait_driver_source": stage_paths.get("liveportrait_driver_source"),
             "liveportrait_calm_template_used": stage_paths.get("liveportrait_calm_template_used"),
             "liveportrait_vetted_template_fallback_used": stage_paths.get("liveportrait_vetted_template_fallback_used"),
+            "liveportrait_composer_used": stage_paths.get("liveportrait_composer_used"),
             "liveportrait_composer_fallback_used": stage_paths.get("liveportrait_composer_fallback_used"),
             "liveportrait_motion_preset": stage_paths.get("liveportrait_motion_preset"),
             "liveportrait_succeeded": stage_paths.get("liveportrait_succeeded"),
             "liveportrait_fallback_used": stage_paths.get("liveportrait_fallback_used"),
             "musetalk_source_kind": stage_paths.get("musetalk_source_kind"),
             "liveportrait_driver_mean_mad": stage_paths.get("liveportrait_driver_mean_mad"),
+            "liveportrait_calm_template_min_mad": stage_paths.get("liveportrait_calm_template_min_mad"),
+            "liveportrait_calm_template_window_accepted_by_profile": stage_paths.get("liveportrait_calm_template_window_accepted_by_profile"),
         }
         if is_preview_request:
             final_validation = legacy_pipeline.validate_avatar_render_with_audio(

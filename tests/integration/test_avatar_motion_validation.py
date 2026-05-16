@@ -471,6 +471,66 @@ def test_liveportrait_motion_preset_affects_cache_identity(tmp_path, monkeypatch
     assert strict_global_keys != request_override_keys
 
 
+def test_restoration_envs_are_scoped_to_preview_and_lesson(monkeypatch):
+    request = SimpleNamespace(restoration_enabled=None)
+    monkeypatch.setenv("AVATAR_PREVIEW_USE_RESTORATION", "1")
+    monkeypatch.delenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", raising=False)
+
+    assert avatar_canonical_pipeline._restore_enabled(True, request) is True
+    assert avatar_canonical_pipeline._restore_enabled(False, request) is False
+
+    monkeypatch.setenv("AVATAR_PREVIEW_USE_RESTORATION", "0")
+    monkeypatch.setenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", "1")
+
+    assert avatar_canonical_pipeline._restore_enabled(True, request) is False
+    assert avatar_canonical_pipeline._restore_enabled(False, request) is True
+
+
+def test_explicit_restoration_request_override_wins(monkeypatch):
+    monkeypatch.setenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", "1")
+    assert avatar_canonical_pipeline._restore_enabled(
+        False,
+        SimpleNamespace(restoration_enabled=False),
+    ) is False
+
+    monkeypatch.setenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", "0")
+    assert avatar_canonical_pipeline._restore_enabled(
+        False,
+        SimpleNamespace(restoration_enabled=True),
+    ) is True
+
+
+def test_lesson_restoration_env_affects_final_cache_but_not_lp_stage_identity(tmp_path, monkeypatch):
+    image = tmp_path / "face.png"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        audio_path=str(audio),
+        output_path=str(tmp_path / "avatar_001.mp4"),
+    )
+
+    monkeypatch.delenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", raising=False)
+    final_off = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+    stage_off = avatar_canonical_pipeline._liveportrait_stage_cache_keys(request, CANONICAL_ENGINE)
+
+    monkeypatch.setenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", "1")
+    final_on = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+    stage_on = avatar_canonical_pipeline._liveportrait_stage_cache_keys(request, CANONICAL_ENGINE)
+
+    assert final_off["restoration_enabled"] == "0"
+    assert final_on["restoration_enabled"] == "1"
+    assert "restoration_enabled" not in stage_off
+    assert "restoration_enabled" not in stage_on
+    assert final_off != final_on
+    assert stage_off == stage_on
+
+    request.restoration_enabled = False
+    explicit_off = avatar_canonical_pipeline._expected_cache_keys(request, CANONICAL_ENGINE)
+    assert explicit_off["restoration_enabled"] == "0"
+
+
 def test_liveportrait_driver_policy_and_template_affect_cache_identity(tmp_path, monkeypatch):
     image = tmp_path / "face.png"
     audio = tmp_path / "a.wav"
@@ -1185,7 +1245,14 @@ def test_validate_avatar_animation_passes_for_dynamic_video(monkeypatch):
     assert result["animation_score"] >= result["min_score"]
 
 
-def _final_quality(*, eye_blink_change=0.0020, eye_movement_score=8.4, head_motion_score=0.0038, structural_artifact=False):
+def _final_quality(
+    *,
+    eye_blink_change=0.0020,
+    eye_movement_score=8.4,
+    head_motion_score=0.0038,
+    structural_artifact=False,
+    drift_detected=False,
+):
     return {
         "unique_frames": 50,
         "lip_movement_score": 8.5,
@@ -1194,7 +1261,7 @@ def _final_quality(*, eye_blink_change=0.0020, eye_movement_score=8.4, head_moti
         "eye_blink_change": eye_blink_change,
         "head_motion_score": head_motion_score,
         "loop_detected": False,
-        "drift_detected": False,
+        "drift_detected": drift_detected,
         "glitch_detected": False,
         "mouth_artifact_detected": False,
         "eye_artifact_detected": False,
@@ -1225,6 +1292,21 @@ def _composer_subtle_context(**overrides):
     return context
 
 
+def _calm_template_subtle_context(**overrides):
+    context = {
+        "liveportrait_driver_source": "template",
+        "liveportrait_calm_template_used": True,
+        "liveportrait_vetted_template_fallback_used": False,
+        "liveportrait_composer_used": False,
+        "liveportrait_composer_fallback_used": False,
+        "liveportrait_succeeded": True,
+        "liveportrait_fallback_used": False,
+        "musetalk_source_kind": "liveportrait",
+    }
+    context.update(overrides)
+    return context
+
+
 def test_composer_subtle_profile_accepts_low_blink_with_strong_eye_motion(monkeypatch):
     _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4))
 
@@ -1244,6 +1326,60 @@ def test_composer_subtle_profile_accepts_low_blink_with_strong_eye_motion(monkey
     assert result["face_artifacts_detected"] is False
     assert result["face_roi_artifact_source"] == "cascade_removed"
     assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+def test_calm_template_subtle_profile_accepts_low_blink_with_strong_eye_motion(monkeypatch):
+    _patch_final_validation_inputs(monkeypatch, _final_quality(eye_blink_change=0.0020, eye_movement_score=8.4))
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "restored.mp4",
+        "preview.wav",
+        validation_context=_calm_template_subtle_context(),
+    )
+
+    assert result["avatar_validation_profile"] == "calm_template_subtle_motion"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0015)
+    assert result["low_eye_blink_change_warning"] is True
+    assert "low_eye_blink_change" in result["validation_warnings"]
+    assert result["failure_reason"] == ""
+    assert result["eye_motion_valid"] is True
+    assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+@pytest.mark.parametrize(
+    ("quality_kwargs", "context_kwargs"),
+    [
+        ({"drift_detected": True}, {}),
+        ({"structural_artifact": True}, {}),
+        ({"eye_movement_score": 0.3}, {}),
+        ({}, {"liveportrait_vetted_template_fallback_used": True}),
+        ({}, {"liveportrait_composer_used": True}),
+        ({}, {"liveportrait_fallback_used": True, "musetalk_source_kind": "static_fallback"}),
+    ],
+)
+def test_calm_template_low_blink_remains_fatal_when_safety_conditions_fail(
+    monkeypatch,
+    quality_kwargs,
+    context_kwargs,
+):
+    final_quality_kwargs = {"eye_blink_change": 0.0020, "eye_movement_score": 8.4}
+    final_quality_kwargs.update(quality_kwargs)
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _final_quality(**final_quality_kwargs),
+    )
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "calm-template.mp4",
+        "preview.wav",
+        validation_context=_calm_template_subtle_context(**context_kwargs),
+    )
+
+    assert result["avatar_validation_profile"] == "strict"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0025)
+    assert result["low_eye_blink_change_warning"] is False
+    assert "low_eye_blink_change" in result["failure_reason"]
+    assert avatar_pipeline.accept_avatar_render(result) is False
 
 
 def test_face_roi_artifact_is_not_set_by_low_eye_blink_alone(monkeypatch):

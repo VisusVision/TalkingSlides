@@ -31,6 +31,7 @@ import { buildChapters, buildTranscriptLines } from '../lib/watch';
 import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 
 const COMMENT_PREVIEW_LIMIT = 5;
+const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
 function normalizeCatalogList(payload) {
@@ -140,9 +141,38 @@ function avatarOverlayDataForLesson(lesson) {
   return {
     enabled: Boolean(avatarOverlay?.enabled && avatarStreamUrl),
     src: avatarStreamUrl,
+    quality: String(avatarOverlay?.quality || '').trim(),
+    enhancedAvailable: Boolean(avatarOverlay?.enhanced_available),
+    enhancedPending: Boolean(avatarOverlay?.enhanced_pending),
     placement: avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {},
     processing: ['queued', 'processing'].includes(String(lesson?.avatar_processing_status || '').trim().toLowerCase()),
     message: String(lesson?.avatar_processing_message || '').trim(),
+  };
+}
+
+function mergePlaybackIntoLesson(previousLesson, playbackData) {
+  if (!previousLesson || !playbackData) return previousLesson;
+  return {
+    ...previousLesson,
+    stream_url: playbackData.video_url || previousLesson.stream_url,
+    srt_url: playbackData.srt_url || previousLesson.srt_url,
+    vtt_url: playbackData.vtt_url || previousLesson.vtt_url,
+    subtitle_vtt_url: playbackData.subtitle_vtt_url || previousLesson.subtitle_vtt_url,
+    avatar_overlay: playbackData.avatar_overlay || previousLesson.avatar_overlay,
+    avatar_processing_status: playbackData.avatar_processing_status || previousLesson.avatar_processing_status,
+    avatar_processing_message: playbackData.avatar_processing_message || previousLesson.avatar_processing_message,
+    avatar_visible: playbackData.avatar_visible ?? previousLesson.avatar_visible,
+    avatar_available: playbackData.avatar_available ?? previousLesson.avatar_available,
+    avatar_updated_at: playbackData.avatar_updated_at || previousLesson.avatar_updated_at,
+    avatar_enhancement: playbackData.avatar_enhancement || previousLesson.avatar_enhancement,
+    final_avatar_engine_chain: playbackData.final_avatar_engine_chain || previousLesson.final_avatar_engine_chain,
+    protection_mode: playbackData.protection_mode || previousLesson.protection_mode,
+    allow_mp4_fallback: playbackData.allow_mp4_fallback ?? previousLesson.allow_mp4_fallback,
+    playback_status: playbackData.playback_status || previousLesson.playback_status,
+    protection: playbackData.protection || previousLesson.protection,
+    streaming: playbackData.streaming || previousLesson.streaming,
+    drm: playbackData.drm || previousLesson.drm,
+    watermark: playbackData.watermark || previousLesson.watermark,
   };
 }
 
@@ -435,29 +465,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
         if (!active) return;
 
-        const integratedLesson = playbackData
-          ? {
-              ...lessonData,
-              stream_url: playbackData.video_url || lessonData.stream_url,
-              srt_url: playbackData.srt_url || lessonData.srt_url,
-              vtt_url: playbackData.vtt_url || lessonData.vtt_url,
-              subtitle_vtt_url: playbackData.subtitle_vtt_url || lessonData.subtitle_vtt_url,
-              avatar_overlay: playbackData.avatar_overlay || lessonData.avatar_overlay,
-              avatar_processing_status: playbackData.avatar_processing_status || lessonData.avatar_processing_status,
-              avatar_processing_message: playbackData.avatar_processing_message || lessonData.avatar_processing_message,
-              avatar_visible: playbackData.avatar_visible ?? lessonData.avatar_visible,
-              avatar_available: playbackData.avatar_available ?? lessonData.avatar_available,
-              avatar_updated_at: playbackData.avatar_updated_at || lessonData.avatar_updated_at,
-              final_avatar_engine_chain: playbackData.final_avatar_engine_chain || lessonData.final_avatar_engine_chain,
-              protection_mode: playbackData.protection_mode || lessonData.protection_mode,
-              allow_mp4_fallback: playbackData.allow_mp4_fallback ?? lessonData.allow_mp4_fallback,
-              playback_status: playbackData.playback_status || lessonData.playback_status,
-              protection: playbackData.protection || lessonData.protection,
-              streaming: playbackData.streaming || lessonData.streaming,
-              drm: playbackData.drm || lessonData.drm,
-              watermark: playbackData.watermark || lessonData.watermark,
-            }
-          : lessonData;
+        const integratedLesson = playbackData ? mergePlaybackIntoLesson(lessonData, playbackData) : lessonData;
 
         setLesson(integratedLesson);
         setTranscriptPayload(transcriptData);
@@ -724,6 +732,41 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     visibilityLock: Boolean(lesson?.protection?.visibility_lock),
     onDenied: handlePlaybackDenied,
   });
+
+  useEffect(() => {
+    const enhancedPending = Boolean(lesson?.avatar_overlay?.enhanced_pending);
+    if (!activeLessonId || !playbackActive || !enhancedPending || loadingLesson) return undefined;
+
+    let cancelled = false;
+    const pollForEnhancedAvatar = async () => {
+      try {
+        const playbackData = await fetchPlaybackToken(activeLessonId);
+        if (cancelled || !playbackData?.avatar_overlay) return;
+        const nextOverlay = playbackData.avatar_overlay;
+        const nextUrl = String(nextOverlay.stream_url || '').trim();
+        const currentUrl = String(lesson?.avatar_overlay?.stream_url || '').trim();
+        if (nextOverlay.enhanced_available && nextUrl && nextUrl !== currentUrl) {
+          setLesson((previous) => mergePlaybackIntoLesson(previous, playbackData));
+        } else if (!nextOverlay.enhanced_pending && nextUrl) {
+          setLesson((previous) => mergePlaybackIntoLesson(previous, playbackData));
+        }
+      } catch {
+        // Keep base playback undisturbed if enhancement polling fails.
+      }
+    };
+
+    const intervalId = window.setInterval(pollForEnhancedAvatar, AVATAR_ENHANCEMENT_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    activeLessonId,
+    loadingLesson,
+    playbackActive,
+    lesson?.avatar_overlay?.enhanced_pending,
+    lesson?.avatar_overlay?.stream_url,
+  ]);
 
   const userProgressPct = Math.max(0, Math.min(100, Number(lesson?.user_progress || 0)));
   const likedByMe = Boolean(lesson?.user_liked || lesson?.liked_by_me);

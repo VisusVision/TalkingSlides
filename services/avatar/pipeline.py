@@ -578,6 +578,41 @@ def _is_composer_subtle_validation_context(
     return float(quality.get("eye_movement_score") or 0.0) >= strong_eye_threshold
 
 
+def _is_calm_template_subtle_validation_context(
+    *,
+    validation_context: dict[str, Any],
+    quality: dict[str, Any],
+    min_eye: float,
+) -> bool:
+    if not _truthy(validation_context.get("liveportrait_calm_template_used")):
+        return False
+    if _truthy(validation_context.get("liveportrait_vetted_template_fallback_used")):
+        return False
+    if _truthy(validation_context.get("liveportrait_composer_used")):
+        return False
+    if _truthy(validation_context.get("liveportrait_composer_fallback_used")):
+        return False
+    if not _truthy(validation_context.get("liveportrait_succeeded")):
+        return False
+    if _truthy(validation_context.get("liveportrait_fallback_used")):
+        return False
+    if str(validation_context.get("musetalk_source_kind") or "").strip().lower() != "liveportrait":
+        return False
+    if _truthy(validation_context.get("whole_frame_drift")) or bool(quality.get("drift_detected")):
+        return False
+    if (
+        bool(quality.get("glitch_detected"))
+        or bool(quality.get("face_artifact_detected"))
+        or bool(quality.get("structural_face_artifact_detected"))
+        or bool(quality.get("face_warp_detected"))
+        or not bool(quality.get("landmark_stable", True))
+    ):
+        return False
+    strong_eye_multiplier = float(os.environ.get("AVATAR_CALM_TEMPLATE_EYE_STRONG_MARGIN_MULTIPLIER", "4.0"))
+    strong_eye_threshold = max(float(min_eye) * strong_eye_multiplier, float(min_eye) + 0.5)
+    return float(quality.get("eye_movement_score") or 0.0) >= strong_eye_threshold
+
+
 def _apply_avatar_validation_profile(
     quality: dict[str, Any],
     *,
@@ -588,11 +623,20 @@ def _apply_avatar_validation_profile(
     context = dict(validation_context or {})
     strict_blink_threshold = float(adjusted.get("min_eye_blink_change") or os.environ.get("AVATAR_MIN_EYE_BLINK_CHANGE", "0.0025"))
     composer_blink_threshold = float(os.environ.get("AVATAR_MIN_EYE_BLINK_CHANGE_COMPOSER", "0.0015"))
+    calm_template_blink_threshold = float(
+        os.environ.get(
+            "AVATAR_MIN_EYE_BLINK_CHANGE_CALM_TEMPLATE",
+            os.environ.get("AVATAR_MIN_EYE_BLINK_CHANGE_COMPOSER", "0.0015"),
+        )
+    )
     profile = "strict"
     threshold_used = strict_blink_threshold
     if _is_composer_subtle_validation_context(validation_context=context, quality=adjusted, min_eye=min_eye):
         profile = "composer_subtle_motion"
         threshold_used = min(strict_blink_threshold, composer_blink_threshold)
+    elif _is_calm_template_subtle_validation_context(validation_context=context, quality=adjusted, min_eye=min_eye):
+        profile = "calm_template_subtle_motion"
+        threshold_used = min(strict_blink_threshold, calm_template_blink_threshold)
 
     blink = float(adjusted.get("eye_blink_change") or 0.0)
     mouth_open = float(adjusted.get("mouth_openness_change") or 0.0)
@@ -607,7 +651,11 @@ def _apply_avatar_validation_profile(
     adjusted["min_eye_blink_change"] = round(threshold_used, 6)
     adjusted["eye_blink_threshold_used"] = round(threshold_used, 6)
     adjusted["low_eye_blink_change"] = bool(low_blink_under_used)
-    adjusted["low_eye_blink_change_warning"] = bool(profile == "composer_subtle_motion" and low_blink_under_strict and not low_blink_under_used)
+    adjusted["low_eye_blink_change_warning"] = bool(
+        profile in {"composer_subtle_motion", "calm_template_subtle_motion"}
+        and low_blink_under_strict
+        and not low_blink_under_used
+    )
     adjusted["low_mouth_openness_change"] = bool(low_mouth)
     adjusted["face_artifact_detected"] = bool(structural_artifact)
     adjusted["face_roi_artifact_source"] = (

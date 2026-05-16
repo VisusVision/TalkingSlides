@@ -26,6 +26,7 @@ _MAX_COMPOSE_DUR = float(os.environ.get("LP_MOTION_COMPOSE_MAX_S", "0.0"))
 _DRIVER_MIN_UNIQUE_FRAMES = int(os.environ.get("LP_DRIVER_MIN_UNIQUE_FRAMES", "6"))
 _DRIVER_MIN_UNIQUE_RATIO = float(os.environ.get("LP_DRIVER_MIN_UNIQUE_RATIO", "0.16"))
 _DRIVER_MIN_MAD = float(os.environ.get("LP_DRIVER_MIN_MAD", "0.35"))
+_DEFAULT_CALM_TEMPLATE_MIN_MAD = 0.32
 _COMPOSER_MIN_UNIQUE_RATIO = float(os.environ.get("AVATAR_LIVEPORTRAIT_COMPOSER_MIN_UNIQUE_RATIO", "0.05"))
 _COMPOSER_LONG_CLIP_MIN_UNIQUE_FRAMES = int(
     os.environ.get("AVATAR_LIVEPORTRAIT_COMPOSER_LONG_CLIP_MIN_UNIQUE_FRAMES", "20")
@@ -515,6 +516,8 @@ def _format_driver_metrics(metrics: dict[str, object]) -> str:
         f"liveportrait_driver_validation_mode={str(metrics.get('liveportrait_driver_validation_mode') or 'global')} "
         f"liveportrait_driver_localized_motion_passed={int(bool(metrics.get('liveportrait_driver_localized_motion_passed')))} "
         f"liveportrait_driver_near_static_threshold_profile={str(metrics.get('liveportrait_driver_near_static_threshold_profile') or 'global')} "
+        f"liveportrait_calm_template_min_mad={float(metrics.get('liveportrait_calm_template_min_mad') or 0.0):.6f} "
+        f"liveportrait_calm_template_window_accepted_by_profile={int(bool(metrics.get('liveportrait_calm_template_window_accepted_by_profile')))} "
         f"composer_localized_motion_override={int(bool(metrics.get('composer_localized_motion_override')))} "
         f"liveportrait_driver_unique_ratio={float(metrics.get('liveportrait_driver_unique_ratio') or metrics.get('unique_ratio') or 0.0):.6f} "
         f"liveportrait_driver_unique_frames={int(metrics.get('liveportrait_driver_unique_frames') or metrics.get('unique_frames') or 0)} "
@@ -750,6 +753,69 @@ def _apply_composer_localized_validation(
     updated["valid"] = True
     updated["failure_reason"] = ""
     updated["validation_failure_reason"] = ""
+    return updated
+
+
+def _calm_template_min_mad() -> float:
+    raw = str(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_TEMPLATE_MIN_MAD", "")).strip()
+    if raw:
+        try:
+            value = float(raw)
+        except Exception:
+            value = _DEFAULT_CALM_TEMPLATE_MIN_MAD
+    else:
+        value = _DEFAULT_CALM_TEMPLATE_MIN_MAD
+    return max(0.0, min(float(value), float(_DRIVER_MIN_MAD)))
+
+
+def _apply_calm_template_validation_profile(metrics: dict[str, object]) -> dict[str, object]:
+    updated = dict(metrics or {})
+    calm_min_mad = _calm_template_min_mad()
+    mean_mad = float(updated.get("mean_mad") or 0.0)
+    unique_frames = int(updated.get("unique_frames") or 0)
+    unique_ratio = float(updated.get("unique_ratio") or 0.0)
+    technical_failure_reason = str(updated.get("technical_failure_reason") or "")
+    validation_failure_reason = str(updated.get("validation_failure_reason") or "")
+    failure_reason = str(updated.get("failure_reason") or "")
+
+    updated["liveportrait_calm_template_min_mad"] = round(float(calm_min_mad), 6)
+    updated["liveportrait_calm_template_window_accepted_by_profile"] = False
+    updated["liveportrait_driver_near_static_threshold_profile"] = "calm_template_materialized_motion"
+
+    if bool(updated.get("valid")):
+        return updated
+
+    unsafe_markers = [
+        "framehash_unavailable",
+        "unique_frames=",
+        "unique_ratio=",
+        "first_last_frame_identical",
+        "duration_unavailable",
+        "fps_unavailable",
+        "frame_count_unavailable",
+        "duration_delta=",
+        "fps_delta=",
+        "frame_count_delta=",
+    ]
+    combined_reason = ";".join([failure_reason, validation_failure_reason, technical_failure_reason])
+    if any(marker in combined_reason for marker in unsafe_markers):
+        return updated
+    if technical_failure_reason:
+        return updated
+    if unique_frames < int(_DRIVER_MIN_UNIQUE_FRAMES):
+        return updated
+    if unique_ratio < float(_DRIVER_MIN_UNIQUE_RATIO):
+        return updated
+    if mean_mad < calm_min_mad:
+        return updated
+
+    updated["global_near_static"] = bool(updated.get("near_static"))
+    updated["global_validation_failure_reason"] = validation_failure_reason
+    updated["near_static"] = False
+    updated["valid"] = True
+    updated["failure_reason"] = ""
+    updated["validation_failure_reason"] = ""
+    updated["liveportrait_calm_template_window_accepted_by_profile"] = True
     return updated
 
 
@@ -1050,6 +1116,81 @@ def _probe_clip_mean_mad_segment(
     return round(sum(mad_values) / len(mad_values), 6)
 
 
+def _calm_template_window_choice_order(
+    *,
+    source_video: Path,
+    target_duration_seconds: float,
+    segment_index: int = 0,
+    audio_hash: str = "",
+    page_key: str = "",
+) -> list[dict[str, object]]:
+    source_duration = float(_probe_duration_seconds(source_video, stream_selector="v:0"))
+    target_duration = max(float(target_duration_seconds or 0.0), 0.5)
+    min_source_seconds = max(float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MIN_SOURCE_SECONDS", "12.0")), target_duration + 0.5)
+    preferred_min_mad = float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MIN_MAD", "0.40"))
+    preferred_max_mad = float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MAX_MAD", "0.70"))
+    step_seconds = max(float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_STEP_SECONDS", "2.0")), 0.5)
+    default_choice = {
+        "start_seconds": 0.0,
+        "duration_seconds": round(float(target_duration), 6),
+        "mean_mad": 0.0,
+        "source": "default_start",
+    }
+    if not _calm_window_selection_enabled() or source_duration < min_source_seconds:
+        return [default_choice]
+
+    max_start = max(source_duration - target_duration, 0.0)
+    scored: list[tuple[float, float, float]] = []
+    offset = 0.0
+    while offset <= max_start + 1e-6:
+        probe_mean_mad = _probe_clip_mean_mad_segment(
+            source_video=source_video,
+            start_seconds=offset,
+            duration_seconds=target_duration,
+        )
+        in_band = preferred_min_mad <= probe_mean_mad <= preferred_max_mad
+        score_bucket = 0.0 if in_band else (1.0 if probe_mean_mad >= preferred_min_mad else 2.0)
+        scored.append((score_bucket, -float(probe_mean_mad), float(offset)))
+        offset += step_seconds
+
+    if not scored:
+        return [default_choice]
+
+    seed = _deterministic_calm_window_seed(
+        segment_index=int(segment_index),
+        audio_hash=str(audio_hash or ""),
+        page_key=str(page_key or ""),
+        template_path=source_video,
+    )
+    ranked = sorted(scored)
+    best_bucket = ranked[0][0]
+    bucket_items = [item for item in ranked if item[0] == best_bucket]
+    ordered_offsets: list[float] = []
+    for index in range(len(bucket_items)):
+        ordered_offsets.append(float(bucket_items[(seed + index) % len(bucket_items)][2]))
+    for _score_bucket, _neg_mad, candidate_offset in ranked:
+        if candidate_offset in ordered_offsets:
+            continue
+        ordered_offsets.append(float(candidate_offset))
+
+    choices: list[dict[str, object]] = []
+    for candidate_offset in ordered_offsets:
+        probe_mean_mad = _probe_clip_mean_mad_segment(
+            source_video=source_video,
+            start_seconds=candidate_offset,
+            duration_seconds=target_duration,
+        )
+        choices.append(
+            {
+                "start_seconds": round(float(candidate_offset), 6),
+                "duration_seconds": round(float(target_duration), 6),
+                "mean_mad": round(float(probe_mean_mad), 6),
+                "source": "sliding_window_probe",
+            }
+        )
+    return choices
+
+
 def _select_calm_template_window_start(
     *,
     source_video: Path,
@@ -1058,59 +1199,14 @@ def _select_calm_template_window_start(
     audio_hash: str = "",
     page_key: str = "",
 ) -> dict[str, object]:
-    source_duration = float(_probe_duration_seconds(source_video, stream_selector="v:0"))
-    target_duration = max(float(target_duration_seconds or 0.0), 0.5)
-    min_source_seconds = max(float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MIN_SOURCE_SECONDS", "12.0")), target_duration + 0.5)
-    preferred_min_mad = float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MIN_MAD", "0.40"))
-    preferred_max_mad = float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_MAX_MAD", "0.70"))
-    step_seconds = max(float(os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_STEP_SECONDS", "2.0")), 0.5)
-    fallback = {
-        "start_seconds": 0.0,
-        "duration_seconds": target_duration,
-        "mean_mad": 0.0,
-        "source": "default_start",
-    }
-    if not _calm_window_selection_enabled() or source_duration < min_source_seconds:
-        return fallback
-
-    max_start = max(source_duration - target_duration, 0.0)
-    candidates: list[tuple[float, float, int]] = []
-    offset = 0.0
-    while offset <= max_start + 1e-6:
-        mean_mad = _probe_clip_mean_mad_segment(
-            source_video=source_video,
-            start_seconds=offset,
-            duration_seconds=target_duration,
-        )
-        in_band = preferred_min_mad <= mean_mad <= preferred_max_mad
-        score_bucket = 0 if in_band else (1 if mean_mad >= preferred_min_mad else 2)
-        candidates.append((float(score_bucket), -float(mean_mad), float(offset)))
-        offset += step_seconds
-
-    if not candidates:
-        return fallback
-
-    seed = _deterministic_calm_window_seed(
-        segment_index=int(segment_index),
-        audio_hash=str(audio_hash or ""),
-        page_key=str(page_key or ""),
-        template_path=source_video,
-    )
-    ranked = sorted(candidates)
-    best_bucket = ranked[0][0]
-    bucket_offsets = [item[2] for item in ranked if item[0] == best_bucket]
-    chosen_offset = bucket_offsets[seed % len(bucket_offsets)]
-    chosen_mad = _probe_clip_mean_mad_segment(
+    choices = _calm_template_window_choice_order(
         source_video=source_video,
-        start_seconds=chosen_offset,
-        duration_seconds=target_duration,
+        target_duration_seconds=target_duration_seconds,
+        segment_index=segment_index,
+        audio_hash=audio_hash,
+        page_key=page_key,
     )
-    return {
-        "start_seconds": round(float(chosen_offset), 6),
-        "duration_seconds": round(float(target_duration), 6),
-        "mean_mad": round(float(chosen_mad), 6),
-        "source": "sliding_window_probe",
-    }
+    return dict(choices[0])
 
 
 def _ensure_driving_clip_contract(
@@ -1410,7 +1506,11 @@ def main() -> int:
         _calm_template_window_start = 0.0
         _calm_template_window_duration = 0.0
         _calm_template_window_mean_mad = 0.0
+        _calm_template_window_materialized_mean_mad = 0.0
+        _calm_template_window_accepted_by_profile = False
+        _calm_template_min_mad_value = _calm_template_min_mad()
         _calm_template_window_source = "default_start"
+        _calm_template_failure_reason = ""
         _vetted_template_path = _VETTED_IMAGE_TEMPLATE_NAME
         _vetted_template_missing = False
         _vetted_template_failed = False
@@ -1554,21 +1654,36 @@ def main() -> int:
                         if str(_template_origin).startswith("vetted_")
                         else 1.0
                     )
-                    _window_start_seconds = 0.0
-                    if (
+                    _is_calm_template = (
                         str(_template_origin).startswith("calm_")
                         and _driver_source_policy == "calm_template_for_image"
-                    ):
-                        _window_choice = _select_calm_template_window_start(
+                    )
+                    if _is_calm_template:
+                        _window_choices = _calm_template_window_choice_order(
                             source_video=_template_path,
                             target_duration_seconds=float(_target_contract_duration_seconds),
                             segment_index=int(os.environ.get("AVATAR_SEGMENT_INDEX", "0") or 0),
                             audio_hash=str(os.environ.get("AVATAR_AUDIO_HASH", "") or ""),
                             page_key=str(os.environ.get("AVATAR_PAGE_KEY", "") or ""),
                         )
+                    else:
+                        _window_choices = [
+                            {
+                                "start_seconds": 0.0,
+                                "duration_seconds": float(_target_contract_duration_seconds),
+                                "mean_mad": 0.0,
+                                "source": "default_start",
+                            }
+                        ]
+
+                    _template_driver_selected = False
+                    for _window_choice in _window_choices:
+                        _calm_template_window_accepted_by_profile = False
                         _window_start_seconds = float(_window_choice.get("start_seconds") or 0.0)
                         _calm_template_window_start = _window_start_seconds
-                        _calm_template_window_duration = float(_window_choice.get("duration_seconds") or _target_contract_duration_seconds)
+                        _calm_template_window_duration = float(
+                            _window_choice.get("duration_seconds") or _target_contract_duration_seconds
+                        )
                         _calm_template_window_mean_mad = float(_window_choice.get("mean_mad") or 0.0)
                         _calm_template_window_source = str(_window_choice.get("source") or "default_start")
                         print(
@@ -1576,22 +1691,153 @@ def main() -> int:
                             f"liveportrait_calm_template_window_start={_calm_template_window_start:.6f} "
                             f"liveportrait_calm_template_window_duration={_calm_template_window_duration:.6f} "
                             f"liveportrait_calm_template_window_mean_mad={_calm_template_window_mean_mad:.6f} "
+                            f"liveportrait_calm_template_min_mad={_calm_template_min_mad_value:.6f} "
                             f"liveportrait_calm_template_window_source={_calm_template_window_source}",
                             file=sys.stderr,
                         )
-                    _candidate_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
-                        source_video=_template_path,
-                        target_duration_seconds=float(_target_contract_duration_seconds),
-                        work_dir=temp_dir,
-                        target_fps=float(_requested_fps),
-                        output_name=f"image_template_drive_{_template_index:02d}.mp4",
-                        always_materialize=True,
-                        playback_speed=float(_candidate_playback_speed),
-                        start_offset_seconds=float(_window_start_seconds),
-                    )
+                        try:
+                            _candidate_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
+                                source_video=_template_path,
+                                target_duration_seconds=float(_target_contract_duration_seconds),
+                                work_dir=temp_dir,
+                                target_fps=float(_requested_fps),
+                                output_name=f"image_template_drive_{_template_index:02d}.mp4",
+                                always_materialize=True,
+                                playback_speed=float(_candidate_playback_speed),
+                                start_offset_seconds=float(_window_start_seconds),
+                            )
+                        except Exception as _template_exc:
+                            if _is_calm_template:
+                                _calm_template_failure_reason = f"materialize_failed:{_template_exc}"
+                            if str(_template_origin).startswith("vetted_"):
+                                _vetted_template_failed = True
+                            _driver_rejections.append(
+                                f"{_template_origin}:window_start={_window_start_seconds:.3f}:materialize_failed:{_template_exc}"
+                            )
+                            print(
+                                "[LivePortrait] driver candidate rejected "
+                                f"candidate=image_template origin={_template_origin} "
+                                f"path={_template_path} reason=materialize_failed:{_template_exc} "
+                                f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                                f"liveportrait_calm_template_failure_reason={_calm_template_failure_reason or 'none'} "
+                                f"liveportrait_calm_template_failed={int(bool(_is_calm_template))} "
+                                f"liveportrait_vetted_template_path={_vetted_template_path} "
+                                f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
+                                f"liveportrait_fallback_driver_source={'composer' if _composer_fallback_allowed else 'none'}",
+                                file=sys.stderr,
+                            )
+                            continue
+
+                        _driver_validation_mode = "must_match_requested" if _requested_fps > 0.0 else "informational"
+                        _driver_metrics = _validate_driving_clip(
+                            path=_candidate_video,
+                            expected_duration_seconds=float(_expected_duration_seconds),
+                            requested_fps=float(_requested_fps),
+                            target_frame_count=int(_target_frame_count),
+                            fps_validation_mode=_driver_validation_mode,
+                        )
+                        if _is_calm_template:
+                            _driver_metrics = _apply_calm_template_validation_profile(_driver_metrics)
+                            _calm_template_window_accepted_by_profile = bool(
+                                _driver_metrics.get("liveportrait_calm_template_window_accepted_by_profile")
+                            )
+                        _calm_template_window_materialized_mean_mad = float(_driver_metrics.get("mean_mad") or 0.0)
+                        print(
+                            "[LivePortrait] driver_variation "
+                            f"candidate=image_template origin={_template_origin} "
+                            + _format_driver_metrics(_driver_metrics),
+                            file=sys.stderr,
+                        )
+                        if not bool(_driver_metrics.get("valid")):
+                            _rejection_reason = str(
+                                _driver_metrics.get("validation_failure_reason")
+                                or _driver_metrics.get("failure_reason")
+                                or "driver_invalid"
+                            )
+                            if _is_calm_template:
+                                _calm_template_failure_reason = _rejection_reason
+                            if str(_template_origin).startswith("vetted_"):
+                                _vetted_template_failed = True
+                            _driver_rejections.append(
+                                f"{_template_origin}:window_start={_window_start_seconds:.3f}:{_rejection_reason}:{_format_driver_metrics(_driver_metrics)}"
+                            )
+                            print(
+                                "[LivePortrait] driver candidate rejected "
+                                f"candidate=image_template origin={_template_origin} "
+                                f"reason={_rejection_reason} metrics={_format_driver_metrics(_driver_metrics)} "
+                                f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                                f"liveportrait_calm_template_failure_reason={_calm_template_failure_reason or 'none'} "
+                                f"liveportrait_calm_template_min_mad={_calm_template_min_mad_value:.6f} "
+                                f"liveportrait_calm_template_window_materialized_mean_mad={_calm_template_window_materialized_mean_mad:.6f} "
+                                f"liveportrait_calm_template_window_accepted_by_profile={int(bool(_calm_template_window_accepted_by_profile))} "
+                                f"liveportrait_calm_template_failed={int(bool(_is_calm_template))} "
+                                f"liveportrait_vetted_template_path={_vetted_template_path} "
+                                f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
+                                f"liveportrait_fallback_driver_source={'composer' if _composer_fallback_allowed else 'none'}",
+                                file=sys.stderr,
+                            )
+                            continue
+
+                        _template_score = (
+                            float(_driver_metrics.get("mean_mad") or 0.0),
+                            float(_driver_metrics.get("unique_ratio") or 0.0),
+                            int(_driver_metrics.get("unique_frames") or 0),
+                        )
+                        if _driver_source_policy == "template_first":
+                            if _best_template_choice is None or _template_score > _best_template_choice[0]:
+                                _best_template_choice = (
+                                    _template_score,
+                                    _candidate_video,
+                                    str(_template_origin),
+                                    _candidate_template_name,
+                                    dict(_driver_metrics),
+                                    str(_driving_action),
+                                    float(_resolved_driving_duration_seconds),
+                                )
+                            break
+
+                        if (
+                            str(_template_origin).startswith("calm_")
+                            or str(_template_origin).startswith("env:")
+                            or str(_template_origin).startswith("vetted_")
+                        ):
+                            source_video = _candidate_video
+                            _motion_source = f"image_template:{_template_origin}"
+                            _driver_source = "template"
+                            _template_used = _candidate_template_name
+                            if str(_template_origin).startswith("calm_"):
+                                _calm_template_used = True
+                            _template_driver_selected = True
+                            if str(_template_origin).startswith("vetted_"):
+                                if _driver_source_policy == "calm_template_for_image" and (
+                                    _calm_template_missing or _calm_template_failed
+                                ):
+                                    _vetted_template_fallback_used = True
+                                    _fallback_driver_source = "vetted_template"
+                                _template_motion_strength = _vetted_motion_settings["motion_strength"]
+                                _template_temporal_smoothing = _vetted_motion_settings["temporal_smoothing"]
+                                _template_speed = _vetted_motion_settings["speed"]
+                                _template_calm_profile = True
+                            break
+
+                    if _template_driver_selected:
+                        break
+                    if _is_calm_template:
+                        _calm_template_failed = True
+                        print(
+                            "[LivePortrait] calm_template_status "
+                            f"liveportrait_driver_source_policy={_driver_source_policy} "
+                            f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                            f"liveportrait_calm_template_failure_reason={_calm_template_failure_reason or 'all_windows_rejected'} "
+                            "liveportrait_calm_template_failed=1 "
+                            "liveportrait_vetted_template_fallback_used=0",
+                            file=sys.stderr,
+                        )
+                        continue
                 except Exception as _template_exc:
                     if str(_template_origin).startswith("calm_"):
                         _calm_template_failed = True
+                        _calm_template_failure_reason = f"unexpected:{_template_exc}"
                     if str(_template_origin).startswith("vetted_"):
                         _vetted_template_failed = True
                     _driver_rejections.append(
@@ -1602,6 +1848,7 @@ def main() -> int:
                         f"candidate=image_template origin={_template_origin} "
                         f"path={_template_path} reason=materialize_failed:{_template_exc} "
                         f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
+                        f"liveportrait_calm_template_failure_reason={_calm_template_failure_reason or 'none'} "
                         f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                         f"liveportrait_vetted_template_path={_vetted_template_path} "
                         f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
@@ -1609,85 +1856,6 @@ def main() -> int:
                         file=sys.stderr,
                     )
                     continue
-
-                _driver_validation_mode = "must_match_requested" if _requested_fps > 0.0 else "informational"
-                _driver_metrics = _validate_driving_clip(
-                    path=_candidate_video,
-                    expected_duration_seconds=float(_expected_duration_seconds),
-                    requested_fps=float(_requested_fps),
-                    target_frame_count=int(_target_frame_count),
-                    fps_validation_mode=_driver_validation_mode,
-                )
-                print(
-                    "[LivePortrait] driver_variation "
-                    f"candidate=image_template origin={_template_origin} "
-                    + _format_driver_metrics(_driver_metrics),
-                    file=sys.stderr,
-                )
-                if not bool(_driver_metrics.get("valid")):
-                    if str(_template_origin).startswith("calm_"):
-                        _calm_template_failed = True
-                    if str(_template_origin).startswith("vetted_"):
-                        _vetted_template_failed = True
-                    _rejection_reason = str(
-                        _driver_metrics.get("validation_failure_reason")
-                        or _driver_metrics.get("failure_reason")
-                        or "driver_invalid"
-                    )
-                    _driver_rejections.append(
-                        f"{_template_origin}:{_rejection_reason}:{_format_driver_metrics(_driver_metrics)}"
-                    )
-                    print(
-                        "[LivePortrait] driver candidate rejected "
-                        f"candidate=image_template origin={_template_origin} "
-                        f"reason={_rejection_reason} metrics={_format_driver_metrics(_driver_metrics)} "
-                        f"liveportrait_calm_template_path={_calm_template_path or 'none'} "
-                        f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
-                        f"liveportrait_vetted_template_path={_vetted_template_path} "
-                        f"liveportrait_vetted_template_failed={int(bool(_vetted_template_failed))} "
-                        f"liveportrait_fallback_driver_source={'composer' if _composer_fallback_allowed else 'none'}",
-                        file=sys.stderr,
-                    )
-                    continue
-
-                if (
-                    str(_template_origin).startswith("calm_")
-                    or str(_template_origin).startswith("env:")
-                    or str(_template_origin).startswith("vetted_")
-                ):
-                    source_video = _candidate_video
-                    _motion_source = f"image_template:{_template_origin}"
-                    _driver_source = "template"
-                    _template_used = _candidate_template_name
-                    if str(_template_origin).startswith("calm_"):
-                        _calm_template_used = True
-                    if str(_template_origin).startswith("vetted_"):
-                        if _driver_source_policy == "calm_template_for_image" and (
-                            _calm_template_missing or _calm_template_failed
-                        ):
-                            _vetted_template_fallback_used = True
-                            _fallback_driver_source = "vetted_template"
-                        _template_motion_strength = _vetted_motion_settings["motion_strength"]
-                        _template_temporal_smoothing = _vetted_motion_settings["temporal_smoothing"]
-                        _template_speed = _vetted_motion_settings["speed"]
-                        _template_calm_profile = True
-                    break
-
-                _template_score = (
-                    float(_driver_metrics.get("mean_mad") or 0.0),
-                    float(_driver_metrics.get("unique_ratio") or 0.0),
-                    int(_driver_metrics.get("unique_frames") or 0),
-                )
-                if _best_template_choice is None or _template_score > _best_template_choice[0]:
-                    _best_template_choice = (
-                        _template_score,
-                        _candidate_video,
-                        str(_template_origin),
-                        _candidate_template_name,
-                        dict(_driver_metrics),
-                        str(_driving_action),
-                        float(_resolved_driving_duration_seconds),
-                    )
 
             if source_video is None and _best_template_choice is not None:
                 (
@@ -1849,7 +2017,11 @@ def main() -> int:
                 f"liveportrait_calm_template_window_start={_calm_template_window_start:.6f} "
                 f"liveportrait_calm_template_window_duration={_calm_template_window_duration:.6f} "
                 f"liveportrait_calm_template_window_mean_mad={_calm_template_window_mean_mad:.6f} "
+                f"liveportrait_calm_template_window_materialized_mean_mad={_calm_template_window_materialized_mean_mad:.6f} "
+                f"liveportrait_calm_template_min_mad={_calm_template_min_mad_value:.6f} "
+                f"liveportrait_calm_template_window_accepted_by_profile={int(bool(_calm_template_window_accepted_by_profile))} "
                 f"liveportrait_calm_template_window_source={_calm_template_window_source} "
+                f"liveportrait_calm_template_failure_reason={_calm_template_failure_reason or 'none'} "
                 f"liveportrait_calm_template_missing={int(bool(_calm_template_missing))} "
                 f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                 f"liveportrait_vetted_template_path={_vetted_template_path} "
@@ -2052,7 +2224,11 @@ def main() -> int:
                 f"liveportrait_calm_template_window_start={_calm_template_window_start:.6f} "
                 f"liveportrait_calm_template_window_duration={_calm_template_window_duration:.6f} "
                 f"liveportrait_calm_template_window_mean_mad={_calm_template_window_mean_mad:.6f} "
+                f"liveportrait_calm_template_window_materialized_mean_mad={_calm_template_window_materialized_mean_mad:.6f} "
+                f"liveportrait_calm_template_min_mad={_calm_template_min_mad_value:.6f} "
+                f"liveportrait_calm_template_window_accepted_by_profile={int(bool(_calm_template_window_accepted_by_profile))} "
                 f"liveportrait_calm_template_window_source={_calm_template_window_source} "
+                f"liveportrait_calm_template_failure_reason={_calm_template_failure_reason or 'none'} "
                 f"liveportrait_calm_template_missing={int(bool(_calm_template_missing))} "
                 f"liveportrait_calm_template_failed={int(bool(_calm_template_failed))} "
                 f"liveportrait_vetted_template_path={_vetted_template_path} "

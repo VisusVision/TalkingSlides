@@ -148,6 +148,8 @@ def _patch_runner_execution(monkeypatch, captured: dict) -> None:
         output_name="driving_contract.mp4",
         always_materialize=False,
         playback_speed=1.0,
+        start_offset_seconds=0.0,
+        **_kwargs,
     ):
         captured.setdefault("ensure_calls", []).append(
             {
@@ -158,6 +160,7 @@ def _patch_runner_execution(monkeypatch, captured: dict) -> None:
                 "output_name": str(output_name),
                 "always_materialize": bool(always_materialize),
                 "playback_speed": float(playback_speed),
+                "start_offset_seconds": float(start_offset_seconds),
             }
         )
         captured["ensure_source_video"] = str(source_video)
@@ -445,6 +448,160 @@ def test_default_image_policy_uses_valid_calm_template_when_configured(tmp_path,
     assert "liveportrait_calm_template_used=1" in stderr_text
     assert "liveportrait_vetted_template_fallback_used=0" in stderr_text
     assert "liveportrait_composer_used=0" in stderr_text
+
+
+def test_calm_template_sub_global_materialized_mad_uses_calm_profile(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {"compose_called": False}
+    calm_template = tmp_path / "calm_lecture_driver.mp4"
+    calm_template.write_bytes(b"calm-template")
+    vetted_template = paths["lp_home"] / "assets" / "examples" / "driving" / "d11.mp4"
+    vetted_template.parent.mkdir(parents=True, exist_ok=True)
+    vetted_template.write_bytes(b"d11")
+
+    monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(calm_template))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_TEMPLATE_MIN_MAD", "0.32")
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=lambda *_args, **_kwargs: False))
+    _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setattr(
+        runner,
+        "_validate_driving_clip",
+        lambda *, path, expected_duration_seconds, requested_fps, target_frame_count, fps_validation_mode: _driver_metrics(
+            path,
+            duration_seconds=expected_duration_seconds or 1.0,
+            fps=16.0,
+            frame_count=596,
+            requested_fps=requested_fps,
+            target_frame_count=target_frame_count,
+            unique_frames=596,
+            unique_ratio=1.0,
+            mean_mad=0.328,
+            near_static=True,
+            valid=False,
+            failure_reason="driver_near_static:mean_mad=0.328<min_0.35",
+            validation_failure_reason="driver_invalid:driver_near_static:mean_mad=0.328<min_0.35",
+        ),
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+            "--fps",
+            "16",
+            "--target_frame_count",
+            "596",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert captured["ensure_source_video"] == str(calm_template)
+    assert captured.get("cmd")
+
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_driver_source_policy=calm_template_for_image" in stderr_text
+    assert "liveportrait_template_used=calm_lecture_driver.mp4" in stderr_text
+    assert "liveportrait_calm_template_used=1" in stderr_text
+    assert "liveportrait_calm_template_min_mad=0.320000" in stderr_text
+    assert "liveportrait_calm_template_window_materialized_mean_mad=0.328000" in stderr_text
+    assert "liveportrait_calm_template_window_accepted_by_profile=1" in stderr_text
+    assert "liveportrait_vetted_template_fallback_used=0" in stderr_text
+    assert "liveportrait_composer_used=0" in stderr_text
+
+
+def test_calm_template_below_calm_min_falls_back_to_vetted_d11(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {"compose_called": False}
+    calm_template = tmp_path / "calm_lecture_driver.mp4"
+    calm_template.write_bytes(b"calm-template")
+    vetted_template = paths["lp_home"] / "assets" / "examples" / "driving" / "d11.mp4"
+    vetted_template.parent.mkdir(parents=True, exist_ok=True)
+    vetted_template.write_bytes(b"d11")
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "calm_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE", str(calm_template))
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CALM_TEMPLATE_MIN_MAD", "0.32")
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=lambda *_args, **_kwargs: False))
+    _patch_runner_execution(monkeypatch, captured)
+
+    def _fake_validate(*, path, expected_duration_seconds, requested_fps, target_frame_count, fps_validation_mode):
+        if Path(path) == calm_template:
+            return _driver_metrics(
+                path,
+                duration_seconds=expected_duration_seconds or 1.0,
+                fps=16.0,
+                frame_count=596,
+                requested_fps=requested_fps,
+                target_frame_count=target_frame_count,
+                unique_frames=596,
+                unique_ratio=1.0,
+                mean_mad=0.299,
+                near_static=True,
+                valid=False,
+                failure_reason="driver_near_static:mean_mad=0.299<min_0.35",
+                validation_failure_reason="driver_invalid:driver_near_static:mean_mad=0.299<min_0.35",
+            )
+        return _driver_metrics(
+            path,
+            duration_seconds=expected_duration_seconds or 1.0,
+            fps=16.0,
+            frame_count=596,
+            requested_fps=requested_fps,
+            target_frame_count=target_frame_count,
+            unique_frames=596,
+            unique_ratio=1.0,
+            mean_mad=0.9,
+            valid=True,
+        )
+
+    monkeypatch.setattr(runner, "_validate_driving_clip", _fake_validate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--timeout_seconds",
+            "30",
+            "--fps",
+            "16",
+            "--target_frame_count",
+            "596",
+        ],
+    )
+
+    assert runner.main() == 0
+    assert captured["ensure_calls"][0]["source_video"] == str(calm_template)
+    assert captured["ensure_source_video"] == str(vetted_template)
+
+    stderr_text = capsys.readouterr().err
+    assert "liveportrait_calm_template_window_accepted_by_profile=0" in stderr_text
+    assert "liveportrait_calm_template_failed=1" in stderr_text
+    assert "liveportrait_template_used=d11.mp4" in stderr_text
+    assert "liveportrait_vetted_template_fallback_used=1" in stderr_text
 
 
 def test_calm_policy_missing_template_falls_back_to_vetted_d11(tmp_path, monkeypatch, capsys):
@@ -1086,6 +1243,76 @@ def test_template_driver_still_uses_global_near_static_validation(tmp_path, monk
     assert "liveportrait_driver_validation_mode=global" in stderr_text
     assert "liveportrait_driver_near_static_threshold_profile=global" in stderr_text
     assert "composer_localized_motion_override=0" in stderr_text
+
+
+def test_vetted_template_sub_global_mad_still_fails_global_profile(tmp_path, monkeypatch, capsys):
+    paths = _make_runtime_layout(tmp_path)
+    captured: dict[str, object] = {"run_called": False}
+    vetted_template = paths["lp_home"] / "assets" / "examples" / "driving" / "d11.mp4"
+    vetted_template.parent.mkdir(parents=True, exist_ok=True)
+    vetted_template.write_bytes(b"d11")
+
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", "vetted_template_for_image")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", "0")
+    monkeypatch.setattr(runner, "_motion_composer", SimpleNamespace(compose=lambda *_args, **_kwargs: False))
+
+    def _fake_validate(*, path, expected_duration_seconds, requested_fps, target_frame_count, fps_validation_mode):
+        return _driver_metrics(
+            path,
+            duration_seconds=expected_duration_seconds or 1.0,
+            fps=16.0,
+            frame_count=596,
+            requested_fps=requested_fps,
+            target_frame_count=target_frame_count,
+            unique_frames=596,
+            unique_ratio=1.0,
+            mean_mad=0.328,
+            near_static=True,
+            valid=False,
+            failure_reason="driver_near_static:mean_mad=0.328<min_0.35",
+            validation_failure_reason="driver_invalid:driver_near_static:mean_mad=0.328<min_0.35",
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_ensure_driving_clip_contract",
+        lambda **kwargs: (kwargs["source_video"], "passed_through", kwargs["target_duration_seconds"]),
+    )
+    _patch_runner_execution(monkeypatch, captured)
+    monkeypatch.setattr(runner, "_validate_driving_clip", _fake_validate)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "liveportrait_runner",
+            "--source_image",
+            str(paths["source_image"]),
+            "--output_path",
+            str(paths["output_path"]),
+            "--liveportrait_home",
+            str(paths["lp_home"]),
+            "--liveportrait_entrypoint",
+            str(paths["lp_entrypoint"]),
+            "--liveportrait_model_path",
+            str(paths["lp_model"]),
+            "--fps",
+            "16",
+            "--target_frame_count",
+            "596",
+            "--timeout_seconds",
+            "30",
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="liveportrait_invalid_driving_clip"):
+        runner.main()
+
+    assert captured["run_called"] is False
+    stderr_text = capsys.readouterr().err
+    assert "candidate=image_template origin=vetted_default" in stderr_text
+    assert "mean_mad=0.328000" in stderr_text
+    assert "liveportrait_driver_near_static_threshold_profile=global" in stderr_text
+    assert "liveportrait_vetted_template_failed=1" in stderr_text
 
 
 def test_source_video_driver_still_uses_global_near_static_validation(tmp_path, monkeypatch, capsys):

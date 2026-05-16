@@ -262,7 +262,11 @@ def _composite_env_report() -> tuple[list[str], list[str], dict[str, bool]]:
         "AVATAR_PREVIEW_USE_MUSETALK",
         "AVATAR_PREVIEW_USE_RESTORATION",
     ]
-    if _is_truthy_env("AVATAR_PREVIEW_USE_RESTORATION"):
+    restoration_requested = (
+        _is_truthy_env("AVATAR_PREVIEW_USE_RESTORATION")
+        or _is_truthy_env("AVATAR_LESSON_AVATAR_USE_RESTORATION")
+    )
+    if restoration_requested:
         required_vars.append("AVATAR_PREVIEW_RESTORE_CMD")
 
     configured_vars = [name for name in required_vars if str(os.environ.get(name, "")).strip()]
@@ -271,6 +275,7 @@ def _composite_env_report() -> tuple[list[str], list[str], dict[str, bool]]:
         "preview_liveportrait": _is_truthy_env("AVATAR_PREVIEW_USE_LIVEPORTRAIT"),
         "preview_musetalk": _is_truthy_env("AVATAR_PREVIEW_USE_MUSETALK", "1"),
         "preview_restoration": _is_truthy_env("AVATAR_PREVIEW_USE_RESTORATION"),
+        "lesson_restoration": _is_truthy_env("AVATAR_LESSON_AVATAR_USE_RESTORATION"),
         "lesson_composite": _is_truthy_env("AVATAR_ENABLE_COMPOSITE_LESSON"),
     }
     return configured_vars, missing_vars, composite_flags
@@ -1071,7 +1076,7 @@ def main() -> int:
                 f"{liveportrait_entrypoint}"
             )
 
-        if _is_truthy_env("AVATAR_PREVIEW_USE_RESTORATION"):
+        if _is_truthy_env("AVATAR_PREVIEW_USE_RESTORATION") or _is_truthy_env("AVATAR_LESSON_AVATAR_USE_RESTORATION"):
             restore_cmd = str(os.environ.get("AVATAR_PREVIEW_RESTORE_CMD", "")).strip()
             composite_errors.extend(_validate_restoration_command(restore_cmd))
 

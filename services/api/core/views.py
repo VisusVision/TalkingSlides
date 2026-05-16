@@ -1510,6 +1510,7 @@ def _playback_payload(
     session_binding_active: bool = False,
     avatar_token: str | None = None,
     avatar_overlay_defaults: dict | None = None,
+    avatar_artifact_state: dict | None = None,
 ) -> dict:
     watermark_enabled = bool(getattr(settings, "LECTURE_WATERMARK_ENABLED", True))
     visibility_lock_enabled = bool(getattr(settings, "LECTURE_VISIBILITY_LOCK_ENABLED", True))
@@ -1616,12 +1617,22 @@ def _playback_payload(
     avatar_defaults.update(avatar_placement)
     avatar_defaults["avatar_placement"] = avatar_placement
 
+    avatar_state = dict(avatar_artifact_state or {})
+    avatar_overlay_meta = {
+        "quality": str(avatar_state.get("quality") or ""),
+        "enhanced_available": bool(avatar_state.get("enhanced_available")),
+        "enhanced_pending": bool(avatar_state.get("enhanced_pending")),
+        "version": str(avatar_state.get("version") or ""),
+        "updated_at": str(avatar_state.get("updated_at") or ""),
+    }
+
     if avatar_token:
         payload["avatar_overlay"] = {
             "enabled": True,
             "stream_url": _stream_url(request, avatar_token),
             "placement": avatar_placement,
             "defaults": avatar_defaults,
+            **avatar_overlay_meta,
         }
     else:
         payload["avatar_overlay"] = {
@@ -1629,8 +1640,15 @@ def _playback_payload(
             "stream_url": "",
             "placement": avatar_placement,
             "defaults": avatar_defaults,
+            **avatar_overlay_meta,
         }
-    payload.update(_avatar_playback_state_payload(project, avatar_available=bool(avatar_token)))
+    payload.update(
+        _avatar_playback_state_payload(
+            project,
+            avatar_available=bool(avatar_token),
+            avatar_artifact_state=avatar_state,
+        )
+    )
     payload["mode_debug"] = mode_debug or {}
     return payload
 
@@ -2463,8 +2481,8 @@ class MediaStreamView(APIView):
                 return _stream_error_response(file_type=file_type, status_code=status.HTTP_404_NOT_FOUND, reason="avatar_missing")
             rel_path = rel_path.lstrip("/")
             if stream_project:
-                avatar_available, avatar_rel_path = _avatar_artifact_available(stream_project, sidecar)
-                if not avatar_available or avatar_rel_path != rel_path or not _avatar_active_for_project(stream_project):
+                avatar_rel_paths = _avatar_artifact_rel_paths(stream_project, sidecar)
+                if rel_path not in avatar_rel_paths or not _avatar_active_for_project(stream_project):
                     return _stream_error_response(file_type=file_type, status_code=status.HTTP_404_NOT_FOUND, reason="avatar_not_available")
         else:
             return _stream_error_response(file_type=file_type, status_code=status.HTTP_404_NOT_FOUND, reason="unsupported_resource")
@@ -2619,7 +2637,9 @@ class PlaybackTokenView(APIView):
                 bind_key=bind_key,
             )
 
-        avatar_available, avatar_rel_path = _avatar_artifact_available(project, sidecar)
+        avatar_artifact_state = _avatar_artifact_state(project, sidecar)
+        avatar_available = bool(avatar_artifact_state.get("available"))
+        avatar_rel_path = str(avatar_artifact_state.get("rel_path") or "")
         if avatar_available and avatar_rel_path and _avatar_active_for_project(project):
             avatar_token = generate_media_token(
                 job.id,
@@ -2677,6 +2697,7 @@ class PlaybackTokenView(APIView):
             session_binding_active=session_binding_active,
             avatar_token=avatar_token,
             avatar_overlay_defaults=_avatar_overlay_defaults_for_project(project),
+            avatar_artifact_state=avatar_artifact_state,
         )
         payload["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})
         return Response(payload)
@@ -3818,7 +3839,90 @@ def _avatar_active_for_project(project: Project) -> bool:
     return bool(project.avatar_enabled_override and profile_enabled)
 
 
+def _avatar_file_version(storage_root: str | os.PathLike[str], rel_path: str) -> str:
+    try:
+        full_path = Path(storage_root) / str(rel_path).lstrip("/")
+        if not full_path.exists() or not full_path.is_file():
+            return ""
+        stat = full_path.stat()
+        digest = hashlib.sha256(f"{rel_path}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")).hexdigest()
+        return digest[:16]
+    except Exception:
+        return ""
+
+
+def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dict[str, Any]:
+    storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+    avatar_payload = sidecar.get("avatar") if isinstance(sidecar, dict) else None
+    avatar_payload = avatar_payload if isinstance(avatar_payload, dict) else {}
+
+    project_rel = _normalize_rel_storage_path(str(getattr(project, "avatar_output_path", "") or ""))
+    sidecar_rel = _normalize_rel_storage_path(str(avatar_payload.get("track_rel_path") or ""))
+    fast_rel = _normalize_rel_storage_path(str(avatar_payload.get("track_fast_rel_path") or ""))
+    restored_rel = _normalize_rel_storage_path(str(avatar_payload.get("track_restored_rel_path") or ""))
+
+    fast_exists = bool(fast_rel and _storage_rel_path_exists(storage_root, fast_rel))
+    restored_exists = bool(restored_rel and _storage_rel_path_exists(storage_root, restored_rel))
+    sidecar_exists = bool(sidecar_rel and _storage_rel_path_exists(storage_root, sidecar_rel))
+    project_exists = bool(project_rel and _storage_rel_path_exists(storage_root, project_rel))
+
+    preferred_rel = ""
+    quality = str(avatar_payload.get("quality") or "").strip().lower()
+    if restored_exists:
+        preferred_rel = restored_rel
+        quality = "restored"
+    elif sidecar_exists:
+        preferred_rel = sidecar_rel
+        if not quality:
+            quality = "fast" if fast_rel and sidecar_rel == fast_rel else "ready"
+    elif fast_exists:
+        preferred_rel = fast_rel
+        quality = "fast"
+    elif project_exists:
+        preferred_rel = project_rel
+        quality = quality or "ready"
+
+    status_ready = str(getattr(project, "avatar_processing_status", "") or "") == "ready"
+    visible = bool(getattr(project, "avatar_visible", True))
+    available = bool(visible and status_ready and preferred_rel)
+    enhanced_pending = bool(avatar_payload.get("enhanced_pending")) and not restored_exists
+    updated_at = str(avatar_payload.get("updated_at") or "")
+    version = str(avatar_payload.get("version") or "") or _avatar_file_version(storage_root, preferred_rel)
+    rel_paths = [
+        rel
+        for rel in (preferred_rel, sidecar_rel, fast_rel, restored_rel, project_rel)
+        if rel and _storage_rel_path_exists(storage_root, rel)
+    ]
+
+    return {
+        "available": available,
+        "rel_path": preferred_rel if available else "",
+        "quality": quality or "",
+        "enhanced_available": bool(available and restored_exists),
+        "enhanced_pending": bool(available and enhanced_pending),
+        "version": version,
+        "updated_at": updated_at,
+        "track_fast_rel_path": fast_rel if fast_exists else "",
+        "track_restored_rel_path": restored_rel if restored_exists else "",
+        "rel_paths": sorted(set(rel_paths)),
+    }
+
+
 def _avatar_artifact_available(project: Project, sidecar: dict | None = None) -> tuple[bool, str]:
+    state = _avatar_artifact_state(project, sidecar)
+    return bool(state.get("available")), str(state.get("rel_path") or "")
+
+
+def _avatar_artifact_rel_paths(project: Project, sidecar: dict | None = None) -> set[str]:
+    if not bool(getattr(project, "avatar_visible", True)):
+        return set()
+    if str(getattr(project, "avatar_processing_status", "") or "") != "ready":
+        return set()
+    state = _avatar_artifact_state(project, sidecar)
+    return {str(path) for path in state.get("rel_paths") or [] if path}
+
+
+def _legacy_avatar_artifact_available(project: Project, sidecar: dict | None = None) -> tuple[bool, str]:
     if not bool(getattr(project, "avatar_visible", True)):
         return False, ""
     if str(getattr(project, "avatar_processing_status", "") or "") != "ready":
@@ -3881,7 +3985,13 @@ def _avatar_runtime_status_for_project(project: Project) -> dict[str, Any]:
     }
 
 
-def _avatar_playback_state_payload(project: Project, *, avatar_available: bool | None = None) -> dict[str, Any]:
+def _avatar_playback_state_payload(
+    project: Project,
+    *,
+    avatar_available: bool | None = None,
+    avatar_artifact_state: dict | None = None,
+) -> dict[str, Any]:
+    state = dict(avatar_artifact_state or {})
     available = bool(avatar_available) if avatar_available is not None else _avatar_artifact_available(project)[0]
     updated_at = getattr(project, "avatar_updated_at", None)
     avatar_engine_selected = _avatar_engine_selected_for_project(project)
@@ -3896,6 +4006,13 @@ def _avatar_playback_state_payload(project: Project, *, avatar_available: bool |
         "final_avatar_engine_chain": _avatar_engine_chain_for_project(project),
         "avatar_runtime_settings": project_avatar_runtime_settings(project),
         "avatar_runtime_status": _avatar_runtime_status_for_project(project),
+        "avatar_enhancement": {
+            "quality": str(state.get("quality") or ""),
+            "enhanced_available": bool(state.get("enhanced_available")),
+            "enhanced_pending": bool(state.get("enhanced_pending")),
+            "version": str(state.get("version") or ""),
+            "updated_at": str(state.get("updated_at") or ""),
+        },
     }
 
 
@@ -7690,7 +7807,9 @@ class CatalogDetailView(APIView):
                 bind_key=bind_key,
             )
 
-        avatar_available, avatar_rel_path = _avatar_artifact_available(project, sidecar)
+        avatar_artifact_state = _avatar_artifact_state(project, sidecar)
+        avatar_available = bool(avatar_artifact_state.get("available"))
+        avatar_rel_path = str(avatar_artifact_state.get("rel_path") or "")
         if avatar_available and avatar_rel_path and _avatar_active_for_project(project):
             avatar_token = generate_media_token(
                 job.id,
@@ -7742,6 +7861,7 @@ class CatalogDetailView(APIView):
             session_binding_active=session_binding_active,
             avatar_token=avatar_token,
             avatar_overlay_defaults=_avatar_overlay_defaults_for_project(project),
+            avatar_artifact_state=avatar_artifact_state,
         )
         data["stream_url"] = playback["video_url"]
         data["srt_url"] = playback["srt_url"]
