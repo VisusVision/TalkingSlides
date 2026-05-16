@@ -180,7 +180,7 @@ export default function SideRail({
             ) : null}
 
             <RailNavItem to="/settings" label="Settings" icon={Settings} expanded={expanded} />
-            <RailHelpItem to="/settings#help" label="Help" icon={CircleHelp} expanded={expanded} />
+            <RailHelpItem to="/help" label="Help" icon={CircleHelp} expanded={expanded} />
           </div>
         </nav>
       </div>

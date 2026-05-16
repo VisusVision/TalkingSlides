@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarDays, Check, Clock3, ListVideo, PlayCircle, UserPlus, Users } from 'lucide-react';
+import { CalendarDays, Check, Clock3, ListVideo, PencilLine, PlayCircle, Save, UserPlus, Users, X } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
-import { getPublisherLessons, getPublisherPlaylists, getPublisherProfile, toggleFollowPublisher } from '../api';
+import { getPublisherLessons, getPublisherPlaylists, getPublisherProfile, toggleFollowPublisher, updateMyProfile } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
@@ -77,6 +77,22 @@ function sortLessonsByNewest(items) {
     if (aTime !== bTime) return bTime - aTime;
     return Number(b?.id || 0) - Number(a?.id || 0);
   });
+}
+
+function channelEditDraftFrom(user, profile) {
+  return {
+    first_name: String(user?.first_name || ''),
+    last_name: String(user?.last_name || ''),
+    bio: String(profile?.bio || ''),
+  };
+}
+
+function displayNameFromProfilePayload(payload, fallback = 'Publisher') {
+  const fullName = [payload?.first_name, payload?.last_name]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(' ');
+  return payload?.display_name || fullName || payload?.username || fallback;
 }
 
 function selectFeaturedLesson(items) {
@@ -200,7 +216,7 @@ function PlaylistCard({ playlist }) {
   );
 }
 
-export default function Channel({ user, searchQuery, onLoginRequest }) {
+export default function Channel({ user, searchQuery, onLoginRequest, onUserRefresh }) {
   const { userId } = useParams();
   const [activeTab, setActiveTab] = useState('home');
   const [sortValue, setSortValue] = useState('date:desc');
@@ -211,9 +227,16 @@ export default function Channel({ user, searchQuery, onLoginRequest }) {
   const [error, setError] = useState('');
   const [followBusy, setFollowBusy] = useState(false);
   const [followError, setFollowError] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editDraft, setEditDraft] = useState(() => channelEditDraftFrom(user, null));
+  const [editSaving, setEditSaving] = useState(false);
+  const [editMessage, setEditMessage] = useState('');
+  const [editError, setEditError] = useState('');
 
   const [sort, order] = sortValue.split(':');
-  const isOwnChannel = Boolean(user?.id && Number(user.id) === Number(userId));
+  const viewerId = Number(user?.id || 0);
+  const channelId = Number(profile?.id ?? userId ?? 0);
+  const isOwnChannel = Boolean(viewerId && channelId && viewerId === channelId);
   const displayName = profile?.display_name || profile?.username || 'Publisher';
   const username = profile?.username ? `@${profile.username}` : '';
   const filteredLessons = useMemo(() => {
@@ -296,6 +319,53 @@ export default function Channel({ user, searchQuery, onLoginRequest }) {
     }
   };
 
+  const handleOpenEdit = () => {
+    if (!isOwnChannel) return;
+    setEditDraft(channelEditDraftFrom(user, profile));
+    setEditMessage('');
+    setEditError('');
+    setEditOpen(true);
+  };
+
+  const handleEditDraftChange = (field, value) => {
+    setEditDraft((current) => ({ ...current, [field]: value }));
+    setEditMessage('');
+    setEditError('');
+  };
+
+  const handleSaveChannelProfile = async (event) => {
+    event.preventDefault();
+    if (!isOwnChannel || editSaving) return;
+
+    setEditSaving(true);
+    setEditMessage('');
+    setEditError('');
+    try {
+      const payload = await updateMyProfile(editDraft);
+      const nextDisplayName = displayNameFromProfilePayload(payload, displayName);
+      setProfile((current) => current ? {
+        ...current,
+        username: payload?.username || current.username,
+        display_name: nextDisplayName,
+        bio: payload?.bio ?? current.bio,
+        role: payload?.role || current.role,
+      } : current);
+      setEditDraft(channelEditDraftFrom({ ...user, ...payload }, payload));
+      if (typeof onUserRefresh === 'function') {
+        try {
+          await onUserRefresh();
+        } catch {
+          // The channel view already has the saved profile payload.
+        }
+      }
+      setEditMessage('Channel profile saved.');
+    } catch (profileUpdateError) {
+      setEditError(profileUpdateError.message || 'Could not update channel profile.');
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   const renderVideos = (items) => {
     if (!items.length) {
       return (
@@ -352,7 +422,17 @@ export default function Channel({ user, searchQuery, onLoginRequest }) {
                 </div>
               </div>
             </div>
-            {!isOwnChannel && (
+            {isOwnChannel ? (
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleOpenEdit}
+                className="w-full shrink-0 sm:w-auto"
+              >
+                <PencilLine size={14} />
+                <span>Edit channel</span>
+              </Button>
+            ) : (
               <Button
                 size="sm"
                 variant={profile?.is_following ? 'primary' : 'secondary'}
@@ -371,6 +451,78 @@ export default function Channel({ user, searchQuery, onLoginRequest }) {
             {profile?.bio || `${displayName} has not added a channel bio yet.`}
           </p>
           {followError ? <p className="mt-3 text-xs font-medium text-[color:var(--feedback-danger-fg)]">{followError}</p> : null}
+          {isOwnChannel && editOpen ? (
+            <form
+              onSubmit={handleSaveChannelProfile}
+              className="mt-4 space-y-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-4"
+            >
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-[var(--text-primary)]">Edit channel profile</p>
+                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                    Updates your existing first name, last name, and bio.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setEditOpen(false)}
+                  disabled={editSaving}
+                  className="self-start"
+                >
+                  <X size={14} />
+                  <span>Close</span>
+                </Button>
+              </div>
+
+              <fieldset disabled={editSaving} className="space-y-3 disabled:opacity-60">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block text-sm text-[var(--text-secondary)]">
+                    First name
+                    <input
+                      type="text"
+                      value={editDraft.first_name}
+                      onChange={(event) => handleEditDraftChange('first_name', event.target.value)}
+                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                    />
+                  </label>
+
+                  <label className="block text-sm text-[var(--text-secondary)]">
+                    Last name
+                    <input
+                      type="text"
+                      value={editDraft.last_name}
+                      onChange={(event) => handleEditDraftChange('last_name', event.target.value)}
+                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                    />
+                  </label>
+                </div>
+
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Bio
+                  <textarea
+                    value={editDraft.bio}
+                    onChange={(event) => handleEditDraftChange('bio', event.target.value)}
+                    rows={4}
+                    className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+              </fieldset>
+
+              {editMessage ? (
+                <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{editMessage}</p>
+              ) : null}
+              {editError ? (
+                <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{editError}</p>
+              ) : null}
+
+              <Button type="submit" disabled={editSaving}>
+                <Save size={15} />
+                <span>{editSaving ? 'Saving...' : 'Save channel'}</span>
+              </Button>
+            </form>
+          ) : null}
         </div>
       </SurfaceCard>
 

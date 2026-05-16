@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, Focus, Heart, Layers3, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
+import { Check, ChevronDown, Focus, Heart, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   addComment,
@@ -32,6 +32,7 @@ import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
+const PLAYLIST_COLLAPSED_KEY = 'visus-watch-playlist-collapsed';
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
 function normalizeCatalogList(payload) {
@@ -278,6 +279,9 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, fol
 }
 
 function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+  const [playlistCollapsed, setPlaylistCollapsed] = useState(
+    () => window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true',
+  );
   const rawItems = Array.isArray(context?.items) ? context.items : [];
   const rows = rawItems
     .map((item, index) => {
@@ -291,21 +295,71 @@ function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
     })
     .filter((row) => row.lesson.id);
 
+  const isPlaylistMode = context?.mode === 'playlist';
+  useEffect(() => {
+    if (isPlaylistMode) {
+      window.localStorage.setItem(PLAYLIST_COLLAPSED_KEY, playlistCollapsed ? 'true' : 'false');
+    }
+  }, [isPlaylistMode, playlistCollapsed]);
+
   if (!rows.length) return null;
 
-  const isPlaylistMode = context?.mode === 'playlist';
   const title = isPlaylistMode ? 'More from this playlist' : 'More from this publisher';
   const subtitle = isPlaylistMode ? context?.playlist?.title || '' : rows[0]?.lesson?.teacherName || '';
+  const currentIndex = rows.findIndex((row) => row.isCurrent);
+  const nextRow = currentIndex >= 0
+    ? rows.slice(currentIndex + 1).find((row) => !row.isCurrent)
+    : rows.find((row) => !row.isCurrent);
+  const nextLesson = nextRow?.lesson || rows.find((row) => !row.isCurrent)?.lesson || null;
+
+  if (isPlaylistMode && playlistCollapsed) {
+    return (
+      <SurfaceCard className="p-4">
+        <button
+          type="button"
+          onClick={() => setPlaylistCollapsed(false)}
+          className="focus-ring flex w-full items-center justify-between gap-3 rounded-xl text-left"
+          aria-expanded="false"
+        >
+          <span className="min-w-0">
+            <span className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">
+              Next: {nextLesson?.title || 'End of playlist'}
+            </span>
+            {subtitle ? (
+              <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">{subtitle}</span>
+            ) : null}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)]">
+            Expand
+            <ChevronDown size={14} />
+          </span>
+        </button>
+      </SurfaceCard>
+    );
+  }
 
   return (
     <SurfaceCard className="space-y-3 p-4">
-      <div className="min-w-0">
-        <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
-        {subtitle && (
-          <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{subtitle}</p>
-        )}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
+          {subtitle && (
+            <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{subtitle}</p>
+          )}
+        </div>
+        {isPlaylistMode ? (
+          <button
+            type="button"
+            onClick={() => setPlaylistCollapsed(true)}
+            className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)]"
+            aria-expanded="true"
+          >
+            Hide
+            <ChevronDown size={14} className="rotate-180" />
+          </button>
+        ) : null}
       </div>
-      <div className="space-y-2">
+      <div className="rail-scroll max-h-[17.5rem] space-y-2 overflow-y-auto pr-1 lg:max-h-[22rem]">
         {rows.map((row) => {
           const { lesson: contextLesson, isCurrent } = row;
           return (
@@ -325,10 +379,10 @@ function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
                 <img
                   src={contextLesson.imageUrl}
                   alt=""
-                  className="h-12 w-16 shrink-0 rounded-lg object-cover"
+                  className="h-16 w-24 shrink-0 rounded-lg object-cover"
                 />
               ) : (
-                <span className="flex h-12 w-16 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-container-highest)] text-xs font-semibold text-[var(--accent-primary)]">
+                <span className="flex h-16 w-24 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-container-highest)] text-xs font-semibold text-[var(--accent-primary)]">
                   {String(contextLesson.title || 'L').charAt(0).toUpperCase()}
                 </span>
               )}
@@ -337,7 +391,7 @@ function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
                   {contextLesson.title}
                 </span>
                 <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">
-                  {isCurrent ? 'Now playing' : contextLesson.categoryName || 'Lesson'}
+                  {isCurrent ? 'Now playing' : `${contextLesson.categoryName || 'Lesson'} - ${formatDuration(contextLesson.durationMinutes || 8)}`}
                 </span>
               </span>
             </button>
@@ -1109,39 +1163,14 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     <div className="space-y-5">
       <SurfaceCard className="token-glass flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="label-sm">Lecture Player</p>
+          <p className="label-sm">Watch</p>
           <h1 className="headline-md mt-1 text-[var(--text-primary)]">Study With Focused Context</h1>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-2 rounded-full token-surface px-3 py-1.5 text-sm text-[var(--text-secondary)]">
-            <Layers3 size={14} />
-            <select
-              value={activeLessonId || ''}
-              onChange={(event) => {
-                const nextId = Number(event.target.value || 0);
-                if (!nextId) return;
-                setSearchParams({ lesson: String(nextId) });
-              }}
-              className="max-w-[10.5rem] truncate border border-[var(--border-subtle)] bg-[var(--surface-elevated)] text-[var(--text-primary)] focus:outline-none sm:max-w-[15rem]"
-            >
-              {!activeLessonId && <option value="" className="bg-[var(--surface-elevated)] text-[var(--text-primary)]"
-              >Select a lesson</option>}
-              {(visibleLessons.length ? visibleLessons : catalogLessons).map((item) => (
-                <option key={item.id} value={item.id}
-                className="bg-[var(--surface-elevated)] text-[var(--text-primary)]"
-                >
-                  {item.title}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <Button variant={focusMode ? 'primary' : 'secondary'} onClick={handleFocusModeToggle} disabled={!activeLessonId}>
-            <Focus size={15} />
-            <span>{focusMode ? 'Exit Focus' : 'Focus Mode'}</span>
-          </Button>
-        </div>
+        <Button variant={focusMode ? 'primary' : 'secondary'} onClick={handleFocusModeToggle} disabled={!activeLessonId}>
+          <Focus size={15} />
+          <span>{focusMode ? 'Exit Focus' : 'Focus Mode'}</span>
+        </Button>
       </SurfaceCard>
 
       {loadingCatalog && (

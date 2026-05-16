@@ -4,6 +4,7 @@ Core app models for AI_ACADEMY.
 Entities:
   UserProfile  - user role management (teacher, publisher, or student)
   VoiceProfile - TTS voice config linked to a Teacher
+  SiteHelpContent - admin-editable public help content
   Category     - lesson category for the student catalog
   Project      - a lesson/course project owned by a Teacher
   Slide        - individual slide within a Project
@@ -76,6 +77,30 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.username} - {self.get_role_display()}"
+
+
+class SiteHelpContent(models.Model):
+    """Admin-managed public help content for the frontend Help page."""
+
+    title = models.CharField(max_length=200)
+    slug = models.SlugField(max_length=120, unique=True)
+    body = models.TextField()
+    contact_email = models.EmailField(blank=True)
+    contact_phone = models.CharField(max_length=80, blank=True)
+    company_name = models.CharField(max_length=200, blank=True)
+    company_address = models.TextField(blank=True)
+    support_url = models.URLField(blank=True)
+    is_published = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at", "-created_at"]
+        verbose_name = "site help content"
+        verbose_name_plural = "site help content"
+
+    def __str__(self):
+        return self.title
 
 
 class VoiceProfile(models.Model):

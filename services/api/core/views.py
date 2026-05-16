@@ -5,6 +5,8 @@ Auth:
   POST /api/v1/auth/login/   LoginView
   POST /api/v1/auth/logout/  LogoutView
   GET  /api/v1/auth/me/      MeView
+  GET/PATCH /api/v1/me/profile/ CurrentUserProfileView
+  GET  /api/v1/help/         HelpContentView
 
 Secure media streaming:
   GET  /api/v1/stream/<token>/                  MediaStreamView  (public, token-gated)
@@ -79,6 +81,7 @@ from core.models import (
     Project,
     PublisherFollow,
     SavedPlaylist,
+    SiteHelpContent,
     Slide,
     TranscriptPage,
     TranslatedSubtitleTrack,
@@ -90,6 +93,7 @@ from core.serializers import (
     AvatarRenderJobSerializer,
     CatalogProjectSerializer,
     CategorySerializer,
+    CurrentUserProfileSerializer,
     JobSerializer,
     LessonCommentSerializer,
     PlaylistPublicSerializer,
@@ -97,6 +101,7 @@ from core.serializers import (
     ProjectCreateSerializer,  # noqa: F401
     ProjectSerializer,
     SlideSerializer,
+    SiteHelpContentSerializer,
     TranscriptPageSerializer,
     UserSerializer,
     canonical_project_tts_settings,
@@ -2321,6 +2326,51 @@ class MeView(APIView):
         token_key = getattr(request.auth, "key", None)
         provider = _get_token_provider(token_key)
         return Response(_serialize_user_with_provider(request.user, provider))
+
+
+DEFAULT_HELP_CONTENT = {
+    "title": "Help and Support",
+    "slug": "default",
+    "body": (
+        "Use Studio with a publisher account to create lessons, then use Watch for "
+        "transcript-first study and local notes. Contact support if you need account, "
+        "publishing, or playback assistance."
+    ),
+    "contact_email": "",
+    "contact_phone": "",
+    "company_name": "",
+    "company_address": "",
+    "support_url": "",
+    "updated_at": None,
+    "is_default": True,
+}
+
+
+class HelpContentView(APIView):
+    """GET /api/v1/help/ - public published Help page content."""
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        content = SiteHelpContent.objects.filter(is_published=True).order_by("-updated_at", "-id").first()
+        if content is None:
+            return Response(DEFAULT_HELP_CONTENT)
+        data = dict(SiteHelpContentSerializer(content).data)
+        data["is_default"] = False
+        return Response(data)
+
+
+class CurrentUserProfileView(APIView):
+    """GET/PATCH /api/v1/me/profile/ - current user's public name and bio only."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        return Response(CurrentUserProfileSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = CurrentUserProfileSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(CurrentUserProfileSerializer(request.user).data)
 
 
 # ---------------------------------------------------------------------------

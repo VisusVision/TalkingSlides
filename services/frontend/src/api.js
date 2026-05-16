@@ -178,6 +178,41 @@ export async function fetchCurrentUser() {
   return data;
 }
 
+export async function fetchHelpContent() {
+  const res = await fetch(`${API_BASE_URL}/help/`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch help content"));
+  }
+  return data;
+}
+
+export async function fetchMyProfile() {
+  const res = await fetch(`${API_BASE_URL}/me/profile/`, { headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch profile"));
+  }
+  return data;
+}
+
+export async function updateMyProfile(payload = {}) {
+  const res = await fetch(`${API_BASE_URL}/me/profile/`, {
+    method: "PATCH",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({
+      first_name: payload.first_name ?? "",
+      last_name: payload.last_name ?? "",
+      bio: payload.bio ?? "",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to update profile"));
+  }
+  return data;
+}
+
 export async function fetchAuthProviders() {
   const res = await fetch(`${API_BASE_URL}/auth/providers/`);
   if (!res.ok) throw new Error("Failed to fetch auth providers");

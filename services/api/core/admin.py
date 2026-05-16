@@ -13,6 +13,7 @@ from .models import (
     Project,
     PublisherFollow,
     SavedPlaylist,
+    SiteHelpContent,
     Slide,
     UserProfile,
     VoiceProfile,
@@ -130,6 +131,21 @@ class JobAdmin(admin.ModelAdmin):
 class CategoryAdmin(admin.ModelAdmin):
     list_display = ("name", "slug", "created_at")
     prepopulated_fields = {"slug": ("name",)}
+
+
+@admin.register(SiteHelpContent)
+class SiteHelpContentAdmin(admin.ModelAdmin):
+    list_display = ("title", "slug", "is_published", "updated_at")
+    search_fields = (
+        "title",
+        "body",
+        "contact_email",
+        "contact_phone",
+        "company_name",
+        "company_address",
+    )
+    list_filter = ("is_published",)
+    prepopulated_fields = {"slug": ("title",)}
 
 
 @admin.register(LessonLike)
