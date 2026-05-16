@@ -33,6 +33,8 @@ import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
 const PLAYLIST_COLLAPSED_KEY = 'visus-watch-playlist-collapsed';
+const AUTOPLAY_NEXT_KEY = 'visus-watch-autoplay-next';
+const AUTOPLAY_COUNTDOWN_SECONDS = 5;
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
 function normalizeCatalogList(payload) {
@@ -278,12 +280,9 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, fol
   );
 }
 
-function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
-  const [playlistCollapsed, setPlaylistCollapsed] = useState(
-    () => window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true',
-  );
+function contextRowsFromPayload(context, currentLessonId) {
   const rawItems = Array.isArray(context?.items) ? context.items : [];
-  const rows = rawItems
+  return rawItems
     .map((item, index) => {
       const project = item?.project || item;
       const contextLesson = normalizeLesson(project);
@@ -294,6 +293,26 @@ function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
       };
     })
     .filter((row) => row.lesson.id);
+}
+
+function nextLessonFromContext(context, currentLessonId) {
+  const rows = contextRowsFromPayload(context, currentLessonId);
+  const currentIndex = rows.findIndex((row) => row.isCurrent);
+  const nextRow = currentIndex >= 0
+    ? rows.slice(currentIndex + 1).find((row) => !row.isCurrent)
+    : rows.find((row) => !row.isCurrent);
+  return nextRow?.lesson || rows.find((row) => !row.isCurrent)?.lesson || null;
+}
+
+function isAutoplayNextEnabled() {
+  return window.localStorage.getItem(AUTOPLAY_NEXT_KEY) !== '0';
+}
+
+function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+  const [playlistCollapsed, setPlaylistCollapsed] = useState(
+    () => window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true',
+  );
+  const rows = contextRowsFromPayload(context, currentLessonId);
 
   const isPlaylistMode = context?.mode === 'playlist';
   useEffect(() => {
@@ -306,11 +325,7 @@ function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
 
   const title = isPlaylistMode ? 'More from this playlist' : 'More from this publisher';
   const subtitle = isPlaylistMode ? context?.playlist?.title || '' : rows[0]?.lesson?.teacherName || '';
-  const currentIndex = rows.findIndex((row) => row.isCurrent);
-  const nextRow = currentIndex >= 0
-    ? rows.slice(currentIndex + 1).find((row) => !row.isCurrent)
-    : rows.find((row) => !row.isCurrent);
-  const nextLesson = nextRow?.lesson || rows.find((row) => !row.isCurrent)?.lesson || null;
+  const nextLesson = nextLessonFromContext(context, currentLessonId);
 
   if (isPlaylistMode && playlistCollapsed) {
     return (
@@ -443,6 +458,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [followBusy, setFollowBusy] = useState(false);
   const [followError, setFollowError] = useState('');
   const [playlistContext, setPlaylistContext] = useState(null);
+  const [autoplayPrompt, setAutoplayPrompt] = useState(null);
   const progressSavedAtRef = useRef(0);
   const resumeAppliedKeyRef = useRef('');
   const commentsSectionRef = useRef(null);
@@ -532,6 +548,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         setPendingSubtitleRequest(null);
         setPlaybackTime(0);
         setPlaybackActive(false);
+        setAutoplayPrompt(null);
         progressSavedAtRef.current = 0;
         setLikeError('');
         setFollowError('');
@@ -680,6 +697,18 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     return source.filter((item) => item.id !== activeLessonId).slice(0, 12);
   }, [visibleLessons, catalogLessons, activeLessonId]);
 
+  const autoplayNextLesson = useMemo(
+    () => nextLessonFromContext(playlistContext, activeLessonId) || relatedLessons[0] || null,
+    [activeLessonId, playlistContext, relatedLessons],
+  );
+
+  const openLessonById = useCallback((id) => {
+    const lessonId = Number(id || 0);
+    if (!lessonId) return;
+    setAutoplayPrompt(null);
+    setSearchParams({ lesson: String(lessonId) });
+  }, [setSearchParams]);
+
   const chapters = useMemo(() => buildChapters(transcriptPayload, lesson), [transcriptPayload, lesson]);
   const transcriptLines = useMemo(
     () => buildTranscriptLines(transcriptPayload, lesson),
@@ -771,10 +800,21 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   );
   const handlePlaybackStarted = useCallback(() => {
     setPlaybackActive(true);
+    setAutoplayPrompt(null);
   }, []);
   const handlePlaybackStopped = useCallback(() => {
     setPlaybackActive(false);
   }, []);
+  const handlePlaybackEnded = useCallback(() => {
+    setPlaybackActive(false);
+    if (!autoplayNextLesson?.id || !isAutoplayNextEnabled()) {
+      return;
+    }
+    setAutoplayPrompt({
+      lesson: autoplayNextLesson,
+      secondsRemaining: AUTOPLAY_COUNTDOWN_SECONDS,
+    });
+  }, [autoplayNextLesson]);
   const handlePlaybackDenied = useCallback(() => {
     setPlaybackActive(false);
   }, []);
@@ -786,6 +826,33 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     visibilityLock: Boolean(lesson?.protection?.visibility_lock),
     onDenied: handlePlaybackDenied,
   });
+
+  useEffect(() => {
+    if (!autoplayPrompt) return undefined;
+
+    const nextLessonId = Number(autoplayPrompt.lesson?.id || 0);
+    if (!nextLessonId) {
+      setAutoplayPrompt(null);
+      return undefined;
+    }
+
+    if (autoplayPrompt.secondsRemaining <= 0) {
+      openLessonById(nextLessonId);
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      setAutoplayPrompt((current) => {
+        if (!current || Number(current.lesson?.id || 0) !== nextLessonId) return current;
+        return {
+          ...current,
+          secondsRemaining: Math.max(0, Number(current.secondsRemaining || 0) - 1),
+        };
+      });
+    }, 1000);
+
+    return () => window.clearTimeout(timerId);
+  }, [autoplayPrompt, openLessonById]);
 
   useEffect(() => {
     const enhancedPending = Boolean(lesson?.avatar_overlay?.enhanced_pending);
@@ -1090,6 +1157,17 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
   };
 
+  const handlePlayAutoplayNow = useCallback(() => {
+    const nextLessonId = Number(autoplayPrompt?.lesson?.id || 0);
+    if (nextLessonId) {
+      openLessonById(nextLessonId);
+    }
+  }, [autoplayPrompt, openLessonById]);
+
+  const handleCancelAutoplay = useCallback(() => {
+    setAutoplayPrompt(null);
+  }, []);
+
   const renderPlayerStage = () => {
     if (playbackHeartbeat.error) {
       return (
@@ -1112,6 +1190,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           onPlaybackTimeChange={handlePlaybackTimeChange}
           onPlaybackStarted={handlePlaybackStarted}
           onPlaybackStopped={handlePlaybackStopped}
+          onPlaybackEnded={handlePlaybackEnded}
           videoRef={videoRef}
           showSubtitleControls={false}
           showLessonDetails={false}
@@ -1139,6 +1218,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             onPlaybackTimeChange={handlePlaybackTimeChange}
             onPlaybackStarted={handlePlaybackStarted}
             onPlaybackStopped={handlePlaybackStopped}
+            onPlaybackEnded={handlePlaybackEnded}
             subtitleTracks={subtitleTracks}
             preferredSubtitleLanguage={preferredSubtitleLanguage}
             selectedSubtitleKey={selectedSubtitleKey}
@@ -1203,7 +1283,33 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
               </SurfaceCard>
             ) : (
               <>
-                {renderPlayerStage()}
+                <div className="relative">
+                  {renderPlayerStage()}
+                  {autoplayPrompt?.lesson ? (
+                    <div
+                      data-testid="watch-autoplay-next"
+                      className="absolute inset-0 z-[60] flex items-end justify-center rounded-[1.5rem] bg-[linear-gradient(180deg,rgba(0,0,0,0.18),rgba(0,0,0,0.72))] p-4 sm:items-center"
+                    >
+                      <div className="w-full max-w-lg rounded-2xl border border-white/15 bg-[color:rgba(8,12,20,0.88)] p-4 text-white shadow-2xl backdrop-blur">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/65">Up next</p>
+                        <h2 className="mt-2 line-clamp-2 text-lg font-semibold leading-tight">
+                          Next: {autoplayPrompt.lesson.title}
+                        </h2>
+                        <p className="mt-1 text-sm text-white/75">
+                          Playing in {Math.max(0, Number(autoplayPrompt.secondsRemaining || 0))}...
+                        </p>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <Button size="sm" onClick={handlePlayAutoplayNow}>
+                            Play now
+                          </Button>
+                          <Button size="sm" variant="secondary" onClick={handleCancelAutoplay}>
+                            Stay here
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
 
                 <SurfaceCard className="space-y-3 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1441,7 +1547,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             {!focusMode && (
               <RelatedLessonsRow
                 lessons={relatedLessons}
-                onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
+                onOpenLesson={openLessonById}
               />
             )}
           </div>
@@ -1464,7 +1570,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                 <WatchContextPanel
                   context={playlistContext}
                   currentLessonId={activeLessonId}
-                  onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
+                  onOpenLesson={openLessonById}
                 />
                 <NotesPanel
                   notes={notes}

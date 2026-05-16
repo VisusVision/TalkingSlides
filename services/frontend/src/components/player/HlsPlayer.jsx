@@ -149,6 +149,7 @@ export default function HlsPlayer({
   onPlaybackTimeChange,
   onPlaybackStarted,
   onPlaybackStopped,
+  onPlaybackEnded,
   onPlaybackError,
   subtitleTracks = [],
   selectedSubtitleKey = 'off',
@@ -320,6 +321,11 @@ export default function HlsPlayer({
     onPlaybackStopped?.();
   }, [onPlaybackStopped]);
 
+  const handleEnded = useCallback(() => {
+    onPlaybackStopped?.();
+    onPlaybackEnded?.();
+  }, [onPlaybackEnded, onPlaybackStopped]);
+
   const handleTimeUpdate = useCallback((event) => {
     onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0));
     setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
@@ -383,7 +389,7 @@ export default function HlsPlayer({
               onError={handleVideoError}
               onPlay={handlePlay}
               onPause={handlePause}
-              onEnded={handlePause}
+              onEnded={handleEnded}
               onSeeked={(event) => setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack))}
               onTimeUpdate={handleTimeUpdate}
             >

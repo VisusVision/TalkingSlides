@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,8 +12,10 @@ import SurfaceCard from '../components/ui/SurfaceCard';
 import { fallbackSections, sectionsFromFeed } from '../lib/content';
 import { formatDuration, formatViews } from '../lib/content';
 
+const ALL_TOPICS = 'All Topics';
+
 const FALLBACK_CATEGORIES = [
-  'All Topics',
+  ALL_TOPICS,
   'Artificial Intelligence',
   'Creative Design',
   'Advanced Mathematics',
@@ -48,12 +50,58 @@ function flattenUniqueLessons(sections) {
   return items;
 }
 
+function lessonKey(lesson) {
+  return String(lesson?.id || '');
+}
+
+function uniqueLessons(lessons) {
+  const seen = new Set();
+  const items = [];
+
+  lessons.forEach((lesson) => {
+    const key = lessonKey(lesson);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    items.push(lesson);
+  });
+
+  return items;
+}
+
+function lessonsForCategory(lessons, activeCategory) {
+  const unique = uniqueLessons(lessons);
+  if (activeCategory === ALL_TOPICS) return unique;
+  return unique.filter((lesson) => lesson.categoryName === activeCategory);
+}
+
+function takeAvoidingSeen(lessons, seenIds, limit, minUnseen = 3) {
+  const unique = uniqueLessons(lessons);
+  const unseen = unique.filter((lesson) => !seenIds.has(lessonKey(lesson)));
+  const minimum = Math.min(limit, minUnseen);
+  const source = unseen.length >= minimum ? unseen : unique;
+  return source.slice(0, limit);
+}
+
+function railScrollState(node) {
+  if (!node) return { canScrollLeft: false, canScrollRight: false };
+  const maxScrollLeft = Math.max(0, node.scrollWidth - node.clientWidth);
+  return {
+    canScrollLeft: node.scrollLeft > 2,
+    canScrollRight: node.scrollLeft < maxScrollLeft - 2,
+  };
+}
+
 export default function Home({ searchQuery, user }) {
   const navigate = useNavigate();
+  const recommendedRailRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sections, setSections] = useState([]);
-  const [activeCategory, setActiveCategory] = useState('All Topics');
+  const [activeCategory, setActiveCategory] = useState(ALL_TOPICS);
+  const [recommendedRailState, setRecommendedRailState] = useState({
+    canScrollLeft: false,
+    canScrollRight: false,
+  });
 
   useEffect(() => {
     let active = true;
@@ -91,44 +139,7 @@ export default function Home({ searchQuery, user }) {
     };
   }, [searchQuery]);
 
-  const featuredLesson = sections[0]?.items?.[0] || null;
   const allLessons = useMemo(() => flattenUniqueLessons(sections), [sections]);
-
-  const continueLessons = useMemo(() => {
-    const inProgress = allLessons.filter((lesson) => lesson.progress > 0);
-    if (inProgress.length > 0) {
-      return inProgress.slice(0, 4);
-    }
-    return allLessons.slice(0, 4);
-  }, [allLessons]);
-
-  const recommendedLessons = useMemo(() => {
-    const bySection = sections.slice(1).flatMap((section) => section.items);
-    const pool = bySection.length ? bySection : allLessons;
-    return pool.slice(0, 10);
-  }, [allLessons, sections]);
-
-  const bentoLessons = useMemo(() => {
-    if (allLessons.length >= 5) {
-      return allLessons.slice(0, 5);
-    }
-
-    if (!allLessons.length) {
-      return [];
-    }
-
-    const copy = [...allLessons];
-    while (copy.length < 5) {
-      copy.push(allLessons[copy.length % allLessons.length]);
-    }
-    return copy;
-  }, [allLessons]);
-
-  const trendingLessons = useMemo(() => {
-    return [...allLessons]
-      .sort((left, right) => Number(right.views || 0) - Number(left.views || 0))
-      .slice(0, 5);
-  }, [allLessons]);
 
   const categories = useMemo(() => {
     const unique = Array.from(
@@ -139,13 +150,110 @@ export default function Home({ searchQuery, user }) {
       return FALLBACK_CATEGORIES;
     }
 
-    return ['All Topics', ...unique.slice(0, 5)];
+    return [ALL_TOPICS, ...unique.slice(0, 5)];
   }, [allLessons]);
 
+  useEffect(() => {
+    if (!categories.includes(activeCategory)) {
+      setActiveCategory(ALL_TOPICS);
+    }
+  }, [activeCategory, categories]);
+
+  const scopedLessons = useMemo(
+    () => lessonsForCategory(allLessons, activeCategory),
+    [activeCategory, allLessons],
+  );
+
+  const featuredLesson = useMemo(() => {
+    if (activeCategory !== ALL_TOPICS) {
+      return scopedLessons[0] || null;
+    }
+    return sections[0]?.items?.[0] || allLessons[0] || null;
+  }, [activeCategory, allLessons, scopedLessons, sections]);
+
+  const continueLessons = useMemo(() => (
+    scopedLessons
+      .filter((lesson) => lesson.progress > 0 && lesson.progress < 100)
+      .slice(0, 4)
+  ), [scopedLessons]);
+
+  const recommendedLessons = useMemo(() => {
+    const recommendedSection = sections.find((section) => section.key === 'recommended');
+    const bySection = recommendedSection?.items?.length
+      ? recommendedSection.items
+      : sections.slice(1).flatMap((section) => section.items);
+    const pool = bySection.length ? bySection : allLessons;
+    return uniqueLessons(pool).slice(0, 10);
+  }, [allLessons, sections]);
+
   const filteredRecommended = useMemo(() => {
-    if (activeCategory === 'All Topics') return recommendedLessons;
-    return recommendedLessons.filter((lesson) => lesson.categoryName === activeCategory);
-  }, [activeCategory, recommendedLessons]);
+    const candidates = activeCategory === ALL_TOPICS
+      ? recommendedLessons
+      : uniqueLessons([
+          ...recommendedLessons.filter((lesson) => lesson.categoryName === activeCategory),
+          ...scopedLessons,
+        ]);
+    const seenAbove = new Set(
+      [featuredLesson, ...continueLessons]
+        .map(lessonKey)
+        .filter(Boolean),
+    );
+    return takeAvoidingSeen(candidates, seenAbove, 10, 4);
+  }, [activeCategory, continueLessons, featuredLesson, recommendedLessons, scopedLessons]);
+
+  const bentoLessons = useMemo(() => {
+    const seenAbove = new Set(
+      [featuredLesson, ...continueLessons, ...filteredRecommended]
+        .map(lessonKey)
+        .filter(Boolean),
+    );
+    return takeAvoidingSeen(scopedLessons, seenAbove, 5);
+  }, [continueLessons, featuredLesson, filteredRecommended, scopedLessons]);
+
+  const trendingLessons = useMemo(() => {
+    const sorted = [...scopedLessons]
+      .sort((left, right) => Number(right.views || 0) - Number(left.views || 0));
+    const seenAbove = new Set(
+      [featuredLesson, ...continueLessons, ...filteredRecommended, ...bentoLessons]
+        .map(lessonKey)
+        .filter(Boolean),
+    );
+    return takeAvoidingSeen(sorted, seenAbove, 5);
+  }, [bentoLessons, continueLessons, featuredLesson, filteredRecommended, scopedLessons]);
+
+  const topicRailTitle = activeCategory === ALL_TOPICS ? 'Explore by topic' : `More in ${activeCategory}`;
+
+  const updateRecommendedRailState = useCallback(() => {
+    setRecommendedRailState(railScrollState(recommendedRailRef.current));
+  }, []);
+
+  useEffect(() => {
+    const node = recommendedRailRef.current;
+    if (!node) return undefined;
+
+    updateRecommendedRailState();
+    const handleScroll = () => updateRecommendedRailState();
+    const resizeTimeout = window.setTimeout(handleScroll, 0);
+
+    node.addEventListener('scroll', handleScroll, { passive: true });
+    window.addEventListener('resize', handleScroll);
+
+    return () => {
+      window.clearTimeout(resizeTimeout);
+      node.removeEventListener('scroll', handleScroll);
+      window.removeEventListener('resize', handleScroll);
+    };
+  }, [filteredRecommended.length, updateRecommendedRailState]);
+
+  const scrollRecommendedRail = useCallback((direction) => {
+    const node = recommendedRailRef.current;
+    if (!node) return;
+    node.scrollBy({
+      left: Math.round(node.clientWidth * 0.82) * direction,
+      behavior: 'smooth',
+    });
+    window.setTimeout(updateRecommendedRailState, 350);
+  }, [updateRecommendedRailState]);
 
   const openLesson = (lessonId) => navigate(`/watch?lesson=${lessonId}`);
 
@@ -203,7 +311,7 @@ export default function Home({ searchQuery, user }) {
                 onClick={() => setActiveCategory(category)}
                 className={`focus-ring whitespace-nowrap rounded-full px-5 py-2 text-sm font-semibold transition ${
                   selected
-                    ? (category === 'All Topics'
+                    ? (category === ALL_TOPICS
                         ? 'bg-[var(--accent-primary)] text-[var(--accent-inverse)]'
                         : 'bg-[image:var(--accent-gradient)] text-[var(--accent-inverse)]'
                       )
@@ -277,16 +385,32 @@ export default function Home({ searchQuery, user }) {
           <div className="flex items-center justify-between">
             <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recommended For You</h2>
             <div className="hidden items-center gap-2 sm:flex">
-              <span className="inline-flex h-9 w-9 items-center justify-center rounded-full token-surface-elevated text-[var(--text-secondary)]">
+              <button
+                type="button"
+                aria-label="Scroll recommended lessons left"
+                onClick={() => scrollRecommendedRail(-1)}
+                disabled={!recommendedRailState.canScrollLeft}
+                className={`focus-ring inline-flex h-9 w-9 items-center justify-center rounded-full token-surface-elevated text-[var(--text-secondary)] transition ${
+                  recommendedRailState.canScrollLeft ? 'hover:text-[var(--text-primary)]' : 'cursor-not-allowed opacity-40'
+                }`}
+              >
                 <ChevronLeft size={16} />
-              </span>
-              <span className="inline-flex h-9 w-9 items-center justify-center rounded-full token-surface-elevated text-[var(--text-secondary)]">
+              </button>
+              <button
+                type="button"
+                aria-label="Scroll recommended lessons right"
+                onClick={() => scrollRecommendedRail(1)}
+                disabled={!recommendedRailState.canScrollRight}
+                className={`focus-ring inline-flex h-9 w-9 items-center justify-center rounded-full token-surface-elevated text-[var(--text-secondary)] transition ${
+                  recommendedRailState.canScrollRight ? 'hover:text-[var(--text-primary)]' : 'cursor-not-allowed opacity-40'
+                }`}
+              >
                 <ChevronRight size={16} />
-              </span>
+              </button>
             </div>
           </div>
 
-          <div className="rail-scroll flex gap-5 overflow-x-auto pb-2">
+          <div ref={recommendedRailRef} className="rail-scroll flex gap-5 overflow-x-auto pb-2">
             {filteredRecommended.map((lesson) => (
               <article key={`recommended-${lesson.id}`} className="w-[300px] shrink-0">
                 <button type="button" className="focus-ring block w-full text-left" onClick={() => openLesson(lesson.id)}>
@@ -310,7 +434,7 @@ export default function Home({ searchQuery, user }) {
         <section className="space-y-6">
           <h2 className="inline-flex items-center gap-2 font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">
             <span className="material-symbols-outlined text-[1.2rem] text-[var(--accent-primary)]">auto_awesome</span>
-            <span>AI & Machine Learning</span>
+            <span>{topicRailTitle}</span>
           </h2>
 
           <div className="grid grid-cols-1 gap-5 md:grid-cols-4 md:grid-rows-2 md:[grid-auto-rows:minmax(9rem,auto)]">
