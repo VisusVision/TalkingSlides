@@ -467,8 +467,7 @@ export default function Settings({ user, onUserRefresh }) {
           eyebrow="Account/Profile"
           title="Theme mode"
           caption="Theme choice is stored locally and applied across the workspace."
-          icon={UserCircle2}
-          defaultOpen
+          icon={activeTheme === 'dark' ? MoonStar : Sun}
         >
           <div className="inline-flex rounded-full bg-[var(--surface-container-high)] p-1">
             {THEME_OPTIONS.map((option) => {
@@ -507,7 +506,6 @@ export default function Settings({ user, onUserRefresh }) {
           title="Display name and bio"
           caption="This updates only your existing first name, last name, and bio fields."
           icon={UserCircle2}
-          defaultOpen={teacherMode}
           className="md:col-span-2 2xl:col-span-1"
         >
           <form onSubmit={handleSavePublicProfile} className="space-y-4">
@@ -604,24 +602,11 @@ export default function Settings({ user, onUserRefresh }) {
         </SettingsSection>
 
         <SettingsSection
-          eyebrow="Security/Auth"
-          title="Session"
-          icon={UserCircle2}
+          eyebrow="Help"
+          title="Support content"
+          caption="Open support guidance and contact details."
+          icon={CircleHelp}
         >
-          <p className="text-sm text-[var(--text-secondary)]">
-            {user ? `Signed in as ${user.username}.` : 'Browsing as guest.'}
-          </p>
-        </SettingsSection>
-
-        <SurfaceCard className="space-y-4">
-          <div className="inline-flex items-center gap-2">
-            <CircleHelp size={16} className="text-[var(--accent-primary)]" />
-            <p className="label-sm">Help</p>
-          </div>
-          <h2 className="title-lg text-[var(--text-primary)]">Support content</h2>
-          <p className="text-sm text-[var(--text-secondary)]">
-            Open support guidance and contact details.
-          </p>
           <Link
             to="/help"
             className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-5 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
@@ -629,7 +614,7 @@ export default function Settings({ user, onUserRefresh }) {
             <CircleHelp size={15} />
             <span>Open Help</span>
           </Link>
-        </SurfaceCard>
+        </SettingsSection>
 
         {teacherMode && (
           <SettingsSection
