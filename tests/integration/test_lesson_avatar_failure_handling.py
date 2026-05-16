@@ -737,9 +737,12 @@ def test_render_lesson_avatar_overlay_reads_handoff_manifest_path(tmp_path, monk
     )
 
     assert result["status"] == "ready"
-    assert result["avatar_track_rel_path"] == "129/avatar/avatar_track.mp4"
+    assert result["avatar_track_rel_path"] == "129/avatar/avatar_track_fast.mp4"
+    assert result["avatar_fast_track_rel_path"] == "129/avatar/avatar_track_fast.mp4"
     sidecar_payload = json.loads((tmp_path / "129" / "playback_assets.json").read_text(encoding="utf-8"))
-    assert sidecar_payload["avatar"]["track_rel_path"] == "129/avatar/avatar_track.mp4"
+    assert sidecar_payload["avatar"]["track_rel_path"] == "129/avatar/avatar_track_fast.mp4"
+    assert sidecar_payload["avatar"]["quality"] == "fast"
+    assert sidecar_payload["avatar"]["enhanced_pending"] is False
     assert sidecar_payload["final_segments"][0]["avatar_clip"] == "129/avatar_segments/avatar_001.mp4"
 
 

@@ -21,7 +21,7 @@ from django.test.utils import override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
-from core.avatar_runtime_settings import normalize_safe_avatar_motion_preset  # noqa: E402
+from core.avatar_runtime_settings import default_avatar_runtime_settings, normalize_safe_avatar_motion_preset  # noqa: E402
 from core.models import AvatarOverlayPreference, AvatarRenderJob, Job, Project, UserProfile  # noqa: E402
 
 pytestmark = pytest.mark.django_db
@@ -43,6 +43,63 @@ def _table_has_column(table_name, column_name):
 
 def _frontend_source(*parts):
     return (REPO_ROOT / "services" / "frontend" / "src" / Path(*parts)).read_text(encoding="utf-8")
+
+
+def _create_avatar_playback_fixture(tmp_path, *, restored=False, pending=True):
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"avatar_playback_{suffix}", password="pass")
+    UserProfile.objects.create(
+        user=teacher,
+        role="teacher",
+        avatar_enabled=True,
+        avatar_consent_confirmed=True,
+        avatar_source_valid=True,
+        avatar_image_processed=f"{suffix}/avatar.png",
+    )
+    lesson = Project.objects.create(
+        title=f"Progressive Avatar {suffix}",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+        avatar_processing_status="ready",
+        avatar_visible=True,
+    )
+    project_dir = tmp_path / str(lesson.id)
+    avatar_dir = project_dir / "avatar"
+    avatar_dir.mkdir(parents=True)
+    (project_dir / f"{lesson.id}.mp4").write_bytes(b"video")
+    fast_rel = f"{lesson.id}/avatar/avatar_track_fast.mp4"
+    restored_rel = f"{lesson.id}/avatar/avatar_track_restored.mp4"
+    (tmp_path / fast_rel).write_bytes(b"fast-avatar")
+    if restored:
+        (tmp_path / restored_rel).write_bytes(b"restored-avatar")
+    preferred_rel = restored_rel if restored else fast_rel
+    lesson.avatar_output_path = preferred_rel
+    lesson.save(update_fields=["avatar_output_path"])
+    job = Job.objects.create(
+        project=lesson,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{lesson.id}/{lesson.id}.mp4",
+    )
+    sidecar = {
+        "protection_mode": "public",
+        "avatar": {
+            "track_rel_path": preferred_rel,
+            "track_fast_rel_path": fast_rel,
+            "track_restored_rel_path": restored_rel if restored else "",
+            "quality": "restored" if restored else "fast",
+            "enhanced_available": restored,
+            "enhanced_pending": pending,
+            "version": "restored-v1" if restored else "fast-v1",
+            "updated_at": "2026-05-16T00:00:00+00:00",
+            "segments": [],
+        },
+    }
+    (project_dir / "playback_assets.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    return lesson, job, fast_rel, restored_rel
 
 
 def test_frontend_video_stage_uses_separate_avatar_overlay_layer():
@@ -498,9 +555,104 @@ def test_playback_token_includes_saved_avatar_placement(tmp_path):
     }
 
 
+def test_playback_token_returns_fast_avatar_when_restoration_pending(tmp_path):
+    lesson, _job, fast_rel, _restored_rel = _create_avatar_playback_fixture(tmp_path, restored=False, pending=True)
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    overlay = response.data["avatar_overlay"]
+    assert overlay["enabled"] is True
+    assert overlay["quality"] == "fast"
+    assert overlay["enhanced_available"] is False
+    assert overlay["enhanced_pending"] is True
+    assert fast_rel not in overlay["stream_url"]
+    token = overlay["stream_url"].rstrip("/").rsplit("/", 1)[-1]
+    _job_id, file_type, rel_path, _grant_id, _bind_key = views.validate_media_token(token)
+    assert file_type == "avatar"
+    assert rel_path == fast_rel
+
+
+def test_playback_token_returns_fast_avatar_without_restoration_pending(tmp_path):
+    lesson, _job, fast_rel, _restored_rel = _create_avatar_playback_fixture(tmp_path, restored=False, pending=False)
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    overlay = response.data["avatar_overlay"]
+    assert overlay["enabled"] is True
+    assert overlay["quality"] == "fast"
+    assert overlay["enhanced_available"] is False
+    assert overlay["enhanced_pending"] is False
+    token = overlay["stream_url"].rstrip("/").rsplit("/", 1)[-1]
+    _job_id, file_type, rel_path, _grant_id, _bind_key = views.validate_media_token(token)
+    assert file_type == "avatar"
+    assert rel_path == fast_rel
+
+
+def test_playback_token_prefers_restored_avatar_when_available(tmp_path):
+    lesson, _job, _fast_rel, restored_rel = _create_avatar_playback_fixture(tmp_path, restored=True, pending=False)
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    overlay = response.data["avatar_overlay"]
+    assert overlay["enabled"] is True
+    assert overlay["quality"] == "restored"
+    assert overlay["enhanced_available"] is True
+    assert overlay["enhanced_pending"] is False
+    token = overlay["stream_url"].rstrip("/").rsplit("/", 1)[-1]
+    _job_id, file_type, rel_path, _grant_id, _bind_key = views.validate_media_token(token)
+    assert file_type == "avatar"
+    assert rel_path == restored_rel
+
+
+def test_avatar_stream_allows_fast_token_after_restored_pointer_exists(tmp_path):
+    lesson, job, fast_rel, _restored_rel = _create_avatar_playback_fixture(tmp_path, restored=True, pending=False)
+    token = views.generate_media_token(job.id, "avatar", rel_path=fast_rel)
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/stream/{token}/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.MediaStreamView.as_view()(request, token=token)
+
+    assert response.status_code == 200
+
+
+def test_frontend_watch_polls_for_enhanced_avatar_and_merges_overlay():
+    source = _frontend_source("pages", "Watch.jsx")
+
+    assert "AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000" in source
+    assert "lesson?.avatar_overlay?.enhanced_pending" in source
+    assert "if (!activeLessonId || !playbackActive || !enhancedPending || loadingLesson) return undefined;" in source
+    assert "fetchPlaybackToken(activeLessonId)" in source
+    assert "mergePlaybackIntoLesson(previous, playbackData)" in source
+    assert "nextOverlay.enhanced_available && nextUrl && nextUrl !== currentUrl" in source
+
+
+def test_worker_lesson_avatar_restoration_is_explicitly_gated():
+    source = (REPO_ROOT / "services" / "worker" / "tasks.py").read_text(encoding="utf-8")
+
+    assert '_env_enabled("AVATAR_PROGRESSIVE_RESTORATION_ENABLED", False)' in source
+    assert "restoration_requested" in source
+    assert '"restoration_enabled": False,' in source
+    assert '"avatar_track_fast.mp4"' in source
+    assert 'quality="fast"' in source
+
+
 def test_avatar_runtime_settings_default_to_safe_values(monkeypatch):
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_MOTION_PRESET", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ENABLED", raising=False)
+    monkeypatch.delenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", raising=False)
     suffix = uuid.uuid4().hex[:8]
     teacher = User.objects.create_user(username=f"runtime_default_{suffix}", password="pass")
     UserProfile.objects.create(user=teacher, role="teacher")
@@ -517,6 +669,12 @@ def test_avatar_runtime_settings_default_to_safe_values(monkeypatch):
         "restoration_enabled": False,
         "liveportrait_enabled": True,
     }
+
+
+def test_lesson_avatar_restoration_env_updates_default_runtime_settings(monkeypatch):
+    monkeypatch.setenv("AVATAR_LESSON_AVATAR_USE_RESTORATION", "1")
+
+    assert default_avatar_runtime_settings()["restoration_enabled"] is True
 
 
 def test_avatar_runtime_settings_patch_normalizes_unsafe_values_without_base_rerender():

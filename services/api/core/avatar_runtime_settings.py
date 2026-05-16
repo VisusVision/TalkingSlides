@@ -54,7 +54,7 @@ def normalize_safe_avatar_motion_preset(value: Any) -> str:
 def default_avatar_runtime_settings() -> dict[str, Any]:
     return {
         "motion_preset": normalize_safe_avatar_motion_preset(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_PRESET", "")),
-        "restoration_enabled": False,
+        "restoration_enabled": _truthy(os.environ.get("AVATAR_LESSON_AVATAR_USE_RESTORATION"), False),
         "liveportrait_enabled": _truthy(os.environ.get("AVATAR_LIVEPORTRAIT_ENABLED"), True),
     }
 

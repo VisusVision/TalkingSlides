@@ -4085,7 +4085,9 @@ def render_lesson_avatar_overlay(
         from django.utils import timezone
         from core.models import Job, Project, UserProfile
         from core.avatar_runtime_settings import normalize_avatar_runtime_settings
+        from avatar.canonical_adapters import run_restoration
         from avatar.hashing import sha256_file
+        from avatar import pipeline as avatar_pipeline
         from scripts.ffmpeg_helpers import concat_videos
     except ImportError as exc:
         raise RuntimeError(f"Avatar overlay dependencies not importable: {exc}") from exc
@@ -4168,6 +4170,12 @@ def render_lesson_avatar_overlay(
     avatar_cfg["motion_preset"] = runtime_settings["motion_preset"]
     avatar_cfg["restoration_enabled"] = bool(runtime_settings["restoration_enabled"])
     avatar_cfg["liveportrait_enabled"] = bool(runtime_settings["liveportrait_enabled"])
+    restoration_requested = bool(avatar_cfg.get("restoration_enabled"))
+    progressive_restoration_enabled = bool(
+        restoration_requested
+        and _env_enabled("AVATAR_PROGRESSIVE_RESTORATION_ENABLED", False)
+    )
+    avatar_cfg["progressive_restoration_enabled"] = progressive_restoration_enabled
 
     ordered = sorted(list(render_results or []), key=lambda item: int(item.get("index") or 0))
     logger.info("Lesson avatar overlay START project=%s teacher=%s slides=%d", project_id_int, teacher_id_int, len(ordered))
@@ -4201,6 +4209,7 @@ def render_lesson_avatar_overlay(
     avatar_slide_metadata: list[dict[str, Any]] = []
     final_avatar_engine_chain: list[str] = []
     segment_rel_by_index: dict[int, str] = {}
+    restored_segment_rel_by_index: dict[int, str] = {}
 
     source_rel = str(avatar_cfg.get("source_image_rel_path") or "")
     source_abs = str(Path(_avatar_storage_root()) / source_rel) if source_rel else ""
@@ -4249,7 +4258,7 @@ def render_lesson_avatar_overlay(
                     "motion_preset": str(avatar_cfg.get("motion_preset") or "natural"),
                     "quality_preset": str(avatar_cfg.get("quality_preset") or "high"),
                     "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
-                    "restoration_enabled": bool(avatar_cfg.get("restoration_enabled")),
+                    "restoration_enabled": False,
                     "liveportrait_enabled": bool(avatar_cfg.get("liveportrait_enabled", True)),
                     "cache_text_hash": hashlib.sha256(str(item.get("text") or "").encode("utf-8")).hexdigest(),
                     "avatar_job_id": int(job_id or 0),
@@ -4277,7 +4286,10 @@ def render_lesson_avatar_overlay(
                 "liveportrait_fallback_used": bool(payload.get("liveportrait_fallback_used")),
                 "liveportrait_fallback_reason": str(payload.get("liveportrait_fallback_reason") or ""),
                 "musetalk_source_kind": str(payload.get("musetalk_source_kind") or ""),
-                "restoration_enabled": bool(payload.get("restoration_enabled")),
+                "restoration_requested": bool(restoration_requested),
+                "restoration_enabled": bool(progressive_restoration_enabled),
+                "progressive_restoration_enabled": bool(progressive_restoration_enabled),
+                "restoration_pending": bool(progressive_restoration_enabled),
                 "restoration_succeeded": bool(payload.get("restoration_succeeded")),
                 "restoration_failed": bool(payload.get("restoration_failed")),
             }
@@ -4290,6 +4302,11 @@ def render_lesson_avatar_overlay(
                     "avatar_status": "ready",
                     "avatar_error": "",
                     "avatar_segment_rel_path": rel_path,
+                    "avatar_segment_fast_rel_path": rel_path,
+                    "avatar_segment_restored_rel_path": "",
+                    "avatar_quality": "fast",
+                    "avatar_enhanced_pending": bool(progressive_restoration_enabled),
+                    "avatar_enhanced_available": False,
                     "avatar_engine_used": engine_used,
                     "avatar_engine_selected": avatar_engine_selected,
                     "avatar_fallback_chain": fallback_chain,
@@ -4304,6 +4321,11 @@ def render_lesson_avatar_overlay(
                     "avatar_engine_selected": avatar_engine_selected,
                     "fallback_chain": fallback_chain,
                     "segment_rel_path": rel_path,
+                    "fast_segment_rel_path": rel_path,
+                    "restored_segment_rel_path": "",
+                    "quality": "fast",
+                    "enhanced_pending": bool(progressive_restoration_enabled),
+                    "enhanced_available": False,
                     **runtime_observability,
                     "duration": round(float(item.get("duration") or 0.0), 3),
                 }
@@ -4391,78 +4413,270 @@ def render_lesson_avatar_overlay(
 
     avatar_track_dir = output_dir / "avatar"
     avatar_track_dir.mkdir(parents=True, exist_ok=True)
+    artifact_version_token = f"job{job_id}" if job_id else f"run{int(time.time() * 1000)}"
+
+    def _non_overwriting_path(directory: Path, filename: str) -> Path:
+        candidate = directory / filename
+        if not candidate.exists():
+            return candidate
+        return candidate.with_name(f"{candidate.stem}.{artifact_version_token}{candidate.suffix}")
+
     avatar_track_path = avatar_track_dir / "avatar_track.mp4"
-    segment_paths = [str(Path(_avatar_storage_root()) / segment["segment_rel_path"]) for segment in sorted(avatar_segments, key=lambda seg: seg.get("index", 0))]
+    avatar_fast_track_path = _non_overwriting_path(avatar_track_dir, "avatar_track_fast.mp4")
+    avatar_restored_track_path = _non_overwriting_path(avatar_track_dir, "avatar_track_restored.mp4")
+    segment_paths = [
+        str(Path(_avatar_storage_root()) / segment["segment_rel_path"])
+        for segment in sorted(avatar_segments, key=lambda seg: seg.get("index", 0))
+    ]
     try:
-        concat_videos(segment_paths, str(avatar_track_path))
+        concat_videos(segment_paths, str(avatar_fast_track_path))
     except Exception as exc:  # noqa: BLE001
         return _fail("Avatar failed. Base video is still published.", [{"status": "avatar_concat_failed", "reason": _concise_error_text(exc, fallback="avatar_concat_failed")}])
+
+    if not avatar_track_path.exists():
+        try:
+            shutil.copy2(str(avatar_fast_track_path), str(avatar_track_path))
+        except Exception:
+            logger.warning("Could not create compatibility avatar_track.mp4 for project=%s", project_id_int, exc_info=True)
 
     if not _avatar_job_is_current(project_id_int, job_id):
         message = "Stale avatar job ignored."
         _set_job(status="failed", progress=100, error_message=message)
         return {"status": "stale", "project_id": project_id_int, "teacher_id": teacher_id_int, "message": message}
 
-    avatar_track_rel = _safe_rel_path(_avatar_storage_root(), avatar_track_path)
-    sidecar = _read_playback_sidecar(project_id_int)
-    if not sidecar:
-        sidecar = {}
-    sidecar["avatar"] = {
-        "track_rel_path": avatar_track_rel,
-        "default_position": "top-right",
-        "default_size": "medium",
-        "segments": avatar_segments,
-    }
-    sidecar["avatar_status"] = "ready"
-    sidecar["avatar_engine_selected"] = str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk")
-    sidecar["normalized_engine"] = sidecar["avatar_engine_selected"]
-    sidecar["final_avatar_engine_chain"] = final_avatar_engine_chain
-    sidecar["avatar_runtime_settings"] = runtime_settings
-    sidecar["avatar_failures"] = []
-    sidecar["avatar_clips"] = [segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
-    sidecar["avatar_slide_metadata"] = avatar_slide_metadata
-    final_segments = sidecar.get("final_segments")
-    if isinstance(final_segments, list):
-        metadata_by_index = {int(item.get("index") or 0): item for item in avatar_slide_metadata}
-        for final_segment in final_segments:
-            if not isinstance(final_segment, dict):
-                continue
-            index = int(final_segment.get("index") or 0)
-            meta = metadata_by_index.get(index, {})
-            final_segment["avatar_clip"] = str(meta.get("avatar_segment_rel_path") or "")
-            final_segment["avatar_attempted"] = bool(meta.get("avatar_attempted"))
-            final_segment["avatar_skipped"] = bool(meta.get("avatar_skipped"))
-            final_segment["avatar_applied"] = bool(meta.get("avatar_applied"))
-            final_segment["avatar_failed"] = bool(meta.get("avatar_failed"))
-            final_segment["avatar_status"] = str(meta.get("avatar_status") or "none")
-            final_segment["avatar_error"] = str(meta.get("avatar_error") or "")
-            final_segment["avatar_failure_reason"] = str(meta.get("avatar_error") or "")
-            final_segment["avatar_engine_selected"] = str(meta.get("avatar_engine_selected") or meta.get("avatar_engine_used") or "none")
-            final_segment["musetalk_source_kind"] = str(meta.get("musetalk_source_kind") or "")
-            final_segment["liveportrait_fallback_used"] = bool(meta.get("liveportrait_fallback_used"))
-            final_segment["liveportrait_failure_reason"] = str(meta.get("liveportrait_failure_reason") or "")
-    _write_playback_sidecar(project_id_int, sidecar)
+    avatar_fast_track_rel = _safe_rel_path(_avatar_storage_root(), avatar_fast_track_path)
+    avatar_track_rel = avatar_fast_track_rel
 
-    _set_job(status="done", progress=100, result_url=avatar_track_rel, error_message="")
+    def _track_version(path: Path) -> str:
+        try:
+            stat = path.stat()
+            return hashlib.sha256(f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")).hexdigest()[:16]
+        except Exception:
+            return ""
+
+    def _publish_avatar_sidecar(
+        *,
+        preferred_track_rel: str,
+        quality: str,
+        enhanced_available: bool,
+        enhanced_pending: bool,
+        restored_track_rel: str = "",
+        restoration_failures: list[dict[str, Any]] | None = None,
+    ) -> None:
+        sidecar = _read_playback_sidecar(project_id_int) or {}
+        preferred_abs = Path(_avatar_storage_root()) / preferred_track_rel
+        now_iso = timezone.now().isoformat()
+        sidecar["avatar"] = {
+            "track_rel_path": preferred_track_rel,
+            "track_fast_rel_path": avatar_fast_track_rel,
+            "track_restored_rel_path": restored_track_rel,
+            "quality": quality,
+            "enhanced_available": bool(enhanced_available),
+            "enhanced_pending": bool(enhanced_pending),
+            "version": _track_version(preferred_abs),
+            "updated_at": now_iso,
+            "progressive_restoration_enabled": bool(progressive_restoration_enabled),
+            "default_position": "top-right",
+            "default_size": "medium",
+            "segments": avatar_segments,
+        }
+        sidecar["avatar_status"] = "ready"
+        sidecar["avatar_restoration_status"] = (
+            "restored" if enhanced_available else ("restoring" if enhanced_pending else ("failed" if restoration_failures else "not_requested"))
+        )
+        sidecar["avatar_engine_selected"] = str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk")
+        sidecar["normalized_engine"] = sidecar["avatar_engine_selected"]
+        sidecar["final_avatar_engine_chain"] = final_avatar_engine_chain
+        sidecar["avatar_runtime_settings"] = runtime_settings
+        sidecar["avatar_failures"] = []
+        sidecar["avatar_restoration_failures"] = list(restoration_failures or [])
+        sidecar["avatar_clips"] = [segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
+        sidecar["avatar_clips_fast"] = list(sidecar["avatar_clips"])
+        sidecar["avatar_clips_restored"] = [restored_segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
+        sidecar["avatar_slide_metadata"] = avatar_slide_metadata
+        final_segments = sidecar.get("final_segments")
+        if isinstance(final_segments, list):
+            metadata_by_index = {int(item.get("index") or 0): item for item in avatar_slide_metadata}
+            for final_segment in final_segments:
+                if not isinstance(final_segment, dict):
+                    continue
+                index = int(final_segment.get("index") or 0)
+                meta = metadata_by_index.get(index, {})
+                final_segment["avatar_clip"] = str(meta.get("avatar_segment_rel_path") or "")
+                final_segment["avatar_clip_fast"] = str(meta.get("avatar_segment_fast_rel_path") or meta.get("avatar_segment_rel_path") or "")
+                final_segment["avatar_clip_restored"] = str(meta.get("avatar_segment_restored_rel_path") or "")
+                final_segment["avatar_attempted"] = bool(meta.get("avatar_attempted"))
+                final_segment["avatar_skipped"] = bool(meta.get("avatar_skipped"))
+                final_segment["avatar_applied"] = bool(meta.get("avatar_applied"))
+                final_segment["avatar_failed"] = bool(meta.get("avatar_failed"))
+                final_segment["avatar_status"] = str(meta.get("avatar_status") or "none")
+                final_segment["avatar_quality"] = str(meta.get("avatar_quality") or quality)
+                final_segment["avatar_enhanced_pending"] = bool(meta.get("avatar_enhanced_pending"))
+                final_segment["avatar_enhanced_available"] = bool(meta.get("avatar_enhanced_available"))
+                final_segment["avatar_error"] = str(meta.get("avatar_error") or "")
+                final_segment["avatar_failure_reason"] = str(meta.get("avatar_error") or "")
+                final_segment["avatar_engine_selected"] = str(meta.get("avatar_engine_selected") or meta.get("avatar_engine_used") or "none")
+                final_segment["musetalk_source_kind"] = str(meta.get("musetalk_source_kind") or "")
+                final_segment["liveportrait_fallback_used"] = bool(meta.get("liveportrait_fallback_used"))
+                final_segment["liveportrait_failure_reason"] = str(meta.get("liveportrait_failure_reason") or "")
+        _write_playback_sidecar(project_id_int, sidecar)
+
+    fast_message = (
+        "Avatar ready. Enhanced avatar restoration is still processing."
+        if progressive_restoration_enabled
+        else "Avatar ready."
+    )
+    _publish_avatar_sidecar(
+        preferred_track_rel=avatar_fast_track_rel,
+        quality="fast",
+        enhanced_available=False,
+        enhanced_pending=bool(progressive_restoration_enabled),
+    )
+    _set_job(status="running" if progressive_restoration_enabled else "done", progress=92 if progressive_restoration_enabled else 100, result_url=avatar_fast_track_rel, error_message="")
     _mark_project_avatar_state(
         project_id_int,
         status="ready",
-        message="Avatar ready.",
+        message=fast_message,
         job_id=job_id,
-        output_path=avatar_track_rel,
+        output_path=avatar_fast_track_rel,
     )
     UserProfile.objects.filter(user_id=teacher_id_int).update(avatar_last_rendered_at=timezone.now())
     Project.objects.filter(pk=project_id_int).update(updated_at=timezone.now())
-    logger.info("Lesson avatar overlay DONE project=%s track=%s", project_id_int, avatar_track_rel)
+
+    restoration_failures: list[dict[str, Any]] = []
+    if progressive_restoration_enabled:
+        self.update_state(state="PROGRESS", meta={"step": "avatar_restoration", "project_id": project_id_int, "progress": 92})
+        restored_segments_by_index: dict[int, dict[str, Any]] = {}
+        for position, item in enumerate(ordered, start=1):
+            index = int(item.get("index") or 0)
+            slide_num = int(item.get("slide_num") or position)
+            fast_rel = segment_rel_by_index.get(index, "")
+            audio_path = str(item.get("tts_audio_path") or "")
+            fast_abs = Path(_avatar_storage_root()) / fast_rel if fast_rel else Path("")
+            restored_path = _non_overwriting_path(segment_dir, f"avatar_{slide_num:03d}.restored.mp4")
+            temp_restored_path = restored_path.with_name(f"{restored_path.name}.tmp-{job_id or os.getpid()}")
+            try:
+                if not fast_abs.exists() or not fast_abs.is_file():
+                    raise RuntimeError("fast_avatar_segment_missing")
+                restoration_result = run_restoration(
+                    input_video=str(fast_abs),
+                    output_path=str(temp_restored_path),
+                    source_image=source_abs,
+                    audio_path=audio_path,
+                    timeout_seconds=float(os.environ.get("AVATAR_STAGE_TIMEOUT_RESTORATION_SECONDS", "180") or 180),
+                )
+                if not restoration_result.success:
+                    raise RuntimeError(restoration_result.error or "restoration_failed")
+                avatar_pipeline._assert_video_contract(str(temp_restored_path), stage_name="lesson_avatar_restoration")
+                temp_restored_path.replace(restored_path)
+                restored_rel = _safe_rel_path(_avatar_storage_root(), restored_path)
+                restored_segment_rel_by_index[index] = restored_rel
+                restored_segments_by_index[index] = {
+                    "segment_rel_path": restored_rel,
+                    "restored_segment_rel_path": restored_rel,
+                    "fast_segment_rel_path": fast_rel,
+                }
+            except Exception as exc:  # noqa: BLE001
+                temp_restored_path.unlink(missing_ok=True)
+                reason = _concise_error_text(exc, fallback="avatar_restoration_failed")
+                restoration_failures.append({"index": index, "slide_num": slide_num, "status": "failed", "reason": reason})
+                logger.warning("Avatar restoration failed project=%s slide=%s reason=%s", project_id_int, slide_num, reason)
+            finally:
+                progress = min(99, 92 + int((position / max(len(ordered), 1)) * 6))
+                _set_job(progress=progress)
+                self.update_state(state="PROGRESS", meta={"step": "avatar_restoration", "project_id": project_id_int, "progress": progress})
+
+        if not restoration_failures and len(restored_segment_rel_by_index) == len(ordered):
+            if "restoration" not in final_avatar_engine_chain:
+                final_avatar_engine_chain = list(final_avatar_engine_chain or ["liveportrait", "musetalk"]) + ["restoration"]
+            for segment in avatar_segments:
+                restored_info = restored_segments_by_index.get(int(segment.get("index") or 0), {})
+                if restored_info:
+                    segment["segment_rel_path"] = str(restored_info["segment_rel_path"])
+                    segment["restored_segment_rel_path"] = str(restored_info["restored_segment_rel_path"])
+                    segment["quality"] = "restored"
+                    segment["enhanced_pending"] = False
+                    segment["enhanced_available"] = True
+                    segment["restoration_succeeded"] = True
+                    segment["restoration_pending"] = False
+                    segment["fallback_chain"] = list(final_avatar_engine_chain)
+            metadata_by_index = {int(meta.get("index") or 0): meta for meta in avatar_slide_metadata}
+            for index, restored_rel in restored_segment_rel_by_index.items():
+                meta = metadata_by_index.get(index)
+                if meta is None:
+                    continue
+                meta["avatar_segment_restored_rel_path"] = restored_rel
+                meta["avatar_segment_rel_path"] = restored_rel
+                meta["avatar_quality"] = "restored"
+                meta["avatar_enhanced_pending"] = False
+                meta["avatar_enhanced_available"] = True
+                meta["restoration_succeeded"] = True
+                meta["restoration_pending"] = False
+                meta["avatar_fallback_chain"] = list(final_avatar_engine_chain)
+            restored_segment_paths = [
+                str(Path(_avatar_storage_root()) / restored_segment_rel_by_index[int(item.get("index") or 0)])
+                for item in ordered
+            ]
+            temp_restored_track_path = avatar_restored_track_path.with_name(f"{avatar_restored_track_path.name}.tmp-{job_id or os.getpid()}")
+            try:
+                concat_videos(restored_segment_paths, str(temp_restored_track_path))
+                temp_restored_track_path.replace(avatar_restored_track_path)
+            except Exception as exc:  # noqa: BLE001
+                temp_restored_track_path.unlink(missing_ok=True)
+                restoration_failures.append({"status": "avatar_restored_concat_failed", "reason": _concise_error_text(exc, fallback="avatar_restored_concat_failed")})
+
+        if restoration_failures:
+            _publish_avatar_sidecar(
+                preferred_track_rel=avatar_fast_track_rel,
+                quality="fast",
+                enhanced_available=False,
+                enhanced_pending=False,
+                restoration_failures=restoration_failures,
+            )
+            _set_job(status="done", progress=100, result_url=avatar_fast_track_rel, error_message="")
+            _mark_project_avatar_state(
+                project_id_int,
+                status="ready",
+                message="Avatar ready. Enhanced restoration failed; fast avatar is available.",
+                job_id=job_id,
+                output_path=avatar_fast_track_rel,
+            )
+            avatar_track_rel = avatar_fast_track_rel
+        else:
+            avatar_restored_track_rel = _safe_rel_path(_avatar_storage_root(), avatar_restored_track_path)
+            _publish_avatar_sidecar(
+                preferred_track_rel=avatar_restored_track_rel,
+                quality="restored",
+                enhanced_available=True,
+                enhanced_pending=False,
+                restored_track_rel=avatar_restored_track_rel,
+            )
+            _set_job(status="done", progress=100, result_url=avatar_restored_track_rel, error_message="")
+            _mark_project_avatar_state(
+                project_id_int,
+                status="ready",
+                message="Enhanced avatar ready.",
+                job_id=job_id,
+                output_path=avatar_restored_track_rel,
+            )
+            avatar_track_rel = avatar_restored_track_rel
+    else:
+        _set_job(status="done", progress=100, result_url=avatar_track_rel, error_message="")
+
+    logger.info("Lesson avatar overlay DONE project=%s track=%s progressive_restoration=%s", project_id_int, avatar_track_rel, bool(progressive_restoration_enabled))
     return {
         "status": "ready",
         "project_id": project_id_int,
         "teacher_id": teacher_id_int,
         "avatar_track_rel_path": avatar_track_rel,
+        "avatar_fast_track_rel_path": avatar_fast_track_rel,
+        "avatar_restored_track_rel_path": _safe_rel_path(_avatar_storage_root(), avatar_restored_track_path) if avatar_restored_track_path.exists() else "",
         "avatar_segments": avatar_segments,
         "avatar_engine_selected": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
         "normalized_engine": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
         "final_avatar_engine_chain": final_avatar_engine_chain,
+        "progressive_restoration": bool(progressive_restoration_enabled),
+        "restoration_failures": restoration_failures,
     }
 
 
