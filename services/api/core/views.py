@@ -7991,6 +7991,389 @@ class AdminStatsDashboardView(APIView):
         )
 
 
+class CreatorAnalyticsView(APIView):
+    """
+    GET /api/v1/me/analytics/
+    Creator-scoped analytics for the signed-in teacher/publisher.
+
+    Staff can call this endpoint, but it remains scoped to their own projects.
+    Platform-wide analytics stay behind /api/v1/admin/stats/.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _parse_date(self, raw_value: str | None, default_date):
+        if not raw_value:
+            return default_date
+        try:
+            return datetime.strptime(raw_value, "%Y-%m-%d").date()
+        except ValueError:
+            return default_date
+
+    def _bounded_date_range(self, request):
+        today = timezone.now().date()
+        raw_range = str(request.query_params.get("range") or "30").strip()
+        try:
+            range_days = int(raw_range)
+        except (TypeError, ValueError):
+            range_days = 30
+        range_days = range_days if range_days in {7, 30, 90} else 30
+
+        default_from = today - timedelta(days=range_days - 1)
+        date_from = self._parse_date(request.query_params.get("from"), default_from)
+        date_to = self._parse_date(request.query_params.get("to"), today)
+        if date_from > date_to:
+            date_from, date_to = date_to, date_from
+        max_days = 180
+        if (date_to - date_from).days > max_days:
+            date_from = date_to - timedelta(days=max_days)
+        return date_from, date_to, range_days
+
+    def _pct_delta(self, current_value: float, previous_value: float) -> float:
+        if previous_value <= 0:
+            return 100.0 if current_value > 0 else 0.0
+        return round(((current_value - previous_value) / previous_value) * 100.0, 2)
+
+    def get(self, request):
+        if not _is_verified_teacher(request.user):
+            return Response(
+                {"error": "Only teacher or publisher accounts can view creator analytics."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        date_from, date_to, range_days = self._bounded_date_range(request)
+        from_dt = timezone.make_aware(datetime.combine(date_from, datetime.min.time()))
+        to_dt = timezone.make_aware(datetime.combine(date_to, datetime.max.time()))
+
+        category_slug = (request.query_params.get("category") or "").strip()
+        sort_by = (request.query_params.get("sort") or "views").strip().lower()
+        supported_sort = ["views", "completion", "watch_time", "likes", "comments", "date"]
+        if sort_by not in supported_sort:
+            sort_by = "views"
+
+        owned_projects_base = (
+            Project.objects.filter(user=request.user)
+            .select_related("user", "category")
+            .prefetch_related("slides", "jobs", "likes", "comments")
+            .distinct()
+        )
+
+        category_options = [
+            category
+            for category in Category.objects.filter(projects__user=request.user).distinct().order_by("name")
+        ]
+
+        projects_qs = owned_projects_base
+        if category_slug:
+            projects_qs = projects_qs.filter(category__slug=category_slug)
+
+        project_list = list(projects_qs)
+        project_ids = [project.id for project in project_list]
+
+        progress_qs = LessonProgress.objects.filter(
+            project_id__in=project_ids,
+            updated_at__gte=from_dt,
+            updated_at__lte=to_dt,
+        )
+        like_qs = LessonLike.objects.filter(
+            project_id__in=project_ids,
+            created_at__gte=from_dt,
+            created_at__lte=to_dt,
+        )
+        comment_qs = LessonComment.objects.filter(
+            project_id__in=project_ids,
+            created_at__gte=from_dt,
+            created_at__lte=to_dt,
+        )
+
+        duration_map = {
+            project.id: max(2, project.slides.count() * 2)
+            for project in project_list
+        }
+
+        progress_rows = list(progress_qs.values("project_id", "user_id", "progress_pct"))
+        progress_count = len(progress_rows)
+        unique_viewers = len({row["user_id"] for row in progress_rows})
+        completed_rows = [row for row in progress_rows if int(row["progress_pct"] or 0) >= 90]
+        completion_rate = round((len(completed_rows) / progress_count) * 100.0, 2) if progress_count else 0.0
+        average_progress = (
+            round(sum(float(row["progress_pct"] or 0) for row in progress_rows) / progress_count, 2)
+            if progress_count
+            else 0.0
+        )
+
+        like_count = like_qs.count()
+        comment_count = comment_qs.count()
+        engagement_events = progress_count + like_count + comment_count
+        estimated_watch_minutes = 0.0
+        for row in progress_rows:
+            duration = float(duration_map.get(row["project_id"], 8))
+            estimated_watch_minutes += duration * (float(row["progress_pct"] or 0) / 100.0)
+        estimated_watch_minutes = round(estimated_watch_minutes, 2)
+
+        previous_to = from_dt - timedelta(microseconds=1)
+        window_days = max(1, (date_to - date_from).days + 1)
+        previous_from = previous_to - timedelta(days=window_days)
+        previous_progress_qs = LessonProgress.objects.filter(
+            project_id__in=project_ids,
+            updated_at__gte=previous_from,
+            updated_at__lte=previous_to,
+        )
+        previous_like_qs = LessonLike.objects.filter(
+            project_id__in=project_ids,
+            created_at__gte=previous_from,
+            created_at__lte=previous_to,
+        )
+        previous_comment_qs = LessonComment.objects.filter(
+            project_id__in=project_ids,
+            created_at__gte=previous_from,
+            created_at__lte=previous_to,
+        )
+        prev_views = previous_progress_qs.count()
+        prev_unique = previous_progress_qs.values("user_id").distinct().count()
+        prev_completion_count = previous_progress_qs.filter(progress_pct__gte=90).count()
+        prev_completion_rate = round((prev_completion_count / prev_views) * 100.0, 2) if prev_views else 0.0
+        prev_engagement = prev_views + previous_like_qs.count() + previous_comment_qs.count()
+
+        lesson_rollup = {}
+        for project in project_list:
+            lesson_rollup[project.id] = {
+                "lesson_id": project.id,
+                "id": project.id,
+                "title": project.title,
+                "category_slug": project.category.slug if project.category else "",
+                "category_name": project.category.name if project.category else "Uncategorized",
+                "status": project.status,
+                "is_published": bool(project.is_published),
+                "created_at": project.created_at.isoformat() if project.created_at else "",
+                "updated_at": project.updated_at.isoformat() if project.updated_at else "",
+                "views": 0,
+                "video_plays": 0,
+                "unique_viewers": 0,
+                "average_progress": 0.0,
+                "completion_rate": 0.0,
+                "completion_count": 0,
+                "likes": 0,
+                "comments": 0,
+                "engagement_events": 0,
+                "estimated_watch_minutes": 0.0,
+            }
+
+        by_lesson_users = {}
+        by_lesson_progress_sum = {}
+        for row in progress_rows:
+            lesson = lesson_rollup.get(row["project_id"])
+            if not lesson:
+                continue
+            progress_pct = float(row["progress_pct"] or 0)
+            lesson["views"] += 1
+            lesson["video_plays"] += 1
+            lesson["estimated_watch_minutes"] += float(duration_map.get(row["project_id"], 8)) * (progress_pct / 100.0)
+            if int(progress_pct) >= 90:
+                lesson["completion_count"] += 1
+            by_lesson_users.setdefault(row["project_id"], set()).add(row["user_id"])
+            by_lesson_progress_sum[row["project_id"]] = by_lesson_progress_sum.get(row["project_id"], 0.0) + progress_pct
+
+        for row in like_qs.values("project_id").annotate(total=Count("id")):
+            lesson = lesson_rollup.get(row["project_id"])
+            if lesson:
+                lesson["likes"] = int(row["total"])
+
+        for row in comment_qs.values("project_id").annotate(total=Count("id")):
+            lesson = lesson_rollup.get(row["project_id"])
+            if lesson:
+                lesson["comments"] = int(row["total"])
+
+        lessons_table = []
+        for lesson_id, payload in lesson_rollup.items():
+            users = by_lesson_users.get(lesson_id, set())
+            views = payload["views"]
+            payload["unique_viewers"] = len(users)
+            payload["average_progress"] = round((by_lesson_progress_sum.get(lesson_id, 0.0) / views), 2) if views else 0.0
+            payload["completion_rate"] = round((payload["completion_count"] / views) * 100.0, 2) if views else 0.0
+            payload["estimated_watch_minutes"] = round(payload["estimated_watch_minutes"], 2)
+            payload["engagement_events"] = views + payload["likes"] + payload["comments"]
+            lessons_table.append(payload)
+
+        if sort_by == "completion":
+            lessons_table.sort(key=lambda item: item["completion_rate"], reverse=True)
+        elif sort_by == "watch_time":
+            lessons_table.sort(key=lambda item: item["estimated_watch_minutes"], reverse=True)
+        elif sort_by == "likes":
+            lessons_table.sort(key=lambda item: item["likes"], reverse=True)
+        elif sort_by == "comments":
+            lessons_table.sort(key=lambda item: item["comments"], reverse=True)
+        elif sort_by == "date":
+            lessons_table.sort(key=lambda item: item["created_at"], reverse=True)
+        else:
+            lessons_table.sort(key=lambda item: item["views"], reverse=True)
+
+        category_rows = {}
+        for lesson in lessons_table:
+            key = lesson["category_slug"] or "uncategorized"
+            row = category_rows.setdefault(
+                key,
+                {
+                    "category_slug": key,
+                    "category_name": lesson["category_name"],
+                    "lesson_count": 0,
+                    "views": 0,
+                    "video_plays": 0,
+                    "unique_viewers": 0,
+                    "average_progress": 0.0,
+                    "completion_rate": 0.0,
+                    "likes": 0,
+                    "comments": 0,
+                    "engagement_events": 0,
+                    "estimated_watch_minutes": 0.0,
+                },
+            )
+            row["lesson_count"] += 1
+            row["views"] += lesson["views"]
+            row["video_plays"] += lesson["video_plays"]
+            row["unique_viewers"] += lesson["unique_viewers"]
+            row["average_progress"] += lesson["average_progress"]
+            row["completion_rate"] += lesson["completion_rate"]
+            row["likes"] += lesson["likes"]
+            row["comments"] += lesson["comments"]
+            row["engagement_events"] += lesson["engagement_events"]
+            row["estimated_watch_minutes"] += lesson["estimated_watch_minutes"]
+
+        category_table = []
+        for item in category_rows.values():
+            item["average_progress"] = round(item["average_progress"] / max(1, item["lesson_count"]), 2)
+            item["completion_rate"] = round(item["completion_rate"] / max(1, item["lesson_count"]), 2)
+            item["estimated_watch_minutes"] = round(item["estimated_watch_minutes"], 2)
+            category_table.append(item)
+        category_table.sort(key=lambda item: item["engagement_events"], reverse=True)
+
+        trend_points = []
+        cursor = date_from
+        while cursor <= date_to:
+            day_start = timezone.make_aware(datetime.combine(cursor, datetime.min.time()))
+            day_end = timezone.make_aware(datetime.combine(cursor, datetime.max.time()))
+            day_progress = progress_qs.filter(updated_at__gte=day_start, updated_at__lte=day_end)
+            day_likes = like_qs.filter(created_at__gte=day_start, created_at__lte=day_end).count()
+            day_comments = comment_qs.filter(created_at__gte=day_start, created_at__lte=day_end).count()
+            day_views = day_progress.count()
+            trend_points.append(
+                {
+                    "date": cursor.isoformat(),
+                    "views": day_views,
+                    "video_plays": day_views,
+                    "unique_viewers": day_progress.values("user_id").distinct().count(),
+                    "completions": day_progress.filter(progress_pct__gte=90).count(),
+                    "likes": day_likes,
+                    "comments": day_comments,
+                    "engagement": day_views + day_likes + day_comments,
+                }
+            )
+            cursor += timedelta(days=1)
+
+        recent_activity = []
+        for progress in progress_qs.select_related("project").order_by("-updated_at")[:25]:
+            recent_activity.append(
+                {
+                    "type": "progress",
+                    "timestamp": progress.updated_at.isoformat(),
+                    "lesson_id": progress.project_id,
+                    "lesson_title": progress.project.title,
+                    "value": int(progress.progress_pct),
+                    "description": f"Progress reached {int(progress.progress_pct)}% on {progress.project.title}.",
+                }
+            )
+        for like in like_qs.select_related("project").order_by("-created_at")[:20]:
+            recent_activity.append(
+                {
+                    "type": "like",
+                    "timestamp": like.created_at.isoformat(),
+                    "lesson_id": like.project_id,
+                    "lesson_title": like.project.title,
+                    "value": 1,
+                    "description": f"Like recorded for {like.project.title}.",
+                }
+            )
+        for comment in comment_qs.select_related("project").order_by("-created_at")[:20]:
+            recent_activity.append(
+                {
+                    "type": "comment",
+                    "timestamp": comment.created_at.isoformat(),
+                    "lesson_id": comment.project_id,
+                    "lesson_title": comment.project.title,
+                    "value": 1,
+                    "description": f"Comment recorded for {comment.project.title}.",
+                }
+            )
+        recent_activity.sort(key=lambda item: item["timestamp"], reverse=True)
+        recent_activity = recent_activity[:30]
+
+        recent_lessons = sorted(lessons_table, key=lambda item: item["created_at"], reverse=True)[:20]
+
+        return Response(
+            {
+                "summary": {
+                    "total_lessons": len(project_list),
+                    "published_lessons": sum(1 for project in project_list if project.is_published),
+                    "draft_lessons": sum(1 for project in project_list if not project.is_published),
+                    "video_plays": progress_count,
+                    "total_views": progress_count,
+                    "unique_viewers": unique_viewers,
+                    "estimated_watch_time_minutes": estimated_watch_minutes,
+                    "completion_rate": completion_rate,
+                    "average_progress": average_progress,
+                    "engagement_events": engagement_events,
+                    "likes": like_count,
+                    "comments": comment_count,
+                    "trends": {
+                        "video_plays_pct": self._pct_delta(float(progress_count), float(prev_views)),
+                        "unique_viewers_pct": self._pct_delta(float(unique_viewers), float(prev_unique)),
+                        "completion_rate_pct": self._pct_delta(float(completion_rate), float(prev_completion_rate)),
+                        "engagement_events_pct": self._pct_delta(float(engagement_events), float(prev_engagement)),
+                    },
+                },
+                "charts": {
+                    "engagement_trend": trend_points,
+                    "category_popularity": category_table[:12],
+                },
+                "tables": {
+                    "top_lessons": lessons_table[:20],
+                    "recent_lessons": recent_lessons,
+                    "top_categories": category_table[:12],
+                },
+                "recent_activity": recent_activity,
+                "filters": {
+                    "from": date_from.isoformat(),
+                    "to": date_to.isoformat(),
+                    "range": range_days,
+                    "category": category_slug,
+                    "sort": sort_by,
+                },
+                "options": {
+                    "categories": CategorySerializer(category_options, many=True).data,
+                    "supported_ranges": [7, 30, 90],
+                    "supported_sort": supported_sort,
+                },
+                "meta": {
+                    "contract": "creator_analytics_v1",
+                    "scope": "creator",
+                    "estimated_metrics": True,
+                    "estimated_fields": [
+                        "video_plays",
+                        "total_views",
+                        "estimated_watch_time_minutes",
+                    ],
+                    "missing_metrics": [
+                        "exact_play_events",
+                        "exact_watch_time_seconds",
+                        "viewer_session_count",
+                        "satisfaction_score",
+                        "revenue",
+                    ],
+                },
+            }
+        )
+
+
 class CatalogDetailView(APIView):
     """
     GET /api/v1/catalog/<project_id>/
