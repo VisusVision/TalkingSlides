@@ -44,7 +44,15 @@ function normalizeCatalogList(payload) {
 
 function lessonSearchMatch(lesson, query) {
   const q = String(query || '').trim().toLowerCase();
-  function contextRowsFromPayload(context, currentLessonId) {
+  if (!q) return true;
+
+  return [lesson.title, lesson.description, lesson.teacherName, lesson.categoryName]
+    .join(' ')
+    .toLowerCase()
+    .includes(q);
+}
+
+function contextRowsFromPayload(context, currentLessonId) {
     const rawItems = Array.isArray(context?.items) ? context.items : [];
     return rawItems
       .map((item, index) => {
