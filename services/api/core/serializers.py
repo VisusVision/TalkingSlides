@@ -866,14 +866,23 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
         return obj.user.username if obj.user else ""
 
     def get_like_count(self, obj):
+        annotated = getattr(obj, "likes_count", None)
+        if annotated is not None:
+            return int(annotated)
         return obj.likes.count()
 
     def get_comment_count(self, obj):
+        annotated = getattr(obj, "comments_count", None)
+        if annotated is not None:
+            return int(annotated)
         return obj.comments.count()
 
     def get_follower_count(self, obj):
         if not obj.user_id:
             return 0
+        annotated = getattr(obj, "followers_count", None)
+        if annotated is not None:
+            return int(annotated)
         return obj.user.publisher_followers.count()
 
     def get_is_following_publisher(self, obj):
@@ -884,6 +893,9 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
         return obj.user.publisher_followers.filter(follower=user).exists()
 
     def get_has_video(self, obj):
+        annotated = getattr(obj, "has_video_export_done", None)
+        if annotated is not None:
+            return bool(annotated)
         return obj.jobs.filter(job_type="video_export", status="done").exists()
 
     def get_cover_url(self, obj):

@@ -6,6 +6,7 @@ for local development when DATABASE_URL is not set.
 """
 
 import os
+import sys
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
@@ -180,8 +181,10 @@ WSGI_APPLICATION = "config.wsgi.application"
 # Falls back to SQLite when POSTGRES_HOST is not set (plain local dev).
 # ---------------------------------------------------------------------------
 _pg_host = os.environ.get("POSTGRES_HOST")
+_running_pytest = "pytest" in sys.modules or bool(os.environ.get("PYTEST_CURRENT_TEST"))
+_force_sqlite_for_tests = _env_bool("USE_SQLITE_FOR_TESTS", default=True) and _running_pytest
 
-if _pg_host:
+if _pg_host and not _force_sqlite_for_tests:
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
@@ -197,6 +200,8 @@ else:
     # Docker test runs can mount source read-only, so allow the pytest database
     # file to live in a writable temp directory without changing runtime DBs.
     _sqlite_test_name = os.environ.get("SQLITE_TEST_DATABASE_PATH")
+    if not _sqlite_test_name and _running_pytest:
+        _sqlite_test_name = "/tmp/ai_academy_api_test.sqlite3"
     _sqlite_options = {}
     if _sqlite_test_name:
         _sqlite_options["TEST"] = {"NAME": _sqlite_test_name}
@@ -214,7 +219,14 @@ else:
 # ---------------------------------------------------------------------------
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 CACHE_URL = os.environ.get("CACHE_URL") or os.environ.get("REDIS_URL")
-if CACHE_URL:
+if _running_pytest:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "pytest-local-cache",
+        }
+    }
+elif CACHE_URL:
     CACHES = {
         "default": {
             "BACKEND": "django.core.cache.backends.redis.RedisCache",
@@ -279,6 +291,16 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": os.environ.get("DRF_THROTTLE_ANON", "120/min"),
+        "user": os.environ.get("DRF_THROTTLE_USER", "600/min"),
+        "login": os.environ.get("DRF_THROTTLE_LOGIN", "10/min"),
+    },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
 }

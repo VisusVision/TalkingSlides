@@ -55,7 +55,7 @@ from typing import Any
 from celery import Celery
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Avg, Count, Max, Prefetch
+from django.db.models import Avg, Count, Exists, Max, OuterRef, Prefetch
 from django.core.cache import cache
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
@@ -214,6 +214,14 @@ _ALLOWED_EXTENSIONS = {".pptx", ".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg"
 _MAX_COVER_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 logger = logging.getLogger(__name__)
+_CATALOG_CACHE_TTL_SECONDS = int(os.environ.get("CATALOG_CACHE_TTL_SECONDS", "30"))
+
+
+def _catalog_cache_key(prefix: str, request) -> str:
+    query_items = sorted((request.query_params or {}).items())
+    raw_query = urlencode(query_items, doseq=True)
+    query_hash = hashlib.sha256(raw_query.encode("utf-8")).hexdigest()[:16]
+    return f"catalog:{prefix}:v1:{query_hash}"
 
 
 # ---------------------------------------------------------------------------
@@ -2235,6 +2243,7 @@ class AuthProvidersView(APIView):
 class LoginView(APIView):
     """POST /api/v1/auth/login/ — accepts {username, password}, returns token + user."""
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "login"
 
     def post(self, request):
         username = (request.data.get("username") or "").strip()
@@ -2576,6 +2585,10 @@ class MediaStreamView(APIView):
     The raw storage path is never sent to the client.
     """
     permission_classes = [permissions.AllowAny]
+    # Stream traffic (especially HLS segments) is high-frequency by design.
+    # Do not apply DRF request throttles here; playback protection is enforced
+    # by signed tokens, grant/session checks, and risk policy controls.
+    throttle_classes = []
 
     def get(self, request, token):
         requested_type = "video"
@@ -7687,8 +7700,17 @@ class CategoryListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
+        cache_key = None
+        if not (request.user and request.user.is_authenticated) and _CATALOG_CACHE_TTL_SECONDS > 0:
+            cache_key = _catalog_cache_key("categories", request)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
         categories = Category.objects.all()
-        return Response(CategorySerializer(categories, many=True).data)
+        payload = CategorySerializer(categories, many=True).data
+        if cache_key:
+            cache.set(cache_key, payload, timeout=_CATALOG_CACHE_TTL_SECONDS)
+        return Response(payload)
 
 
 class CatalogListView(APIView):
@@ -7701,6 +7723,13 @@ class CatalogListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
+        cache_key = None
+        if not (request.user and request.user.is_authenticated) and _CATALOG_CACHE_TTL_SECONDS > 0:
+            cache_key = _catalog_cache_key("list", request)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
         # Public catalog: published + render done + moderation approved/not_scanned.
         # Lessons that are unscanned (not_scanned) are also shown so that projects
         # without auto-moderation enabled are not silently hidden from the catalog.
@@ -7714,14 +7743,28 @@ class CatalogListView(APIView):
             )
             .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
-            .prefetch_related("jobs", "likes", "comments")
+            .annotate(
+                likes_count=Count("likes", distinct=True),
+                comments_count=Count("comments", distinct=True),
+                followers_count=Count("user__publisher_followers", distinct=True),
+                has_video_export_done=Exists(
+                    Job.objects.filter(
+                        project_id=OuterRef("pk"),
+                        job_type="video_export",
+                        status="done",
+                    )
+                ),
+            )
             .distinct()
             .order_by("-created_at")
         )
         category_slug = request.query_params.get("category")
         if category_slug:
             projects = projects.filter(category__slug=category_slug)
-        return Response(CatalogProjectSerializer(projects, many=True, context={"request": request}).data)
+        payload = CatalogProjectSerializer(projects, many=True, context={"request": request}).data
+        if cache_key:
+            cache.set(cache_key, payload, timeout=_CATALOG_CACHE_TTL_SECONDS)
+        return Response(payload)
 
 
 class CatalogFeedView(APIView):
@@ -7759,8 +7802,8 @@ class CatalogFeedView(APIView):
         now_ts: float,
         interest_slugs: set[str],
     ) -> dict:
-        likes = project.likes.count()
-        comments = project.comments.count()
+        likes = int(getattr(project, "likes_count", 0) or 0)
+        comments = int(getattr(project, "comments_count", 0) or 0)
         age_hours = max(1.0, (now_ts - project.created_at.timestamp()) / 3600.0)
         recency_score = round(1000.0 / (1.0 + age_hours), 2)
         popularity_score = round((likes * 7.0) + (comments * 4.0), 2)
@@ -7771,7 +7814,7 @@ class CatalogFeedView(APIView):
             {
                 "teacher_id": project.user_id,
                 "teacher_username": project.user.username if project.user else "",
-                "duration_minutes": max(2, (project.slides.count() or 1) * 2),
+                "duration_minutes": max(2, (int(getattr(project, "slides_count", 0) or 0) or 1) * 2),
                 "view_count": max(1, int((likes * 14) + (comments * 9) + 32)),
                 "user_progress": progress_pct,
                 "is_saved": progress_pct >= 90,
@@ -7795,6 +7838,13 @@ class CatalogFeedView(APIView):
         return sorted(items, key=lambda item: item["scores"][key_name], reverse=True)
 
     def get(self, request):
+        cache_key = None
+        if not (request.user and request.user.is_authenticated) and _CATALOG_CACHE_TTL_SECONDS > 0:
+            cache_key = _catalog_cache_key("feed", request)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
         query = (request.query_params.get("q") or "").strip().lower()
         category_slug = (request.query_params.get("category") or "").strip()
         teacher_id_raw = (request.query_params.get("teacher") or "").strip()
@@ -7817,7 +7867,19 @@ class CatalogFeedView(APIView):
             )
             .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
-            .prefetch_related("jobs", "likes", "comments", "slides")
+            .annotate(
+                likes_count=Count("likes", distinct=True),
+                comments_count=Count("comments", distinct=True),
+                followers_count=Count("user__publisher_followers", distinct=True),
+                slides_count=Count("slides", distinct=True),
+                has_video_export_done=Exists(
+                    Job.objects.filter(
+                        project_id=OuterRef("pk"),
+                        job_type="video_export",
+                        status="done",
+                    )
+                ),
+            )
             .distinct()
             .order_by("-created_at")
         )
@@ -7940,26 +8002,27 @@ class CatalogFeedView(APIView):
             },
         ]
 
-        return Response(
-            {
-                "sections": sections,
-                "featured_publishers": featured_publishers,
-                "filters": {
-                    "query": query,
-                    "category": category_slug,
-                    "teacher": int(teacher_id_raw) if teacher_id_raw.isdigit() else None,
-                    "interests": sorted(interest_slugs),
-                    "watched": watched_only,
-                    "rank_by": rank_by,
-                    "supported_rank_by": ["blended", "popularity", "recency"],
-                },
-                "meta": {
-                    "contract": "catalog_feed_v1",
-                    "placeholder_logic": True,
-                    "notes": "Ranking is heuristic and intentionally lightweight. Replace with recommendation jobs later.",
-                },
-            }
-        )
+        payload = {
+            "sections": sections,
+            "featured_publishers": featured_publishers,
+            "filters": {
+                "query": query,
+                "category": category_slug,
+                "teacher": int(teacher_id_raw) if teacher_id_raw.isdigit() else None,
+                "interests": sorted(interest_slugs),
+                "watched": watched_only,
+                "rank_by": rank_by,
+                "supported_rank_by": ["blended", "popularity", "recency"],
+            },
+            "meta": {
+                "contract": "catalog_feed_v1",
+                "placeholder_logic": True,
+                "notes": "Ranking is heuristic and intentionally lightweight. Replace with recommendation jobs later.",
+            },
+        }
+        if cache_key:
+            cache.set(cache_key, payload, timeout=_CATALOG_CACHE_TTL_SECONDS)
+        return Response(payload)
 
 
 class AdminStatsDashboardView(APIView):

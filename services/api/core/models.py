@@ -240,6 +240,16 @@ class Project(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["is_published", "status", "moderation_status", "-created_at"],
+                name="c_proj_pub_stat_mod_cr_idx",
+            ),
+            models.Index(
+                fields=["user", "-created_at"],
+                name="c_proj_user_created_idx",
+            ),
+        ]
 
     def __str__(self):
         return self.title
@@ -402,6 +412,16 @@ class Job(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["project", "job_type", "status", "-created_at"],
+                name="c_job_proj_type_stat_cr_idx",
+            ),
+            models.Index(
+                fields=["project", "-created_at"],
+                name="c_job_proj_created_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.job_type} [{self.status}] - {self.pk}"
@@ -417,6 +437,16 @@ class LessonProgress(models.Model):
 
     class Meta:
         unique_together = [("user", "project")]
+        indexes = [
+            models.Index(
+                fields=["project", "-updated_at"],
+                name="c_lp_proj_updated_idx",
+            ),
+            models.Index(
+                fields=["user", "-updated_at"],
+                name="c_lp_user_updated_idx",
+            ),
+        ]
 
     def __str__(self):
         return f"{self.user.username} - {self.project.title} - {self.progress_pct}%"
