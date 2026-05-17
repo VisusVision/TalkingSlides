@@ -188,6 +188,18 @@ function contextRowsFromPayload(context, currentLessonId) {
       </SurfaceCard>
     );
   }
+
+function WatchStudyPanel({
+  lesson,
+  videoRef,
+  notes,
+  onNotesChange,
+  onSave,
+  savedAtLabel,
+  unsaved,
+  saveActionLabel,
+  saveHint,
+}) {
         {avatar.enabled ? (
           <AvatarOverlayLayer
             lessonId={lesson?.id}
