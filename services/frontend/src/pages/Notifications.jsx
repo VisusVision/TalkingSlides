@@ -14,6 +14,7 @@ import {
   notifyNotificationsChanged,
   notificationPageInfo,
 } from '../utils/notifications';
+import NotificationTypeIcon from '../components/ui/NotificationTypeIcon';
 
 const PAGE_SIZE = 20;
 const FILTERS = [
@@ -27,20 +28,25 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
 
   return (
     <article
-      className={`rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] p-3 transition sm:p-4 ${
+      className={`min-w-0 overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] p-3 transition sm:p-4 ${
         unread ? 'border-[color:rgba(107,56,212,0.35)] bg-[color:rgba(107,56,212,0.06)] dark:bg-[color:rgba(208,188,255,0.09)]' : ''
       }`}
     >
       <div className="flex gap-3">
-        <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${unread ? 'bg-[var(--accent-primary)]' : 'bg-transparent'}`} />
+        <span className="relative mt-1 shrink-0">
+          <NotificationTypeIcon eventType={notification.event_type} />
+          {unread && (
+            <span className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full bg-[var(--accent-primary)] ring-2 ring-[color:var(--surface-container-low)]" />
+          )}
+        </span>
         <div className="min-w-0 flex-1">
           <button
             type="button"
             onClick={() => onOpen(notification)}
-            className="focus-ring block w-full rounded-md text-left"
+            className="focus-ring block w-full min-w-0 rounded-md text-left"
           >
-            <div className="flex flex-wrap items-start justify-between gap-2">
-              <h2 className="text-sm font-semibold text-[var(--text-primary)] sm:text-base">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-2">
+              <h2 className="min-w-0 break-words text-sm font-semibold text-[var(--text-primary)] sm:text-base">
                 {notification.title}
               </h2>
               <span className="shrink-0 text-xs font-medium text-[var(--outline)]">
@@ -48,7 +54,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
               </span>
             </div>
             {notification.body && (
-              <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+              <p className="mt-1 break-words text-sm leading-6 text-[var(--text-secondary)]">
                 {notification.body}
               </p>
             )}
@@ -203,13 +209,13 @@ export default function Notifications({ user }) {
     : 'New lesson activity, comments, and render updates will appear here.';
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-3 pb-8 sm:px-5 lg:px-6">
-      <section className="rounded-none bg-transparent py-2">
+    <div className="mx-auto flex w-[calc(100vw-3rem)] max-w-5xl min-w-0 flex-col gap-5 overflow-x-hidden px-3 pb-8 sm:w-full sm:px-5 lg:px-6">
+      <section className="min-w-0 rounded-none bg-transparent py-2">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
+          <div className="min-w-0">
             <p className="label-sm">Notifications</p>
             <h1 className="display-lg mt-2 text-[var(--text-primary)]">Notification center</h1>
-            <p className="body-md mt-2 max-w-2xl">
+            <p className="body-md mt-2 max-w-[19rem] sm:max-w-2xl">
               Review comments, followed publisher updates, and render status changes.
             </p>
           </div>
@@ -217,7 +223,7 @@ export default function Notifications({ user }) {
             type="button"
             onClick={handleMarkAllRead}
             disabled={markAllLoading || unreadCount === 0}
-            className="focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+            className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
             <CheckCheck size={16} />
             <span>{markAllLoading ? 'Updating...' : 'Mark all read'}</span>
@@ -225,7 +231,7 @@ export default function Notifications({ user }) {
         </div>
       </section>
 
-      <SurfaceCard className="space-y-4">
+      <SurfaceCard className="min-w-0 space-y-4 overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="inline-flex w-fit rounded-full bg-[var(--surface-container-high)] p-1">
             {FILTERS.map((option) => {
