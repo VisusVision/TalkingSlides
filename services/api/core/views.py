@@ -76,6 +76,7 @@ from core.models import (
     LessonComment,
     LessonLike,
     LessonProgress,
+    Notification,
     Playlist,
     PlaylistItem,
     Project,
@@ -96,6 +97,7 @@ from core.serializers import (
     CurrentUserProfileSerializer,
     JobSerializer,
     LessonCommentSerializer,
+    NotificationSerializer,
     PlaylistPublicSerializer,
     PlaylistSerializer,
     ProjectCreateSerializer,  # noqa: F401
@@ -4630,6 +4632,7 @@ class ProjectDetailView(APIView):
         if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
+        was_published = bool(getattr(project, "is_published", False))
         has_category_id = "category_id" in request.data
         has_category_name = "category_name" in request.data or "category" in request.data
         has_avatar_enabled = "avatar_enabled" in request.data
@@ -4745,6 +4748,13 @@ class ProjectDetailView(APIView):
             if has_avatar_runtime_settings:
                 save_project_avatar_runtime_settings(project, request.data.get("avatar_runtime_settings"))
                 project.refresh_from_db()
+        if has_is_published and not was_published and bool(getattr(project, "is_published", False)):
+            try:
+                from core.notifications import notify_publisher_posted_lesson
+
+                notify_publisher_posted_lesson(project)
+            except Exception:
+                logger.warning("Publish notification hook failed for project=%s", project.id, exc_info=True)
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
 
@@ -6474,6 +6484,12 @@ class ProjectAvatarRerenderView(APIView):
                 message="Avatar rerender could not be queued.",
                 job_id=avatar_job.id,
             )
+            try:
+                from core.notifications import notify_avatar_failed
+
+                notify_avatar_failed(project, avatar_job)
+            except Exception:
+                logger.warning("Avatar enqueue failure notification hook failed for project=%s", project.id, exc_info=True)
             return Response(
                 {
                     "error": "avatar_rerender_enqueue_failed",
@@ -8644,6 +8660,87 @@ class CatalogDetailView(APIView):
 # Student social features (authentication required)
 # ---------------------------------------------------------------------------
 
+class UserNotificationListView(APIView):
+    """GET /api/v1/me/notifications/ - latest notifications for current user."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        try:
+            limit = int(request.query_params.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(limit, 50))
+        unread_only = str(request.query_params.get("unread_only", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        queryset = (
+            Notification.objects.filter(recipient_user=request.user)
+            .select_related("actor_user", "project", "project__user", "lesson_comment", "job")
+            .order_by("-created_at", "-id")
+        )
+        if unread_only:
+            queryset = queryset.filter(is_read=False)
+        notifications = list(queryset[:limit])
+        return Response(
+            {
+                "results": NotificationSerializer(
+                    notifications,
+                    many=True,
+                    context={"request": request},
+                ).data
+            }
+        )
+
+
+class UserNotificationUnreadCountView(APIView):
+    """GET /api/v1/me/notifications/unread-count/."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        unread_count = Notification.objects.filter(recipient_user=request.user, is_read=False).count()
+        return Response({"unread_count": unread_count})
+
+
+class UserNotificationReadView(APIView):
+    """POST /api/v1/me/notifications/<id>/read/."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, notification_id):
+        notification = (
+            Notification.objects.select_related("actor_user", "project", "project__user", "lesson_comment", "job")
+            .filter(pk=notification_id, recipient_user=request.user)
+            .first()
+        )
+        if notification is None:
+            return Response({"error": "Notification not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not notification.is_read:
+            notification.is_read = True
+            notification.read_at = timezone.now()
+            notification.save(update_fields=["is_read", "read_at", "updated_at"])
+        return Response(NotificationSerializer(notification, context={"request": request}).data)
+
+
+class UserNotificationMarkAllReadView(APIView):
+    """POST /api/v1/me/notifications/mark-all-read/."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        now = timezone.now()
+        updated = Notification.objects.filter(recipient_user=request.user, is_read=False).update(
+            is_read=True,
+            read_at=now,
+            updated_at=now,
+        )
+        return Response({"updated": updated, "unread_count": 0})
+
+
 class LessonLikeView(APIView):
     """POST /api/v1/catalog/<project_id>/like/ — toggle like (auth required)."""
     permission_classes = [permissions.IsAuthenticated]
@@ -9346,6 +9443,12 @@ class LessonCommentsView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         comment = LessonComment.objects.create(user=request.user, project=project, text=text)
+        try:
+            from core.notifications import notify_lesson_commented
+
+            notify_lesson_commented(comment)
+        except Exception:
+            logger.warning("Comment notification hook failed for comment=%s", comment.id, exc_info=True)
         return Response(LessonCommentSerializer(comment).data, status=status.HTTP_201_CREATED)
 
 
