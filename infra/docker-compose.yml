@@ -144,7 +144,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-render}'
     volumes:
@@ -218,7 +218,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-avatar}'
     volumes:

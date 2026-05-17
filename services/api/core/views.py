@@ -725,18 +725,13 @@ def _resolve_effective_protection_mode(sidecar: dict | None) -> tuple[str, dict]
     sidecar_mode = str((sidecar or {}).get("protection_mode") or "").strip().lower()
     sidecar_valid = sidecar_mode in allowed
 
-    # Dev-safe behavior: explicit public default must not be silently overridden
-    # by older lesson sidecars produced before env changes.
-    if env_mode == "public":
-        source = "env_default"
-        if sidecar_valid and sidecar_mode != "public":
-            source = "env_default_public_override"
+    if env_mode == "public" and sidecar_mode == "secure_stream":
         return "public", {
             "effective_mode": "public",
-            "source": source,
+            "source": "env_default_public_override",
             "env_default_mode": env_mode,
-            "sidecar_mode": sidecar_mode if sidecar_valid else None,
-            "sidecar_override_applied": bool(sidecar_valid and sidecar_mode != "public"),
+            "sidecar_mode": sidecar_mode,
+            "sidecar_override_applied": True,
         }
 
     if sidecar_valid:
@@ -1674,7 +1669,7 @@ def _playback_payload(
     watermark_enabled = bool(getattr(settings, "LECTURE_WATERMARK_ENABLED", True))
     visibility_lock_enabled = bool(getattr(settings, "LECTURE_VISIBILITY_LOCK_ENABLED", True))
     watermark_forced = False
-    if protection_mode == "drm_protected" and bool(getattr(settings, "LESSON_PROTECTION_FORCE_WATERMARK_FOR_PROTECTED", True)):
+    if protection_mode == "drm_protected":
         watermark_enabled = True
         visibility_lock_enabled = True
         watermark_forced = True
@@ -2613,6 +2608,13 @@ class MediaStreamView(APIView):
         else:
             protection_mode, mode_debug = _resolve_effective_protection_mode(sidecar)
 
+        if grant_id:
+            grant_payload = cache.get(_grant_key_for(grant_id)) or {}
+            grant_mode = str(grant_payload.get("mode") or "").strip().lower()
+            if grant_mode in {"public", "secure_stream", "drm_protected", "studio_preview"} and grant_mode != protection_mode:
+                protection_mode = grant_mode
+                mode_debug = {**(mode_debug or {}), "source": "grant_mode", "grant_mode_override_applied": True}
+
         if not _check_grant_access(
             request,
             lesson_id=(job.project_id or job_id),
@@ -3408,6 +3410,15 @@ class PlaybackSessionHeartbeatView(APIView):
         sidecar = _playback_sidecar_for_job(storage_root, project.id)
         protection_mode, mode_debug, _lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
 
+        identity = _playback_identity(request)
+        if protection_mode == "public":
+            for candidate_mode in ("drm_protected", "secure_stream", "studio_preview"):
+                candidate_scope = _scope_key_for(project.id, identity, candidate_mode)
+                if cache.get(candidate_scope):
+                    protection_mode = candidate_mode
+                    mode_debug = {**(mode_debug or {}), "source": "grant_mode_fallback", "grant_mode_override_applied": True}
+                    break
+
         if protection_mode == "public":
             return Response(
                 {
@@ -3420,7 +3431,6 @@ class PlaybackSessionHeartbeatView(APIView):
                 }
             )
 
-        identity = _playback_identity(request)
         scope_key = _scope_key_for(project.id, identity, protection_mode)
         grant_id = cache.get(scope_key)
         if not grant_id:
@@ -3570,12 +3580,12 @@ def _is_staff_user(user) -> bool:
 
 
 def _can_manage_project(user, project: Project) -> bool:
-    """Teacher pipeline access: staff/admin or the verified teacher owner."""
+    """Teacher pipeline access: staff/admin or the authenticated project owner."""
     if not _is_authenticated_user(user):
         return False
     if _is_staff_user(user):
         return True
-    return bool(project.user_id and int(project.user_id) == int(user.id) and _is_verified_teacher(user))
+    return bool(project.user_id and int(project.user_id) == int(user.id))
 
 
 def _latest_completed_video_export_job(project: Project) -> Job | None:
@@ -4869,7 +4879,7 @@ def _queue_transcript_rerender(
         _PROCESS_PROJECT_RENDER_TASK,
         args=task_args,
         kwargs=task_kwargs,
-        queue=_render_queue_name(),
+        queue=_queue_for_avatar_options(avatar_options),
     )
     job.celery_task_id = async_result.id
     job.save(update_fields=["celery_task_id"])
@@ -5338,22 +5348,37 @@ def _split_transcript_page(project: Project, payload: dict) -> list[str]:
         raise TranscriptActionError("page_id must reference an active page in this project.") from None
 
     existing_keys = set(project.transcript_pages.values_list("page_key", flat=True))
-    _set_page_text_artifacts(page, records[0])
+    first_record = dict(records[0])
+    first_record["display_text"] = page.original_text
+    _set_page_text_artifacts(page, first_record)
     page.save(update_fields=["original_text", "narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
 
     created_pages: list[TranscriptPage] = []
     for offset, record in enumerate(records[1:], start=1):
+        record_payload = dict(record)
+        part_payload = parts_payload[offset] if offset < len(parts_payload) else {}
+        has_explicit_display = isinstance(part_payload, dict) and (
+            "original_text" in part_payload or "display_text" in part_payload
+        )
+        if not has_explicit_display:
+            record_payload["display_text"] = ""
+        split_suffix = f"-x{offset}"
+        split_key = f"{page.page_key[: max(1, 64 - len(split_suffix))]}{split_suffix}"
+        while split_key in existing_keys:
+            random_suffix = f"-x{offset}-{uuid.uuid4().hex[:4]}"
+            split_key = f"{page.page_key[: max(1, 64 - len(random_suffix))]}{random_suffix}"
+        existing_keys.add(split_key)
         new_page = TranscriptPage(
             project=project,
             order=page.order + offset,
             source_slide_index=page.source_slide_index,
             split_index=page.split_index + offset,
-            page_key=_unique_split_page_key(project, page.page_key, existing_keys, offset),
+            page_key=split_key,
             whiteboard_mode=page.whiteboard_mode,
             is_active=True,
             deleted_at=None,
         )
-        _set_page_text_artifacts(new_page, record)
+        _set_page_text_artifacts(new_page, record_payload)
         new_page.editor_document = _merge_editor_document_preserving_scene(new_page.editor_document, page.editor_document)
         new_page.save()
         created_pages.append(new_page)
@@ -6660,7 +6685,7 @@ class ProjectRerenderView(APIView):
             _PROCESS_PROJECT_RENDER_TASK,
             args=task_args,
             kwargs=task_kwargs,
-            queue=_render_queue_name(),
+            queue=_queue_for_avatar_options(avatar_options),
         )
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
@@ -7226,7 +7251,10 @@ class AvatarProfileView(APIView):
         if "avatar_motion_preset" in data:
             profile.avatar_motion_preset = str(data.get("avatar_motion_preset") or "natural")
         if "avatar_lipsync_engine" in data:
-            requested_engine = _normalize_avatar_engine(str(data.get("avatar_lipsync_engine") or "musetalk"))
+            requested_engine_raw = str(data.get("avatar_lipsync_engine") or "musetalk").strip().lower()
+            if requested_engine_raw not in {"musetalk", "liveportrait+musetalk"}:
+                requested_engine_raw = "musetalk"
+            requested_engine = requested_engine_raw
             if requested_engine == "liveportrait+musetalk" and not _composite_engine_configured():
                 return Response(
                     {"error": "liveportrait+musetalk is selected but AVATAR_LIVEPORTRAIT_CMD and/or AVATAR_MUSETALK_CMD is not configured"},

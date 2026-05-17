@@ -2337,7 +2337,9 @@ def _musetalk_debug_history_record(debug_payload: dict[str, Any], *, source: str
 
 
 def _musetalk_history_records(request: Any, resources: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not _env_enabled("AVATAR_MUSETALK_TIMEOUT_HISTORY_ENABLED", True):
+    history_enabled = _env_enabled("AVATAR_MUSETALK_TIMEOUT_HISTORY_ENABLED", True)
+    metrics_file_override = str(os.environ.get("AVATAR_ORCH_METRICS_FILE", "") or "").strip()
+    if not history_enabled and not metrics_file_override:
         return []
 
     records: list[dict[str, Any]] = []
@@ -2546,11 +2548,12 @@ def _musetalk_timeout_profile(
         gpu_total_mib=int(gpu_total_mib),
     )
     history_estimate = max(float(history.get("p95_seconds") or 0.0), float(history.get("max_seconds") or 0.0))
-    pre_safety = max(
-        float(history_estimate),
-        float(input_estimate if history_estimate > 0.0 else hardware_estimate),
-        float(min_seconds),
-    )
+    if history_estimate > 0.0:
+        # Favor observed timings when a matching workload history exists; this
+        # avoids over-inflating budgets from conservative formula estimates.
+        pre_safety = max(float(history_estimate), float(min_seconds))
+    else:
+        pre_safety = max(float(hardware_estimate), float(min_seconds))
     computed = pre_safety * float(safety_multiplier)
     chosen = max(float(min_seconds), min(float(max_seconds), float(computed)))
 
