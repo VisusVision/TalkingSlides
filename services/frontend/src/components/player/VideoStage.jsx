@@ -155,6 +155,7 @@ export default function VideoStage({
   onPlaybackTimeChange,
   onPlaybackStarted,
   onPlaybackStopped,
+  onPlaybackEnded,
   videoRef,
   asSurface = true,
   captionMissingLabel = 'No captions yet',
@@ -311,6 +312,11 @@ export default function VideoStage({
     onPlaybackStopped?.();
   }, [onPlaybackStopped]);
 
+  const handleVideoEnded = useCallback(() => {
+    onPlaybackStopped?.();
+    onPlaybackEnded?.();
+  }, [onPlaybackEnded, onPlaybackStopped]);
+
   const handleVideoSeeked = useCallback((event) => {
     setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
   }, [selectedTrack]);
@@ -378,7 +384,7 @@ export default function VideoStage({
               onLoadedMetadata={handleCaptionTrackReady}
               onPlay={handleVideoPlay}
               onPause={handleVideoPause}
-              onEnded={handleVideoPause}
+              onEnded={handleVideoEnded}
               onSeeked={handleVideoSeeked}
               onTimeUpdate={handleVideoTimeUpdate}
             >

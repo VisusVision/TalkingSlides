@@ -33,6 +33,8 @@ import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
 const PLAYLIST_COLLAPSED_KEY = 'visus-watch-playlist-collapsed';
+const AUTOPLAY_NEXT_KEY = 'visus-watch-autoplay-next';
+const AUTOPLAY_COUNTDOWN_SECONDS = 5;
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
 function normalizeCatalogList(payload) {
@@ -42,157 +44,142 @@ function normalizeCatalogList(payload) {
 
 function lessonSearchMatch(lesson, query) {
   const q = String(query || '').trim().toLowerCase();
-  if (!q) return true;
-
-  return [lesson.title, lesson.description, lesson.teacherName, lesson.categoryName]
-    .join(' ')
-    .toLowerCase()
-    .includes(q);
-}
-
-function savedNoteKey(lessonId) {
-  return `visus-notes-${lessonId || 'none'}`;
-}
-
-function draftNoteKey(lessonId) {
-  return `visus-notes-draft-${lessonId || 'none'}`;
-}
-
-function focusModeKey(lessonId) {
-  return `visus-focus-mode-${lessonId || 'none'}`;
-}
-
-function subtitleTrackCode(track) {
-  const raw = String(track?.language_code || '').trim().toLowerCase();
-  if (!raw || raw === 'original' || track?.is_original === true) return '';
-  return raw;
-}
-
-function subtitleSelectionKeyForCode(value) {
-  const code = String(value || '').trim().toLowerCase();
-  if (!code || code === 'off') return 'off';
-  if (code === 'original') return 'original';
-  if (code.startsWith('translated:')) return code;
-  return `translated:${code}`;
-}
-
-function lessonOriginalSubtitleUrl(lesson) {
-  return [lesson?.vtt_url, lesson?.subtitle_vtt_url]
-    .map((value) => String(value || '').trim())
-    .find(Boolean) || '';
-}
-
-function isReadySubtitleTrack(track) {
-  return String(track?.status || '').trim().toLowerCase() === 'ready' && Boolean(track?.vtt_url);
-}
-
-function subtitleProviderMessage(track) {
-  const providerUsed = String(track?.metadata?.provider_used || track?.provider || '').trim().toLowerCase();
-  return providerUsed === 'mock' ? ' Mock provider used; this is not a real translation.' : '';
-}
-
-function normalizeSubtitleOptions(lesson, subtitleTracks) {
-  const byKey = new Map();
-  const originalUrl = lessonOriginalSubtitleUrl(lesson);
-  if (originalUrl) {
-    byKey.set('original', { key: 'original', label: 'Original' });
+  function contextRowsFromPayload(context, currentLessonId) {
+    const rawItems = Array.isArray(context?.items) ? context.items : [];
+    return rawItems
+      .map((item, index) => {
+        const project = item?.project || item;
+        const contextLesson = normalizeLesson(project);
+        return {
+          key: `${contextLesson.id || index}-${index}`,
+          lesson: contextLesson,
+          isCurrent: Boolean(item?.is_current) || Number(contextLesson.id) === Number(currentLessonId),
+        };
+      })
+      .filter((row) => row.lesson.id);
   }
-  for (const track of subtitleTracks || []) {
-    if (!isReadySubtitleTrack(track)) continue;
-    const isOriginal = track?.is_original === true
-      || String(track?.language_code || '').trim().toLowerCase() === 'original'
-      || String(track?.type || '').trim().toLowerCase() === 'original';
-    const code = isOriginal ? 'original' : String(track?.language_code || '').trim().toLowerCase();
-    if (!code) continue;
-    const key = subtitleSelectionKeyForCode(code);
-    byKey.set(key, {
-      key,
-      label: isOriginal
-        ? 'Original'
-        : String(track?.language_label || track?.label || code.toUpperCase()).trim(),
-    });
+
+  function nextLessonFromContext(context, currentLessonId) {
+    const rows = contextRowsFromPayload(context, currentLessonId);
+    const currentIndex = rows.findIndex((row) => row.isCurrent);
+    const nextRow = currentIndex >= 0
+      ? rows.slice(currentIndex + 1).find((row) => !row.isCurrent)
+      : rows.find((row) => !row.isCurrent);
+    return nextRow?.lesson || rows.find((row) => !row.isCurrent)?.lesson || null;
   }
-  const options = Array.from(byKey.values());
-  return options.sort((a, b) => {
-    if (a.key === 'original') return -1;
-    if (b.key === 'original') return 1;
-    return a.label.localeCompare(b.label);
-  });
-}
 
-function formatCommentDate(value) {
-  if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
+  function isAutoplayNextEnabled() {
+    return window.localStorage.getItem(AUTOPLAY_NEXT_KEY) !== '0';
+  }
 
-function compactCount(value, noun) {
-  const count = Math.max(0, Number(value || 0));
-  return `${count} ${noun}${count === 1 ? '' : 's'}`;
-}
+  function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+    const [playlistCollapsed, setPlaylistCollapsed] = useState(
+      () => window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true',
+    );
+    const rows = contextRowsFromPayload(context, currentLessonId);
 
-function avatarOverlayDataForLesson(lesson) {
-  const avatarOverlay = lesson?.avatar_overlay || {};
-  const avatarStreamUrl = String(avatarOverlay?.stream_url || '').trim();
-  return {
-    enabled: Boolean(avatarOverlay?.enabled && avatarStreamUrl),
-    src: avatarStreamUrl,
-    quality: String(avatarOverlay?.quality || '').trim(),
-    enhancedAvailable: Boolean(avatarOverlay?.enhanced_available),
-    enhancedPending: Boolean(avatarOverlay?.enhanced_pending),
-    placement: avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {},
-    processing: ['queued', 'processing'].includes(String(lesson?.avatar_processing_status || '').trim().toLowerCase()),
-    message: String(lesson?.avatar_processing_message || '').trim(),
-  };
-}
+    const isPlaylistMode = context?.mode === 'playlist';
+    useEffect(() => {
+      if (isPlaylistMode) {
+        window.localStorage.setItem(PLAYLIST_COLLAPSED_KEY, playlistCollapsed ? 'true' : 'false');
+      }
+    }, [isPlaylistMode, playlistCollapsed]);
 
-function mergePlaybackIntoLesson(previousLesson, playbackData) {
-  if (!previousLesson || !playbackData) return previousLesson;
-  return {
-    ...previousLesson,
-    stream_url: playbackData.video_url || previousLesson.stream_url,
-    srt_url: playbackData.srt_url || previousLesson.srt_url,
-    vtt_url: playbackData.vtt_url || previousLesson.vtt_url,
-    subtitle_vtt_url: playbackData.subtitle_vtt_url || previousLesson.subtitle_vtt_url,
-    avatar_overlay: playbackData.avatar_overlay || previousLesson.avatar_overlay,
-    avatar_processing_status: playbackData.avatar_processing_status || previousLesson.avatar_processing_status,
-    avatar_processing_message: playbackData.avatar_processing_message || previousLesson.avatar_processing_message,
-    avatar_visible: playbackData.avatar_visible ?? previousLesson.avatar_visible,
-    avatar_available: playbackData.avatar_available ?? previousLesson.avatar_available,
-    avatar_updated_at: playbackData.avatar_updated_at || previousLesson.avatar_updated_at,
-    avatar_enhancement: playbackData.avatar_enhancement || previousLesson.avatar_enhancement,
-    final_avatar_engine_chain: playbackData.final_avatar_engine_chain || previousLesson.final_avatar_engine_chain,
-    protection_mode: playbackData.protection_mode || previousLesson.protection_mode,
-    allow_mp4_fallback: playbackData.allow_mp4_fallback ?? previousLesson.allow_mp4_fallback,
-    playback_status: playbackData.playback_status || previousLesson.playback_status,
-    protection: playbackData.protection || previousLesson.protection,
-    streaming: playbackData.streaming || previousLesson.streaming,
-    drm: playbackData.drm || previousLesson.drm,
-    watermark: playbackData.watermark || previousLesson.watermark,
-  };
-}
+    if (!rows.length) return null;
 
-function WatchStudyPanel({
-  lesson,
-  videoRef,
-  notes,
-  onNotesChange,
-  onSave,
-  savedAtLabel,
-  unsaved,
-  saveActionLabel,
-  saveHint,
-}) {
-  const avatar = avatarOverlayDataForLesson(lesson);
+    const title = isPlaylistMode ? 'More from this playlist' : 'More from this publisher';
+    const subtitle = isPlaylistMode ? context?.playlist?.title || '' : rows[0]?.lesson?.teacherName || '';
+    const nextLesson = nextLessonFromContext(context, currentLessonId);
 
-  return (
-    <SurfaceCard data-testid="study-mode-panel" className="space-y-3 p-3 xl:sticky xl:top-4">
-      <div className="space-y-2">
+    if (isPlaylistMode && playlistCollapsed) {
+      return (
+        <SurfaceCard className="p-4">
+          <button
+            type="button"
+            onClick={() => setPlaylistCollapsed(false)}
+            className="focus-ring flex w-full items-center justify-between gap-3 rounded-xl text-left"
+            aria-expanded="false"
+          >
+            <span className="min-w-0">
+              <span className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">
+                Next: {nextLesson?.title || 'End of playlist'}
+              </span>
+              {subtitle ? (
+                <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">{subtitle}</span>
+              ) : null}
+            </span>
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)]">
+              Expand
+              <ChevronDown size={14} />
+            </span>
+          </button>
+        </SurfaceCard>
+      );
+    }
+
+    return (
+      <SurfaceCard className="space-y-3 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
+            {subtitle && (
+              <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{subtitle}</p>
+            )}
+          </div>
+          {isPlaylistMode ? (
+            <button
+              type="button"
+              onClick={() => setPlaylistCollapsed(true)}
+              className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)]"
+              aria-expanded="true"
+            >
+              Hide
+              <ChevronDown size={14} className="rotate-180" />
+            </button>
+          ) : null}
+        </div>
+        <div className="rail-scroll max-h-[17.5rem] space-y-2 overflow-y-auto pr-1 lg:max-h-[22rem]">
+          {rows.map((row) => {
+            const { lesson: contextLesson, isCurrent } = row;
+            return (
+              <button
+                key={row.key}
+                type="button"
+                disabled={isCurrent}
+                onClick={() => onOpenLesson(contextLesson.id)}
+                className={[
+                  'focus-ring flex w-full items-center gap-3 rounded-xl border p-2 text-left transition',
+                  isCurrent
+                    ? 'border-[color:var(--accent-primary)] bg-[color:color-mix(in_srgb,var(--accent-primary),transparent_86%)]'
+                    : 'border-[var(--border-subtle)] bg-[var(--surface-container-high)] hover:bg-[color:var(--hover-surface-strong)]',
+                ].join(' ')}
+              >
+                {contextLesson.imageUrl ? (
+                  <img
+                    src={contextLesson.imageUrl}
+                    alt=""
+                    className="h-16 w-24 shrink-0 rounded-lg object-cover"
+                  />
+                ) : (
+                  <span className="flex h-16 w-24 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-container-highest)] text-xs font-semibold text-[var(--accent-primary)]">
+                    {String(contextLesson.title || 'L').charAt(0).toUpperCase()}
+                  </span>
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="line-clamp-2 text-sm font-semibold leading-snug text-[var(--text-primary)]">
+                    {contextLesson.title}
+                  </span>
+                  <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">
+                    {isCurrent ? 'Now playing' : `${contextLesson.categoryName || 'Lesson'} - ${formatDuration(contextLesson.durationMinutes || 8)}`}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </SurfaceCard>
+    );
+  }
         {avatar.enabled ? (
           <AvatarOverlayLayer
             lessonId={lesson?.id}
@@ -278,12 +265,9 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, fol
   );
 }
 
-function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
-  const [playlistCollapsed, setPlaylistCollapsed] = useState(
-    () => window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true',
-  );
+function contextRowsFromPayload(context, currentLessonId) {
   const rawItems = Array.isArray(context?.items) ? context.items : [];
-  const rows = rawItems
+  return rawItems
     .map((item, index) => {
       const project = item?.project || item;
       const contextLesson = normalizeLesson(project);
@@ -294,6 +278,26 @@ function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
       };
     })
     .filter((row) => row.lesson.id);
+}
+
+function nextLessonFromContext(context, currentLessonId) {
+  const rows = contextRowsFromPayload(context, currentLessonId);
+  const currentIndex = rows.findIndex((row) => row.isCurrent);
+  const nextRow = currentIndex >= 0
+    ? rows.slice(currentIndex + 1).find((row) => !row.isCurrent)
+    : rows.find((row) => !row.isCurrent);
+  return nextRow?.lesson || rows.find((row) => !row.isCurrent)?.lesson || null;
+}
+
+function isAutoplayNextEnabled() {
+  return window.localStorage.getItem(AUTOPLAY_NEXT_KEY) !== '0';
+}
+
+function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+  const [playlistCollapsed, setPlaylistCollapsed] = useState(
+    () => window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true',
+  );
+  const rows = contextRowsFromPayload(context, currentLessonId);
 
   const isPlaylistMode = context?.mode === 'playlist';
   useEffect(() => {
@@ -306,11 +310,7 @@ function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
 
   const title = isPlaylistMode ? 'More from this playlist' : 'More from this publisher';
   const subtitle = isPlaylistMode ? context?.playlist?.title || '' : rows[0]?.lesson?.teacherName || '';
-  const currentIndex = rows.findIndex((row) => row.isCurrent);
-  const nextRow = currentIndex >= 0
-    ? rows.slice(currentIndex + 1).find((row) => !row.isCurrent)
-    : rows.find((row) => !row.isCurrent);
-  const nextLesson = nextRow?.lesson || rows.find((row) => !row.isCurrent)?.lesson || null;
+  const nextLesson = nextLessonFromContext(context, currentLessonId);
 
   if (isPlaylistMode && playlistCollapsed) {
     return (
@@ -443,6 +443,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [followBusy, setFollowBusy] = useState(false);
   const [followError, setFollowError] = useState('');
   const [playlistContext, setPlaylistContext] = useState(null);
+  const [autoplayPrompt, setAutoplayPrompt] = useState(null);
   const progressSavedAtRef = useRef(0);
   const resumeAppliedKeyRef = useRef('');
   const commentsSectionRef = useRef(null);
@@ -532,6 +533,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         setPendingSubtitleRequest(null);
         setPlaybackTime(0);
         setPlaybackActive(false);
+        setAutoplayPrompt(null);
         progressSavedAtRef.current = 0;
         setLikeError('');
         setFollowError('');
@@ -680,6 +682,18 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     return source.filter((item) => item.id !== activeLessonId).slice(0, 12);
   }, [visibleLessons, catalogLessons, activeLessonId]);
 
+  const autoplayNextLesson = useMemo(
+    () => nextLessonFromContext(playlistContext, activeLessonId) || relatedLessons[0] || null,
+    [activeLessonId, playlistContext, relatedLessons],
+  );
+
+  const openLessonById = useCallback((id) => {
+    const lessonId = Number(id || 0);
+    if (!lessonId) return;
+    setAutoplayPrompt(null);
+    setSearchParams({ lesson: String(lessonId) });
+  }, [setSearchParams]);
+
   const chapters = useMemo(() => buildChapters(transcriptPayload, lesson), [transcriptPayload, lesson]);
   const transcriptLines = useMemo(
     () => buildTranscriptLines(transcriptPayload, lesson),
@@ -771,10 +785,21 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   );
   const handlePlaybackStarted = useCallback(() => {
     setPlaybackActive(true);
+    setAutoplayPrompt(null);
   }, []);
   const handlePlaybackStopped = useCallback(() => {
     setPlaybackActive(false);
   }, []);
+  const handlePlaybackEnded = useCallback(() => {
+    setPlaybackActive(false);
+    if (!autoplayNextLesson?.id || !isAutoplayNextEnabled()) {
+      return;
+    }
+    setAutoplayPrompt({
+      lesson: autoplayNextLesson,
+      secondsRemaining: AUTOPLAY_COUNTDOWN_SECONDS,
+    });
+  }, [autoplayNextLesson]);
   const handlePlaybackDenied = useCallback(() => {
     setPlaybackActive(false);
   }, []);
@@ -786,6 +811,33 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     visibilityLock: Boolean(lesson?.protection?.visibility_lock),
     onDenied: handlePlaybackDenied,
   });
+
+  useEffect(() => {
+    if (!autoplayPrompt) return undefined;
+
+    const nextLessonId = Number(autoplayPrompt.lesson?.id || 0);
+    if (!nextLessonId) {
+      setAutoplayPrompt(null);
+      return undefined;
+    }
+
+    if (autoplayPrompt.secondsRemaining <= 0) {
+      openLessonById(nextLessonId);
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(() => {
+      setAutoplayPrompt((current) => {
+        if (!current || Number(current.lesson?.id || 0) !== nextLessonId) return current;
+        return {
+          ...current,
+          secondsRemaining: Math.max(0, Number(current.secondsRemaining || 0) - 1),
+        };
+      });
+    }, 1000);
+
+    return () => window.clearTimeout(timerId);
+  }, [autoplayPrompt, openLessonById]);
 
   useEffect(() => {
     const enhancedPending = Boolean(lesson?.avatar_overlay?.enhanced_pending);
@@ -1090,6 +1142,17 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
   };
 
+  const handlePlayAutoplayNow = useCallback(() => {
+    const nextLessonId = Number(autoplayPrompt?.lesson?.id || 0);
+    if (nextLessonId) {
+      openLessonById(nextLessonId);
+    }
+  }, [autoplayPrompt, openLessonById]);
+
+  const handleCancelAutoplay = useCallback(() => {
+    setAutoplayPrompt(null);
+  }, []);
+
   const renderPlayerStage = () => {
     if (playbackHeartbeat.error) {
       return (
@@ -1112,6 +1175,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           onPlaybackTimeChange={handlePlaybackTimeChange}
           onPlaybackStarted={handlePlaybackStarted}
           onPlaybackStopped={handlePlaybackStopped}
+          onPlaybackEnded={handlePlaybackEnded}
           videoRef={videoRef}
           showSubtitleControls={false}
           showLessonDetails={false}
@@ -1139,6 +1203,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             onPlaybackTimeChange={handlePlaybackTimeChange}
             onPlaybackStarted={handlePlaybackStarted}
             onPlaybackStopped={handlePlaybackStopped}
+            onPlaybackEnded={handlePlaybackEnded}
             subtitleTracks={subtitleTracks}
             preferredSubtitleLanguage={preferredSubtitleLanguage}
             selectedSubtitleKey={selectedSubtitleKey}
@@ -1203,7 +1268,33 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
               </SurfaceCard>
             ) : (
               <>
-                {renderPlayerStage()}
+                <div className="relative">
+                  {renderPlayerStage()}
+                  {autoplayPrompt?.lesson ? (
+                    <div
+                      data-testid="watch-autoplay-next"
+                      className="absolute inset-0 z-[60] flex items-end justify-center rounded-[1.5rem] bg-[linear-gradient(180deg,rgba(0,0,0,0.18),rgba(0,0,0,0.72))] p-4 sm:items-center"
+                    >
+                      <div className="w-full max-w-lg rounded-2xl border border-white/15 bg-[color:rgba(8,12,20,0.88)] p-4 text-white shadow-2xl backdrop-blur">
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/65">Up next</p>
+                        <h2 className="mt-2 line-clamp-2 text-lg font-semibold leading-tight">
+                          Next: {autoplayPrompt.lesson.title}
+                        </h2>
+                        <p className="mt-1 text-sm text-white/75">
+                          Playing in {Math.max(0, Number(autoplayPrompt.secondsRemaining || 0))}...
+                        </p>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <Button size="sm" onClick={handlePlayAutoplayNow}>
+                            Play now
+                          </Button>
+                          <Button size="sm" variant="secondary" onClick={handleCancelAutoplay}>
+                            Stay here
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
 
                 <SurfaceCard className="space-y-3 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1441,7 +1532,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             {!focusMode && (
               <RelatedLessonsRow
                 lessons={relatedLessons}
-                onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
+                onOpenLesson={openLessonById}
               />
             )}
           </div>
@@ -1464,7 +1555,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                 <WatchContextPanel
                   context={playlistContext}
                   currentLessonId={activeLessonId}
-                  onOpenLesson={(id) => setSearchParams({ lesson: String(id) })}
+                  onOpenLesson={openLessonById}
                 />
                 <NotesPanel
                   notes={notes}
