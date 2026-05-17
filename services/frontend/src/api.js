@@ -816,6 +816,7 @@ export async function fetchCatalogFeed(filters = {}) {
 
 export async function fetchAdminStats(filters = {}) {
   const params = new URLSearchParams();
+  if (filters.range) params.set("range", String(filters.range));
   if (filters.from) params.set("from", String(filters.from));
   if (filters.to) params.set("to", String(filters.to));
   if (filters.category) params.set("category", String(filters.category));
@@ -831,6 +832,27 @@ export async function fetchAdminStats(filters = {}) {
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw new Error(data.error || "Failed to fetch admin statistics");
+  }
+  return res.json();
+}
+
+export async function fetchMyAnalytics(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.range) params.set("range", String(filters.range));
+  if (filters.from) params.set("from", String(filters.from));
+  if (filters.to) params.set("to", String(filters.to));
+  if (filters.category) params.set("category", String(filters.category));
+  if (filters.sort) params.set("sort", String(filters.sort));
+
+  const query = params.toString();
+  const url = query
+    ? `${API_BASE_URL}/me/analytics/?${query}`
+    : `${API_BASE_URL}/me/analytics/`;
+
+  const res = await fetch(url, { headers: authHeaders() });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || data.detail || "Failed to fetch creator analytics");
   }
   return res.json();
 }

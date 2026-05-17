@@ -327,6 +327,8 @@ function WatchStudyPanel({
   saveActionLabel,
   saveHint,
 }) {
+  const avatar = avatarOverlayDataForLesson(lesson);
+
   return (
     <SurfaceCard data-testid="study-mode-panel" className="space-y-3 p-3 xl:sticky xl:top-4">
       <div className="space-y-2">

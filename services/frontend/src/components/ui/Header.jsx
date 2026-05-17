@@ -1,6 +1,8 @@
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Search, Bell } from 'lucide-react';
 import ProfileMenu from './ProfileMenu';
+
+const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics']);
 
 export default function Header({
   searchQuery,
@@ -10,6 +12,9 @@ export default function Header({
   onLoginRequest,
   onLogout,
 }) {
+  const location = useLocation();
+  const showSearch = !SEARCH_HIDDEN_PATHS.has(location.pathname);
+
   return (
     <>
       <header className="fixed top-0 z-50 w-full overflow-visible">
@@ -25,17 +30,19 @@ export default function Header({
               </span>
             </Link>
 
-            <label className="focus-ring hidden h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] px-3 md:flex md:max-w-2xl">
-              <Search size={16} className="text-[var(--outline)]" />
-              <input
-                value={searchQuery}
-                onChange={(event) => onSearchQueryChange(event.target.value)}
-                type="search"
-                placeholder="Search lessons, teachers, and topics"
-                className="h-full w-full border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--outline)] focus:outline-none"
-                aria-label="Global search"
-              />
-            </label>
+            {showSearch && (
+              <label className="focus-ring hidden h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] px-3 md:flex md:max-w-2xl">
+                <Search size={16} className="text-[var(--outline)]" />
+                <input
+                  value={searchQuery}
+                  onChange={(event) => onSearchQueryChange(event.target.value)}
+                  type="search"
+                  placeholder="Search lessons, teachers, and topics"
+                  className="h-full w-full border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--outline)] focus:outline-none"
+                  aria-label="Global search"
+                />
+              </label>
+            )}
           </div>
 
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
