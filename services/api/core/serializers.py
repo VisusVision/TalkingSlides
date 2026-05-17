@@ -4,8 +4,11 @@ DRF serializers for AI_ACADEMY core models.
 
 from collections.abc import Mapping
 from copy import deepcopy
+import ipaddress
 import math
 from pathlib import Path
+import re
+from urllib.parse import urlparse
 
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -19,14 +22,6 @@ from core.avatar_placement import (
     placement_from_overlay_preference,
     project_avatar_placement,
 )
-
-
-ALLOWED_SOCIAL_LINK_KEYS = frozenset(
-    {"website", "youtube", "x", "twitter", "instagram", "linkedin", "github", "facebook"}
-)
-SOCIAL_LINK_MAX_KEYS = 8
-SOCIAL_LINK_VALUE_MAX_LENGTH = 300
-SOCIAL_LINK_URL_VALIDATOR = URLValidator(schemes=["http", "https"])
 from core.avatar_runtime_settings import project_avatar_runtime_settings
 from core.models import (
     AvatarRenderJob,
@@ -48,6 +43,15 @@ from core.models import (
     VoiceProfile,
     default_project_tts_settings,
 )
+
+
+ALLOWED_SOCIAL_LINK_KEYS = frozenset(
+    {"website", "youtube", "x", "twitter", "instagram", "linkedin", "github", "facebook"}
+)
+SOCIAL_LINK_MAX_KEYS = 8
+SOCIAL_LINK_VALUE_MAX_LENGTH = 300
+SOCIAL_LINK_URL_VALIDATOR = URLValidator(schemes=["http", "https"])
+SOCIAL_HANDLE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 
 
 def _normalize_rel_storage_path(raw_path: str) -> str:
@@ -109,6 +113,146 @@ def _profile_display_name(user: User, profile: UserProfile | None = None) -> str
     return custom or user.get_full_name() or user.username
 
 
+def _profile_display_name_for_public_lesson(user: User, profile: UserProfile | None = None) -> str:
+    if bool(getattr(profile, "is_public_profile", False)):
+        return _profile_display_name(user, profile)
+    return user.get_full_name() or user.username
+
+
+def _profile_asset_version(profile: UserProfile | None) -> str | None:
+    updated_at = getattr(profile, "updated_at", None)
+    return str(int(updated_at.timestamp())) if updated_at else None
+
+
+def _public_profile_logo_url(user: User | None, context: dict | None = None) -> str:
+    if user is None:
+        return ""
+    profile = getattr(user, "profile", None)
+    if not profile or not getattr(profile, "is_public_profile", False):
+        return ""
+    if not getattr(profile, "logo_image_processed", ""):
+        return ""
+    return _profile_asset_url(getattr(user, "id", None), "logo", context, _profile_asset_version(profile))
+
+
+def _strip_social_handle(value: str) -> str:
+    handle = value.strip().strip("/")
+    if handle.startswith("@"):
+        handle = handle[1:]
+    return handle.strip().strip("/")
+
+
+def _ensure_https_url(value: str) -> str:
+    raw = value.strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if parsed.scheme:
+        return raw
+    return f"https://{raw.lstrip('/')}"
+
+
+def _hostname_without_www(url: str) -> str:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").strip().lower()
+    return hostname[4:] if hostname.startswith("www.") else hostname
+
+
+def _reject_unsafe_url(url: str, *, field: str) -> None:
+    parsed = urlparse(url)
+    scheme = str(parsed.scheme or "").lower()
+    if scheme not in {"http", "https"}:
+        raise serializers.ValidationError(f"{field} must use http or https.")
+    hostname = str(parsed.hostname or "").strip().lower()
+    if not hostname:
+        raise serializers.ValidationError(f"{field} must include a valid host.")
+    if hostname in {"localhost"} or hostname.endswith(".localhost"):
+        raise serializers.ValidationError(f"{field} cannot point to localhost.")
+    try:
+        ip_address = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip_address = None
+    if ip_address and (
+        ip_address.is_private
+        or ip_address.is_loopback
+        or ip_address.is_link_local
+        or ip_address.is_unspecified
+        or ip_address.is_reserved
+    ):
+        raise serializers.ValidationError(f"{field} cannot point to a private network address.")
+
+
+def _validate_final_url(url: str, *, field: str) -> str:
+    if len(url) > SOCIAL_LINK_VALUE_MAX_LENGTH:
+        raise serializers.ValidationError(f"{field} is too long.")
+    _reject_unsafe_url(url, field=field)
+    try:
+        SOCIAL_LINK_URL_VALIDATOR(url)
+    except DjangoValidationError:
+        raise serializers.ValidationError(f"{field} must be a valid http(s) URL.")
+    return url
+
+
+def normalize_profile_website_url(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return _validate_final_url(_ensure_https_url(raw), field="Website")
+
+
+def _normalize_platform_url(key: str, value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) > SOCIAL_LINK_VALUE_MAX_LENGTH:
+        raise serializers.ValidationError(f"Social link '{key}' is too long.")
+    if raw.lower().startswith(("javascript:", "data:", "file:")):
+        raise serializers.ValidationError(f"Social link '{key}' must use http or https.")
+
+    canonical_key = "x" if key == "twitter" else key
+    if canonical_key == "website":
+        return normalize_profile_website_url(raw)
+
+    platform_hosts = {
+        "instagram": ("instagram.com", "instagram.com"),
+        "x": ("x.com", "x.com"),
+        "github": ("github.com", "github.com"),
+        "facebook": ("facebook.com", "facebook.com"),
+        "youtube": ("youtube.com", "youtube.com"),
+        "linkedin": ("linkedin.com", "linkedin.com"),
+    }
+    default_host, canonical_host = platform_hosts[canonical_key]
+    candidate_url = _ensure_https_url(raw)
+    parsed = urlparse(candidate_url)
+    hostname = _hostname_without_www(candidate_url)
+    path = str(parsed.path or "").strip("/")
+
+    if canonical_key == "x" and hostname == "twitter.com":
+        hostname = "x.com"
+
+    known_host = hostname == default_host or hostname == canonical_host
+    if known_host:
+        _validate_final_url(candidate_url, field=f"Social link '{canonical_key}'")
+        if canonical_key == "x":
+            return f"https://x.com/{path}" if path else "https://x.com"
+        if canonical_key == "youtube":
+            return f"https://youtube.com/{path}" if path else "https://youtube.com"
+        if canonical_key == "linkedin":
+            if path.startswith("in/") or path.startswith("company/"):
+                return f"https://linkedin.com/{path}"
+            raise serializers.ValidationError("LinkedIn must use linkedin.com/in/name or linkedin.com/company/name.")
+        return f"https://{canonical_host}/{path}" if path else f"https://{canonical_host}"
+
+    handle = _strip_social_handle(raw)
+    if "/" in handle or not SOCIAL_HANDLE_PATTERN.fullmatch(handle):
+        raise serializers.ValidationError(f"Social link '{canonical_key}' must be a valid handle or {default_host} URL.")
+    if canonical_key == "youtube":
+        return f"https://youtube.com/@{handle}"
+    if canonical_key == "linkedin":
+        return f"https://linkedin.com/in/{handle}"
+    return f"https://{canonical_host}/{handle}"
+
+
 def validate_social_links_payload(value) -> dict:
     if value in (None, ""):
         return {}
@@ -116,27 +260,34 @@ def validate_social_links_payload(value) -> dict:
         raise serializers.ValidationError("Social links must be an object.")
 
     cleaned: dict[str, str] = {}
+    errors: dict[str, str] = {}
     for raw_key, raw_value in value.items():
         key = str(raw_key or "").strip().lower()
         if key not in ALLOWED_SOCIAL_LINK_KEYS:
-            raise serializers.ValidationError(f"Unsupported social link key: {raw_key}")
+            errors[str(raw_key)] = "Unsupported social link key."
+            continue
+        canonical_key = "x" if key == "twitter" else key
         if raw_value in (None, ""):
             continue
         if not isinstance(raw_value, str):
-            raise serializers.ValidationError(f"Social link '{key}' must be a URL string.")
-        url = raw_value.strip()
-        if not url:
+            errors[canonical_key] = "Must be a handle or URL string."
             continue
-        if len(url) > SOCIAL_LINK_VALUE_MAX_LENGTH:
-            raise serializers.ValidationError(f"Social link '{key}' is too long.")
         try:
-            SOCIAL_LINK_URL_VALIDATOR(url)
-        except DjangoValidationError:
-            raise serializers.ValidationError(f"Social link '{key}' must be a valid http(s) URL.")
-        cleaned[key] = url
+            normalized_url = _normalize_platform_url(key, raw_value)
+        except serializers.ValidationError as exc:
+            details = exc.detail
+            if isinstance(details, list) and details:
+                errors[canonical_key] = str(details[0])
+            else:
+                errors[canonical_key] = str(details)
+            continue
+        if normalized_url:
+            cleaned[canonical_key] = normalized_url
 
     if len(cleaned) > SOCIAL_LINK_MAX_KEYS:
-        raise serializers.ValidationError(f"Social links can contain at most {SOCIAL_LINK_MAX_KEYS} entries.")
+        errors["social_links"] = f"Social links can contain at most {SOCIAL_LINK_MAX_KEYS} entries."
+    if errors:
+        raise serializers.ValidationError(errors)
     return cleaned
 
 
@@ -679,10 +830,13 @@ class CurrentUserProfileSerializer(serializers.Serializer):
     last_name = serializers.CharField(max_length=150, allow_blank=True, required=False, trim_whitespace=True)
     bio = serializers.CharField(allow_blank=True, required=False, trim_whitespace=True)
     display_name = serializers.CharField(max_length=200, allow_blank=True, required=False, trim_whitespace=True)
-    website_url = serializers.URLField(allow_blank=True, required=False)
+    website_url = serializers.CharField(max_length=SOCIAL_LINK_VALUE_MAX_LENGTH, allow_blank=True, required=False, trim_whitespace=True)
     contact_email = serializers.EmailField(allow_blank=True, required=False)
     social_links = serializers.JSONField(required=False)
     is_public_profile = serializers.BooleanField(required=False)
+
+    def validate_website_url(self, value):
+        return normalize_profile_website_url(value)
 
     def validate_social_links(self, value):
         return validate_social_links_payload(value)
@@ -971,6 +1125,8 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
     teacher_name = serializers.SerializerMethodField()
     teacher_id = serializers.SerializerMethodField()
     teacher_username = serializers.SerializerMethodField()
+    publisher_logo_url = serializers.SerializerMethodField()
+    publisher_avatar_url = serializers.SerializerMethodField()
     like_count = serializers.SerializerMethodField()
     comment_count = serializers.SerializerMethodField()
     follower_count = serializers.SerializerMethodField()
@@ -985,6 +1141,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
             "id", "title", "description",
             "category_name", "category_slug",
             "teacher_id", "teacher_name", "teacher_username",
+            "publisher_logo_url", "publisher_avatar_url",
             "like_count", "comment_count", "follower_count", "is_following_publisher",
             "has_video",
             "cover_url", "thumbnail_url",
@@ -994,7 +1151,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
 
     def get_teacher_name(self, obj):
         if obj.user:
-            return _profile_display_name(obj.user, getattr(obj.user, "profile", None))
+            return _profile_display_name_for_public_lesson(obj.user, getattr(obj.user, "profile", None))
         return ""
 
     def get_teacher_id(self, obj):
@@ -1002,6 +1159,12 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
 
     def get_teacher_username(self, obj):
         return obj.user.username if obj.user else ""
+
+    def get_publisher_logo_url(self, obj):
+        return _public_profile_logo_url(obj.user, self.context)
+
+    def get_publisher_avatar_url(self, obj):
+        return _public_profile_logo_url(obj.user, self.context)
 
     def get_like_count(self, obj):
         annotated = getattr(obj, "likes_count", None)

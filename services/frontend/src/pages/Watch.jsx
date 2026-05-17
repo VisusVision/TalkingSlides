@@ -897,7 +897,15 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const commentCount = Math.max(0, Number(lesson?.comment_count || 0), comments.length);
   const publisherId = Number(lesson?.publisher_id || lesson?.teacher_id || lesson?.teacherId || 0) || null;
   const publisherName = lesson?.publisher_display_name || lesson?.teacher_name || lesson?.teacherName || 'VISUS Instructor';
-  const publisherAvatarUrl = lesson?.publisher_avatar_url || lesson?.teacher_avatar_url || lesson?.avatar_url || '';
+  const publisherAvatarUrl = (
+    lesson?.publisher_logo_url
+    || lesson?.publisher?.logo_url
+    || lesson?.publisher_avatar_url
+    || lesson?.publisher?.avatar_url
+    || lesson?.teacher_avatar_url
+    || lesson?.avatar_url
+    || ''
+  );
   const publisherFollowerCount = Math.max(0, Number(lesson?.publisher_follower_count ?? lesson?.follower_count ?? 0));
   const isFollowingPublisher = Boolean(lesson?.publisher_is_following ?? lesson?.is_following_publisher);
   const isOwnPublisher = Boolean(user?.id && publisherId && Number(user.id) === Number(publisherId));

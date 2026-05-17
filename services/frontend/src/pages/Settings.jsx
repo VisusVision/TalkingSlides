@@ -12,8 +12,10 @@ import {
   Trash2,
   Upload,
   UserCircle2,
+  X,
 } from 'lucide-react';
 import Button from '../components/ui/Button';
+import SocialIcon from '../components/ui/SocialIcon';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { useTheme } from '../components/ui/ThemeProvider';
 import {
@@ -32,6 +34,13 @@ import {
   uploadVoiceSample,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
+import {
+  SOCIAL_LINK_FIELDS,
+  normalizedPublicProfilePayload,
+  profileFieldErrorsFromApi,
+  socialLinkValue,
+  validatePublicProfileDraft,
+} from '../utils/profileSocial';
 
 const REDUCED_MOTION_KEY = 'visus-reduced-motion';
 const NOTIFICATION_PREFS_KEY = 'visus-notification-preferences';
@@ -42,17 +51,6 @@ const DEFAULT_NOTIFICATION_PREFERENCES = {
   renderUpdates: true,
   followedPublisherLessons: true,
 };
-
-const SOCIAL_LINK_FIELDS = [
-  { key: 'website', label: 'Website' },
-  { key: 'youtube', label: 'YouTube' },
-  { key: 'x', label: 'X' },
-  { key: 'twitter', label: 'Twitter' },
-  { key: 'instagram', label: 'Instagram' },
-  { key: 'linkedin', label: 'LinkedIn' },
-  { key: 'github', label: 'GitHub' },
-  { key: 'facebook', label: 'Facebook' },
-];
 
 const THEME_OPTIONS = [
   {
@@ -113,7 +111,7 @@ function profileDraftFromUser(user) {
     contact_email: String(profile.contact_email || ''),
     social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
       ...acc,
-      [field.key]: String(profile.social_links?.[field.key] || ''),
+      [field.key]: socialLinkValue(profile.social_links, field.key),
     }), {}),
     is_public_profile: Boolean(profile.is_public_profile),
     banner_url: String(profile.banner_url || ''),
@@ -131,7 +129,7 @@ function profileDraftFromPayload(payload) {
     contact_email: String(payload?.contact_email || ''),
     social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
       ...acc,
-      [field.key]: String(payload?.social_links?.[field.key] || ''),
+      [field.key]: socialLinkValue(payload?.social_links, field.key),
     }), {}),
     is_public_profile: Boolean(payload?.is_public_profile),
     banner_url: String(payload?.banner_url || ''),
@@ -225,6 +223,9 @@ export default function Settings({ user, onUserRefresh }) {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [profileEditDraft, setProfileEditDraft] = useState(() => profileDraftFromUser(user));
+  const [profileFieldErrors, setProfileFieldErrors] = useState({});
   const [bannerFile, setBannerFile] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
   const [bannerPreviewUrl, setBannerPreviewUrl] = useState('');
@@ -255,9 +256,12 @@ export default function Settings({ user, onUserRefresh }) {
   }, [notificationPreferences]);
 
   useEffect(() => {
-    setProfileDraft(profileDraftFromUser(user));
+    const userDraft = profileDraftFromUser(user);
+    setProfileDraft(userDraft);
+    setProfileEditDraft(userDraft);
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
     setBannerFile(null);
     setLogoFile(null);
 
@@ -265,7 +269,11 @@ export default function Settings({ user, onUserRefresh }) {
     let active = true;
     fetchMyProfile()
       .then((payload) => {
-        if (active) setProfileDraft(profileDraftFromPayload(payload));
+        if (active) {
+          const nextDraft = profileDraftFromPayload(payload);
+          setProfileDraft(nextDraft);
+          setProfileEditDraft(nextDraft);
+        }
       })
       .catch(() => {
         if (active) setProfileError('Unable to refresh public profile details.');
@@ -331,6 +339,16 @@ export default function Settings({ user, onUserRefresh }) {
     () => displayNameFromDraft(profileDraft, user),
     [profileDraft, user],
   );
+  const profileEditorDisplayName = useMemo(
+    () => displayNameFromDraft(profileEditDraft, user),
+    [profileEditDraft, user],
+  );
+  const profileValidationErrors = useMemo(
+    () => validatePublicProfileDraft(profileEditDraft),
+    [profileEditDraft],
+  );
+  const profileHasValidationErrors = Object.keys(profileValidationErrors).length > 0;
+  const profileFieldError = (field) => profileValidationErrors[field] || profileFieldErrors[field] || '';
 
   const loadAvatarProfile = useCallback(async () => {
     if (!teacherMode || !user?.id) return;
@@ -438,13 +456,14 @@ export default function Settings({ user, onUserRefresh }) {
   }, [onUserRefresh]);
 
   const updateProfileDraftField = (field, value) => {
-    setProfileDraft((previous) => ({ ...previous, [field]: value }));
+    setProfileEditDraft((previous) => ({ ...previous, [field]: value }));
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
   };
 
   const updateSocialLinkField = (field, value) => {
-    setProfileDraft((previous) => ({
+    setProfileEditDraft((previous) => ({
       ...previous,
       social_links: {
         ...(previous.social_links || {}),
@@ -453,6 +472,33 @@ export default function Settings({ user, onUserRefresh }) {
     }));
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
+  };
+
+  const openPublicProfileEditor = () => {
+    setProfileEditDraft(profileDraft);
+    setBannerFile(null);
+    setLogoFile(null);
+    setProfileMessage('');
+    setProfileError('');
+    setProfileFieldErrors({});
+    setProfileEditorOpen(true);
+  };
+
+  const closePublicProfileEditor = () => {
+    if (profileSaving) return;
+    setProfileEditorOpen(false);
+    setProfileEditDraft(profileDraft);
+    setBannerFile(null);
+    setLogoFile(null);
+    setProfileError('');
+    setProfileFieldErrors({});
+  };
+
+  const handlePublicProfileBackdropMouseDown = (event) => {
+    if (event.target === event.currentTarget) {
+      closePublicProfileEditor();
+    }
   };
 
   const updateNotificationPreference = (field, checked) => {
@@ -462,21 +508,34 @@ export default function Settings({ user, onUserRefresh }) {
   const handleSavePublicProfile = async (event) => {
     event.preventDefault();
     if (!user?.id) return;
+    if (profileHasValidationErrors) {
+      setProfileFieldErrors(profileValidationErrors);
+      setProfileError('Fix the highlighted profile fields before saving.');
+      return;
+    }
 
     setProfileSaving(true);
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
     try {
-      let payload = await updateMyProfile(profileDraft);
+      let payload = await updateMyProfile(normalizedPublicProfilePayload(profileEditDraft));
       if (bannerFile || logoFile) {
         payload = await uploadProfileAssets({ bannerFile, logoFile });
       }
-      setProfileDraft(profileDraftFromPayload(payload));
+      const nextDraft = profileDraftFromPayload(payload);
+      setProfileDraft(nextDraft);
+      setProfileEditDraft(nextDraft);
       setBannerFile(null);
       setLogoFile(null);
       await refreshSessionUser();
       setProfileMessage('Public profile saved.');
+      setProfileEditorOpen(false);
     } catch (error) {
+      const fieldErrors = profileFieldErrorsFromApi(error.details);
+      if (Object.keys(fieldErrors).length) {
+        setProfileFieldErrors(fieldErrors);
+      }
       setProfileError(error.message || 'Unable to save public profile.');
     } finally {
       setProfileSaving(false);
@@ -615,152 +674,42 @@ export default function Settings({ user, onUserRefresh }) {
           icon={UserCircle2}
           className="md:col-span-2 2xl:col-span-1"
         >
-          <form onSubmit={handleSavePublicProfile} className="space-y-4">
-            <fieldset disabled={!user || profileSaving} className="space-y-3 disabled:opacity-60">
-              <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={profileDraft.is_public_profile}
-                  onChange={(event) => updateProfileDraftField('is_public_profile', event.target.checked)}
-                  className="mt-1"
-                />
-                <span>
-                  <span className="block font-semibold text-[var(--text-primary)]">Make profile public</span>
-                  <span className="mt-1 block text-xs">When disabled, only you and staff can view your channel profile page.</span>
-                </span>
-              </label>
-
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Display name
-                <input
-                  type="text"
-                  value={profileDraft.display_name}
-                  onChange={(event) => updateProfileDraftField('display_name', event.target.value)}
-                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                />
-              </label>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  First name
-                  <input
-                    type="text"
-                    value={profileDraft.first_name}
-                    onChange={(event) => updateProfileDraftField('first_name', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Last name
-                  <input
-                    type="text"
-                    value={profileDraft.last_name}
-                    onChange={(event) => updateProfileDraftField('last_name', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-              </div>
-
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Bio
-                <textarea
-                  value={profileDraft.bio}
-                  onChange={(event) => updateProfileDraftField('bio', event.target.value)}
-                  rows={5}
-                  className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
-                />
-              </label>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Website URL
-                  <input
-                    type="url"
-                    value={profileDraft.website_url}
-                    onChange={(event) => updateProfileDraftField('website_url', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Contact email
-                  <input
-                    type="email"
-                    value={profileDraft.contact_email}
-                    onChange={(event) => updateProfileDraftField('contact_email', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Banner image
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => setBannerFile(event.target.files?.[0] || null)}
-                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Logo image
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => setLogoFile(event.target.files?.[0] || null)}
-                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
-                <div
-                  className="min-h-28 rounded-xl bg-[var(--surface-container-high)] bg-cover bg-center"
-                  style={(bannerPreviewUrl || profileDraft.banner_url) ? {
-                    backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0.45), rgba(0,0,0,0.18)), url(${bannerPreviewUrl || profileDraft.banner_url})`,
-                  } : undefined}
-                />
-                <div className="flex items-center justify-center rounded-xl bg-[var(--surface-container-high)] p-3">
-                  {logoPreviewUrl || profileDraft.logo_url ? (
-                    <img
-                      src={logoPreviewUrl || profileDraft.logo_url}
-                      alt=""
-                      className="h-20 w-20 rounded-full object-cover"
-                    />
-                  ) : (
-                    <UserCircle2 size={48} className="text-[var(--text-secondary)]" />
-                  )}
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3">
+              <div
+                className="min-h-24 rounded-xl bg-[var(--surface-container-highest)] bg-cover bg-center"
+                style={profileDraft.banner_url ? {
+                  backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0.42), rgba(0,0,0,0.12)), url(${profileDraft.banner_url})`,
+                } : undefined}
+              />
+              <div className="-mt-8 flex flex-col gap-3 px-2 sm:flex-row sm:items-end sm:justify-between">
+                <div className="flex min-w-0 items-end gap-3">
+                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-4 border-[var(--surface-container-high)] bg-[var(--surface-container-highest)]">
+                    {profileDraft.logo_url ? (
+                      <img src={profileDraft.logo_url} alt="" className="h-full w-full rounded-full object-cover" />
+                    ) : (
+                      <UserCircle2 size={34} className="text-[var(--text-secondary)]" />
+                    )}
+                  </div>
+                  <div className="min-w-0 pb-1">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                      profileDraft.is_public_profile
+                        ? 'bg-[var(--status-success-bg)] text-[var(--status-success-fg)]'
+                        : 'bg-[var(--surface-container-highest)] text-[var(--text-secondary)]'
+                    }`}>
+                      {profileDraft.is_public_profile ? 'Public' : 'Private'}
+                    </span>
+                    <p className="mt-2 truncate text-sm font-semibold text-[var(--text-primary)]">{publicDisplayName}</p>
+                    <p className="text-xs text-[var(--text-secondary)]">
+                      {profileDraft.website_url || 'No website set'}
+                    </p>
+                  </div>
                 </div>
+                <Button size="sm" variant="secondary" onClick={openPublicProfileEditor} disabled={!user}>
+                  <UserCircle2 size={15} />
+                  <span>Edit</span>
+                </Button>
               </div>
-
-              <div className="space-y-2">
-                <p className="text-sm font-semibold text-[var(--text-primary)]">Social links</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {SOCIAL_LINK_FIELDS.filter((field) => field.key !== 'website').map((field) => (
-                    <label key={field.key} className="block text-sm text-[var(--text-secondary)]">
-                      {field.label}
-                      <input
-                        type="url"
-                        value={profileDraft.social_links?.[field.key] || ''}
-                        onChange={(event) => updateSocialLinkField(field.key, event.target.value)}
-                        className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </fieldset>
-
-            <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-              <p>
-                Preview name: <span className="font-semibold text-[var(--text-primary)]">{publicDisplayName}</span>
-              </p>
-              <p className="mt-1 text-xs">
-                Public contact and social fields are only returned by the public profile API when your profile is public.
-              </p>
             </div>
 
             {!user && (
@@ -769,15 +718,10 @@ export default function Settings({ user, onUserRefresh }) {
             {profileMessage && (
               <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{profileMessage}</p>
             )}
-            {profileError && (
+            {profileError && !profileEditorOpen && (
               <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{profileError}</p>
             )}
-
-            <Button type="submit" disabled={!user || profileSaving}>
-              <Save size={15} />
-              <span>{profileSaving ? 'Saving...' : 'Save Profile'}</span>
-            </Button>
-          </form>
+          </div>
         </SettingsSection>
 
         <SettingsSection
@@ -1051,6 +995,228 @@ export default function Settings({ user, onUserRefresh }) {
           </SettingsSection>
         )}
       </section>
+
+      {profileEditorOpen ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-[color:var(--modal-backdrop)] p-3 sm:p-4"
+          onMouseDown={handlePublicProfileBackdropMouseDown}
+        >
+          <form
+            onSubmit={handleSavePublicProfile}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="public-profile-editor-title"
+            className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-[var(--border-subtle)] bg-[var(--surface-container)] p-4 shadow-2xl sm:p-6"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="label-sm">Publisher/Public Profile</p>
+                <h2 id="public-profile-editor-title" className="title-lg mt-1 text-[var(--text-primary)]">Edit public profile</h2>
+              </div>
+              <button
+                type="button"
+                onClick={closePublicProfileEditor}
+                disabled={profileSaving}
+                className="focus-ring inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[color:var(--surface-muted)] disabled:cursor-not-allowed disabled:opacity-60"
+                aria-label="Close public profile editor"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <fieldset disabled={!user || profileSaving} className="mt-5 space-y-4 disabled:opacity-60">
+              <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={profileEditDraft.is_public_profile}
+                  onChange={(event) => updateProfileDraftField('is_public_profile', event.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block font-semibold text-[var(--text-primary)]">Make profile public</span>
+                  <span className="mt-1 block text-xs">Public profiles can show banner, logo, bio, contact, and social links.</span>
+                </span>
+              </label>
+
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
+                <div
+                  className="min-h-28 rounded-xl bg-[var(--surface-container-high)] bg-cover bg-center"
+                  style={(bannerPreviewUrl || profileEditDraft.banner_url) ? {
+                    backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0.45), rgba(0,0,0,0.18)), url(${bannerPreviewUrl || profileEditDraft.banner_url})`,
+                  } : undefined}
+                />
+                <div className="flex items-center justify-center rounded-xl bg-[var(--surface-container-high)] p-3">
+                  {logoPreviewUrl || profileEditDraft.logo_url ? (
+                    <img
+                      src={logoPreviewUrl || profileEditDraft.logo_url}
+                      alt=""
+                      className="h-20 w-20 rounded-full object-cover"
+                    />
+                  ) : (
+                    <UserCircle2 size={48} className="text-[var(--text-secondary)]" />
+                  )}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Banner image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => setBannerFile(event.target.files?.[0] || null)}
+                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Logo image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => setLogoFile(event.target.files?.[0] || null)}
+                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+              </div>
+
+              <label className="block text-sm text-[var(--text-secondary)]">
+                Display name
+                <input
+                  type="text"
+                  value={profileEditDraft.display_name}
+                  onChange={(event) => updateProfileDraftField('display_name', event.target.value)}
+                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  First name
+                  <input
+                    type="text"
+                    value={profileEditDraft.first_name}
+                    onChange={(event) => updateProfileDraftField('first_name', event.target.value)}
+                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Last name
+                  <input
+                    type="text"
+                    value={profileEditDraft.last_name}
+                    onChange={(event) => updateProfileDraftField('last_name', event.target.value)}
+                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+              </div>
+
+              <label className="block text-sm text-[var(--text-secondary)]">
+                Bio
+                <textarea
+                  value={profileEditDraft.bio}
+                  onChange={(event) => updateProfileDraftField('bio', event.target.value)}
+                  rows={5}
+                  className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
+                />
+              </label>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  <span className="inline-flex items-center gap-1.5">
+                    <SocialIcon type="website" size={14} />
+                    Website
+                  </span>
+                  <input
+                    type="text"
+                    value={profileEditDraft.website_url}
+                    onChange={(event) => updateProfileDraftField('website_url', event.target.value)}
+                    placeholder="example.com"
+                    className={`focus-ring mt-1 h-10 w-full rounded-xl border bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)] ${
+                      profileFieldError('website_url') ? 'border-[color:var(--feedback-danger-fg)]' : 'border-[var(--border-subtle)]'
+                    }`}
+                  />
+                  <span className={`mt-1 block text-xs ${profileFieldError('website_url') ? 'text-[color:var(--feedback-danger-fg)]' : 'text-[var(--text-secondary)]'}`}>
+                    {profileFieldError('website_url') || 'example.com is accepted and saved as https://example.com'}
+                  </span>
+                </label>
+
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  <span className="inline-flex items-center gap-1.5">
+                    <SocialIcon type="contact" size={14} />
+                    Contact email
+                  </span>
+                  <input
+                    type="text"
+                    value={profileEditDraft.contact_email}
+                    onChange={(event) => updateProfileDraftField('contact_email', event.target.value)}
+                    placeholder="publisher@example.com"
+                    className={`focus-ring mt-1 h-10 w-full rounded-xl border bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)] ${
+                      profileFieldError('contact_email') ? 'border-[color:var(--feedback-danger-fg)]' : 'border-[var(--border-subtle)]'
+                    }`}
+                  />
+                  {profileFieldError('contact_email') ? (
+                    <span className="mt-1 block text-xs text-[color:var(--feedback-danger-fg)]">{profileFieldError('contact_email')}</span>
+                  ) : null}
+                </label>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-semibold text-[var(--text-primary)]">Social links</p>
+                {profileFieldError('social_links') ? (
+                  <p className="text-xs text-[color:var(--feedback-danger-fg)]">{profileFieldError('social_links')}</p>
+                ) : null}
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {SOCIAL_LINK_FIELDS.map((field) => (
+                    <label key={field.key} className="block text-sm text-[var(--text-secondary)]">
+                      <span className="inline-flex items-center gap-1.5">
+                        <SocialIcon type={field.key} size={14} />
+                        {field.label}
+                      </span>
+                      <input
+                        type="text"
+                        value={profileEditDraft.social_links?.[field.key] || ''}
+                        onChange={(event) => updateSocialLinkField(field.key, event.target.value)}
+                        placeholder={field.placeholder}
+                        className={`focus-ring mt-1 h-10 w-full rounded-xl border bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)] ${
+                          profileFieldError(`social_links.${field.key}`) ? 'border-[color:var(--feedback-danger-fg)]' : 'border-[var(--border-subtle)]'
+                        }`}
+                      />
+                      <span className={`mt-1 block text-xs ${profileFieldError(`social_links.${field.key}`) ? 'text-[color:var(--feedback-danger-fg)]' : 'text-[var(--text-secondary)]'}`}>
+                        {profileFieldError(`social_links.${field.key}`) || field.helper}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </fieldset>
+
+            <div className="mt-5 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+              <p>
+                Preview name: <span className="font-semibold text-[var(--text-primary)]">{profileEditorDisplayName}</span>
+              </p>
+              <p className="mt-1 text-xs">
+                Handles and domains are normalized on save.
+              </p>
+            </div>
+
+            {profileError && (
+              <p className="mt-3 rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{profileError}</p>
+            )}
+
+            <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="ghost" onClick={closePublicProfileEditor} disabled={profileSaving}>
+                <span>Cancel</span>
+              </Button>
+              <Button type="submit" disabled={!user || profileSaving || profileHasValidationErrors}>
+                <Save size={15} />
+                <span>{profileSaving ? 'Saving...' : 'Save Profile'}</span>
+              </Button>
+            </div>
+          </form>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -104,6 +104,12 @@ function apiErrorMessage(data, fallback) {
   return fallback;
 }
 
+function apiError(data, fallback) {
+  const error = new Error(apiErrorMessage(data, fallback));
+  error.details = data;
+  return error;
+}
+
 export async function fetchAuthenticatedMediaBlobUrl(relPath) {
   const safeRel = String(relPath || "").replace(/^\/+/, "").trim();
   if (!safeRel) return "";
@@ -230,7 +236,7 @@ export async function updateMyProfile(payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to update profile"));
+    throw apiError(data, "Failed to update profile");
   }
   return data;
 }
@@ -246,7 +252,7 @@ export async function uploadProfileAssets({ bannerFile, logoFile } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to upload profile images"));
+    throw apiError(data, "Failed to upload profile images");
   }
   return data;
 }

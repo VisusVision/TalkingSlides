@@ -9211,7 +9211,9 @@ class CatalogDetailView(APIView):
         data["comment_count"] = project.comments.count()
         data["publisher_id"] = project.user_id
         data["publisher_username"] = project.user.username if project.user else ""
-        data["publisher_display_name"] = _publisher_display_name(project.user) if project.user else ""
+        data["publisher_display_name"] = _publisher_public_lesson_display_name(project.user) if project.user else ""
+        data["publisher_logo_url"] = _publisher_public_logo_url(request, project.user)
+        data["publisher_avatar_url"] = data["publisher_logo_url"]
         data["publisher_follower_count"] = (
             PublisherFollow.objects.filter(publisher=project.user).count()
             if project.user_id
@@ -9435,6 +9437,13 @@ def _publisher_display_name(user) -> str:
     return custom_name or user.get_full_name() or user.username
 
 
+def _publisher_public_lesson_display_name(user) -> str:
+    profile = _safe_user_profile(user)
+    if profile and getattr(profile, "is_public_profile", False):
+        return _publisher_display_name(user)
+    return user.get_full_name() or user.username
+
+
 def _can_view_publisher_profile(request, publisher) -> bool:
     if _is_public_publisher_user(publisher):
         return True
@@ -9444,6 +9453,28 @@ def _can_view_publisher_profile(request, publisher) -> bool:
     if not viewer or not viewer.is_authenticated:
         return False
     return _is_staff_user(viewer) or int(viewer.id) == int(publisher.id)
+
+
+def _can_access_publisher_channel(request, publisher) -> bool:
+    if _publisher_role(publisher) not in PUBLISHER_PROFILE_ROLES:
+        return False
+    if _can_view_publisher_profile(request, publisher):
+        return True
+    return _public_publisher_projects(publisher).exists()
+
+
+def _publisher_public_logo_url(request, publisher) -> str:
+    profile = _safe_user_profile(publisher)
+    if not profile or not getattr(profile, "is_public_profile", False):
+        return ""
+    if not getattr(profile, "logo_image_processed", ""):
+        return ""
+    return _profile_asset_url_for_request(
+        request,
+        publisher.id,
+        "logo",
+        _profile_asset_version(profile),
+    )
 
 
 def _public_publisher_projects(publisher):
@@ -9499,7 +9530,7 @@ def _playlist_context_publisher_payload(user) -> dict[str, Any] | None:
     return {
         "id": user.id,
         "username": user.username,
-        "display_name": _publisher_display_name(user),
+        "display_name": _publisher_public_lesson_display_name(user),
     }
 
 
@@ -9599,30 +9630,36 @@ class CatalogPlaylistContextView(APIView):
 def _publisher_profile_payload(publisher, request, *, latest_limit: int = 0) -> dict[str, Any]:
     profile = _safe_user_profile(publisher)
     public_lessons = _public_publisher_projects(publisher)
+    details_visible = _can_view_publisher_profile(request, publisher)
     is_following = False
-    if request.user and request.user.is_authenticated:
+    if details_visible and request.user and request.user.is_authenticated:
         is_following = PublisherFollow.objects.filter(follower=request.user, publisher=publisher).exists()
     total_views = LessonProgress.objects.filter(project__in=public_lessons).count()
     total_likes = LessonLike.objects.filter(project__in=public_lessons).count()
     asset_version = _profile_asset_version(profile) if profile else ""
     banner_url = ""
     logo_url = ""
-    if profile and getattr(profile, "banner_image_processed", ""):
+    if details_visible and profile and getattr(profile, "banner_image_processed", ""):
         banner_url = _profile_asset_url_for_request(request, publisher.id, "banner", asset_version)
-    if profile and getattr(profile, "logo_image_processed", ""):
+    if details_visible and profile and getattr(profile, "logo_image_processed", ""):
         logo_url = _profile_asset_url_for_request(request, publisher.id, "logo", asset_version)
     payload = {
         "id": publisher.id,
         "username": publisher.username,
-        "display_name": _publisher_display_name(publisher),
-        "bio": getattr(profile, "bio", "") or "",
+        "display_name": _publisher_display_name(publisher) if details_visible else _publisher_public_lesson_display_name(publisher),
+        "bio": (getattr(profile, "bio", "") or "") if details_visible else "",
         "banner_url": banner_url,
         "logo_url": logo_url,
         "avatar_url": "",
-        "website_url": getattr(profile, "website_url", "") or "",
-        "contact_email": getattr(profile, "contact_email", "") or "",
-        "social_links": getattr(profile, "social_links", {}) if isinstance(getattr(profile, "social_links", {}), dict) else {},
+        "website_url": (getattr(profile, "website_url", "") or "") if details_visible else "",
+        "contact_email": (getattr(profile, "contact_email", "") or "") if details_visible else "",
+        "social_links": (
+            getattr(profile, "social_links", {})
+            if details_visible and isinstance(getattr(profile, "social_links", {}), dict)
+            else {}
+        ),
         "is_public_profile": bool(getattr(profile, "is_public_profile", False)),
+        "profile_private": not details_visible,
         "role": _publisher_role(publisher),
         "follower_count": PublisherFollow.objects.filter(publisher=publisher).count(),
         "lesson_count": public_lessons.count(),
@@ -9678,7 +9715,7 @@ class PublisherProfileView(APIView):
             publisher = User.objects.select_related("profile").get(pk=user_id)
         except User.DoesNotExist:
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_view_publisher_profile(request, publisher):
+        if not _can_access_publisher_channel(request, publisher):
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(_publisher_profile_payload(publisher, request, latest_limit=3))
 
@@ -9692,7 +9729,7 @@ class PublisherLessonsView(APIView):
             publisher = User.objects.select_related("profile").get(pk=user_id)
         except User.DoesNotExist:
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_view_publisher_profile(request, publisher):
+        if not _can_access_publisher_channel(request, publisher):
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
 
         can_view_private = bool(
@@ -9959,7 +9996,7 @@ class PublisherPlaylistsView(APIView):
             publisher = User.objects.select_related("profile").get(pk=user_id)
         except User.DoesNotExist:
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_view_publisher_profile(request, publisher):
+        if not _can_access_publisher_channel(request, publisher):
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
         playlists = (
             Playlist.objects.filter(user=publisher, is_public=True)
