@@ -132,6 +132,10 @@ def _project_avatar_artifact_exists(project: Project) -> bool:
 SCENE_BACKGROUND_MODES = {"original", "whiteboard", "custom", "source_background"}
 SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
 SOURCE_BACKGROUND_SUPPORTED_TYPES = {"pptx"}
+SCENE_HIGHLIGHT_STYLES = {"none", "box", "bold"}
+SCENE_HIGHLIGHT_DETECTORS = {"auto"}
+SCENE_HIGHLIGHT_TARGETS = {"block"}
+SCENE_HIGHLIGHT_SPEC_VERSION = "v1"
 
 
 def _transcript_background_url(page: TranscriptPage, kind: str, context: dict | None) -> str:
@@ -152,8 +156,44 @@ def _transcript_background_url(page: TranscriptPage, kind: str, context: dict | 
     return url_path
 
 
+def _transcript_highlight_preview_url(page: TranscriptPage, context: dict | None) -> str:
+    url_path = f"/api/v1/projects/{page.project_id}/transcript-pages/{page.id}/highlight-preview-image/"
+    request = (context or {}).get("request")
+    if request is not None:
+        try:
+            return request.build_absolute_uri(url_path)
+        except Exception:
+            pass
+    api_public_base_url = str(getattr(settings, "API_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if api_public_base_url:
+        return f"{api_public_base_url}{url_path}"
+    return url_path
+
+
 def _scene_path(scene: Mapping, key: str) -> str:
     return _normalize_rel_storage_path(str(scene.get(key) or ""))
+
+
+def _normalize_scene_highlight_spec(scene: Mapping) -> dict:
+    raw_spec = scene.get("highlight")
+    spec = raw_spec if isinstance(raw_spec, Mapping) else {}
+    style = str(spec.get("style", scene.get("highlight_style", "none")) or "none").strip().lower()
+    if style not in SCENE_HIGHLIGHT_STYLES:
+        style = "none"
+    detector = str(spec.get("detector", scene.get("highlight_detector", "auto")) or "auto").strip().lower()
+    if detector not in SCENE_HIGHLIGHT_DETECTORS:
+        detector = "auto"
+    target = str(spec.get("target") or "block").strip().lower()
+    if target not in SCENE_HIGHLIGHT_TARGETS:
+        target = "block"
+    version = str(spec.get("version") or SCENE_HIGHLIGHT_SPEC_VERSION).strip() or SCENE_HIGHLIGHT_SPEC_VERSION
+    return {
+        "enabled": bool(spec.get("enabled", scene.get("highlight_enabled", False))),
+        "style": style,
+        "detector": detector,
+        "target": target,
+        "version": version,
+    }
 
 
 def _scene_source_type(page: TranscriptPage, scene: Mapping) -> str:
@@ -215,9 +255,14 @@ def transcript_page_editor_document_for_response(page: TranscriptPage, context: 
             "custom_background_url",
             "source_background_url",
             "source_background_details",
+            "highlight_preview_path",
         }
         and not str(key).endswith("_path")
     }
+    highlight_spec = _normalize_scene_highlight_spec(scene)
+    highlight_style = str(highlight_spec.get("style") or "none")
+    highlight_detector = str(highlight_spec.get("detector") or "auto")
+    highlight_preview_path = _scene_path(scene, "highlight_preview_path")
     safe_scene.update(
         {
             "background_mode": mode,
@@ -235,6 +280,12 @@ def transcript_page_editor_document_for_response(page: TranscriptPage, context: 
             "source_background_warnings": [
                 str(warning).strip() for warning in source_background_warnings if str(warning or "").strip()
             ],
+            "highlight": highlight_spec,
+            "highlight_enabled": bool(highlight_spec.get("enabled", False)),
+            "highlight_style": highlight_style,
+            "highlight_detector": highlight_detector,
+            "highlight_updated_at": str(scene.get("highlight_updated_at") or ""),
+            "highlight_preview_url": _transcript_highlight_preview_url(page, context) if highlight_preview_path else "",
         }
     )
     document["scene"] = safe_scene

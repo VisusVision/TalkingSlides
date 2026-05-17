@@ -890,6 +890,10 @@ SCENE_BACKGROUND_FITS = {"contain", "cover", "stretch"}
 SCENE_TEXT_SCALE_MIN = 0.75
 SCENE_TEXT_SCALE_MAX = 2.0
 SOURCE_BACKGROUND_SUPPORTED_TYPES = {"pptx"}
+SCENE_HIGHLIGHT_STYLES = {"none", "box", "bold"}
+SCENE_HIGHLIGHT_DETECTORS = {"auto"}
+SCENE_HIGHLIGHT_TARGETS = {"block"}
+SCENE_HIGHLIGHT_SPEC_VERSION = "v1"
 
 
 def _raw_scene_from_document(editor_document: Any) -> dict:
@@ -947,17 +951,61 @@ def _clean_scene_text_scale(value: Any, *, fallback: float = 1.0) -> float:
     return max(SCENE_TEXT_SCALE_MIN, min(scale, SCENE_TEXT_SCALE_MAX))
 
 
+def _clean_scene_highlight_style(value: Any, *, fallback: str = "none") -> str:
+    style = str(value or "").strip().lower()
+    return style if style in SCENE_HIGHLIGHT_STYLES else fallback
+
+
+def _clean_scene_highlight_detector(value: Any, *, fallback: str = "auto") -> str:
+    detector = str(value or "").strip().lower()
+    return detector if detector in SCENE_HIGHLIGHT_DETECTORS else fallback
+
+
+def _normalize_scene_highlight_spec(scene: dict | None) -> dict[str, Any]:
+    raw_scene = scene if isinstance(scene, dict) else {}
+    raw_spec = raw_scene.get("highlight")
+    spec = raw_spec if isinstance(raw_spec, dict) else {}
+    enabled = bool(spec.get("enabled", raw_scene.get("highlight_enabled", False)))
+    style = _clean_scene_highlight_style(spec.get("style", raw_scene.get("highlight_style")), fallback="none")
+    detector = _clean_scene_highlight_detector(spec.get("detector", raw_scene.get("highlight_detector")), fallback="auto")
+    target = str(spec.get("target") or "block").strip().lower()
+    if target not in SCENE_HIGHLIGHT_TARGETS:
+        target = "block"
+    version = str(spec.get("version") or SCENE_HIGHLIGHT_SPEC_VERSION).strip() or SCENE_HIGHLIGHT_SPEC_VERSION
+    return {
+        "enabled": enabled,
+        "style": style,
+        "detector": detector,
+        "target": target,
+        "version": version,
+    }
+
+
+def _apply_scene_highlight_spec(scene: dict, highlight_spec: dict[str, Any]) -> None:
+    scene["highlight"] = deepcopy(highlight_spec)
+    scene["highlight_enabled"] = bool(highlight_spec.get("enabled", False))
+    scene["highlight_style"] = _clean_scene_highlight_style(highlight_spec.get("style"), fallback="none")
+    scene["highlight_detector"] = _clean_scene_highlight_detector(highlight_spec.get("detector"), fallback="auto")
+
+
 def _page_scene_for_storage(page: TranscriptPage) -> dict:
     scene = _raw_scene_from_document(getattr(page, "editor_document", None))
     mode = _clean_scene_mode(
         scene.get("background_mode"),
         fallback="whiteboard" if bool(getattr(page, "whiteboard_mode", False)) else "original",
     )
+    highlight_spec = _normalize_scene_highlight_spec(scene)
     return {
         **scene,
         "background_mode": mode,
         "background_fit": _clean_scene_fit(scene.get("background_fit"), fallback="contain"),
         "text_scale": _clean_scene_text_scale(scene.get("text_scale"), fallback=1.0),
+        "highlight": highlight_spec,
+        "highlight_enabled": bool(highlight_spec.get("enabled", False)),
+        "highlight_style": _clean_scene_highlight_style(highlight_spec.get("style"), fallback="none"),
+        "highlight_detector": _clean_scene_highlight_detector(highlight_spec.get("detector"), fallback="auto"),
+        "highlight_updated_at": str(scene.get("highlight_updated_at") or ""),
+        "highlight_preview_path": _normalize_rel_storage_path(str(scene.get("highlight_preview_path") or "")),
     }
 
 
@@ -1087,11 +1135,18 @@ def _draft_page_scene_for_storage(draft_page: dict, fallback_page: TranscriptPag
         if bool(draft_page.get("whiteboard_mode", getattr(fallback_page, "whiteboard_mode", False)))
         else "original",
     )
+    highlight_spec = _normalize_scene_highlight_spec(scene)
     return {
         **scene,
         "background_mode": mode,
         "background_fit": _clean_scene_fit(scene.get("background_fit"), fallback="contain"),
         "text_scale": _clean_scene_text_scale(scene.get("text_scale"), fallback=1.0),
+        "highlight": highlight_spec,
+        "highlight_enabled": bool(highlight_spec.get("enabled", False)),
+        "highlight_style": _clean_scene_highlight_style(highlight_spec.get("style"), fallback="none"),
+        "highlight_detector": _clean_scene_highlight_detector(highlight_spec.get("detector"), fallback="auto"),
+        "highlight_updated_at": str(scene.get("highlight_updated_at") or ""),
+        "highlight_preview_path": _normalize_rel_storage_path(str(scene.get("highlight_preview_path") or "")),
     }
 
 
@@ -1149,6 +1204,10 @@ def _draft_scene_differs(active_page: TranscriptPage | None, draft_page: dict) -
         "original_background_path",
         "custom_background_path",
         "source_background_path",
+        "highlight_enabled",
+        "highlight_style",
+        "highlight_detector",
+        "highlight_preview_path",
     }
     for key in keys:
         active_value = active_scene.get(key)
@@ -1188,7 +1247,7 @@ def _draft_page_response(project: Project, draft_page: dict, request) -> dict:
     data = TranscriptPageSerializer(page, context={"request": request}).data
     scene = data.get("editor_document", {}).get("scene")
     if isinstance(scene, dict):
-        for url_key in ("original_background_url", "custom_background_url", "source_background_url"):
+        for url_key in ("original_background_url", "custom_background_url", "source_background_url", "highlight_preview_url"):
             if scene.get(url_key):
                 scene[url_key] = _draft_url(scene[url_key])
     data["draft_scene_dirty"] = _draft_scene_differs(active_page, draft_page)
@@ -5969,6 +6028,26 @@ class TranscriptPageSceneView(APIView):
                 scene["background_fit"] = fit
             if "text_scale" in request.data:
                 scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+            if "highlight_enabled" in request.data:
+                scene["highlight_enabled"] = _truthy_request_value(request.data.get("highlight_enabled"))
+            if "highlight_style" in request.data:
+                style = _clean_scene_highlight_style(request.data.get("highlight_style"), fallback="")
+                if not style:
+                    return Response(
+                        {"error": "highlight_style must be none, box, or bold."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                scene["highlight_style"] = style
+            if "highlight_detector" in request.data:
+                detector = _clean_scene_highlight_detector(request.data.get("highlight_detector"), fallback="")
+                if not detector:
+                    return Response(
+                        {"error": "highlight_detector must be auto."},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                scene["highlight_detector"] = detector
+            scene.pop("highlight", None)
+            _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
             _set_draft_page_scene(draft_page, scene)
             metadata = draft_data.setdefault("metadata", {})
             metadata["background_dirty"] = True
@@ -6011,11 +6090,268 @@ class TranscriptPageSceneView(APIView):
             scene["background_fit"] = fit
         if "text_scale" in request.data:
             scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
+        if "highlight_enabled" in request.data:
+            scene["highlight_enabled"] = _truthy_request_value(request.data.get("highlight_enabled"))
+        if "highlight_style" in request.data:
+            style = _clean_scene_highlight_style(request.data.get("highlight_style"), fallback="")
+            if not style:
+                return Response(
+                    {"error": "highlight_style must be none, box, or bold."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            scene["highlight_style"] = style
+        if "highlight_detector" in request.data:
+            detector = _clean_scene_highlight_detector(request.data.get("highlight_detector"), fallback="")
+            if not detector:
+                return Response(
+                    {"error": "highlight_detector must be auto."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            scene["highlight_detector"] = detector
+        scene.pop("highlight", None)
+        _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
 
         _set_page_scene(page, scene)
         page.whiteboard_mode = scene["background_mode"] == "whiteboard"
         page.save(update_fields=["editor_document", "whiteboard_mode", "updated_at"])
         return Response({"project_id": project.id, "page": _page_scene_response(page, request)})
+
+
+def _record_highlight_preview_metric(*, status_key: str, style: str, detector: str, latency_ms: float, fallback_used: bool) -> None:
+    now_bucket = timezone.now().strftime("%Y%m%d%H%M")
+    keys = [
+        "highlight_preview_requests_total",
+        f"highlight_preview_requests_total:{status_key}",
+        f"highlight_preview_requests_total:style:{style}",
+        f"highlight_preview_requests_total:detector:{detector}",
+        f"highlight_preview_requests_total:bucket:{now_bucket}",
+    ]
+    if fallback_used:
+        keys.append("highlight_preview_fallback_total")
+    for key in keys:
+        try:
+            cache.incr(key)
+        except ValueError:
+            cache.set(key, 1, timeout=86400)
+    try:
+        cache.set("highlight_preview_latency_ms:last", float(latency_ms), timeout=86400)
+    except Exception:
+        pass
+
+
+class TranscriptPageHighlightPreviewView(APIView):
+    """POST highlight preview for one transcript page scene."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id, page_id=None, page_ref=None):
+        if not bool(getattr(settings, "HIGHLIGHT_PREVIEW_ENABLED", False)):
+            _record_highlight_preview_metric(
+                status_key="disabled",
+                style="unknown",
+                detector="unknown",
+                latency_ms=0.0,
+                fallback_used=False,
+            )
+            return Response({"error": "Highlight preview is disabled."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            _record_highlight_preview_metric(
+                status_key="forbidden",
+                style="unknown",
+                detector="unknown",
+                latency_ms=0.0,
+                fallback_used=False,
+            )
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        page_token = page_ref if page_ref is not None else page_id
+        raw_draft_only = request.data.get("draft_only")
+        if raw_draft_only is None:
+            raw_draft_only = request.query_params.get("draft_only")
+        if raw_draft_only is None:
+            raw_draft_only = True
+        draft_only = _truthy_request_value(raw_draft_only)
+        style = _clean_scene_highlight_style(request.data.get("style"), fallback="")
+        detector = _clean_scene_highlight_detector(request.data.get("detector"), fallback="")
+        forensic_debug = _truthy_request_value(request.data.get("forensic_debug"))
+        if not style:
+            _record_highlight_preview_metric(
+                status_key="invalid_style",
+                style="invalid",
+                detector=detector or "unknown",
+                latency_ms=0.0,
+                fallback_used=False,
+            )
+            return Response({"error": "style must be none, box, or bold."}, status=status.HTTP_400_BAD_REQUEST)
+        if not detector:
+            _record_highlight_preview_metric(
+                status_key="invalid_detector",
+                style=style or "unknown",
+                detector="invalid",
+                latency_ms=0.0,
+                fallback_used=False,
+            )
+            return Response({"error": "detector must be auto."}, status=status.HTTP_400_BAD_REQUEST)
+
+        page = None
+        draft_page = None
+        if draft_only:
+            draft_data = ensure_project_draft_data(project)
+            draft_page = _draft_page_for_ref(draft_data, page_token)
+            if draft_page is None:
+                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            page = _active_page_for_draft_page(project, draft_page)
+            scene = _draft_page_scene_for_storage(draft_page, page)
+            page_key = str(draft_page.get("page_key") or page_token or "draft")
+            display_text = str(draft_page.get("original_text") or draft_page.get("narration_text") or "")
+        else:
+            try:
+                page = _get_project_page(project, page_token, active=True, field_name="page_id")
+            except TranscriptActionError as exc:
+                return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+            scene = _page_scene_for_storage(page)
+            page_key = str(page.page_key or page.id)
+            display_text = str(page.original_text or page.narration_text or "")
+
+        mode = _clean_scene_mode(scene.get("background_mode"), fallback="original")
+        rel_path = ""
+        if mode == "custom":
+            rel_path = _normalize_rel_storage_path(str(scene.get("custom_background_path") or ""))
+        elif mode == "source_background":
+            rel_path = _normalize_rel_storage_path(str(scene.get("source_background_path") or ""))
+        else:
+            rel_path = _normalize_rel_storage_path(str(scene.get("original_background_path") or ""))
+        if not rel_path:
+            return Response({"error": "No source image available for highlight preview."}, status=status.HTTP_400_BAD_REQUEST)
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        source_file = _resolve_storage_file(storage_root, rel_path)
+        if source_file is None:
+            return Response({"error": "Preview source image not found."}, status=status.HTTP_400_BAD_REQUEST)
+
+        output_dir = storage_root / str(project.id) / "highlight_previews"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_name = f"page_{re.sub(r'[^A-Za-z0-9_-]+', '_', page_key)[:40]}_{uuid.uuid4().hex[:10]}.png"
+        output_file = output_dir / output_name
+
+        started = time.perf_counter()
+        from .highlight_engine import apply_highlight
+
+        result = apply_highlight(
+            image_path=str(source_file),
+            text=display_text,
+            style=style,
+            detector=detector,
+            output_path=str(output_file),
+            timeout_sec=float(getattr(settings, "HIGHLIGHT_PREVIEW_TIMEOUT_SECONDS", 12.0) or 12.0),
+        )
+        latency_ms = round((time.perf_counter() - started) * 1000.0, 2)
+
+        rel_output = str(output_file.relative_to(storage_root)).replace("\\", "/")
+        scene["highlight_enabled"] = style != "none"
+        scene["highlight_style"] = style
+        scene["highlight_detector"] = detector
+        scene.pop("highlight", None)
+        _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
+        scene["highlight_updated_at"] = timezone.now().isoformat()
+        scene["highlight_preview_path"] = rel_output
+
+        if draft_only:
+            _set_draft_page_scene(draft_page, scene)
+            draft_data = ensure_project_draft_data(project)
+            target = _draft_page_for_ref(draft_data, page_token)
+            if target is not None:
+                _set_draft_page_scene(target, scene)
+            metadata = draft_data.setdefault("metadata", {})
+            metadata["background_dirty"] = True
+            save_project_draft_data(project, draft_data, dirty=True)
+            page_payload = _draft_page_response(project, target or draft_page, request)
+        else:
+            _set_page_scene(page, scene)
+            page.save(update_fields=["editor_document", "updated_at"])
+            page_payload = _page_scene_response(page, request)
+
+        logger.info(
+            "Highlight preview completed project_id=%s page_ref=%s style=%s latency_ms=%s fallback_used=%s error_reason=%s",
+            project.id,
+            page_token,
+            style,
+            latency_ms,
+            bool(result.get("fallback_used")),
+            str(result.get("error_reason") or ""),
+        )
+        effective_latency_ms = float(result.get("latency_ms") or latency_ms)
+        _record_highlight_preview_metric(
+            status_key="ok" if bool(result.get("success")) else "fallback",
+            style=style,
+            detector=str(result.get("detector_used") or detector),
+            latency_ms=effective_latency_ms,
+            fallback_used=bool(result.get("fallback_used")),
+        )
+
+        return Response(
+            {
+                "success": bool(result.get("success", False)),
+                "preview_image_url": page_payload.get("editor_document", {}).get("scene", {}).get("highlight_preview_url", ""),
+                "fallback_used": bool(result.get("fallback_used")),
+                "detector_used": str(result.get("detector_used") or detector),
+                "engine_version": str(result.get("engine_version") or ""),
+                "latency_ms": effective_latency_ms,
+                "regions": list(result.get("regions") or []),
+                "debug_info": {
+                    "renderer_used": str(result.get("renderer_used") or style),
+                    "forensic_debug": bool(forensic_debug),
+                    "latency_ms": effective_latency_ms,
+                },
+                "error_message": str(result.get("error_reason") or ""),
+                "page": page_payload,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class TranscriptPageHighlightPreviewImageView(APIView):
+    """Serve transcript-page highlight preview image."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, project_id, page_id=None, page_ref=None):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            raise Http404
+        if not _can_manage_project(request.user, project):
+            raise Http404
+
+        page_token = page_ref if page_ref is not None else page_id
+        draft = _truthy_request_value(request.query_params.get("draft"))
+        rel_path = ""
+        if draft:
+            draft_data = get_project_draft_data(project)
+            draft_page = _draft_page_for_ref(draft_data, page_token)
+            if draft_page is not None:
+                scene = _draft_page_scene_for_storage(draft_page, _active_page_for_draft_page(project, draft_page))
+                rel_path = _normalize_rel_storage_path(str(scene.get("highlight_preview_path") or ""))
+        else:
+            try:
+                page = _get_project_page(project, page_token, active=True, field_name="page_id")
+            except TranscriptActionError:
+                raise Http404
+            scene = _page_scene_for_storage(page)
+            rel_path = _normalize_rel_storage_path(str(scene.get("highlight_preview_path") or ""))
+
+        if not rel_path:
+            raise Http404
+        full_path = _resolve_storage_file(Path(getattr(settings, "STORAGE_ROOT", "storage_local")), rel_path)
+        if full_path is None:
+            raise Http404
+        response = _media_file_response(request, full_path, "image/png")
+        response["Cache-Control"] = "private, max-age=120"
+        return response
 
 
 class TranscriptPageBackgroundUploadView(APIView):

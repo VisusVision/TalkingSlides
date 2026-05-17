@@ -1068,3 +1068,241 @@ def test_public_catalog_does_not_expose_scene_storage_paths():
     assert "custom_background_path" not in payload
     assert "original_background_path" not in payload
     assert "source_background_path" not in payload
+
+
+@pytest.mark.django_db
+def test_scene_patch_persists_highlight_fields(tmp_path):
+    teacher = _make_teacher("scene_patch_highlight_fields")
+    project = Project.objects.create(title="Highlight patch", user=teacher)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "original",
+                "original_background_path": f"{project.id}/images/slide-1.png",
+            },
+        },
+    )
+    source = tmp_path / str(project.id) / "images" / "slide-1.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(PNG_1X1)
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/scene/",
+        {
+            "highlight_enabled": True,
+            "highlight_style": "box",
+            "highlight_detector": "auto",
+        },
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.TranscriptPageSceneView.as_view()(request, project_id=project.id, page_id=page.id)
+
+    assert response.status_code == 200
+    page.refresh_from_db()
+    scene = page.editor_document["scene"]
+    assert scene["highlight_enabled"] is True
+    assert scene["highlight_style"] == "box"
+    assert scene["highlight_detector"] == "auto"
+
+
+@pytest.mark.django_db
+def test_highlight_preview_requires_owner_auth_and_generates_preview(tmp_path):
+    teacher = _make_teacher("highlight_preview_owner")
+    outsider = _make_teacher("highlight_preview_outsider")
+    project = Project.objects.create(title="Highlight preview", user=teacher)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "original",
+                "original_background_path": f"{project.id}/images/slide-1.png",
+            },
+        },
+    )
+    source = tmp_path / str(project.id) / "images" / "slide-1.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(PNG_1X1)
+
+    unauthorized = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/highlight-preview/",
+        {"style": "box", "detector": "auto", "draft_only": False},
+        format="json",
+    )
+    force_authenticate(unauthorized, user=outsider)
+    with override_settings(STORAGE_ROOT=str(tmp_path), HIGHLIGHT_PREVIEW_ENABLED=True):
+        unauthorized_response = views.TranscriptPageHighlightPreviewView.as_view()(
+            unauthorized,
+            project_id=project.id,
+            page_id=page.id,
+        )
+    assert unauthorized_response.status_code == 403
+
+    authorized = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/highlight-preview/",
+        {"style": "box", "detector": "auto", "draft_only": False},
+        format="json",
+    )
+    force_authenticate(authorized, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path), HIGHLIGHT_PREVIEW_ENABLED=True):
+        response = views.TranscriptPageHighlightPreviewView.as_view()(
+            authorized,
+            project_id=project.id,
+            page_id=page.id,
+        )
+
+    assert response.status_code == 200
+    assert response.data["preview_image_url"]
+    assert response.data["detector_used"] == "auto"
+    page.refresh_from_db()
+    assert page.editor_document["scene"]["highlight_preview_path"]
+
+
+@pytest.mark.django_db
+def test_highlight_preview_invalid_style_and_flag_disable(tmp_path):
+    teacher = _make_teacher("highlight_preview_invalid")
+    project = Project.objects.create(title="Highlight invalid", user=teacher)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "original",
+                "original_background_path": f"{project.id}/images/slide-1.png",
+            },
+        },
+    )
+    source = tmp_path / str(project.id) / "images" / "slide-1.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(PNG_1X1)
+
+    disabled_req = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/highlight-preview/",
+        {"style": "box", "detector": "auto", "draft_only": False},
+        format="json",
+    )
+    force_authenticate(disabled_req, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path), HIGHLIGHT_PREVIEW_ENABLED=False):
+        disabled_response = views.TranscriptPageHighlightPreviewView.as_view()(
+            disabled_req,
+            project_id=project.id,
+            page_id=page.id,
+        )
+    assert disabled_response.status_code == 400
+
+    invalid_req = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/highlight-preview/",
+        {"style": "invalid", "detector": "auto", "draft_only": False},
+        format="json",
+    )
+    force_authenticate(invalid_req, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path), HIGHLIGHT_PREVIEW_ENABLED=True):
+        invalid_response = views.TranscriptPageHighlightPreviewView.as_view()(
+            invalid_req,
+            project_id=project.id,
+            page_id=page.id,
+        )
+    assert invalid_response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_highlight_preview_style_switch_creates_fresh_artifact_and_updates_spec(tmp_path):
+    teacher = _make_teacher("highlight_preview_switch")
+    project = Project.objects.create(title="Highlight switch", user=teacher)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "original",
+                "original_background_path": f"{project.id}/images/slide-1.png",
+            },
+        },
+    )
+    source = tmp_path / str(project.id) / "images" / "slide-1.png"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(PNG_1X1)
+
+    box_req = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/highlight-preview/",
+        {"style": "box", "detector": "auto", "draft_only": False},
+        format="json",
+    )
+    force_authenticate(box_req, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path), HIGHLIGHT_PREVIEW_ENABLED=True):
+        box_response = views.TranscriptPageHighlightPreviewView.as_view()(box_req, project_id=project.id, page_id=page.id)
+    assert box_response.status_code == 200
+    assert box_response.data["engine_version"] == "highlight-v1"
+    first_url = box_response.data["preview_image_url"]
+    assert first_url
+    page.refresh_from_db()
+    first_path = page.editor_document.get("scene", {}).get("highlight_preview_path", "")
+
+    bold_req = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/highlight-preview/",
+        {"style": "bold", "detector": "auto", "draft_only": False},
+        format="json",
+    )
+    force_authenticate(bold_req, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path), HIGHLIGHT_PREVIEW_ENABLED=True):
+        bold_response = views.TranscriptPageHighlightPreviewView.as_view()(bold_req, project_id=project.id, page_id=page.id)
+    assert bold_response.status_code == 200
+    second_url = bold_response.data["preview_image_url"]
+    assert second_url
+    assert second_url == first_url
+
+    page.refresh_from_db()
+    scene = page.editor_document["scene"]
+    assert scene["highlight_style"] == "bold"
+    assert scene["highlight"]["style"] == "bold"
+    assert scene["highlight"]["detector"] == "auto"
+    assert scene["highlight"]["target"] == "block"
+    assert scene["highlight"]["version"] == "v1"
+    assert scene["highlight_preview_path"]
+    assert scene["highlight_preview_path"] != first_path
+
+    first_file = tmp_path / first_path
+    second_file = tmp_path / scene["highlight_preview_path"]
+    assert first_path
+    assert str(second_file).endswith(".png")
+
+
+@pytest.mark.django_db
+def test_highlight_engine_box_and_bold_renderers(tmp_path):
+    from worker.highlight_engine import apply_highlight
+
+    source = tmp_path / "src.png"
+    output_box = tmp_path / "out_box.png"
+    output_bold = tmp_path / "out_bold.png"
+
+    Image = pytest.importorskip("PIL.Image")
+    Image.new("RGB", (320, 180), color=(240, 240, 240)).save(source)
+
+    box_result = apply_highlight(
+        image_path=str(source),
+        text="Preview this highlighted term",
+        style="box",
+        detector="auto",
+        output_path=str(output_box),
+        timeout_sec=5.0,
+    )
+    bold_result = apply_highlight(
+        image_path=str(source),
+        text="Preview this highlighted term",
+        style="bold",
+        detector="auto",
+        output_path=str(output_bold),
+        timeout_sec=5.0,
+    )
+
+    assert box_result["fallback_used"] is False
+    assert bold_result["fallback_used"] is False
+    assert "renderer_used" in box_result
+    assert "renderer_used" in bold_result
+    assert box_result["detector_used"] == "auto"
+    assert bold_result["detector_used"] == "auto"

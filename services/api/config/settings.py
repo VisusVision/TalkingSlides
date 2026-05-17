@@ -601,4 +601,12 @@ VIDEO_FRAME_AUDIT_CLEANUP_ON_SUCCESS = os.environ.get(
     "true",
 ).lower() in {"1", "true", "yes", "on"}
 
+# ---------------------------------------------------------------------------
+# Highlight preview controls (Studio scene editor)
+# ---------------------------------------------------------------------------
+HIGHLIGHT_PREVIEW_ENABLED = os.environ.get("HIGHLIGHT_PREVIEW_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+HIGHLIGHT_PREVIEW_TIMEOUT_SECONDS = float(os.environ.get("HIGHLIGHT_PREVIEW_TIMEOUT_SECONDS", "12") or "12")
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

@@ -117,6 +117,23 @@ export async function fetchAuthenticatedMediaBlobUrl(relPath) {
   return URL.createObjectURL(blob);
 }
 
+export async function fetchAuthenticatedAssetBlobUrl(url) {
+  const absolute = toAbsoluteApiUrl(url);
+  if (!absolute) return "";
+  const separator = absolute.includes("?") ? "&" : "?";
+  const cacheBustedUrl = `${absolute}${separator}t=${Date.now()}`;
+  const res = await fetch(cacheBustedUrl, {
+    headers: authHeaders(),
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `Failed to fetch asset (${res.status})`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
@@ -1087,6 +1104,19 @@ export async function updateTranscriptPageScene(projectId, pageId, payload = {})
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(apiErrorMessage(data, 'Failed to update scene background settings'));
+  }
+  return data;
+}
+
+export async function previewTranscriptPageHighlight(projectId, pageId, payload = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript-pages/${pageId}/highlight-preview/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ ...(payload || {}), draft_only: payload?.draft_only ?? true }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to preview highlight'));
   }
   return data;
 }

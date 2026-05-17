@@ -36,6 +36,8 @@ import {
   updateTranscriptPageScene,
   updateProjectPublished,
   fetchSubtitleTracks,
+  fetchAuthenticatedAssetBlobUrl,
+  previewTranscriptPageHighlight,
   uploadProjectCover,
   uploadTranscriptPageBackground,
   updateProjectAvatarVisible,
@@ -750,6 +752,10 @@ function pageSceneSettings(page) {
     : 1;
   const hasSource = Boolean(scene.has_source_background || scene.source_background_url);
   const sourceBackgroundAvailable = Boolean(scene.source_background_available || (sourceType === 'pptx' && hasSource));
+  const rawHighlightStyle = String(scene.highlight_style || 'none').trim().toLowerCase();
+  const highlightStyle = ['none', 'box', 'bold'].includes(rawHighlightStyle) ? rawHighlightStyle : 'none';
+  const rawHighlightDetector = String(scene.highlight_detector || 'auto').trim().toLowerCase();
+  const highlightDetector = rawHighlightDetector === 'auto' ? 'auto' : 'auto';
   return {
     backgroundMode,
     backgroundFit,
@@ -763,6 +769,10 @@ function pageSceneSettings(page) {
     hasSource,
     sourceBackgroundAvailable,
     sourceWarnings: Array.isArray(scene.source_background_warnings) ? scene.source_background_warnings : [],
+    highlightEnabled: Boolean(scene.highlight_enabled),
+    highlightStyle,
+    highlightDetector,
+    highlightPreviewUrl: textValue(scene.highlight_preview_url),
   };
 }
 
@@ -1023,6 +1033,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [sceneActionBusy, setSceneActionBusy] = useState('');
   const [sceneActionMessage, setSceneActionMessage] = useState('');
   const [sceneActionError, setSceneActionError] = useState('');
+  const [highlightPreviewBusy, setHighlightPreviewBusy] = useState(false);
+  const [highlightPreviewMessage, setHighlightPreviewMessage] = useState('');
+  const [highlightPreviewImageUrl, setHighlightPreviewImageUrl] = useState('');
+  const highlightPreviewObjectUrlRef = useRef('');
+  const [selectedSceneBackgroundImageUrl, setSelectedSceneBackgroundImageUrl] = useState('');
+  const selectedSceneBackgroundObjectUrlRef = useRef('');
   const [globalEditorActionBusy, setGlobalEditorActionBusy] = useState('');
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
@@ -1349,6 +1365,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       setTranscriptPages([]);
       setSceneActionMessage('');
       setSceneActionError('');
+      setHighlightPreviewMessage('');
+      setHighlightPreviewImageUrl('');
       return;
     }
 
@@ -1356,6 +1374,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setActiveRerenderStatus(null);
     setSceneActionMessage('');
     setSceneActionError('');
+    setHighlightPreviewMessage('');
+    setHighlightPreviewImageUrl('');
 
     refreshProjectTranscript(selectedLesson.id);
   }, [refreshProjectTranscript, selectedLesson?.id]);
@@ -1940,6 +1960,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           hasSourceBackground: sceneSettings.hasSource,
           sourceBackgroundAvailable: sceneSettings.sourceBackgroundAvailable,
           sourceBackgroundWarnings: sceneSettings.sourceWarnings,
+          highlightEnabled: sceneSettings.highlightEnabled,
+          highlightStyle: sceneSettings.highlightStyle,
+          highlightDetector: sceneSettings.highlightDetector,
+          highlightPreviewUrl: sceneSettings.highlightPreviewUrl,
           draftBackgroundDirty: Boolean(page?.draft_background_dirty || page?.draft_scene_dirty),
           moderationWarning: moderationPageWarnings[key] || null,
           page,
@@ -2028,6 +2052,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const selectedSceneSourceWarnings = Array.isArray(selectedScene?.sourceBackgroundWarnings)
     ? selectedScene.sourceBackgroundWarnings
     : [];
+  const selectedSceneHighlightEnabled = Boolean(selectedScene?.highlightEnabled);
+  const selectedSceneHighlightStyle = selectedScene?.highlightStyle || 'none';
+  const selectedSceneActiveHighlightStyle = selectedSceneHighlightEnabled ? selectedSceneHighlightStyle : 'none';
+  const selectedSceneHighlightDetector = selectedScene?.highlightDetector || 'auto';
   const selectedSceneHasRenderDependencyWarning = selectedSceneSourceWarnings.some((warning) => (
     warning === 'slide_render_dependency_missing_libreoffice'
     || warning === 'slide_render_dependency_missing_pdftoppm'
@@ -2040,6 +2068,71 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     () => scenePreviewTextLayout(selectedSceneTextScale, selectedSceneFullText),
     [selectedSceneFullText, selectedSceneTextScale],
   );
+  useEffect(() => {
+    let cancelled = false;
+    const nextUrl = textValue(selectedScene?.highlightPreviewUrl);
+    setHighlightPreviewMessage('');
+    if (!nextUrl) {
+      if (highlightPreviewObjectUrlRef.current) {
+        URL.revokeObjectURL(highlightPreviewObjectUrlRef.current);
+        highlightPreviewObjectUrlRef.current = '';
+      }
+      setHighlightPreviewImageUrl('');
+      return () => {};
+    }
+    (async () => {
+      try {
+        const blobUrl = await fetchAuthenticatedAssetBlobUrl(nextUrl);
+        if (cancelled) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        if (highlightPreviewObjectUrlRef.current) {
+          URL.revokeObjectURL(highlightPreviewObjectUrlRef.current);
+        }
+        highlightPreviewObjectUrlRef.current = blobUrl;
+        setHighlightPreviewImageUrl(blobUrl);
+      } catch {
+        if (!cancelled) setHighlightPreviewImageUrl('');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedScene?.key, selectedScene?.highlightPreviewUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const nextUrl = textValue(selectedSceneBackgroundUrl);
+    if (!nextUrl) {
+      if (selectedSceneBackgroundObjectUrlRef.current) {
+        URL.revokeObjectURL(selectedSceneBackgroundObjectUrlRef.current);
+        selectedSceneBackgroundObjectUrlRef.current = '';
+      }
+      setSelectedSceneBackgroundImageUrl('');
+      return () => {};
+    }
+    (async () => {
+      try {
+        const blobUrl = await fetchAuthenticatedAssetBlobUrl(nextUrl);
+        if (cancelled) {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        if (selectedSceneBackgroundObjectUrlRef.current) {
+          URL.revokeObjectURL(selectedSceneBackgroundObjectUrlRef.current);
+        }
+        selectedSceneBackgroundObjectUrlRef.current = blobUrl;
+        setSelectedSceneBackgroundImageUrl(blobUrl);
+      } catch {
+        if (!cancelled) setSelectedSceneBackgroundImageUrl('');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSceneBackgroundUrl, fetchAuthenticatedAssetBlobUrl]);
+
   const latestRenderStatus = activeRerenderStatus || selectedLesson?.latest_job || null;
   const avatarJobInFlight = ['queued', 'processing'].includes(avatarProcessingStatus(selectedLesson));
   const avatarOnlyRerenderDisabled = (
@@ -2127,6 +2220,59 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
     handleScenePatch({ background_mode: nextMode }, 'Background mode updated.');
   }, [handleScenePatch, selectedSceneHasCustomBackground, selectedSceneOriginalAvailable, selectedSceneSourceBackgroundAvailable, selectedSceneSourceBackgroundMessage]);
+
+  const handleHighlightPreview = useCallback(async () => {
+    if (!selectedLesson?.id || !selectedScene?.page?.id || highlightPreviewBusy) return;
+    setHighlightPreviewBusy(true);
+    setHighlightPreviewMessage('');
+    setSceneActionError('');
+    try {
+      const style = selectedSceneHighlightEnabled ? selectedSceneHighlightStyle : 'none';
+      const payload = await previewTranscriptPageHighlight(
+        selectedLesson.id,
+        selectedScene.page.id,
+        {
+          style,
+          detector: selectedSceneHighlightDetector || 'auto',
+          draft_only: true,
+          forensic_debug: false,
+        },
+      );
+      if (payload?.page) {
+        replaceTranscriptPage(payload.page);
+      }
+      const previewUrl = textValue(payload?.preview_image_url || payload?.page?.editor_document?.scene?.highlight_preview_url);
+      if (previewUrl) {
+        const blobUrl = await fetchAuthenticatedAssetBlobUrl(previewUrl);
+        if (highlightPreviewObjectUrlRef.current) {
+          URL.revokeObjectURL(highlightPreviewObjectUrlRef.current);
+        }
+        highlightPreviewObjectUrlRef.current = blobUrl;
+        setHighlightPreviewImageUrl(blobUrl);
+      } else {
+        setHighlightPreviewImageUrl('');
+      }
+      if (payload?.fallback_used) {
+        setHighlightPreviewMessage('Highlight preview generated with fallback.');
+      } else {
+        setHighlightPreviewMessage('Highlight preview generated.');
+      }
+    } catch (err) {
+      setHighlightPreviewMessage('');
+      setSceneActionError(err.message || 'Highlight preview failed.');
+    } finally {
+      setHighlightPreviewBusy(false);
+    }
+  }, [
+    highlightPreviewBusy,
+    replaceTranscriptPage,
+    selectedLesson?.id,
+    selectedScene?.page?.id,
+    selectedSceneHighlightDetector,
+    selectedSceneHighlightEnabled,
+    selectedSceneHighlightStyle,
+    fetchAuthenticatedAssetBlobUrl,
+  ]);
 
   const handleSceneBackgroundUpload = useCallback(async (file) => {
     if (!file || !selectedLesson?.id || !selectedScene?.page?.id) return;
@@ -3033,9 +3179,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     width: 'min(100%, calc(72vh * 3 / 2))',
                   }}
                 >
-                  {selectedSceneBackgroundUrl || (!selectedLesson && coverPreviewUrl) ? (
+                  {selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
                     <img
-                      src={selectedSceneBackgroundUrl || coverPreviewUrl}
+                      src={selectedSceneBackgroundImageUrl || coverPreviewUrl}
                       alt="Selected scene preview"
                       className={`absolute inset-0 h-full w-full ${
                         selectedSceneMode === 'custom' ? 'opacity-90' : 'opacity-100'
@@ -3090,8 +3236,20 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         }}
                       >
                         <p
-                          className={`whitespace-pre-wrap font-semibold leading-snug ${
+                          className={`whitespace-pre-wrap leading-snug ${
                             selectedSceneMode === 'whiteboard' ? 'text-slate-900' : 'text-white'
+                          } ${
+                            selectedSceneActiveHighlightStyle === 'bold'
+                              ? 'font-extrabold tracking-[0.01em]'
+                              : 'font-semibold'
+                          } ${
+                            selectedSceneActiveHighlightStyle === 'box'
+                              ? `inline-block rounded-xl border-2 px-3 py-2 shadow-md ${
+                                selectedSceneMode === 'whiteboard'
+                                  ? 'border-slate-400 bg-white/90'
+                                  : 'border-white/75 bg-black/35'
+                              }`
+                              : ''
                           }`}
                           dir={selectedSceneTextDirection}
                           style={{
@@ -3548,6 +3706,80 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             />
                             <span className="mt-1 block text-[0.68rem]">{selectedSceneTextScale.toFixed(2)}x</span>
                           </label>
+
+                          <div className="space-y-2 rounded-xl bg-[var(--surface-container-high)] p-3">
+                            <p className="text-xs font-semibold text-[var(--text-secondary)]">Highlight preview</p>
+                            <label className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                              <input
+                                type="checkbox"
+                                checked={selectedSceneHighlightEnabled}
+                                onChange={(event) => handleScenePatch({ highlight_enabled: event.target.checked }, 'Highlight setting updated.')}
+                                disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                              />
+                              <span>Enable highlight</span>
+                            </label>
+                            <div className="space-y-1">
+                              <p className="text-[0.68rem] font-medium uppercase tracking-wide text-[var(--text-secondary)]">
+                                Quick style
+                              </p>
+                              <div className="flex flex-wrap gap-2">
+                                {[
+                                  { value: 'none', label: 'None' },
+                                  { value: 'box', label: 'Box' },
+                                  { value: 'bold', label: 'Bold' },
+                                ].map((option) => {
+                                  const active = selectedSceneHighlightStyle === option.value;
+                                  return (
+                                    <button
+                                      key={option.value}
+                                      type="button"
+                                      onClick={() => handleScenePatch({ highlight_style: option.value }, 'Highlight style updated.')}
+                                      disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                                      className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
+                                        active
+                                          ? 'border-[var(--border-strong)] bg-[var(--surface-container-high)] text-[var(--text-primary)]'
+                                          : 'border-[var(--border-subtle)] bg-[var(--surface-elevated)] text-[var(--text-primary)] hover:border-[var(--border-strong)]'
+                                      }`}
+                                    >
+                                      {option.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                            <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                              Style
+                              <select
+                                value={selectedSceneHighlightStyle}
+                                onChange={(event) => handleScenePatch({ highlight_style: event.target.value }, 'Highlight style updated.')}
+                                disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                                className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
+                              >
+                                <option value="none">None</option>
+                                <option value="box">Box</option>
+                                <option value="bold">Bold</option>
+                              </select>
+                            </label>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={handleHighlightPreview}
+                              disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                            >
+                              <Sparkles size={14} />
+                              <span>{highlightPreviewBusy ? 'Generating preview...' : 'Preview Highlight'}</span>
+                            </Button>
+                            {highlightPreviewImageUrl && (
+                              <img
+                                src={highlightPreviewImageUrl}
+                                alt="Highlight preview"
+                                className="h-24 w-full rounded-lg object-cover"
+                              />
+                            )}
+                            {highlightPreviewMessage && (
+                              <p className="text-xs text-[var(--text-secondary)]">{highlightPreviewMessage}</p>
+                            )}
+                          </div>
 
                           <label className="block text-xs font-medium text-[var(--text-secondary)]">
                             Upload custom background for this slide
