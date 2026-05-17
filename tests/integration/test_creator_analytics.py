@@ -123,7 +123,13 @@ def test_creator_roles_can_read_own_analytics(role: str):
     assert response.data["summary"]["unique_viewers"] == 1
     assert response.data["summary"]["likes"] == 1
     assert response.data["summary"]["comments"] == 1
-    assert response.data["tables"]["top_lessons"][0]["title"] == f"{role} analytics lesson"
+    top_lesson = response.data["tables"]["top_lessons"][0]
+    assert top_lesson["title"] == f"{role} analytics lesson"
+    assert top_lesson["average_progress"] == 75
+    assert top_lesson["progress_pct"] == 75
+    assert top_lesson["engagement_events"] == 3
+    activity_types = {row["type"] for row in response.data["recent_activity"]}
+    assert {"progress", "like", "comment"}.issubset(activity_types)
 
 
 @pytest.mark.django_db
@@ -150,6 +156,7 @@ def test_creator_analytics_is_scoped_to_current_creator():
     assert response.data["summary"]["comments"] == 1
     titles = [row["title"] for row in response.data["tables"]["top_lessons"]]
     assert titles == ["Owner lesson"]
+    assert all(row["lesson_title"] == "Owner lesson" for row in response.data["recent_activity"])
     assert "Other creator lesson" not in json.dumps(response.data)
 
 
@@ -188,6 +195,51 @@ def test_creator_endpoint_does_not_expose_viewer_identity_details():
     assert response.status_code == 200
     _assert_no_viewer_identity_keys(response.data)
     assert "creator_privacy_viewer" not in json.dumps(response.data)
+
+
+@pytest.mark.django_db
+def test_recent_activity_includes_comments_likes_and_progress_without_viewer_identity():
+    creator = _make_user("creator_activity_owner", role="publisher")
+    viewer = _make_user("creator_activity_viewer")
+    lesson = _make_project(creator, "Activity lesson")
+
+    LessonProgress.objects.create(user=viewer, project=lesson, progress_pct=65)
+    LessonLike.objects.create(user=viewer, project=lesson)
+    LessonComment.objects.create(user=viewer, project=lesson, text="Activity comment")
+
+    response = _client(creator).get("/api/v1/me/analytics/?range=30")
+
+    assert response.status_code == 200
+    recent_activity = response.data["recent_activity"]
+    by_type = {row["type"]: row for row in recent_activity}
+    assert {"progress", "like", "comment"}.issubset(by_type)
+    assert by_type["progress"]["label"] == "Progress"
+    assert by_type["progress"]["value"] == 65
+    assert by_type["progress"]["message"] == "A viewer made progress on Activity lesson."
+    assert by_type["like"]["message"] == "A viewer liked Activity lesson."
+    assert by_type["comment"]["message"] == "A viewer commented on Activity lesson."
+    _assert_no_viewer_identity_keys(recent_activity)
+    assert "creator_activity_viewer" not in json.dumps(recent_activity)
+
+
+@pytest.mark.django_db
+def test_top_lessons_use_average_progress_when_lesson_is_not_completed():
+    creator = _make_user("creator_progress_owner", role="teacher")
+    viewer = _make_user("creator_progress_viewer")
+    lesson = _make_project(creator, "Progress not complete")
+
+    LessonProgress.objects.create(user=viewer, project=lesson, progress_pct=86)
+
+    response = _client(creator).get("/api/v1/me/analytics/?range=30")
+
+    assert response.status_code == 200
+    top_lesson = response.data["tables"]["top_lessons"][0]
+    assert top_lesson["title"] == "Progress not complete"
+    assert top_lesson["completion_rate"] == 0
+    assert top_lesson["completion_pct"] == 0
+    assert top_lesson["average_progress"] == 86
+    assert top_lesson["average_progress_pct"] == 86
+    assert top_lesson["progress_pct"] == 86
 
 
 @pytest.mark.django_db
@@ -233,4 +285,5 @@ def test_creator_analytics_honors_category_and_range_filters():
     assert response.data["summary"]["total_views"] == 1
     assert response.data["filters"]["category"] == cat_a.slug
     assert {row["category_slug"] for row in response.data["tables"]["top_lessons"]} == {cat_a.slug}
+    assert {row["lesson_title"] for row in response.data["recent_activity"]} == {"Recent A lesson"}
     assert "Recent B lesson" not in json.dumps(response.data)

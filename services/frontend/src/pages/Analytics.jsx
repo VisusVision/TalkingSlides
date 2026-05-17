@@ -27,6 +27,15 @@ const RANGE_OPTIONS = [
   { key: '90', label: '90 days' },
 ];
 
+const DONUT_COLORS = [
+  'var(--accent-primary)',
+  '#38bdf8',
+  '#34d399',
+  '#f59e0b',
+  '#fb7185',
+  '#a78bfa',
+];
+
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -138,24 +147,31 @@ function normalizeTopLessons(source) {
   if (!Array.isArray(source)) return [];
   return source
     .slice(0, 8)
-    .map((item, index) => ({
-      id: item?.lesson_id || item?.id || `top-${index}`,
-      title: String(item?.title || item?.name || `Lesson ${index + 1}`),
-      retentionPct: toNumber(
-        item?.completion_rate ?? item?.completion_pct ?? item?.average_progress ?? item?.retention_pct,
-        0,
-      ),
-      views: toNumber(item?.views ?? item?.total_views ?? item?.video_plays, 0),
-      engagementEvents: toNumber(item?.engagement_events, 0),
-      likes: toNumber(item?.likes, 0),
-      comments: toNumber(item?.comments, 0),
-    }))
+    .map((item, index) => {
+      const completionPct = toNumber(item?.completion_pct ?? item?.completion_rate ?? item?.completionRate, 0);
+      const progressPct = toNumber(
+        item?.progress_pct ?? item?.average_progress_pct ?? item?.average_progress ?? item?.retention_pct,
+        completionPct,
+      );
+      return {
+        id: item?.lesson_id || item?.id || `top-${index}`,
+        title: String(item?.title || item?.name || `Lesson ${index + 1}`),
+        progressPct,
+        completionPct,
+        retentionPct: progressPct,
+        views: toNumber(item?.views ?? item?.total_views ?? item?.video_plays, 0),
+        engagementEvents: toNumber(item?.engagement_events, 0),
+        likes: toNumber(item?.likes, 0),
+        comments: toNumber(item?.comments, 0),
+      };
+    })
     .filter((item) => (
       item.views > 0
       || item.engagementEvents > 0
       || item.likes > 0
       || item.comments > 0
-      || item.retentionPct > 0
+      || item.progressPct > 0
+      || item.completionPct > 0
     ));
 }
 
@@ -164,9 +180,10 @@ function normalizeRecentLessons(source) {
   return source.slice(0, 8).map((item, index) => ({
     id: item?.lesson_id || item?.id || `recent-${index}`,
     title: String(item?.title || item?.name || `Lesson ${index + 1}`),
-    publishedAt: String(item?.published_at || item?.created_at || item?.updated_at || ''),
+    publishedAt: String(item?.latest_activity_at || item?.published_at || item?.updated_at || item?.created_at || ''),
     views: toNumber(item?.views ?? item?.total_views ?? item?.video_plays, 0),
-    completionPct: toNumber(item?.completion_rate ?? item?.completion_pct ?? item?.average_progress, 0),
+    completionPct: toNumber(item?.completion_pct ?? item?.completion_rate, 0),
+    progressPct: toNumber(item?.progress_pct ?? item?.average_progress_pct ?? item?.average_progress, 0),
     engagementEvents: toNumber(item?.engagement_events, 0),
     likes: toNumber(item?.likes, 0),
     comments: toNumber(item?.comments, 0),
@@ -175,12 +192,13 @@ function normalizeRecentLessons(source) {
 
 function normalizeRecentActivity(source) {
   if (!Array.isArray(source)) return [];
-  return source.slice(0, 8).map((item, index) => ({
+  return source.slice(0, 30).map((item, index) => ({
     id: `${item?.type || 'activity'}-${item?.lesson_id || index}-${item?.timestamp || index}`,
     type: String(item?.type || 'activity'),
+    label: String(item?.label || item?.type || 'Activity'),
     timestamp: String(item?.timestamp || ''),
     title: String(item?.lesson_title || item?.title || 'Lesson activity'),
-    description: String(item?.description || 'Activity recorded.'),
+    description: String(item?.message || item?.description || 'Activity recorded.'),
   }));
 }
 
@@ -354,6 +372,73 @@ function CompletionRing({ value }) {
   );
 }
 
+function CategoryDonut({ categories }) {
+  const visibleCategories = categories.slice(0, 6);
+  const total = visibleCategories.reduce((sum, category) => sum + Math.max(0, toNumber(category.value, 0)), 0);
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+
+  if (total <= 0 || visibleCategories.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-5 rounded-2xl bg-[color:var(--surface-muted)]/25 p-4">
+      <div className="relative h-28 w-28 shrink-0">
+        <svg viewBox="0 0 112 112" className="h-full w-full -rotate-90">
+          <circle
+            cx="56"
+            cy="56"
+            r={radius}
+            fill="none"
+            stroke="var(--surface-muted)"
+            strokeWidth="12"
+          />
+          {visibleCategories.map((category, index) => {
+            const value = Math.max(0, toNumber(category.value, 0));
+            const segmentLength = (value / total) * circumference;
+            const dashOffset = -offset;
+            offset += segmentLength;
+            return (
+              <circle
+                key={`donut-${category.id}`}
+                cx="56"
+                cy="56"
+                r={radius}
+                fill="none"
+                stroke={DONUT_COLORS[index % DONUT_COLORS.length]}
+                strokeWidth="12"
+                strokeLinecap="butt"
+                strokeDasharray={`${segmentLength} ${circumference - segmentLength}`}
+                strokeDashoffset={dashOffset}
+              />
+            );
+          })}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="font-['Manrope'] text-lg font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">
+            {compactNumber(total)}
+          </span>
+          <span className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">events</span>
+        </div>
+      </div>
+      <div className="min-w-0 flex-1 space-y-2">
+        {visibleCategories.slice(0, 4).map((category, index) => (
+          <div key={`legend-${category.id}`} className="flex items-center justify-between gap-3 text-xs">
+            <span className="flex min-w-0 items-center gap-2">
+              <span
+                className="h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: DONUT_COLORS[index % DONUT_COLORS.length] }}
+              />
+              <span className="line-clamp-1 font-semibold text-[var(--text-primary)]">{category.name}</span>
+            </span>
+            <span className="font-semibold text-[var(--text-secondary)]">{compactNumber(category.value)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, children }) {
   return (
     <SurfaceCard className="min-h-[10.5rem] space-y-4">
@@ -384,6 +469,7 @@ export default function Analytics({ user }) {
   const [stats, setStats] = useState(() => emptyAnalyticsStats());
   const [categories, setCategories] = useState([]);
   const [analyticsCategories, setAnalyticsCategories] = useState([]);
+  const [recentActivityExpanded, setRecentActivityExpanded] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState('');
@@ -497,6 +583,9 @@ export default function Analytics({ user }) {
     () => Math.max(1, ...stats.categoryBreakdown.map((item) => toNumber(item.value, 0))),
     [stats.categoryBreakdown],
   );
+  const visibleRecentActivity = recentActivityExpanded
+    ? stats.recentActivity
+    : stats.recentActivity.slice(0, 3);
 
   return (
     <div className="space-y-7 pb-8">
@@ -726,8 +815,12 @@ export default function Analytics({ user }) {
           </div>
           {stats.categoryBreakdown.length > 0 ? (
             <div className="space-y-4">
-              {stats.categoryBreakdown.map((category) => {
+              {stats.categoryBreakdown.length <= 6 && (
+                <CategoryDonut categories={stats.categoryBreakdown} />
+              )}
+              {stats.categoryBreakdown.map((category, index) => {
                 const width = Math.max(6, Math.round((category.value / categoryMax) * 100));
+                const color = DONUT_COLORS[index % DONUT_COLORS.length];
                 return (
                   <article key={category.id} className="space-y-2">
                     <div className="flex items-center justify-between gap-3 text-sm">
@@ -735,7 +828,7 @@ export default function Analytics({ user }) {
                       <p className="text-xs font-semibold text-[var(--accent-primary)]">{compactNumber(category.value)}</p>
                     </div>
                     <div className="h-2.5 rounded-full bg-[color:var(--surface-muted)]">
-                      <div className="h-full rounded-full bg-[image:var(--accent-gradient)]" style={{ width: `${width}%` }} />
+                      <div className="h-full rounded-full" style={{ width: `${width}%`, backgroundColor: color }} />
                     </div>
                     <p className="text-[0.68rem] text-[var(--text-secondary)]">
                       {compactNumber(category.views)} views / {compactNumber(category.engagement)} events / {compactNumber(category.lessonCount)} lessons
@@ -767,15 +860,20 @@ export default function Analytics({ user }) {
                   <div className="min-w-0 space-y-2">
                     <div className="flex items-start justify-between gap-3">
                       <p className="line-clamp-2 text-sm font-semibold text-[var(--text-primary)]">{lesson.title}</p>
-                      <span className="shrink-0 rounded-full bg-emerald-400/15 px-2 py-1 text-[0.68rem] font-semibold text-emerald-300">
-                        {percent(lesson.retentionPct)}
+                      <span className={`shrink-0 rounded-full px-2 py-1 text-[0.68rem] font-semibold ${
+                        lesson.progressPct > 0
+                          ? 'bg-emerald-400/15 text-emerald-300'
+                          : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
+                      }`}>
+                        {lesson.progressPct > 0 ? `${percent(lesson.progressPct)} progress` : 'No progress yet'}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full bg-[color:var(--surface-muted)]">
-                      <div className="h-full rounded-full bg-[image:var(--accent-gradient)]" style={{ width: percent(lesson.retentionPct) }} />
+                      <div className="h-full rounded-full bg-[image:var(--accent-gradient)]" style={{ width: percent(lesson.progressPct) }} />
                     </div>
                     <p className="text-[0.68rem] text-[var(--text-secondary)]">
-                      {compactNumber(lesson.views)} views / {compactNumber(lesson.engagementEvents)} events / {compactNumber(lesson.likes)} likes
+                      {compactNumber(lesson.views)} views / {compactNumber(lesson.engagementEvents)} events / {compactNumber(lesson.likes)} likes / {compactNumber(lesson.comments)} comments
+                      {lesson.completionPct > 0 ? ` / ${percent(lesson.completionPct)} completed` : ''}
                     </p>
                   </div>
                 </article>
@@ -787,24 +885,40 @@ export default function Analytics({ user }) {
         </SurfaceCard>
 
         <SurfaceCard className="space-y-6">
-          <div>
-            <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recent Activity</h2>
-            <p className="text-xs text-[var(--text-secondary)]">Aggregate activity only. Viewer identities are not shown.</p>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recent Activity</h2>
+              <p className="text-xs text-[var(--text-secondary)]">Aggregate activity only. Viewer identities are not shown.</p>
+            </div>
+            {stats.recentActivity.length > 3 && (
+              <button
+                type="button"
+                onClick={() => setRecentActivityExpanded((value) => !value)}
+                className="focus-ring shrink-0 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)]"
+              >
+                {recentActivityExpanded ? 'Show less' : `Show ${stats.recentActivity.length - 3} more`}
+              </button>
+            )}
           </div>
           {stats.recentActivity.length > 0 ? (
             <div className="space-y-3">
-              {stats.recentActivity.map((activity) => (
+              {visibleRecentActivity.map((activity) => (
                 <article key={activity.id} className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-3">
                   <span className="mt-1.5 h-3 w-3 rounded-full bg-[var(--accent-primary)] shadow-[0_0_0_4px_rgba(208,188,255,0.14)]" />
                   <div className="rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
-                    <p className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
+                      <span className="shrink-0 rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
+                        {activity.label}
+                      </span>
+                    </div>
                     <p className="mt-1 text-sm text-[var(--text-secondary)]">{activity.description}</p>
                   </div>
                 </article>
               ))}
             </div>
           ) : (
-            <EmptyPanel message="Recent activity will appear after viewers progress, like, or comment on a lesson." />
+            <EmptyPanel message="Activity will appear here after viewers like, comment, or make progress on your lessons." />
           )}
         </SurfaceCard>
       </section>
@@ -821,7 +935,7 @@ export default function Analytics({ user }) {
               <tr className="text-[0.62rem] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
                 <th className="px-5 py-3 font-semibold sm:px-8">Lesson Name</th>
                 <th className="px-5 py-3 font-semibold sm:px-8">Views</th>
-                <th className="px-5 py-3 font-semibold sm:px-8">Completion</th>
+                <th className="px-5 py-3 font-semibold sm:px-8">Progress</th>
                 <th className="px-5 py-3 font-semibold sm:px-8">Engagement</th>
               </tr>
             </thead>
@@ -835,12 +949,16 @@ export default function Analytics({ user }) {
                     </td>
                     <td className="px-5 py-4 text-sm text-[var(--text-primary)] sm:px-8">{compactNumber(lesson.views)}</td>
                     <td className="px-5 py-4 sm:px-8">
-                      <div className="flex items-center gap-2">
-                        <div className="h-1.5 w-14 rounded-full bg-[color:var(--surface-muted)]">
-                          <div className="h-full rounded-full bg-emerald-400" style={{ width: percent(lesson.completionPct) }} />
+                      {lesson.progressPct > 0 ? (
+                        <div className="flex items-center gap-2">
+                          <div className="h-1.5 w-14 rounded-full bg-[color:var(--surface-muted)]">
+                            <div className="h-full rounded-full bg-emerald-400" style={{ width: percent(lesson.progressPct) }} />
+                          </div>
+                          <span className="text-xs font-medium text-[var(--text-primary)]">{percent(lesson.progressPct)}</span>
                         </div>
-                        <span className="text-xs font-medium text-[var(--text-primary)]">{percent(lesson.completionPct)}</span>
-                      </div>
+                      ) : (
+                        <span className="text-xs text-[var(--text-secondary)]">No progress yet</span>
+                      )}
                     </td>
                     <td className="px-5 py-4 text-sm text-[var(--text-primary)] sm:px-8">
                       {compactNumber(lesson.engagementEvents)}

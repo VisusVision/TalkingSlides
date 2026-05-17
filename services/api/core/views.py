@@ -8034,6 +8034,52 @@ class CreatorAnalyticsView(APIView):
             return 100.0 if current_value > 0 else 0.0
         return round(((current_value - previous_value) / previous_value) * 100.0, 2)
 
+    def _progress_pct(self, raw_value) -> float:
+        try:
+            numeric = float(raw_value or 0)
+        except (TypeError, ValueError):
+            numeric = 0.0
+        if 0 < numeric < 1:
+            numeric *= 100.0
+        return max(0.0, min(100.0, numeric))
+
+    def _remember_latest_activity(self, lesson_payload: dict | None, timestamp) -> None:
+        if not lesson_payload or not timestamp:
+            return
+        current = lesson_payload.get("_latest_activity_at")
+        if current is None or timestamp > current:
+            lesson_payload["_latest_activity_at"] = timestamp
+
+    def _activity_item(self, *, activity_type: str, timestamp, lesson_id: int, lesson_title: str, value=None) -> dict:
+        labels = {
+            "progress": "Progress",
+            "like": "Like",
+            "comment": "Comment",
+        }
+        if activity_type == "progress":
+            message = f"A viewer made progress on {lesson_title}."
+            description = f"A viewer reached {int(self._progress_pct(value))}% progress on {lesson_title}."
+        elif activity_type == "like":
+            message = f"A viewer liked {lesson_title}."
+            description = message
+        elif activity_type == "comment":
+            message = f"A viewer commented on {lesson_title}."
+            description = message
+        else:
+            message = f"Activity recorded for {lesson_title}."
+            description = message
+
+        return {
+            "type": activity_type,
+            "label": labels.get(activity_type, "Activity"),
+            "message": message,
+            "description": description,
+            "timestamp": timestamp.isoformat() if timestamp else "",
+            "lesson_id": lesson_id,
+            "lesson_title": lesson_title,
+            "value": value,
+        }
+
     def get(self, request):
         if not _is_verified_teacher(request.user):
             return Response(
@@ -8091,10 +8137,12 @@ class CreatorAnalyticsView(APIView):
             for project in project_list
         }
 
-        progress_rows = list(progress_qs.values("project_id", "user_id", "progress_pct"))
+        progress_rows = list(progress_qs.values("project_id", "user_id", "progress_pct", "updated_at"))
+        for row in progress_rows:
+            row["progress_pct"] = self._progress_pct(row.get("progress_pct"))
         progress_count = len(progress_rows)
         unique_viewers = len({row["user_id"] for row in progress_rows})
-        completed_rows = [row for row in progress_rows if int(row["progress_pct"] or 0) >= 90]
+        completed_rows = [row for row in progress_rows if float(row["progress_pct"] or 0) >= 90]
         completion_rate = round((len(completed_rows) / progress_count) * 100.0, 2) if progress_count else 0.0
         average_progress = (
             round(sum(float(row["progress_pct"] or 0) for row in progress_rows) / progress_count, 2)
@@ -8147,11 +8195,17 @@ class CreatorAnalyticsView(APIView):
                 "is_published": bool(project.is_published),
                 "created_at": project.created_at.isoformat() if project.created_at else "",
                 "updated_at": project.updated_at.isoformat() if project.updated_at else "",
+                "latest_activity_at": project.updated_at.isoformat() if project.updated_at else "",
+                "_latest_activity_at": project.updated_at or project.created_at,
                 "views": 0,
                 "video_plays": 0,
+                "progress_events": 0,
                 "unique_viewers": 0,
                 "average_progress": 0.0,
+                "average_progress_pct": 0.0,
+                "progress_pct": 0.0,
                 "completion_rate": 0.0,
+                "completion_pct": 0.0,
                 "completion_count": 0,
                 "likes": 0,
                 "comments": 0,
@@ -8168,21 +8222,27 @@ class CreatorAnalyticsView(APIView):
             progress_pct = float(row["progress_pct"] or 0)
             lesson["views"] += 1
             lesson["video_plays"] += 1
+            lesson["progress_events"] += 1
             lesson["estimated_watch_minutes"] += float(duration_map.get(row["project_id"], 8)) * (progress_pct / 100.0)
-            if int(progress_pct) >= 90:
+            if progress_pct >= 90:
                 lesson["completion_count"] += 1
             by_lesson_users.setdefault(row["project_id"], set()).add(row["user_id"])
             by_lesson_progress_sum[row["project_id"]] = by_lesson_progress_sum.get(row["project_id"], 0.0) + progress_pct
+            self._remember_latest_activity(lesson, row.get("updated_at"))
 
         for row in like_qs.values("project_id").annotate(total=Count("id")):
             lesson = lesson_rollup.get(row["project_id"])
             if lesson:
                 lesson["likes"] = int(row["total"])
+        for row in like_qs.values("project_id", "created_at"):
+            self._remember_latest_activity(lesson_rollup.get(row["project_id"]), row.get("created_at"))
 
         for row in comment_qs.values("project_id").annotate(total=Count("id")):
             lesson = lesson_rollup.get(row["project_id"])
             if lesson:
                 lesson["comments"] = int(row["total"])
+        for row in comment_qs.values("project_id", "created_at"):
+            self._remember_latest_activity(lesson_rollup.get(row["project_id"]), row.get("created_at"))
 
         lessons_table = []
         for lesson_id, payload in lesson_rollup.items():
@@ -8190,13 +8250,25 @@ class CreatorAnalyticsView(APIView):
             views = payload["views"]
             payload["unique_viewers"] = len(users)
             payload["average_progress"] = round((by_lesson_progress_sum.get(lesson_id, 0.0) / views), 2) if views else 0.0
+            payload["average_progress_pct"] = payload["average_progress"]
+            payload["progress_pct"] = payload["average_progress"]
             payload["completion_rate"] = round((payload["completion_count"] / views) * 100.0, 2) if views else 0.0
+            payload["completion_pct"] = payload["completion_rate"]
             payload["estimated_watch_minutes"] = round(payload["estimated_watch_minutes"], 2)
             payload["engagement_events"] = views + payload["likes"] + payload["comments"]
+            latest_activity_at = payload.pop("_latest_activity_at", None)
+            payload["latest_activity_at"] = latest_activity_at.isoformat() if latest_activity_at else payload["updated_at"]
             lessons_table.append(payload)
 
         if sort_by == "completion":
-            lessons_table.sort(key=lambda item: item["completion_rate"], reverse=True)
+            lessons_table.sort(
+                key=lambda item: (
+                    item["completion_rate"],
+                    item["average_progress"],
+                    item["engagement_events"],
+                ),
+                reverse=True,
+            )
         elif sort_by == "watch_time":
             lessons_table.sort(key=lambda item: item["estimated_watch_minutes"], reverse=True)
         elif sort_by == "likes":
@@ -8206,7 +8278,14 @@ class CreatorAnalyticsView(APIView):
         elif sort_by == "date":
             lessons_table.sort(key=lambda item: item["created_at"], reverse=True)
         else:
-            lessons_table.sort(key=lambda item: item["views"], reverse=True)
+            lessons_table.sort(
+                key=lambda item: (
+                    item["engagement_events"],
+                    item["views"],
+                    item["latest_activity_at"],
+                ),
+                reverse=True,
+            )
 
         category_rows = {}
         for lesson in lessons_table:
@@ -8273,41 +8352,42 @@ class CreatorAnalyticsView(APIView):
         recent_activity = []
         for progress in progress_qs.select_related("project").order_by("-updated_at")[:25]:
             recent_activity.append(
-                {
-                    "type": "progress",
-                    "timestamp": progress.updated_at.isoformat(),
-                    "lesson_id": progress.project_id,
-                    "lesson_title": progress.project.title,
-                    "value": int(progress.progress_pct),
-                    "description": f"Progress reached {int(progress.progress_pct)}% on {progress.project.title}.",
-                }
+                self._activity_item(
+                    activity_type="progress",
+                    timestamp=progress.updated_at,
+                    lesson_id=progress.project_id,
+                    lesson_title=progress.project.title,
+                    value=int(self._progress_pct(progress.progress_pct)),
+                )
             )
         for like in like_qs.select_related("project").order_by("-created_at")[:20]:
             recent_activity.append(
-                {
-                    "type": "like",
-                    "timestamp": like.created_at.isoformat(),
-                    "lesson_id": like.project_id,
-                    "lesson_title": like.project.title,
-                    "value": 1,
-                    "description": f"Like recorded for {like.project.title}.",
-                }
+                self._activity_item(
+                    activity_type="like",
+                    timestamp=like.created_at,
+                    lesson_id=like.project_id,
+                    lesson_title=like.project.title,
+                    value=1,
+                )
             )
         for comment in comment_qs.select_related("project").order_by("-created_at")[:20]:
             recent_activity.append(
-                {
-                    "type": "comment",
-                    "timestamp": comment.created_at.isoformat(),
-                    "lesson_id": comment.project_id,
-                    "lesson_title": comment.project.title,
-                    "value": 1,
-                    "description": f"Comment recorded for {comment.project.title}.",
-                }
+                self._activity_item(
+                    activity_type="comment",
+                    timestamp=comment.created_at,
+                    lesson_id=comment.project_id,
+                    lesson_title=comment.project.title,
+                    value=1,
+                )
             )
         recent_activity.sort(key=lambda item: item["timestamp"], reverse=True)
         recent_activity = recent_activity[:30]
 
-        recent_lessons = sorted(lessons_table, key=lambda item: item["created_at"], reverse=True)[:20]
+        recent_lessons = sorted(
+            lessons_table,
+            key=lambda item: item.get("latest_activity_at") or item.get("updated_at") or item.get("created_at") or "",
+            reverse=True,
+        )[:20]
 
         return Response(
             {
