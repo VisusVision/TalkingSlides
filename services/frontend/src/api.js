@@ -230,9 +230,10 @@ export async function updateMyProfile(payload = {}) {
   return data;
 }
 
-export async function fetchNotifications({ limit = 20, unreadOnly = false } = {}) {
+export async function fetchNotifications({ limit = 20, offset = 0, unreadOnly = false } = {}) {
   const params = new URLSearchParams();
   params.set("limit", String(limit || 20));
+  if (offset) params.set("offset", String(offset));
   if (unreadOnly) params.set("unread_only", "1");
   const res = await fetch(`${API_BASE_URL}/me/notifications/?${params.toString()}`, {
     headers: authHeaders(),

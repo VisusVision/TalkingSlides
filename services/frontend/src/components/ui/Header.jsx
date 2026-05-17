@@ -7,30 +7,17 @@ import {
   markAllNotificationsRead,
   markNotificationRead,
 } from '../../api';
+import {
+  formatNotificationTime,
+  isSafeNotificationActionUrl,
+  NOTIFICATIONS_CHANGED_EVENT,
+  notifyNotificationsChanged,
+  notificationResults,
+} from '../../utils/notifications';
 import ProfileMenu from './ProfileMenu';
 
-const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics']);
-
-function notificationResults(payload) {
-  if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload?.results)) return payload.results;
-  return [];
-}
-
-function formatNotificationTime(value) {
-  if (!value) return '';
-  const created = new Date(value);
-  if (Number.isNaN(created.getTime())) return '';
-  const seconds = Math.max(0, Math.floor((Date.now() - created.getTime()) / 1000));
-  if (seconds < 60) return 'Just now';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-}
+const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics', '/notifications']);
+const NOTIFICATION_DROPDOWN_LIMIT = 5;
 
 export default function Header({
   searchQuery,
@@ -49,6 +36,7 @@ export default function Header({
   const [notifications, setNotifications] = useState([]);
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   const [notificationsError, setNotificationsError] = useState('');
+  const [notificationFilter, setNotificationFilter] = useState('all');
   const [unreadCount, setUnreadCount] = useState(0);
   const [markAllLoading, setMarkAllLoading] = useState(false);
 
@@ -75,9 +63,14 @@ export default function Header({
     };
 
     loadCount();
+    const handleNotificationsChanged = () => {
+      loadCount();
+    };
+    window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, handleNotificationsChanged);
     const intervalId = window.setInterval(loadCount, 60000);
     return () => {
       cancelled = true;
+      window.removeEventListener(NOTIFICATIONS_CHANGED_EVENT, handleNotificationsChanged);
       window.clearInterval(intervalId);
     };
   }, [isAuthenticated, user?.id]);
@@ -88,7 +81,10 @@ export default function Header({
     let cancelled = false;
     setNotificationsLoading(true);
     setNotificationsError('');
-    fetchNotifications({ limit: 20, unreadOnly: false })
+    fetchNotifications({
+      limit: NOTIFICATION_DROPDOWN_LIMIT,
+      unreadOnly: notificationFilter === 'unread',
+    })
       .then((data) => {
         if (!cancelled) setNotifications(notificationResults(data));
       })
@@ -102,7 +98,7 @@ export default function Header({
     return () => {
       cancelled = true;
     };
-  }, [notificationsOpen, isAuthenticated, user?.id]);
+  }, [notificationsOpen, isAuthenticated, notificationFilter, user?.id]);
 
   useEffect(() => {
     setNotificationsOpen(false);
@@ -124,10 +120,13 @@ export default function Header({
     try {
       await markNotificationRead(notification.id);
       setNotifications((items) => (
-        items.map((item) => (item.id === notification.id ? { ...item, is_read: true } : item))
+        notificationFilter === 'unread'
+          ? items.filter((item) => item.id !== notification.id)
+          : items.map((item) => (item.id === notification.id ? { ...item, is_read: true } : item))
       ));
       if (wasUnread) {
         setUnreadCount((count) => Math.max(0, count - 1));
+        notifyNotificationsChanged();
       }
     } catch (error) {
       setNotificationsError(error?.message || 'Failed to update notification');
@@ -135,7 +134,7 @@ export default function Header({
     }
 
     const actionUrl = String(notification.action_url || '').trim();
-    if (actionUrl.startsWith('/') && !actionUrl.startsWith('//')) {
+    if (isSafeNotificationActionUrl(actionUrl)) {
       setNotificationsOpen(false);
       navigate(actionUrl);
     }
@@ -147,7 +146,12 @@ export default function Header({
     try {
       await markAllNotificationsRead();
       setUnreadCount(0);
-      setNotifications((items) => items.map((item) => ({ ...item, is_read: true })));
+      setNotifications((items) => (
+        notificationFilter === 'unread'
+          ? []
+          : items.map((item) => ({ ...item, is_read: true }))
+      ));
+      notifyNotificationsChanged();
     } catch (error) {
       setNotificationsError(error?.message || 'Failed to update notifications');
     } finally {
@@ -221,22 +225,51 @@ export default function Header({
                       </button>
                     </div>
 
+                    <div className="flex items-center gap-1 border-b border-[color:var(--border-subtle)] px-3 py-2">
+                      {['all', 'unread'].map((filter) => {
+                        const selected = notificationFilter === filter;
+                        return (
+                          <button
+                            key={filter}
+                            type="button"
+                            onClick={() => setNotificationFilter(filter)}
+                            className={`focus-ring h-8 rounded-full px-3 text-xs font-semibold capitalize transition ${
+                              selected
+                                ? 'bg-[color:rgba(107,56,212,0.12)] text-[var(--text-primary)] dark:bg-[color:rgba(208,188,255,0.2)]'
+                                : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]'
+                            }`}
+                          >
+                            {filter}
+                          </button>
+                        );
+                      })}
+                    </div>
+
                     <div className="max-h-[26rem] overflow-y-auto">
                       {notificationsLoading && (
-                        <div className="px-4 py-5 text-sm text-[var(--text-secondary)]">
-                          Loading notifications...
+                        <div className="px-4 py-6 text-sm text-[var(--text-secondary)]">
+                          <p className="font-semibold text-[var(--text-primary)]">Loading notifications</p>
+                          <p className="mt-1 text-xs">Checking the latest activity.</p>
                         </div>
                       )}
 
                       {!notificationsLoading && notificationsError && (
-                        <div className="px-4 py-5 text-sm text-red-600">
-                          {notificationsError}
+                        <div className="px-4 py-6 text-sm text-red-600">
+                          <p className="font-semibold">Unable to load notifications</p>
+                          <p className="mt-1 text-xs">{notificationsError}</p>
                         </div>
                       )}
 
                       {!notificationsLoading && !notificationsError && notifications.length === 0 && (
-                        <div className="px-4 py-5 text-sm text-[var(--text-secondary)]">
-                          No notifications yet.
+                        <div className="px-4 py-7 text-sm text-[var(--text-secondary)]">
+                          <p className="font-semibold text-[var(--text-primary)]">
+                            {notificationFilter === 'unread' ? 'No unread notifications' : 'No notifications yet'}
+                          </p>
+                          <p className="mt-1 text-xs">
+                            {notificationFilter === 'unread'
+                              ? 'Everything in this view has been read.'
+                              : 'Comments, followed publisher posts, and render updates will appear here.'}
+                          </p>
                         </div>
                       )}
 
@@ -269,6 +302,16 @@ export default function Header({
                           </button>
                         );
                       })}
+                    </div>
+
+                    <div className="border-t border-[color:var(--border-subtle)] p-2">
+                      <Link
+                        to="/notifications"
+                        onClick={() => setNotificationsOpen(false)}
+                        className="focus-ring flex h-9 items-center justify-center rounded-full text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-accent-soft)]"
+                      >
+                        View all notifications
+                      </Link>
                     </div>
                   </div>
                 )}

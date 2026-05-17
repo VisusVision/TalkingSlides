@@ -9007,6 +9007,11 @@ class UserNotificationListView(APIView):
         except (TypeError, ValueError):
             limit = 20
         limit = max(1, min(limit, 50))
+        try:
+            offset = int(request.query_params.get("offset", 0))
+        except (TypeError, ValueError):
+            offset = 0
+        offset = max(0, offset)
         unread_only = str(request.query_params.get("unread_only", "0")).strip().lower() in {
             "1",
             "true",
@@ -9020,14 +9025,22 @@ class UserNotificationListView(APIView):
         )
         if unread_only:
             queryset = queryset.filter(is_read=False)
-        notifications = list(queryset[:limit])
+        total_count = queryset.count()
+        notifications = list(queryset[offset:offset + limit])
+        next_offset = offset + len(notifications)
+        has_more = next_offset < total_count
         return Response(
             {
                 "results": NotificationSerializer(
                     notifications,
                     many=True,
                     context={"request": request},
-                ).data
+                ).data,
+                "count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "next_offset": next_offset if has_more else None,
+                "has_more": has_more,
             }
         )
 
