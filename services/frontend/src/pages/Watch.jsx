@@ -200,6 +200,9 @@ function WatchStudyPanel({
   saveActionLabel,
   saveHint,
 }) {
+  return (
+    <SurfaceCard data-testid="study-mode-panel" className="space-y-3 p-3 xl:sticky xl:top-4">
+      <div className="space-y-2">
         {avatar.enabled ? (
           <AvatarOverlayLayer
             lessonId={lesson?.id}
