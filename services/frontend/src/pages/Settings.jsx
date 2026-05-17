@@ -28,6 +28,7 @@ import {
   updateMyProfile,
   uploadAvatarImage,
   uploadAvatarVideo,
+  uploadProfileAssets,
   uploadVoiceSample,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
@@ -41,6 +42,17 @@ const DEFAULT_NOTIFICATION_PREFERENCES = {
   renderUpdates: true,
   followedPublisherLessons: true,
 };
+
+const SOCIAL_LINK_FIELDS = [
+  { key: 'website', label: 'Website' },
+  { key: 'youtube', label: 'YouTube' },
+  { key: 'x', label: 'X' },
+  { key: 'twitter', label: 'Twitter' },
+  { key: 'instagram', label: 'Instagram' },
+  { key: 'linkedin', label: 'LinkedIn' },
+  { key: 'github', label: 'GitHub' },
+  { key: 'facebook', label: 'Facebook' },
+];
 
 const THEME_OPTIONS = [
   {
@@ -91,10 +103,21 @@ function resolvePreviewVideoUrl(payload) {
 }
 
 function profileDraftFromUser(user) {
+  const profile = user?.profile || {};
   return {
     first_name: String(user?.first_name || ''),
     last_name: String(user?.last_name || ''),
-    bio: String(user?.profile?.bio || ''),
+    display_name: String(profile.display_name || ''),
+    bio: String(profile.bio || ''),
+    website_url: String(profile.website_url || ''),
+    contact_email: String(profile.contact_email || ''),
+    social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
+      ...acc,
+      [field.key]: String(profile.social_links?.[field.key] || ''),
+    }), {}),
+    is_public_profile: Boolean(profile.is_public_profile),
+    banner_url: String(profile.banner_url || ''),
+    logo_url: String(profile.logo_url || ''),
   };
 }
 
@@ -102,11 +125,23 @@ function profileDraftFromPayload(payload) {
   return {
     first_name: String(payload?.first_name || ''),
     last_name: String(payload?.last_name || ''),
+    display_name: String(payload?.display_name || ''),
     bio: String(payload?.bio || ''),
+    website_url: String(payload?.website_url || ''),
+    contact_email: String(payload?.contact_email || ''),
+    social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
+      ...acc,
+      [field.key]: String(payload?.social_links?.[field.key] || ''),
+    }), {}),
+    is_public_profile: Boolean(payload?.is_public_profile),
+    banner_url: String(payload?.banner_url || ''),
+    logo_url: String(payload?.logo_url || ''),
   };
 }
 
 function displayNameFromDraft(draft, user) {
+  const customName = String(draft.display_name || '').trim();
+  if (customName) return customName;
   const fullName = [draft.first_name, draft.last_name].map((value) => String(value || '').trim()).filter(Boolean).join(' ');
   return fullName || user?.username || 'VISUS User';
 }
@@ -190,6 +225,10 @@ export default function Settings({ user, onUserRefresh }) {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
+  const [bannerFile, setBannerFile] = useState(null);
+  const [logoFile, setLogoFile] = useState(null);
+  const [bannerPreviewUrl, setBannerPreviewUrl] = useState('');
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState('');
   const [voiceFile, setVoiceFile] = useState(null);
   const [voicePreviewUrl, setVoicePreviewUrl] = useState('');
   const [imageFile, setImageFile] = useState(null);
@@ -219,6 +258,8 @@ export default function Settings({ user, onUserRefresh }) {
     setProfileDraft(profileDraftFromUser(user));
     setProfileMessage('');
     setProfileError('');
+    setBannerFile(null);
+    setLogoFile(null);
 
     if (!user?.id) return undefined;
     let active = true;
@@ -233,6 +274,26 @@ export default function Settings({ user, onUserRefresh }) {
       active = false;
     };
   }, [user?.id]);
+
+  useEffect(() => {
+    if (!bannerFile) {
+      setBannerPreviewUrl('');
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(bannerFile);
+    setBannerPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [bannerFile]);
+
+  useEffect(() => {
+    if (!logoFile) {
+      setLogoPreviewUrl('');
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(logoFile);
+    setLogoPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [logoFile]);
 
   useEffect(() => {
     if (!voiceFile) {
@@ -382,6 +443,18 @@ export default function Settings({ user, onUserRefresh }) {
     setProfileError('');
   };
 
+  const updateSocialLinkField = (field, value) => {
+    setProfileDraft((previous) => ({
+      ...previous,
+      social_links: {
+        ...(previous.social_links || {}),
+        [field]: value,
+      },
+    }));
+    setProfileMessage('');
+    setProfileError('');
+  };
+
   const updateNotificationPreference = (field, checked) => {
     setNotificationPreferences((previous) => ({ ...previous, [field]: checked }));
   };
@@ -394,8 +467,13 @@ export default function Settings({ user, onUserRefresh }) {
     setProfileMessage('');
     setProfileError('');
     try {
-      const payload = await updateMyProfile(profileDraft);
+      let payload = await updateMyProfile(profileDraft);
+      if (bannerFile || logoFile) {
+        payload = await uploadProfileAssets({ bannerFile, logoFile });
+      }
       setProfileDraft(profileDraftFromPayload(payload));
+      setBannerFile(null);
+      setLogoFile(null);
       await refreshSessionUser();
       setProfileMessage('Public profile saved.');
     } catch (error) {
@@ -532,13 +610,36 @@ export default function Settings({ user, onUserRefresh }) {
 
         <SettingsSection
           eyebrow="Publisher/Public Profile"
-          title="Display name and bio"
-          caption="This updates only your existing first name, last name, and bio fields."
+          title="Public profile"
+          caption="Customize the public channel page shown to visitors."
           icon={UserCircle2}
           className="md:col-span-2 2xl:col-span-1"
         >
           <form onSubmit={handleSavePublicProfile} className="space-y-4">
             <fieldset disabled={!user || profileSaving} className="space-y-3 disabled:opacity-60">
+              <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+                <input
+                  type="checkbox"
+                  checked={profileDraft.is_public_profile}
+                  onChange={(event) => updateProfileDraftField('is_public_profile', event.target.checked)}
+                  className="mt-1"
+                />
+                <span>
+                  <span className="block font-semibold text-[var(--text-primary)]">Make profile public</span>
+                  <span className="mt-1 block text-xs">When disabled, only you and staff can view your channel profile page.</span>
+                </span>
+              </label>
+
+              <label className="block text-sm text-[var(--text-secondary)]">
+                Display name
+                <input
+                  type="text"
+                  value={profileDraft.display_name}
+                  onChange={(event) => updateProfileDraftField('display_name', event.target.value)}
+                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                />
+              </label>
+
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="block text-sm text-[var(--text-secondary)]">
                   First name
@@ -570,6 +671,87 @@ export default function Settings({ user, onUserRefresh }) {
                   className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
                 />
               </label>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Website URL
+                  <input
+                    type="url"
+                    value={profileDraft.website_url}
+                    onChange={(event) => updateProfileDraftField('website_url', event.target.value)}
+                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Contact email
+                  <input
+                    type="email"
+                    value={profileDraft.contact_email}
+                    onChange={(event) => updateProfileDraftField('contact_email', event.target.value)}
+                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Banner image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => setBannerFile(event.target.files?.[0] || null)}
+                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+
+                <label className="block text-sm text-[var(--text-secondary)]">
+                  Logo image
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => setLogoFile(event.target.files?.[0] || null)}
+                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
+                <div
+                  className="min-h-28 rounded-xl bg-[var(--surface-container-high)] bg-cover bg-center"
+                  style={(bannerPreviewUrl || profileDraft.banner_url) ? {
+                    backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0.45), rgba(0,0,0,0.18)), url(${bannerPreviewUrl || profileDraft.banner_url})`,
+                  } : undefined}
+                />
+                <div className="flex items-center justify-center rounded-xl bg-[var(--surface-container-high)] p-3">
+                  {logoPreviewUrl || profileDraft.logo_url ? (
+                    <img
+                      src={logoPreviewUrl || profileDraft.logo_url}
+                      alt=""
+                      className="h-20 w-20 rounded-full object-cover"
+                    />
+                  ) : (
+                    <UserCircle2 size={48} className="text-[var(--text-secondary)]" />
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-semibold text-[var(--text-primary)]">Social links</p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {SOCIAL_LINK_FIELDS.filter((field) => field.key !== 'website').map((field) => (
+                    <label key={field.key} className="block text-sm text-[var(--text-secondary)]">
+                      {field.label}
+                      <input
+                        type="url"
+                        value={profileDraft.social_links?.[field.key] || ''}
+                        onChange={(event) => updateSocialLinkField(field.key, event.target.value)}
+                        className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+                      />
+                    </label>
+                  ))}
+                </div>
+              </div>
             </fieldset>
 
             <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
@@ -577,7 +759,7 @@ export default function Settings({ user, onUserRefresh }) {
                 Preview name: <span className="font-semibold text-[var(--text-primary)]">{publicDisplayName}</span>
               </p>
               <p className="mt-1 text-xs">
-                Banner, logo, social links, contact fields, and public visibility controls are planned separately.
+                Public contact and social fields are only returned by the public profile API when your profile is public.
               </p>
             </div>
 

@@ -23,7 +23,12 @@ from core.models import Job, LessonLike, Project, PublisherFollow, UserProfile  
 
 def _make_user(username: str, *, role: str = "student", is_staff: bool = False) -> User:
     user = User.objects.create_user(username=username, password="pass", is_staff=is_staff)
-    UserProfile.objects.create(user=user, role=role, bio=f"{username} bio")
+    UserProfile.objects.create(
+        user=user,
+        role=role,
+        bio=f"{username} bio",
+        is_public_profile=role in {"publisher", "teacher"},
+    )
     return user
 
 

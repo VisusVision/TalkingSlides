@@ -221,11 +221,32 @@ export async function updateMyProfile(payload = {}) {
       first_name: payload.first_name ?? "",
       last_name: payload.last_name ?? "",
       bio: payload.bio ?? "",
+      display_name: payload.display_name ?? "",
+      website_url: payload.website_url ?? "",
+      contact_email: payload.contact_email ?? "",
+      social_links: payload.social_links && typeof payload.social_links === "object" ? payload.social_links : {},
+      is_public_profile: Boolean(payload.is_public_profile),
     }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(apiErrorMessage(data, "Failed to update profile"));
+  }
+  return data;
+}
+
+export async function uploadProfileAssets({ bannerFile, logoFile } = {}) {
+  const formData = new FormData();
+  if (bannerFile) formData.append("banner_file", bannerFile);
+  if (logoFile) formData.append("logo_file", logoFile);
+  const res = await fetch(`${API_BASE_URL}/me/profile-assets/`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: formData,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to upload profile images"));
   }
   return data;
 }

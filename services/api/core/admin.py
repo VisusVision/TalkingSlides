@@ -32,7 +32,12 @@ class UserProfileInline(admin.StackedInline):
     fk_name = "user"
     fields = (
         "role",
+        "is_public_profile",
+        "display_name",
         "bio",
+        "website_url",
+        "contact_email",
+        "social_links",
         "avatar_enabled",
         "avatar_consent_confirmed",
         "avatar_image_status",
