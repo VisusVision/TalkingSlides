@@ -213,6 +213,55 @@ export async function updateMyProfile(payload = {}) {
   return data;
 }
 
+export async function fetchNotifications({ limit = 20, unreadOnly = false } = {}) {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit || 20));
+  if (unreadOnly) params.set("unread_only", "1");
+  const res = await fetch(`${API_BASE_URL}/me/notifications/?${params.toString()}`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch notifications"));
+  }
+  return data;
+}
+
+export async function fetchNotificationUnreadCount() {
+  const res = await fetch(`${API_BASE_URL}/me/notifications/unread-count/`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch notification count"));
+  }
+  return data;
+}
+
+export async function markNotificationRead(id) {
+  const res = await fetch(`${API_BASE_URL}/me/notifications/${id}/read/`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to mark notification read"));
+  }
+  return data;
+}
+
+export async function markAllNotificationsRead() {
+  const res = await fetch(`${API_BASE_URL}/me/notifications/mark-all-read/`, {
+    method: "POST",
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to mark notifications read"));
+  }
+  return data;
+}
+
 export async function fetchAuthProviders() {
   const res = await fetch(`${API_BASE_URL}/auth/providers/`);
   if (!res.ok) throw new Error("Failed to fetch auth providers");

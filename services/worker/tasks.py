@@ -337,6 +337,48 @@ def _mark_project_avatar_state(
         logger.warning("Failed to update avatar state for project=%s", project_id, exc_info=True)
 
 
+def _notify_render_completed(project_id: str | int) -> None:
+    try:
+        from core.notifications import notify_render_completed
+
+        notify_render_completed(project_id, _latest_video_export_job_id(project_id))
+    except Exception:
+        logger.warning("Render completion notification hook failed for project=%s", project_id, exc_info=True)
+
+
+def _notify_render_failed(project_id: str | int) -> None:
+    try:
+        from core.notifications import notify_render_failed
+
+        notify_render_failed(project_id, _latest_project_job_id(project_id, job_type="video_export"))
+    except Exception:
+        logger.warning("Render failure notification hook failed for project=%s", project_id, exc_info=True)
+
+
+def _notify_avatar_completed(project_id: str | int, avatar_job_id: str | int | None = None) -> None:
+    try:
+        from core.notifications import notify_avatar_completed
+
+        notify_avatar_completed(
+            project_id,
+            avatar_job_id or _latest_project_job_id(project_id, job_type="avatar_render"),
+        )
+    except Exception:
+        logger.warning("Avatar completion notification hook failed for project=%s", project_id, exc_info=True)
+
+
+def _notify_avatar_failed(project_id: str | int, avatar_job_id: str | int | None = None) -> None:
+    try:
+        from core.notifications import notify_avatar_failed
+
+        notify_avatar_failed(
+            project_id,
+            avatar_job_id or _latest_project_job_id(project_id, job_type="avatar_render"),
+        )
+    except Exception:
+        logger.warning("Avatar failure notification hook failed for project=%s", project_id, exc_info=True)
+
+
 def _avatar_job_is_current(project_id: str | int, avatar_job_id: str | int | None) -> bool:
     if not avatar_job_id:
         return True
@@ -4120,6 +4162,7 @@ def render_lesson_avatar_overlay(
                 sidecar["avatar_status"] = "failed"
                 sidecar["avatar_failures"] = list(failures or [])
                 _write_playback_sidecar(project_id_int, sidecar)
+            _notify_avatar_failed(project_id_int, job_id)
         return {
             "status": "failed",
             "project_id": project_id_int,
@@ -4664,6 +4707,7 @@ def render_lesson_avatar_overlay(
         _set_job(status="done", progress=100, result_url=avatar_track_rel, error_message="")
 
     logger.info("Lesson avatar overlay DONE project=%s track=%s progressive_restoration=%s", project_id_int, avatar_track_rel, bool(progressive_restoration_enabled))
+    _notify_avatar_completed(project_id_int, job_id)
     return {
         "status": "ready",
         "project_id": project_id_int,
@@ -4724,6 +4768,7 @@ def _queue_lesson_avatar_overlay_after_base_render(
             job_id="",
             clear_output=True,
         )
+        _notify_avatar_failed(project_id)
         return {"status": "failed", "queued": False, "reason": reason}
 
     try:
@@ -4794,6 +4839,7 @@ def _queue_lesson_avatar_overlay_after_base_render(
             job_id="",
             clear_output=True,
         )
+        _notify_avatar_failed(project_id)
         return {"status": "failed", "queued": False, "reason": _concise_error_text(exc, fallback="avatar_queue_failed")}
 
 
@@ -5944,6 +5990,7 @@ def concat_and_finalize(
             error_message=completion_warning_message,
         )
         _mark_project_ready_after_successful_render(project_id)
+        _notify_render_completed(project_id)
         try:
             video_frame_audit = _run_auto_video_frame_audit_after_render(
                 project_id,
@@ -6003,6 +6050,7 @@ def concat_and_finalize(
         error_trace = tb.format_exc()
         logger.exception("concat_and_finalize FAILED project=%s", project_id)
         _update_job(project_id, status="failed", error_message=error_trace)
+        _notify_render_failed(project_id)
         raise
 
 
@@ -6117,6 +6165,7 @@ def mark_project_render_failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
     if project_id is not None:
         logger.error("Render pipeline failed for project=%s errback_args=%s", project_id, args[:-1])
         _update_job(project_id, status="failed", progress=100, error_message=error_message)
+        _notify_render_failed(project_id)
     return {"status": "failed", "project_id": project_id, "error_message": error_message}
 
 
@@ -6419,6 +6468,7 @@ def process_pptx_to_video(
         error_trace = tb.format_exc()
         logger.exception("process_pptx_to_video FAILED for project=%s", project_id)
         _update_job(project_id, status="failed", error_message=error_trace)
+        _notify_render_failed(project_id)
         self.update_state(
             state="FAILURE",
             meta={

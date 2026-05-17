@@ -8,6 +8,7 @@ from .models import (
     LessonComment,
     LessonLike,
     LessonProgress,
+    Notification,
     Playlist,
     PlaylistItem,
     Project,
@@ -164,6 +165,15 @@ class LessonProgressAdmin(admin.ModelAdmin):
 class LessonCommentAdmin(admin.ModelAdmin):
     list_display = ("user", "project", "text", "created_at")
     raw_id_fields = ("user", "project")
+
+
+@admin.register(Notification)
+class NotificationAdmin(admin.ModelAdmin):
+    list_display = ("recipient_user", "event_type", "title", "is_read", "created_at")
+    list_filter = ("event_type", "is_read", "created_at")
+    search_fields = ("recipient_user__username", "actor_user__username", "title", "body")
+    raw_id_fields = ("recipient_user", "actor_user", "project", "lesson_comment", "job")
+    readonly_fields = ("created_at", "updated_at", "read_at")
 
 
 @admin.register(PublisherFollow)

@@ -451,6 +451,91 @@ class LessonComment(models.Model):
         return f"{self.user.username} on {self.project.title}"
 
 
+class Notification(models.Model):
+    """In-app notification for authenticated users."""
+
+    class EventType(models.TextChoices):
+        STUDENT_FOLLOWED_PUBLISHER_NEW_LESSON = (
+            "student_followed_publisher_new_lesson",
+            "Followed publisher posted a new lesson",
+        )
+        PUBLISHER_COMMENT_ON_LESSON = (
+            "publisher_comment_on_lesson",
+            "Someone commented on my lesson",
+        )
+        PUBLISHER_LESSON_RENDER_DONE = (
+            "publisher_lesson_render_done",
+            "Lesson render completed",
+        )
+        PUBLISHER_LESSON_RENDER_FAILED = (
+            "publisher_lesson_render_failed",
+            "Lesson render failed",
+        )
+        PUBLISHER_AVATAR_RENDER_DONE = (
+            "publisher_avatar_render_done",
+            "Avatar render completed",
+        )
+        PUBLISHER_AVATAR_RENDER_FAILED = (
+            "publisher_avatar_render_failed",
+            "Avatar render failed",
+        )
+
+    recipient_user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+        db_index=True,
+    )
+    actor_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    event_type = models.CharField(max_length=80, choices=EventType.choices, db_index=True)
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+    lesson_comment = models.ForeignKey(
+        LessonComment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+    job = models.ForeignKey(
+        Job,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+    title = models.CharField(max_length=200)
+    body = models.TextField(blank=True)
+    action_url = models.CharField(max_length=500, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    is_read = models.BooleanField(default=False, db_index=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["recipient_user", "is_read", "created_at"]),
+            models.Index(fields=["recipient_user", "created_at"]),
+            models.Index(fields=["event_type", "created_at"]),
+        ]
+
+    def __str__(self):
+        return f"{self.event_type} -> {self.recipient_user_id}"
+
+
 class PublisherFollow(models.Model):
     """Follower relationship between a learner and a publisher/teacher account."""
 

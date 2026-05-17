@@ -25,6 +25,7 @@ from core.models import (
     Job,
     LessonSegment,
     LessonComment,
+    Notification,
     Playlist,
     PlaylistItem,
     Project,
@@ -967,6 +968,118 @@ class LessonCommentSerializer(serializers.ModelSerializer):
         model = LessonComment
         fields = ["id", "username", "text", "created_at"]
         read_only_fields = ["id", "username", "created_at"]
+
+
+NOTIFICATION_SAFE_METADATA_KEYS = {
+    "project_id",
+    "lesson_id",
+    "comment_id",
+    "job_id",
+    "avatar_job_id",
+    "base_job_id",
+    "status",
+    "event",
+    "is_published",
+}
+NOTIFICATION_PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved", "not_scanned"}
+
+
+def _notification_safe_metadata(metadata) -> dict:
+    if not isinstance(metadata, Mapping):
+        return {}
+    safe = {}
+    for raw_key, value in metadata.items():
+        key = str(raw_key or "").strip()
+        if key not in NOTIFICATION_SAFE_METADATA_KEYS:
+            continue
+        if isinstance(value, bool) or value is None:
+            safe[key] = value
+        elif isinstance(value, int):
+            safe[key] = value
+        elif isinstance(value, str):
+            compact = value.strip()[:120]
+            if "/" in compact or "\\" in compact or "storage" in compact.lower():
+                continue
+            safe[key] = compact
+    return safe
+
+
+def _notification_project_public(project: Project | None) -> bool:
+    if project is None:
+        return False
+    if not bool(getattr(project, "is_published", False)):
+        return False
+    if str(getattr(project, "status", "") or "") != "ready":
+        return False
+    if str(getattr(project, "moderation_status", "") or "") not in NOTIFICATION_PUBLIC_MODERATION_STATUSES:
+        return False
+    return project.jobs.filter(job_type="video_export", status="done").exists()
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    actor_display_name = serializers.SerializerMethodField()
+    action_url = serializers.SerializerMethodField()
+    project = serializers.SerializerMethodField()
+    metadata = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = [
+            "id",
+            "event_type",
+            "title",
+            "body",
+            "action_url",
+            "metadata",
+            "is_read",
+            "read_at",
+            "created_at",
+            "actor_display_name",
+            "project",
+        ]
+        read_only_fields = fields
+
+    def get_actor_display_name(self, obj):
+        actor = getattr(obj, "actor_user", None)
+        if actor is None:
+            return ""
+        return actor.get_full_name() or actor.username
+
+    def _can_expose_project(self, obj) -> bool:
+        project = getattr(obj, "project", None)
+        if project is None:
+            return True
+
+        request = self.context.get("request") if hasattr(self, "context") else None
+        user = getattr(request, "user", None)
+        owns_project = bool(user and getattr(user, "is_authenticated", False) and project.user_id == user.id)
+        staff_access = bool(user and (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)))
+        public_new_lesson = (
+            obj.event_type == Notification.EventType.STUDENT_FOLLOWED_PUBLISHER_NEW_LESSON
+            and _notification_project_public(project)
+        )
+        return bool(owns_project or staff_access or public_new_lesson)
+
+    def get_action_url(self, obj):
+        if not self._can_expose_project(obj):
+            return ""
+        return str(getattr(obj, "action_url", "") or "")
+
+    def get_project(self, obj):
+        project = getattr(obj, "project", None)
+        if project is None or not self._can_expose_project(obj):
+            return None
+        return {
+            "id": project.id,
+            "title": project.title,
+        }
+
+    def get_metadata(self, obj):
+        metadata = _notification_safe_metadata(getattr(obj, "metadata", None))
+        if not self._can_expose_project(obj):
+            metadata.pop("project_id", None)
+            metadata.pop("lesson_id", None)
+        return metadata
 
 
 class TranscriptPageSerializer(serializers.ModelSerializer):
