@@ -14,6 +14,7 @@ import {
   notifyNotificationsChanged,
   notificationResults,
 } from '../../utils/notifications';
+import NotificationTypeIcon from './NotificationTypeIcon';
 import ProfileMenu from './ProfileMenu';
 
 const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics', '/notifications']);
@@ -282,7 +283,8 @@ export default function Header({
                             className={`focus-ring block w-full border-b border-[color:var(--border-subtle)] px-4 py-3 text-left transition last:border-b-0 hover:bg-[color:var(--hover-accent-soft)] ${unread ? 'bg-[color:var(--surface-container-low)]' : ''}`}
                             onClick={() => handleNotificationClick(notification)}
                           >
-                            <div className="flex items-start gap-2">
+                            <div className="flex items-start gap-3">
+                              <NotificationTypeIcon eventType={notification.event_type} size="sm" />
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-semibold text-[var(--text-primary)]">
                                   {notification.title}
