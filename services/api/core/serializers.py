@@ -8,6 +8,8 @@ import math
 from pathlib import Path
 
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import URLValidator
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from core.avatar_readiness import normalize_avatar_engine
@@ -17,6 +19,14 @@ from core.avatar_placement import (
     placement_from_overlay_preference,
     project_avatar_placement,
 )
+
+
+ALLOWED_SOCIAL_LINK_KEYS = frozenset(
+    {"website", "youtube", "x", "twitter", "instagram", "linkedin", "github", "facebook"}
+)
+SOCIAL_LINK_MAX_KEYS = 8
+SOCIAL_LINK_VALUE_MAX_LENGTH = 300
+SOCIAL_LINK_URL_VALIDATOR = URLValidator(schemes=["http", "https"])
 from core.avatar_runtime_settings import project_avatar_runtime_settings
 from core.models import (
     AvatarRenderJob,
@@ -72,6 +82,62 @@ def _project_cover_url(project: Project, context: dict | None) -> str:
     if api_public_base_url:
         return f"{api_public_base_url}{url_path}"
     return url_path
+
+
+def _profile_asset_url(user_id: int | None, kind: str, context: dict | None = None, version: str | None = None) -> str:
+    if not user_id or kind not in {"banner", "logo"}:
+        return ""
+
+    url_path = f"/api/v1/users/{int(user_id)}/profile-assets/{kind}/"
+    if version:
+        url_path = f"{url_path}?v={version}"
+    request = (context or {}).get("request")
+    if request is not None:
+        try:
+            return request.build_absolute_uri(url_path)
+        except Exception:
+            pass
+
+    api_public_base_url = str(getattr(settings, "API_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if api_public_base_url:
+        return f"{api_public_base_url}{url_path}"
+    return url_path
+
+
+def _profile_display_name(user: User, profile: UserProfile | None = None) -> str:
+    custom = str(getattr(profile, "display_name", "") or "").strip()
+    return custom or user.get_full_name() or user.username
+
+
+def validate_social_links_payload(value) -> dict:
+    if value in (None, ""):
+        return {}
+    if not isinstance(value, Mapping):
+        raise serializers.ValidationError("Social links must be an object.")
+
+    cleaned: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip().lower()
+        if key not in ALLOWED_SOCIAL_LINK_KEYS:
+            raise serializers.ValidationError(f"Unsupported social link key: {raw_key}")
+        if raw_value in (None, ""):
+            continue
+        if not isinstance(raw_value, str):
+            raise serializers.ValidationError(f"Social link '{key}' must be a URL string.")
+        url = raw_value.strip()
+        if not url:
+            continue
+        if len(url) > SOCIAL_LINK_VALUE_MAX_LENGTH:
+            raise serializers.ValidationError(f"Social link '{key}' is too long.")
+        try:
+            SOCIAL_LINK_URL_VALIDATOR(url)
+        except DjangoValidationError:
+            raise serializers.ValidationError(f"Social link '{key}' must be a valid http(s) URL.")
+        cleaned[key] = url
+
+    if len(cleaned) > SOCIAL_LINK_MAX_KEYS:
+        raise serializers.ValidationError(f"Social links can contain at most {SOCIAL_LINK_MAX_KEYS} entries.")
+    return cleaned
 
 
 def _request_can_view_project_draft(project: Project, context: dict | None) -> bool:
@@ -522,12 +588,22 @@ class VoiceProfileSerializer(serializers.ModelSerializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
+    banner_url = serializers.SerializerMethodField()
+    logo_url = serializers.SerializerMethodField()
+
     class Meta:
         model = UserProfile
         fields = [
             "id",
             "role",
             "bio",
+            "display_name",
+            "website_url",
+            "contact_email",
+            "social_links",
+            "is_public_profile",
+            "banner_url",
+            "logo_url",
             "avatar_image_original",
             "avatar_image_processed",
             "avatar_video_original",
@@ -568,6 +644,18 @@ class UserProfileSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["created_at", "updated_at"]
 
+    def get_banner_url(self, obj):
+        if not getattr(obj, "banner_image_processed", ""):
+            return ""
+        version = str(int(obj.updated_at.timestamp())) if getattr(obj, "updated_at", None) else None
+        return _profile_asset_url(getattr(obj, "user_id", None), "banner", self.context, version)
+
+    def get_logo_url(self, obj):
+        if not getattr(obj, "logo_image_processed", ""):
+            return ""
+        version = str(int(obj.updated_at.timestamp())) if getattr(obj, "updated_at", None) else None
+        return _profile_asset_url(getattr(obj, "user_id", None), "logo", self.context, version)
+
 
 class SiteHelpContentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -590,12 +678,20 @@ class CurrentUserProfileSerializer(serializers.Serializer):
     first_name = serializers.CharField(max_length=150, allow_blank=True, required=False, trim_whitespace=True)
     last_name = serializers.CharField(max_length=150, allow_blank=True, required=False, trim_whitespace=True)
     bio = serializers.CharField(allow_blank=True, required=False, trim_whitespace=True)
+    display_name = serializers.CharField(max_length=200, allow_blank=True, required=False, trim_whitespace=True)
+    website_url = serializers.URLField(allow_blank=True, required=False)
+    contact_email = serializers.EmailField(allow_blank=True, required=False)
+    social_links = serializers.JSONField(required=False)
+    is_public_profile = serializers.BooleanField(required=False)
+
+    def validate_social_links(self, value):
+        return validate_social_links_payload(value)
 
     def to_representation(self, user):
         profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "student"})
         first_name = user.first_name or ""
         last_name = user.last_name or ""
-        display_name = user.get_full_name() or user.username
+        display_name = _profile_display_name(user, profile)
         return {
             "id": user.id,
             "username": user.username,
@@ -603,10 +699,35 @@ class CurrentUserProfileSerializer(serializers.Serializer):
             "last_name": last_name,
             "display_name": display_name,
             "bio": profile.bio or "",
+            "website_url": profile.website_url or "",
+            "contact_email": profile.contact_email or "",
+            "social_links": profile.social_links if isinstance(profile.social_links, dict) else {},
+            "is_public_profile": bool(profile.is_public_profile),
+            "banner_url": (
+                _profile_asset_url(
+                    profile.user_id,
+                    "banner",
+                    self.context,
+                    str(int(profile.updated_at.timestamp())) if profile.updated_at else None,
+                )
+                if profile.banner_image_processed
+                else ""
+            ),
+            "logo_url": (
+                _profile_asset_url(
+                    profile.user_id,
+                    "logo",
+                    self.context,
+                    str(int(profile.updated_at.timestamp())) if profile.updated_at else None,
+                )
+                if profile.logo_image_processed
+                else ""
+            ),
             "role": profile.role,
         }
 
     def update(self, user, validated_data):
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "student"})
         user_update_fields = []
         if "first_name" in validated_data:
             user.first_name = validated_data["first_name"]
@@ -617,10 +738,27 @@ class CurrentUserProfileSerializer(serializers.Serializer):
         if user_update_fields:
             user.save(update_fields=user_update_fields)
 
+        profile_update_fields = []
         if "bio" in validated_data:
-            profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "student"})
             profile.bio = validated_data["bio"]
-            profile.save(update_fields=["bio", "updated_at"])
+            profile_update_fields.append("bio")
+        if "display_name" in validated_data:
+            profile.display_name = validated_data["display_name"]
+            profile_update_fields.append("display_name")
+        if "website_url" in validated_data:
+            profile.website_url = validated_data["website_url"]
+            profile_update_fields.append("website_url")
+        if "contact_email" in validated_data:
+            profile.contact_email = validated_data["contact_email"]
+            profile_update_fields.append("contact_email")
+        if "social_links" in validated_data:
+            profile.social_links = validated_data["social_links"]
+            profile_update_fields.append("social_links")
+        if "is_public_profile" in validated_data:
+            profile.is_public_profile = bool(validated_data["is_public_profile"])
+            profile_update_fields.append("is_public_profile")
+        if profile_update_fields:
+            profile.save(update_fields=[*profile_update_fields, "updated_at"])
         return user
 
 
@@ -856,7 +994,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
 
     def get_teacher_name(self, obj):
         if obj.user:
-            return obj.user.get_full_name() or obj.user.username
+            return _profile_display_name(obj.user, getattr(obj.user, "profile", None))
         return ""
 
     def get_teacher_id(self, obj):
@@ -977,7 +1115,7 @@ class PlaylistPublicSerializer(serializers.ModelSerializer):
 
     def get_publisher_name(self, obj):
         if obj.user:
-            return obj.user.get_full_name() or obj.user.username
+            return _profile_display_name(obj.user, getattr(obj.user, "profile", None))
         return ""
 
     def get_item_count(self, obj):

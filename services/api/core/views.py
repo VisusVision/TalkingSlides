@@ -67,6 +67,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from core.models import (
     AvatarRenderJob,
@@ -213,6 +214,9 @@ _MAX_LESSON_BYTES = 100 * 1024 * 1024  # 100 MB
 _ALLOWED_EXTENSIONS = {".pptx", ".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _MAX_COVER_BYTES = 10 * 1024 * 1024  # 10 MB
 _ALLOWED_COVER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_MAX_PROFILE_ASSET_BYTES = 8 * 1024 * 1024  # 8 MB
+_ALLOWED_PROFILE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_PROFILE_ASSET_KINDS = {"banner", "logo"}
 logger = logging.getLogger(__name__)
 
 
@@ -2425,13 +2429,161 @@ class CurrentUserProfileView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        return Response(CurrentUserProfileSerializer(request.user).data)
+        return Response(CurrentUserProfileSerializer(request.user, context={"request": request}).data)
 
     def patch(self, request):
-        serializer = CurrentUserProfileSerializer(request.user, data=request.data, partial=True)
+        serializer = CurrentUserProfileSerializer(
+            request.user,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(CurrentUserProfileSerializer(request.user).data)
+        return Response(CurrentUserProfileSerializer(request.user, context={"request": request}).data)
+
+
+def _profile_asset_url_for_request(request, user_id: int, kind: str, version: str | None = None) -> str:
+    if kind not in _PROFILE_ASSET_KINDS:
+        return ""
+    url_path = f"/api/v1/users/{int(user_id)}/profile-assets/{kind}/"
+    if version:
+        url_path = f"{url_path}?v={version}"
+    try:
+        return request.build_absolute_uri(url_path)
+    except Exception:
+        return url_path
+
+
+def _profile_asset_version(profile: UserProfile) -> str:
+    updated_at = getattr(profile, "updated_at", None)
+    return str(int(updated_at.timestamp())) if updated_at else ""
+
+
+def _validate_profile_asset_upload(image_file) -> str:
+    ext = Path(str(getattr(image_file, "name", ""))).suffix.lower()
+    if ext not in _ALLOWED_PROFILE_IMAGE_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported image type '{ext}'. Allowed: {', '.join(sorted(_ALLOWED_PROFILE_IMAGE_EXTENSIONS))}"
+        )
+    if int(getattr(image_file, "size", 0) or 0) > _MAX_PROFILE_ASSET_BYTES:
+        raise ValueError("Profile image exceeds the 8 MB size limit.")
+    return ".jpg" if ext == ".jpeg" else ext
+
+
+def _profile_asset_to_rgb(image: Image.Image) -> Image.Image:
+    if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+        alpha = image.convert("RGBA").getchannel("A")
+        background = Image.new("RGB", image.size, (255, 255, 255))
+        background.paste(image.convert("RGBA"), mask=alpha)
+        return background
+    return image.convert("RGB")
+
+
+def _process_profile_asset_image(source_path: Path, destination_path: Path, kind: str) -> None:
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with Image.open(source_path) as image:
+            image = ImageOps.exif_transpose(image)
+            target_size = (1600, 500) if kind == "banner" else (512, 512)
+            processed = ImageOps.fit(image, target_size, method=Image.Resampling.LANCZOS)
+            processed = _profile_asset_to_rgb(processed)
+            processed.save(destination_path, format="JPEG", quality=88, optimize=True)
+    except (UnidentifiedImageError, OSError) as exc:
+        raise ValueError("Uploaded file is not a valid image.") from exc
+
+
+def _save_profile_asset(profile: UserProfile, image_file, kind: str) -> None:
+    if kind not in _PROFILE_ASSET_KINDS:
+        raise ValueError("Unsupported profile asset kind.")
+    image_ext = _validate_profile_asset_upload(image_file)
+    storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local")).resolve()
+    asset_dir = storage_root / "profiles" / str(profile.user_id)
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    original_path = asset_dir / f"{kind}_original{image_ext}"
+    processed_path = asset_dir / f"{kind}_processed.jpg"
+    _write_uploaded_file(image_file, original_path)
+    try:
+        _process_profile_asset_image(original_path, processed_path, kind)
+    except ValueError:
+        try:
+            original_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+    setattr(profile, f"{kind}_image_original", str(original_path.relative_to(storage_root)).replace("\\", "/"))
+    setattr(profile, f"{kind}_image_processed", str(processed_path.relative_to(storage_root)).replace("\\", "/"))
+
+
+class CurrentUserProfileAssetsView(APIView):
+    """POST /api/v1/me/profile-assets/ - upload current user's banner/logo images."""
+
+    parser_classes = [MultiPartParser, FormParser]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        banner_file = request.FILES.get("banner_file")
+        logo_file = request.FILES.get("logo_file")
+        if banner_file is None and logo_file is None:
+            return Response(
+                {"error": "banner_file or logo_file is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        profile, _ = UserProfile.objects.get_or_create(user=request.user, defaults={"role": "student"})
+        update_fields: list[str] = []
+        try:
+            if banner_file is not None:
+                _save_profile_asset(profile, banner_file, "banner")
+                update_fields.extend(["banner_image_original", "banner_image_processed"])
+            if logo_file is not None:
+                _save_profile_asset(profile, logo_file, "logo")
+                update_fields.extend(["logo_image_original", "logo_image_processed"])
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if update_fields:
+            profile.save(update_fields=[*update_fields, "updated_at"])
+        request.user.refresh_from_db()
+        return Response(CurrentUserProfileSerializer(request.user, context={"request": request}).data)
+
+
+class UserProfileAssetView(APIView):
+    """GET /api/v1/users/<id>/profile-assets/<kind>/ - safe processed profile image."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def _can_view_private_profile_asset(self, request, user: User) -> bool:
+        viewer = getattr(request, "user", None)
+        if not viewer or not viewer.is_authenticated:
+            return False
+        return _is_staff_user(viewer) or int(viewer.id) == int(user.id)
+
+    def get(self, request, user_id, kind):
+        if kind not in _PROFILE_ASSET_KINDS:
+            raise Http404
+        try:
+            user = User.objects.select_related("profile").get(pk=user_id)
+        except User.DoesNotExist:
+            raise Http404
+        profile = _safe_user_profile(user)
+        if profile is None:
+            raise Http404
+        if not bool(profile.is_public_profile) and not self._can_view_private_profile_asset(request, user):
+            raise Http404
+
+        rel_path = _normalize_rel_storage_path(getattr(profile, f"{kind}_image_processed", "") or "")
+        if not rel_path:
+            raise Http404
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local")).resolve()
+        full_path = _resolve_storage_file(storage_root, rel_path)
+        if full_path is None:
+            raise Http404
+
+        response = _media_file_response(request, full_path, "image/jpeg")
+        response["Cache-Control"] = "public, max-age=86400" if profile.is_public_profile else "private, no-store"
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -9178,11 +9330,29 @@ def _publisher_role(user) -> str:
 def _is_public_publisher_user(user) -> bool:
     if not user:
         return False
-    return _is_staff_user(user) or _publisher_role(user) in PUBLISHER_PROFILE_ROLES
+    profile = _safe_user_profile(user)
+    return bool(
+        _publisher_role(user) in PUBLISHER_PROFILE_ROLES
+        and profile is not None
+        and getattr(profile, "is_public_profile", False)
+    )
 
 
 def _publisher_display_name(user) -> str:
-    return user.get_full_name() or user.username
+    profile = _safe_user_profile(user)
+    custom_name = str(getattr(profile, "display_name", "") or "").strip()
+    return custom_name or user.get_full_name() or user.username
+
+
+def _can_view_publisher_profile(request, publisher) -> bool:
+    if _is_public_publisher_user(publisher):
+        return True
+    if _publisher_role(publisher) not in PUBLISHER_PROFILE_ROLES:
+        return False
+    viewer = getattr(request, "user", None)
+    if not viewer or not viewer.is_authenticated:
+        return False
+    return _is_staff_user(viewer) or int(viewer.id) == int(publisher.id)
 
 
 def _public_publisher_projects(publisher):
@@ -9341,19 +9511,36 @@ def _publisher_profile_payload(publisher, request, *, latest_limit: int = 0) -> 
     is_following = False
     if request.user and request.user.is_authenticated:
         is_following = PublisherFollow.objects.filter(follower=request.user, publisher=publisher).exists()
+    total_views = LessonProgress.objects.filter(project__in=public_lessons).count()
+    total_likes = LessonLike.objects.filter(project__in=public_lessons).count()
+    asset_version = _profile_asset_version(profile) if profile else ""
+    banner_url = ""
+    logo_url = ""
+    if profile and getattr(profile, "banner_image_processed", ""):
+        banner_url = _profile_asset_url_for_request(request, publisher.id, "banner", asset_version)
+    if profile and getattr(profile, "logo_image_processed", ""):
+        logo_url = _profile_asset_url_for_request(request, publisher.id, "logo", asset_version)
     payload = {
         "id": publisher.id,
         "username": publisher.username,
         "display_name": _publisher_display_name(publisher),
         "bio": getattr(profile, "bio", "") or "",
+        "banner_url": banner_url,
+        "logo_url": logo_url,
         "avatar_url": "",
+        "website_url": getattr(profile, "website_url", "") or "",
+        "contact_email": getattr(profile, "contact_email", "") or "",
+        "social_links": getattr(profile, "social_links", {}) if isinstance(getattr(profile, "social_links", {}), dict) else {},
+        "is_public_profile": bool(getattr(profile, "is_public_profile", False)),
         "role": _publisher_role(publisher),
         "follower_count": PublisherFollow.objects.filter(publisher=publisher).count(),
         "lesson_count": public_lessons.count(),
         "is_following": is_following,
+        "total_views": total_views,
+        "total_likes": total_likes,
         "stats": {
-            "total_views": LessonProgress.objects.filter(project__in=public_lessons).count(),
-            "total_likes": LessonLike.objects.filter(project__in=public_lessons).count(),
+            "total_views": total_views,
+            "total_likes": total_likes,
         },
     }
     if latest_limit:
@@ -9400,7 +9587,7 @@ class PublisherProfileView(APIView):
             publisher = User.objects.select_related("profile").get(pk=user_id)
         except User.DoesNotExist:
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_public_publisher_user(publisher):
+        if not _can_view_publisher_profile(request, publisher):
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(_publisher_profile_payload(publisher, request, latest_limit=3))
 
@@ -9414,7 +9601,7 @@ class PublisherLessonsView(APIView):
             publisher = User.objects.select_related("profile").get(pk=user_id)
         except User.DoesNotExist:
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_public_publisher_user(publisher):
+        if not _can_view_publisher_profile(request, publisher):
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
 
         can_view_private = bool(
@@ -9681,7 +9868,7 @@ class PublisherPlaylistsView(APIView):
             publisher = User.objects.select_related("profile").get(pk=user_id)
         except User.DoesNotExist:
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_public_publisher_user(publisher):
+        if not _can_view_publisher_profile(request, publisher):
             return Response({"error": "Publisher not found."}, status=status.HTTP_404_NOT_FOUND)
         playlists = (
             Playlist.objects.filter(user=publisher, is_public=True)

@@ -28,7 +28,11 @@ def _make_user(username: str, *, role: str = "student", is_staff: bool = False, 
         is_staff=is_staff,
         is_superuser=is_superuser,
     )
-    UserProfile.objects.create(user=user, role=role)
+    UserProfile.objects.create(
+        user=user,
+        role=role,
+        is_public_profile=role in {"teacher", "publisher"} or is_staff or is_superuser,
+    )
     return user
 
 
