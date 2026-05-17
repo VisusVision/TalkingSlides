@@ -29,6 +29,8 @@ services:
     build:
       context: ..
       dockerfile: infra/dockerfiles/Dockerfile.api
+      args:
+        INSTALL_TEST_DEPS: "${INSTALL_TEST_DEPS:-1}"
     image: ai_academy_api:local
     user: root
     entrypoint: [ "sh", "/usr/local/bin/local-storage-entrypoint.sh" ]
@@ -39,6 +41,12 @@ services:
       # Mount only the service source so the image /app is not overwritten
       - ../services/api:/app
       - ../services/avatar:/app/avatar
+      - ../services/worker:/app/worker:ro
+      - ../services/scripts:/app/scripts:ro
+      - ../services/tts_service/tts_preprocess:/app/tts_preprocess:ro
+      - ../services:/app/services:ro
+      - ../infra:/app/infra:ro
+      - ../tests:/app/tests:ro
       - ../infra/dockerfiles/local-storage-entrypoint.sh:/usr/local/bin/local-storage-entrypoint.sh:ro
       - ../storage_local:/app/storage_local
     depends_on:
@@ -50,6 +58,7 @@ services:
         condition: service_started
     environment:
       DJANGO_SETTINGS_MODULE: config.settings
+      PYTHONPATH: /app:/app/worker:/app/scripts:/app/tts_preprocess:/app/services
       DJANGO_DISABLE_STATIC_COMPRESSION: "true"
       STORAGE_ROOT: /app/storage_local
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
@@ -135,7 +144,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-render}'
     volumes:
@@ -209,7 +218,7 @@ services:
       fi &&
       exec celery -A worker worker
       --loglevel=$${CELERY_LOG_LEVEL:-info}
-      --concurrency=$${CELERY_WORKER_CONCURRENCY:-1}
+      --concurrency=$${CELERY_WORKER_CONCURRENCY:-$${CELERY_CONCURRENCY:-1}}
       --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
       -Q $${CELERY_WORKER_QUEUES:-avatar}'
     volumes:

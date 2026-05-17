@@ -11,6 +11,11 @@ COMPRESSED_STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFil
 
 def _load_settings(monkeypatch, *, debug: str, disable_static_compression: str | None = None):
     monkeypatch.setenv("DEBUG", debug)
+    monkeypatch.setenv("SECRET_KEY", "test-secret-key-abcdefghijklmnopqrstuvwxyz-123456")
+    monkeypatch.setenv("MEDIA_TOKEN_SECRET", "test-media-token-secret-abcdefghijklmnopqrstuvwxyz")
+    monkeypatch.setenv("ALLOWED_HOSTS", "localhost,127.0.0.1")
+    monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000")
+    monkeypatch.delenv("POSTGRES_HOST", raising=False)
     if disable_static_compression is None:
         monkeypatch.delenv("DJANGO_DISABLE_STATIC_COMPRESSION", raising=False)
     else:

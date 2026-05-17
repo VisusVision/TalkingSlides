@@ -55,7 +55,7 @@ from typing import Any
 from celery import Celery
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Avg, Count, Max, Prefetch
+from django.db.models import Avg, Count, Exists, Max, OuterRef, Prefetch
 from django.core.cache import cache
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
@@ -218,6 +218,14 @@ _MAX_PROFILE_ASSET_BYTES = 8 * 1024 * 1024  # 8 MB
 _ALLOWED_PROFILE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 _PROFILE_ASSET_KINDS = {"banner", "logo"}
 logger = logging.getLogger(__name__)
+_CATALOG_CACHE_TTL_SECONDS = int(os.environ.get("CATALOG_CACHE_TTL_SECONDS", "30"))
+
+
+def _catalog_cache_key(prefix: str, request) -> str:
+    query_items = sorted((request.query_params or {}).items())
+    raw_query = urlencode(query_items, doseq=True)
+    query_hash = hashlib.sha256(raw_query.encode("utf-8")).hexdigest()[:16]
+    return f"catalog:{prefix}:v1:{query_hash}"
 
 
 # ---------------------------------------------------------------------------
@@ -721,18 +729,13 @@ def _resolve_effective_protection_mode(sidecar: dict | None) -> tuple[str, dict]
     sidecar_mode = str((sidecar or {}).get("protection_mode") or "").strip().lower()
     sidecar_valid = sidecar_mode in allowed
 
-    # Dev-safe behavior: explicit public default must not be silently overridden
-    # by older lesson sidecars produced before env changes.
-    if env_mode == "public":
-        source = "env_default"
-        if sidecar_valid and sidecar_mode != "public":
-            source = "env_default_public_override"
+    if env_mode == "public" and sidecar_mode == "secure_stream":
         return "public", {
             "effective_mode": "public",
-            "source": source,
+            "source": "env_default_public_override",
             "env_default_mode": env_mode,
-            "sidecar_mode": sidecar_mode if sidecar_valid else None,
-            "sidecar_override_applied": bool(sidecar_valid and sidecar_mode != "public"),
+            "sidecar_mode": sidecar_mode,
+            "sidecar_override_applied": True,
         }
 
     if sidecar_valid:
@@ -1670,7 +1673,7 @@ def _playback_payload(
     watermark_enabled = bool(getattr(settings, "LECTURE_WATERMARK_ENABLED", True))
     visibility_lock_enabled = bool(getattr(settings, "LECTURE_VISIBILITY_LOCK_ENABLED", True))
     watermark_forced = False
-    if protection_mode == "drm_protected" and bool(getattr(settings, "LESSON_PROTECTION_FORCE_WATERMARK_FOR_PROTECTED", True)):
+    if protection_mode == "drm_protected":
         watermark_enabled = True
         visibility_lock_enabled = True
         watermark_forced = True
@@ -2239,6 +2242,7 @@ class AuthProvidersView(APIView):
 class LoginView(APIView):
     """POST /api/v1/auth/login/ — accepts {username, password}, returns token + user."""
     permission_classes = [permissions.AllowAny]
+    throttle_scope = "login"
 
     def post(self, request):
         username = (request.data.get("username") or "").strip()
@@ -2728,6 +2732,10 @@ class MediaStreamView(APIView):
     The raw storage path is never sent to the client.
     """
     permission_classes = [permissions.AllowAny]
+    # Stream traffic (especially HLS segments) is high-frequency by design.
+    # Do not apply DRF request throttles here; playback protection is enforced
+    # by signed tokens, grant/session checks, and risk policy controls.
+    throttle_classes = []
 
     def get(self, request, token):
         requested_type = "video"
@@ -2751,6 +2759,13 @@ class MediaStreamView(APIView):
                 return _stream_error_response(file_type=requested_type, status_code=status.HTTP_403_FORBIDDEN, reason="draft_preview_requires_grant")
         else:
             protection_mode, mode_debug = _resolve_effective_protection_mode(sidecar)
+
+        if grant_id:
+            grant_payload = cache.get(_grant_key_for(grant_id)) or {}
+            grant_mode = str(grant_payload.get("mode") or "").strip().lower()
+            if grant_mode in {"public", "secure_stream", "drm_protected", "studio_preview"} and grant_mode != protection_mode:
+                protection_mode = grant_mode
+                mode_debug = {**(mode_debug or {}), "source": "grant_mode", "grant_mode_override_applied": True}
 
         if not _check_grant_access(
             request,
@@ -3547,6 +3562,15 @@ class PlaybackSessionHeartbeatView(APIView):
         sidecar = _playback_sidecar_for_job(storage_root, project.id)
         protection_mode, mode_debug, _lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
 
+        identity = _playback_identity(request)
+        if protection_mode == "public":
+            for candidate_mode in ("drm_protected", "secure_stream", "studio_preview"):
+                candidate_scope = _scope_key_for(project.id, identity, candidate_mode)
+                if cache.get(candidate_scope):
+                    protection_mode = candidate_mode
+                    mode_debug = {**(mode_debug or {}), "source": "grant_mode_fallback", "grant_mode_override_applied": True}
+                    break
+
         if protection_mode == "public":
             return Response(
                 {
@@ -3559,7 +3583,6 @@ class PlaybackSessionHeartbeatView(APIView):
                 }
             )
 
-        identity = _playback_identity(request)
         scope_key = _scope_key_for(project.id, identity, protection_mode)
         grant_id = cache.get(scope_key)
         if not grant_id:
@@ -3709,12 +3732,12 @@ def _is_staff_user(user) -> bool:
 
 
 def _can_manage_project(user, project: Project) -> bool:
-    """Teacher pipeline access: staff/admin or the verified teacher owner."""
+    """Teacher pipeline access: staff/admin or the authenticated project owner."""
     if not _is_authenticated_user(user):
         return False
     if _is_staff_user(user):
         return True
-    return bool(project.user_id and int(project.user_id) == int(user.id) and _is_verified_teacher(user))
+    return bool(project.user_id and int(project.user_id) == int(user.id))
 
 
 def _latest_completed_video_export_job(project: Project) -> Job | None:
@@ -5008,7 +5031,7 @@ def _queue_transcript_rerender(
         _PROCESS_PROJECT_RENDER_TASK,
         args=task_args,
         kwargs=task_kwargs,
-        queue=_render_queue_name(),
+        queue=_queue_for_avatar_options(avatar_options),
     )
     job.celery_task_id = async_result.id
     job.save(update_fields=["celery_task_id"])
@@ -5477,22 +5500,37 @@ def _split_transcript_page(project: Project, payload: dict) -> list[str]:
         raise TranscriptActionError("page_id must reference an active page in this project.") from None
 
     existing_keys = set(project.transcript_pages.values_list("page_key", flat=True))
-    _set_page_text_artifacts(page, records[0])
+    first_record = dict(records[0])
+    first_record["display_text"] = page.original_text
+    _set_page_text_artifacts(page, first_record)
     page.save(update_fields=["original_text", "narration_text", "rich_text_html", "editor_document", "subtitle_chunks", "updated_at"])
 
     created_pages: list[TranscriptPage] = []
     for offset, record in enumerate(records[1:], start=1):
+        record_payload = dict(record)
+        part_payload = parts_payload[offset] if offset < len(parts_payload) else {}
+        has_explicit_display = isinstance(part_payload, dict) and (
+            "original_text" in part_payload or "display_text" in part_payload
+        )
+        if not has_explicit_display:
+            record_payload["display_text"] = ""
+        split_suffix = f"-x{offset}"
+        split_key = f"{page.page_key[: max(1, 64 - len(split_suffix))]}{split_suffix}"
+        while split_key in existing_keys:
+            random_suffix = f"-x{offset}-{uuid.uuid4().hex[:4]}"
+            split_key = f"{page.page_key[: max(1, 64 - len(random_suffix))]}{random_suffix}"
+        existing_keys.add(split_key)
         new_page = TranscriptPage(
             project=project,
             order=page.order + offset,
             source_slide_index=page.source_slide_index,
             split_index=page.split_index + offset,
-            page_key=_unique_split_page_key(project, page.page_key, existing_keys, offset),
+            page_key=split_key,
             whiteboard_mode=page.whiteboard_mode,
             is_active=True,
             deleted_at=None,
         )
-        _set_page_text_artifacts(new_page, record)
+        _set_page_text_artifacts(new_page, record_payload)
         new_page.editor_document = _merge_editor_document_preserving_scene(new_page.editor_document, page.editor_document)
         new_page.save()
         created_pages.append(new_page)
@@ -6799,7 +6837,7 @@ class ProjectRerenderView(APIView):
             _PROCESS_PROJECT_RENDER_TASK,
             args=task_args,
             kwargs=task_kwargs,
-            queue=_render_queue_name(),
+            queue=_queue_for_avatar_options(avatar_options),
         )
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
@@ -7365,7 +7403,10 @@ class AvatarProfileView(APIView):
         if "avatar_motion_preset" in data:
             profile.avatar_motion_preset = str(data.get("avatar_motion_preset") or "natural")
         if "avatar_lipsync_engine" in data:
-            requested_engine = _normalize_avatar_engine(str(data.get("avatar_lipsync_engine") or "musetalk"))
+            requested_engine_raw = str(data.get("avatar_lipsync_engine") or "musetalk").strip().lower()
+            if requested_engine_raw not in {"musetalk", "liveportrait+musetalk"}:
+                requested_engine_raw = "musetalk"
+            requested_engine = requested_engine_raw
             if requested_engine == "liveportrait+musetalk" and not _composite_engine_configured():
                 return Response(
                     {"error": "liveportrait+musetalk is selected but AVATAR_LIVEPORTRAIT_CMD and/or AVATAR_MUSETALK_CMD is not configured"},
@@ -7839,8 +7880,17 @@ class CategoryListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
+        cache_key = None
+        if not (request.user and request.user.is_authenticated) and _CATALOG_CACHE_TTL_SECONDS > 0:
+            cache_key = _catalog_cache_key("categories", request)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
         categories = Category.objects.all()
-        return Response(CategorySerializer(categories, many=True).data)
+        payload = CategorySerializer(categories, many=True).data
+        if cache_key:
+            cache.set(cache_key, payload, timeout=_CATALOG_CACHE_TTL_SECONDS)
+        return Response(payload)
 
 
 class CatalogListView(APIView):
@@ -7853,6 +7903,13 @@ class CatalogListView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
+        cache_key = None
+        if not (request.user and request.user.is_authenticated) and _CATALOG_CACHE_TTL_SECONDS > 0:
+            cache_key = _catalog_cache_key("list", request)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
         # Public catalog: published + render done + moderation approved/not_scanned.
         # Lessons that are unscanned (not_scanned) are also shown so that projects
         # without auto-moderation enabled are not silently hidden from the catalog.
@@ -7866,14 +7923,28 @@ class CatalogListView(APIView):
             )
             .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
-            .prefetch_related("jobs", "likes", "comments")
+            .annotate(
+                likes_count=Count("likes", distinct=True),
+                comments_count=Count("comments", distinct=True),
+                followers_count=Count("user__publisher_followers", distinct=True),
+                has_video_export_done=Exists(
+                    Job.objects.filter(
+                        project_id=OuterRef("pk"),
+                        job_type="video_export",
+                        status="done",
+                    )
+                ),
+            )
             .distinct()
             .order_by("-created_at")
         )
         category_slug = request.query_params.get("category")
         if category_slug:
             projects = projects.filter(category__slug=category_slug)
-        return Response(CatalogProjectSerializer(projects, many=True, context={"request": request}).data)
+        payload = CatalogProjectSerializer(projects, many=True, context={"request": request}).data
+        if cache_key:
+            cache.set(cache_key, payload, timeout=_CATALOG_CACHE_TTL_SECONDS)
+        return Response(payload)
 
 
 class CatalogFeedView(APIView):
@@ -7911,8 +7982,8 @@ class CatalogFeedView(APIView):
         now_ts: float,
         interest_slugs: set[str],
     ) -> dict:
-        likes = project.likes.count()
-        comments = project.comments.count()
+        likes = int(getattr(project, "likes_count", 0) or 0)
+        comments = int(getattr(project, "comments_count", 0) or 0)
         age_hours = max(1.0, (now_ts - project.created_at.timestamp()) / 3600.0)
         recency_score = round(1000.0 / (1.0 + age_hours), 2)
         popularity_score = round((likes * 7.0) + (comments * 4.0), 2)
@@ -7923,7 +7994,7 @@ class CatalogFeedView(APIView):
             {
                 "teacher_id": project.user_id,
                 "teacher_username": project.user.username if project.user else "",
-                "duration_minutes": max(2, (project.slides.count() or 1) * 2),
+                "duration_minutes": max(2, (int(getattr(project, "slides_count", 0) or 0) or 1) * 2),
                 "view_count": max(1, int((likes * 14) + (comments * 9) + 32)),
                 "user_progress": progress_pct,
                 "is_saved": progress_pct >= 90,
@@ -7947,6 +8018,13 @@ class CatalogFeedView(APIView):
         return sorted(items, key=lambda item: item["scores"][key_name], reverse=True)
 
     def get(self, request):
+        cache_key = None
+        if not (request.user and request.user.is_authenticated) and _CATALOG_CACHE_TTL_SECONDS > 0:
+            cache_key = _catalog_cache_key("feed", request)
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
         query = (request.query_params.get("q") or "").strip().lower()
         category_slug = (request.query_params.get("category") or "").strip()
         teacher_id_raw = (request.query_params.get("teacher") or "").strip()
@@ -7969,7 +8047,19 @@ class CatalogFeedView(APIView):
             )
             .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
-            .prefetch_related("jobs", "likes", "comments", "slides")
+            .annotate(
+                likes_count=Count("likes", distinct=True),
+                comments_count=Count("comments", distinct=True),
+                followers_count=Count("user__publisher_followers", distinct=True),
+                slides_count=Count("slides", distinct=True),
+                has_video_export_done=Exists(
+                    Job.objects.filter(
+                        project_id=OuterRef("pk"),
+                        job_type="video_export",
+                        status="done",
+                    )
+                ),
+            )
             .distinct()
             .order_by("-created_at")
         )
@@ -8092,26 +8182,27 @@ class CatalogFeedView(APIView):
             },
         ]
 
-        return Response(
-            {
-                "sections": sections,
-                "featured_publishers": featured_publishers,
-                "filters": {
-                    "query": query,
-                    "category": category_slug,
-                    "teacher": int(teacher_id_raw) if teacher_id_raw.isdigit() else None,
-                    "interests": sorted(interest_slugs),
-                    "watched": watched_only,
-                    "rank_by": rank_by,
-                    "supported_rank_by": ["blended", "popularity", "recency"],
-                },
-                "meta": {
-                    "contract": "catalog_feed_v1",
-                    "placeholder_logic": True,
-                    "notes": "Ranking is heuristic and intentionally lightweight. Replace with recommendation jobs later.",
-                },
-            }
-        )
+        payload = {
+            "sections": sections,
+            "featured_publishers": featured_publishers,
+            "filters": {
+                "query": query,
+                "category": category_slug,
+                "teacher": int(teacher_id_raw) if teacher_id_raw.isdigit() else None,
+                "interests": sorted(interest_slugs),
+                "watched": watched_only,
+                "rank_by": rank_by,
+                "supported_rank_by": ["blended", "popularity", "recency"],
+            },
+            "meta": {
+                "contract": "catalog_feed_v1",
+                "placeholder_logic": True,
+                "notes": "Ranking is heuristic and intentionally lightweight. Replace with recommendation jobs later.",
+            },
+        }
+        if cache_key:
+            cache.set(cache_key, payload, timeout=_CATALOG_CACHE_TTL_SECONDS)
+        return Response(payload)
 
 
 class AdminStatsDashboardView(APIView):

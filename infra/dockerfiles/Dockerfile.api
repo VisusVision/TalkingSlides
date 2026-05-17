@@ -6,11 +6,13 @@
 # ============================================================
 
 FROM python:3.11-slim
+ARG INSTALL_TEST_DEPS=0
 
 # --- system dependencies ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
   gcc \
   libpq-dev \
+  ffmpeg \
   curl \
   && rm -rf /var/lib/apt/lists/*
 
@@ -18,7 +20,11 @@ WORKDIR /app
 
 # --- Python dependencies (cached layer) ---
 COPY services/api/requirements.txt .
+COPY requirements-test.txt /tmp/test-requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+RUN if [ "$INSTALL_TEST_DEPS" = "1" ]; then \
+      pip install --no-cache-dir -r /tmp/test-requirements.txt; \
+    fi
 
 # --- copy application source ---
 COPY services/api/ ./

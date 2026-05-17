@@ -17,7 +17,9 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.test.utils import override_settings  # noqa: E402
+from django.contrib.auth.models import User  # noqa: E402
 from rest_framework.test import APIRequestFactory  # noqa: E402
+from rest_framework.test import force_authenticate  # noqa: E402
 
 from core import views  # noqa: E402
 from core.models import Job, Project  # noqa: E402
@@ -25,9 +27,11 @@ from core.models import Job, Project  # noqa: E402
 
 @pytest.mark.django_db
 def test_job_status_returns_language_detection_fallback_when_sidecar_missing(tmp_path):
-    project = Project.objects.create(title="Language test")
+    user = User.objects.create_user(username="job_status_lang_user_1", password="pass")
+    project = Project.objects.create(title="Language test", user=user)
     job = Job.objects.create(project=project, job_type="video_export", status="pending")
     request = APIRequestFactory().get(f"/api/v1/projects/{project.id}/jobs/{job.id}/")
+    force_authenticate(request, user=user)
 
     with override_settings(STORAGE_ROOT=str(tmp_path)):
         response = views.JobStatusView.as_view()(request, project_id=project.id, job_id=job.id)
@@ -41,7 +45,8 @@ def test_job_status_returns_language_detection_fallback_when_sidecar_missing(tmp
 
 @pytest.mark.django_db
 def test_job_status_returns_language_detection_sidecar_payload(tmp_path):
-    project = Project.objects.create(title="Language sidecar")
+    user = User.objects.create_user(username="job_status_lang_user_2", password="pass")
+    project = Project.objects.create(title="Language sidecar", user=user)
     job = Job.objects.create(project=project, job_type="video_export", status="running")
 
     sidecar_dir = tmp_path / str(project.id)
@@ -59,6 +64,7 @@ def test_job_status_returns_language_detection_sidecar_payload(tmp_path):
     sidecar.write_text(json.dumps(sidecar_payload), encoding="utf-8")
 
     request = APIRequestFactory().get(f"/api/v1/projects/{project.id}/jobs/{job.id}/")
+    force_authenticate(request, user=user)
 
     with override_settings(STORAGE_ROOT=str(tmp_path)):
         response = views.JobStatusView.as_view()(request, project_id=project.id, job_id=job.id)
