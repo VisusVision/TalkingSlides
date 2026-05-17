@@ -7,6 +7,7 @@ import Channel from '../pages/Channel';
 import Playlist from '../pages/Playlist';
 import Library from '../pages/Library';
 import History from '../pages/History';
+import Notifications from '../pages/Notifications';
 import Help from '../pages/Help';
 import Analytics from '../pages/Analytics';
 import ModerationDashboard from '../pages/ModerationDashboard';
@@ -67,6 +68,14 @@ export default function AppRouter({
         element={(
           <ProtectedRoute user={user} onLoginRequest={onLoginRequest}>
             <History user={user} />
+          </ProtectedRoute>
+        )}
+      />
+      <Route
+        path="/notifications"
+        element={(
+          <ProtectedRoute user={user} onLoginRequest={onLoginRequest}>
+            <Notifications user={user} />
           </ProtectedRoute>
         )}
       />

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  Bell,
   ChevronDown,
   CircleHelp,
   MonitorPlay,
@@ -32,7 +33,14 @@ import {
 import { canAccessStudio } from '../lib/auth';
 
 const REDUCED_MOTION_KEY = 'visus-reduced-motion';
+const NOTIFICATION_PREFS_KEY = 'visus-notification-preferences';
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
+
+const DEFAULT_NOTIFICATION_PREFERENCES = {
+  commentsOnLessons: true,
+  renderUpdates: true,
+  followedPublisherLessons: true,
+};
 
 const THEME_OPTIONS = [
   {
@@ -101,6 +109,18 @@ function profileDraftFromPayload(payload) {
 function displayNameFromDraft(draft, user) {
   const fullName = [draft.first_name, draft.last_name].map((value) => String(value || '').trim()).filter(Boolean).join(' ');
   return fullName || user?.username || 'VISUS User';
+}
+
+function readNotificationPreferences() {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(NOTIFICATION_PREFS_KEY) || '{}');
+    return {
+      ...DEFAULT_NOTIFICATION_PREFERENCES,
+      ...(parsed && typeof parsed === 'object' ? parsed : {}),
+    };
+  } catch {
+    return DEFAULT_NOTIFICATION_PREFERENCES;
+  }
 }
 
 function CollapsibleSection({ title, caption, defaultOpen = false, children }) {
@@ -184,11 +204,16 @@ export default function Settings({ user, onUserRefresh }) {
   const [previewStatusLabel, setPreviewStatusLabel] = useState('idle');
   const [previewVideoUrl, setPreviewVideoUrl] = useState('');
   const [localDataMessage, setLocalDataMessage] = useState('');
+  const [notificationPreferences, setNotificationPreferences] = useState(readNotificationPreferences);
 
   useEffect(() => {
     window.localStorage.setItem(REDUCED_MOTION_KEY, String(reducedMotion));
     document.documentElement.classList.toggle('reduced-motion', reducedMotion);
   }, [reducedMotion]);
+
+  useEffect(() => {
+    window.localStorage.setItem(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPreferences));
+  }, [notificationPreferences]);
 
   useEffect(() => {
     setProfileDraft(profileDraftFromUser(user));
@@ -355,6 +380,10 @@ export default function Settings({ user, onUserRefresh }) {
     setProfileDraft((previous) => ({ ...previous, [field]: value }));
     setProfileMessage('');
     setProfileError('');
+  };
+
+  const updateNotificationPreference = (field, checked) => {
+    setNotificationPreferences((previous) => ({ ...previous, [field]: checked }));
   };
 
   const handleSavePublicProfile = async (event) => {
@@ -583,6 +612,54 @@ export default function Settings({ user, onUserRefresh }) {
             />
             <span>Reduce UI Motion</span>
           </label>
+        </SettingsSection>
+
+        <SettingsSection
+          eyebrow="In-App Notifications"
+          title="Notification preferences"
+          caption="Stored in this browser for the notification center."
+          icon={Bell}
+        >
+          <div className="space-y-3">
+            <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={notificationPreferences.commentsOnLessons}
+                onChange={(event) => updateNotificationPreference('commentsOnLessons', event.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-semibold text-[var(--text-primary)]">Comments on my lessons</span>
+                <span className="mt-1 block text-xs">Notify me about comments on lessons I publish.</span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={notificationPreferences.renderUpdates}
+                onChange={(event) => updateNotificationPreference('renderUpdates', event.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-semibold text-[var(--text-primary)]">Render status changes</span>
+                <span className="mt-1 block text-xs">Notify me when lesson or avatar renders finish or fail.</span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={notificationPreferences.followedPublisherLessons}
+                onChange={(event) => updateNotificationPreference('followedPublisherLessons', event.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-semibold text-[var(--text-primary)]">Followed publisher lessons</span>
+                <span className="mt-1 block text-xs">Notify me when publishers I follow post public lessons.</span>
+              </span>
+            </label>
+          </div>
         </SettingsSection>
 
         <SettingsSection

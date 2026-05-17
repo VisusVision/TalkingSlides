@@ -106,6 +106,31 @@ def test_user_only_sees_own_notifications():
 
 
 @pytest.mark.django_db
+def test_notification_list_supports_limit_and_offset_pagination():
+    user = _make_user("notify_page_user")
+    notifications = [
+        _make_notification(user, title=f"Page {index}")
+        for index in range(3)
+    ]
+
+    first_page = _client(user).get("/api/v1/me/notifications/?limit=2&offset=0")
+    second_page = _client(user).get("/api/v1/me/notifications/?limit=2&offset=2")
+
+    assert first_page.status_code == 200
+    assert first_page.data["count"] == 3
+    assert first_page.data["has_more"] is True
+    assert first_page.data["next_offset"] == 2
+    assert [row["id"] for row in first_page.data["results"]] == [
+        notifications[2].id,
+        notifications[1].id,
+    ]
+    assert second_page.status_code == 200
+    assert second_page.data["has_more"] is False
+    assert second_page.data["next_offset"] is None
+    assert [row["id"] for row in second_page.data["results"]] == [notifications[0].id]
+
+
+@pytest.mark.django_db
 def test_unread_count_only_counts_current_users_unread_notifications():
     user = _make_user("notify_count_user")
     other = _make_user("notify_count_other")
