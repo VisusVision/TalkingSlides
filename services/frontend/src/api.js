@@ -951,6 +951,48 @@ export async function fetchMyAnalytics(filters = {}) {
   return res.json();
 }
 
+function analyticsQueryString(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.range) params.set("range", String(filters.range));
+  if (filters.from) params.set("from", String(filters.from));
+  if (filters.to) params.set("to", String(filters.to));
+  if (filters.category) params.set("category", String(filters.category));
+  if (filters.sort) params.set("sort", String(filters.sort));
+  return params.toString();
+}
+
+export async function fetchMyAnalyticsIntelligence(filters = {}) {
+  const query = analyticsQueryString(filters);
+  const url = query
+    ? `${API_BASE_URL}/me/analytics/intelligence/?${query}`
+    : `${API_BASE_URL}/me/analytics/intelligence/`;
+
+  const res = await fetch(url, { headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to fetch analytics intelligence'));
+  }
+  return data;
+}
+
+export async function analyzeMyAnalyticsIntelligence(filters = {}) {
+  const query = analyticsQueryString(filters);
+  const url = query
+    ? `${API_BASE_URL}/me/analytics/intelligence/analyze/?${query}`
+    : `${API_BASE_URL}/me/analytics/intelligence/analyze/`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to analyze analytics'));
+  }
+  return data;
+}
+
 /**
  * Fetch short-lived playback token for a project.
  * Returns { video_url, srt_url, vtt_url, expires_in }

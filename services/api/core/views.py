@@ -70,6 +70,7 @@ from rest_framework.views import APIView
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from core.models import (
+    AnalyticsIntelligenceReport,
     AvatarRenderJob,
     AvatarOverlayPreference,
     Category,
@@ -110,6 +111,16 @@ from core.serializers import (
     UserSerializer,
     canonical_project_tts_settings,
     merge_project_tts_settings_patch,
+)
+from core.analytics_intelligence import (
+    AnalyticsIntelligenceInputError,
+    AnalyticsIntelligenceInputTooLarge,
+    analytics_intelligence_enabled,
+    analytics_provider_chain_from_settings,
+    analytics_report_response_payload,
+    analyze_analytics_with_provider_chain,
+    apply_analytics_analysis_to_report,
+    build_analytics_intelligence_input,
 )
 from core.drafts import (
     ensure_project_draft_data,
@@ -8772,7 +8783,9 @@ class CreatorAnalyticsView(APIView):
                 {"error": "Only teacher or publisher accounts can view creator analytics."},
                 status=status.HTTP_403_FORBIDDEN,
             )
+        return Response(self.build_payload(request), status=status.HTTP_200_OK)
 
+    def build_payload(self, request) -> dict[str, Any]:
         date_from, date_to, range_days = self._bounded_date_range(request)
         from_dt = timezone.make_aware(datetime.combine(date_from, datetime.min.time()))
         to_dt = timezone.make_aware(datetime.combine(date_to, datetime.max.time()))
@@ -9075,69 +9088,165 @@ class CreatorAnalyticsView(APIView):
             reverse=True,
         )[:20]
 
+        return {
+            "summary": {
+                "total_lessons": len(project_list),
+                "published_lessons": sum(1 for project in project_list if project.is_published),
+                "draft_lessons": sum(1 for project in project_list if not project.is_published),
+                "video_plays": progress_count,
+                "total_views": progress_count,
+                "unique_viewers": unique_viewers,
+                "estimated_watch_time_minutes": estimated_watch_minutes,
+                "completion_rate": completion_rate,
+                "average_progress": average_progress,
+                "engagement_events": engagement_events,
+                "likes": like_count,
+                "comments": comment_count,
+                "trends": {
+                    "video_plays_pct": self._pct_delta(float(progress_count), float(prev_views)),
+                    "unique_viewers_pct": self._pct_delta(float(unique_viewers), float(prev_unique)),
+                    "completion_rate_pct": self._pct_delta(float(completion_rate), float(prev_completion_rate)),
+                    "engagement_events_pct": self._pct_delta(float(engagement_events), float(prev_engagement)),
+                },
+            },
+            "charts": {
+                "engagement_trend": trend_points,
+                "category_popularity": category_table[:12],
+            },
+            "tables": {
+                "top_lessons": lessons_table[:20],
+                "recent_lessons": recent_lessons,
+                "top_categories": category_table[:12],
+            },
+            "recent_activity": recent_activity,
+            "filters": {
+                "from": date_from.isoformat(),
+                "to": date_to.isoformat(),
+                "range": range_days,
+                "category": category_slug,
+                "sort": sort_by,
+            },
+            "options": {
+                "categories": CategorySerializer(category_options, many=True).data,
+                "supported_ranges": [7, 30, 90],
+                "supported_sort": supported_sort,
+            },
+            "meta": {
+                "contract": "creator_analytics_v1",
+                "scope": "creator",
+                "estimated_metrics": True,
+                "estimated_fields": [
+                    "video_plays",
+                    "total_views",
+                    "estimated_watch_time_minutes",
+                ],
+                "missing_metrics": [
+                    "exact_play_events",
+                    "exact_watch_time_seconds",
+                    "viewer_session_count",
+                    "satisfaction_score",
+                    "revenue",
+                ],
+            },
+        }
+
+
+class CreatorAnalyticsIntelligenceView(APIView):
+    """GET/POST /api/v1/me/analytics/intelligence/"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _forbidden_response(self):
         return Response(
-            {
-                "summary": {
-                    "total_lessons": len(project_list),
-                    "published_lessons": sum(1 for project in project_list if project.is_published),
-                    "draft_lessons": sum(1 for project in project_list if not project.is_published),
-                    "video_plays": progress_count,
-                    "total_views": progress_count,
-                    "unique_viewers": unique_viewers,
-                    "estimated_watch_time_minutes": estimated_watch_minutes,
-                    "completion_rate": completion_rate,
-                    "average_progress": average_progress,
-                    "engagement_events": engagement_events,
-                    "likes": like_count,
-                    "comments": comment_count,
-                    "trends": {
-                        "video_plays_pct": self._pct_delta(float(progress_count), float(prev_views)),
-                        "unique_viewers_pct": self._pct_delta(float(unique_viewers), float(prev_unique)),
-                        "completion_rate_pct": self._pct_delta(float(completion_rate), float(prev_completion_rate)),
-                        "engagement_events_pct": self._pct_delta(float(engagement_events), float(prev_engagement)),
-                    },
-                },
-                "charts": {
-                    "engagement_trend": trend_points,
-                    "category_popularity": category_table[:12],
-                },
-                "tables": {
-                    "top_lessons": lessons_table[:20],
-                    "recent_lessons": recent_lessons,
-                    "top_categories": category_table[:12],
-                },
-                "recent_activity": recent_activity,
-                "filters": {
-                    "from": date_from.isoformat(),
-                    "to": date_to.isoformat(),
-                    "range": range_days,
-                    "category": category_slug,
-                    "sort": sort_by,
-                },
-                "options": {
-                    "categories": CategorySerializer(category_options, many=True).data,
-                    "supported_ranges": [7, 30, 90],
-                    "supported_sort": supported_sort,
-                },
-                "meta": {
-                    "contract": "creator_analytics_v1",
-                    "scope": "creator",
-                    "estimated_metrics": True,
-                    "estimated_fields": [
-                        "video_plays",
-                        "total_views",
-                        "estimated_watch_time_minutes",
-                    ],
-                    "missing_metrics": [
-                        "exact_play_events",
-                        "exact_watch_time_seconds",
-                        "viewer_session_count",
-                        "satisfaction_score",
-                        "revenue",
-                    ],
-                },
-            }
+            {"error": "Only teacher or publisher accounts can analyze creator analytics."},
+            status=status.HTTP_403_FORBIDDEN,
         )
+
+    def _creator_payload(self, request) -> dict[str, Any]:
+        return CreatorAnalyticsView().build_payload(request)
+
+    def get(self, request):
+        if not _is_verified_teacher(request.user):
+            return self._forbidden_response()
+
+        enabled = analytics_intelligence_enabled()
+        if not enabled:
+            payload = analytics_report_response_payload(None, enabled=False)
+            payload["message"] = "Analytics Intelligence is disabled."
+            return Response(payload, status=status.HTTP_200_OK)
+
+        try:
+            analytics_payload = self._creator_payload(request)
+            analytics_input = build_analytics_intelligence_input(request.user, analytics_payload, scope="creator")
+        except (AnalyticsIntelligenceInputTooLarge, AnalyticsIntelligenceInputError):
+            latest = (
+                AnalyticsIntelligenceReport.objects.filter(requested_by=request.user, scope="creator")
+                .order_by("-created_at", "-id")
+                .first()
+            )
+            return Response(analytics_report_response_payload(latest, enabled=True), status=status.HTTP_200_OK)
+
+        latest = (
+            AnalyticsIntelligenceReport.objects.filter(
+                requested_by=request.user,
+                scope="creator",
+                source_hash=analytics_input.source_hash,
+            )
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        return Response(analytics_report_response_payload(latest, enabled=True), status=status.HTTP_200_OK)
+
+    def post(self, request):
+        if not _is_verified_teacher(request.user):
+            return self._forbidden_response()
+        if not analytics_intelligence_enabled():
+            return Response(
+                {
+                    "enabled": False,
+                    "status": "disabled",
+                    "error": "Analytics Intelligence is disabled.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        analytics_payload = self._creator_payload(request)
+        try:
+            analytics_input = build_analytics_intelligence_input(request.user, analytics_payload, scope="creator")
+        except AnalyticsIntelligenceInputTooLarge as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except AnalyticsIntelligenceInputError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        chain = analytics_provider_chain_from_settings()
+        report = AnalyticsIntelligenceReport.objects.create(
+            requested_by=request.user if request.user and request.user.is_authenticated else None,
+            scope=analytics_input.scope,
+            status="running",
+            provider="heuristic",
+            provider_chain=chain,
+            fallback_used=False,
+            source_hash=analytics_input.source_hash,
+            date_range=analytics_input.date_range,
+            category_filter=analytics_input.category_filter,
+        )
+        try:
+            analysis = analyze_analytics_with_provider_chain(analytics_input, chain=chain)
+            report = apply_analytics_analysis_to_report(
+                report,
+                analysis,
+                source_hash=analytics_input.source_hash,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Analytics intelligence analysis failed user=%s report=%s", request.user.id, report.id)
+            report.status = "failed"
+            report.error_message = str(exc or exc.__class__.__name__)[:500]
+            report.save(update_fields=["status", "error_message", "updated_at"])
+            payload = analytics_report_response_payload(report, enabled=True)
+            payload["error"] = "Analytics Intelligence analysis failed."
+            return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response(analytics_report_response_payload(report, enabled=True), status=status.HTTP_200_OK)
 
 
 class CatalogDetailView(APIView):

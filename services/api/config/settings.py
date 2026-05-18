@@ -461,6 +461,37 @@ OPENAI_LESSON_INTELLIGENCE_MODEL = os.environ.get(
 ).strip()
 
 # ---------------------------------------------------------------------------
+# Analytics Intelligence. Creator analytics are summarized locally by default.
+# Optional Ollama analysis can be enabled; paid providers remain gated.
+# ---------------------------------------------------------------------------
+ANALYTICS_INTELLIGENCE_ENABLED = os.environ.get(
+    "ANALYTICS_INTELLIGENCE_ENABLED",
+    "true" if DEBUG else "false",
+).lower() in {"1", "true", "yes", "on"}
+ANALYTICS_INTELLIGENCE_PROVIDER = os.environ.get("ANALYTICS_INTELLIGENCE_PROVIDER", "heuristic").strip().lower()
+ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN = os.environ.get(
+    "ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN",
+    ANALYTICS_INTELLIGENCE_PROVIDER or "heuristic",
+).strip()
+ANALYTICS_INTELLIGENCE_ALLOW_EXTERNAL = os.environ.get("ANALYTICS_INTELLIGENCE_ALLOW_EXTERNAL", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS = float(os.environ.get("ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS", "30"))
+ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS = int(os.environ.get("ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS", "20000"))
+OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL = os.environ.get(
+    "OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL",
+    os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+).strip().rstrip("/")
+OLLAMA_ANALYTICS_INTELLIGENCE_MODEL = os.environ.get(
+    "OLLAMA_ANALYTICS_INTELLIGENCE_MODEL",
+    "qwen2.5:7b-instruct",
+).strip()
+OPENAI_ANALYTICS_INTELLIGENCE_MODEL = os.environ.get(
+    "OPENAI_ANALYTICS_INTELLIGENCE_MODEL",
+    "gpt-4o-mini",
+).strip()
+
+# ---------------------------------------------------------------------------
 # Subtitle translation providers. Enabled by default, but paid/external API
 # providers are skipped unless explicit endpoint/key/provider settings are set.
 # ---------------------------------------------------------------------------
