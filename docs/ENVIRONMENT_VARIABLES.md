@@ -290,3 +290,26 @@ CORS_ALLOWED_ORIGINS=https://<frontend-domain>
 API_PUBLIC_BASE_URL=https://<api-domain>
 VITE_API_BASE_URL=https://<api-domain>/api/v1
 ```
+
+## Intelligence provider chain (Lesson / Analytics)
+
+Add these variables to configure the intelligence provider chain used by Lesson Intelligence and Analytics Intelligence. These are examples — never commit real secrets.
+
+```
+# Provider chains (comma-separated provider labels, tried in order)
+LESSON_INTELLIGENCE_PROVIDER_CHAIN=heuristic
+ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN=heuristic
+
+# Ollama/local provider (optional)
+OLLAMA_LESSON_INTELLIGENCE_BASE_URL=http://localhost:11434
+OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL=http://localhost:11434
+OLLAMA_LESSON_INTELLIGENCE_MODEL=qwen2.5:7b
+OLLAMA_ANALYTICS_INTELLIGENCE_MODEL=qwen2.5:7b
+OLLAMA_INTELLIGENCE_TIMEOUT_SECONDS=20
+
+# Allow external/paid providers (explicit enabling required)
+LESSON_INTELLIGENCE_ALLOW_EXTERNAL=0
+ANALYTICS_INTELLIGENCE_ALLOW_EXTERNAL=0
+```
+
+See `docs/INTELLIGENCE_PROVIDERS.md` for a full explanation of layers, fallback behavior, safety notes, and a production checklist before enabling paid/external providers.
