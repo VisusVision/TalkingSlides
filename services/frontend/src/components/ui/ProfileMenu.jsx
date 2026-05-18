@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { CircleHelp, LayoutDashboard, LogIn, LogOut, Settings as SettingsIcon, UserCircle2 } from 'lucide-react';
+import { BookOpen, CircleHelp, LogIn, LogOut, Settings as SettingsIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { API_BASE_URL, fetchAuthenticatedMediaBlobUrl } from '../../api';
 import Button from './Button';
@@ -131,6 +131,8 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
   const displayName = displayNameFromUser(user);
   const roleLabel = userRoleLabel(user);
   const visibleAvatarSrc = avatarLoadFailed ? '' : avatarSrc;
+  const ownChannelPath = user?.id ? `/channel/${user.id}` : '/settings';
+  const ownChannelLabel = user?.id ? 'Open your channel' : 'Open account settings';
 
   return (
     <div className="relative" ref={menuRef}>
@@ -178,32 +180,31 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           role="menu"
           className="absolute right-0 z-[70] mt-3 w-56 rounded-2xl border border-[color:rgba(73,68,84,0.15)] bg-[var(--surface-container)] p-3"
         >
-          <div className="mb-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2">
-            <p className="label-sm">Account</p>
-            <p className="mt-1 text-sm font-medium text-[var(--text-primary)]">{displayName}</p>
-            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{roleLabel}</p>
-          </div>
-
           <Link
-            to="/"
-            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            to={ownChannelPath}
+            role="menuitem"
+            aria-label={ownChannelLabel}
+            className="focus-ring mb-2 block rounded-xl bg-[var(--surface-container-high)] px-3 py-2 transition hover:bg-[color:var(--hover-surface)]"
             onClick={() => setOpen(false)}
           >
-            <LayoutDashboard size={15} />
-            <span>Dashboard</span>
+            <p className="label-sm">Your channel</p>
+            <p className="mt-1 text-sm font-medium text-[var(--text-primary)]">{displayName}</p>
+            <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{roleLabel}</p>
           </Link>
 
           <Link
             to="/library"
+            role="menuitem"
             className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
-            <UserCircle2 size={15} />
-            <span>Open Library</span>
+            <BookOpen size={15} />
+            <span>Library</span>
           </Link>
 
           <Link
             to="/settings"
+            role="menuitem"
             className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
@@ -213,6 +214,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
 
           <Link
             to="/help"
+            role="menuitem"
             className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
@@ -222,6 +224,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
 
           <button
             type="button"
+            role="menuitem"
             className="focus-ring flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={async () => {
               setOpen(false);

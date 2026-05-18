@@ -4,15 +4,12 @@ import {
   Check,
   Clock3,
   ExternalLink,
-  Globe2,
+  Info,
   ListVideo,
-  Mail,
   PencilLine,
   PlayCircle,
-  Save,
   UserPlus,
   Users,
-  X,
 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import {
@@ -24,8 +21,17 @@ import {
   uploadProfileAssets,
 } from '../api';
 import Button from '../components/ui/Button';
+import PublicProfileEditor from '../components/profile/PublicProfileEditor';
+import SocialIcon from '../components/ui/SocialIcon';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
+import {
+  SOCIAL_LINK_FIELDS,
+  normalizedPublicProfilePayload,
+  profileFieldErrorsFromApi,
+  socialLinkValue,
+  validatePublicProfileDraft,
+} from '../utils/profileSocial';
 
 const CHANNEL_TABS = [
   { key: 'home', label: 'Home' },
@@ -39,17 +45,6 @@ const SORT_OPTIONS = [
   { value: 'date:asc', label: 'Date oldest' },
   { value: 'name:asc', label: 'Name A-Z' },
   { value: 'name:desc', label: 'Name Z-A' },
-];
-
-const SOCIAL_LINK_FIELDS = [
-  { key: 'website', label: 'Website' },
-  { key: 'youtube', label: 'YouTube' },
-  { key: 'x', label: 'X' },
-  { key: 'twitter', label: 'Twitter' },
-  { key: 'instagram', label: 'Instagram' },
-  { key: 'linkedin', label: 'LinkedIn' },
-  { key: 'github', label: 'GitHub' },
-  { key: 'facebook', label: 'Facebook' },
 ];
 
 function lessonBackground(lesson) {
@@ -119,9 +114,11 @@ function channelEditDraftFrom(user, profile) {
     bio: String(profile?.bio || ''),
     website_url: String(profile?.website_url || ''),
     contact_email: String(profile?.contact_email || ''),
+    banner_url: String(profile?.banner_url || ''),
+    logo_url: String(profile?.logo_url || ''),
     social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
       ...acc,
-      [field.key]: String(profile?.social_links?.[field.key] || ''),
+      [field.key]: socialLinkValue(profile?.social_links, field.key),
     }), {}),
     is_public_profile: Boolean(profile?.is_public_profile),
   };
@@ -168,7 +165,7 @@ function ChannelAvatar({ imageUrl, name, size = 'large' }) {
 function normalizeSocialLinks(profile) {
   const links = profile?.social_links && typeof profile.social_links === 'object' ? profile.social_links : {};
   return SOCIAL_LINK_FIELDS
-    .map((field) => ({ ...field, url: String(links[field.key] || '').trim() }))
+    .map((field) => ({ ...field, url: socialLinkValue(links, field.key) }))
     .filter((field) => field.url && field.url !== profile?.website_url);
 }
 
@@ -185,9 +182,10 @@ function ChannelLinks({ profile, compact = false }) {
           href={websiteUrl}
           target="_blank"
           rel="noreferrer"
+          aria-label="Open publisher website"
           className="focus-ring inline-flex items-center gap-1.5 rounded-full bg-[var(--surface-container-high)] px-3 py-1.5 font-medium text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)]"
         >
-          <Globe2 size={14} />
+          <SocialIcon type="website" size={14} />
           <span>Website</span>
           <ExternalLink size={12} />
         </a>
@@ -195,9 +193,10 @@ function ChannelLinks({ profile, compact = false }) {
       {contactEmail ? (
         <a
           href={`mailto:${contactEmail}`}
+          aria-label="Email publisher contact"
           className="focus-ring inline-flex items-center gap-1.5 rounded-full bg-[var(--surface-container-high)] px-3 py-1.5 font-medium text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)]"
         >
-          <Mail size={14} />
+          <SocialIcon type="contact" size={14} />
           <span>Contact</span>
         </a>
       ) : null}
@@ -207,8 +206,10 @@ function ChannelLinks({ profile, compact = false }) {
           href={link.url}
           target="_blank"
           rel="noreferrer"
+          aria-label={`Open publisher ${link.label}`}
           className="focus-ring inline-flex items-center gap-1.5 rounded-full bg-[var(--surface-container-high)] px-3 py-1.5 font-medium text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)]"
         >
+          <SocialIcon type={link.key} size={14} />
           <span>{link.label}</span>
           <ExternalLink size={12} />
         </a>
@@ -323,18 +324,37 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
   const [editDraft, setEditDraft] = useState(() => channelEditDraftFrom(user, null));
   const [editBannerFile, setEditBannerFile] = useState(null);
   const [editLogoFile, setEditLogoFile] = useState(null);
+  const [editBannerPreviewUrl, setEditBannerPreviewUrl] = useState('');
+  const [editLogoPreviewUrl, setEditLogoPreviewUrl] = useState('');
   const [editSaving, setEditSaving] = useState(false);
   const [editMessage, setEditMessage] = useState('');
   const [editError, setEditError] = useState('');
+  const [editFieldErrors, setEditFieldErrors] = useState({});
 
   const [sort, order] = sortValue.split(':');
   const viewerId = Number(user?.id || 0);
   const channelId = Number(profile?.id ?? userId ?? 0);
   const isOwnChannel = Boolean(viewerId && channelId && viewerId === channelId);
+  const profilePrivate = Boolean(profile?.profile_private);
   const displayName = profile?.display_name || profile?.username || 'Publisher';
   const username = profile?.username ? `@${profile.username}` : '';
-  const logoUrl = profile?.logo_url || profile?.avatar_url || '';
-  const hasBanner = Boolean(profile?.banner_url);
+  const logoUrl = profilePrivate ? '' : profile?.logo_url || profile?.avatar_url || '';
+  const hasBanner = Boolean(profile?.banner_url) && !profilePrivate;
+  const editValidationErrors = useMemo(() => validatePublicProfileDraft(editDraft), [editDraft]);
+  const editHasValidationErrors = Object.keys(editValidationErrors).length > 0;
+  const editFieldError = (field) => editValidationErrors[field] || editFieldErrors[field] || '';
+  const editDisplayNamePreview = useMemo(
+    () => displayNameFromProfilePayload({ ...profile, ...editDraft }, displayName),
+    [displayName, editDraft, profile],
+  );
+  const editEditorDirty = useMemo(
+    () => (
+      JSON.stringify(editDraft) !== JSON.stringify(channelEditDraftFrom(user, profile))
+      || Boolean(editBannerFile)
+      || Boolean(editLogoFile)
+    ),
+    [editBannerFile, editLogoFile, editDraft, profile, user],
+  );
   const filteredLessons = useMemo(() => {
     const needle = String(searchQuery || '').trim().toLowerCase();
     if (!needle) return lessons;
@@ -392,6 +412,26 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
     };
   }, [order, sort, userId, user?.id]);
 
+  useEffect(() => {
+    if (!editBannerFile) {
+      setEditBannerPreviewUrl('');
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(editBannerFile);
+    setEditBannerPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [editBannerFile]);
+
+  useEffect(() => {
+    if (!editLogoFile) {
+      setEditLogoPreviewUrl('');
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(editLogoFile);
+    setEditLogoPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [editLogoFile]);
+
   const handleToggleFollow = async () => {
     if (!profile?.id || followBusy || isOwnChannel) return;
     if (!user) {
@@ -422,13 +462,25 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
     setEditLogoFile(null);
     setEditMessage('');
     setEditError('');
+    setEditFieldErrors({});
     setEditOpen(true);
+  };
+
+  const handleCloseEdit = () => {
+    if (editSaving) return;
+    setEditDraft(channelEditDraftFrom(user, profile));
+    setEditBannerFile(null);
+    setEditLogoFile(null);
+    setEditError('');
+    setEditFieldErrors({});
+    setEditOpen(false);
   };
 
   const handleEditDraftChange = (field, value) => {
     setEditDraft((current) => ({ ...current, [field]: value }));
     setEditMessage('');
     setEditError('');
+    setEditFieldErrors({});
   };
 
   const handleEditSocialChange = (field, value) => {
@@ -441,17 +493,24 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
     }));
     setEditMessage('');
     setEditError('');
+    setEditFieldErrors({});
   };
 
   const handleSaveChannelProfile = async (event) => {
     event.preventDefault();
     if (!isOwnChannel || editSaving) return;
+    if (editHasValidationErrors) {
+      setEditError('Fix the highlighted profile fields before saving.');
+      setEditFieldErrors(editValidationErrors);
+      return;
+    }
 
     setEditSaving(true);
     setEditMessage('');
     setEditError('');
+    setEditFieldErrors({});
     try {
-      let payload = await updateMyProfile(editDraft);
+      let payload = await updateMyProfile(normalizedPublicProfilePayload(editDraft));
       if (editBannerFile || editLogoFile) {
         payload = await uploadProfileAssets({
           bannerFile: editBannerFile,
@@ -475,6 +534,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
       setEditDraft(channelEditDraftFrom({ ...user, ...payload }, payload));
       setEditBannerFile(null);
       setEditLogoFile(null);
+      setEditOpen(false);
       if (typeof onUserRefresh === 'function') {
         try {
           await onUserRefresh();
@@ -484,6 +544,10 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
       }
       setEditMessage('Channel profile saved.');
     } catch (profileUpdateError) {
+      const fieldErrors = profileFieldErrorsFromApi(profileUpdateError.details);
+      if (Object.keys(fieldErrors).length) {
+        setEditFieldErrors(fieldErrors);
+      }
       setEditError(profileUpdateError.message || 'Could not update channel profile.');
     } finally {
       setEditSaving(false);
@@ -518,9 +582,15 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
   }
 
   if (error) {
+    const privateOrUnavailable = /not found|private/i.test(error);
     return (
       <SurfaceCard elevated>
-        <p className="text-sm font-semibold text-[color:var(--feedback-danger-fg)]">{error}</p>
+        <p className="title-lg text-[var(--text-primary)]">
+          {privateOrUnavailable ? 'This channel is private or unavailable.' : 'Unable to load this channel.'}
+        </p>
+        <p className="body-md mt-2">
+          {privateOrUnavailable ? 'The publisher may not have public lessons available yet.' : error}
+        </p>
       </SurfaceCard>
     );
   }
@@ -561,7 +631,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
                 <PencilLine size={14} />
                 <span>Edit channel</span>
               </Button>
-            ) : (
+            ) : profilePrivate ? null : (
               <Button
                 size="sm"
                 variant={profile?.is_following ? 'primary' : 'secondary'}
@@ -576,168 +646,31 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
           </div>
         </div>
         <div className="px-5 py-4 sm:px-6">
-          <p className="max-w-4xl whitespace-pre-wrap text-sm leading-6 text-[var(--text-secondary)]">
-            {profile?.bio || `${displayName} has not added a channel bio yet.`}
-          </p>
-          <div className="mt-3">
-            <ChannelLinks profile={profile} />
-          </div>
-          {followError ? <p className="mt-3 text-xs font-medium text-[color:var(--feedback-danger-fg)]">{followError}</p> : null}
-          {isOwnChannel && editOpen ? (
-            <form
-              onSubmit={handleSaveChannelProfile}
-              className="mt-4 space-y-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-4"
-            >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-[var(--text-primary)]">Edit channel profile</p>
-                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Updates public profile metadata, links, banner, and logo.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setEditOpen(false)}
-                  disabled={editSaving}
-                  className="self-start"
-                >
-                  <X size={14} />
-                  <span>Close</span>
-                </Button>
+          {profilePrivate ? (
+            <div className="flex flex-col gap-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-4 sm:flex-row sm:items-start">
+              <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--surface-container-highest)] text-[var(--accent-primary)]">
+                <Info size={18} />
+              </span>
+              <span>
+                <span className="block text-sm font-semibold text-[var(--text-primary)]">Publisher details are private.</span>
+                <span className="mt-1 block text-sm text-[var(--text-secondary)]">
+                  You can still browse public lessons from this publisher.
+                </span>
+              </span>
+            </div>
+          ) : (
+            <>
+              <p className="max-w-4xl whitespace-pre-wrap text-sm leading-6 text-[var(--text-secondary)]">
+                {profile?.bio || `${displayName} has not added a channel bio yet.`}
+              </p>
+              <div className="mt-3">
+                <ChannelLinks profile={profile} />
               </div>
-
-              <fieldset disabled={editSaving} className="space-y-3 disabled:opacity-60">
-                <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-muted)] px-3 py-3 text-sm text-[var(--text-secondary)]">
-                  <input
-                    type="checkbox"
-                    checked={editDraft.is_public_profile}
-                    onChange={(event) => handleEditDraftChange('is_public_profile', event.target.checked)}
-                    className="mt-1"
-                  />
-                  <span>
-                    <span className="block font-semibold text-[var(--text-primary)]">Make channel public</span>
-                    <span className="mt-1 block text-xs">Anonymous visitors can view your channel page and public profile links.</span>
-                  </span>
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Display name
-                  <input
-                    type="text"
-                    value={editDraft.display_name}
-                    onChange={(event) => handleEditDraftChange('display_name', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    First name
-                    <input
-                      type="text"
-                      value={editDraft.first_name}
-                      onChange={(event) => handleEditDraftChange('first_name', event.target.value)}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Last name
-                    <input
-                      type="text"
-                      value={editDraft.last_name}
-                      onChange={(event) => handleEditDraftChange('last_name', event.target.value)}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                </div>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Bio
-                  <textarea
-                    value={editDraft.bio}
-                    onChange={(event) => handleEditDraftChange('bio', event.target.value)}
-                    rows={4}
-                    className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Website URL
-                    <input
-                      type="url"
-                      value={editDraft.website_url}
-                      onChange={(event) => handleEditDraftChange('website_url', event.target.value)}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Contact email
-                    <input
-                      type="email"
-                      value={editDraft.contact_email}
-                      onChange={(event) => handleEditDraftChange('contact_email', event.target.value)}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Banner image
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(event) => setEditBannerFile(event.target.files?.[0] || null)}
-                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Logo image
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(event) => setEditLogoFile(event.target.files?.[0] || null)}
-                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-sm font-semibold text-[var(--text-primary)]">Social links</p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {SOCIAL_LINK_FIELDS.filter((field) => field.key !== 'website').map((field) => (
-                      <label key={field.key} className="block text-sm text-[var(--text-secondary)]">
-                        {field.label}
-                        <input
-                          type="url"
-                          value={editDraft.social_links?.[field.key] || ''}
-                          onChange={(event) => handleEditSocialChange(field.key, event.target.value)}
-                          className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                        />
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              </fieldset>
-
-              {editMessage ? (
-                <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{editMessage}</p>
-              ) : null}
-              {editError ? (
-                <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{editError}</p>
-              ) : null}
-
-              <Button type="submit" disabled={editSaving}>
-                <Save size={15} />
-                <span>{editSaving ? 'Saving...' : 'Save channel'}</span>
-              </Button>
-            </form>
+            </>
+          )}
+          {followError ? <p className="mt-3 text-xs font-medium text-[color:var(--feedback-danger-fg)]">{followError}</p> : null}
+          {editMessage ? (
+            <p className="mt-3 rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{editMessage}</p>
           ) : null}
         </div>
       </SurfaceCard>
@@ -861,12 +794,20 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
           <div className="grid gap-4 md:grid-cols-[1fr_18rem]">
             <div>
               <p className="text-sm font-semibold text-[var(--text-primary)]">About</p>
-              <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">
-                {profile?.bio || `${displayName} has not added a channel bio yet.`}
-              </p>
-              <div className="mt-3">
-                <ChannelLinks profile={profile} compact />
-              </div>
+              {profilePrivate ? (
+                <p className="mt-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+                  Publisher details are private. Public lessons remain available on this channel.
+                </p>
+              ) : (
+                <>
+                  <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">
+                    {profile?.bio || `${displayName} has not added a channel bio yet.`}
+                  </p>
+                  <div className="mt-3">
+                    <ChannelLinks profile={profile} compact />
+                  </div>
+                </>
+              )}
             </div>
             <div className="rounded-xl token-surface p-4 text-sm text-[var(--text-secondary)]">
               <p className="font-semibold text-[var(--text-primary)]">Stats</p>
@@ -877,6 +818,36 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
           </div>
         )}
       </SurfaceCard>
+
+      <PublicProfileEditor
+        open={isOwnChannel && editOpen}
+        title="Edit channel profile"
+        titleId="channel-profile-editor-title"
+        eyebrow="Channel"
+        closeLabel="Close channel editor"
+        draft={editDraft}
+        displayNamePreview={editDisplayNamePreview}
+        bannerPreviewUrl={editBannerPreviewUrl}
+        logoPreviewUrl={editLogoPreviewUrl}
+        onCancel={handleCloseEdit}
+        onSubmit={handleSaveChannelProfile}
+        onFieldChange={handleEditDraftChange}
+        onSocialChange={handleEditSocialChange}
+        onBannerFileChange={setEditBannerFile}
+        onLogoFileChange={setEditLogoFile}
+        fieldError={editFieldError}
+        error={editError}
+        saving={editSaving}
+        disabled={!isOwnChannel}
+        saveDisabled={editHasValidationErrors}
+        submitLabel="Save channel"
+        savingLabel="Saving..."
+        cancelLabel={editEditorDirty ? 'Discard' : 'Cancel'}
+        canBackdropClose={!editEditorDirty}
+        visibilityLabel="Make channel public"
+        visibilityHelp="Anonymous visitors can view your channel page and public profile links."
+        formId="channel-profile-editor-form"
+      />
     </div>
   );
 }

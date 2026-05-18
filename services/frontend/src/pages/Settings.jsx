@@ -14,6 +14,8 @@ import {
   UserCircle2,
 } from 'lucide-react';
 import Button from '../components/ui/Button';
+import PublicProfileEditor from '../components/profile/PublicProfileEditor';
+import ModalShell from '../components/ui/ModalShell';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { useTheme } from '../components/ui/ThemeProvider';
 import {
@@ -32,6 +34,13 @@ import {
   uploadVoiceSample,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
+import {
+  SOCIAL_LINK_FIELDS,
+  normalizedPublicProfilePayload,
+  profileFieldErrorsFromApi,
+  socialLinkValue,
+  validatePublicProfileDraft,
+} from '../utils/profileSocial';
 
 const REDUCED_MOTION_KEY = 'visus-reduced-motion';
 const NOTIFICATION_PREFS_KEY = 'visus-notification-preferences';
@@ -42,17 +51,6 @@ const DEFAULT_NOTIFICATION_PREFERENCES = {
   renderUpdates: true,
   followedPublisherLessons: true,
 };
-
-const SOCIAL_LINK_FIELDS = [
-  { key: 'website', label: 'Website' },
-  { key: 'youtube', label: 'YouTube' },
-  { key: 'x', label: 'X' },
-  { key: 'twitter', label: 'Twitter' },
-  { key: 'instagram', label: 'Instagram' },
-  { key: 'linkedin', label: 'LinkedIn' },
-  { key: 'github', label: 'GitHub' },
-  { key: 'facebook', label: 'Facebook' },
-];
 
 const THEME_OPTIONS = [
   {
@@ -113,7 +111,7 @@ function profileDraftFromUser(user) {
     contact_email: String(profile.contact_email || ''),
     social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
       ...acc,
-      [field.key]: String(profile.social_links?.[field.key] || ''),
+      [field.key]: socialLinkValue(profile.social_links, field.key),
     }), {}),
     is_public_profile: Boolean(profile.is_public_profile),
     banner_url: String(profile.banner_url || ''),
@@ -131,7 +129,7 @@ function profileDraftFromPayload(payload) {
     contact_email: String(payload?.contact_email || ''),
     social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
       ...acc,
-      [field.key]: String(payload?.social_links?.[field.key] || ''),
+      [field.key]: socialLinkValue(payload?.social_links, field.key),
     }), {}),
     is_public_profile: Boolean(payload?.is_public_profile),
     banner_url: String(payload?.banner_url || ''),
@@ -158,18 +156,21 @@ function readNotificationPreferences() {
   }
 }
 
-function CollapsibleSection({ title, caption, defaultOpen = false, children }) {
+function AvatarActionCard({ title, caption, icon: Icon, onClick }) {
   return (
-    <details open={defaultOpen} className="group rounded-2xl token-surface px-4 py-3">
-      <summary className="focus-ring flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl text-left text-sm font-semibold text-[var(--text-primary)]">
-        <span>
-          <span>{title}</span>
-          {caption && <span className="mt-1 block text-xs font-normal text-[var(--text-secondary)]">{caption}</span>}
-        </span>
-        <ChevronDown size={15} className="shrink-0 text-[var(--text-secondary)] transition group-open:rotate-180" />
-      </summary>
-      <div className="mt-3 space-y-3">{children}</div>
-    </details>
+    <button
+      type="button"
+      onClick={onClick}
+      className="focus-ring flex h-full items-start gap-3 rounded-2xl token-surface p-4 text-left transition hover:bg-[color:var(--hover-surface)]"
+    >
+      <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--surface-container-highest)] text-[var(--accent-primary)]">
+        <Icon size={18} />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-semibold text-[var(--text-primary)]">{title}</span>
+        <span className="mt-1 block text-xs leading-5 text-[var(--text-secondary)]">{caption}</span>
+      </span>
+    </button>
   );
 }
 
@@ -225,6 +226,9 @@ export default function Settings({ user, onUserRefresh }) {
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
+  const [profileEditorOpen, setProfileEditorOpen] = useState(false);
+  const [profileEditDraft, setProfileEditDraft] = useState(() => profileDraftFromUser(user));
+  const [profileFieldErrors, setProfileFieldErrors] = useState({});
   const [bannerFile, setBannerFile] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
   const [bannerPreviewUrl, setBannerPreviewUrl] = useState('');
@@ -244,6 +248,7 @@ export default function Settings({ user, onUserRefresh }) {
   const [previewVideoUrl, setPreviewVideoUrl] = useState('');
   const [localDataMessage, setLocalDataMessage] = useState('');
   const [notificationPreferences, setNotificationPreferences] = useState(readNotificationPreferences);
+  const [avatarModal, setAvatarModal] = useState('');
 
   useEffect(() => {
     window.localStorage.setItem(REDUCED_MOTION_KEY, String(reducedMotion));
@@ -255,9 +260,12 @@ export default function Settings({ user, onUserRefresh }) {
   }, [notificationPreferences]);
 
   useEffect(() => {
-    setProfileDraft(profileDraftFromUser(user));
+    const userDraft = profileDraftFromUser(user);
+    setProfileDraft(userDraft);
+    setProfileEditDraft(userDraft);
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
     setBannerFile(null);
     setLogoFile(null);
 
@@ -265,7 +273,11 @@ export default function Settings({ user, onUserRefresh }) {
     let active = true;
     fetchMyProfile()
       .then((payload) => {
-        if (active) setProfileDraft(profileDraftFromPayload(payload));
+        if (active) {
+          const nextDraft = profileDraftFromPayload(payload);
+          setProfileDraft(nextDraft);
+          setProfileEditDraft(nextDraft);
+        }
       })
       .catch(() => {
         if (active) setProfileError('Unable to refresh public profile details.');
@@ -330,6 +342,24 @@ export default function Settings({ user, onUserRefresh }) {
   const publicDisplayName = useMemo(
     () => displayNameFromDraft(profileDraft, user),
     [profileDraft, user],
+  );
+  const profileEditorDisplayName = useMemo(
+    () => displayNameFromDraft(profileEditDraft, user),
+    [profileEditDraft, user],
+  );
+  const profileValidationErrors = useMemo(
+    () => validatePublicProfileDraft(profileEditDraft),
+    [profileEditDraft],
+  );
+  const profileHasValidationErrors = Object.keys(profileValidationErrors).length > 0;
+  const profileFieldError = (field) => profileValidationErrors[field] || profileFieldErrors[field] || '';
+  const profileEditorDirty = useMemo(
+    () => (
+      JSON.stringify(profileEditDraft) !== JSON.stringify(profileDraft)
+      || Boolean(bannerFile)
+      || Boolean(logoFile)
+    ),
+    [bannerFile, logoFile, profileDraft, profileEditDraft],
   );
 
   const loadAvatarProfile = useCallback(async () => {
@@ -438,13 +468,14 @@ export default function Settings({ user, onUserRefresh }) {
   }, [onUserRefresh]);
 
   const updateProfileDraftField = (field, value) => {
-    setProfileDraft((previous) => ({ ...previous, [field]: value }));
+    setProfileEditDraft((previous) => ({ ...previous, [field]: value }));
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
   };
 
   const updateSocialLinkField = (field, value) => {
-    setProfileDraft((previous) => ({
+    setProfileEditDraft((previous) => ({
       ...previous,
       social_links: {
         ...(previous.social_links || {}),
@@ -453,6 +484,27 @@ export default function Settings({ user, onUserRefresh }) {
     }));
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
+  };
+
+  const openPublicProfileEditor = () => {
+    setProfileEditDraft(profileDraft);
+    setBannerFile(null);
+    setLogoFile(null);
+    setProfileMessage('');
+    setProfileError('');
+    setProfileFieldErrors({});
+    setProfileEditorOpen(true);
+  };
+
+  const closePublicProfileEditor = () => {
+    if (profileSaving) return;
+    setProfileEditorOpen(false);
+    setProfileEditDraft(profileDraft);
+    setBannerFile(null);
+    setLogoFile(null);
+    setProfileError('');
+    setProfileFieldErrors({});
   };
 
   const updateNotificationPreference = (field, checked) => {
@@ -462,21 +514,34 @@ export default function Settings({ user, onUserRefresh }) {
   const handleSavePublicProfile = async (event) => {
     event.preventDefault();
     if (!user?.id) return;
+    if (profileHasValidationErrors) {
+      setProfileFieldErrors(profileValidationErrors);
+      setProfileError('Fix the highlighted profile fields before saving.');
+      return;
+    }
 
     setProfileSaving(true);
     setProfileMessage('');
     setProfileError('');
+    setProfileFieldErrors({});
     try {
-      let payload = await updateMyProfile(profileDraft);
+      let payload = await updateMyProfile(normalizedPublicProfilePayload(profileEditDraft));
       if (bannerFile || logoFile) {
         payload = await uploadProfileAssets({ bannerFile, logoFile });
       }
-      setProfileDraft(profileDraftFromPayload(payload));
+      const nextDraft = profileDraftFromPayload(payload);
+      setProfileDraft(nextDraft);
+      setProfileEditDraft(nextDraft);
       setBannerFile(null);
       setLogoFile(null);
       await refreshSessionUser();
       setProfileMessage('Public profile saved.');
+      setProfileEditorOpen(false);
     } catch (error) {
+      const fieldErrors = profileFieldErrorsFromApi(error.details);
+      if (Object.keys(fieldErrors).length) {
+        setProfileFieldErrors(fieldErrors);
+      }
       setProfileError(error.message || 'Unable to save public profile.');
     } finally {
       setProfileSaving(false);
@@ -549,6 +614,10 @@ export default function Settings({ user, onUserRefresh }) {
     }, 'Avatar preview removed.');
   };
 
+  const closeAvatarModal = () => {
+    if (!teacherBusy) setAvatarModal('');
+  };
+
   return (
     <div className="space-y-5">
       <section className="layout-grid-12">
@@ -615,152 +684,42 @@ export default function Settings({ user, onUserRefresh }) {
           icon={UserCircle2}
           className="md:col-span-2 2xl:col-span-1"
         >
-          <form onSubmit={handleSavePublicProfile} className="space-y-4">
-            <fieldset disabled={!user || profileSaving} className="space-y-3 disabled:opacity-60">
-              <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
-                <input
-                  type="checkbox"
-                  checked={profileDraft.is_public_profile}
-                  onChange={(event) => updateProfileDraftField('is_public_profile', event.target.checked)}
-                  className="mt-1"
-                />
-                <span>
-                  <span className="block font-semibold text-[var(--text-primary)]">Make profile public</span>
-                  <span className="mt-1 block text-xs">When disabled, only you and staff can view your channel profile page.</span>
-                </span>
-              </label>
-
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Display name
-                <input
-                  type="text"
-                  value={profileDraft.display_name}
-                  onChange={(event) => updateProfileDraftField('display_name', event.target.value)}
-                  className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                />
-              </label>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  First name
-                  <input
-                    type="text"
-                    value={profileDraft.first_name}
-                    onChange={(event) => updateProfileDraftField('first_name', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Last name
-                  <input
-                    type="text"
-                    value={profileDraft.last_name}
-                    onChange={(event) => updateProfileDraftField('last_name', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-              </div>
-
-              <label className="block text-sm text-[var(--text-secondary)]">
-                Bio
-                <textarea
-                  value={profileDraft.bio}
-                  onChange={(event) => updateProfileDraftField('bio', event.target.value)}
-                  rows={5}
-                  className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
-                />
-              </label>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Website URL
-                  <input
-                    type="url"
-                    value={profileDraft.website_url}
-                    onChange={(event) => updateProfileDraftField('website_url', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Contact email
-                  <input
-                    type="email"
-                    value={profileDraft.contact_email}
-                    onChange={(event) => updateProfileDraftField('contact_email', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Banner image
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => setBannerFile(event.target.files?.[0] || null)}
-                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Logo image
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => setLogoFile(event.target.files?.[0] || null)}
-                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_7rem]">
-                <div
-                  className="min-h-28 rounded-xl bg-[var(--surface-container-high)] bg-cover bg-center"
-                  style={(bannerPreviewUrl || profileDraft.banner_url) ? {
-                    backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0.45), rgba(0,0,0,0.18)), url(${bannerPreviewUrl || profileDraft.banner_url})`,
-                  } : undefined}
-                />
-                <div className="flex items-center justify-center rounded-xl bg-[var(--surface-container-high)] p-3">
-                  {logoPreviewUrl || profileDraft.logo_url ? (
-                    <img
-                      src={logoPreviewUrl || profileDraft.logo_url}
-                      alt=""
-                      className="h-20 w-20 rounded-full object-cover"
-                    />
-                  ) : (
-                    <UserCircle2 size={48} className="text-[var(--text-secondary)]" />
-                  )}
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3">
+              <div
+                className="min-h-24 rounded-xl bg-[var(--surface-container-highest)] bg-cover bg-center"
+                style={profileDraft.banner_url ? {
+                  backgroundImage: `linear-gradient(90deg, rgba(0,0,0,0.42), rgba(0,0,0,0.12)), url(${profileDraft.banner_url})`,
+                } : undefined}
+              />
+              <div className="-mt-8 flex flex-col gap-3 px-2 sm:flex-row sm:items-end sm:justify-between">
+                <div className="flex min-w-0 items-end gap-3">
+                  <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-4 border-[var(--surface-container-high)] bg-[var(--surface-container-highest)]">
+                    {profileDraft.logo_url ? (
+                      <img src={profileDraft.logo_url} alt="" className="h-full w-full rounded-full object-cover" />
+                    ) : (
+                      <UserCircle2 size={34} className="text-[var(--text-secondary)]" />
+                    )}
+                  </div>
+                  <div className="min-w-0 pb-1">
+                    <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                      profileDraft.is_public_profile
+                        ? 'bg-[var(--status-success-bg)] text-[var(--status-success-fg)]'
+                        : 'bg-[var(--surface-container-highest)] text-[var(--text-secondary)]'
+                    }`}>
+                      {profileDraft.is_public_profile ? 'Public' : 'Private'}
+                    </span>
+                    <p className="mt-2 truncate text-sm font-semibold text-[var(--text-primary)]">{publicDisplayName}</p>
+                    <p className="text-xs text-[var(--text-secondary)]">
+                      {profileDraft.website_url || 'No website set'}
+                    </p>
+                  </div>
                 </div>
+                <Button size="sm" variant="secondary" onClick={openPublicProfileEditor} disabled={!user}>
+                  <UserCircle2 size={15} />
+                  <span>Edit</span>
+                </Button>
               </div>
-
-              <div className="space-y-2">
-                <p className="text-sm font-semibold text-[var(--text-primary)]">Social links</p>
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {SOCIAL_LINK_FIELDS.filter((field) => field.key !== 'website').map((field) => (
-                    <label key={field.key} className="block text-sm text-[var(--text-secondary)]">
-                      {field.label}
-                      <input
-                        type="url"
-                        value={profileDraft.social_links?.[field.key] || ''}
-                        onChange={(event) => updateSocialLinkField(field.key, event.target.value)}
-                        className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                      />
-                    </label>
-                  ))}
-                </div>
-              </div>
-            </fieldset>
-
-            <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-              <p>
-                Preview name: <span className="font-semibold text-[var(--text-primary)]">{publicDisplayName}</span>
-              </p>
-              <p className="mt-1 text-xs">
-                Public contact and social fields are only returned by the public profile API when your profile is public.
-              </p>
             </div>
 
             {!user && (
@@ -769,15 +728,10 @@ export default function Settings({ user, onUserRefresh }) {
             {profileMessage && (
               <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{profileMessage}</p>
             )}
-            {profileError && (
+            {profileError && !profileEditorOpen && (
               <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{profileError}</p>
             )}
-
-            <Button type="submit" disabled={!user || profileSaving}>
-              <Save size={15} />
-              <span>{profileSaving ? 'Saving...' : 'Save Profile'}</span>
-            </Button>
-          </form>
+          </div>
         </SettingsSection>
 
         <SettingsSection
@@ -885,162 +839,26 @@ export default function Settings({ user, onUserRefresh }) {
             contentClassName="space-y-4"
           >
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-              <CollapsibleSection
+              <AvatarActionCard
                 title="Voice Sample"
                 caption="Upload one audio sample and preview it locally before saving."
-              >
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Voice audio
-                  <input
-                    type="file"
-                    accept="audio/*"
-                    onChange={(event) => setVoiceFile(event.target.files?.[0] || null)}
-                    className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
+                icon={Upload}
+                onClick={() => setAvatarModal('voice')}
+              />
 
-                {voicePreviewUrl && (
-                  <audio controls src={voicePreviewUrl} className="w-full" />
-                )}
-
-                <Button onClick={handleUploadVoice} disabled={teacherBusy || !voiceFile}>
-                  <Upload size={15} />
-                  <span>{teacherBusy ? 'Uploading...' : 'Upload Voice Sample'}</span>
-                </Button>
-              </CollapsibleSection>
-
-              <CollapsibleSection
+              <AvatarActionCard
                 title="Picture Or Video Sample"
                 caption="Upload an image or short video source and preview before submit."
-              >
-                <div className="grid gap-3">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Portrait image
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(event) => setImageFile(event.target.files?.[0] || null)}
-                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
+                icon={UserCircle2}
+                onClick={() => setAvatarModal('media')}
+              />
 
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Portrait video
-                    <input
-                      type="file"
-                      accept="video/*"
-                      onChange={(event) => setVideoFile(event.target.files?.[0] || null)}
-                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                </div>
-
-                {mediaPreviewUrl && mediaPreviewType === 'image' && (
-                  <img
-                    src={mediaPreviewUrl}
-                    alt="Uploaded avatar sample"
-                    className="max-h-56 w-full rounded-2xl object-cover token-surface"
-                  />
-                )}
-
-                {mediaPreviewUrl && mediaPreviewType === 'video' && (
-                  <video
-                    src={mediaPreviewUrl}
-                    controls
-                    className="max-h-56 w-full rounded-2xl object-cover token-surface"
-                  />
-                )}
-
-                <Button onClick={handleUploadVisualSample} disabled={teacherBusy || (!imageFile && !videoFile)}>
-                  <Upload size={15} />
-                  <span>{teacherBusy ? 'Uploading...' : 'Upload Visual Sample'}</span>
-                </Button>
-              </CollapsibleSection>
-
-              <CollapsibleSection
+              <AvatarActionCard
                 title="Avatar Preview"
                 caption="Prepare profile, queue preview, and monitor render state."
-              >
-                <div className="grid gap-3">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Motion preset
-                    <select
-                      value={avatarSettings.avatar_motion_preset}
-                      onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_motion_preset: event.target.value }))}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    >
-                      <option value="natural">Natural</option>
-                      <option value="expressive">Expressive</option>
-                      <option value="calm">Calm</option>
-                    </select>
-                  </label>
-
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Quality preset
-                    <select
-                      value={avatarSettings.avatar_quality_preset}
-                      onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_quality_preset: event.target.value }))}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    >
-                      <option value="high">High</option>
-                      <option value="balanced">Balanced</option>
-                      <option value="fast">Fast</option>
-                    </select>
-                  </label>
-                </div>
-
-                <label className="inline-flex items-center gap-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-                  <input
-                    type="checkbox"
-                    checked={avatarSettings.composite_fallback_allowed}
-                    onChange={(event) => {
-                      setAvatarSettings((prev) => ({
-                        ...prev,
-                        composite_fallback_allowed: event.target.checked,
-                      }));
-                    }}
-                  />
-                  <span>Allow composite fallback for preview preparation</span>
-                </label>
-
-                <div className="flex flex-wrap gap-2">
-                  <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
-                    <Save size={15} />
-                    <span>Save Defaults</span>
-                  </Button>
-                  <Button variant="secondary" onClick={handlePrepareAvatar} disabled={teacherBusy}>
-                    <Sparkles size={15} />
-                    <span>Prepare Avatar</span>
-                  </Button>
-                  <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
-                    <Sparkles size={15} />
-                    <span>Generate Preview</span>
-                  </Button>
-                  <Button variant="ghost" onClick={handleDeletePreview} disabled={teacherBusy}>
-                    <Trash2 size={15} />
-                    <span>Delete Preview</span>
-                  </Button>
-                </div>
-
-                <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-                  <p>
-                    Preview status: <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
-                  </p>
-                  {avatarProfilePayload?.readiness?.missing_requirements?.length > 0 && (
-                    <p className="mt-1 text-xs">
-                      Missing requirements: {avatarProfilePayload.readiness.missing_requirements.join(', ')}
-                    </p>
-                  )}
-                </div>
-
-                {previewVideoUrl && (
-                  <video
-                    src={previewVideoUrl}
-                    controls
-                    className="max-h-[22rem] w-full rounded-2xl token-surface object-contain"
-                  />
-                )}
-              </CollapsibleSection>
+                icon={Sparkles}
+                onClick={() => setAvatarModal('preview')}
+              />
             </div>
 
             {teacherMessage && (
@@ -1051,6 +869,234 @@ export default function Settings({ user, onUserRefresh }) {
           </SettingsSection>
         )}
       </section>
+
+      <PublicProfileEditor
+        open={profileEditorOpen}
+        title="Edit public profile"
+        titleId="settings-public-profile-editor-title"
+        draft={profileEditDraft}
+        displayNamePreview={profileEditorDisplayName}
+        bannerPreviewUrl={bannerPreviewUrl}
+        logoPreviewUrl={logoPreviewUrl}
+        onCancel={closePublicProfileEditor}
+        onSubmit={handleSavePublicProfile}
+        onFieldChange={updateProfileDraftField}
+        onSocialChange={updateSocialLinkField}
+        onBannerFileChange={setBannerFile}
+        onLogoFileChange={setLogoFile}
+        fieldError={profileFieldError}
+        error={profileError}
+        saving={profileSaving}
+        disabled={!user}
+        saveDisabled={profileHasValidationErrors}
+        cancelLabel={profileEditorDirty ? 'Discard' : 'Cancel'}
+        canBackdropClose={!profileEditorDirty}
+        formId="settings-public-profile-editor-form"
+      />
+
+      <ModalShell
+        open={avatarModal === 'voice'}
+        eyebrow="Avatar Preferences"
+        title="Voice sample"
+        titleId="avatar-voice-modal-title"
+        closeLabel="Close voice sample"
+        onClose={closeAvatarModal}
+        closeDisabled={teacherBusy}
+        canBackdropClose={!voiceFile}
+        maxWidthClass="max-w-xl"
+        footer={(
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
+              <span>{voiceFile ? 'Discard and close' : 'Close'}</span>
+            </Button>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          <label className="block text-sm text-[var(--text-secondary)]">
+            Voice audio
+            <input
+              type="file"
+              accept="audio/*"
+              onChange={(event) => setVoiceFile(event.target.files?.[0] || null)}
+              className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+            />
+          </label>
+
+          {voicePreviewUrl && (
+            <audio controls src={voicePreviewUrl} className="w-full" />
+          )}
+
+          <Button onClick={handleUploadVoice} disabled={teacherBusy || !voiceFile}>
+            <Upload size={15} />
+            <span>{teacherBusy ? 'Uploading...' : 'Upload Voice Sample'}</span>
+          </Button>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={avatarModal === 'media'}
+        eyebrow="Avatar Preferences"
+        title="Avatar image or video"
+        titleId="avatar-media-modal-title"
+        closeLabel="Close avatar image or video upload"
+        onClose={closeAvatarModal}
+        closeDisabled={teacherBusy}
+        canBackdropClose={!imageFile && !videoFile}
+        maxWidthClass="max-w-2xl"
+        footer={(
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
+              <span>{imageFile || videoFile ? 'Discard and close' : 'Close'}</span>
+            </Button>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block text-sm text-[var(--text-secondary)]">
+              Portrait image
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(event) => setImageFile(event.target.files?.[0] || null)}
+                className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+              />
+            </label>
+
+            <label className="block text-sm text-[var(--text-secondary)]">
+              Portrait video
+              <input
+                type="file"
+                accept="video/*"
+                onChange={(event) => setVideoFile(event.target.files?.[0] || null)}
+                className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
+              />
+            </label>
+          </div>
+
+          {mediaPreviewUrl && mediaPreviewType === 'image' && (
+            <img
+              src={mediaPreviewUrl}
+              alt="Uploaded avatar sample"
+              className="max-h-56 w-full rounded-2xl object-cover token-surface"
+            />
+          )}
+
+          {mediaPreviewUrl && mediaPreviewType === 'video' && (
+            <video
+              src={mediaPreviewUrl}
+              controls
+              className="max-h-56 w-full rounded-2xl object-cover token-surface"
+            />
+          )}
+
+          <Button onClick={handleUploadVisualSample} disabled={teacherBusy || (!imageFile && !videoFile)}>
+            <Upload size={15} />
+            <span>{teacherBusy ? 'Uploading...' : 'Upload Visual Sample'}</span>
+          </Button>
+        </div>
+      </ModalShell>
+
+      <ModalShell
+        open={avatarModal === 'preview'}
+        eyebrow="Avatar Preferences"
+        title="Avatar preview"
+        titleId="avatar-preview-modal-title"
+        closeLabel="Close avatar preview"
+        onClose={closeAvatarModal}
+        closeDisabled={teacherBusy}
+        maxWidthClass="max-w-2xl"
+        footer={(
+          <div className="flex justify-end">
+            <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
+              <span>Close</span>
+            </Button>
+          </div>
+        )}
+      >
+        <div className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="block text-sm text-[var(--text-secondary)]">
+              Motion preset
+              <select
+                value={avatarSettings.avatar_motion_preset}
+                onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_motion_preset: event.target.value }))}
+                className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+              >
+                <option value="natural">Natural</option>
+                <option value="expressive">Expressive</option>
+                <option value="calm">Calm</option>
+              </select>
+            </label>
+
+            <label className="block text-sm text-[var(--text-secondary)]">
+              Quality preset
+              <select
+                value={avatarSettings.avatar_quality_preset}
+                onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_quality_preset: event.target.value }))}
+                className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+              >
+                <option value="high">High</option>
+                <option value="balanced">Balanced</option>
+                <option value="fast">Fast</option>
+              </select>
+            </label>
+          </div>
+
+          <label className="inline-flex items-center gap-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+            <input
+              type="checkbox"
+              checked={avatarSettings.composite_fallback_allowed}
+              onChange={(event) => {
+                setAvatarSettings((prev) => ({
+                  ...prev,
+                  composite_fallback_allowed: event.target.checked,
+                }));
+              }}
+            />
+            <span>Allow composite fallback for preview preparation</span>
+          </label>
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
+              <Save size={15} />
+              <span>Save Defaults</span>
+            </Button>
+            <Button variant="secondary" onClick={handlePrepareAvatar} disabled={teacherBusy}>
+              <Sparkles size={15} />
+              <span>Prepare Avatar</span>
+            </Button>
+            <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
+              <Sparkles size={15} />
+              <span>Generate Preview</span>
+            </Button>
+            <Button variant="ghost" onClick={handleDeletePreview} disabled={teacherBusy}>
+              <Trash2 size={15} />
+              <span>Delete Preview</span>
+            </Button>
+          </div>
+
+          <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+            <p>
+              Preview status: <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
+            </p>
+            {avatarProfilePayload?.readiness?.missing_requirements?.length > 0 && (
+              <p className="mt-1 text-xs">
+                Missing requirements: {avatarProfilePayload.readiness.missing_requirements.join(', ')}
+              </p>
+            )}
+          </div>
+
+          {previewVideoUrl && (
+            <video
+              src={previewVideoUrl}
+              controls
+              className="max-h-[22rem] w-full rounded-2xl token-surface object-contain"
+            />
+          )}
+        </div>
+      </ModalShell>
     </div>
   );
 }

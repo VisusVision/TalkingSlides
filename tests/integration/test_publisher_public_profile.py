@@ -22,7 +22,7 @@ from django.test import override_settings  # noqa: E402
 from PIL import Image  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
-from core.models import UserProfile  # noqa: E402
+from core.models import Job, Project, UserProfile  # noqa: E402
 
 
 def _client(user: User | None = None) -> APIClient:
@@ -57,6 +57,18 @@ def _image_file(name: str, *, size=(800, 400), color=(40, 120, 200)) -> SimpleUp
     buffer = BytesIO()
     Image.new("RGB", size, color=color).save(buffer, format="PNG")
     return SimpleUploadedFile(name, buffer.getvalue(), content_type="image/png")
+
+
+def _make_public_lesson(owner: User, title: str = "Public lesson") -> Project:
+    project = Project.objects.create(
+        title=title,
+        user=owner,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    Job.objects.create(project=project, job_type="video_export", status="done", result_url=f"{project.id}.mp4")
+    return project
 
 
 @pytest.mark.django_db
@@ -137,6 +149,55 @@ def test_social_links_validation_strips_empty_and_rejects_nested_values():
 
 
 @pytest.mark.django_db
+def test_social_links_normalize_handles_domains_and_twitter_alias():
+    user = _make_user("profile_social_normalize")
+
+    response = _client(user).patch(
+        "/api/v1/me/profile/",
+        {
+            "website_url": "example.com",
+            "social_links": {
+                "instagram": "@janedoe",
+                "twitter": "twitter.com/janedoe",
+                "github": "githubuser",
+                "youtube": "@channelname",
+                "linkedin": "janedoe",
+            },
+        },
+        format="json",
+    )
+
+    assert response.status_code == 200
+    assert response.data["website_url"] == "https://example.com"
+    assert response.data["social_links"] == {
+        "instagram": "https://instagram.com/janedoe",
+        "x": "https://x.com/janedoe",
+        "github": "https://github.com/githubuser",
+        "youtube": "https://youtube.com/@channelname",
+        "linkedin": "https://linkedin.com/in/janedoe",
+    }
+
+
+@pytest.mark.django_db
+def test_social_links_reject_invalid_protocol_and_private_urls():
+    user = _make_user("profile_social_unsafe")
+
+    bad_protocol = _client(user).patch(
+        "/api/v1/me/profile/",
+        {"social_links": {"github": "javascript:alert(1)"}},
+        format="json",
+    )
+    private_url = _client(user).patch(
+        "/api/v1/me/profile/",
+        {"website_url": "http://127.0.0.1:8000"},
+        format="json",
+    )
+
+    assert bad_protocol.status_code == 400
+    assert private_url.status_code == 400
+
+
+@pytest.mark.django_db
 def test_anonymous_cannot_see_private_profile_contact_or_social_data():
     publisher = _make_user("profile_private_anon", is_public_profile=False)
 
@@ -145,6 +206,26 @@ def test_anonymous_cannot_see_private_profile_contact_or_social_data():
     assert response.status_code == 404
     assert "profile_private_anon@example.com" not in str(response.data)
     assert "youtube.com" not in str(response.data)
+
+
+@pytest.mark.django_db
+def test_anonymous_can_see_minimal_private_profile_when_public_lessons_exist():
+    publisher = _make_user("profile_private_with_lessons", is_public_profile=False)
+    _make_public_lesson(publisher, "Visible private-profile lesson")
+
+    response = _client().get(f"/api/v1/users/{publisher.id}/profile/")
+
+    assert response.status_code == 200
+    assert response.data["profile_private"] is True
+    assert response.data["lesson_count"] == 1
+    assert response.data["latest_lessons"][0]["title"] == "Visible private-profile lesson"
+    assert response.data["bio"] == ""
+    assert response.data["banner_url"] == ""
+    assert response.data["logo_url"] == ""
+    assert response.data["website_url"] == ""
+    assert response.data["contact_email"] == ""
+    assert response.data["social_links"] == {}
+    assert "profile_private_with_lessons@example.com" not in str(response.data)
 
 
 @pytest.mark.django_db
@@ -186,6 +267,38 @@ def test_public_profile_returns_safe_banner_logo_social_and_contact_fields():
     assert response.data["contact_email"] == "profile_public_payload@example.com"
     assert response.data["social_links"] == {"youtube": "https://youtube.com/example"}
     assert "banner_image_processed" not in response.data
+
+
+@pytest.mark.django_db
+def test_watch_lesson_payload_includes_public_publisher_logo_only(tmp_path):
+    public_publisher = _make_user("profile_watch_logo_public", is_public_profile=True)
+    private_publisher = _make_user("profile_watch_logo_private", is_public_profile=False)
+    public_lesson = _make_public_lesson(public_publisher, "Public logo lesson")
+    private_lesson = _make_public_lesson(private_publisher, "Private logo lesson")
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        public_upload = _client(public_publisher).post(
+            "/api/v1/me/profile-assets/",
+            {"logo_file": _image_file("logo.png", size=(640, 640))},
+            format="multipart",
+        )
+        private_upload = _client(private_publisher).post(
+            "/api/v1/me/profile-assets/",
+            {"logo_file": _image_file("logo.png", size=(640, 640))},
+            format="multipart",
+        )
+        assert public_upload.status_code == 200
+        assert private_upload.status_code == 200
+
+        public_response = _client().get(f"/api/v1/catalog/{public_lesson.id}/")
+        private_response = _client().get(f"/api/v1/catalog/{private_lesson.id}/")
+
+    assert public_response.status_code == 200
+    assert public_response.data["publisher_logo_url"]
+    assert public_response.data["publisher_avatar_url"] == public_response.data["publisher_logo_url"]
+    assert private_response.status_code == 200
+    assert private_response.data["publisher_logo_url"] == ""
+    assert private_response.data["publisher_avatar_url"] == ""
 
 
 @pytest.mark.django_db
