@@ -6,6 +6,7 @@ from .models import (
     Category,
     Job,
     LessonComment,
+    LessonIntelligenceReport,
     LessonLike,
     LessonProgress,
     Notification,
@@ -131,6 +132,15 @@ class JobAdmin(admin.ModelAdmin):
     list_filter = ("job_type", "status")
     search_fields = ("project__title", "celery_task_id")
     readonly_fields = ("celery_task_id", "result_url", "srt_url", "error_message", "created_at", "updated_at")
+
+
+@admin.register(LessonIntelligenceReport)
+class LessonIntelligenceReportAdmin(admin.ModelAdmin):
+    list_display = ("project", "provider", "status", "fallback_used", "complexity_level", "created_at")
+    list_filter = ("provider", "status", "fallback_used", "complexity_level")
+    search_fields = ("project__title", "summary", "short_description", "source_hash")
+    raw_id_fields = ("project", "requested_by")
+    readonly_fields = ("created_at", "updated_at")
 
 
 @admin.register(Category)

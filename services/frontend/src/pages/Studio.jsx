@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BookOpenText,
+  Check,
+  Copy,
   Eye,
   EyeOff,
   FileText,
@@ -20,11 +22,13 @@ import {
   createProject,
   deleteProject,
   discardProjectDraft,
+  analyzeProjectLessonIntelligence,
   applyProjectBackgroundToAll,
   fetchCategories,
   fetchPlaybackToken,
   fetchStudioPreviewToken,
   fetchProjectTranscript,
+  fetchProjectLessonIntelligence,
   fetchProjects,
   getProjectModeration,
   generateSubtitleTrack,
@@ -53,7 +57,7 @@ import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
 import VideoStage from '../components/player/VideoStage';
 
 const LESSON_TABS = ['overview'];
-const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'notes', 'tts'];
+const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
 const SOURCE_TYPES_ACCEPT = '.pptx,.pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,.gif';
 const STUDIO_POLL_INTERVAL_MS = 4000;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
@@ -989,6 +993,257 @@ function ModerationPanel({
   );
 }
 
+function lessonIntelligenceProviderLabel(report) {
+  if (report?.enabled === false) return 'Disabled';
+  if (report?.fallback_used) return 'Fallback heuristic used';
+  const provider = String(report?.provider || '').toLowerCase();
+  if (provider === 'ollama') return 'Ollama analysis';
+  if (provider === 'heuristic') return 'Heuristic analysis';
+  if (provider) return `${provider.charAt(0).toUpperCase()}${provider.slice(1)} analysis`;
+  return 'No analysis yet';
+}
+
+function lessonIntelligenceLanguageLabel(report) {
+  const language = String(report?.output_language || report?.metadata?.output_language || '').toLowerCase();
+  const detected = String(report?.detected_language || report?.metadata?.detected_language || '').toLowerCase();
+  if (language === 'tr') return 'Turkish analysis';
+  if (language === 'en') return detected === 'unknown' ? 'English analysis' : 'English analysis';
+  return 'Language uncertain';
+}
+
+function lessonIntelligenceInputWasCompacted(report) {
+  return Boolean(report?.metadata?.input_truncated);
+}
+
+function lessonIntelligenceItemText(item) {
+  if (typeof item === 'string') return item;
+  if (!item || typeof item !== 'object') return '';
+  return textValue(item.message || item.suggestion || item.reason || item.text || item.title);
+}
+
+function lessonIntelligenceItemMeta(item) {
+  if (!item || typeof item !== 'object') return '';
+  const page = item.page_number ? `Page ${item.page_number}` : '';
+  const type = textValue(item.type).replace(/_/g, ' ');
+  return [page, type].filter(Boolean).join(' - ');
+}
+
+function lessonIntelligenceCopyText(report) {
+  if (!report) return '';
+  const sections = [];
+  if (report.summary) sections.push(`Summary\n${report.summary}`);
+  const complexity = report.complexity || {};
+  if (complexity.level) {
+    sections.push(`Complexity\n${complexity.level} (${complexity.score || 0}/100)`);
+  }
+  const appendList = (title, items) => {
+    if (!Array.isArray(items) || !items.length) return;
+    const lines = items.map((item) => {
+      const meta = lessonIntelligenceItemMeta(item);
+      const text = lessonIntelligenceItemText(item);
+      return [meta, text].filter(Boolean).join(': ');
+    }).filter(Boolean);
+    if (lines.length) sections.push(`${title}\n${lines.map((line) => `- ${line}`).join('\n')}`);
+  };
+  appendList('Clarity warnings', report.clarity_warnings);
+  appendList('Page suggestions', report.page_suggestions);
+  appendList('Expanded narration suggestions', report.expanded_narration_suggestions);
+  return sections.join('\n\n');
+}
+
+function LessonIntelligenceList({ title, items, emptyText }) {
+  const rows = Array.isArray(items) ? items : [];
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">{title}</p>
+      {rows.length === 0 ? (
+        <p className="text-sm text-[var(--text-secondary)]">{emptyText}</p>
+      ) : (
+        rows.map((item, index) => {
+          const meta = lessonIntelligenceItemMeta(item);
+          const text = lessonIntelligenceItemText(item);
+          return (
+            <article key={`${title}-${index}`} className="rounded-xl bg-[color:var(--surface-muted)] p-3">
+              {meta && <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">{meta}</p>}
+              <p className="mt-1 text-sm text-[var(--text-primary)]">{text || 'Review this item.'}</p>
+            </article>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function LessonIntelligencePanel({
+  project,
+  report,
+  loading,
+  error,
+  actionBusy,
+  copied,
+  onAnalyze,
+  onRefresh,
+  onCopy,
+}) {
+  if (!project) return null;
+
+  const enabled = report?.enabled !== false;
+  const status = String(report?.status || '').toLowerCase();
+  const hasReport = Boolean(report?.id && status !== 'empty');
+  const complexity = report?.complexity || {};
+  const score = Number.isFinite(Number(complexity.score)) ? Number(complexity.score) : 0;
+  const providerLabel = lessonIntelligenceProviderLabel(report);
+  const copyDisabled = !hasReport || actionBusy || loading;
+
+  return (
+    <div className="rounded-2xl token-surface p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="label-sm">Lesson Intelligence</p>
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              enabled
+                ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                : 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+            }`}>
+              {providerLabel}
+            </span>
+            {hasReport && (
+              <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                {lessonIntelligenceLanguageLabel(report)}
+              </span>
+            )}
+            {hasReport && (
+              <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                Report #{report.id}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="secondary" onClick={onRefresh} disabled={loading || Boolean(actionBusy)}>
+            <RefreshCcw size={14} />
+            <span>Refresh</span>
+          </Button>
+          <Button size="sm" onClick={onAnalyze} disabled={!enabled || loading || Boolean(actionBusy)}>
+            <Sparkles size={14} />
+            <span>{actionBusy ? 'Analyzing...' : 'Analyze lesson'}</span>
+          </Button>
+        </div>
+      </div>
+
+      <p className="mt-3 text-sm text-[var(--text-secondary)]">
+        Suggestions are advisory. They do not change your lesson until you edit it.
+      </p>
+
+      {!enabled && (
+        <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
+          {report?.message || 'Lesson Intelligence is disabled.'}
+        </p>
+      )}
+      {loading && (
+        <p className="mt-3 text-sm text-[var(--text-secondary)]">Loading latest analysis...</p>
+      )}
+      {error && (
+        <p className="mt-3 rounded-xl bg-[color:var(--feedback-danger-bg)] px-3 py-2 text-sm text-[color:var(--feedback-danger-fg)]">
+          {error}
+        </p>
+      )}
+
+      {!loading && enabled && !hasReport && !error && (
+        <div className="mt-4 rounded-xl bg-[color:var(--surface-muted)] p-4">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">No analysis yet</p>
+          <p className="mt-1 text-sm text-[var(--text-secondary)]">
+            Run an analysis to review summary, complexity, warnings, and narration suggestions.
+          </p>
+        </div>
+      )}
+
+      {hasReport && (
+        <div className="mt-4 space-y-4">
+          <div className="rounded-xl bg-[color:var(--surface-muted)] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Summary</p>
+                <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">{report.summary}</p>
+                {report.short_description && (
+                  <p className="mt-2 text-xs text-[var(--text-secondary)]">{report.short_description}</p>
+                )}
+              </div>
+              <div className="grid h-16 w-16 shrink-0 place-items-center rounded-full border-4 border-[var(--accent-primary)] bg-[var(--surface-elevated)]">
+                <div className="text-center">
+                  <p className="text-lg font-bold text-[var(--text-primary)]">{score}</p>
+                  <p className="text-[0.62rem] uppercase text-[var(--text-secondary)]">score</p>
+                </div>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-[var(--surface-container-highest)] px-3 py-1 text-xs font-semibold text-[var(--text-primary)]">
+                {complexity.display_label || complexity.level || 'unknown'}
+              </span>
+              {(Array.isArray(complexity.reasons) ? complexity.reasons : []).slice(0, 3).map((reason, index) => (
+                <span key={`complexity-reason-${index}`} className="rounded-full bg-[color:var(--surface-container-high)] px-3 py-1 text-xs text-[var(--text-secondary)]">
+                  {reason}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="secondary" onClick={onCopy} disabled={copyDisabled}>
+              {copied ? <Check size={14} /> : <Copy size={14} />}
+              <span>{copied ? 'Copied' : 'Copy suggestions'}</span>
+            </Button>
+          </div>
+
+          {(lessonIntelligenceInputWasCompacted(report) || (Array.isArray(report.limitations) && report.limitations.length > 0)) && (
+            <div className="rounded-xl bg-[color:var(--surface-muted)] p-3 text-sm text-[var(--text-secondary)]">
+              {lessonIntelligenceInputWasCompacted(report) && (
+                <p>Large lesson text was summarized before analysis.</p>
+              )}
+              {Array.isArray(report.limitations) && report.limitations.slice(0, 3).map((item, index) => (
+                <p key={`lesson-intelligence-limitation-${index}`} className="mt-1">{textValue(item)}</p>
+              ))}
+            </div>
+          )}
+
+          <LessonIntelligenceList
+            title="Clarity warnings"
+            items={report.clarity_warnings}
+            emptyText="No clarity warnings in the latest report."
+          />
+          <LessonIntelligenceList
+            title="Slide/page suggestions"
+            items={report.page_suggestions}
+            emptyText="No slide or page suggestions in the latest report."
+          />
+          <LessonIntelligenceList
+            title="Expanded narration suggestions"
+            items={report.expanded_narration_suggestions}
+            emptyText="No expanded narration suggestions in the latest report."
+          />
+
+          {Array.isArray(report.suggested_tags) && report.suggested_tags.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Suggested tags</p>
+              <div className="flex flex-wrap gap-2">
+                {report.suggested_tags.map((tag, index) => {
+                  const tagLabel = textValue(tag);
+                  return (
+                    <span key={`${tagLabel}-${index}`} className="rounded-full bg-[var(--surface-container-highest)] px-3 py-1 text-xs font-semibold text-[var(--text-primary)]">
+                      {tagLabel}
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const navigate = useNavigate();
   const previewVideoRef = useRef(null);
@@ -1030,6 +1285,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [moderationError, setModerationError] = useState('');
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [reviewMessage, setReviewMessage] = useState('');
+  const [lessonIntelligenceByProject, setLessonIntelligenceByProject] = useState({});
+  const [loadingLessonIntelligence, setLoadingLessonIntelligence] = useState(false);
+  const [lessonIntelligenceActionBusy, setLessonIntelligenceActionBusy] = useState('');
+  const [lessonIntelligenceError, setLessonIntelligenceError] = useState('');
+  const [lessonIntelligenceCopied, setLessonIntelligenceCopied] = useState(false);
   const [sceneActionBusy, setSceneActionBusy] = useState('');
   const [sceneActionMessage, setSceneActionMessage] = useState('');
   const [sceneActionError, setSceneActionError] = useState('');
@@ -1149,6 +1409,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [selectedLesson?.id]);
 
   const selectedModeration = selectedLesson?.id ? moderationByProject[selectedLesson.id] || null : null;
+  const selectedLessonIntelligence = selectedLesson?.id ? lessonIntelligenceByProject[selectedLesson.id] || null : null;
   const selectedModerationFindings = useMemo(
     () => (Array.isArray(selectedModeration?.findings) ? selectedModeration.findings : []),
     [selectedModeration],
@@ -1273,6 +1534,27 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   }, []);
 
+  const refreshLessonIntelligence = useCallback(async (projectId, { showLoading = true, preserveError = false } = {}) => {
+    if (!projectId) return null;
+    if (showLoading) setLoadingLessonIntelligence(true);
+    if (!preserveError) setLessonIntelligenceError('');
+    try {
+      const payload = await fetchProjectLessonIntelligence(projectId);
+      setLessonIntelligenceByProject((previous) => ({
+        ...previous,
+        [projectId]: payload,
+      }));
+      return payload;
+    } catch (err) {
+      if (!preserveError) {
+        setLessonIntelligenceError(err.message || 'Lesson Intelligence is unavailable.');
+      }
+      return null;
+    } finally {
+      if (showLoading) setLoadingLessonIntelligence(false);
+    }
+  }, []);
+
   const refreshProjectTranscript = useCallback(async (projectId, { showLoading = true, preserveOnError = false } = {}) => {
     if (!projectId) return [];
     if (showLoading) setLoadingTranscript(true);
@@ -1300,9 +1582,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     await Promise.all([
       refreshProjects({ showLoading, preserveOnError: true }),
       refreshProjectModeration(projectId, { showLoading: false, preserveError: true }),
+      refreshLessonIntelligence(projectId, { showLoading: false, preserveError: true }),
       refreshProjectTranscript(projectId, { showLoading: false, preserveOnError: true }),
     ]);
-  }, [refreshProjectModeration, refreshProjectTranscript, refreshProjects]);
+  }, [refreshLessonIntelligence, refreshProjectModeration, refreshProjectTranscript, refreshProjects]);
 
   const selectedLessonNeedsPolling = useMemo(() => studioLessonNeedsPolling({
     project: selectedLesson,
@@ -1359,6 +1642,18 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setReviewMessage('');
     refreshProjectModeration(selectedLesson.id);
   }, [refreshProjectModeration, selectedLesson?.id]);
+
+  useEffect(() => {
+    if (!selectedLesson?.id) {
+      setLessonIntelligenceError('');
+      setLessonIntelligenceCopied(false);
+      return;
+    }
+
+    setLessonIntelligenceError('');
+    setLessonIntelligenceCopied(false);
+    refreshLessonIntelligence(selectedLesson.id);
+  }, [refreshLessonIntelligence, selectedLesson?.id]);
 
   useEffect(() => {
     if (!selectedLesson?.id) {
@@ -1861,6 +2156,36 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       setModerationError(err.message || 'Admin review request failed.');
     } finally {
       setModerationActionBusy('');
+    }
+  };
+
+  const handleAnalyzeLessonIntelligence = async (project) => {
+    if (!project?.id || lessonIntelligenceActionBusy) return;
+    setLessonIntelligenceActionBusy('analyze');
+    setLessonIntelligenceError('');
+    setLessonIntelligenceCopied(false);
+    try {
+      const payload = await analyzeProjectLessonIntelligence(project.id);
+      setLessonIntelligenceByProject((previous) => ({
+        ...previous,
+        [project.id]: payload,
+      }));
+    } catch (err) {
+      setLessonIntelligenceError(err.message || 'Lesson analysis failed.');
+    } finally {
+      setLessonIntelligenceActionBusy('');
+    }
+  };
+
+  const handleCopyLessonIntelligence = async () => {
+    const text = lessonIntelligenceCopyText(selectedLessonIntelligence);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setLessonIntelligenceCopied(true);
+      window.setTimeout(() => setLessonIntelligenceCopied(false), 1600);
+    } catch {
+      setLessonIntelligenceError('Could not copy suggestions.');
     }
   };
 
@@ -2458,12 +2783,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const editorPanelLabel = (panel) => {
     if (panel === 'tts') return 'TTS';
+    if (panel === 'intelligence') return 'Intelligence';
     return panel.charAt(0).toUpperCase() + panel.slice(1);
   };
 
   const editorPanelIcon = (panel) => {
     if (panel === 'slides') return <LayoutPanelTop size={14} />;
     if (panel === 'moderation') return <Eye size={14} />;
+    if (panel === 'intelligence') return <Sparkles size={14} />;
     if (panel === 'notes') return <FileText size={14} />;
     if (panel === 'tts') return <Volume2 size={14} />;
     return <BookOpenText size={14} />;
@@ -3860,6 +4187,29 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         <p className="title-lg text-[var(--text-primary)]">Moderation</p>
                         <p className="mt-2 text-sm text-[var(--text-secondary)]">
                           Create or select a lesson draft before running moderation.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className={activeEditorPanel === 'intelligence' ? '' : 'hidden'}>
+                    {selectedLesson ? (
+                      <LessonIntelligencePanel
+                        project={selectedLesson}
+                        report={selectedLessonIntelligence}
+                        loading={loadingLessonIntelligence}
+                        error={lessonIntelligenceError}
+                        actionBusy={lessonIntelligenceActionBusy}
+                        copied={lessonIntelligenceCopied}
+                        onRefresh={() => selectedLesson && refreshLessonIntelligence(selectedLesson.id)}
+                        onAnalyze={() => handleAnalyzeLessonIntelligence(selectedLesson)}
+                        onCopy={handleCopyLessonIntelligence}
+                      />
+                    ) : (
+                      <div className="rounded-2xl token-surface p-4">
+                        <p className="title-lg text-[var(--text-primary)]">Lesson Intelligence</p>
+                        <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                          Create or select a lesson draft before analyzing lesson quality.
                         </p>
                       </div>
                     )}

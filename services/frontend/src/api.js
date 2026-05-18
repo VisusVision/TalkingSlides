@@ -951,6 +951,52 @@ export async function fetchMyAnalytics(filters = {}) {
   return res.json();
 }
 
+function analyticsQueryString(filters = {}) {
+  const params = new URLSearchParams();
+  if (filters.range) params.set("range", String(filters.range));
+  if (filters.from) params.set("from", String(filters.from));
+  if (filters.to) params.set("to", String(filters.to));
+  if (filters.category) params.set("category", String(filters.category));
+  if (filters.sort) params.set("sort", String(filters.sort));
+  if (filters.output_language) params.set("output_language", String(filters.output_language));
+  if (filters.outputLanguage) params.set("output_language", String(filters.outputLanguage));
+  return params.toString();
+}
+
+export async function fetchMyAnalyticsIntelligence(filters = {}) {
+  const query = analyticsQueryString(filters);
+  const url = query
+    ? `${API_BASE_URL}/me/analytics/intelligence/?${query}`
+    : `${API_BASE_URL}/me/analytics/intelligence/`;
+
+  const res = await fetch(url, { headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to fetch analytics intelligence'));
+  }
+  return data;
+}
+
+export async function analyzeMyAnalyticsIntelligence(filters = {}, options = {}) {
+  const query = analyticsQueryString(filters);
+  const url = query
+    ? `${API_BASE_URL}/me/analytics/intelligence/analyze/?${query}`
+    : `${API_BASE_URL}/me/analytics/intelligence/analyze/`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      output_language: options.outputLanguage || options.output_language || 'auto',
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to analyze analytics'));
+  }
+  return data;
+}
+
 /**
  * Fetch short-lived playback token for a project.
  * Returns { video_url, srt_url, vtt_url, expires_in }
@@ -1088,6 +1134,32 @@ export async function fetchProjectTranscript(projectId) {
     throw new Error(payload.error || 'Failed to fetch project transcript');
   }
   return res.json();
+}
+
+export async function fetchProjectLessonIntelligence(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/intelligence/`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to fetch lesson intelligence'));
+  }
+  return data;
+}
+
+export async function analyzeProjectLessonIntelligence(projectId, options = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/intelligence/analyze/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      output_language: options.outputLanguage || options.output_language || 'auto',
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to analyze lesson'));
+  }
+  return data;
 }
 
 export async function updateProjectTranscript(projectId, pages, options = {}) {
