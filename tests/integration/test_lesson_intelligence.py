@@ -29,6 +29,20 @@ from core.models import LessonIntelligenceReport, Project, TranscriptPage, UserP
 pytestmark = pytest.mark.django_db
 
 
+class _FakeOllamaResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
 def _client(user: User | None = None) -> APIClient:
     client = APIClient()
     if user is not None:
@@ -295,6 +309,138 @@ def test_provider_chain_falls_back_when_ollama_unavailable():
     attempts = response.data["metadata"]["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
     assert attempts[0]["status"] in {"skipped", "failed"}
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test",
+    OLLAMA_LESSON_INTELLIGENCE_MODEL="lesson-test-model",
+)
+def test_ollama_successful_json_response_is_used(monkeypatch):
+    owner = _make_user("li_ollama_success_owner")
+    project = _make_project(owner, title="Ollama Lesson")
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeOllamaResponse(
+            {
+                "response": json.dumps(
+                    {
+                        "lesson_summary": "Ollama summary for the lesson.",
+                        "short_description": "Ollama short description.",
+                        "complexity_level": "intermediate",
+                        "complexity_score": 64,
+                        "complexity_reasons": ["Ollama identified multi-step concepts."],
+                        "clarity_warnings": [],
+                        "page_suggestions": [{"page_number": 1, "suggestion": "Add one visual example."}],
+                        "expanded_narration_suggestions": [
+                            {"page_number": 1, "suggestion": "Narrate the parameter update with a concrete example."}
+                        ],
+                        "suggested_tags": ["ollama", "optimization"],
+                        "limitations": ["Mocked local model response."],
+                    }
+                )
+            }
+        )
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "ollama"
+    assert response.data["fallback_used"] is False
+    assert response.data["summary"] == "Ollama summary for the lesson."
+    assert response.data["complexity"]["level"] == "intermediate"
+    assert response.data["provider_chain"] == ["ollama", "heuristic"]
+    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert attempts == [{"provider": "ollama", "status": "success"}]
+    assert response.data["metadata"]["detected_language"] in {"en", "unknown"}
+    assert response.data["metadata"]["output_language"] == "en"
+    assert "http://ollama.test" not in json.dumps(response.data)
+    assert "base_url" not in json.dumps(response.data).lower()
+    assert captured["url"] == "http://ollama.test/api/generate"
+    assert captured["payload"]["model"] == "lesson-test-model"
+    assert "Respond in English." in captured["payload"]["prompt"]
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test",
+)
+def test_ollama_turkish_prompt_and_response_are_supported(monkeypatch):
+    owner = _make_user("li_ollama_tr_owner")
+    project = _make_project(owner, title="TÃ¼rkÃ§e Ollama Dersi")
+    _add_page(project, order=0, key="p1", original=_turkish_lesson_text())
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["prompt"] = json.loads(request.data.decode("utf-8"))["prompt"]
+        return _FakeOllamaResponse(
+            {
+                "response": json.dumps(
+                    {
+                        "lesson_summary": "Bu ders yerel Ollama yanÄ±tÄ±yla TÃ¼rkÃ§e olarak deÄŸerlendirildi.",
+                        "short_description": "TÃ¼rkÃ§e Ollama kÄ±sa aÃ§Ä±klamasÄ±.",
+                        "complexity_level": "beginner",
+                        "complexity_score": 38,
+                        "complexity_reasons": ["Kavramlar giriÅŸ seviyesinde sunuluyor."],
+                        "clarity_warnings": [],
+                        "page_suggestions": [{"page_number": 1, "suggestion": "Bir Ã¶rnek ekleyin."}],
+                        "expanded_narration_suggestions": [
+                            {"page_number": 1, "suggestion": "AnlatÄ±mÄ± somut bir veri Ã¶rneÄŸiyle geniÅŸletin."}
+                        ],
+                        "suggested_tags": ["veri", "ollama"],
+                        "limitations": ["Mock yanÄ±t kullanÄ±ldÄ±."],
+                    }
+                )
+            }
+        )
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    response = _client(owner).post(_analyze_url(project), {"output_language": "tr"}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "ollama"
+    assert response.data["fallback_used"] is False
+    assert response.data["detected_language"] == "tr"
+    assert response.data["output_language"] == "tr"
+    assert "TÃ¼rkÃ§e" in response.data["summary"]
+    assert "Respond in Turkish. Keep JSON keys in English" in captured["prompt"]
+    assert '"output_language": "tr"' in captured["prompt"]
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test",
+)
+def test_invalid_ollama_json_falls_back_to_heuristic(monkeypatch):
+    owner = _make_user("li_ollama_invalid_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": "not valid json"})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "heuristic"
+    assert response.data["fallback_used"] is True
+    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert attempts[0]["provider"] == "ollama"
+    assert attempts[0]["status"] == "skipped"
+    assert attempts[1] == {"provider": "heuristic", "status": "success"}
 
 
 @override_settings(

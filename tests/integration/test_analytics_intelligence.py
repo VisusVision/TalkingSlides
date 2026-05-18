@@ -37,6 +37,20 @@ from core.models import (  # noqa: E402
 pytestmark = pytest.mark.django_db
 
 
+class _FakeOllamaResponse:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode("utf-8")
+
+
 def _client(user: User | None = None) -> APIClient:
     client = APIClient()
     if user is not None:
@@ -260,6 +274,92 @@ def test_ollama_unavailable_falls_back_to_heuristic():
     attempts = response.data["metadata"]["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
     assert attempts[0]["status"] in {"skipped", "failed"}
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test",
+    OLLAMA_ANALYTICS_INTELLIGENCE_MODEL="analytics-test-model",
+)
+def test_ollama_successful_json_response_is_used(monkeypatch):
+    publisher = _make_user("ai_ollama_success_owner")
+    viewer = _make_user("ai_ollama_success_viewer", role="student")
+    lesson = _make_project(publisher, "Ollama analytics lesson")
+    _progress(viewer, lesson, 82)
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return _FakeOllamaResponse(
+            {
+                "response": json.dumps(
+                    {
+                        "analytics_summary": "Ollama analytics summary.",
+                        "health_score": 76,
+                        "risk_level": "low",
+                        "insights": [{"type": "momentum", "message": "Ollama detected healthy progress."}],
+                        "recommendations": [
+                            {"type": "retention", "message": "Review the strongest lesson pattern."}
+                        ],
+                        "lesson_actions": [
+                            {"lesson_title": "Ollama analytics lesson", "message": "Keep the lesson pacing."}
+                        ],
+                        "category_actions": [],
+                        "limitations": ["Mocked local model response."],
+                    }
+                )
+            }
+        )
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "ollama"
+    assert response.data["fallback_used"] is False
+    assert response.data["summary"] == "Ollama analytics summary."
+    assert response.data["health_score"] == 76
+    assert response.data["risk_level"] == "low"
+    assert response.data["provider_chain"] == ["ollama", "heuristic"]
+    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert attempts == [{"provider": "ollama", "status": "success"}]
+    assert response.data["metadata"]["output_language"] == "en"
+    assert "http://ollama.test" not in json.dumps(response.data)
+    assert "base_url" not in json.dumps(response.data).lower()
+    assert captured["url"] == "http://ollama.test/api/generate"
+    assert captured["payload"]["model"] == "analytics-test-model"
+    assert "Respond in English." in captured["payload"]["prompt"]
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test",
+)
+def test_invalid_ollama_json_falls_back_to_heuristic(monkeypatch):
+    publisher = _make_user("ai_ollama_invalid_owner")
+    viewer = _make_user("ai_ollama_invalid_viewer", role="student")
+    lesson = _make_project(publisher, "Invalid Ollama analytics lesson")
+    _progress(viewer, lesson, 42)
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": "not valid json"})
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "heuristic"
+    assert response.data["fallback_used"] is True
+    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert attempts[0]["provider"] == "ollama"
+    assert attempts[0]["status"] == "skipped"
+    assert attempts[1] == {"provider": "heuristic", "status": "success"}
 
 
 @override_settings(
