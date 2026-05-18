@@ -56,6 +56,7 @@ import PlaylistManager from '../components/studio/PlaylistManager';
 import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
 import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
 import VideoStage from '../components/player/VideoStage';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 const LESSON_TABS = ['overview'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
@@ -1023,7 +1024,7 @@ function lessonIntelligenceIsStale(report) {
 function lessonIntelligenceItemText(item) {
   if (typeof item === 'string') return item;
   if (!item || typeof item !== 'object') return '';
-  return textValue(item.message || item.suggestion || item.reason || item.text || item.title);
+  return textValue(item.message || item.advice || item.suggestion || item.reason || item.text || item.title);
 }
 
 function lessonIntelligenceItemMeta(item) {
@@ -1031,6 +1032,28 @@ function lessonIntelligenceItemMeta(item) {
   const page = item.page_number ? `Page ${item.page_number}` : '';
   const type = textValue(item.type).replace(/_/g, ' ');
   return [page, type].filter(Boolean).join(' - ');
+}
+
+function lessonIntelligenceItemKey(item, index = 0) {
+  if (!item || typeof item !== 'object') return `item-${index}`;
+  return [
+    item.page_key || item.page_number || 'item',
+    item.type || 'suggestion',
+    index,
+  ].map((value) => textValue(value).replace(/\s+/g, '-')).join(':');
+}
+
+function lessonIntelligenceDraftNarration(item) {
+  if (!item || typeof item !== 'object') return '';
+  return textValue(item.draft_narration || item.copy_text).trim();
+}
+
+function getCleanSuggestionCopyText(item) {
+  const draft = lessonIntelligenceDraftNarration(item);
+  if (draft) return draft;
+  if (typeof item === 'string') return item.trim();
+  if (!item || typeof item !== 'object') return '';
+  return textValue(item.copy_text || item.advice || item.suggestion || item.message || item.text || '').trim();
 }
 
 function lessonIntelligenceCopyText(report) {
@@ -1079,7 +1102,7 @@ function CollapsibleIntelligenceSection({ title, count = 0, defaultOpen = false,
   );
 }
 
-function LessonIntelligenceList({ title, items, emptyText, renderActions }) {
+function LessonIntelligenceList({ title, items, emptyText, renderActions, renderItem }) {
   const rows = Array.isArray(items) ? items : [];
   return (
     <CollapsibleIntelligenceSection title={title} count={rows.length}>
@@ -1087,6 +1110,9 @@ function LessonIntelligenceList({ title, items, emptyText, renderActions }) {
         <p className="text-sm text-[var(--text-secondary)]">{emptyText}</p>
       ) : (
         rows.map((item, index) => {
+          if (renderItem) {
+            return renderItem(item, index);
+          }
           const meta = lessonIntelligenceItemMeta(item);
           const text = lessonIntelligenceItemText(item);
           return (
@@ -1118,6 +1144,7 @@ function LessonIntelligencePanel({
   onCopy,
   onCopySuggestion,
   onApplyNarrationSuggestion,
+  copiedSuggestionKey,
   notice,
 }) {
   if (!project) return null;
@@ -1270,18 +1297,55 @@ function LessonIntelligencePanel({
             title="Expanded narration suggestions"
             items={report.expanded_narration_suggestions}
             emptyText="No expanded narration suggestions in the latest report."
-            renderActions={(item) => (
-              <>
-                <Button size="sm" variant="secondary" onClick={() => onCopySuggestion?.(item)} disabled={Boolean(actionBusy)}>
-                  <Copy size={14} />
-                  <span>Copy</span>
-                </Button>
-                <Button size="sm" onClick={() => onApplyNarrationSuggestion?.(item)} disabled={Boolean(actionBusy)}>
-                  <Sparkles size={14} />
-                  <span>Apply to page draft</span>
-                </Button>
-              </>
-            )}
+            renderItem={(item, index) => {
+              const key = lessonIntelligenceItemKey(item, index);
+              const pageLabel = item?.page_number ? `Page ${item.page_number}` : 'Page';
+              const title = textValue(item?.title || 'Expand narration');
+              const advice = textValue(item?.advice || item?.suggestion || lessonIntelligenceItemText(item));
+              const draftNarration = lessonIntelligenceDraftNarration(item);
+              const copiedThis = copiedSuggestionKey === key;
+              return (
+                <article key={key} className="space-y-3 rounded-xl bg-[color:var(--surface-muted)] p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="inline-flex rounded-full bg-[var(--surface-container-highest)] px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-primary)]">
+                        {pageLabel}
+                      </span>
+                      <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">{title}</p>
+                    </div>
+                    {item?.ai_generated && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[color:rgba(208,188,255,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--accent-primary)]">
+                        <Sparkles size={12} />
+                        <span>AI draft</span>
+                      </span>
+                    )}
+                  </div>
+                  {advice && (
+                    <p className="text-sm leading-6 text-[var(--text-secondary)]">{advice}</p>
+                  )}
+                  {draftNarration ? (
+                    <div className="rounded-xl border border-[color:rgba(208,188,255,0.32)] bg-[color:rgba(208,188,255,0.08)] p-3">
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">Draft narration</p>
+                      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-primary)]">{draftNarration}</p>
+                    </div>
+                  ) : (
+                    <p className="rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
+                      This suggestion does not include draft narration to apply.
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => onCopySuggestion?.(item, index)} disabled={Boolean(actionBusy) || !getCleanSuggestionCopyText(item)}>
+                      {copiedThis ? <Check size={14} /> : <Copy size={14} />}
+                      <span>{copiedThis ? 'Copied' : 'Copy'}</span>
+                    </Button>
+                    <Button size="sm" onClick={() => onApplyNarrationSuggestion?.(item)} disabled={Boolean(actionBusy) || !draftNarration}>
+                      <Sparkles size={14} />
+                      <span>Apply to page draft</span>
+                    </Button>
+                  </div>
+                </article>
+              );
+            }}
           />
 
           {(Array.isArray(report.suggested_tags) && report.suggested_tags.length > 0) && (
@@ -1350,6 +1414,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [lessonIntelligenceActionBusy, setLessonIntelligenceActionBusy] = useState('');
   const [lessonIntelligenceError, setLessonIntelligenceError] = useState('');
   const [lessonIntelligenceCopied, setLessonIntelligenceCopied] = useState(false);
+  const [lessonIntelligenceCopiedItemKey, setLessonIntelligenceCopiedItemKey] = useState('');
   const [lessonIntelligenceNotice, setLessonIntelligenceNotice] = useState('');
   const lessonIntelligenceAutoRunKeysRef = useRef(new Set());
   const [sceneActionBusy, setSceneActionBusy] = useState('');
@@ -1709,12 +1774,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     if (!selectedLesson?.id) {
       setLessonIntelligenceError('');
       setLessonIntelligenceCopied(false);
+      setLessonIntelligenceCopiedItemKey('');
       setLessonIntelligenceNotice('');
       return;
     }
 
     setLessonIntelligenceError('');
     setLessonIntelligenceCopied(false);
+    setLessonIntelligenceCopiedItemKey('');
     setLessonIntelligenceNotice('');
     refreshLessonIntelligence(selectedLesson.id);
   }, [refreshLessonIntelligence, selectedLesson?.id]);
@@ -2248,23 +2315,26 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     const text = lessonIntelligenceCopyText(selectedLessonIntelligence);
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       setLessonIntelligenceCopied(true);
-      window.setTimeout(() => setLessonIntelligenceCopied(false), 1600);
+      window.setTimeout(() => setLessonIntelligenceCopied(false), 2200);
     } catch {
       setLessonIntelligenceError('Could not copy suggestions.');
     }
   };
 
-  const handleCopyLessonIntelligenceItem = async (item) => {
-    const meta = lessonIntelligenceItemMeta(item);
-    const text = lessonIntelligenceItemText(item);
-    const copyText = [meta, text].filter(Boolean).join(': ');
+  const handleCopyLessonIntelligenceItem = async (item, index = 0) => {
+    const copyText = getCleanSuggestionCopyText(item);
     if (!copyText) return;
+    const itemKey = lessonIntelligenceItemKey(item, index);
     try {
-      await navigator.clipboard.writeText(copyText);
+      await copyTextToClipboard(copyText);
+      setLessonIntelligenceCopiedItemKey(itemKey);
       setLessonIntelligenceNotice('Suggestion copied.');
-      window.setTimeout(() => setLessonIntelligenceNotice(''), 1600);
+      window.setTimeout(() => {
+        setLessonIntelligenceCopiedItemKey('');
+        setLessonIntelligenceNotice('');
+      }, 2200);
     } catch {
       setLessonIntelligenceError('Could not copy this suggestion.');
     }
@@ -2284,7 +2354,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       return;
     }
     setLessonIntelligenceError('');
-    setLessonIntelligenceNotice('Suggestion applied to draft. Save changes to update the lesson transcript.');
+    setLessonIntelligenceNotice('AI draft applied. Review it, then save changes when ready.');
   };
 
   useEffect(() => {
@@ -4354,6 +4424,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         error={lessonIntelligenceError}
                         actionBusy={lessonIntelligenceActionBusy}
                         copied={lessonIntelligenceCopied}
+                        copiedSuggestionKey={lessonIntelligenceCopiedItemKey}
                         notice={lessonIntelligenceNotice}
                         onRefresh={() => selectedLesson && refreshLessonIntelligence(selectedLesson.id)}
                         onAnalyze={() => handleAnalyzeLessonIntelligence(selectedLesson)}

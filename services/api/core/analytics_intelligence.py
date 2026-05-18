@@ -375,6 +375,10 @@ class OllamaAnalyticsIntelligenceProvider:
             minimum=0.5,
             maximum=180.0,
         )
+        self.timeout_seconds = _effective_sync_provider_timeout(
+            self.timeout_seconds,
+            cap_setting="ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS",
+        )
 
     def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
@@ -1438,3 +1442,9 @@ def _float_setting(name: str, default: float, *, minimum: float | None = None, m
     if maximum is not None:
         value = min(maximum, value)
     return value
+
+
+def _effective_sync_provider_timeout(configured_timeout: float, *, cap_setting: str) -> float:
+    global_cap = _float_setting("INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS", 20.0, minimum=0.5, maximum=60.0)
+    cap = _float_setting(cap_setting, global_cap, minimum=0.5, maximum=60.0)
+    return min(float(configured_timeout), cap)

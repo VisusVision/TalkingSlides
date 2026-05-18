@@ -27,6 +27,7 @@ import {
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { canAccessStudio } from '../lib/auth';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 const RANGE_OPTIONS = [
   { key: '7', label: 'Last 7 days' },
@@ -888,9 +889,9 @@ export default function Analytics({ user }) {
     const text = analyticsIntelligenceCopyText(intelligenceReport);
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       setIntelligenceCopied(true);
-      window.setTimeout(() => setIntelligenceCopied(false), 1600);
+      window.setTimeout(() => setIntelligenceCopied(false), 2200);
     } catch {
       setIntelligenceError('Could not copy analytics suggestions.');
     }

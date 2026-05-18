@@ -273,6 +273,21 @@ class HeuristicLessonIntelligenceProvider:
                         "empty_page",
                     )
                 )
+                expanded_suggestions.append(
+                    _expanded_suggestion(
+                        page_number,
+                        page_key,
+                        _lesson_message(output_language, "empty_page_advice"),
+                        _draft_narration_for_page(
+                            output_language=output_language,
+                            suggestion_type="empty_page",
+                            display_text=display_text,
+                            narration_text=narration_text,
+                        ),
+                        "empty_page",
+                        generated_by=self.provider_name,
+                    )
+                )
                 continue
 
             if page_words > 95:
@@ -308,7 +323,14 @@ class HeuristicLessonIntelligenceProvider:
                         page_number,
                         page_key,
                         _lesson_message(output_language, "bullet_expansion"),
+                        _draft_narration_for_page(
+                            output_language=output_language,
+                            suggestion_type="bullet_expansion",
+                            display_text=display_text,
+                            narration_text=narration_text,
+                        ),
                         "bullet_expansion",
+                        generated_by=self.provider_name,
                     )
                 )
 
@@ -318,7 +340,14 @@ class HeuristicLessonIntelligenceProvider:
                         page_number,
                         page_key,
                         _lesson_message(output_language, "short_narration"),
+                        _draft_narration_for_page(
+                            output_language=output_language,
+                            suggestion_type="short_narration",
+                            display_text=display_text,
+                            narration_text=narration_text,
+                        ),
                         "short_narration",
+                        generated_by=self.provider_name,
                     )
                 )
 
@@ -375,7 +404,11 @@ class OllamaLessonIntelligenceProvider:
             _string_setting("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
         ).rstrip("/")
         self.model = _string_setting("OLLAMA_LESSON_INTELLIGENCE_MODEL", "qwen2.5:7b-instruct")
-        self.timeout_seconds = _float_setting("LESSON_INTELLIGENCE_TIMEOUT_SECONDS", 30.0, minimum=0.5, maximum=180.0)
+        configured_timeout = _float_setting("LESSON_INTELLIGENCE_TIMEOUT_SECONDS", 30.0, minimum=0.5, maximum=180.0)
+        self.timeout_seconds = _effective_sync_provider_timeout(
+            configured_timeout,
+            cap_setting="LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS",
+        )
 
     def analyze_lesson(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
@@ -750,11 +783,56 @@ def _normalize_provider_result(raw: Any, *, provider_name: str) -> dict[str, Any
         "complexity_reasons": _safe_json_list(raw.get("complexity_reasons") or complexity.get("reasons")),
         "clarity_warnings": _safe_json_list(raw.get("clarity_warnings")),
         "page_suggestions": _safe_json_list(raw.get("page_suggestions")),
-        "expanded_narration_suggestions": _safe_json_list(raw.get("expanded_narration_suggestions")),
+        "expanded_narration_suggestions": _normalize_expanded_narration_suggestions(
+            raw.get("expanded_narration_suggestions"),
+            provider_name=provider_name,
+        ),
         "suggested_tags": _safe_json_list(raw.get("suggested_tags")),
         "limitations": _safe_json_list(raw.get("limitations")),
         "metadata": _safe_json_dict(raw.get("metadata")),
     }
+
+
+def _normalize_expanded_narration_suggestions(raw: Any, *, provider_name: str) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in _safe_json_list(raw):
+        if isinstance(item, str):
+            normalized.append(
+                {
+                    "page_number": 0,
+                    "page_key": "",
+                    "type": "expanded_narration",
+                    "title": "Expand narration",
+                    "advice": item,
+                    "suggestion": item,
+                    "draft_narration": "",
+                    "copy_text": "",
+                    "generated_by": provider_name,
+                    "ai_generated": True,
+                }
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        suggestion_type = str(item.get("type") or "expanded_narration").strip() or "expanded_narration"
+        title = _clean_text(item.get("title"), max_chars=120) or _expanded_suggestion_title(suggestion_type)
+        advice = _clean_text(item.get("advice") or item.get("suggestion") or item.get("message"), max_chars=700)
+        draft = _clean_text(item.get("draft_narration") or item.get("copy_text"), max_chars=1200)
+        normalized.append(
+            {
+                "page_number": _safe_int(item.get("page_number"), 0),
+                "page_key": _clean_text(item.get("page_key"), max_chars=80),
+                "type": suggestion_type,
+                "title": title,
+                "advice": advice,
+                "suggestion": advice,
+                "draft_narration": draft,
+                "copy_text": draft,
+                "generated_by": _clean_text(item.get("generated_by"), max_chars=40) or provider_name,
+                "ai_generated": bool(item.get("ai_generated", True)),
+            }
+        )
+    return normalized
 
 
 def _ollama_prompt(input_payload: dict[str, Any]) -> str:
@@ -784,7 +862,7 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
         "\"complexity_reasons\":[\"reason\"],"
         "\"clarity_warnings\":[{\"type\":\"warning_type\",\"severity\":\"low|medium|high\",\"message\":\"text\"}],"
         "\"page_suggestions\":[{\"page_number\":1,\"page_key\":\"key\",\"type\":\"suggestion_type\",\"suggestion\":\"text\"}],"
-        "\"expanded_narration_suggestions\":[{\"page_number\":1,\"page_key\":\"key\",\"type\":\"suggestion_type\",\"suggestion\":\"text\"}],"
+        "\"expanded_narration_suggestions\":[{\"page_number\":1,\"page_key\":\"key\",\"type\":\"short_narration\",\"title\":\"Expand narration\",\"advice\":\"why this helps\",\"draft_narration\":\"actual narration to apply\",\"copy_text\":\"same useful narration text\",\"generated_by\":\"ollama\",\"ai_generated\":true}],"
         "\"suggested_tags\":[\"tag\"],"
         "\"limitations\":[\"limitation\"]"
         "}.\n"
@@ -846,6 +924,7 @@ def _lesson_message(language: str, key: str, **kwargs: Any) -> str:
             "missing_intro": "Açılış, hedefleri veya öğrencinin ne öğreneceğini yeterince net tanıtmıyor.",
             "missing_conclusion": "Kapanış, dersi özetlemiyor veya sonraki adımları net vermiyor.",
             "empty_page_suggestion": "Bu slayta öğrenme bağlamı kazandırmak için kısa bir anlatım notu ekleyin.",
+            "empty_page_advice": "Bu slaytta kullanılabilir anlatım yok; öğrenciye bağlam, hedef ve geçiş veren kısa bir anlatım gerekir.",
             "reduce_density_suggestion": "Görsel yoğunluğu azaltmak için bu sayfayı bölün veya ayrıntıları anlatıma taşıyın.",
             "bullets_without_explanation": "Madde ağırlıklı slayt metni daha açıklayıcı anlatım gerektirebilir.",
             "explain_bullets_suggestion": "Öğrencinin yalnızca listeyi değil, gerekçeyi de duyması için maddeler arasına açıklayıcı anlatım ekleyin.",
@@ -865,6 +944,7 @@ def _lesson_message(language: str, key: str, **kwargs: Any) -> str:
         "missing_intro": "The opening does not clearly introduce goals or what the learner will learn.",
         "missing_conclusion": "The ending does not clearly recap the lesson or provide next steps.",
         "empty_page_suggestion": "Add a short narration note so this slide has learning context.",
+        "empty_page_advice": "This slide has no usable narration; add a short explanation that gives learners context, the goal, and a transition.",
         "reduce_density_suggestion": "Split this page or move detail into narration to reduce visual density.",
         "bullets_without_explanation": "Bullet-heavy slide text may need more explanatory narration.",
         "explain_bullets_suggestion": "Add explanatory narration between bullet points so learners hear the reasoning, not just the list.",
@@ -994,13 +1074,99 @@ def _page_suggestion(page_number: int, page_key: str, suggestion: str, suggestio
     }
 
 
-def _expanded_suggestion(page_number: int, page_key: str, suggestion: str, suggestion_type: str) -> dict[str, Any]:
+def _expanded_suggestion(
+    page_number: int,
+    page_key: str,
+    advice: str,
+    draft_narration: str,
+    suggestion_type: str,
+    *,
+    generated_by: str = "heuristic",
+) -> dict[str, Any]:
+    clean_draft = _clean_text(draft_narration, max_chars=900)
     return {
         "page_number": page_number,
         "page_key": page_key,
         "type": suggestion_type,
-        "suggestion": suggestion,
+        "title": _expanded_suggestion_title(suggestion_type),
+        "advice": advice,
+        "suggestion": advice,
+        "draft_narration": clean_draft,
+        "copy_text": clean_draft,
+        "generated_by": generated_by,
+        "ai_generated": True,
     }
+
+
+def _expanded_suggestion_title(suggestion_type: str) -> str:
+    normalized = str(suggestion_type or "").strip().lower()
+    if normalized == "empty_page":
+        return "Add narration"
+    return "Expand narration"
+
+
+def _draft_narration_for_page(
+    *,
+    output_language: str,
+    suggestion_type: str,
+    display_text: str,
+    narration_text: str,
+) -> str:
+    source = _clean_text(display_text or narration_text, max_chars=650)
+    bullet_items = _bullet_items(display_text or narration_text)
+    if output_language == "tr":
+        if not source:
+            return (
+                "Bu bölümde slaydın ana fikrini kısa ve net biçimde tanıtıyoruz. "
+                "Öğrenciye önce konunun neden önemli olduğunu söylüyor, ardından basit bir örnekle bağlantı kuruyoruz. "
+                "Son olarak bir sonraki adıma geçmeden önce öğrenilmesi gereken noktayı özetliyoruz."
+            )
+        if bullet_items:
+            items = ", ".join(bullet_items[:3])
+            return _truncate(
+                "Bu bölümde listedeki ana noktaları birlikte anlamlandırıyoruz: "
+                f"{items}. Her madde, dersin ana fikrine nasıl katkı verdiğini gösteren kısa bir açıklamayla ele alınır. "
+                "Böylece öğrenci yalnızca listeyi okumaz, maddeler arasındaki ilişkiyi de duyar.",
+                900,
+            )
+        return _truncate(
+            f"Bu bölümde ana fikri şöyle açıklıyoruz: {source}. "
+            "Bunu somut bir örnekle düşünürsek, öğrenci kavramın nerede kullanılacağını daha kolay görür. "
+            "Bir sonraki adımda bu fikri dersin devamındaki uygulamayla ilişkilendiriyoruz.",
+            900,
+        )
+    if not source:
+        return (
+            "In this part, we introduce the slide's main idea in clear learner-friendly language. "
+            "First, we explain why the point matters, then we connect it to a simple example. "
+            "Before moving on, we summarize the takeaway learners should remember."
+        )
+    if bullet_items:
+        items = ", ".join(bullet_items[:3])
+        return _truncate(
+            "In this part, we connect the bullet points into a clear explanation: "
+            f"{items}. Each point should be described in terms of why it matters and how it supports the main idea. "
+            "That gives learners the reasoning behind the list instead of only reading the items.",
+            900,
+        )
+    return _truncate(
+        f"In this part, we explain the key idea: {source}. "
+        "A simple example can make the concept easier to place in a real learning context. "
+        "Then we transition to the next step by showing how this idea will be used in the rest of the lesson.",
+        900,
+    )
+
+
+def _bullet_items(text: str) -> list[str]:
+    items: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not re.match(r"^[-*•]\s+", stripped):
+            continue
+        item = re.sub(r"^[-*•]\s+", "", stripped).strip()
+        if item:
+            items.append(_truncate(item, 120))
+    return items
 
 
 def _compose_input_text(title: str, description: str, pages: list[dict[str, Any]]) -> str:
@@ -1169,3 +1335,13 @@ def _float_setting(name: str, default: float, *, minimum: float, maximum: float)
     except (TypeError, ValueError):
         parsed = float(default)
     return min(maximum, max(minimum, parsed))
+
+
+def _effective_sync_provider_timeout(configured_timeout: float, *, cap_setting: str) -> float:
+    cap = _float_setting(
+        cap_setting,
+        _float_setting("INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS", 20.0, minimum=0.5, maximum=60.0),
+        minimum=0.5,
+        maximum=60.0,
+    )
+    return min(float(configured_timeout), cap)

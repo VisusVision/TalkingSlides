@@ -145,6 +145,24 @@ Columns:
 | `TTS_LLM_CONTEXT_MAX_CHARS` | API | Optional | If suggestions | `1000` | Prompt context limit. |
 | `OPENAI_API_KEY`, `ELEVENLABS_API_KEY` | TTS/API if enabled | No | If provider used | commented placeholders | External provider keys. Secrets. |
 
+## Lesson and Analytics Intelligence
+
+| Variable | Service | Local | Prod | Default/example | Meaning |
+| --- | --- | --- | --- | --- | --- |
+| `LESSON_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | `true` in DEBUG, else `false` | Enables lesson quality analysis. |
+| `LESSON_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `ollama,heuristic`. |
+| `ANALYTICS_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | `true` in DEBUG, else `false` | Enables creator analytics insights. |
+| `ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `ollama,heuristic`. |
+| `LESSON_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
+| `ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
+| `INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | `20` | Upper bound for synchronous Ollama calls so API workers can return fallback before Gunicorn timeout. |
+| `LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | global cap | Lesson-specific synchronous cap. |
+| `ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | global cap | Analytics-specific synchronous cap. |
+| `OLLAMA_LESSON_INTELLIGENCE_BASE_URL`, `OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL` | API | Optional | If Ollama | `OLLAMA_BASE_URL` fallback | Local Ollama endpoints. |
+| `OLLAMA_LESSON_INTELLIGENCE_MODEL`, `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` | API | Optional | If Ollama | `qwen2.5:7b-instruct` | Local Ollama models. |
+
+Keep synchronous Ollama timeout caps lower than the API/Gunicorn worker timeout. Docker uses Gunicorn without an explicit `--timeout`, so the effective default is 30 seconds; a provider timeout above that can kill the worker before heuristic fallback is returned. Long-running local LLM analysis should move to a background job/polling flow before raising these caps.
+
 ## Subtitle Translation and Moderation-adjacent Providers
 
 | Variable | Service | Local | Prod | Default/example | Meaning |

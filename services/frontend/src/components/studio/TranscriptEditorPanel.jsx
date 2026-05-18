@@ -11,6 +11,7 @@ import {
   RotateCcw,
   Save,
   Scissors,
+  Sparkles,
   Trash2,
   Undo2,
 } from 'lucide-react';
@@ -236,6 +237,10 @@ function actionLabel(action) {
   }[action] || 'Page action';
 }
 
+function suggestionDraftNarrationText(suggestion = {}) {
+  return textValue(suggestion.draft_narration || suggestion.copy_text).trim();
+}
+
 const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   project,
   pages,
@@ -264,6 +269,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   const [deletedPages, setDeletedPages] = useState([]);
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
   const [displayEditKeys, setDisplayEditKeys] = useState({});
+  const [aiAppliedDraftsByPageKey, setAiAppliedDraftsByPageKey] = useState({});
   const mountedRef = useRef(false);
   const lastProjectIdRef = useRef(null);
   const pageRefs = useRef({});
@@ -296,6 +302,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
       setDeletedPages([]);
       setPendingConfirmation(null);
       setDisplayEditKeys({});
+      setAiAppliedDraftsByPageKey({});
     }
   }, [project?.id, pages]);
 
@@ -374,6 +381,15 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   }, []);
 
   const updateNarrationText = useCallback((index, nextText) => {
+    const key = pageKey(draftPages[index], index);
+    if (key) {
+      setAiAppliedDraftsByPageKey((current) => {
+        if (!current[key]) return current;
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
+    }
     setDraftPages((current) =>
       current.map((page, pageIndex) => {
         if (pageIndex !== index) return page;
@@ -391,7 +407,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         };
       }),
     );
-  }, []);
+  }, [draftPages]);
 
   const toggleDisplayEdit = useCallback((key) => {
     setDisplayEditKeys((current) => ({
@@ -417,6 +433,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     setJobStatus(null);
     setPollingStartedAt(null);
     setDisplayEditKeys({});
+    setAiAppliedDraftsByPageKey({});
   }, [pages]);
 
   const pageDiffLabel = useCallback(
@@ -685,11 +702,11 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     if (controlsDisabled) {
       return { ok: false, message: 'Transcript editor is busy.' };
     }
-    const nextText = textValue(suggestion.text || suggestion.suggestion || suggestion.message).trim();
+    const nextText = suggestionDraftNarrationText(suggestion);
     if (!nextText) {
-      setError('Suggestion text is empty.');
+      setError('This suggestion does not include an AI draft narration to apply.');
       setStatusMessage('');
-      return { ok: false, message: 'Suggestion text is empty.' };
+      return { ok: false, message: 'This suggestion does not include an AI draft narration to apply.' };
     }
 
     const requestedKey = textValue(suggestion.pageKey || suggestion.page_key).trim();
@@ -710,9 +727,10 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     }
 
     const targetPage = draftPages[targetIndex];
-    const currentNarration = textValue(targetPage?.narration_text).trim();
+    const currentNarrationRaw = textValue(targetPage?.narration_text);
+    const currentNarration = currentNarrationRaw.trim();
     if (currentNarration && currentNarration !== nextText) {
-      const confirmed = window.confirm(`Replace current narration for ${pageDescriptor(targetPage, targetIndex)}?`);
+      const confirmed = window.confirm(`Replace current narration for ${pageDescriptor(targetPage, targetIndex)} with this AI draft?`);
       if (!confirmed) {
         return { ok: false, cancelled: true, message: 'Suggestion was not applied.' };
       }
@@ -737,11 +755,53 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         return updatedPage;
       }),
     );
+    const targetKey = pageKey(targetPage, targetIndex);
+    setAiAppliedDraftsByPageKey((current) => ({
+      ...current,
+      [targetKey]: {
+        previousText: currentNarrationRaw,
+        appliedText: nextText,
+        appliedAt: Date.now(),
+      },
+    }));
     setError('');
-    setStatusMessage('Suggestion applied to draft. Save changes to update the lesson transcript.');
+    setStatusMessage('AI draft applied. Review it, then save changes when ready.');
     onSelectPage?.(updatedPage || targetPage, targetIndex);
-    return { ok: true, pageIndex: targetIndex, pageKey: pageKey(targetPage, targetIndex) };
+    return { ok: true, pageIndex: targetIndex, pageKey: targetKey };
   }, [controlsDisabled, draftPages, onSelectPage]);
+
+  const undoAiDraft = useCallback((index) => {
+    const page = draftPages[index];
+    const key = pageKey(page, index);
+    const marker = aiAppliedDraftsByPageKey[key];
+    if (!marker) return;
+    const previousText = textValue(marker.previousText);
+    setDraftPages((current) =>
+      current.map((candidate, pageIndex) => {
+        if (pageIndex !== index) return candidate;
+        const flags = {
+          ...editorTextFlags(candidate),
+          narration_customized: true,
+        };
+        return {
+          ...candidate,
+          narration_text: previousText,
+          editor_document: {
+            ...(candidate.editor_document || {}),
+            text: flags,
+          },
+        };
+      }),
+    );
+    setAiAppliedDraftsByPageKey((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setError('');
+    setStatusMessage('AI draft undone.');
+    onSelectPage?.({ ...page, narration_text: previousText }, index);
+  }, [aiAppliedDraftsByPageKey, draftPages, onSelectPage]);
 
   const saveTranscript = useCallback(
     async ({ triggerRerender = false } = {}) => {
@@ -778,6 +838,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           onPagesUpdated?.(updatedPages);
         }
         onModerationUpdated?.(response);
+        setAiAppliedDraftsByPageKey({});
         setStatusMessage(triggerRerender ? 'Transcript saved. Rerender queued.' : 'Transcript saved.');
 
         if (onProjectRefresh) {
@@ -1040,6 +1101,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           const hasModerationWarning = Boolean(moderationWarning);
           const displayWarned = moderationFields.has('original_text') || moderationFields.has('page');
           const narrationWarned = moderationFields.has('narration_text') || moderationFields.has('page');
+          const aiDraftMarker = aiAppliedDraftsByPageKey[key] || null;
 
           return (
             <article
@@ -1127,24 +1189,54 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                 )}
               </div>
 
-              <label className={`block rounded-xl text-sm ${
+              <div className={`block rounded-xl text-sm ${
                 narrationWarned
                   ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] p-3 text-[color:var(--status-warning-fg)]'
-                  : 'text-[var(--text-secondary)]'
+                  : aiDraftMarker
+                    ? 'border border-[color:rgba(208,188,255,0.55)] bg-[color:rgba(208,188,255,0.11)] p-3 text-[var(--text-secondary)]'
+                    : 'text-[var(--text-secondary)]'
               }`}>
-                Narration text / captions
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>Narration text / captions</span>
+                  {aiDraftMarker && (
+                    <span className="inline-flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[color:rgba(208,188,255,0.18)] px-2.5 py-1 text-xs font-semibold text-[var(--accent-primary)]">
+                        <Sparkles size={12} />
+                        <span>AI draft</span>
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          undoAiDraft(index);
+                        }}
+                        disabled={controlsDisabled}
+                      >
+                        <Undo2 size={14} />
+                        <span>Undo</span>
+                      </Button>
+                    </span>
+                  )}
+                </div>
                 <textarea
+                  aria-label="Narration text / captions"
                   value={narration}
                   onFocus={() => onSelectPage?.(page, index)}
                   onChange={(event) => updateNarrationText(index, event.target.value)}
                   className={`focus-ring mt-1 w-full resize-y rounded-2xl border bg-[var(--surface-elevated)] p-4 text-[var(--text-primary)] ${
-                    narrationWarned ? 'border-[color:var(--status-warning-fg)]' : 'border-[var(--border-subtle)]'
+                    narrationWarned
+                      ? 'border-[color:var(--status-warning-fg)]'
+                      : aiDraftMarker
+                        ? 'border-[color:rgba(208,188,255,0.7)] shadow-[0_0_0_1px_rgba(208,188,255,0.16)]'
+                        : 'border-[var(--border-subtle)]'
                   } ${
                     focusMode ? 'min-h-[280px] text-base leading-7' : 'min-h-[190px] text-[0.95rem] leading-7'
                   }`}
                   placeholder="Edit spoken narration for this slide..."
                 />
-              </label>
+              </div>
 
               {!narration.trim() && (
                 <p className="inline-flex items-center gap-2 text-xs text-[color:var(--status-danger-fg)]">

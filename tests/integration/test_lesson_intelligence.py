@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.error import URLError
 
 import django
 import pytest
@@ -88,6 +89,23 @@ def _analyze_url(project: Project) -> str:
 
 def _latest_url(project: Project) -> str:
     return f"/api/v1/projects/{project.id}/intelligence/"
+
+
+class _FakeOllamaResponse:
+    def __init__(self, payload: dict | str):
+        if isinstance(payload, str):
+            self.body = payload.encode("utf-8")
+        else:
+            self.body = json.dumps(payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self) -> bytes:
+        return self.body
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
@@ -189,6 +207,22 @@ def test_heuristic_response_stable_and_complete():
         assert isinstance(payload["complexity"]["score"], int)
         assert payload["clarity_warnings"]
         assert payload["expanded_narration_suggestions"]
+        suggestion = payload["expanded_narration_suggestions"][0]
+        assert {
+            "page_number",
+            "page_key",
+            "type",
+            "title",
+            "advice",
+            "draft_narration",
+            "copy_text",
+            "generated_by",
+            "ai_generated",
+        }.issubset(suggestion.keys())
+        assert suggestion["draft_narration"]
+        assert suggestion["copy_text"] == suggestion["draft_narration"]
+        assert suggestion["draft_narration"] != suggestion["advice"]
+        assert suggestion["draft_narration"] != suggestion["title"]
         assert payload["suggested_tags"]
     assert first.data["summary"] == second.data["summary"]
     assert first.data["complexity"] == second.data["complexity"]
@@ -327,6 +361,130 @@ def test_provider_chain_falls_back_when_ollama_unavailable():
 
 @override_settings(
     LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://secret-ollama.local:11434",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=120,
+    INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS=20,
+    LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS=20,
+)
+def test_ollama_timeout_uses_sync_cap_and_falls_back(monkeypatch):
+    owner = _make_user("li_ollama_cap_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        raise URLError("timed out")
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert captured["timeout"] == 20
+    assert response.data["provider"] == "heuristic"
+    assert response.data["fallback_used"] is True
+    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert attempts[0]["provider"] == "ollama"
+    assert attempts[0]["status"] in {"skipped", "failed"}
+    serialized = json.dumps(response.data)
+    assert "secret-ollama.local" not in serialized
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=8,
+    INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS=20,
+)
+def test_successful_mocked_ollama_returns_primary_provider(monkeypatch):
+    owner = _make_user("li_ollama_success_owner")
+    project = _make_project(owner)
+    _add_page(
+        project,
+        order=0,
+        key="p1",
+        original="- Objective\n- Example",
+        narration="A short narration.",
+    )
+    captured = {}
+    provider_payload = {
+        "provider": "ollama",
+        "lesson_summary": "Ollama generated lesson summary.",
+        "short_description": "Ollama generated short description.",
+        "complexity_level": "intermediate",
+        "complexity_score": 61,
+        "complexity_reasons": ["Uses model terminology."],
+        "clarity_warnings": [{"type": "short_narration", "message": "Narration needs more explanation."}],
+        "page_suggestions": [{"page_number": 1, "page_key": "p1", "type": "example", "suggestion": "Add an example."}],
+        "expanded_narration_suggestions": [
+            {
+                "page_number": 1,
+                "page_key": "p1",
+                "type": "short_narration",
+                "title": "Expand narration",
+                "advice": "This slide needs more teaching context.",
+                "draft_narration": "In this part, we explain the objective and connect it to a concrete example.",
+                "copy_text": "In this part, we explain the objective and connect it to a concrete example.",
+                "generated_by": "ollama",
+                "ai_generated": True,
+            }
+        ],
+        "suggested_tags": ["optimization"],
+        "limitations": [],
+    }
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        captured["body"] = request.data.decode("utf-8")
+        return _FakeOllamaResponse({"response": json.dumps(provider_payload)})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert captured["timeout"] == 8
+    assert response.data["provider"] == "ollama"
+    assert response.data["fallback_used"] is False
+    assert response.data["summary"] == "Ollama generated lesson summary."
+    suggestion = response.data["expanded_narration_suggestions"][0]
+    assert suggestion["draft_narration"].startswith("In this part")
+    assert suggestion["draft_narration"] != suggestion["advice"]
+    assert response.data["metadata"]["provider_chain_attempts"][0]["status"] == "success"
+    assert "draft_narration" in captured["body"]
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=8,
+)
+def test_invalid_ollama_json_falls_back_to_heuristic(monkeypatch):
+    owner = _make_user("li_ollama_invalid_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": "not-json"})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "heuristic"
+    assert response.data["fallback_used"] is True
+    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert attempts[0]["provider"] == "ollama"
+    assert attempts[0]["status"] in {"skipped", "failed"}
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
     LESSON_INTELLIGENCE_PROVIDER_CHAIN="openai,heuristic",
     LESSON_INTELLIGENCE_ALLOW_EXTERNAL=False,
 )
@@ -370,6 +528,29 @@ def test_turkish_transcript_returns_turkish_user_facing_output():
     assert "Bu ders" in response.data["summary"]
     serialized = json.dumps(response.data, ensure_ascii=False)
     assert "Belirgin örnek" in serialized or "Öneriler" in serialized or "danışma amaçlıdır" in serialized
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_turkish_expanded_narration_contains_turkish_draft_text():
+    owner = _make_user("li_tr_draft_owner")
+    project = _make_project(owner, title="Veri Analizi")
+    _add_page(
+        project,
+        order=0,
+        key="p1",
+        original="- Veri\n- \u00d6rnek\n- Sonu\u00e7",
+        narration="Bu ders k\u0131sad\u0131r.",
+    )
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["output_language"] == "tr"
+    suggestion = response.data["expanded_narration_suggestions"][0]
+    assert suggestion["draft_narration"].startswith("Bu ")
+    assert "madde" in suggestion["draft_narration"]
+    assert suggestion["draft_narration"] != suggestion["advice"]
+    assert suggestion["copy_text"] == suggestion["draft_narration"]
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
