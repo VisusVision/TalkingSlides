@@ -75,6 +75,7 @@ from core.models import (
     Category,
     Job,
     LessonComment,
+    LessonIntelligenceReport,
     LessonLike,
     LessonProgress,
     Notification,
@@ -118,6 +119,16 @@ from core.drafts import (
     has_dirty_draft,
     has_project_draft,
     save_project_draft_data,
+)
+from core.lesson_intelligence import (
+    LessonIntelligenceInputError,
+    LessonIntelligenceInputTooLarge,
+    analyze_with_provider_chain,
+    apply_analysis_to_report,
+    build_lesson_intelligence_input,
+    lesson_intelligence_enabled,
+    provider_chain_from_settings,
+    report_response_payload,
 )
 from core.tts_llm_suggestions import pronunciation_suggestion_response
 from core.avatar_readiness import avatar_preview_readiness, normalize_avatar_engine
@@ -3740,6 +3751,17 @@ def _can_manage_project(user, project: Project) -> bool:
     return bool(project.user_id and int(project.user_id) == int(user.id))
 
 
+def _can_run_lesson_intelligence(user, project: Project) -> bool:
+    if not _is_authenticated_user(user):
+        return False
+    if _is_staff_user(user):
+        return True
+    if not project.user_id or int(project.user_id) != int(user.id):
+        return False
+    profile = getattr(user, "profile", None)
+    return bool(profile and profile.role in {"teacher", "publisher"})
+
+
 def _latest_completed_video_export_job(project: Project) -> Job | None:
     return (
         project.jobs.filter(job_type="video_export", status="done")
@@ -5987,6 +6009,75 @@ class ProjectTranscriptView(APIView):
         if rerender_job:
             payload["rerender_job"] = rerender_job
         return Response(payload)
+
+
+class ProjectLessonIntelligenceView(APIView):
+    """GET/POST /api/v1/projects/<project_id>/intelligence/"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_run_lesson_intelligence(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        latest = project.lesson_intelligence_reports.order_by("-created_at", "-id").first()
+        enabled = lesson_intelligence_enabled()
+        payload = report_response_payload(latest, enabled=enabled)
+        if not enabled:
+            payload["message"] = "Lesson Intelligence is disabled."
+        return Response(payload, status=status.HTTP_200_OK)
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.select_related("user").get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_run_lesson_intelligence(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+        if not lesson_intelligence_enabled():
+            return Response(
+                {
+                    "enabled": False,
+                    "status": "disabled",
+                    "error": "Lesson Intelligence is disabled.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            lesson_input = build_lesson_intelligence_input(project)
+        except LessonIntelligenceInputTooLarge as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except LessonIntelligenceInputError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        chain = provider_chain_from_settings()
+        report = LessonIntelligenceReport.objects.create(
+            project=project,
+            requested_by=request.user if request.user and request.user.is_authenticated else None,
+            status="running",
+            provider="heuristic",
+            provider_chain=chain,
+            fallback_used=False,
+            source_hash=lesson_input.source_hash,
+        )
+        try:
+            analysis = analyze_with_provider_chain(lesson_input, chain=chain)
+            report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Lesson intelligence analysis failed project=%s report=%s", project.id, report.id)
+            report.status = "failed"
+            report.error_message = str(exc or exc.__class__.__name__)[:500]
+            report.save(update_fields=["status", "error_message", "updated_at"])
+            payload = report_response_payload(report, enabled=True)
+            payload["error"] = "Lesson Intelligence analysis failed."
+            return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response(report_response_payload(report, enabled=True), status=status.HTTP_200_OK)
 
 
 class ProjectDraftDiscardView(APIView):

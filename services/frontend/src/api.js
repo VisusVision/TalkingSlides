@@ -1090,6 +1090,30 @@ export async function fetchProjectTranscript(projectId) {
   return res.json();
 }
 
+export async function fetchProjectLessonIntelligence(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/intelligence/`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to fetch lesson intelligence'));
+  }
+  return data;
+}
+
+export async function analyzeProjectLessonIntelligence(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/intelligence/analyze/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to analyze lesson'));
+  }
+  return data;
+}
+
 export async function updateProjectTranscript(projectId, pages, options = {}) {
   const body = {
     pages,

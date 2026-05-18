@@ -436,6 +436,66 @@ class Job(models.Model):
         return f"{self.job_type} [{self.status}] - {self.pk}"
 
 
+class LessonIntelligenceReport(models.Model):
+    """Advisory lesson-quality analysis for publisher Studio workflows."""
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("running", "Running"),
+        ("done", "Done"),
+        ("failed", "Failed"),
+    ]
+
+    project = models.ForeignKey(
+        Project,
+        on_delete=models.CASCADE,
+        related_name="lesson_intelligence_reports",
+    )
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="lesson_intelligence_reports",
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    provider = models.CharField(max_length=40, default="heuristic")
+    provider_chain = models.JSONField(default=list, blank=True)
+    fallback_used = models.BooleanField(default=False)
+    source_hash = models.CharField(max_length=64, db_index=True)
+    summary = models.TextField(blank=True)
+    short_description = models.TextField(blank=True)
+    complexity_level = models.CharField(max_length=20, blank=True)
+    complexity_score = models.PositiveSmallIntegerField(default=0)
+    complexity_reasons = models.JSONField(default=list, blank=True)
+    clarity_warnings = models.JSONField(default=list, blank=True)
+    page_suggestions = models.JSONField(default=list, blank=True)
+    expanded_narration_suggestions = models.JSONField(default=list, blank=True)
+    suggested_tags = models.JSONField(default=list, blank=True)
+    limitations = models.JSONField(default=list, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    error_message = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["project", "-created_at"], name="c_lir_project_created_idx"),
+            models.Index(fields=["project", "source_hash"], name="c_lir_project_hash_idx"),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.provider = str(self.provider or "heuristic").strip().lower()
+        self.status = str(self.status or "pending").strip().lower()
+        if self.status not in {choice[0] for choice in self.STATUS_CHOICES}:
+            self.status = "pending"
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"LessonIntelligenceReport project={self.project_id} provider={self.provider} status={self.status}"
+
+
 class LessonProgress(models.Model):
     """Per-user lesson watch progress (authenticated students only)."""
 

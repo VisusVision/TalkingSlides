@@ -429,6 +429,38 @@ TTS_LLM_MAX_TERMS = int(os.environ.get("TTS_LLM_MAX_TERMS", "20"))
 TTS_LLM_CONTEXT_MAX_CHARS = int(os.environ.get("TTS_LLM_CONTEXT_MAX_CHARS", "1000"))
 
 # ---------------------------------------------------------------------------
+# Lesson Intelligence. Local heuristic analysis is the guaranteed default.
+# Optional local Ollama analysis can be enabled through the provider chain.
+# Paid/external providers remain gated by LESSON_INTELLIGENCE_ALLOW_EXTERNAL.
+# ---------------------------------------------------------------------------
+LESSON_INTELLIGENCE_ENABLED = os.environ.get(
+    "LESSON_INTELLIGENCE_ENABLED",
+    "true" if DEBUG else "false",
+).lower() in {"1", "true", "yes", "on"}
+LESSON_INTELLIGENCE_PROVIDER = os.environ.get("LESSON_INTELLIGENCE_PROVIDER", "heuristic").strip().lower()
+LESSON_INTELLIGENCE_PROVIDER_CHAIN = os.environ.get(
+    "LESSON_INTELLIGENCE_PROVIDER_CHAIN",
+    LESSON_INTELLIGENCE_PROVIDER or "heuristic",
+).strip()
+LESSON_INTELLIGENCE_ALLOW_EXTERNAL = os.environ.get("LESSON_INTELLIGENCE_ALLOW_EXTERNAL", "false").lower() in {
+    "1", "true", "yes", "on"
+}
+LESSON_INTELLIGENCE_TIMEOUT_SECONDS = float(os.environ.get("LESSON_INTELLIGENCE_TIMEOUT_SECONDS", "30"))
+LESSON_INTELLIGENCE_MAX_INPUT_CHARS = int(os.environ.get("LESSON_INTELLIGENCE_MAX_INPUT_CHARS", "20000"))
+OLLAMA_LESSON_INTELLIGENCE_BASE_URL = os.environ.get(
+    "OLLAMA_LESSON_INTELLIGENCE_BASE_URL",
+    os.environ.get("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
+).strip().rstrip("/")
+OLLAMA_LESSON_INTELLIGENCE_MODEL = os.environ.get(
+    "OLLAMA_LESSON_INTELLIGENCE_MODEL",
+    "qwen2.5:7b-instruct",
+).strip()
+OPENAI_LESSON_INTELLIGENCE_MODEL = os.environ.get(
+    "OPENAI_LESSON_INTELLIGENCE_MODEL",
+    "gpt-4o-mini",
+).strip()
+
+# ---------------------------------------------------------------------------
 # Subtitle translation providers. Enabled by default, but paid/external API
 # providers are skipped unless explicit endpoint/key/provider settings are set.
 # ---------------------------------------------------------------------------
