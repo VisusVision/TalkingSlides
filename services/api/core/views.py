@@ -6037,7 +6037,18 @@ class ProjectLessonIntelligenceView(APIView):
 
         latest = project.lesson_intelligence_reports.order_by("-created_at", "-id").first()
         enabled = lesson_intelligence_enabled()
-        payload = report_response_payload(latest, enabled=enabled)
+        current_source_hash = ""
+        if enabled:
+            try:
+                lesson_input = build_lesson_intelligence_input(
+                    project,
+                    output_language=request.query_params.get("output_language") or "auto",
+                    request_language=request.headers.get("Accept-Language", ""),
+                )
+                current_source_hash = lesson_input.source_hash
+            except (LessonIntelligenceInputTooLarge, LessonIntelligenceInputError):
+                current_source_hash = ""
+        payload = report_response_payload(latest, enabled=enabled, current_source_hash=current_source_hash)
         if not enabled:
             payload["message"] = "Lesson Intelligence is disabled."
         return Response(payload, status=status.HTTP_200_OK)
@@ -6093,11 +6104,14 @@ class ProjectLessonIntelligenceView(APIView):
             report.status = "failed"
             report.error_message = str(exc or exc.__class__.__name__)[:500]
             report.save(update_fields=["status", "error_message", "updated_at"])
-            payload = report_response_payload(report, enabled=True)
+            payload = report_response_payload(report, enabled=True, current_source_hash=lesson_input.source_hash)
             payload["error"] = "Lesson Intelligence analysis failed."
             return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response(report_response_payload(report, enabled=True), status=status.HTTP_200_OK)
+        return Response(
+            report_response_payload(report, enabled=True, current_source_hash=lesson_input.source_hash),
+            status=status.HTTP_200_OK,
+        )
 
 
 class ProjectDraftDiscardView(APIView):
@@ -9205,12 +9219,20 @@ class CreatorAnalyticsIntelligenceView(APIView):
             AnalyticsIntelligenceReport.objects.filter(
                 requested_by=request.user,
                 scope="creator",
-                source_hash=analytics_input.source_hash,
+                date_range=analytics_input.date_range,
+                category_filter=analytics_input.category_filter,
             )
             .order_by("-created_at", "-id")
             .first()
         )
-        return Response(analytics_report_response_payload(latest, enabled=True), status=status.HTTP_200_OK)
+        return Response(
+            analytics_report_response_payload(
+                latest,
+                enabled=True,
+                current_source_hash=analytics_input.source_hash,
+            ),
+            status=status.HTTP_200_OK,
+        )
 
     def post(self, request):
         if not _is_verified_teacher(request.user):
@@ -9268,11 +9290,18 @@ class CreatorAnalyticsIntelligenceView(APIView):
             report.status = "failed"
             report.error_message = str(exc or exc.__class__.__name__)[:500]
             report.save(update_fields=["status", "error_message", "updated_at"])
-            payload = analytics_report_response_payload(report, enabled=True)
+            payload = analytics_report_response_payload(
+                report,
+                enabled=True,
+                current_source_hash=analytics_input.source_hash,
+            )
             payload["error"] = "Analytics Intelligence analysis failed."
             return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response(analytics_report_response_payload(report, enabled=True), status=status.HTTP_200_OK)
+        return Response(
+            analytics_report_response_payload(report, enabled=True, current_source_hash=analytics_input.source_hash),
+            status=status.HTTP_200_OK,
+        )
 
 
 class CatalogDetailView(APIView):

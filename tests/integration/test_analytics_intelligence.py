@@ -238,6 +238,35 @@ def test_get_returns_latest_report_for_current_filter():
     assert latest.status_code == 200
     assert latest.data["id"] == first.data["id"]
     assert latest.data["source_hash"] == first.data["source_hash"]
+    assert latest.data["report_source_hash"] == first.data["source_hash"]
+    assert latest.data["current_source_hash"] == first.data["source_hash"]
+    assert latest.data["is_stale"] is False
+
+    changed_lesson = _make_project(publisher, "Latest changed lesson", category=category)
+    _progress(viewer, changed_lesson, 44)
+    stale = _client(publisher).get(_latest_url("range=30"))
+
+    assert stale.status_code == 200
+    assert stale.data["id"] == first.data["id"]
+    assert stale.data["report_source_hash"] == first.data["source_hash"]
+    assert stale.data["current_source_hash"] != first.data["source_hash"]
+    assert stale.data["is_stale"] is True
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_get_without_report_exposes_current_hash_and_stale():
+    publisher = _make_user("ai_empty_report_owner")
+    viewer = _make_user("ai_empty_report_viewer", role="student")
+    lesson = _make_project(publisher, "Reportless analytics lesson")
+    _progress(viewer, lesson, 81)
+
+    latest = _client(publisher).get(_latest_url("range=30"))
+
+    assert latest.status_code == 200
+    assert latest.data["status"] == "empty"
+    assert latest.data["report_source_hash"] == ""
+    assert latest.data["current_source_hash"]
+    assert latest.data["is_stale"] is True
 
 
 @override_settings(

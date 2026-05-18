@@ -634,13 +634,19 @@ def analytics_report_response_payload(
     report: AnalyticsIntelligenceReport | None,
     *,
     enabled: bool = True,
+    current_source_hash: str = "",
 ) -> dict[str, Any]:
+    current_hash = str(current_source_hash or "")
     if report is None:
         return {
             "enabled": enabled,
             "status": "empty" if enabled else "disabled",
             "provider": "",
             "fallback_used": False,
+            "source_hash": "",
+            "report_source_hash": "",
+            "current_source_hash": current_hash,
+            "is_stale": bool(enabled),
             "detected_language": "unknown",
             "output_language": "en",
             "language_confidence": 0.0,
@@ -654,6 +660,7 @@ def analytics_report_response_payload(
             "limitations": [],
         }
     report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
+    report_hash = str(report.source_hash or "")
     return {
         "enabled": enabled,
         "id": report.id,
@@ -664,7 +671,10 @@ def analytics_report_response_payload(
         "detected_language": str(report_metadata.get("detected_language") or "unknown"),
         "output_language": str(report_metadata.get("output_language") or "en"),
         "language_confidence": float(report_metadata.get("language_confidence") or 0.0),
-        "source_hash": report.source_hash,
+        "source_hash": report_hash,
+        "report_source_hash": report_hash,
+        "current_source_hash": current_hash,
+        "is_stale": bool(enabled and current_hash and report_hash != current_hash),
         "date_range": report.date_range if isinstance(report.date_range, dict) else {},
         "category_filter": report.category_filter,
         "summary": report.summary,

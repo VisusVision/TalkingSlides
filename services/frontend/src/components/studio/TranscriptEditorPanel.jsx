@@ -679,6 +679,70 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     [draftPages.length, runPageAction],
   );
 
+  const controlsDisabled = saving || rerendering || actioning;
+
+  const applyNarrationSuggestion = useCallback((suggestion = {}) => {
+    if (controlsDisabled) {
+      return { ok: false, message: 'Transcript editor is busy.' };
+    }
+    const nextText = textValue(suggestion.text || suggestion.suggestion || suggestion.message).trim();
+    if (!nextText) {
+      setError('Suggestion text is empty.');
+      setStatusMessage('');
+      return { ok: false, message: 'Suggestion text is empty.' };
+    }
+
+    const requestedKey = textValue(suggestion.pageKey || suggestion.page_key).trim();
+    const requestedPageNumber = Number(suggestion.pageNumber || suggestion.page_number || 0);
+    let targetIndex = -1;
+    if (requestedKey) {
+      targetIndex = draftPages.findIndex((page, index) => pageKey(page, index) === requestedKey);
+    }
+    if (targetIndex < 0 && Number.isFinite(requestedPageNumber) && requestedPageNumber > 0) {
+      const index = Math.floor(requestedPageNumber) - 1;
+      if (index >= 0 && index < draftPages.length) targetIndex = index;
+    }
+    if (targetIndex < 0) {
+      const message = 'Could not find the target transcript page for this suggestion.';
+      setError(message);
+      setStatusMessage('');
+      return { ok: false, message };
+    }
+
+    const targetPage = draftPages[targetIndex];
+    const currentNarration = textValue(targetPage?.narration_text).trim();
+    if (currentNarration && currentNarration !== nextText) {
+      const confirmed = window.confirm(`Replace current narration for ${pageDescriptor(targetPage, targetIndex)}?`);
+      if (!confirmed) {
+        return { ok: false, cancelled: true, message: 'Suggestion was not applied.' };
+      }
+    }
+
+    let updatedPage = null;
+    setDraftPages((current) =>
+      current.map((page, pageIndex) => {
+        if (pageIndex !== targetIndex) return page;
+        const flags = {
+          ...editorTextFlags(page),
+          narration_customized: true,
+        };
+        updatedPage = {
+          ...page,
+          narration_text: nextText,
+          editor_document: {
+            ...(page.editor_document || {}),
+            text: flags,
+          },
+        };
+        return updatedPage;
+      }),
+    );
+    setError('');
+    setStatusMessage('Suggestion applied to draft. Save changes to update the lesson transcript.');
+    onSelectPage?.(updatedPage || targetPage, targetIndex);
+    return { ok: true, pageIndex: targetIndex, pageKey: pageKey(targetPage, targetIndex) };
+  }, [controlsDisabled, draftPages, onSelectPage]);
+
   const saveTranscript = useCallback(
     async ({ triggerRerender = false } = {}) => {
       if (!project?.id || saving || rerendering) return;
@@ -741,13 +805,12 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     [dirtyPageIndexes, draftPages, onModerationUpdated, onPagesUpdated, onProjectRefresh, pollRerenderJob, project, rerendering, saving],
   );
 
-  const controlsDisabled = saving || rerendering || actioning;
-
   useImperativeHandle(ref, () => ({
     save: saveTranscript,
     hasUnsavedChanges: () => isDirty,
     isBusy: () => controlsDisabled,
-  }), [controlsDisabled, isDirty, saveTranscript]);
+    applyNarrationSuggestion,
+  }), [applyNarrationSuggestion, controlsDisabled, isDirty, saveTranscript]);
 
   if (!project) {
     return (

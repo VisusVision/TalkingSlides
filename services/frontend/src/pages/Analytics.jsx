@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Copy,
   Eye,
@@ -437,6 +438,10 @@ function analyticsInputWasCompacted(report) {
   return Boolean(report?.metadata?.input_truncated || report?.metadata?.compaction?.input_truncated);
 }
 
+function analyticsIntelligenceIsStale(report) {
+  return Boolean(report?.is_stale);
+}
+
 function RiskBadge({ level, outputLanguage = 'en' }) {
   const normalized = String(level || '').toLowerCase();
   const normalizedLanguage = String(outputLanguage || '').toLowerCase();
@@ -505,14 +510,38 @@ function intelligenceItemDetail(item) {
   return String(item.evidence || item.action_label || '');
 }
 
+function CollapsibleAnalyticsSection({ title, count = 0, icon: Icon = Lightbulb, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-muted)]/20">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="focus-ring flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <Icon size={16} className="shrink-0 text-[var(--accent-primary)]" />
+          <span className="min-w-0">
+            <span className="block text-sm font-bold text-[var(--text-primary)]">{title}</span>
+            <span className="mt-0.5 block text-xs text-[var(--text-secondary)]">
+              {count} item{count === 1 ? '' : 's'}
+            </span>
+          </span>
+        </span>
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-[var(--text-secondary)] transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && <div className="space-y-2 px-4 pb-4">{children}</div>}
+    </section>
+  );
+}
+
 function IntelligenceList({ title, items, emptyText, icon: Icon = Lightbulb }) {
   const visibleItems = Array.isArray(items) ? items.filter(Boolean).slice(0, 6) : [];
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Icon size={16} className="text-[var(--accent-primary)]" />
-        <h3 className="text-sm font-bold text-[var(--text-primary)]">{title}</h3>
-      </div>
+    <CollapsibleAnalyticsSection title={title} count={visibleItems.length} icon={Icon}>
       {visibleItems.length > 0 ? (
         <div className="space-y-2">
           {visibleItems.map((item, index) => {
@@ -529,7 +558,7 @@ function IntelligenceList({ title, items, emptyText, icon: Icon = Lightbulb }) {
       ) : (
         <p className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-3 text-sm text-[var(--text-secondary)]">{emptyText}</p>
       )}
-    </div>
+    </CollapsibleAnalyticsSection>
   );
 }
 
@@ -663,6 +692,9 @@ export default function Analytics({ user }) {
   const [intelligenceAnalyzing, setIntelligenceAnalyzing] = useState(false);
   const [intelligenceError, setIntelligenceError] = useState('');
   const [intelligenceCopied, setIntelligenceCopied] = useState(false);
+  const [intelligenceLoadedFilterKey, setIntelligenceLoadedFilterKey] = useState('');
+  const analyticsAutoRunKeysRef = useRef(new Set());
+  const analyticsInitialAutoRunDoneRef = useRef(false);
 
   const canCreateLesson = canAccessStudio(user);
   const canReviewModeration = isStaffUser(user);
@@ -675,6 +707,7 @@ export default function Analytics({ user }) {
       category: categorySlug || undefined,
     };
   }, [categorySlug, rangeKey]);
+  const analyticsFilterKey = useMemo(() => JSON.stringify(analyticsFilters), [analyticsFilters]);
 
   const loadStats = useCallback(async (activeRef = { current: true }) => {
     setLoading(true);
@@ -704,21 +737,24 @@ export default function Analytics({ user }) {
   const loadIntelligenceReport = useCallback(async (activeRef = { current: true }) => {
     setIntelligenceLoading(true);
     setIntelligenceError('');
+    setIntelligenceLoadedFilterKey('');
 
     try {
       const payload = await fetchMyAnalyticsIntelligence(analyticsFilters);
       if (!activeRef.current) return;
       setIntelligenceReport(payload);
+      setIntelligenceLoadedFilterKey(analyticsFilterKey);
     } catch (intelligenceLoadError) {
       if (!activeRef.current) return;
       setIntelligenceReport(null);
+      setIntelligenceLoadedFilterKey(analyticsFilterKey);
       setIntelligenceError(intelligenceLoadError.message || 'Analytics Intelligence is unavailable.');
     } finally {
       if (activeRef.current) {
         setIntelligenceLoading(false);
       }
     }
-  }, [analyticsFilters]);
+  }, [analyticsFilterKey, analyticsFilters]);
 
   useEffect(() => {
     const activeRef = { current: true };
@@ -792,20 +828,61 @@ export default function Analytics({ user }) {
     }
   };
 
-  const handleAnalyzeAnalytics = async () => {
+  const handleAnalyzeAnalytics = useCallback(async ({ auto = false } = {}) => {
     setIntelligenceAnalyzing(true);
     setIntelligenceError('');
     setIntelligenceCopied(false);
 
     try {
-      const payload = await analyzeMyAnalyticsIntelligence(analyticsFilters);
+      const payload = await analyzeMyAnalyticsIntelligence(analyticsFilters, { force: !auto });
       setIntelligenceReport(payload);
+      setIntelligenceLoadedFilterKey(analyticsFilterKey);
+      return payload;
     } catch (analyzeError) {
       setIntelligenceError(analyzeError.message || 'Analytics analysis failed.');
+      return null;
     } finally {
       setIntelligenceAnalyzing(false);
     }
-  };
+  }, [analyticsFilterKey, analyticsFilters]);
+
+  useEffect(() => {
+    if (!canCreateLesson || analyticsInitialAutoRunDoneRef.current) return;
+    if (intelligenceLoadedFilterKey !== analyticsFilterKey || intelligenceLoading || intelligenceAnalyzing) return;
+
+    const report = intelligenceReport || null;
+    const status = String(report?.status || '').toLowerCase();
+    if (report?.enabled === false || status === 'disabled' || status === 'failed') {
+      analyticsInitialAutoRunDoneRef.current = true;
+      return;
+    }
+
+    const missingReport = !report?.id || status === 'empty';
+    const staleReport = analyticsIntelligenceIsStale(report);
+    if (!missingReport && !staleReport) {
+      analyticsInitialAutoRunDoneRef.current = true;
+      return;
+    }
+
+    const sourceKey = report?.current_source_hash || report?.report_source_hash || report?.source_hash || 'empty';
+    const autoRunKey = `${analyticsFilterKey}:${sourceKey}:${missingReport ? 'missing' : 'stale'}`;
+    if (analyticsAutoRunKeysRef.current.has(autoRunKey)) {
+      analyticsInitialAutoRunDoneRef.current = true;
+      return;
+    }
+
+    analyticsInitialAutoRunDoneRef.current = true;
+    analyticsAutoRunKeysRef.current.add(autoRunKey);
+    handleAnalyzeAnalytics({ auto: true });
+  }, [
+    analyticsFilterKey,
+    canCreateLesson,
+    handleAnalyzeAnalytics,
+    intelligenceAnalyzing,
+    intelligenceLoadedFilterKey,
+    intelligenceLoading,
+    intelligenceReport,
+  ]);
 
   const handleCopyIntelligence = async () => {
     const text = analyticsIntelligenceCopyText(intelligenceReport);
@@ -831,6 +908,8 @@ export default function Analytics({ user }) {
   const visibleRecentActivity = recentActivityExpanded
     ? stats.recentActivity
     : stats.recentActivity.slice(0, 3);
+  const intelligenceStale = analyticsIntelligenceIsStale(intelligenceReport);
+  const intelligenceCompacted = analyticsInputWasCompacted(intelligenceReport);
 
   return (
     <div className="space-y-7 pb-8">
@@ -1236,6 +1315,11 @@ export default function Analytics({ user }) {
                 <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">Smart Insights</p>
                 <ProviderLabel report={intelligenceReport} />
                 <IntelligenceLanguageLabel report={intelligenceReport} />
+                {intelligenceStale && (
+                  <span className="inline-flex items-center rounded-full bg-amber-400/15 px-3 py-1 text-xs font-semibold text-amber-300">
+                    Stale
+                  </span>
+                )}
               </div>
               <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--text-secondary)]">
                 Suggestions are advisory. They do not change your lessons until you edit them.
@@ -1255,12 +1339,12 @@ export default function Analytics({ user }) {
             )}
             <button
               type="button"
-              onClick={handleAnalyzeAnalytics}
+              onClick={() => handleAnalyzeAnalytics()}
               disabled={intelligenceAnalyzing || intelligenceReport?.enabled === false}
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[image:var(--accent-gradient)] px-4 text-xs font-bold text-white transition hover:scale-105 active:scale-95 disabled:cursor-wait disabled:opacity-60 disabled:hover:scale-100"
             >
               <RefreshCw size={14} className={intelligenceAnalyzing ? 'animate-spin' : ''} />
-              {intelligenceAnalyzing ? 'Analyzing...' : 'Analyze analytics'}
+              {intelligenceAnalyzing ? 'Analyzing...' : intelligenceStale ? 'Re-analyze' : 'Analyze analytics'}
             </button>
           </div>
         </div>
@@ -1279,6 +1363,16 @@ export default function Analytics({ user }) {
           </div>
         ) : intelligenceReport?.status === 'done' ? (
           <div className="space-y-6">
+            {(intelligenceStale || intelligenceCompacted) && (
+              <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-3 text-sm text-[var(--text-secondary)]">
+                {intelligenceStale && (
+                  <p className="font-semibold text-amber-300">This analytics report is out of date for the selected filters.</p>
+                )}
+                {intelligenceCompacted && (
+                  <p className={intelligenceStale ? 'mt-1' : ''}>Large analytics dataset summarized before analysis.</p>
+                )}
+              </div>
+            )}
             <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
               <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
                 <div className="flex items-center gap-2">
@@ -1329,20 +1423,18 @@ export default function Analytics({ user }) {
               />
             </div>
 
-            {Array.isArray(intelligenceReport.limitations) && intelligenceReport.limitations.length > 0 && (
-              <div className="rounded-2xl bg-[color:var(--surface-muted)]/20 p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Limitations</p>
-                {analyticsInputWasCompacted(intelligenceReport) && (
-                  <p className="mt-2 text-xs leading-relaxed text-[var(--text-secondary)]">
-                    Large analytics dataset summarized before analysis.
-                  </p>
-                )}
+            {(Array.isArray(intelligenceReport.limitations) && intelligenceReport.limitations.length > 0) && (
+              <CollapsibleAnalyticsSection
+                title="Limitations"
+                count={intelligenceReport.limitations.length}
+                icon={AlertTriangle}
+              >
                 <ul className="mt-2 space-y-1 text-xs leading-relaxed text-[var(--text-secondary)]">
                   {intelligenceReport.limitations.slice(0, 4).map((item, index) => (
                     <li key={`analytics-limitation-${index}`}>{String(item)}</li>
                   ))}
                 </ul>
-              </div>
+              </CollapsibleAnalyticsSection>
             )}
           </div>
         ) : intelligenceReport?.status === 'disabled' || intelligenceReport?.enabled === false ? (

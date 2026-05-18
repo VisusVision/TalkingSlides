@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   BookOpenText,
   Check,
+  ChevronDown,
   Copy,
   Eye,
   EyeOff,
@@ -1015,6 +1016,10 @@ function lessonIntelligenceInputWasCompacted(report) {
   return Boolean(report?.metadata?.input_truncated);
 }
 
+function lessonIntelligenceIsStale(report) {
+  return Boolean(report?.is_stale);
+}
+
 function lessonIntelligenceItemText(item) {
   if (typeof item === 'string') return item;
   if (!item || typeof item !== 'object') return '';
@@ -1051,11 +1056,33 @@ function lessonIntelligenceCopyText(report) {
   return sections.join('\n\n');
 }
 
-function LessonIntelligenceList({ title, items, emptyText }) {
+function CollapsibleIntelligenceSection({ title, count = 0, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)]/35">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="focus-ring flex w-full items-center justify-between gap-3 rounded-xl px-3 py-3 text-left"
+      >
+        <span className="min-w-0">
+          <span className="block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">{title}</span>
+          <span className="mt-0.5 block text-xs text-[var(--text-secondary)]">{count} item{count === 1 ? '' : 's'}</span>
+        </span>
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-[var(--text-secondary)] transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && <div className="space-y-2 px-3 pb-3">{children}</div>}
+    </section>
+  );
+}
+
+function LessonIntelligenceList({ title, items, emptyText, renderActions }) {
   const rows = Array.isArray(items) ? items : [];
   return (
-    <div className="space-y-2">
-      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">{title}</p>
+    <CollapsibleIntelligenceSection title={title} count={rows.length}>
       {rows.length === 0 ? (
         <p className="text-sm text-[var(--text-secondary)]">{emptyText}</p>
       ) : (
@@ -1066,11 +1093,16 @@ function LessonIntelligenceList({ title, items, emptyText }) {
             <article key={`${title}-${index}`} className="rounded-xl bg-[color:var(--surface-muted)] p-3">
               {meta && <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">{meta}</p>}
               <p className="mt-1 text-sm text-[var(--text-primary)]">{text || 'Review this item.'}</p>
+              {renderActions && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {renderActions(item, index)}
+                </div>
+              )}
             </article>
           );
         })
       )}
-    </div>
+    </CollapsibleIntelligenceSection>
   );
 }
 
@@ -1084,6 +1116,9 @@ function LessonIntelligencePanel({
   onAnalyze,
   onRefresh,
   onCopy,
+  onCopySuggestion,
+  onApplyNarrationSuggestion,
+  notice,
 }) {
   if (!project) return null;
 
@@ -1094,6 +1129,7 @@ function LessonIntelligencePanel({
   const score = Number.isFinite(Number(complexity.score)) ? Number(complexity.score) : 0;
   const providerLabel = lessonIntelligenceProviderLabel(report);
   const copyDisabled = !hasReport || actionBusy || loading;
+  const stale = lessonIntelligenceIsStale(report);
 
   return (
     <div className="rounded-2xl token-surface p-4">
@@ -1118,6 +1154,11 @@ function LessonIntelligencePanel({
                 Report #{report.id}
               </span>
             )}
+            {stale && (
+              <span className="rounded-full bg-[color:var(--status-warning-bg)] px-3 py-1 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+                Stale
+              </span>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1127,7 +1168,7 @@ function LessonIntelligencePanel({
           </Button>
           <Button size="sm" onClick={onAnalyze} disabled={!enabled || loading || Boolean(actionBusy)}>
             <Sparkles size={14} />
-            <span>{actionBusy ? 'Analyzing...' : 'Analyze lesson'}</span>
+            <span>{actionBusy ? 'Analyzing...' : stale ? 'Re-analyze' : 'Analyze lesson'}</span>
           </Button>
         </div>
       </div>
@@ -1147,6 +1188,11 @@ function LessonIntelligencePanel({
       {error && (
         <p className="mt-3 rounded-xl bg-[color:var(--feedback-danger-bg)] px-3 py-2 text-sm text-[color:var(--feedback-danger-fg)]">
           {error}
+        </p>
+      )}
+      {notice && (
+        <p className="mt-3 rounded-xl bg-[color:var(--feedback-success-bg)] px-3 py-2 text-sm text-[color:var(--feedback-success-fg)]">
+          {notice}
         </p>
       )}
 
@@ -1196,8 +1242,11 @@ function LessonIntelligencePanel({
             </Button>
           </div>
 
-          {(lessonIntelligenceInputWasCompacted(report) || (Array.isArray(report.limitations) && report.limitations.length > 0)) && (
+          {(stale || lessonIntelligenceInputWasCompacted(report) || (Array.isArray(report.limitations) && report.limitations.length > 0)) && (
             <div className="rounded-xl bg-[color:var(--surface-muted)] p-3 text-sm text-[var(--text-secondary)]">
+              {stale && (
+                <p className="font-semibold text-[color:var(--status-warning-fg)]">This analysis is out of date for the current transcript.</p>
+              )}
               {lessonIntelligenceInputWasCompacted(report) && (
                 <p>Large lesson text was summarized before analysis.</p>
               )}
@@ -1221,11 +1270,22 @@ function LessonIntelligencePanel({
             title="Expanded narration suggestions"
             items={report.expanded_narration_suggestions}
             emptyText="No expanded narration suggestions in the latest report."
+            renderActions={(item) => (
+              <>
+                <Button size="sm" variant="secondary" onClick={() => onCopySuggestion?.(item)} disabled={Boolean(actionBusy)}>
+                  <Copy size={14} />
+                  <span>Copy</span>
+                </Button>
+                <Button size="sm" onClick={() => onApplyNarrationSuggestion?.(item)} disabled={Boolean(actionBusy)}>
+                  <Sparkles size={14} />
+                  <span>Apply to page draft</span>
+                </Button>
+              </>
+            )}
           />
 
-          {Array.isArray(report.suggested_tags) && report.suggested_tags.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Suggested tags</p>
+          {(Array.isArray(report.suggested_tags) && report.suggested_tags.length > 0) && (
+            <CollapsibleIntelligenceSection title="Suggested tags" count={report.suggested_tags.length}>
               <div className="flex flex-wrap gap-2">
                 {report.suggested_tags.map((tag, index) => {
                   const tagLabel = textValue(tag);
@@ -1236,7 +1296,7 @@ function LessonIntelligencePanel({
                   );
                 })}
               </div>
-            </div>
+            </CollapsibleIntelligenceSection>
           )}
         </div>
       )}
@@ -1290,6 +1350,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [lessonIntelligenceActionBusy, setLessonIntelligenceActionBusy] = useState('');
   const [lessonIntelligenceError, setLessonIntelligenceError] = useState('');
   const [lessonIntelligenceCopied, setLessonIntelligenceCopied] = useState(false);
+  const [lessonIntelligenceNotice, setLessonIntelligenceNotice] = useState('');
+  const lessonIntelligenceAutoRunKeysRef = useRef(new Set());
   const [sceneActionBusy, setSceneActionBusy] = useState('');
   const [sceneActionMessage, setSceneActionMessage] = useState('');
   const [sceneActionError, setSceneActionError] = useState('');
@@ -1647,11 +1709,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     if (!selectedLesson?.id) {
       setLessonIntelligenceError('');
       setLessonIntelligenceCopied(false);
+      setLessonIntelligenceNotice('');
       return;
     }
 
     setLessonIntelligenceError('');
     setLessonIntelligenceCopied(false);
+    setLessonIntelligenceNotice('');
     refreshLessonIntelligence(selectedLesson.id);
   }, [refreshLessonIntelligence, selectedLesson?.id]);
 
@@ -2159,23 +2223,26 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   };
 
-  const handleAnalyzeLessonIntelligence = async (project) => {
-    if (!project?.id || lessonIntelligenceActionBusy) return;
+  const handleAnalyzeLessonIntelligence = useCallback(async (project, { auto = false } = {}) => {
+    if (!project?.id || lessonIntelligenceActionBusy) return null;
     setLessonIntelligenceActionBusy('analyze');
     setLessonIntelligenceError('');
     setLessonIntelligenceCopied(false);
+    setLessonIntelligenceNotice('');
     try {
-      const payload = await analyzeProjectLessonIntelligence(project.id);
+      const payload = await analyzeProjectLessonIntelligence(project.id, { force: !auto });
       setLessonIntelligenceByProject((previous) => ({
         ...previous,
         [project.id]: payload,
       }));
+      return payload;
     } catch (err) {
       setLessonIntelligenceError(err.message || 'Lesson analysis failed.');
+      return null;
     } finally {
       setLessonIntelligenceActionBusy('');
     }
-  };
+  }, [lessonIntelligenceActionBusy]);
 
   const handleCopyLessonIntelligence = async () => {
     const text = lessonIntelligenceCopyText(selectedLessonIntelligence);
@@ -2188,6 +2255,66 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       setLessonIntelligenceError('Could not copy suggestions.');
     }
   };
+
+  const handleCopyLessonIntelligenceItem = async (item) => {
+    const meta = lessonIntelligenceItemMeta(item);
+    const text = lessonIntelligenceItemText(item);
+    const copyText = [meta, text].filter(Boolean).join(': ');
+    if (!copyText) return;
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setLessonIntelligenceNotice('Suggestion copied.');
+      window.setTimeout(() => setLessonIntelligenceNotice(''), 1600);
+    } catch {
+      setLessonIntelligenceError('Could not copy this suggestion.');
+    }
+  };
+
+  const handleApplyLessonNarrationSuggestion = (item) => {
+    const apply = transcriptEditorRef.current?.applyNarrationSuggestion;
+    if (!apply) {
+      setLessonIntelligenceError('Transcript editor is not ready yet.');
+      return;
+    }
+    const result = apply(item);
+    if (!result?.ok) {
+      if (!result?.cancelled) {
+        setLessonIntelligenceError(result?.message || 'Could not apply this suggestion.');
+      }
+      return;
+    }
+    setLessonIntelligenceError('');
+    setLessonIntelligenceNotice('Suggestion applied to draft. Save changes to update the lesson transcript.');
+  };
+
+  useEffect(() => {
+    if (!selectedLesson?.id || loadingLessonIntelligence || lessonIntelligenceActionBusy) return;
+    const hasFetchedReport = Object.prototype.hasOwnProperty.call(lessonIntelligenceByProject, selectedLesson.id);
+    if (!hasFetchedReport) return;
+
+    const report = selectedLessonIntelligence || null;
+    if (report?.enabled === false || report?.status === 'disabled' || report?.status === 'failed') return;
+    if (transcriptEditorRef.current?.hasUnsavedChanges?.()) return;
+
+    const status = String(report?.status || '').toLowerCase();
+    const missingReport = !report?.id || status === 'empty';
+    const staleReport = lessonIntelligenceIsStale(report);
+    if (!missingReport && !(staleReport && activeEditorPanel === 'intelligence')) return;
+
+    const sourceKey = report?.current_source_hash || report?.report_source_hash || report?.source_hash || 'empty';
+    const autoRunKey = `${selectedLesson.id}:${sourceKey}:${missingReport ? 'missing' : 'stale'}`;
+    if (lessonIntelligenceAutoRunKeysRef.current.has(autoRunKey)) return;
+    lessonIntelligenceAutoRunKeysRef.current.add(autoRunKey);
+    handleAnalyzeLessonIntelligence(selectedLesson, { auto: true });
+  }, [
+    activeEditorPanel,
+    handleAnalyzeLessonIntelligence,
+    lessonIntelligenceActionBusy,
+    lessonIntelligenceByProject,
+    loadingLessonIntelligence,
+    selectedLesson,
+    selectedLessonIntelligence,
+  ]);
 
   const handlePublishToggle = async (project, nextPublished) => {
     const moderation = moderationByProject[project.id] || null;
@@ -2724,6 +2851,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setGlobalEditorError('');
 
     try {
+      const hadTranscriptChanges = Boolean(transcriptEditorRef.current?.hasUnsavedChanges?.());
       const ttsResult = await ttsSettingsRef.current?.save?.();
       if (ttsResult?.id) {
         handleProjectUpdated(ttsResult);
@@ -2733,13 +2861,38 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       applyProjectModerationPayload(transcriptResult, 'not_scanned');
       saveLessonNotes();
       await refreshSelectedLessonState(selectedLesson.id, { showLoading: false });
+      if (hadTranscriptChanges) {
+        if (activeEditorPanel === 'intelligence') {
+          await handleAnalyzeLessonIntelligence(selectedLesson, { auto: true });
+        } else {
+          setLessonIntelligenceByProject((previous) => {
+            const current = previous[selectedLesson.id];
+            if (!current) return previous;
+            return {
+              ...previous,
+              [selectedLesson.id]: {
+                ...current,
+                is_stale: true,
+              },
+            };
+          });
+        }
+      }
       setGlobalEditorMessage(triggerRerender ? 'Saved all changes and queued rerender.' : 'Saved all changes.');
     } catch (err) {
       setGlobalEditorError(err.message || 'Could not save all editor changes.');
     } finally {
       setGlobalEditorActionBusy('');
     }
-  }, [applyProjectModerationPayload, handleProjectUpdated, refreshSelectedLessonState, saveLessonNotes, selectedLesson?.id]);
+  }, [
+    activeEditorPanel,
+    applyProjectModerationPayload,
+    handleAnalyzeLessonIntelligence,
+    handleProjectUpdated,
+    refreshSelectedLessonState,
+    saveLessonNotes,
+    selectedLesson,
+  ]);
 
   const handleDiscardDraft = useCallback(async () => {
     if (!selectedLesson?.id || globalEditorActionBusy) return;
@@ -4201,9 +4354,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         error={lessonIntelligenceError}
                         actionBusy={lessonIntelligenceActionBusy}
                         copied={lessonIntelligenceCopied}
+                        notice={lessonIntelligenceNotice}
                         onRefresh={() => selectedLesson && refreshLessonIntelligence(selectedLesson.id)}
                         onAnalyze={() => handleAnalyzeLessonIntelligence(selectedLesson)}
                         onCopy={handleCopyLessonIntelligence}
+                        onCopySuggestion={handleCopyLessonIntelligenceItem}
+                        onApplyNarrationSuggestion={handleApplyLessonNarrationSuggestion}
                       />
                     ) : (
                       <div className="rounded-2xl token-surface p-4">

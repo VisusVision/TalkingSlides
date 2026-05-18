@@ -233,6 +233,34 @@ def test_get_returns_latest_report():
     assert latest.status_code == 200
     assert latest.data["id"] == second.data["id"]
     assert latest.data["source_hash"] == second.data["source_hash"]
+    assert latest.data["report_source_hash"] == second.data["source_hash"]
+    assert latest.data["current_source_hash"] == second.data["source_hash"]
+    assert latest.data["is_stale"] is False
+
+    page.narration_text = _lesson_text() + " Finally, learners compare three learning-rate scenarios."
+    page.save(update_fields=["narration_text", "updated_at"])
+    stale = _client(owner).get(_latest_url(project))
+
+    assert stale.status_code == 200
+    assert stale.data["id"] == second.data["id"]
+    assert stale.data["report_source_hash"] == second.data["source_hash"]
+    assert stale.data["current_source_hash"] != second.data["source_hash"]
+    assert stale.data["is_stale"] is True
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_get_without_report_exposes_current_hash_and_stale():
+    owner = _make_user("li_empty_report_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+
+    latest = _client(owner).get(_latest_url(project))
+
+    assert latest.status_code == 200
+    assert latest.data["status"] == "empty"
+    assert latest.data["report_source_hash"] == ""
+    assert latest.data["current_source_hash"]
+    assert latest.data["is_stale"] is True
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
