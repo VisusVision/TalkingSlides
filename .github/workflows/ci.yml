@@ -28,6 +28,11 @@ jobs:
           pip install -r services/api/requirements.txt -r requirements-test.txt
           pip install pip-audit
 
+      - name: Install media tooling (ffprobe)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Migration check
         working-directory: services/api
         env:
@@ -62,7 +67,7 @@ jobs:
 
       - name: Frontend tests
         working-directory: services/frontend
-        run: npm run test:ci
+        run: npm run test -- --run
 
       - name: Frontend build
         working-directory: services/frontend
