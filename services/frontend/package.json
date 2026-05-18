@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node -e \"console.log('No frontend unit tests configured yet.')\""
+    "test": "node -e \"console.log('No frontend unit tests configured yet.')\"",
+    "e2e": "echo \"No e2e tests configured yet\""
   },
   "dependencies": {
     "hls.js": "^1.5.18",

@@ -13,6 +13,9 @@ develop-eggs/
 dist/
 eggs/
 lib/
+!services/frontend/src/lib/
+services/frontend/src/lib/*
+!services/frontend/src/lib/watch.js
 lib64/
 parts/
 sdist/
