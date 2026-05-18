@@ -106,6 +106,16 @@ def validate_production_settings(
         raise ImproperlyConfigured("Invalid production settings: " + " ".join(errors))
 
 
+def validate_observability_settings(*, slow_query_threshold_ms: int | None = None) -> None:
+    resolved_threshold = (
+        SLOW_QUERY_LOG_THRESHOLD_MS
+        if slow_query_threshold_ms is None
+        else int(slow_query_threshold_ms)
+    )
+    if resolved_threshold < 50:
+        raise ImproperlyConfigured("SLOW_QUERY_LOG_THRESHOLD_MS must be >= 50.")
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -146,6 +156,7 @@ MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
+    "core.middleware.RequestObservabilityMiddleware",
     "core.middleware.PlaybackSecurityHeadersMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -238,6 +249,13 @@ CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", REDIS_URL)
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", REDIS_URL)
 CELERY_RENDER_QUEUE = os.environ.get("CELERY_RENDER_QUEUE", "render")
 CELERY_AVATAR_QUEUE = os.environ.get("CELERY_AVATAR_QUEUE", "avatar")
+
+# ---------------------------------------------------------------------------
+# Observability
+# ---------------------------------------------------------------------------
+REQUEST_LOG_LEVEL = os.environ.get("REQUEST_LOG_LEVEL", "INFO").strip().upper()
+SLOW_QUERY_LOG_LEVEL = os.environ.get("SLOW_QUERY_LOG_LEVEL", "WARNING").strip().upper()
+SLOW_QUERY_LOG_THRESHOLD_MS = int(os.environ.get("SLOW_QUERY_LOG_THRESHOLD_MS", "750"))
 
 # ---------------------------------------------------------------------------
 # Password validation
@@ -405,6 +423,50 @@ validate_production_settings(
     cors_allowed_origins=CORS_ALLOWED_ORIGINS,
     cors_allow_all_origins=CORS_ALLOW_ALL_ORIGINS,
 )
+validate_observability_settings(slow_query_threshold_ms=SLOW_QUERY_LOG_THRESHOLD_MS)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "filters": {
+        "request_context": {
+            "()": "core.log_context.RequestContextLogFilter",
+        },
+        "slow_query_threshold": {
+            "()": "core.log_context.SlowQueryLogFilter",
+            "threshold_ms": SLOW_QUERY_LOG_THRESHOLD_MS,
+        },
+    },
+    "formatters": {
+        "standard": {
+            "format": "%(asctime)s %(levelname)s %(name)s request_id=%(request_id)s trace_id=%(trace_id)s %(message)s",
+        }
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "filters": ["request_context"],
+            "formatter": "standard",
+        },
+        "slow_query_console": {
+            "class": "logging.StreamHandler",
+            "filters": ["request_context", "slow_query_threshold"],
+            "formatter": "standard",
+        },
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["console"],
+            "level": REQUEST_LOG_LEVEL,
+            "propagate": False,
+        },
+        "django.db.backends": {
+            "handlers": ["slow_query_console"],
+            "level": SLOW_QUERY_LOG_LEVEL,
+            "propagate": False,
+        },
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Misc
