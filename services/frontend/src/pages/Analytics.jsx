@@ -415,16 +415,42 @@ function ProviderLabel({ report }) {
   );
 }
 
-function RiskBadge({ level }) {
+function IntelligenceLanguageLabel({ report }) {
+  if (!report || report.status === 'empty') return null;
+  const language = String(report.output_language || report.metadata?.output_language || '').toLowerCase();
+  const detected = String(report.detected_language || report.metadata?.detected_language || '').toLowerCase();
+  const label = language === 'tr'
+    ? 'Turkish analysis'
+    : language === 'en'
+      ? 'English analysis'
+      : detected === 'unknown'
+        ? 'Language uncertain'
+        : 'Language auto';
+  return (
+    <span className="inline-flex items-center rounded-full bg-[color:var(--surface-muted)]/45 px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+      {label}
+    </span>
+  );
+}
+
+function analyticsInputWasCompacted(report) {
+  return Boolean(report?.metadata?.input_truncated || report?.metadata?.compaction?.input_truncated);
+}
+
+function RiskBadge({ level, outputLanguage = 'en' }) {
   const normalized = String(level || '').toLowerCase();
+  const normalizedLanguage = String(outputLanguage || '').toLowerCase();
   const className = normalized === 'high'
     ? 'bg-rose-400/15 text-rose-300'
     : normalized === 'low'
       ? 'bg-emerald-400/15 text-emerald-300'
       : 'bg-amber-400/15 text-amber-300';
+  const label = normalizedLanguage === 'tr'
+    ? { high: 'Yüksek risk', medium: 'Orta risk', low: 'Düşük risk' }[normalized] || 'Risk bekleniyor'
+    : normalized ? `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} risk` : 'Risk pending';
   return (
     <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${className}`}>
-      {normalized ? `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)} risk` : 'Risk pending'}
+      {label}
     </span>
   );
 }
@@ -1209,6 +1235,7 @@ export default function Analytics({ user }) {
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">Smart Insights</p>
                 <ProviderLabel report={intelligenceReport} />
+                <IntelligenceLanguageLabel report={intelligenceReport} />
               </div>
               <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--text-secondary)]">
                 Suggestions are advisory. They do not change your lessons until you edit them.
@@ -1263,7 +1290,10 @@ export default function Analytics({ user }) {
               <div className="flex items-center justify-between gap-5 rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
                 <div>
                   <p className="label-sm">Health</p>
-                  <RiskBadge level={intelligenceReport.risk_level} />
+                  <RiskBadge
+                    level={intelligenceReport.risk_level}
+                    outputLanguage={intelligenceReport.output_language}
+                  />
                   <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">
                     Based on aggregate creator analytics for the selected range.
                   </p>
@@ -1302,6 +1332,11 @@ export default function Analytics({ user }) {
             {Array.isArray(intelligenceReport.limitations) && intelligenceReport.limitations.length > 0 && (
               <div className="rounded-2xl bg-[color:var(--surface-muted)]/20 p-4">
                 <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Limitations</p>
+                {analyticsInputWasCompacted(intelligenceReport) && (
+                  <p className="mt-2 text-xs leading-relaxed text-[var(--text-secondary)]">
+                    Large analytics dataset summarized before analysis.
+                  </p>
+                )}
                 <ul className="mt-2 space-y-1 text-xs leading-relaxed text-[var(--text-secondary)]">
                   {intelligenceReport.limitations.slice(0, 4).map((item, index) => (
                     <li key={`analytics-limitation-${index}`}>{String(item)}</li>

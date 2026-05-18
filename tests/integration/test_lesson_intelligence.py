@@ -73,6 +73,15 @@ def _lesson_text() -> str:
     )
 
 
+def _turkish_lesson_text() -> str:
+    return (
+        "Giriş: Bu ders veri analizi konusunu sade bir şekilde anlatır. "
+        "Öğrenci, temel kavramları ve neden önemli olduklarını öğrenir. "
+        "Konu boyunca açıklık, yapı ve anlatım akışı üzerinde durulur. "
+        "Sonuç: Ders sonunda ana fikirler özetlenir ve sonraki adım önerilir."
+    )
+
+
 def _analyze_url(project: Project) -> str:
     return f"/api/v1/projects/{project.id}/intelligence/analyze/"
 
@@ -316,3 +325,125 @@ def test_paid_provider_disabled_unless_external_allowed():
             PaidLessonIntelligenceProvider("openai").analyze_lesson({})
 
     assert LessonIntelligenceReport.objects.filter(project=project, provider="heuristic").exists()
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_turkish_transcript_returns_turkish_user_facing_output():
+    owner = _make_user("li_tr_owner")
+    project = _make_project(owner, title="Veri Analizi Dersi")
+    _add_page(project, order=0, key="p1", original=_turkish_lesson_text())
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["status"] == "done"
+    assert response.data["detected_language"] == "tr"
+    assert response.data["output_language"] == "tr"
+    assert "Bu ders" in response.data["summary"]
+    serialized = json.dumps(response.data, ensure_ascii=False)
+    assert "Belirgin örnek" in serialized or "Öneriler" in serialized or "danışma amaçlıdır" in serialized
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_turkish_complexity_display_label_is_localized():
+    owner = _make_user("li_tr_label_owner")
+    project = _make_project(owner, title="Algoritma Dersi")
+    _add_page(
+        project,
+        order=0,
+        key="p1",
+        original="Bu ders algoritma, veri yapısı, optimizasyon ve model doğrulama konularını anlatır.",
+    )
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["complexity"]["level"] in {"beginner", "intermediate", "advanced"}
+    assert response.data["complexity"]["display_label"] in {"başlangıç", "orta", "ileri"}
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_english_transcript_remains_english():
+    owner = _make_user("li_en_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["output_language"] == "en"
+    assert response.data["summary"].startswith("Gradient Descent Basics: This lesson covers")
+    assert response.data["complexity"]["display_label"] in {"beginner", "intermediate", "advanced"}
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_output_language_override_can_force_english_for_turkish_input():
+    owner = _make_user("li_tr_force_en_owner")
+    project = _make_project(owner, title="Türkçe Ders")
+    _add_page(project, order=0, key="p1", original=_turkish_lesson_text())
+
+    response = _client(owner).post(_analyze_url(project), {"output_language": "en"}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["detected_language"] == "tr"
+    assert response.data["output_language"] == "en"
+    assert "This lesson covers" in response.data["summary"]
+    assert response.data["complexity"]["display_label"] in {"beginner", "intermediate", "advanced"}
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic",
+    LESSON_INTELLIGENCE_MAX_INPUT_CHARS=900,
+)
+def test_long_lesson_does_not_fail_and_reports_truncation_limitation():
+    owner = _make_user("li_long_owner")
+    project = _make_project(owner, title="Long Systems Lesson")
+    long_text = (
+        "Introduction: this lesson explains architecture, database design, validation, optimization, and examples. "
+        * 45
+    )
+    for index in range(8):
+        _add_page(project, order=index, key=f"p{index}", original=long_text)
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["status"] == "done"
+    assert response.data["metadata"]["input_truncated"] is True
+    assert any("shortened" in str(item).lower() for item in response.data["limitations"])
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://127.0.0.1:9",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=0.5,
+)
+def test_ollama_fallback_preserves_turkish_output_language():
+    owner = _make_user("li_tr_ollama_owner")
+    project = _make_project(owner, title="Türkçe Fallback Dersi")
+    _add_page(project, order=0, key="p1", original=_turkish_lesson_text())
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "heuristic"
+    assert response.data["fallback_used"] is True
+    assert response.data["output_language"] == "tr"
+    assert "Bu ders" in response.data["summary"]
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_lesson_language_json_keys_remain_stable():
+    owner = _make_user("li_json_keys_owner")
+    project = _make_project(owner, title="Türkçe Anahtar Testi")
+    _add_page(project, order=0, key="p1", original=_turkish_lesson_text())
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert {"level", "display_label", "score", "reasons"}.issubset(response.data["complexity"].keys())
+    assert "clarity_warnings" in response.data
+    assert "page_suggestions" in response.data
+    assert "expanded_narration_suggestions" in response.data

@@ -6060,7 +6060,16 @@ class ProjectLessonIntelligenceView(APIView):
             )
 
         try:
-            lesson_input = build_lesson_intelligence_input(project)
+            requested_output_language = (
+                request.data.get("output_language")
+                or request.query_params.get("output_language")
+                or "auto"
+            )
+            lesson_input = build_lesson_intelligence_input(
+                project,
+                output_language=requested_output_language,
+                request_language=request.headers.get("Accept-Language", ""),
+            )
         except LessonIntelligenceInputTooLarge as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except LessonIntelligenceInputError as exc:
@@ -9177,7 +9186,13 @@ class CreatorAnalyticsIntelligenceView(APIView):
 
         try:
             analytics_payload = self._creator_payload(request)
-            analytics_input = build_analytics_intelligence_input(request.user, analytics_payload, scope="creator")
+            analytics_input = build_analytics_intelligence_input(
+                request.user,
+                analytics_payload,
+                scope="creator",
+                output_language=request.query_params.get("output_language") or "auto",
+                request_language=request.headers.get("Accept-Language", ""),
+            )
         except (AnalyticsIntelligenceInputTooLarge, AnalyticsIntelligenceInputError):
             latest = (
                 AnalyticsIntelligenceReport.objects.filter(requested_by=request.user, scope="creator")
@@ -9212,7 +9227,18 @@ class CreatorAnalyticsIntelligenceView(APIView):
 
         analytics_payload = self._creator_payload(request)
         try:
-            analytics_input = build_analytics_intelligence_input(request.user, analytics_payload, scope="creator")
+            requested_output_language = (
+                request.data.get("output_language")
+                or request.query_params.get("output_language")
+                or "auto"
+            )
+            analytics_input = build_analytics_intelligence_input(
+                request.user,
+                analytics_payload,
+                scope="creator",
+                output_language=requested_output_language,
+                request_language=request.headers.get("Accept-Language", ""),
+            )
         except AnalyticsIntelligenceInputTooLarge as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except AnalyticsIntelligenceInputError as exc:

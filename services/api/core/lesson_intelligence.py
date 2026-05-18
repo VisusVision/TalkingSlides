@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 from django.conf import settings
 
 from core.drafts import get_studio_transcript_pages
+from core.intelligence_language import detect_lesson_language, resolve_output_language
 from core.models import LessonIntelligenceReport, Project
 
 
@@ -87,7 +88,7 @@ STOPWORDS = {
 }
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
 WHITESPACE_RE = re.compile(r"\s+")
-WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+-]*")
+WORD_RE = re.compile(r"[A-Za-zÇĞİÖŞÜçğıöşü][A-Za-zÇĞİÖŞÜçğıöşü0-9_+-]*")
 
 
 class LessonIntelligenceProviderUnavailable(RuntimeError):
@@ -114,17 +115,26 @@ class LessonPageInput:
     def analysis_text(self) -> str:
         return self.narration_text.strip() or self.original_text.strip()
 
-    def to_payload(self, index: int) -> dict[str, Any]:
-        text = self.analysis_text
+    def to_payload(self, index: int, *, max_text_chars: int = -1) -> dict[str, Any]:
+        original_full = self.original_text
+        narration_full = self.narration_text
+        original_text = _clean_text(original_full, max_chars=max_text_chars)
+        narration_text = _clean_text(narration_full, max_chars=max_text_chars)
+        text = narration_text.strip() or original_text.strip()
+        full_text = self.analysis_text
         return {
             "id": self.id,
             "order": self.order,
             "page_number": index + 1,
             "page_key": self.page_key,
-            "display_text": self.original_text,
-            "narration_text": self.narration_text,
+            "display_text": original_text,
+            "narration_text": narration_text,
             "analysis_text": text,
-            "word_count": len(_words(text)),
+            "word_count": len(_words(full_text)),
+            "text_truncated": bool(
+                max_text_chars >= 0
+                and (len(original_full) > max_text_chars or len(narration_full) > max_text_chars)
+            ),
         }
 
 
@@ -136,19 +146,31 @@ class LessonIntelligenceInput:
     pages: list[LessonPageInput]
     source_hash: str
     input_chars: int
+    detected_language: str = "unknown"
+    output_language: str = "en"
+    language_confidence: float = 0.0
+    input_truncated: bool = False
+    source_chars: int = 0
+    page_text_limit: int = -1
 
     def to_provider_payload(self) -> dict[str, Any]:
-        pages = [page.to_payload(index) for index, page in enumerate(self.pages)]
-        input_text = _compose_input_text(self.title, self.description, pages)
+        pages = [page.to_payload(index, max_text_chars=self.page_text_limit) for index, page in enumerate(self.pages)]
+        description = _clean_text(self.description, max_chars=1200) if self.input_truncated else self.description
+        input_text = _compose_input_text(self.title, description, pages)
         return {
             "project": {
                 "id": self.project_id,
                 "title": self.title,
-                "description": self.description,
+                "description": description,
             },
             "pages": pages,
             "source_hash": self.source_hash,
             "input_chars": self.input_chars,
+            "source_chars": self.source_chars or self.input_chars,
+            "input_truncated": self.input_truncated,
+            "detected_language": self.detected_language,
+            "output_language": self.output_language,
+            "language_confidence": self.language_confidence,
             "input_text": input_text,
         }
 
@@ -164,6 +186,7 @@ class HeuristicLessonIntelligenceProvider:
     provider_name = "heuristic"
 
     def analyze_lesson(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+        output_language = _output_language(input_payload)
         pages = [page for page in input_payload.get("pages", []) if isinstance(page, dict)]
         all_text = _clean_text(input_payload.get("input_text"), max_chars=-1)
         sentences = _sentences(all_text)
@@ -185,7 +208,7 @@ class HeuristicLessonIntelligenceProvider:
                 {
                     "type": "long_sentences",
                     "severity": "medium",
-                    "message": f"Average sentence length is {avg_sentence_words:.0f} words; shorter narration sentences may improve clarity.",
+                    "message": _lesson_message(output_language, "long_sentences", value=avg_sentence_words),
                 }
             )
         if max_page_words > 95:
@@ -193,7 +216,7 @@ class HeuristicLessonIntelligenceProvider:
                 {
                     "type": "dense_slide",
                     "severity": "medium",
-                    "message": "At least one slide/page has a high word count; reduce on-slide density or split the idea.",
+                    "message": _lesson_message(output_language, "dense_slide"),
                 }
             )
         empty_pages = [page for page in pages if not _page_text(page)]
@@ -202,7 +225,7 @@ class HeuristicLessonIntelligenceProvider:
                 {
                     "type": "empty_pages",
                     "severity": "medium",
-                    "message": "Multiple slides/pages have no transcript or narration text.",
+                    "message": _lesson_message(output_language, "empty_pages"),
                 }
             )
         if not example_present:
@@ -210,7 +233,7 @@ class HeuristicLessonIntelligenceProvider:
                 {
                     "type": "missing_examples",
                     "severity": "low",
-                    "message": "No clear example or case-study language was detected.",
+                    "message": _lesson_message(output_language, "missing_examples"),
                 }
             )
         if not intro_present:
@@ -218,7 +241,7 @@ class HeuristicLessonIntelligenceProvider:
                 {
                     "type": "missing_intro",
                     "severity": "low",
-                    "message": "The opening does not clearly introduce goals or what the learner will learn.",
+                    "message": _lesson_message(output_language, "missing_intro"),
                 }
             )
         if not conclusion_present and len(pages) >= 2:
@@ -226,7 +249,7 @@ class HeuristicLessonIntelligenceProvider:
                 {
                     "type": "missing_conclusion",
                     "severity": "low",
-                    "message": "The ending does not clearly recap the lesson or provide next steps.",
+                    "message": _lesson_message(output_language, "missing_conclusion"),
                 }
             )
 
@@ -246,7 +269,7 @@ class HeuristicLessonIntelligenceProvider:
                     _page_suggestion(
                         page_number,
                         page_key,
-                        "Add a short narration note so this slide has learning context.",
+                        _lesson_message(output_language, "empty_page_suggestion"),
                         "empty_page",
                     )
                 )
@@ -257,7 +280,7 @@ class HeuristicLessonIntelligenceProvider:
                     _page_suggestion(
                         page_number,
                         page_key,
-                        "Split this page or move detail into narration to reduce visual density.",
+                        _lesson_message(output_language, "reduce_density_suggestion"),
                         "reduce_density",
                     )
                 )
@@ -269,14 +292,14 @@ class HeuristicLessonIntelligenceProvider:
                         "severity": "low",
                         "page_number": page_number,
                         "page_key": page_key,
-                        "message": "Bullet-heavy slide text may need more explanatory narration.",
+                        "message": _lesson_message(output_language, "bullets_without_explanation"),
                     }
                 )
                 page_suggestions.append(
                     _page_suggestion(
                         page_number,
                         page_key,
-                        "Add explanatory narration between bullet points so learners hear the reasoning, not just the list.",
+                        _lesson_message(output_language, "explain_bullets_suggestion"),
                         "explain_bullets",
                     )
                 )
@@ -284,7 +307,7 @@ class HeuristicLessonIntelligenceProvider:
                     _expanded_suggestion(
                         page_number,
                         page_key,
-                        "Introduce the point, explain why each bullet matters, and close with how the bullets connect to the next slide.",
+                        _lesson_message(output_language, "bullet_expansion"),
                         "bullet_expansion",
                     )
                 )
@@ -294,7 +317,7 @@ class HeuristicLessonIntelligenceProvider:
                     _expanded_suggestion(
                         page_number,
                         page_key,
-                        "Add a 2-3 sentence narration that defines the key idea, gives one concrete example, and transitions to the next concept.",
+                        _lesson_message(output_language, "short_narration"),
                         "short_narration",
                     )
                 )
@@ -304,9 +327,19 @@ class HeuristicLessonIntelligenceProvider:
             technical_hits=technical_hits,
             max_page_words=max_page_words,
             words=words,
+            output_language=output_language,
         )
 
-        summary = _summary_from_text(input_payload.get("project", {}).get("title"), all_text)
+        summary = _summary_from_text(input_payload.get("project", {}).get("title"), all_text, output_language=output_language)
+        limitations = [
+            _lesson_message(output_language, "heuristic_limitation"),
+            _lesson_message(output_language, "advisory_limitation"),
+        ]
+        if input_payload.get("input_truncated"):
+            limitations.append(_lesson_message(output_language, "lesson_truncated_limitation"))
+        detected_language = str(input_payload.get("detected_language") or "unknown")
+        if detected_language == "unknown":
+            limitations.append(_lesson_message(output_language, "language_uncertain_limitation"))
         return {
             "provider": self.provider_name,
             "lesson_summary": summary,
@@ -318,13 +351,15 @@ class HeuristicLessonIntelligenceProvider:
             "page_suggestions": page_suggestions[:12],
             "expanded_narration_suggestions": expanded_suggestions[:12],
             "suggested_tags": _suggested_tags(all_text, technical_hits),
-            "limitations": [
-                "Heuristic analysis uses deterministic text signals and may miss domain nuance.",
-                "Suggestions are advisory and were not applied to the lesson.",
-            ],
+            "limitations": limitations,
             "metadata": {
                 "page_count": len(pages),
                 "input_char_count": int(input_payload.get("input_chars") or len(all_text)),
+                "source_char_count": int(input_payload.get("source_chars") or len(all_text)),
+                "input_truncated": bool(input_payload.get("input_truncated")),
+                "detected_language": detected_language,
+                "output_language": output_language,
+                "language_confidence": float(input_payload.get("language_confidence") or 0.0),
                 "average_sentence_words": round(avg_sentence_words, 2),
                 "technical_terms_detected": technical_hits,
             },
@@ -425,7 +460,13 @@ def get_lesson_intelligence_provider(provider_name: str) -> LessonIntelligencePr
     raise LessonIntelligenceProviderUnavailable(f"unknown lesson intelligence provider: {provider}")
 
 
-def build_lesson_intelligence_input(project: Project, *, max_chars: int | None = None) -> LessonIntelligenceInput:
+def build_lesson_intelligence_input(
+    project: Project,
+    *,
+    max_chars: int | None = None,
+    output_language: str = "auto",
+    request_language: str = "",
+) -> LessonIntelligenceInput:
     limit = int(max_chars if max_chars is not None else _int_setting("LESSON_INTELLIGENCE_MAX_INPUT_CHARS", 20000))
     title = _clean_text(getattr(project, "title", ""), max_chars=500)
     description = _clean_text(getattr(project, "description", ""), max_chars=4000)
@@ -447,8 +488,17 @@ def build_lesson_intelligence_input(project: Project, *, max_chars: int | None =
     if not any(page.analysis_text for page in pages):
         raise LessonIntelligenceInputError("Lesson transcript is empty.")
 
+    full_detection_text = _compose_input_text(title, description, [page.to_payload(index) for index, page in enumerate(pages)])
+    language = detect_lesson_language(full_detection_text)
+    detected_language = str(language.get("language") or "unknown")
+    resolved_output_language = resolve_output_language(
+        requested=output_language,
+        detected=detected_language,
+        request_language=request_language,
+    )
     source_payload = {
         "project": {"title": title, "description": description},
+        "output_language": resolved_output_language,
         "pages": [
             {
                 "order": page.order,
@@ -460,11 +510,8 @@ def build_lesson_intelligence_input(project: Project, *, max_chars: int | None =
         ],
     }
     source_json = json.dumps(source_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    input_chars = len(_compose_input_text(title, description, [page.to_payload(index) for index, page in enumerate(pages)]))
-    if input_chars > limit:
-        raise LessonIntelligenceInputTooLarge(
-            f"Lesson text is too large for synchronous analysis ({input_chars} chars, limit {limit})."
-        )
+    source_chars = len(full_detection_text)
+    page_text_limit, input_chars, input_truncated = _lesson_compaction_for_limit(title, description, pages, limit)
 
     return LessonIntelligenceInput(
         project_id=int(project.id),
@@ -473,6 +520,12 @@ def build_lesson_intelligence_input(project: Project, *, max_chars: int | None =
         pages=pages,
         source_hash=hashlib.sha256(source_json.encode("utf-8", errors="ignore")).hexdigest(),
         input_chars=input_chars,
+        detected_language=detected_language,
+        output_language=resolved_output_language,
+        language_confidence=float(language.get("confidence") or 0.0),
+        input_truncated=input_truncated,
+        source_chars=source_chars,
+        page_text_limit=page_text_limit,
     )
 
 
@@ -514,6 +567,12 @@ def analyze_with_provider_chain(
             **dict(normalized.get("metadata") or {}),
             "provider_chain_attempts": attempts,
             "source_hash": lesson_input.source_hash,
+            "detected_language": lesson_input.detected_language,
+            "output_language": lesson_input.output_language,
+            "language_confidence": lesson_input.language_confidence,
+            "input_truncated": lesson_input.input_truncated,
+            "source_char_count": lesson_input.source_chars,
+            "input_char_count": lesson_input.input_chars,
         }
         return normalized
 
@@ -526,6 +585,12 @@ def analyze_with_provider_chain(
         **dict(fallback.get("metadata") or {}),
         "provider_chain_attempts": attempts,
         "source_hash": lesson_input.source_hash,
+        "detected_language": lesson_input.detected_language,
+        "output_language": lesson_input.output_language,
+        "language_confidence": lesson_input.language_confidence,
+        "input_truncated": lesson_input.input_truncated,
+        "source_char_count": lesson_input.source_chars,
+        "input_char_count": lesson_input.input_chars,
     }
     return fallback
 
@@ -585,15 +650,20 @@ def report_response_payload(report: LessonIntelligenceReport | None, *, enabled:
             "status": "empty" if enabled else "disabled",
             "provider": "",
             "fallback_used": False,
+            "detected_language": "unknown",
+            "output_language": "en",
+            "language_confidence": 0.0,
             "summary": "",
             "short_description": "",
-            "complexity": {"level": "", "score": 0, "reasons": []},
+            "complexity": {"level": "", "display_label": "", "score": 0, "reasons": []},
             "clarity_warnings": [],
             "page_suggestions": [],
             "expanded_narration_suggestions": [],
             "suggested_tags": [],
             "limitations": [],
         }
+    report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
+    output_language = str(report_metadata.get("output_language") or "en")
     return {
         "enabled": enabled,
         "id": report.id,
@@ -601,11 +671,15 @@ def report_response_payload(report: LessonIntelligenceReport | None, *, enabled:
         "provider": report.provider,
         "provider_chain": report.provider_chain if isinstance(report.provider_chain, list) else [],
         "fallback_used": bool(report.fallback_used),
+        "detected_language": str(report_metadata.get("detected_language") or "unknown"),
+        "output_language": output_language,
+        "language_confidence": float(report_metadata.get("language_confidence") or 0.0),
         "source_hash": report.source_hash,
         "summary": report.summary,
         "short_description": report.short_description,
         "complexity": {
             "level": report.complexity_level,
+            "display_label": _complexity_display_label(report.complexity_level, output_language),
             "score": int(report.complexity_score or 0),
             "reasons": report.complexity_reasons if isinstance(report.complexity_reasons, list) else [],
         },
@@ -621,7 +695,17 @@ def report_response_payload(report: LessonIntelligenceReport | None, *, enabled:
         "metadata": {
             key: value
             for key, value in (report.metadata if isinstance(report.metadata, dict) else {}).items()
-            if key in {"provider_chain_attempts", "page_count", "input_char_count", "average_sentence_words"}
+            if key in {
+                "provider_chain_attempts",
+                "page_count",
+                "input_char_count",
+                "source_char_count",
+                "average_sentence_words",
+                "detected_language",
+                "output_language",
+                "language_confidence",
+                "input_truncated",
+            }
         },
         "error_message": report.error_message,
         "created_at": report.created_at.isoformat() if report.created_at else "",
@@ -660,13 +744,22 @@ def _normalize_provider_result(raw: Any, *, provider_name: str) -> dict[str, Any
 
 
 def _ollama_prompt(input_payload: dict[str, Any]) -> str:
+    output_language = _output_language(input_payload)
     safe_payload = {
         "project": input_payload.get("project") or {},
         "pages": input_payload.get("pages") or [],
         "source_hash": input_payload.get("source_hash") or "",
+        "detected_language": input_payload.get("detected_language") or "unknown",
+        "output_language": output_language,
+        "input_truncated": bool(input_payload.get("input_truncated")),
     }
+    language_instruction = (
+        "Respond in Turkish. Keep JSON keys in English, but all user-facing text values in Turkish. "
+        if output_language == "tr"
+        else "Respond in English. "
+    )
     return (
-        "You are a lesson quality analyst for publisher Studio. Return JSON only. "
+        f"You are a lesson quality analyst for publisher Studio. Return JSON only. {language_instruction}"
         "Do not edit lesson text, do not trigger rendering, and do not suggest hidden actions. "
         "Focus on clarity, structure, narration quality, and learner comprehension.\n"
         "Required JSON shape: {"
@@ -707,12 +800,77 @@ def _json_object_from_text(text: str) -> dict[str, Any]:
     return data
 
 
+def _output_language(input_payload: dict[str, Any]) -> str:
+    language = str(input_payload.get("output_language") or "").strip().lower()
+    return language if language in {"tr", "en"} else "en"
+
+
+def _complexity_display_label(level: Any, output_language: str) -> str:
+    normalized = str(level or "").strip().lower()
+    labels = {
+        "tr": {
+            "beginner": "başlangıç",
+            "intermediate": "orta",
+            "advanced": "ileri",
+        },
+        "en": {
+            "beginner": "beginner",
+            "intermediate": "intermediate",
+            "advanced": "advanced",
+        },
+    }
+    return labels.get(output_language, labels["en"]).get(normalized, normalized)
+
+
+def _lesson_message(language: str, key: str, **kwargs: Any) -> str:
+    if language == "tr":
+        messages = {
+            "long_sentences": f"Ortalama cümle uzunluğu {float(kwargs.get('value') or 0):.0f} kelime; daha kısa anlatım cümleleri açıklığı artırabilir.",
+            "dense_slide": "En az bir slayt/sayfa çok yoğun metin içeriyor; görsel yoğunluğu azaltın veya fikri bölün.",
+            "empty_pages": "Birden fazla slayt/sayfada transkript veya anlatım metni yok.",
+            "missing_examples": "Belirgin örnek veya vaka anlatımı tespit edilmedi.",
+            "missing_intro": "Açılış, hedefleri veya öğrencinin ne öğreneceğini yeterince net tanıtmıyor.",
+            "missing_conclusion": "Kapanış, dersi özetlemiyor veya sonraki adımları net vermiyor.",
+            "empty_page_suggestion": "Bu slayta öğrenme bağlamı kazandırmak için kısa bir anlatım notu ekleyin.",
+            "reduce_density_suggestion": "Görsel yoğunluğu azaltmak için bu sayfayı bölün veya ayrıntıları anlatıma taşıyın.",
+            "bullets_without_explanation": "Madde ağırlıklı slayt metni daha açıklayıcı anlatım gerektirebilir.",
+            "explain_bullets_suggestion": "Öğrencinin yalnızca listeyi değil, gerekçeyi de duyması için maddeler arasına açıklayıcı anlatım ekleyin.",
+            "bullet_expansion": "Önce ana fikri tanıtın, her maddenin neden önemli olduğunu açıklayın ve sonraki slayta bağlantı kurarak kapatın.",
+            "short_narration": "Ana fikri tanımlayan, somut bir örnek veren ve sonraki kavrama geçiş yapan 2-3 cümlelik anlatım ekleyin.",
+            "heuristic_limitation": "Heuristik analiz deterministik metin sinyallerini kullanır ve alan nüanslarını kaçırabilir.",
+            "advisory_limitation": "Öneriler danışma amaçlıdır ve derse otomatik olarak uygulanmadı.",
+            "lesson_truncated_limitation": "Ders çok uzun olduğu için bazı metinler analiz öncesinde güvenli şekilde kısaltıldı.",
+            "language_uncertain_limitation": "Ders dili belirsiz olduğu için çıktı dili güvenli varsayımla seçildi.",
+        }
+        return messages.get(key, key)
+    messages = {
+        "long_sentences": f"Average sentence length is {float(kwargs.get('value') or 0):.0f} words; shorter narration sentences may improve clarity.",
+        "dense_slide": "At least one slide/page has a high word count; reduce on-slide density or split the idea.",
+        "empty_pages": "Multiple slides/pages have no transcript or narration text.",
+        "missing_examples": "No clear example or case-study language was detected.",
+        "missing_intro": "The opening does not clearly introduce goals or what the learner will learn.",
+        "missing_conclusion": "The ending does not clearly recap the lesson or provide next steps.",
+        "empty_page_suggestion": "Add a short narration note so this slide has learning context.",
+        "reduce_density_suggestion": "Split this page or move detail into narration to reduce visual density.",
+        "bullets_without_explanation": "Bullet-heavy slide text may need more explanatory narration.",
+        "explain_bullets_suggestion": "Add explanatory narration between bullet points so learners hear the reasoning, not just the list.",
+        "bullet_expansion": "Introduce the point, explain why each bullet matters, and close with how the bullets connect to the next slide.",
+        "short_narration": "Add a 2-3 sentence narration that defines the key idea, gives one concrete example, and transitions to the next concept.",
+        "heuristic_limitation": "Heuristic analysis uses deterministic text signals and may miss domain nuance.",
+        "advisory_limitation": "Suggestions are advisory and were not applied to the lesson.",
+        "lesson_truncated_limitation": "Some lesson text was safely shortened before analysis because the lesson is large.",
+        "language_uncertain_limitation": "Lesson language was uncertain, so the output language was chosen by fallback.",
+    }
+    return messages.get(key, key)
+
+
 def _complexity_assessment(
     *,
     avg_sentence_words: float,
     technical_hits: list[str],
     max_page_words: int,
     words: list[str],
+    output_language: str = "en",
 ) -> tuple[int, str, list[str]]:
     long_word_ratio = 0.0
     if words:
@@ -729,25 +887,47 @@ def _complexity_assessment(
         level = "intermediate"
     else:
         level = "advanced"
-    reasons = [
-        f"Average sentence length is {avg_sentence_words:.1f} words.",
-        f"Detected {len(technical_hits)} technical term signals.",
-    ]
+    if output_language == "tr":
+        reasons = [
+            f"Ortalama cümle uzunluğu {avg_sentence_words:.1f} kelime.",
+            f"{len(technical_hits)} teknik terim sinyali algılandı.",
+        ]
+    else:
+        reasons = [
+            f"Average sentence length is {avg_sentence_words:.1f} words.",
+            f"Detected {len(technical_hits)} technical term signals.",
+        ]
     if max_page_words > 95:
-        reasons.append(f"Densest page has {max_page_words} words.")
+        reasons.append(
+            f"En yoğun sayfada {max_page_words} kelime var."
+            if output_language == "tr"
+            else f"Densest page has {max_page_words} words."
+        )
     if long_word_ratio > 0.18:
-        reasons.append("Long-word density is elevated.")
+        reasons.append(
+            "Uzun kelime yoğunluğu yüksek."
+            if output_language == "tr"
+            else "Long-word density is elevated."
+        )
     return score, level, reasons
 
 
-def _summary_from_text(title: Any, text: str) -> str:
+def _summary_from_text(title: Any, text: str, *, output_language: str = "en") -> str:
     clean_title = _clean_text(title, max_chars=180)
     sentences = _sentences(text)
     body = " ".join(sentences[:2]).strip()
+    if output_language == "tr":
+        if clean_title and body:
+            return _truncate(f"{clean_title}: Bu ders {body}", 700)
+        if body:
+            return _truncate(f"Bu ders {body}", 700)
+        if clean_title:
+            return f"{clean_title}: Güvenilir bir özet için ders metninde daha fazla ayrıntı gerekiyor."
+        return "Güvenilir bir özet için ders metninde daha fazla ayrıntı gerekiyor."
     if clean_title and body:
-        return _truncate(f"{clean_title}: {body}", 700)
+        return _truncate(f"{clean_title}: This lesson covers {body}", 700)
     if body:
-        return _truncate(body, 700)
+        return _truncate(f"This lesson covers {body}", 700)
     if clean_title:
         return f"{clean_title}: lesson transcript needs more detail before a reliable summary can be generated."
     return "Lesson transcript needs more detail before a reliable summary can be generated."
@@ -829,20 +1009,39 @@ def _compose_input_text(title: str, description: str, pages: list[dict[str, Any]
     return "\n\n".join(chunks).strip()
 
 
+def _lesson_compaction_for_limit(
+    title: str,
+    description: str,
+    pages: list[LessonPageInput],
+    limit: int,
+) -> tuple[int, int, bool]:
+    source_pages = [page.to_payload(index) for index, page in enumerate(pages)]
+    source_chars = len(_compose_input_text(title, description, source_pages))
+    if source_chars <= max(1, limit):
+        return -1, source_chars, False
+
+    for page_limit in (1800, 1200, 800, 500, 280, 160, 80, 0):
+        compact_pages = [page.to_payload(index, max_text_chars=page_limit) for index, page in enumerate(pages)]
+        input_chars = len(_compose_input_text(title, _clean_text(description, max_chars=1200), compact_pages))
+        if input_chars <= max(1, limit) or page_limit == 0:
+            return page_limit, input_chars, True
+    return 0, source_chars, True
+
+
 def _has_example_signal(text: str) -> bool:
     lowered = text.lower()
-    return bool(re.search(r"\b(example|for instance|case study|scenario|e\.g\.|ornek|mesela)\b", lowered))
+    return bool(re.search(r"\b(example|for instance|case study|scenario|e\.g\.|ornek|örnek|mesela)\b", lowered))
 
 
 def _has_intro_signal(pages: list[dict[str, Any]], input_payload: dict[str, Any]) -> bool:
     text = " ".join([str(input_payload.get("project", {}).get("description") or ""), *[_page_text(page) for page in pages]])
     lowered = text.lower()
-    return bool(re.search(r"\b(introduction|overview|objective|goal|today we|we will|learn|giris|hedef|amac)\b", lowered))
+    return bool(re.search(r"\b(introduction|overview|objective|goal|today we|we will|learn|giris|giriş|hedef|amac|amaç)\b", lowered))
 
 
 def _has_conclusion_signal(pages: list[dict[str, Any]]) -> bool:
     lowered = " ".join(_page_text(page) for page in pages).lower()
-    return bool(re.search(r"\b(conclusion|summary|recap|next step|wrap up|finally|sonuc|ozet)\b", lowered))
+    return bool(re.search(r"\b(conclusion|summary|recap|next step|wrap up|finally|sonuc|sonuç|ozet|özet)\b", lowered))
 
 
 def _bullet_line_count(text: str) -> int:

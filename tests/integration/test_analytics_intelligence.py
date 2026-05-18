@@ -310,3 +310,79 @@ def test_no_raw_storage_paths_exposed():
     assert "storage_local" not in serialized
     assert "secret-cover" not in serialized
     assert "C:/private" not in serialized
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_turkish_analytics_output_language_returns_turkish_suggestions():
+    publisher = _make_user("ai_tr_owner")
+    viewer = _make_user("ai_tr_viewer", role="student")
+    category = Category.objects.create(name="Türkçe Kategori", slug="turkce-kategori")
+    lesson = _make_project(publisher, "Türkçe Analitik Dersi", category=category)
+    _progress(viewer, lesson, 24)
+
+    response = _client(publisher).post(_analyze_url(), {"output_language": "tr"}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["output_language"] == "tr"
+    assert "Bu aralıkta" in response.data["summary"] or "ders" in response.data["summary"].lower()
+    serialized = json.dumps(response.data, ensure_ascii=False)
+    assert "Öğrenciler" in serialized or "Ders ilerlemesini" in serialized or "görüntüleme" in serialized
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic",
+    ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS=1000,
+)
+def test_large_analytics_payload_does_not_return_400_due_to_size():
+    publisher = _make_user("ai_large_owner")
+    viewers = [_make_user(f"ai_large_viewer_{index}", role="student") for index in range(12)]
+    category = Category.objects.create(name="Large Dataset Category", slug="large-dataset-category")
+    for index in range(14):
+        lesson = _make_project(
+            publisher,
+            f"Large Analytics Lesson {index} with detailed title for compaction testing",
+            category=category,
+        )
+        _progress(viewers[index % len(viewers)], lesson, 20 + (index % 6) * 10)
+        if index % 2 == 0:
+            LessonLike.objects.create(user=viewers[index % len(viewers)], project=lesson)
+
+    response = _client(publisher).post(_analyze_url("range=90"), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["status"] == "done"
+    assert response.data["metadata"]["input_truncated"] is True
+    assert response.data["metadata"]["compaction"]["compact_char_count"] > 0
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic",
+    ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS=1000,
+)
+def test_large_analytics_payload_returns_limitation_note():
+    publisher = _make_user("ai_large_limitation_owner")
+    viewer = _make_user("ai_large_limitation_viewer", role="student")
+    for index in range(10):
+        lesson = _make_project(publisher, f"Large Limitation Lesson {index}")
+        _progress(viewer, lesson, 35)
+
+    response = _client(publisher).post(_analyze_url("range=90"), {}, format="json")
+
+    assert response.status_code == 200
+    limitations_text = _text(response.data["limitations"]).lower()
+    assert "large" in limitations_text or "omitted" in limitations_text
+    assert response.data["metadata"]["input_truncated"] is True
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_empty_analytics_localized_onboarding_for_turkish_request():
+    publisher = _make_user("ai_empty_tr_owner")
+
+    response = _client(publisher).post(_analyze_url(), {"output_language": "tr"}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["output_language"] == "tr"
+    assert "henüz" in response.data["summary"]
+    assert any("Yayın" in item["message"] or "yayın" in item["message"] for item in response.data["recommendations"])

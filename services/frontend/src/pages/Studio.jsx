@@ -1003,6 +1003,18 @@ function lessonIntelligenceProviderLabel(report) {
   return 'No analysis yet';
 }
 
+function lessonIntelligenceLanguageLabel(report) {
+  const language = String(report?.output_language || report?.metadata?.output_language || '').toLowerCase();
+  const detected = String(report?.detected_language || report?.metadata?.detected_language || '').toLowerCase();
+  if (language === 'tr') return 'Turkish analysis';
+  if (language === 'en') return detected === 'unknown' ? 'English analysis' : 'English analysis';
+  return 'Language uncertain';
+}
+
+function lessonIntelligenceInputWasCompacted(report) {
+  return Boolean(report?.metadata?.input_truncated);
+}
+
 function lessonIntelligenceItemText(item) {
   if (typeof item === 'string') return item;
   if (!item || typeof item !== 'object') return '';
@@ -1098,6 +1110,11 @@ function LessonIntelligencePanel({
             </span>
             {hasReport && (
               <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                {lessonIntelligenceLanguageLabel(report)}
+              </span>
+            )}
+            {hasReport && (
+              <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
                 Report #{report.id}
               </span>
             )}
@@ -1162,7 +1179,7 @@ function LessonIntelligencePanel({
             </div>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="rounded-full bg-[var(--surface-container-highest)] px-3 py-1 text-xs font-semibold text-[var(--text-primary)]">
-                {complexity.level || 'unknown'}
+                {complexity.display_label || complexity.level || 'unknown'}
               </span>
               {(Array.isArray(complexity.reasons) ? complexity.reasons : []).slice(0, 3).map((reason, index) => (
                 <span key={`complexity-reason-${index}`} className="rounded-full bg-[color:var(--surface-container-high)] px-3 py-1 text-xs text-[var(--text-secondary)]">
@@ -1178,6 +1195,17 @@ function LessonIntelligencePanel({
               <span>{copied ? 'Copied' : 'Copy suggestions'}</span>
             </Button>
           </div>
+
+          {(lessonIntelligenceInputWasCompacted(report) || (Array.isArray(report.limitations) && report.limitations.length > 0)) && (
+            <div className="rounded-xl bg-[color:var(--surface-muted)] p-3 text-sm text-[var(--text-secondary)]">
+              {lessonIntelligenceInputWasCompacted(report) && (
+                <p>Large lesson text was summarized before analysis.</p>
+              )}
+              {Array.isArray(report.limitations) && report.limitations.slice(0, 3).map((item, index) => (
+                <p key={`lesson-intelligence-limitation-${index}`} className="mt-1">{textValue(item)}</p>
+              ))}
+            </div>
+          )}
 
           <LessonIntelligenceList
             title="Clarity warnings"

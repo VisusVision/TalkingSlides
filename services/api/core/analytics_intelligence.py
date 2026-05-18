@@ -11,6 +11,7 @@ from urllib.request import Request, urlopen
 
 from django.conf import settings
 
+from core.intelligence_language import detect_lesson_language, resolve_output_language
 from core.models import AnalyticsIntelligenceReport, LessonIntelligenceReport
 
 
@@ -55,6 +56,11 @@ class AnalyticsIntelligenceInput:
     input_chars: int
     date_range: dict[str, Any]
     category_filter: str
+    detected_language: str = "unknown"
+    output_language: str = "en"
+    language_confidence: float = 0.0
+    input_truncated: bool = False
+    compaction: dict[str, Any] | None = None
 
     def to_provider_payload(self) -> dict[str, Any]:
         return {
@@ -64,6 +70,11 @@ class AnalyticsIntelligenceInput:
             "input_chars": self.input_chars,
             "date_range": self.date_range,
             "category_filter": self.category_filter,
+            "detected_language": self.detected_language,
+            "output_language": self.output_language,
+            "language_confidence": self.language_confidence,
+            "input_truncated": self.input_truncated,
+            "compaction": self.compaction or {},
         }
 
 
@@ -78,6 +89,7 @@ class HeuristicAnalyticsIntelligenceProvider:
     provider_name = "heuristic"
 
     def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+        output_language = _output_language(input_payload)
         analytics = input_payload.get("analytics") if isinstance(input_payload.get("analytics"), dict) else {}
         summary = analytics.get("summary") if isinstance(analytics.get("summary"), dict) else {}
         tables = analytics.get("tables") if isinstance(analytics.get("tables"), dict) else {}
@@ -116,14 +128,16 @@ class HeuristicAnalyticsIntelligenceProvider:
         recommendations: list[dict[str, Any]] = []
         lesson_actions: list[dict[str, Any]] = []
         category_actions: list[dict[str, Any]] = []
-        limitations = _base_limitations(meta)
+        limitations = _base_limitations(meta, output_language=output_language)
+        if input_payload.get("input_truncated"):
+            limitations.append(_analytics_text(output_language, "large_dataset_limitation"))
 
         if total_lessons <= 0:
             insights.append(
                 _insight(
                     "no_lessons",
                     "medium",
-                    "No creator lessons were found in this analytics scope.",
+                    _analytics_text(output_language, "no_lessons_insight"),
                     "total_lessons=0",
                 )
             )
@@ -132,12 +146,12 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _recommendation(
                         "publish_first_lesson",
                         "high",
-                        "Publish a focused first lesson so progress, completion, likes, and comments can be measured.",
+                        _analytics_text(output_language, "publish_first_lesson"),
                     ),
                     _recommendation(
                         "define_category",
                         "medium",
-                        "Choose a clear category for the first lesson so future category analytics are easier to compare.",
+                        _analytics_text(output_language, "define_category"),
                     ),
                 ]
             )
@@ -146,7 +160,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                 _insight(
                     "no_activity",
                     "medium",
-                    "No viewer activity was recorded for this date range.",
+                    _analytics_text(output_language, "no_activity_insight"),
                     f"published_lessons={published_lessons}, views=0",
                 )
             )
@@ -155,12 +169,12 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _recommendation(
                         "share_lessons",
                         "high",
-                        "Share published lessons and invite a small test audience before changing content based on analytics.",
+                        _analytics_text(output_language, "share_lessons"),
                     ),
                     _recommendation(
                         "improve_discovery",
                         "medium",
-                        "Review lesson titles, thumbnails, and categories so learners can quickly understand the lesson promise.",
+                        _analytics_text(output_language, "improve_discovery"),
                     ),
                 ]
             )
@@ -169,7 +183,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _recommendation(
                         "publish_drafts",
                         "medium",
-                        "Convert strong drafts into published lessons to start collecting real engagement signals.",
+                        _analytics_text(output_language, "publish_drafts"),
                     )
                 )
         else:
@@ -177,9 +191,12 @@ class HeuristicAnalyticsIntelligenceProvider:
                 _insight(
                     "activity_summary",
                     "low",
-                    (
-                        f"{total_views} views from {unique_viewers} unique viewers produced "
-                        f"{engagement_events} recorded engagement events."
+                    _analytics_text(
+                        output_language,
+                        "activity_summary_insight",
+                        total_views=total_views,
+                        unique_viewers=unique_viewers,
+                        engagement_events=engagement_events,
                     ),
                     f"completion_rate={completion_rate:.0f}%, average_progress={average_progress:.0f}%",
                 )
@@ -190,7 +207,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _insight(
                         "low_completion",
                         "high",
-                        "Completion rate is low for the recorded views.",
+                        _analytics_text(output_language, "low_completion_insight"),
                         f"completion_rate={completion_rate:.0f}%",
                     )
                 )
@@ -198,7 +215,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _recommendation(
                         "shorten_or_segment",
                         "high",
-                        "Shorten long lessons or split them into clearer segments with checkpoints.",
+                        _analytics_text(output_language, "shorten_or_segment"),
                     )
                 )
 
@@ -207,7 +224,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _insight(
                         "views_low_progress",
                         "high",
-                        "Learners are starting lessons but average progress is weak.",
+                        _analytics_text(output_language, "views_low_progress_insight"),
                         f"average_progress={average_progress:.0f}%",
                     )
                 )
@@ -215,7 +232,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _recommendation(
                         "clearer_intro",
                         "high",
-                        "Add a clearer opening promise and an early concrete example to improve lesson progress.",
+                        _analytics_text(output_language, "clearer_intro"),
                     )
                 )
 
@@ -224,7 +241,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _insight(
                         "low_engagement",
                         "medium",
-                        "Views are present but likes and comments are still absent.",
+                        _analytics_text(output_language, "low_engagement_insight"),
                         f"views={total_views}, likes=0, comments=0",
                     )
                 )
@@ -232,7 +249,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _recommendation(
                         "prompt_engagement",
                         "medium",
-                        "Add a short recap question or practical exercise near the end of the lesson.",
+                        _analytics_text(output_language, "prompt_engagement"),
                     )
                 )
 
@@ -241,7 +258,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _insight(
                         "strong_social_engagement",
                         "low",
-                        "Likes and comments are strong relative to current views.",
+                        _analytics_text(output_language, "strong_social_engagement"),
                         f"likes={likes}, comments={comments}, views={total_views}",
                     )
                 )
@@ -250,7 +267,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                         _recommendation(
                             "match_interest_to_retention",
                             "medium",
-                            "Learners are reacting, but progress is lower; review pacing and examples in the most-viewed lessons.",
+                            _analytics_text(output_language, "match_interest_to_retention"),
                         )
                     )
 
@@ -265,7 +282,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _insight(
                         "category_dominance",
                         "medium",
-                        f"{category_name} dominates creator analytics in this range.",
+                        _analytics_text(output_language, "category_dominance", category=category_name),
                         f"category_share={share:.0%}",
                     )
                 )
@@ -273,8 +290,8 @@ class HeuristicAnalyticsIntelligenceProvider:
                     {
                         "type": "category_imbalance",
                         "category": category_name,
-                        "message": "Compare this category's lesson style with weaker categories before expanding the catalog.",
-                        "evidence": f"{category_name} accounts for {share:.0%} of category activity.",
+                        "message": _analytics_text(output_language, "category_imbalance"),
+                        "evidence": _analytics_text(output_language, "category_share", category=category_name, share=share),
                     }
                 )
 
@@ -283,13 +300,13 @@ class HeuristicAnalyticsIntelligenceProvider:
                     _recommendation(
                         "review_top_lesson_style",
                         "medium",
-                        "Review the strongest lesson's title, opening, structure, and examples, then reuse the patterns in weaker lessons.",
+                        _analytics_text(output_language, "review_top_lesson_style"),
                     )
                 )
 
         recommendations = _dedupe_by_message(recommendations)
-        lesson_actions.extend(_lesson_actions(top_lessons, recent_lessons))
-        category_actions.extend(_category_actions(categories, has_activity=has_activity))
+        lesson_actions.extend(_lesson_actions(top_lessons, recent_lessons, output_language=output_language))
+        category_actions.extend(_category_actions(categories, has_activity=has_activity, output_language=output_language))
 
         health_score = _health_score(
             total_lessons=total_lessons,
@@ -314,6 +331,7 @@ class HeuristicAnalyticsIntelligenceProvider:
             likes=likes,
             comments=comments,
             has_activity=has_activity,
+            output_language=output_language,
         )
 
         return {
@@ -328,6 +346,11 @@ class HeuristicAnalyticsIntelligenceProvider:
             "limitations": limitations,
             "metadata": {
                 "input_char_count": int(input_payload.get("input_chars") or 0),
+                "input_truncated": bool(input_payload.get("input_truncated")),
+                "compaction": input_payload.get("compaction") if isinstance(input_payload.get("compaction"), dict) else {},
+                "detected_language": str(input_payload.get("detected_language") or "unknown"),
+                "output_language": output_language,
+                "language_confidence": float(input_payload.get("language_confidence") or 0.0),
                 "total_lessons": total_lessons,
                 "published_lessons": published_lessons,
                 "total_views": total_views,
@@ -442,18 +465,36 @@ def build_analytics_intelligence_input(
     *,
     scope: str = "creator",
     max_chars: int | None = None,
+    output_language: str = "auto",
+    request_language: str = "",
 ) -> AnalyticsIntelligenceInput:
     if not isinstance(analytics_payload, dict):
         raise AnalyticsIntelligenceInputError("Analytics payload is empty.")
 
     limit = int(max_chars if max_chars is not None else _int_setting("ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS", 20000))
-    safe_payload = _safe_analytics_payload(analytics_payload)
-    source_json = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    safe_payload, compaction = _compact_analytics_payload(analytics_payload, max_chars=limit)
+    detection_text = json.dumps(
+        {
+            "summary": safe_payload.get("summary"),
+            "tables": safe_payload.get("tables"),
+            "filters": safe_payload.get("filters"),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    language = detect_lesson_language(detection_text)
+    detected_language = str(language.get("language") or "unknown")
+    resolved_output_language = resolve_output_language(
+        requested=output_language,
+        detected=detected_language,
+        request_language=request_language,
+    )
+    source_payload = {
+        **safe_payload,
+        "output_language": resolved_output_language,
+    }
+    source_json = json.dumps(source_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     input_chars = len(source_json)
-    if input_chars > limit:
-        raise AnalyticsIntelligenceInputTooLarge(
-            f"Analytics payload is too large for synchronous analysis ({input_chars} chars, limit {limit})."
-        )
     filters = safe_payload.get("filters") if isinstance(safe_payload.get("filters"), dict) else {}
     date_range = {
         "from": _clean_text(filters.get("from"), max_chars=20),
@@ -469,6 +510,11 @@ def build_analytics_intelligence_input(
         input_chars=input_chars,
         date_range=date_range,
         category_filter=category_filter,
+        detected_language=detected_language,
+        output_language=resolved_output_language,
+        language_confidence=float(language.get("confidence") or 0.0),
+        input_truncated=bool(compaction.get("input_truncated")),
+        compaction=compaction,
     )
 
 
@@ -510,6 +556,12 @@ def analyze_analytics_with_provider_chain(
             **dict(normalized.get("metadata") or {}),
             "provider_chain_attempts": attempts,
             "source_hash": analytics_input.source_hash,
+            "detected_language": analytics_input.detected_language,
+            "output_language": analytics_input.output_language,
+            "language_confidence": analytics_input.language_confidence,
+            "input_truncated": analytics_input.input_truncated,
+            "compaction": analytics_input.compaction or {},
+            "input_char_count": analytics_input.input_chars,
         }
         return normalized
 
@@ -522,6 +574,12 @@ def analyze_analytics_with_provider_chain(
         **dict(fallback.get("metadata") or {}),
         "provider_chain_attempts": attempts,
         "source_hash": analytics_input.source_hash,
+        "detected_language": analytics_input.detected_language,
+        "output_language": analytics_input.output_language,
+        "language_confidence": analytics_input.language_confidence,
+        "input_truncated": analytics_input.input_truncated,
+        "compaction": analytics_input.compaction or {},
+        "input_char_count": analytics_input.input_chars,
     }
     return fallback
 
@@ -583,6 +641,9 @@ def analytics_report_response_payload(
             "status": "empty" if enabled else "disabled",
             "provider": "",
             "fallback_used": False,
+            "detected_language": "unknown",
+            "output_language": "en",
+            "language_confidence": 0.0,
             "summary": "",
             "health_score": 0,
             "risk_level": "",
@@ -592,6 +653,7 @@ def analytics_report_response_payload(
             "category_actions": [],
             "limitations": [],
         }
+    report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
     return {
         "enabled": enabled,
         "id": report.id,
@@ -599,6 +661,9 @@ def analytics_report_response_payload(
         "provider": report.provider,
         "provider_chain": report.provider_chain if isinstance(report.provider_chain, list) else [],
         "fallback_used": bool(report.fallback_used),
+        "detected_language": str(report_metadata.get("detected_language") or "unknown"),
+        "output_language": str(report_metadata.get("output_language") or "en"),
+        "language_confidence": float(report_metadata.get("language_confidence") or 0.0),
         "source_hash": report.source_hash,
         "date_range": report.date_range if isinstance(report.date_range, dict) else {},
         "category_filter": report.category_filter,
@@ -620,11 +685,169 @@ def analytics_report_response_payload(
                 "published_lessons",
                 "total_views",
                 "category_count",
+                "detected_language",
+                "output_language",
+                "language_confidence",
+                "input_truncated",
+                "compaction",
             }
         },
         "error_message": report.error_message,
         "created_at": report.created_at.isoformat() if report.created_at else "",
         "updated_at": report.updated_at.isoformat() if report.updated_at else "",
+    }
+
+
+def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    summary = _safe_json_dict(payload.get("summary"))
+    charts = _safe_json_dict(payload.get("charts"))
+    tables = _safe_json_dict(payload.get("tables"))
+    filters = _safe_json_dict(payload.get("filters"))
+    meta = _safe_json_dict(payload.get("meta"))
+    source_counts = {
+        "engagement_trend": len(_safe_list(charts.get("engagement_trend"))),
+        "top_lessons": len(_safe_list(tables.get("top_lessons"))),
+        "recent_lessons": len(_safe_list(tables.get("recent_lessons"))),
+        "top_categories": len(_safe_list(tables.get("top_categories") or charts.get("category_popularity"))),
+        "recent_activity": len(_safe_list(payload.get("recent_activity"))),
+    }
+
+    def build_payload(limits: dict[str, int], *, title_chars: int = 160, include_activity_messages: bool = False) -> dict[str, Any]:
+        trend_limit = limits["engagement_trend"]
+        trend_source = _safe_list(charts.get("engagement_trend"))
+        trend_rows = trend_source[-trend_limit:] if trend_limit > 0 else []
+        trend = [
+            {
+                "date": _clean_text(row.get("date"), max_chars=20),
+                "views": _safe_int(row.get("views") or row.get("video_plays"), 0),
+                "engagement": _safe_int(row.get("engagement"), 0),
+                "completions": _safe_int(row.get("completions"), 0),
+            }
+            for row in trend_rows
+            if isinstance(row, dict)
+        ]
+        top_lessons = [
+            _compact_lesson_row(row, title_chars=title_chars)
+            for row in _safe_list(tables.get("top_lessons"))[: limits["top_lessons"]]
+            if isinstance(row, dict)
+        ]
+        recent_lessons = [
+            _compact_lesson_row(row, title_chars=title_chars)
+            for row in _safe_list(tables.get("recent_lessons"))[: limits["recent_lessons"]]
+            if isinstance(row, dict)
+        ]
+        categories_source = _safe_list(tables.get("top_categories") or charts.get("category_popularity"))
+        categories = [
+            {
+                "category_slug": _clean_text(row.get("category_slug") or row.get("slug"), max_chars=80),
+                "category_name": _clean_text(row.get("category_name") or row.get("name") or "Uncategorized", max_chars=title_chars),
+                "lesson_count": _safe_int(row.get("lesson_count") or row.get("lessons"), 0),
+                "views": _safe_int(row.get("views") or row.get("video_plays"), 0),
+                "average_progress": _safe_float(row.get("average_progress"), 0.0),
+                "completion_rate": _safe_float(row.get("completion_rate"), 0.0),
+                "likes": _safe_int(row.get("likes"), 0),
+                "comments": _safe_int(row.get("comments"), 0),
+                "engagement_events": _safe_int(row.get("engagement_events") or row.get("engagement"), 0),
+                "estimated_watch_minutes": _safe_float(row.get("estimated_watch_minutes"), 0.0),
+            }
+            for row in categories_source[: limits["top_categories"]]
+            if isinstance(row, dict)
+        ]
+        activity = []
+        for row in _safe_list(payload.get("recent_activity"))[: limits["recent_activity"]]:
+            if not isinstance(row, dict):
+                continue
+            item = {
+                "type": _clean_text(row.get("type"), max_chars=40),
+                "label": _clean_text(row.get("label"), max_chars=60),
+                "timestamp": _clean_text(row.get("timestamp"), max_chars=40),
+                "lesson_id": _safe_int(row.get("lesson_id"), 0),
+                "lesson_title": _clean_text(row.get("lesson_title") or row.get("title"), max_chars=title_chars),
+                "value": row.get("value") if isinstance(row.get("value"), (int, float, str, bool)) else None,
+            }
+            if include_activity_messages:
+                item["message"] = _clean_text(row.get("message") or row.get("description"), max_chars=240)
+            activity.append(item)
+        return _scrub_private(
+            {
+                "summary": summary,
+                "charts": {
+                    "engagement_trend": trend,
+                    "category_popularity": categories,
+                },
+                "tables": {
+                    "top_lessons": top_lessons,
+                    "recent_lessons": recent_lessons,
+                    "top_categories": categories,
+                },
+                "recent_activity": activity,
+                "filters": filters,
+                "meta": {
+                    "contract": _clean_text(meta.get("contract"), max_chars=60),
+                    "scope": _clean_text(meta.get("scope"), max_chars=40),
+                    "estimated_metrics": bool(meta.get("estimated_metrics")),
+                    "estimated_fields": _scrub_private(_safe_list(meta.get("estimated_fields"))[:12]),
+                    "missing_metrics": _scrub_private(_safe_list(meta.get("missing_metrics"))[:12]),
+                },
+            }
+        )
+
+    original_safe = _safe_analytics_payload(payload)
+    original_chars = len(json.dumps(original_safe, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    candidates = [
+        ({"engagement_trend": 30, "top_lessons": 10, "recent_lessons": 10, "top_categories": 10, "recent_activity": 20}, 160),
+        ({"engagement_trend": 14, "top_lessons": 8, "recent_lessons": 6, "top_categories": 8, "recent_activity": 12}, 140),
+        ({"engagement_trend": 7, "top_lessons": 5, "recent_lessons": 3, "top_categories": 5, "recent_activity": 6}, 100),
+        ({"engagement_trend": 0, "top_lessons": 3, "recent_lessons": 0, "top_categories": 3, "recent_activity": 0}, 80),
+    ]
+    chosen = build_payload(candidates[0][0], title_chars=candidates[0][1])
+    chosen_limits = candidates[0][0]
+    chosen_chars = len(json.dumps(chosen, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    for limits, title_chars in candidates:
+        candidate = build_payload(limits, title_chars=title_chars)
+        candidate_chars = len(json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        chosen = candidate
+        chosen_limits = limits
+        chosen_chars = candidate_chars
+        if candidate_chars <= max(1, max_chars):
+            break
+
+    omitted_counts = {
+        key: max(0, source_counts.get(key, 0) - chosen_limits.get(key, 0))
+        for key in source_counts
+    }
+    input_truncated = original_chars > max_chars or any(value > 0 for value in omitted_counts.values())
+    return chosen, {
+        "input_truncated": input_truncated,
+        "original_char_count": original_chars,
+        "compact_char_count": chosen_chars,
+        "max_chars": max_chars,
+        "omitted_counts": omitted_counts,
+    }
+
+
+def _compact_lesson_row(row: dict[str, Any], *, title_chars: int) -> dict[str, Any]:
+    return {
+        "lesson_id": _safe_int(row.get("lesson_id") or row.get("id"), 0),
+        "id": _safe_int(row.get("id") or row.get("lesson_id"), 0),
+        "title": _clean_text(row.get("title") or row.get("name") or "Untitled lesson", max_chars=title_chars),
+        "category_slug": _clean_text(row.get("category_slug"), max_chars=80),
+        "category_name": _clean_text(row.get("category_name") or "Uncategorized", max_chars=title_chars),
+        "status": _clean_text(row.get("status"), max_chars=30),
+        "is_published": bool(row.get("is_published")),
+        "created_at": _clean_text(row.get("created_at"), max_chars=40),
+        "latest_activity_at": _clean_text(row.get("latest_activity_at"), max_chars=40),
+        "views": _safe_int(row.get("views") or row.get("video_plays"), 0),
+        "video_plays": _safe_int(row.get("video_plays") or row.get("views"), 0),
+        "unique_viewers": _safe_int(row.get("unique_viewers"), 0),
+        "average_progress": _safe_float(row.get("average_progress") or row.get("progress_pct"), 0.0),
+        "progress_pct": _safe_float(row.get("progress_pct") or row.get("average_progress"), 0.0),
+        "completion_rate": _safe_float(row.get("completion_rate") or row.get("completion_pct"), 0.0),
+        "completion_pct": _safe_float(row.get("completion_pct") or row.get("completion_rate"), 0.0),
+        "likes": _safe_int(row.get("likes"), 0),
+        "comments": _safe_int(row.get("comments"), 0),
+        "engagement_events": _safe_int(row.get("engagement_events"), 0),
+        "estimated_watch_minutes": _safe_float(row.get("estimated_watch_minutes"), 0.0),
     }
 
 
@@ -682,15 +905,24 @@ def _normalize_provider_result(raw: Any, *, provider_name: str) -> dict[str, Any
 
 
 def _ollama_prompt(input_payload: dict[str, Any]) -> str:
+    output_language = _output_language(input_payload)
     safe_payload = {
         "scope": input_payload.get("scope") or "creator",
         "date_range": input_payload.get("date_range") or {},
         "category_filter": input_payload.get("category_filter") or "",
         "analytics": input_payload.get("analytics") or {},
         "source_hash": input_payload.get("source_hash") or "",
+        "detected_language": input_payload.get("detected_language") or "unknown",
+        "output_language": output_language,
+        "input_truncated": bool(input_payload.get("input_truncated")),
     }
+    language_instruction = (
+        "Respond in Turkish. Keep JSON keys in English, but all user-facing text values in Turkish. "
+        if output_language == "tr"
+        else "Respond in English. "
+    )
     return (
-        "You are a publisher analytics analyst. Return JSON only. "
+        f"You are a publisher analytics analyst. Return JSON only. {language_instruction}"
         "Use only the analytics data provided. Do not invent trends, viewer identities, or private data. "
         "Do not edit lessons, trigger rendering, or perform hidden actions. "
         "Return keys: analytics_summary, health_score, risk_level, insights, recommendations, "
@@ -699,6 +931,83 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
         "Each insight/recommendation/action should be a concise JSON object with type, message, and evidence when useful. "
         f"Analytics payload: {json.dumps(safe_payload, ensure_ascii=False)}"
     )
+
+
+def _output_language(input_payload: dict[str, Any]) -> str:
+    language = str(input_payload.get("output_language") or "").strip().lower()
+    return language if language in {"tr", "en"} else "en"
+
+
+def _analytics_text(language: str, key: str, **kwargs: Any) -> str:
+    if language == "tr":
+        messages = {
+            "large_dataset_limitation": "Veri seti büyük olduğu için bazı analiz satırları özetlendi veya çıkarıldı.",
+            "no_lessons_insight": "Bu analiz kapsamında içerik üretici dersi bulunamadı.",
+            "publish_first_lesson": "İlerleme, tamamlama, beğeni ve yorum sinyallerini ölçebilmek için odaklı bir ilk ders yayınlayın.",
+            "define_category": "Gelecekte kategori analitiğini karşılaştırabilmek için ilk ders için net bir kategori seçin.",
+            "no_activity_insight": "Bu tarih aralığında kayıtlı izleyici etkinliği yok.",
+            "share_lessons": "Analitiğe göre içerik değiştirmeden önce yayınlanan dersleri paylaşın ve küçük bir test kitlesi davet edin.",
+            "improve_discovery": "Öğrencilerin ders vaadini hızlı anlaması için başlıkları, kapakları ve kategorileri gözden geçirin.",
+            "publish_drafts": "Gerçek etkileşim sinyalleri toplamak için güçlü taslakları yayına alın.",
+            "activity_summary_insight": f"{kwargs.get('unique_viewers', 0)} tekil izleyiciden {kwargs.get('total_views', 0)} görüntüleme, {kwargs.get('engagement_events', 0)} kayıtlı etkileşim üretti.",
+            "low_completion_insight": "Kayıtlı görüntülemeler için tamamlama oranı düşük.",
+            "shorten_or_segment": "Uzun dersleri kısaltın veya net kontrol noktalarıyla daha küçük bölümlere ayırın.",
+            "views_low_progress_insight": "Öğrenciler derslere başlıyor, ancak ortalama ilerleme zayıf.",
+            "clearer_intro": "Ders ilerlemesini artırmak için daha net bir açılış vaadi ve erken bir somut örnek ekleyin.",
+            "low_engagement_insight": "Görüntüleme var, ancak beğeni ve yorum henüz yok.",
+            "prompt_engagement": "Dersin sonuna kısa bir özet sorusu veya pratik alıştırma ekleyin.",
+            "strong_social_engagement": "Beğeni ve yorumlar mevcut görüntülemelere göre güçlü.",
+            "match_interest_to_retention": "Öğrenciler tepki veriyor, ancak ilerleme daha düşük; en çok izlenen derslerde tempo ve örnekleri gözden geçirin.",
+            "category_dominance": f"{kwargs.get('category', 'Bir kategori')} bu aralıkta içerik üretici analitiğine hakim.",
+            "category_imbalance": "Kataloğu genişletmeden önce bu kategorinin ders stilini daha zayıf kategorilerle karşılaştırın.",
+            "category_share": f"{kwargs.get('category', 'Bu kategori')} kategori etkinliğinin %{float(kwargs.get('share') or 0) * 100:.0f} kadarını oluşturuyor.",
+            "review_top_lesson_style": "En güçlü dersin başlığını, açılışını, yapısını ve örneklerini gözden geçirip bu kalıpları zayıf derslerde yeniden kullanın.",
+            "lesson_views_low_progress": "Bu ders görüntüleme alıyor ancak ilerleme veya tamamlama zayıf; giriş, tempo, örnekler ve kapanışı gözden geçirin.",
+            "lesson_no_engagement": "Bu ders görüntüleme alıyor ancak beğeni veya yorum yok; bir özet sorusu veya pratik soru ekleyin.",
+            "lesson_top_style": "Bu üst dersi, daha zayıf dersler için başlık, tempo ve yapı referansı olarak inceleyin.",
+            "missing_category_breakdown": "Analitiğin daha net içerik fırsatları gösterebilmesi için ders kategorilerini ekleyin veya gözden geçirin.",
+            "category_retention": "Bu kategoride etkinlik var ancak ilerleme zayıf; ders temposunu ve örnekleri gözden geçirin.",
+            "privacy_limitation": "Analytics Intelligence çıktıları izleyici kimliklerini içermez.",
+            "dropoff_limitation": "Ek izleme eklenmedikçe slayt veya sayfa bazlı düşüş verisi yoktur.",
+            "heuristic_limitation": "Heuristik analiz deterministik toplu sinyalleri kullanır ve alan nüanslarını kaçırabilir.",
+            "estimated_limitation": "İzleme süresi ve görüntüleme sayıları ilerleme kayıtlarından tahmin edilir.",
+            "missing_metrics_limitation": f"Bazı metrikler mevcut değil: {kwargs.get('missing', '')}.",
+        }
+        return messages.get(key, key)
+    messages = {
+        "large_dataset_limitation": "Some analytics rows were omitted because the dataset was large.",
+        "no_lessons_insight": "No creator lessons were found in this analytics scope.",
+        "publish_first_lesson": "Publish a focused first lesson so progress, completion, likes, and comments can be measured.",
+        "define_category": "Choose a clear category for the first lesson so future category analytics are easier to compare.",
+        "no_activity_insight": "No viewer activity was recorded for this date range.",
+        "share_lessons": "Share published lessons and invite a small test audience before changing content based on analytics.",
+        "improve_discovery": "Review lesson titles, thumbnails, and categories so learners can quickly understand the lesson promise.",
+        "publish_drafts": "Convert strong drafts into published lessons to start collecting real engagement signals.",
+        "activity_summary_insight": f"{kwargs.get('total_views', 0)} views from {kwargs.get('unique_viewers', 0)} unique viewers produced {kwargs.get('engagement_events', 0)} recorded engagement events.",
+        "low_completion_insight": "Completion rate is low for the recorded views.",
+        "shorten_or_segment": "Shorten long lessons or split them into clearer segments with checkpoints.",
+        "views_low_progress_insight": "Learners are starting lessons but average progress is weak.",
+        "clearer_intro": "Add a clearer opening promise and an early concrete example to improve lesson progress.",
+        "low_engagement_insight": "Views are present but likes and comments are still absent.",
+        "prompt_engagement": "Add a short recap question or practical exercise near the end of the lesson.",
+        "strong_social_engagement": "Likes and comments are strong relative to current views.",
+        "match_interest_to_retention": "Learners are reacting, but progress is lower; review pacing and examples in the most-viewed lessons.",
+        "category_dominance": f"{kwargs.get('category', 'One category')} dominates creator analytics in this range.",
+        "category_imbalance": "Compare this category's lesson style with weaker categories before expanding the catalog.",
+        "category_share": f"{kwargs.get('category', 'This category')} accounts for {float(kwargs.get('share') or 0):.0%} of category activity.",
+        "review_top_lesson_style": "Review the strongest lesson's title, opening, structure, and examples, then reuse the patterns in weaker lessons.",
+        "lesson_views_low_progress": "This lesson has views but weak progress or completion; review its intro, pacing, examples, and ending.",
+        "lesson_no_engagement": "This lesson has views but no likes or comments; add a recap prompt or practical question.",
+        "lesson_top_style": "Review this top lesson's title, pacing, and structure as a reference for weaker lessons.",
+        "missing_category_breakdown": "Add or review lesson categories so analytics can show clearer content opportunities.",
+        "category_retention": "Review lesson pacing and examples in this category; activity exists but progress is weak.",
+        "privacy_limitation": "No viewer identities are included in Analytics Intelligence outputs.",
+        "dropoff_limitation": "No per-slide or per-page drop-off is available unless that tracking is added later.",
+        "heuristic_limitation": "Heuristic analysis uses deterministic aggregate signals and may miss domain nuance.",
+        "estimated_limitation": "Watch time and view counts are estimated from progress records.",
+        "missing_metrics_limitation": f"Some metrics are unavailable: {kwargs.get('missing', '')}.",
+    }
+    return messages.get(key, key)
 
 
 def _analytics_summary(**kwargs) -> str:
@@ -712,6 +1021,21 @@ def _analytics_summary(**kwargs) -> str:
     likes = kwargs["likes"]
     comments = kwargs["comments"]
     has_activity = kwargs["has_activity"]
+    output_language = kwargs.get("output_language") or "en"
+    if output_language == "tr":
+        if total_lessons <= 0:
+            return "Bu kapsamda henüz içerik üretici dersi yok; bu nedenle analiz başlangıç önerileriyle sınırlı."
+        if not has_activity:
+            return (
+                f"{total_lessons} dersin {published_lessons} tanesi yayında, ancak bu aralıkta kayıtlı izleyici "
+                "etkinliği yok."
+            )
+        return (
+            f"{total_lessons} dersin {published_lessons} tanesi yayında. Bu aralıkta {unique_viewers} tekil izleyiciden "
+            f"{total_views} görüntüleme, yaklaşık {watch_minutes:.1f} dakika tahmini izleme, "
+            f"%{completion_rate:.0f} tamamlama, %{average_progress:.0f} ortalama ilerleme, "
+            f"{likes} beğeni ve {comments} yorum var."
+        )
     if total_lessons <= 0:
         return "No creator lessons are available in this scope yet, so analytics intelligence is limited to onboarding guidance."
     if not has_activity:
@@ -768,7 +1092,12 @@ def _risk_level(score: int) -> str:
     return "high"
 
 
-def _lesson_actions(top_lessons: list[dict[str, Any]], recent_lessons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _lesson_actions(
+    top_lessons: list[dict[str, Any]],
+    recent_lessons: list[dict[str, Any]],
+    *,
+    output_language: str,
+) -> list[dict[str, Any]]:
     lesson_ids = [_safe_int(lesson.get("lesson_id") or lesson.get("id"), 0) for lesson in top_lessons + recent_lessons]
     report_lookup = _lesson_report_lookup([lesson_id for lesson_id in lesson_ids if lesson_id])
     actions: list[dict[str, Any]] = []
@@ -786,7 +1115,8 @@ def _lesson_actions(top_lessons: list[dict[str, Any]], recent_lessons: list[dict
                 lesson,
                 report_lookup,
                 "views_low_progress",
-                "This lesson has views but weak progress or completion; review its intro, pacing, examples, and ending.",
+                _analytics_text(output_language, "lesson_views_low_progress"),
+                output_language=output_language,
             )
         )
         if len(actions) >= 6:
@@ -801,7 +1131,8 @@ def _lesson_actions(top_lessons: list[dict[str, Any]], recent_lessons: list[dict
                     lesson,
                     report_lookup,
                     "no_engagement",
-                    "This lesson has views but no likes or comments; add a recap prompt or practical question.",
+                    _analytics_text(output_language, "lesson_no_engagement"),
+                    output_language=output_language,
                 )
                 if action not in actions:
                     actions.append(action)
@@ -815,7 +1146,8 @@ def _lesson_actions(top_lessons: list[dict[str, Any]], recent_lessons: list[dict
                 top,
                 report_lookup,
                 "review_top_lesson_style",
-                "Review this top lesson's title, pacing, and structure as a reference for weaker lessons.",
+                _analytics_text(output_language, "lesson_top_style"),
+                output_language=output_language,
             )
             if action not in actions:
                 actions.append(action)
@@ -827,6 +1159,8 @@ def _lesson_action(
     report_lookup: dict[int, int],
     action_type: str,
     message: str,
+    *,
+    output_language: str = "en",
 ) -> dict[str, Any]:
     lesson_id = _safe_int(lesson.get("lesson_id") or lesson.get("id"), 0)
     report_id = report_lookup.get(lesson_id)
@@ -844,7 +1178,11 @@ def _lesson_action(
         },
         "has_lesson_intelligence_report": bool(report_id),
         "lesson_intelligence_report_id": report_id,
-        "action_label": "Review lesson suggestions." if report_id else "Analyze lesson in Studio.",
+        "action_label": (
+            "Ders önerilerini gözden geçir." if report_id else "Studio'da dersi analiz et."
+        ) if output_language == "tr" else (
+            "Review lesson suggestions." if report_id else "Analyze lesson in Studio."
+        ),
     }
 
 
@@ -862,13 +1200,18 @@ def _lesson_report_lookup(lesson_ids: list[int]) -> dict[int, int]:
     return lookup
 
 
-def _category_actions(categories: list[dict[str, Any]], *, has_activity: bool) -> list[dict[str, Any]]:
+def _category_actions(
+    categories: list[dict[str, Any]],
+    *,
+    has_activity: bool,
+    output_language: str,
+) -> list[dict[str, Any]]:
     if not categories:
         if has_activity:
             return [
                 {
                     "type": "missing_category_breakdown",
-                    "message": "Add or review lesson categories so analytics can show clearer content opportunities.",
+                    "message": _analytics_text(output_language, "missing_category_breakdown"),
                 }
             ]
         return []
@@ -884,7 +1227,7 @@ def _category_actions(categories: list[dict[str, Any]], *, has_activity: bool) -
                 {
                     "type": "category_retention",
                     "category": name,
-                    "message": "Review lesson pacing and examples in this category; activity exists but progress is weak.",
+                    "message": _analytics_text(output_language, "category_retention"),
                     "evidence": f"completion={completion:.0f}%, progress={progress:.0f}%",
                 }
             )
@@ -914,17 +1257,18 @@ def _category_signal(category: dict[str, Any]) -> int:
     )
 
 
-def _base_limitations(meta: dict[str, Any]) -> list[str]:
+def _base_limitations(meta: dict[str, Any], *, output_language: str = "en") -> list[str]:
     limitations = [
-        "No viewer identities are included in Analytics Intelligence outputs.",
-        "No per-slide or per-page drop-off is available unless that tracking is added later.",
-        "Heuristic analysis uses deterministic aggregate signals and may miss domain nuance.",
+        _analytics_text(output_language, "privacy_limitation"),
+        _analytics_text(output_language, "dropoff_limitation"),
+        _analytics_text(output_language, "heuristic_limitation"),
     ]
     if meta.get("estimated_metrics"):
-        limitations.insert(0, "Watch time and view counts are estimated from progress records.")
+        limitations.insert(0, _analytics_text(output_language, "estimated_limitation"))
     missing_metrics = _safe_list(meta.get("missing_metrics"))
     if missing_metrics:
-        limitations.append("Some metrics are unavailable: " + ", ".join(_clean_text(item, max_chars=60) for item in missing_metrics[:6]) + ".")
+        missing = ", ".join(_clean_text(item, max_chars=60) for item in missing_metrics[:6])
+        limitations.append(_analytics_text(output_language, "missing_metrics_limitation", missing=missing))
     return limitations
 
 

@@ -958,6 +958,8 @@ function analyticsQueryString(filters = {}) {
   if (filters.to) params.set("to", String(filters.to));
   if (filters.category) params.set("category", String(filters.category));
   if (filters.sort) params.set("sort", String(filters.sort));
+  if (filters.output_language) params.set("output_language", String(filters.output_language));
+  if (filters.outputLanguage) params.set("output_language", String(filters.outputLanguage));
   return params.toString();
 }
 
@@ -975,7 +977,7 @@ export async function fetchMyAnalyticsIntelligence(filters = {}) {
   return data;
 }
 
-export async function analyzeMyAnalyticsIntelligence(filters = {}) {
+export async function analyzeMyAnalyticsIntelligence(filters = {}, options = {}) {
   const query = analyticsQueryString(filters);
   const url = query
     ? `${API_BASE_URL}/me/analytics/intelligence/analyze/?${query}`
@@ -984,7 +986,9 @@ export async function analyzeMyAnalyticsIntelligence(filters = {}) {
   const res = await fetch(url, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({}),
+    body: JSON.stringify({
+      output_language: options.outputLanguage || options.output_language || 'auto',
+    }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -1143,11 +1147,13 @@ export async function fetchProjectLessonIntelligence(projectId) {
   return data;
 }
 
-export async function analyzeProjectLessonIntelligence(projectId) {
+export async function analyzeProjectLessonIntelligence(projectId, options = {}) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/intelligence/analyze/`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({}),
+    body: JSON.stringify({
+      output_language: options.outputLanguage || options.output_language || 'auto',
+    }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
