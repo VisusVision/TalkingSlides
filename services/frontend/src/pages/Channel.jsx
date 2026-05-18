@@ -8,10 +8,8 @@ import {
   ListVideo,
   PencilLine,
   PlayCircle,
-  Save,
   UserPlus,
   Users,
-  X,
 } from 'lucide-react';
 import { Link, useParams } from 'react-router-dom';
 import {
@@ -23,6 +21,7 @@ import {
   uploadProfileAssets,
 } from '../api';
 import Button from '../components/ui/Button';
+import PublicProfileEditor from '../components/profile/PublicProfileEditor';
 import SocialIcon from '../components/ui/SocialIcon';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
@@ -115,6 +114,8 @@ function channelEditDraftFrom(user, profile) {
     bio: String(profile?.bio || ''),
     website_url: String(profile?.website_url || ''),
     contact_email: String(profile?.contact_email || ''),
+    banner_url: String(profile?.banner_url || ''),
+    logo_url: String(profile?.logo_url || ''),
     social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
       ...acc,
       [field.key]: socialLinkValue(profile?.social_links, field.key),
@@ -323,6 +324,8 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
   const [editDraft, setEditDraft] = useState(() => channelEditDraftFrom(user, null));
   const [editBannerFile, setEditBannerFile] = useState(null);
   const [editLogoFile, setEditLogoFile] = useState(null);
+  const [editBannerPreviewUrl, setEditBannerPreviewUrl] = useState('');
+  const [editLogoPreviewUrl, setEditLogoPreviewUrl] = useState('');
   const [editSaving, setEditSaving] = useState(false);
   const [editMessage, setEditMessage] = useState('');
   const [editError, setEditError] = useState('');
@@ -340,6 +343,18 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
   const editValidationErrors = useMemo(() => validatePublicProfileDraft(editDraft), [editDraft]);
   const editHasValidationErrors = Object.keys(editValidationErrors).length > 0;
   const editFieldError = (field) => editValidationErrors[field] || editFieldErrors[field] || '';
+  const editDisplayNamePreview = useMemo(
+    () => displayNameFromProfilePayload({ ...profile, ...editDraft }, displayName),
+    [displayName, editDraft, profile],
+  );
+  const editEditorDirty = useMemo(
+    () => (
+      JSON.stringify(editDraft) !== JSON.stringify(channelEditDraftFrom(user, profile))
+      || Boolean(editBannerFile)
+      || Boolean(editLogoFile)
+    ),
+    [editBannerFile, editLogoFile, editDraft, profile, user],
+  );
   const filteredLessons = useMemo(() => {
     const needle = String(searchQuery || '').trim().toLowerCase();
     if (!needle) return lessons;
@@ -397,6 +412,26 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
     };
   }, [order, sort, userId, user?.id]);
 
+  useEffect(() => {
+    if (!editBannerFile) {
+      setEditBannerPreviewUrl('');
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(editBannerFile);
+    setEditBannerPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [editBannerFile]);
+
+  useEffect(() => {
+    if (!editLogoFile) {
+      setEditLogoPreviewUrl('');
+      return undefined;
+    }
+    const objectUrl = URL.createObjectURL(editLogoFile);
+    setEditLogoPreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [editLogoFile]);
+
   const handleToggleFollow = async () => {
     if (!profile?.id || followBusy || isOwnChannel) return;
     if (!user) {
@@ -429,6 +464,16 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
     setEditError('');
     setEditFieldErrors({});
     setEditOpen(true);
+  };
+
+  const handleCloseEdit = () => {
+    if (editSaving) return;
+    setEditDraft(channelEditDraftFrom(user, profile));
+    setEditBannerFile(null);
+    setEditLogoFile(null);
+    setEditError('');
+    setEditFieldErrors({});
+    setEditOpen(false);
   };
 
   const handleEditDraftChange = (field, value) => {
@@ -489,6 +534,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
       setEditDraft(channelEditDraftFrom({ ...user, ...payload }, payload));
       setEditBannerFile(null);
       setEditLogoFile(null);
+      setEditOpen(false);
       if (typeof onUserRefresh === 'function') {
         try {
           await onUserRefresh();
@@ -623,188 +669,8 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
             </>
           )}
           {followError ? <p className="mt-3 text-xs font-medium text-[color:var(--feedback-danger-fg)]">{followError}</p> : null}
-          {isOwnChannel && editOpen ? (
-            <form
-              onSubmit={handleSaveChannelProfile}
-              className="mt-4 space-y-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-4"
-            >
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-[var(--text-primary)]">Edit channel profile</p>
-                  <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                    Updates public profile metadata, links, banner, and logo.
-                  </p>
-                </div>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setEditOpen(false)}
-                  disabled={editSaving}
-                  className="self-start"
-                >
-                  <X size={14} />
-                  <span>Close</span>
-                </Button>
-              </div>
-
-              <fieldset disabled={editSaving} className="space-y-3 disabled:opacity-60">
-                <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-muted)] px-3 py-3 text-sm text-[var(--text-secondary)]">
-                  <input
-                    type="checkbox"
-                    checked={editDraft.is_public_profile}
-                    onChange={(event) => handleEditDraftChange('is_public_profile', event.target.checked)}
-                    className="mt-1"
-                  />
-                  <span>
-                    <span className="block font-semibold text-[var(--text-primary)]">Make channel public</span>
-                    <span className="mt-1 block text-xs">Anonymous visitors can view your channel page and public profile links.</span>
-                  </span>
-                </label>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Display name
-                  <input
-                    type="text"
-                    value={editDraft.display_name}
-                    onChange={(event) => handleEditDraftChange('display_name', event.target.value)}
-                    className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    First name
-                    <input
-                      type="text"
-                      value={editDraft.first_name}
-                      onChange={(event) => handleEditDraftChange('first_name', event.target.value)}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Last name
-                    <input
-                      type="text"
-                      value={editDraft.last_name}
-                      onChange={(event) => handleEditDraftChange('last_name', event.target.value)}
-                      className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                </div>
-
-                <label className="block text-sm text-[var(--text-secondary)]">
-                  Bio
-                  <textarea
-                    value={editDraft.bio}
-                    onChange={(event) => handleEditDraftChange('bio', event.target.value)}
-                    rows={4}
-                    className="focus-ring mt-1 w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-primary)]"
-                  />
-                </label>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    <span className="inline-flex items-center gap-1.5">
-                      <SocialIcon type="website" size={14} />
-                      Website
-                    </span>
-                    <input
-                      type="text"
-                      value={editDraft.website_url}
-                      onChange={(event) => handleEditDraftChange('website_url', event.target.value)}
-                      placeholder="example.com"
-                      className={`focus-ring mt-1 h-10 w-full rounded-xl border bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)] ${
-                        editFieldError('website_url') ? 'border-[color:var(--feedback-danger-fg)]' : 'border-[var(--border-subtle)]'
-                      }`}
-                    />
-                    <span className={`mt-1 block text-xs ${editFieldError('website_url') ? 'text-[color:var(--feedback-danger-fg)]' : 'text-[var(--text-secondary)]'}`}>
-                      {editFieldError('website_url') || 'example.com is accepted and saved as https://example.com'}
-                    </span>
-                  </label>
-
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    <span className="inline-flex items-center gap-1.5">
-                      <SocialIcon type="contact" size={14} />
-                      Contact email
-                    </span>
-                    <input
-                      type="text"
-                      value={editDraft.contact_email}
-                      onChange={(event) => handleEditDraftChange('contact_email', event.target.value)}
-                      placeholder="publisher@example.com"
-                      className={`focus-ring mt-1 h-10 w-full rounded-xl border bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)] ${
-                        editFieldError('contact_email') ? 'border-[color:var(--feedback-danger-fg)]' : 'border-[var(--border-subtle)]'
-                      }`}
-                    />
-                    {editFieldError('contact_email') ? (
-                      <span className="mt-1 block text-xs text-[color:var(--feedback-danger-fg)]">{editFieldError('contact_email')}</span>
-                    ) : null}
-                  </label>
-                </div>
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Banner image
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(event) => setEditBannerFile(event.target.files?.[0] || null)}
-                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-
-                  <label className="block text-sm text-[var(--text-secondary)]">
-                    Logo image
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(event) => setEditLogoFile(event.target.files?.[0] || null)}
-                      className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
-                    />
-                  </label>
-                </div>
-
-                <div className="space-y-2">
-                  <p className="text-sm font-semibold text-[var(--text-primary)]">Social links</p>
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    {SOCIAL_LINK_FIELDS.map((field) => (
-                      <label key={field.key} className="block text-sm text-[var(--text-secondary)]">
-                        <span className="inline-flex items-center gap-1.5">
-                          <SocialIcon type={field.key} size={14} />
-                          {field.label}
-                        </span>
-                        <input
-                          type="text"
-                          value={editDraft.social_links?.[field.key] || ''}
-                          onChange={(event) => handleEditSocialChange(field.key, event.target.value)}
-                          placeholder={field.placeholder}
-                          className={`focus-ring mt-1 h-10 w-full rounded-xl border bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)] ${
-                            editFieldError(`social_links.${field.key}`) ? 'border-[color:var(--feedback-danger-fg)]' : 'border-[var(--border-subtle)]'
-                          }`}
-                        />
-                        <span className={`mt-1 block text-xs ${editFieldError(`social_links.${field.key}`) ? 'text-[color:var(--feedback-danger-fg)]' : 'text-[var(--text-secondary)]'}`}>
-                          {editFieldError(`social_links.${field.key}`) || field.helper}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              </fieldset>
-
-              {editMessage ? (
-                <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{editMessage}</p>
-              ) : null}
-              {editError ? (
-                <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">{editError}</p>
-              ) : null}
-
-              <Button type="submit" disabled={editSaving || editHasValidationErrors}>
-                <Save size={15} />
-                <span>{editSaving ? 'Saving...' : 'Save channel'}</span>
-              </Button>
-            </form>
+          {editMessage ? (
+            <p className="mt-3 rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{editMessage}</p>
           ) : null}
         </div>
       </SurfaceCard>
@@ -952,6 +818,36 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
           </div>
         )}
       </SurfaceCard>
+
+      <PublicProfileEditor
+        open={isOwnChannel && editOpen}
+        title="Edit channel profile"
+        titleId="channel-profile-editor-title"
+        eyebrow="Channel"
+        closeLabel="Close channel editor"
+        draft={editDraft}
+        displayNamePreview={editDisplayNamePreview}
+        bannerPreviewUrl={editBannerPreviewUrl}
+        logoPreviewUrl={editLogoPreviewUrl}
+        onCancel={handleCloseEdit}
+        onSubmit={handleSaveChannelProfile}
+        onFieldChange={handleEditDraftChange}
+        onSocialChange={handleEditSocialChange}
+        onBannerFileChange={setEditBannerFile}
+        onLogoFileChange={setEditLogoFile}
+        fieldError={editFieldError}
+        error={editError}
+        saving={editSaving}
+        disabled={!isOwnChannel}
+        saveDisabled={editHasValidationErrors}
+        submitLabel="Save channel"
+        savingLabel="Saving..."
+        cancelLabel={editEditorDirty ? 'Discard' : 'Cancel'}
+        canBackdropClose={!editEditorDirty}
+        visibilityLabel="Make channel public"
+        visibilityHelp="Anonymous visitors can view your channel page and public profile links."
+        formId="channel-profile-editor-form"
+      />
     </div>
   );
 }
