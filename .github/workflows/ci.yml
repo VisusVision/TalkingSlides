@@ -67,7 +67,12 @@ jobs:
 
       - name: Frontend tests
         working-directory: services/frontend
-        run: npm run test -- --run
+        run: |
+          if npm run | grep -q "test:ci"; then
+            npm run test:ci
+          else
+            npm test
+          fi
 
       - name: Frontend build
         working-directory: services/frontend
