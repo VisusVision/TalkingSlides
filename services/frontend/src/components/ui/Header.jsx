@@ -192,7 +192,7 @@ export default function Header({
 
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
             {isAuthenticated && (
-              <div ref={notificationRef} className="relative hidden md:block">
+              <div ref={notificationRef} className="relative block">
                 <button
                   type="button"
                   className="focus-ring relative inline-flex h-10 w-10 items-center justify-center rounded-full text-[#9ca3af] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
@@ -209,7 +209,7 @@ export default function Header({
                 </button>
 
                 {notificationsOpen && (
-                  <div className="absolute right-0 top-12 z-[60] w-[22rem] overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-primary)] shadow-2xl">
+                  <div className="fixed left-3 right-3 top-16 z-[60] w-auto overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-primary)] shadow-2xl md:absolute md:left-auto md:right-0 md:top-12 md:w-[22rem]">
                     <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-4 py-3">
                       <div>
                         <p className="text-sm font-semibold">Notifications</p>
@@ -246,7 +246,7 @@ export default function Header({
                       })}
                     </div>
 
-                    <div className="max-h-[26rem] overflow-y-auto">
+                    <div className="max-h-[calc(100vh-15rem)] overflow-y-auto md:max-h-[26rem]">
                       {notificationsLoading && (
                         <div className="px-4 py-6 text-sm text-[var(--text-secondary)]">
                           <p className="font-semibold text-[var(--text-primary)]">Loading notifications</p>
