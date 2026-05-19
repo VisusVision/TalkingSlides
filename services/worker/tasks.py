@@ -4976,8 +4976,8 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         output_language = str(report_metadata.get("output_language") or "auto")
         lesson_input = build_lesson_intelligence_input(report.project, output_language=output_language)
         if expected_source_hash and lesson_input.source_hash != expected_source_hash:
-            _mark_lesson_intelligence_enhancement(report_id, "stale", task_id=task_id, error="source_hash_changed")
-            return {"report_id": report_id, "status": "stale", "provider": report.provider}
+            _mark_lesson_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
 
         analysis = analyze_lesson_ollama_background(lesson_input, chain=report.provider_chain)
         analysis_metadata = {
@@ -5058,8 +5058,8 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             output_language=output_language,
         )
         if expected_source_hash and analytics_input.source_hash != expected_source_hash:
-            _mark_analytics_intelligence_enhancement(report_id, "stale", task_id=task_id, error="source_hash_changed")
-            return {"report_id": report_id, "status": "stale", "provider": report.provider}
+            _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
 
         analysis = analyze_analytics_ollama_background(analytics_input, chain=report.provider_chain)
         analysis_metadata = {

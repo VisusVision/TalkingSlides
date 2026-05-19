@@ -437,7 +437,7 @@ function AnalyticsEnhancementLabel({ report }) {
     : status === 'done'
       ? 'Ollama enhanced'
       : failed
-        ? 'Ollama unavailable; heuristic kept'
+        ? 'Ollama enhancement failed; heuristic analysis kept'
         : '';
   if (!label) return null;
   const className = failed
@@ -1421,7 +1421,7 @@ export default function Analytics({ user }) {
         {intelligenceEnhancementFailed && (
           <div className="flex items-start gap-2 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-200">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <span>{intelligenceReport?.enhancement_error_safe || 'Ollama unavailable; heuristic kept.'}</span>
+            <span>{intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}</span>
           </div>
         )}
 

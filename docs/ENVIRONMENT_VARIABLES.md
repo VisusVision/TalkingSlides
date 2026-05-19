@@ -158,15 +158,19 @@ Columns:
 | `INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | `20` | Upper bound for synchronous Ollama calls so API workers can return fallback before Gunicorn timeout. |
 | `INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED` | API/worker | Optional | Recommended | `true` | Queues background Ollama enhancement while returning heuristic reports immediately. |
 | `INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Recommended | `120` | Background Ollama timeout for progressive intelligence enhancement. |
+| `INTELLIGENCE_CELERY_QUEUE` | API/worker | Optional | Recommended | render queue | Queue used for progressive intelligence enhancement tasks. Local compose consumes `render` by default; use a dedicated queue only if a worker consumes it. |
+| `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` | API | Optional | Recommended | `900` | Pending/running enhancement age before it is marked failed so polling can stop and re-analyze can queue again. |
 | `LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | global cap | Lesson-specific synchronous cap. |
 | `ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | global cap | Analytics-specific synchronous cap. |
 | `LESSON_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Recommended | global background timeout | Lesson-specific background Ollama timeout. |
 | `ANALYTICS_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Recommended | global background timeout | Analytics-specific background Ollama timeout. |
-| `CELERY_INTELLIGENCE_QUEUE` | API/worker | Optional | Optional | `celery` | Queue used for progressive intelligence enhancement tasks. |
+| `CELERY_INTELLIGENCE_QUEUE` | API/worker | Optional | Optional | legacy alias | Backward-compatible alias for `INTELLIGENCE_CELERY_QUEUE`. |
 | `OLLAMA_LESSON_INTELLIGENCE_BASE_URL`, `OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL` | API | Optional | If Ollama | `OLLAMA_BASE_URL` fallback | Local Ollama endpoints. |
 | `OLLAMA_LESSON_INTELLIGENCE_MODEL`, `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` | API | Optional | If Ollama | `qwen2.5:7b-instruct` | Local Ollama models. |
 
 Keep synchronous Ollama timeout caps lower than the API/Gunicorn worker timeout. Docker uses Gunicorn without an explicit `--timeout`, so the effective default is 30 seconds; a provider timeout above that can kill the worker before heuristic fallback is returned. Long-running local LLM analysis should use the background job/polling flow before raising these caps.
+
+For the current local worker, use `INTELLIGENCE_CELERY_QUEUE=render`. If you prefer `INTELLIGENCE_CELERY_QUEUE=celery`, configure `CELERY_WORKER_QUEUES=celery,render` or run a dedicated worker for `celery`.
 
 ## Subtitle Translation and Moderation-adjacent Providers
 

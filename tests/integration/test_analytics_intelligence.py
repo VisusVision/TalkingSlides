@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 from urllib.error import URLError
 
@@ -21,6 +22,7 @@ django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
 from django.test import override_settings  # noqa: E402
+from django.utils import timezone  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
 from core.analytics_intelligence import (  # noqa: E402
@@ -313,6 +315,7 @@ def test_get_without_report_exposes_current_hash_and_stale():
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
     OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://127.0.0.1:9",
     ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=0.5,
+    INTELLIGENCE_CELERY_QUEUE="analytics-intelligence-test",
 )
 def test_post_analyze_returns_heuristic_and_queues_analytics_ollama(monkeypatch):
     publisher = _make_user("ai_ollama_owner")
@@ -335,6 +338,13 @@ def test_post_analyze_returns_heuristic_and_queues_analytics_ollama(monkeypatch)
     assert attempts[0]["provider"] == "ollama"
     assert attempts[0]["status"] == "queued"
     assert dispatch_calls[0]["task_name"] == "worker.tasks.enhance_analytics_intelligence_report"
+    assert dispatch_calls[0]["queue"] == "analytics-intelligence-test"
+
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["queue"] == "analytics-intelligence-test"
+    assert enhancement["task_id"] == "fake-analytics-intelligence-task"
+    assert enhancement["queued_at"]
 
     latest = _client(publisher).get(_latest_url())
 
@@ -368,6 +378,98 @@ def test_duplicate_analytics_analyze_does_not_enqueue_duplicate_for_same_source(
     ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
 )
+def test_force_analytics_analyze_requeues_fresh_pending_enhancement(monkeypatch):
+    publisher = _make_user("ai_force_requeue_owner")
+    viewer = _make_user("ai_force_requeue_viewer", role="student")
+    lesson = _make_project(publisher, "Force requeue analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(publisher).post(_analyze_url(), {}, format="json")
+    second = _client(publisher).post(_analyze_url(), {"force": True}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert len(dispatch_calls) == 2
+    old_report = AnalyticsIntelligenceReport.objects.get(pk=first.data["id"])
+    assert old_report.metadata["progressive_enhancement"]["status"] == "failed"
+    assert "superseded" in old_report.metadata["progressive_enhancement"]["error"]
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    INTELLIGENCE_ENHANCEMENT_STALE_SECONDS=60,
+)
+def test_stale_analytics_pending_enhancement_is_marked_failed(monkeypatch):
+    publisher = _make_user("ai_stale_pending_owner")
+    viewer = _make_user("ai_stale_pending_viewer", role="student")
+    lesson = _make_project(publisher, "Stale pending analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    metadata = dict(report.metadata)
+    enhancement = dict(metadata["progressive_enhancement"])
+    enhancement["queued_at"] = (timezone.now() - timedelta(seconds=120)).isoformat()
+    metadata["progressive_enhancement"] = enhancement
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+
+    latest = _client(publisher).get(_latest_url())
+
+    assert latest.status_code == 200
+    assert latest.data["id"] == response.data["id"]
+    assert latest.data["enhancement_pending"] is False
+    assert latest.data["enhancement_status"] == "failed"
+    assert "stale timeout" in latest.data["enhancement_error_safe"]
+    report.refresh_from_db()
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["failed_at"]
+    assert enhancement["stale"] is True
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    INTELLIGENCE_ENHANCEMENT_STALE_SECONDS=60,
+)
+def test_stale_analytics_pending_reanalyze_enqueues_again(monkeypatch):
+    publisher = _make_user("ai_stale_requeue_owner")
+    viewer = _make_user("ai_stale_requeue_viewer", role="student")
+    lesson = _make_project(publisher, "Stale requeue analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(publisher).post(_analyze_url(), {}, format="json")
+    old_report = AnalyticsIntelligenceReport.objects.get(pk=first.data["id"])
+    metadata = dict(old_report.metadata)
+    enhancement = dict(metadata["progressive_enhancement"])
+    enhancement["queued_at"] = (timezone.now() - timedelta(seconds=120)).isoformat()
+    metadata["progressive_enhancement"] = enhancement
+    old_report.metadata = metadata
+    old_report.save(update_fields=["metadata", "updated_at"])
+
+    second = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert second.data["enhancement_pending"] is True
+    assert len(dispatch_calls) == 2
+    old_report.refresh_from_db()
+    assert old_report.metadata["progressive_enhancement"]["status"] == "failed"
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+)
 def test_analytics_stale_source_hash_allows_new_enhancement(monkeypatch):
     publisher = _make_user("ai_stale_new_owner")
     viewer = _make_user("ai_stale_new_viewer", role="student")
@@ -386,6 +488,32 @@ def test_analytics_stale_source_hash_allows_new_enhancement(monkeypatch):
     assert first.data["id"] != second.data["id"]
     assert first.data["source_hash"] != second.data["source_hash"]
     assert len(dispatch_calls) == 2
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+)
+def test_analytics_enhancement_task_start_sets_running(monkeypatch):
+    publisher = _make_user("ai_task_running_owner")
+    viewer = _make_user("ai_task_running_viewer", role="student")
+    lesson = _make_project(publisher, "Task running analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    from worker.tasks import _mark_analytics_intelligence_enhancement  # noqa: E402
+
+    _mark_analytics_intelligence_enhancement(response.data["id"], "running", task_id="task-started")
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+
+    assert enhancement["status"] == "running"
+    assert enhancement["task_id"] == "task-started"
+    assert enhancement["started_at"]
+    assert report.metadata["provider_chain_attempts"][0]["status"] == "running"
 
 
 @override_settings(
@@ -474,6 +602,10 @@ def test_background_success_updates_analytics_report_to_ollama(monkeypatch):
     assert latest.data["summary"] == "Ollama analytics summary."
     assert latest.data["health_score"] == 76
     assert latest.data["enhancement_status"] == "done"
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["started_at"]
+    assert enhancement["finished_at"]
     assert latest.data["provider_chain_attempts"][0]["status"] == "success"
     assert "Analytics payload" in captured["body"]
 
@@ -509,6 +641,11 @@ def test_invalid_analytics_ollama_json_falls_back_to_heuristic(monkeypatch):
     assert latest.data["fallback_used"] is True
     assert latest.data["enhancement_pending"] is False
     assert latest.data["enhancement_status"] == "failed"
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["started_at"]
+    assert enhancement["finished_at"]
+    assert enhancement["failed_at"]
     assert "ollama.test" not in json.dumps(latest.data)
     attempts = latest.data["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"

@@ -1020,7 +1020,7 @@ function lessonIntelligenceEnhancementLabel(report) {
   if (provider !== 'ollama') return '';
   if (['pending', 'running'].includes(status)) return 'Ollama enhancement running';
   if (status === 'done') return 'Ollama enhanced';
-  if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Ollama unavailable; heuristic kept';
+  if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Ollama enhancement failed; heuristic analysis kept';
   return '';
 }
 
@@ -1257,7 +1257,7 @@ function LessonIntelligencePanel({
       )}
       {enhancementFailed && (
         <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
-          {report?.enhancement_error_safe || 'Ollama unavailable; heuristic kept.'}
+          {report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
         </p>
       )}
 

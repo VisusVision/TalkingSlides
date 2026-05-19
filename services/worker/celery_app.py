@@ -42,7 +42,11 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 
 render_queue = str(os.environ.get("CELERY_RENDER_QUEUE", "render") or "render").strip() or "render"
 avatar_queue = str(os.environ.get("CELERY_AVATAR_QUEUE", "avatar") or "avatar").strip() or "avatar"
-intelligence_queue = str(os.environ.get("CELERY_INTELLIGENCE_QUEUE", "celery") or "celery").strip() or "celery"
+intelligence_queue = str(
+    os.environ.get("INTELLIGENCE_CELERY_QUEUE")
+    or os.environ.get("CELERY_INTELLIGENCE_QUEUE")
+    or render_queue
+).strip() or render_queue
 legacy_queue = str(os.environ.get("CELERY_LEGACY_QUEUE", "celery") or "celery").strip() or "celery"
 
 app.conf.task_default_queue = str(os.environ.get("CELERY_TASK_DEFAULT_QUEUE", render_queue) or render_queue).strip()

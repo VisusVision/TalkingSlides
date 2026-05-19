@@ -40,6 +40,7 @@ def enhancement_metadata(
     provider: str = "ollama",
     status: str = "pending",
     task_id: str = "",
+    queue: str = "",
     error: Exception | str | None = None,
     enabled: bool = True,
 ) -> dict[str, Any]:
@@ -52,7 +53,9 @@ def enhancement_metadata(
         "queued_at": now if normalized_status == "pending" else "",
         "started_at": now if normalized_status == "running" else "",
         "finished_at": now if normalized_status in TERMINAL_ENHANCEMENT_STATUSES else "",
+        "failed_at": now if normalized_status in {"failed", "stale"} else "",
         "task_id": str(task_id or ""),
+        "queue": str(queue or "").strip(),
         "error": safe_enhancement_error(error),
     }
     return payload
@@ -64,6 +67,7 @@ def merge_enhancement_metadata(
     provider: str | None = None,
     status: str | None = None,
     task_id: str | None = None,
+    queue: str | None = None,
     error: Exception | str | None = None,
     enabled: bool | None = None,
 ) -> dict[str, Any]:
@@ -78,6 +82,8 @@ def merge_enhancement_metadata(
         enhancement["enabled"] = bool(enabled)
     if task_id is not None:
         enhancement["task_id"] = str(task_id or "")
+    if queue is not None:
+        enhancement["queue"] = str(queue or "").strip()
     if status is not None:
         normalized_status = str(status or "").strip().lower() or "pending"
         previous_status = str(enhancement.get("status") or "").strip().lower()
@@ -88,6 +94,8 @@ def merge_enhancement_metadata(
             enhancement["started_at"] = now
         if normalized_status in TERMINAL_ENHANCEMENT_STATUSES:
             enhancement["finished_at"] = now
+        if normalized_status in {"failed", "stale"}:
+            enhancement["failed_at"] = now
     if error is not None:
         enhancement["error"] = safe_enhancement_error(error)
     elif status in {"done", "pending", "running"}:
