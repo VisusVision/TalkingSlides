@@ -19,7 +19,10 @@ from core.intelligence_progressive import (
     bounded_adaptive_background_timeout,
     enhancement_response_fields,
     first_provider_name,
+    intelligence_runtime_profile_metadata,
+    lesson_section_statuses,
     ollama_chunk_max_chars,
+    ollama_chunk_concurrency,
     ollama_chunk_timeout_seconds,
     ollama_total_timeout_budget_seconds,
     provider_attempt as progressive_provider_attempt,
@@ -637,6 +640,7 @@ def analyze_with_provider_chain(
             "input_truncated": lesson_input.input_truncated,
             "source_char_count": lesson_input.source_chars,
             "input_char_count": lesson_input.input_chars,
+            "sections": lesson_section_statuses(status="done", provider=normalized["provider"]),
         }
         return normalized
 
@@ -655,6 +659,7 @@ def analyze_with_provider_chain(
         "input_truncated": lesson_input.input_truncated,
         "source_char_count": lesson_input.source_chars,
         "input_char_count": lesson_input.input_chars,
+        "sections": lesson_section_statuses(status="done", provider="heuristic"),
     }
     return fallback
 
@@ -730,6 +735,7 @@ def analyze_lesson_heuristic_immediate(
         "input_truncated": lesson_input.input_truncated,
         "source_char_count": lesson_input.source_chars,
         "input_char_count": lesson_input.input_chars,
+        "sections": lesson_section_statuses(status="done", provider="heuristic"),
     }
     return normalized
 
@@ -898,6 +904,69 @@ def _synthesize_lesson_chunk_results(
     }
 
 
+def lesson_sections_for_analysis(
+    analysis: dict[str, Any],
+    *,
+    existing_report: LessonIntelligenceReport | None = None,
+    provider: str = "ollama",
+) -> dict[str, dict[str, Any]]:
+    existing = existing_report
+    section_specs = {
+        "summary": ["lesson_summary", "summary", "short_description", "complexity_level", "complexity_score"],
+        "clarity": ["clarity_warnings", "complexity_reasons"],
+        "page_suggestions": ["page_suggestions"],
+        "expanded_narration": ["expanded_narration_suggestions"],
+        "tags": ["suggested_tags"],
+    }
+    existing_values = {
+        "summary": bool(existing and (existing.summary or existing.short_description or existing.complexity_score)),
+        "clarity": bool(existing and (existing.clarity_warnings or existing.complexity_reasons)),
+        "page_suggestions": bool(existing and existing.page_suggestions),
+        "expanded_narration": bool(existing and existing.expanded_narration_suggestions),
+        "tags": bool(existing and existing.suggested_tags),
+    }
+    statuses: dict[str, dict[str, Any]] = {}
+    for section, fields in section_specs.items():
+        has_new = any(bool(analysis.get(field)) for field in fields)
+        if has_new or not existing_values[section]:
+            statuses[section] = {
+                "status": "done",
+                "provider": provider,
+            }
+        else:
+            statuses[section] = {
+                "status": "failed",
+                "provider": "heuristic",
+                "error": "ollama_section_empty",
+            }
+    return statuses
+
+
+def apply_lesson_section_fallbacks(
+    report: LessonIntelligenceReport,
+    analysis: dict[str, Any],
+    sections: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(analysis)
+    if str(sections.get("summary", {}).get("status") or "") == "failed":
+        merged["lesson_summary"] = report.summary
+        merged["summary"] = report.summary
+        merged["short_description"] = report.short_description
+        merged["complexity_level"] = report.complexity_level
+        merged["complexity_score"] = report.complexity_score
+        merged["complexity_reasons"] = report.complexity_reasons
+    if str(sections.get("clarity", {}).get("status") or "") == "failed":
+        merged["clarity_warnings"] = report.clarity_warnings
+        merged["complexity_reasons"] = report.complexity_reasons
+    if str(sections.get("page_suggestions", {}).get("status") or "") == "failed":
+        merged["page_suggestions"] = report.page_suggestions
+    if str(sections.get("expanded_narration", {}).get("status") or "") == "failed":
+        merged["expanded_narration_suggestions"] = report.expanded_narration_suggestions
+    if str(sections.get("tags", {}).get("status") or "") == "failed":
+        merged["suggested_tags"] = report.suggested_tags
+    return merged
+
+
 def analyze_lesson_ollama_background(
     lesson_input: LessonIntelligenceInput,
     *,
@@ -991,6 +1060,8 @@ def analyze_lesson_ollama_background(
         "prompt_version": LESSON_INTELLIGENCE_PROMPT_VERSION,
         **run_identity,
         **chunk_metadata,
+        **intelligence_runtime_profile_metadata(),
+        "chunk_concurrency": ollama_chunk_concurrency(),
         "timeout_seconds": timeout_seconds,
     }
     return normalized
@@ -1135,7 +1206,14 @@ def report_response_payload(
                 "run_key",
                 "model",
                 "prompt_version",
+                "hardware_profile",
                 "input_fingerprint",
+                "chunk_max_chars",
+                "chunk_concurrency",
+                "chunk_timeout_min_seconds",
+                "chunk_timeout_max_seconds",
+                "total_timeout_max_seconds",
+                "sections",
                 "chunked",
                 "chunk_count",
                 "completed_chunks",

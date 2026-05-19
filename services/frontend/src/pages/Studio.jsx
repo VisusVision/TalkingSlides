@@ -1037,8 +1037,72 @@ function lessonIntelligenceEnhancementLabel(report) {
     if (failedChunks > 0) return 'Some chunks failed; partial enhancement used';
     return 'Ollama enhanced';
   }
+  if (status === 'partial') return 'Some sections enhanced; heuristic kept where needed';
   if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Heuristic fallback kept';
   return '';
+}
+
+const LESSON_INTELLIGENCE_SECTION_LABELS = {
+  summary: 'Summary',
+  clarity: 'Clarity',
+  page_suggestions: 'Page suggestions',
+  expanded_narration: 'Narration suggestions',
+  tags: 'Tags',
+};
+
+function lessonIntelligenceSectionEntries(report) {
+  const progressive = report?.metadata?.progressive_enhancement?.sections;
+  const topLevel = report?.metadata?.sections;
+  const sections = progressive && typeof progressive === 'object' ? progressive : topLevel;
+  if (!sections || typeof sections !== 'object') return [];
+  return Object.entries(LESSON_INTELLIGENCE_SECTION_LABELS)
+    .map(([key, label]) => {
+      const meta = sections[key] && typeof sections[key] === 'object' ? sections[key] : {};
+      const status = String(meta.status || '').trim().toLowerCase();
+      const provider = String(meta.provider || '').trim().toLowerCase();
+      if (!status && !provider) return null;
+      return { key, label, status, provider };
+    })
+    .filter(Boolean);
+}
+
+function lessonIntelligenceSectionText(entry) {
+  if (!entry) return '';
+  if (['pending', 'running'].includes(entry.status)) return `${entry.label} analyzing...`;
+  if (entry.status === 'done' && entry.provider === 'ollama') return `${entry.label} enhanced`;
+  if (entry.status === 'done') return `${entry.label} ready`;
+  if (entry.status === 'failed') return `${entry.label} heuristic kept`;
+  return `${entry.label} ${entry.status || 'ready'}`;
+}
+
+function LessonIntelligenceSectionStatusList({ report }) {
+  const entries = lessonIntelligenceSectionEntries(report);
+  if (!entries.length) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {entries.map((entry) => {
+        const pending = ['pending', 'running'].includes(entry.status);
+        const enhanced = entry.status === 'done' && entry.provider === 'ollama';
+        const failed = entry.status === 'failed';
+        return (
+          <span
+            key={entry.key}
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              failed
+                ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                : pending
+                  ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                  : enhanced
+                    ? 'bg-[color:var(--feedback-success-bg)] text-[color:var(--feedback-success-fg)]'
+                    : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
+            }`}
+          >
+            {lessonIntelligenceSectionText(entry)}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 function lessonIntelligenceLanguageLabel(report) {
@@ -1277,6 +1341,7 @@ function LessonIntelligencePanel({
           {report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic fallback kept.'}
         </p>
       )}
+      {hasReport && <LessonIntelligenceSectionStatusList report={report} />}
 
       {!loading && enabled && !hasReport && !error && (
         <div className="mt-4 rounded-xl bg-[color:var(--surface-muted)] p-4">

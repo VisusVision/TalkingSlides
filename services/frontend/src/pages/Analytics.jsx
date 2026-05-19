@@ -450,6 +450,8 @@ function AnalyticsEnhancementLabel({ report }) {
         : 'Ollama enhancement running')
     : status === 'done'
       ? (failedChunks > 0 ? 'Some chunks failed; partial enhancement used' : 'Ollama enhanced insight')
+      : status === 'partial'
+        ? 'Some chunks failed; partial enhancement used'
       : failed
         ? 'Basic fallback insight; Ollama enhancement failed'
         : '';

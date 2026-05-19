@@ -153,6 +153,7 @@ from core.intelligence_progressive import (
     enhancement_lock_key,
     enhancement_from_metadata,
     enhancement_metadata,
+    lesson_section_statuses,
     merge_enhancement_metadata,
     provider_attempt as progressive_provider_attempt,
     safe_enhancement_error,
@@ -6233,7 +6234,16 @@ def _identity_metadata(run_identity: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     return {
         key: str(run_identity.get(key) or "")
-        for key in ("run_key", "source_hash", "provider", "model", "output_language", "prompt_version", "input_fingerprint")
+        for key in (
+            "run_key",
+            "source_hash",
+            "provider",
+            "model",
+            "output_language",
+            "prompt_version",
+            "hardware_profile",
+            "input_fingerprint",
+        )
         if run_identity.get(key) is not None
     }
 
@@ -6259,7 +6269,7 @@ def _latest_lesson_report_for_source(
                 return report
             if bool(enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {}).get("stale")):
                 return None
-            if not force and (report.provider == "ollama" and (report.status == "done" or status_value == "done")):
+            if not force and (report.provider == "ollama" and (report.status == "done" or status_value in {"done", "partial"})):
                 return report
             if not force and report.provider == "heuristic":
                 return report
@@ -6271,7 +6281,7 @@ def _latest_lesson_report_for_source(
         .order_by("-created_at", "-id")
         .first()
     )
-    if not force and done_ollama and (done_ollama.status == "done" or _enhancement_status_for_report(done_ollama) == "done"):
+    if not force and done_ollama and (done_ollama.status == "done" or _enhancement_status_for_report(done_ollama) in {"done", "partial"}):
         return done_ollama
     latest = (
         project.lesson_intelligence_reports.filter(source_hash=source_hash)
@@ -6316,7 +6326,7 @@ def _latest_analytics_report_for_source(user: User, analytics_input, *, force: b
                 return report
             if bool(enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {}).get("stale")):
                 return None
-            if not force and (report.provider == "ollama" and (report.status == "done" or status_value == "done")):
+            if not force and (report.provider == "ollama" and (report.status == "done" or status_value in {"done", "partial"})):
                 return report
             if not force and report.provider == "heuristic":
                 return report
@@ -6335,7 +6345,7 @@ def _latest_analytics_report_for_source(user: User, analytics_input, *, force: b
         .order_by("-created_at", "-id")
         .first()
     )
-    if not force and done_ollama and (done_ollama.status == "done" or _enhancement_status_for_report(done_ollama) == "done"):
+    if not force and done_ollama and (done_ollama.status == "done" or _enhancement_status_for_report(done_ollama) in {"done", "partial"}):
         return done_ollama
     latest = (
         AnalyticsIntelligenceReport.objects.filter(
@@ -6439,6 +6449,7 @@ def _queue_lesson_intelligence_enhancement(report: LessonIntelligenceReport) -> 
         status="pending",
         task_id=task_id,
         queue=queue_name,
+        extra={"sections": lesson_section_statuses(status="pending", provider="ollama")},
     )
     report.save(update_fields=["metadata", "updated_at"])
 
@@ -6656,7 +6667,10 @@ def schedule_lesson_intelligence(
                     provider="ollama",
                     status="pending",
                     queue=queue_name,
-                    extra=identity_metadata,
+                    extra={
+                        **identity_metadata,
+                        "sections": lesson_section_statuses(status="pending", provider="ollama"),
+                    },
                 ),
             }
         else:
@@ -6889,7 +6903,10 @@ class ProjectLessonIntelligenceView(APIView):
                         provider="ollama",
                         status="pending",
                         queue=queue_name,
-                        extra=identity_metadata,
+                        extra={
+                            **identity_metadata,
+                            "sections": lesson_section_statuses(status="pending", provider="ollama"),
+                        },
                     ),
                 }
             else:
@@ -9729,6 +9746,8 @@ class CreatorAnalyticsView(APIView):
                 "category_name": project.category.name if project.category else "Uncategorized",
                 "status": project.status,
                 "is_published": bool(project.is_published),
+                "has_cover": bool(project.cover_image_processed or project.cover_image_original),
+                "missing_cover": not bool(project.cover_image_processed or project.cover_image_original),
                 "created_at": project.created_at.isoformat() if project.created_at else "",
                 "updated_at": project.updated_at.isoformat() if project.updated_at else "",
                 "latest_activity_at": project.updated_at.isoformat() if project.updated_at else "",
@@ -9949,6 +9968,31 @@ class CreatorAnalyticsView(APIView):
             key=lambda item: item.get("latest_activity_at") or item.get("updated_at") or item.get("created_at") or "",
             reverse=True,
         )[:20]
+        lessons_with_activity = [
+            lesson for lesson in lessons_table
+            if int(lesson.get("views") or 0) > 0
+            or int(lesson.get("engagement_events") or 0) > 0
+            or float(lesson.get("average_progress") or 0) > 0
+        ]
+        weak_lessons = sorted(
+            lessons_with_activity,
+            key=lambda item: (
+                float(item.get("completion_rate") or 0),
+                float(item.get("average_progress") or 0),
+                -int(item.get("views") or 0),
+                str(item.get("title") or ""),
+            ),
+        )[:10]
+        strong_lessons = sorted(
+            lessons_with_activity,
+            key=lambda item: (
+                float(item.get("completion_rate") or 0),
+                float(item.get("average_progress") or 0),
+                int(item.get("engagement_events") or 0),
+                int(item.get("views") or 0),
+            ),
+            reverse=True,
+        )[:5]
 
         return {
             "summary": {
@@ -9986,6 +10030,15 @@ class CreatorAnalyticsView(APIView):
                 "truncated": bool(comments_count_truncated or comments_text_truncated),
                 "limit": comment_feedback_limit,
                 "max_comment_chars": comment_feedback_chars,
+            },
+            "lesson_quality": {
+                "weak_lessons": weak_lessons,
+                "strong_lessons": strong_lessons,
+                "missing_cover_count": sum(1 for lesson in lessons_table if lesson.get("missing_cover")),
+                "with_cover_count": sum(1 for lesson in lessons_table if lesson.get("has_cover")),
+                "limitations": [
+                    "Lesson intelligence summaries are included only for selected weak/strong lessons.",
+                ],
             },
             "filters": {
                 "from": date_from.isoformat(),

@@ -157,6 +157,7 @@ Columns:
 | `ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
 | `INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | `20` | Upper bound for synchronous Ollama calls so API workers can return fallback before Gunicorn timeout. |
 | `INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED` | API/worker | Optional | Recommended | `true` | Queues background Ollama enhancement while returning heuristic reports immediately. |
+| `INTELLIGENCE_HARDWARE_PROFILE` | API/worker | Optional | Recommended | `local_mid` | Selects model/chunk/timeout defaults. Allowed: `local_low`, `local_mid`, `production_gpu`. Explicit model and timeout env vars still win. |
 | `INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Legacy/fallback | `120` | Legacy background Ollama timeout input. Adaptive background settings now determine the effective timeout. |
 | `INTELLIGENCE_BACKGROUND_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | `60` | Minimum adaptive background intelligence timeout. |
 | `INTELLIGENCE_BACKGROUND_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `300` | Maximum adaptive background intelligence timeout. |
@@ -167,6 +168,7 @@ Columns:
 | `INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES` | worker | Optional | Optional | `8` | Maximum lesson pages grouped into one Ollama lesson chunk. |
 | `INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS` | worker | Optional | Optional | `10` | Maximum analytics rows grouped into one Ollama analytics chunk. |
 | `INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD` | worker | Optional | Optional | `40` | Analytics row count that can still use one-shot Ollama when prompt size is small. |
+| `INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY` | worker | Optional | Optional | profile default | Profile-aware local Ollama chunk concurrency hint. Keep `1` for local CPU/shared hosts; production GPU can use `2-4` if the Ollama host can handle it. |
 | `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | `45` | Minimum timeout for one background Ollama chunk request. |
 | `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `120` | Maximum timeout for one background Ollama chunk request. |
 | `INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `600` | Maximum total budget for one chunked Ollama enhancement task. |
@@ -185,13 +187,15 @@ Columns:
 | `ANALYTICS_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Recommended | global background timeout | Analytics-specific background Ollama timeout. |
 | `CELERY_INTELLIGENCE_QUEUE` | API/worker | Optional | Optional | legacy alias | Backward-compatible alias for `INTELLIGENCE_CELERY_QUEUE`. |
 | `OLLAMA_LESSON_INTELLIGENCE_BASE_URL`, `OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL` | API | Optional | If Ollama | `OLLAMA_BASE_URL` fallback | Local Ollama endpoints. |
-| `OLLAMA_LESSON_INTELLIGENCE_MODEL`, `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` | API | Optional | If Ollama | `qwen2.5:7b-instruct` | Local Ollama models. |
+| `OLLAMA_LESSON_INTELLIGENCE_MODEL`, `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` | API | Optional | If Ollama | profile default | Local Ollama models. Local lesson defaults favor `qwen2.5:7b-instruct`; local analytics defaults favor `qwen2.5:3b`; production GPU defaults favor larger qwen3 models. |
 
 Keep synchronous Ollama timeout caps lower than the API/Gunicorn worker timeout. Docker uses Gunicorn without an explicit `--timeout`, so the effective default is 30 seconds; a provider timeout above that can kill the worker before heuristic fallback is returned. Long-running local LLM analysis should use the background job/polling flow before raising these caps.
 
 For the current local worker, use `INTELLIGENCE_CELERY_QUEUE=render`. If you prefer `INTELLIGENCE_CELERY_QUEUE=celery`, configure `CELERY_WORKER_QUEUES=celery,render` or run a dedicated worker for `celery`.
 
 Production should prefer `INTELLIGENCE_CELERY_QUEUE=intelligence` with a separate worker consuming only `intelligence` and concurrency `1`. This keeps Ollama analysis behind render/TTS/avatar resource needs instead of sharing the critical render queue.
+
+Studio Intelligence is the detailed lesson analyzer. Analytics Intelligence should stay compact: it uses creator metrics, weak/strong lesson stats, sanitized comments, cover signals, and selected `LessonIntelligenceReport` summaries instead of full transcripts.
 
 ## Subtitle Translation and Moderation-adjacent Providers
 

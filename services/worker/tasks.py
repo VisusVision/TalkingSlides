@@ -4952,7 +4952,13 @@ def _mark_lesson_intelligence_enhancement(
     failed_chunks: int | None = None,
     extra: dict[str, Any] | None = None,
 ):
-    from core.intelligence_progressive import PROGRESSIVE_ENHANCEMENT_KEY, enhancement_lock_key, merge_enhancement_metadata
+    from core.intelligence_progressive import (
+        PROGRESSIVE_ENHANCEMENT_KEY,
+        TERMINAL_ENHANCEMENT_STATUSES,
+        enhancement_lock_key,
+        lesson_section_statuses,
+        merge_enhancement_metadata,
+    )
     from core.models import LessonIntelligenceReport
 
     report = LessonIntelligenceReport.objects.filter(pk=int(report_id)).first()
@@ -4967,6 +4973,10 @@ def _mark_lesson_intelligence_enhancement(
         progress_extra["completed_chunks"] = int(completed_chunks)
     if failed_chunks is not None:
         progress_extra["failed_chunks"] = int(failed_chunks)
+    if status_value == "running" and "sections" not in progress_extra:
+        progress_extra["sections"] = lesson_section_statuses(status="running", provider="ollama")
+    if status_value == "failed" and "sections" not in progress_extra:
+        progress_extra["sections"] = lesson_section_statuses(status="failed", provider="heuristic", error=error)
     metadata = merge_enhancement_metadata(
         report.metadata if isinstance(report.metadata, dict) else {},
         provider="ollama",
@@ -4976,11 +4986,12 @@ def _mark_lesson_intelligence_enhancement(
         error=error,
         extra=progress_extra,
     )
-    if status_value in {"running", "done", "failed"}:
-        _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
+    if status_value in {"running", "done", "partial", "failed"}:
+        attempt_status = "success" if status_value == "done" else status_value
+        _replace_intelligence_attempt(metadata, "ollama", attempt_status, error)
     report.metadata = metadata
     report.save(update_fields=["metadata", "updated_at"])
-    if status_value in {"done", "failed"}:
+    if status_value in TERMINAL_ENHANCEMENT_STATUSES:
         try:
             from django.core.cache import cache
 
@@ -5006,7 +5017,7 @@ def _mark_analytics_intelligence_enhancement(
     failed_chunks: int | None = None,
     extra: dict[str, Any] | None = None,
 ):
-    from core.intelligence_progressive import PROGRESSIVE_ENHANCEMENT_KEY, enhancement_lock_key, merge_enhancement_metadata
+    from core.intelligence_progressive import PROGRESSIVE_ENHANCEMENT_KEY, TERMINAL_ENHANCEMENT_STATUSES, enhancement_lock_key, merge_enhancement_metadata
     from core.models import AnalyticsIntelligenceReport
 
     report = AnalyticsIntelligenceReport.objects.filter(pk=int(report_id)).first()
@@ -5030,11 +5041,11 @@ def _mark_analytics_intelligence_enhancement(
         error=error,
         extra=progress_extra,
     )
-    if status_value in {"running", "done", "failed"}:
+    if status_value in {"running", "done", "partial", "failed"}:
         _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
     report.metadata = metadata
     report.save(update_fields=["metadata", "updated_at"])
-    if status_value in {"done", "failed"}:
+    if status_value in TERMINAL_ENHANCEMENT_STATUSES:
         try:
             from django.core.cache import cache
 
@@ -5095,9 +5106,11 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         LessonIntelligenceInputError,
         adaptive_lesson_intelligence_timeout,
         analyze_lesson_ollama_background,
+        apply_lesson_section_fallbacks,
         apply_analysis_to_report,
         build_lesson_intelligence_input,
         lesson_ollama_run_identity,
+        lesson_sections_for_analysis,
     )
     from core.models import LessonIntelligenceReport
 
@@ -5168,6 +5181,17 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         )
         timeout_seconds = (analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}).get("timeout_seconds") or timeout_seconds
         analysis_meta = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+        section_statuses = lesson_sections_for_analysis(
+            analysis,
+            existing_report=report,
+            provider="ollama",
+        )
+        analysis = apply_lesson_section_fallbacks(report, analysis, section_statuses)
+        has_failed_sections = any(
+            str(item.get("status") or "").strip().lower() == "failed"
+            for item in section_statuses.values()
+            if isinstance(item, dict)
+        )
         enhancement_extra = {
             **run_identity,
             "phase": "done",
@@ -5175,24 +5199,26 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             "chunk_count": int(analysis_meta.get("chunk_count") or 0),
             "completed_chunks": int(analysis_meta.get("completed_chunks") or 0),
             "failed_chunks": int(analysis_meta.get("failed_chunks") or 0),
-            "partial_enhancement": bool(analysis_meta.get("partial_enhancement")),
+            "partial_enhancement": bool(analysis_meta.get("partial_enhancement") or has_failed_sections),
+            "sections": section_statuses,
         }
         if isinstance(analysis_meta.get("chunk_limitations"), list):
             enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
         analysis_metadata = {
             **dict(analysis.get("metadata") or {}),
             "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
+            "sections": section_statuses,
         }
         analysis["metadata"] = merge_enhancement_metadata(
             analysis_metadata,
             provider="ollama",
-            status="done",
+            status="partial" if enhancement_extra["partial_enhancement"] else "done",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
             extra=enhancement_extra,
         )
         report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
-        return {"report_id": report.id, "status": "done", "provider": report.provider}
+        return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
     except (LessonIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Lesson intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
         _mark_lesson_intelligence_enhancement(
@@ -5335,13 +5361,13 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         analysis["metadata"] = merge_enhancement_metadata(
             analysis_metadata,
             provider="ollama",
-            status="done",
+            status="partial" if enhancement_extra["partial_enhancement"] else "done",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
             extra=enhancement_extra,
         )
         report = apply_analytics_analysis_to_report(report, analysis, source_hash=analytics_input.source_hash)
-        return {"report_id": report.id, "status": "done", "provider": report.provider}
+        return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
     except (AnalyticsIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Analytics intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
         _mark_analytics_intelligence_enhancement(

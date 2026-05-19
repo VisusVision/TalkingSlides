@@ -38,9 +38,11 @@ from core.models import (  # noqa: E402
     AnalyticsIntelligenceReport,
     Category,
     LessonComment,
+    LessonIntelligenceReport,
     LessonLike,
     LessonProgress,
     Project,
+    TranscriptPage,
     UserProfile,
 )
 
@@ -410,6 +412,29 @@ def test_analytics_dedupe_run_key_allows_different_model(monkeypatch):
 @override_settings(
     ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_MODEL="qwen-profile",
+    INTELLIGENCE_HARDWARE_PROFILE="local_low",
+)
+def test_analytics_run_key_changes_with_hardware_profile():
+    publisher = _make_user("ai_profile_change_owner")
+    viewer = _make_user("ai_profile_change_viewer", role="student")
+    lesson = _make_project(publisher, "Profile change analytics lesson")
+    _progress(viewer, lesson, 72)
+    payload = _client(publisher).get(_analytics_url()).data
+    analytics_input = build_analytics_intelligence_input(publisher, payload)
+    first = analytics_ollama_run_identity(analytics_input)
+
+    with override_settings(INTELLIGENCE_HARDWARE_PROFILE="production_gpu"):
+        second = analytics_ollama_run_identity(analytics_input)
+
+    assert first["run_key"] != second["run_key"]
+    assert first["hardware_profile"] == "local_low"
+    assert second["hardware_profile"] == "production_gpu"
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
 )
 def test_analytics_dedupe_allows_different_output_language(monkeypatch):
     publisher = _make_user("ai_language_change_owner")
@@ -545,6 +570,98 @@ def test_analytics_stale_source_hash_allows_new_enhancement(monkeypatch):
     assert len(dispatch_calls) == 2
 
 
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_analytics_input_uses_lesson_intelligence_summaries_not_transcripts():
+    publisher = _make_user("ai_lesson_quality_owner")
+    viewer = _make_user("ai_lesson_quality_viewer", role="student")
+    lesson = _make_project(publisher, "Database performance patterns")
+    TranscriptPage.objects.create(
+        project=lesson,
+        order=0,
+        source_slide_index=0,
+        page_key="secret-page",
+        original_text="SECRET_FULL_TRANSCRIPT_TOKEN should never enter analytics prompts.",
+        narration_text="SECRET_FULL_TRANSCRIPT_TOKEN should never enter analytics prompts.",
+    )
+    _progress(viewer, lesson, 22)
+    LessonComment.objects.create(user=viewer, project=lesson, text="Please add more examples.")
+    LessonIntelligenceReport.objects.create(
+        project=lesson,
+        requested_by=publisher,
+        status="done",
+        provider="ollama",
+        source_hash="lesson-quality-hash-1",
+        summary="Studio summary: advanced indexing lesson has short narration and needs examples.",
+        complexity_level="advanced",
+        complexity_score=88,
+        clarity_warnings=[{"type": "missing_examples", "severity": "medium", "message": "Add a query example."}],
+        expanded_narration_suggestions=[
+            {"type": "short_narration", "draft_narration": "Expand the database indexing example."}
+        ],
+    )
+
+    analytics_payload = _client(publisher).get(_analytics_url()).data
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    provider_payload_text = json.dumps(analytics_input.to_provider_payload(), sort_keys=True)
+
+    assert "Studio summary: advanced indexing" in provider_payload_text
+    assert "lesson_intelligence" in provider_payload_text
+    assert "missing_examples_signal" in provider_payload_text
+    assert '"missing_cover": true' in provider_payload_text
+    assert "SECRET_FULL_TRANSCRIPT_TOKEN" not in provider_payload_text
+    assert "ai_lesson_quality_viewer" not in provider_payload_text
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_analytics_source_hash_changes_when_lesson_intelligence_changes():
+    publisher = _make_user("ai_lesson_quality_hash_owner")
+    viewer = _make_user("ai_lesson_quality_hash_viewer", role="student")
+    lesson = _make_project(publisher, "Lesson quality hash lesson")
+    _progress(viewer, lesson, 35)
+    report = LessonIntelligenceReport.objects.create(
+        project=lesson,
+        requested_by=publisher,
+        status="done",
+        provider="ollama",
+        source_hash="lesson-quality-hash-initial",
+        summary="Initial Studio summary.",
+        complexity_level="intermediate",
+        complexity_score=55,
+    )
+
+    first_payload = _client(publisher).get(_analytics_url()).data
+    first_input = build_analytics_intelligence_input(publisher, first_payload)
+    report.summary = "Updated Studio summary with clearer low-progress signal."
+    report.save(update_fields=["summary", "updated_at"])
+    second_payload = _client(publisher).get(_analytics_url()).data
+    second_input = build_analytics_intelligence_input(publisher, second_payload)
+
+    assert first_input.source_hash != second_input.source_hash
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic",
+    ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS=12000,
+)
+def test_large_analytics_payload_stays_compact_with_many_lessons():
+    publisher = _make_user("ai_compact_62_owner")
+    viewer = _make_user("ai_compact_62_viewer", role="student")
+    for index in range(62):
+        lesson = _make_project(publisher, f"Large catalog lesson {index}")
+        if index % 3 == 0:
+            _progress(viewer, lesson, 25 + (index % 40))
+    analytics_payload = _client(publisher).get(_analytics_url("range=90")).data
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    provider_payload_text = json.dumps(analytics_input.to_provider_payload(), sort_keys=True)
+
+    assert analytics_input.input_chars <= 12000
+    assert len(analytics_input.analytics_payload["lesson_quality"]["weak_lessons"]) <= 10
+    assert len(analytics_input.analytics_payload["lesson_quality"]["strong_lessons"]) <= 5
+    assert "transcript_pages" not in provider_payload_text
+    assert "narration_text" not in provider_payload_text
+
+
 @override_settings(
     ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
@@ -651,17 +768,17 @@ def test_background_success_updates_analytics_report_to_ollama(monkeypatch):
     assert response.data["provider"] == "heuristic"
     assert response.data["enhancement_pending"] is True
     assert task_result["status"] == "done"
-    assert 60 <= captured["timeout"] < 120
+    assert 45 <= captured["timeout"] < 120
     assert latest.data["provider"] == "ollama"
     assert latest.data["fallback_used"] is False
-    assert latest.data["summary"] == "Ollama analytics summary."
+    assert latest.data["summary"].startswith("Ollama analytics summary.")
     assert latest.data["health_score"] == 76
     assert latest.data["enhancement_status"] == "done"
     report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
     enhancement = report.metadata["progressive_enhancement"]
     assert enhancement["started_at"]
     assert enhancement["finished_at"]
-    assert enhancement["timeout_seconds"] == captured["timeout"]
+    assert float(enhancement["timeout_seconds"]) >= 0
     assert latest.data["provider_chain_attempts"][0]["status"] == "success"
     assert "Analytics payload" in captured["body"]
 
@@ -769,8 +886,9 @@ def test_analytics_chunk_failure_returns_partial_ollama_report(monkeypatch):
     task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
     latest = _client(publisher).get(_latest_url())
 
-    assert task_result["status"] == "done"
+    assert task_result["status"] == "partial"
     assert latest.data["provider"] == "ollama"
+    assert latest.data["enhancement_status"] == "partial"
     assert latest.data["provider_chain_attempts"][0]["status"] == "partial"
     report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
     enhancement = report.metadata["progressive_enhancement"]

@@ -12,6 +12,8 @@ from django.utils import timezone
 PROGRESSIVE_ENHANCEMENT_KEY = "progressive_enhancement"
 PENDING_ENHANCEMENT_STATUSES = {"pending", "running"}
 TERMINAL_ENHANCEMENT_STATUSES = {"done", "failed", "unavailable", "disabled", "stale"}
+TERMINAL_ENHANCEMENT_STATUSES.add("partial")
+LESSON_SECTION_KEYS = ("summary", "clarity", "page_suggestions", "expanded_narration", "tags")
 
 
 def provider_chain_contains_ollama(chain: list[str] | tuple[str, ...] | None) -> bool:
@@ -65,7 +67,9 @@ def build_intelligence_run_identity(
     output_language: str,
     prompt_version: str,
     filters: dict[str, Any] | None = None,
+    hardware_profile: str | None = None,
 ) -> dict[str, str]:
+    profile = str(hardware_profile or intelligence_hardware_profile()).strip().lower()
     input_payload = {
         "kind": str(kind or "").strip().lower(),
         "owner_id": str(owner_id or ""),
@@ -74,6 +78,7 @@ def build_intelligence_run_identity(
         "model": str(model or "").strip(),
         "output_language": str(output_language or "auto").strip().lower() or "auto",
         "prompt_version": str(prompt_version or "").strip(),
+        "hardware_profile": profile,
         "filters": filters if isinstance(filters, dict) else {},
     }
     return {
@@ -83,11 +88,13 @@ def build_intelligence_run_identity(
         "model": input_payload["model"],
         "output_language": input_payload["output_language"],
         "prompt_version": input_payload["prompt_version"],
+        "hardware_profile": profile,
         "input_fingerprint": stable_json_fingerprint(
             {
                 "kind": input_payload["kind"],
                 "owner_id": input_payload["owner_id"],
                 "source_hash": input_payload["source_hash"],
+                "hardware_profile": profile,
                 "filters": input_payload["filters"],
             }
         ),
@@ -99,8 +106,73 @@ def enhancement_lock_key(run_key: str) -> str:
     return f"intelligence:enhancement:run:{normalized}" if normalized else ""
 
 
+def lesson_section_statuses(
+    *,
+    status: str,
+    provider: str,
+    sections: tuple[str, ...] = LESSON_SECTION_KEYS,
+    error: Exception | str | None = None,
+) -> dict[str, dict[str, Any]]:
+    now = timezone.now().isoformat()
+    safe_error = safe_enhancement_error(error)
+    return {
+        key: {
+            "status": str(status or "pending").strip().lower(),
+            "provider": str(provider or "").strip().lower(),
+            "updated_at": now,
+            **({"error": safe_error} if safe_error else {}),
+        }
+        for key in sections
+    }
+
+
+def merge_lesson_section_statuses(
+    current: dict[str, Any] | None,
+    updates: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    source = current if isinstance(current, dict) else {}
+    for key in LESSON_SECTION_KEYS:
+        value = source.get(key)
+        merged[key] = dict(value) if isinstance(value, dict) else {
+            "status": "",
+            "provider": "",
+            "updated_at": "",
+        }
+    for key, value in (updates or {}).items():
+        if key not in LESSON_SECTION_KEYS or not isinstance(value, dict):
+            continue
+        merged[key] = {**merged.get(key, {}), **value}
+        merged[key]["status"] = str(merged[key].get("status") or "").strip().lower()
+        merged[key]["provider"] = str(merged[key].get("provider") or "").strip().lower()
+        if not value.get("updated_at"):
+            merged[key]["updated_at"] = timezone.now().isoformat()
+    return merged
+
+
 def ollama_chunk_max_chars() -> int:
     return _int_setting("INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS", 6000, minimum=1000, maximum=50000)
+
+
+def intelligence_hardware_profile() -> str:
+    profile = str(getattr(settings, "INTELLIGENCE_HARDWARE_PROFILE", "local_mid") or "local_mid").strip().lower()
+    return profile if profile in {"local_low", "local_mid", "production_gpu"} else "local_mid"
+
+
+def ollama_chunk_concurrency() -> int:
+    maximum = 4 if intelligence_hardware_profile() == "production_gpu" else 1
+    return _int_setting("INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY", 1, minimum=1, maximum=maximum)
+
+
+def intelligence_runtime_profile_metadata() -> dict[str, Any]:
+    return {
+        "hardware_profile": intelligence_hardware_profile(),
+        "chunk_max_chars": ollama_chunk_max_chars(),
+        "chunk_concurrency": ollama_chunk_concurrency(),
+        "chunk_timeout_min_seconds": _float_setting("INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS", 45.0, minimum=1.0, maximum=3600.0),
+        "chunk_timeout_max_seconds": _float_setting("INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS", 120.0, minimum=1.0, maximum=3600.0),
+        "total_timeout_max_seconds": ollama_total_timeout_budget_seconds(),
+    }
 
 
 def ollama_chunk_timeout_seconds(input_chars: int) -> float:
@@ -207,7 +279,10 @@ def enhancement_metadata(
     if isinstance(extra, dict):
         for key, value in extra.items():
             if value is not None:
-                payload[str(key)] = value
+                if str(key) == "sections" and isinstance(value, dict):
+                    payload["sections"] = merge_lesson_section_statuses(payload.get("sections"), value)
+                else:
+                    payload[str(key)] = value
     return payload
 
 
@@ -257,7 +332,10 @@ def merge_enhancement_metadata(
         for key, value in extra.items():
             if value is None:
                 continue
-            enhancement[str(key)] = value
+            if str(key) == "sections" and isinstance(value, dict):
+                enhancement["sections"] = merge_lesson_section_statuses(enhancement.get("sections"), value)
+            else:
+                enhancement[str(key)] = value
     if error is not None:
         enhancement["error"] = safe_enhancement_error(error)
     elif status in {"done", "pending", "running"}:

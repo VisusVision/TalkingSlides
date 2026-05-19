@@ -463,6 +463,48 @@ LESSON_INTELLIGENCE_TIMEOUT_SECONDS = float(os.environ.get("LESSON_INTELLIGENCE_
 INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS = float(
     os.environ.get("INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS", "20")
 )
+_INTELLIGENCE_PROFILE_DEFAULTS = {
+    "local_low": {
+        "lesson_model": "qwen2.5:7b-instruct",
+        "analytics_model": "qwen2.5:3b",
+        "chunk_chars": "4000",
+        "chunk_pages": "4",
+        "chunk_items": "6",
+        "row_threshold": "24",
+        "chunk_timeout_min": "60",
+        "chunk_timeout_max": "150",
+        "total_timeout_max": "720",
+        "chunk_concurrency": "1",
+    },
+    "local_mid": {
+        "lesson_model": "qwen2.5:7b-instruct",
+        "analytics_model": "qwen2.5:3b",
+        "chunk_chars": "6000",
+        "chunk_pages": "8",
+        "chunk_items": "10",
+        "row_threshold": "40",
+        "chunk_timeout_min": "45",
+        "chunk_timeout_max": "120",
+        "total_timeout_max": "600",
+        "chunk_concurrency": "1",
+    },
+    "production_gpu": {
+        "lesson_model": "qwen3:14b",
+        "analytics_model": "qwen3:8b",
+        "chunk_chars": "10000",
+        "chunk_pages": "12",
+        "chunk_items": "16",
+        "row_threshold": "80",
+        "chunk_timeout_min": "30",
+        "chunk_timeout_max": "90",
+        "total_timeout_max": "900",
+        "chunk_concurrency": "2",
+    },
+}
+INTELLIGENCE_HARDWARE_PROFILE = os.environ.get("INTELLIGENCE_HARDWARE_PROFILE", "local_mid").strip().lower()
+if INTELLIGENCE_HARDWARE_PROFILE not in _INTELLIGENCE_PROFILE_DEFAULTS:
+    INTELLIGENCE_HARDWARE_PROFILE = "local_mid"
+_INTELLIGENCE_PROFILE = _INTELLIGENCE_PROFILE_DEFAULTS[INTELLIGENCE_HARDWARE_PROFILE]
 INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED = os.environ.get(
     "INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED",
     "true",
@@ -486,18 +528,29 @@ INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS = float(
     os.environ.get("INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS", "1")
 )
 INTELLIGENCE_ENHANCEMENT_STALE_SECONDS = int(os.environ.get("INTELLIGENCE_ENHANCEMENT_STALE_SECONDS", "900"))
-INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS = int(os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS", "6000"))
-INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES = int(os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES", "8"))
-INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS = int(os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS", "10"))
-INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD = int(os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD", "40"))
+INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS = int(
+    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS", _INTELLIGENCE_PROFILE["chunk_chars"])
+)
+INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES = int(
+    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES", _INTELLIGENCE_PROFILE["chunk_pages"])
+)
+INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS = int(
+    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS", _INTELLIGENCE_PROFILE["chunk_items"])
+)
+INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD = int(
+    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD", _INTELLIGENCE_PROFILE["row_threshold"])
+)
+INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY = int(
+    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY", _INTELLIGENCE_PROFILE["chunk_concurrency"])
+)
 INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS = float(
-    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS", "45")
+    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS", _INTELLIGENCE_PROFILE["chunk_timeout_min"])
 )
 INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS = float(
-    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS", "120")
+    os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS", _INTELLIGENCE_PROFILE["chunk_timeout_max"])
 )
 INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS = float(
-    os.environ.get("INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS", "600")
+    os.environ.get("INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS", _INTELLIGENCE_PROFILE["total_timeout_max"])
 )
 LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS = float(
     os.environ.get(
@@ -518,7 +571,7 @@ OLLAMA_LESSON_INTELLIGENCE_BASE_URL = os.environ.get(
 ).strip().rstrip("/")
 OLLAMA_LESSON_INTELLIGENCE_MODEL = os.environ.get(
     "OLLAMA_LESSON_INTELLIGENCE_MODEL",
-    "qwen2.5:7b-instruct",
+    _INTELLIGENCE_PROFILE["lesson_model"],
 ).strip()
 OPENAI_LESSON_INTELLIGENCE_MODEL = os.environ.get(
     "OPENAI_LESSON_INTELLIGENCE_MODEL",
@@ -577,7 +630,7 @@ OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL = os.environ.get(
 ).strip().rstrip("/")
 OLLAMA_ANALYTICS_INTELLIGENCE_MODEL = os.environ.get(
     "OLLAMA_ANALYTICS_INTELLIGENCE_MODEL",
-    "qwen2.5:7b-instruct",
+    _INTELLIGENCE_PROFILE["analytics_model"],
 ).strip()
 OPENAI_ANALYTICS_INTELLIGENCE_MODEL = os.environ.get(
     "OPENAI_ANALYTICS_INTELLIGENCE_MODEL",

@@ -18,7 +18,9 @@ from core.intelligence_progressive import (
     bounded_adaptive_background_timeout,
     enhancement_response_fields,
     first_provider_name,
+    intelligence_runtime_profile_metadata,
     ollama_chunk_max_chars,
+    ollama_chunk_concurrency,
     ollama_chunk_timeout_seconds,
     ollama_total_timeout_budget_seconds,
     provider_attempt as progressive_provider_attempt,
@@ -509,6 +511,153 @@ def get_analytics_intelligence_provider(provider_name: str) -> AnalyticsIntellig
     raise AnalyticsIntelligenceProviderUnavailable(f"unknown analytics intelligence provider: {provider}")
 
 
+def _lesson_quality_report_hash(report: LessonIntelligenceReport) -> str:
+    payload = {
+        "report_id": int(report.id),
+        "source_hash": str(report.source_hash or ""),
+        "updated_at": report.updated_at.isoformat() if report.updated_at else "",
+        "provider": str(report.provider or ""),
+        "summary": str(report.summary or "")[:500],
+        "complexity_level": str(report.complexity_level or ""),
+        "complexity_score": int(report.complexity_score or 0),
+        "warnings": _safe_json_list(report.clarity_warnings)[:3],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode(
+            "utf-8",
+            errors="ignore",
+        )
+    ).hexdigest()
+
+
+def _lesson_quality_signal_blob(report: LessonIntelligenceReport) -> str:
+    parts = [
+        report.summary,
+        report.short_description,
+        report.complexity_level,
+        report.complexity_reasons,
+        report.clarity_warnings,
+        report.page_suggestions,
+        report.expanded_narration_suggestions,
+    ]
+    return json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str).lower()
+
+
+def _lesson_quality_from_report(report: LessonIntelligenceReport) -> dict[str, Any]:
+    warnings = []
+    for item in _safe_json_list(report.clarity_warnings)[:3]:
+        if not isinstance(item, dict):
+            warnings.append({"message": _clean_text(item, max_chars=180)})
+            continue
+        warnings.append(
+            {
+                "type": _clean_text(item.get("type"), max_chars=80),
+                "severity": _clean_text(item.get("severity"), max_chars=40),
+                "message": _clean_text(item.get("message") or item.get("advice") or item.get("suggestion"), max_chars=220),
+            }
+        )
+    blob = _lesson_quality_signal_blob(report)
+    short_narration = ("narration" in blob or "anlat" in blob) and ("short" in blob or "brief" in blob or "kisa" in blob)
+    missing_examples = "example" in blob or "ornek" in blob or "examples" in blob
+    return _scrub_private(
+        {
+            "report_id": int(report.id),
+            "report_hash": _lesson_quality_report_hash(report),
+            "report_updated_at": report.updated_at.isoformat() if report.updated_at else "",
+            "provider": _clean_text(report.provider, max_chars=40),
+            "summary": _clean_text(report.summary, max_chars=500),
+            "complexity_level": _clean_text(report.complexity_level, max_chars=40),
+            "complexity_score": int(report.complexity_score or 0),
+            "clarity_warnings": warnings,
+            "short_narration_signal": bool(short_narration),
+            "missing_examples_signal": bool(missing_examples),
+        }
+    )
+
+
+def _latest_lesson_quality_reports(lesson_ids: list[int], *, requested_by_id: int) -> dict[int, dict[str, Any]]:
+    if not lesson_ids or not requested_by_id:
+        return {}
+    lookup: dict[int, dict[str, Any]] = {}
+    reports = (
+        LessonIntelligenceReport.objects.filter(
+            project_id__in=sorted(set(int(item) for item in lesson_ids if item)),
+            project__user_id=int(requested_by_id),
+        )
+        .only(
+            "id",
+            "project_id",
+            "provider",
+            "source_hash",
+            "summary",
+            "short_description",
+            "complexity_level",
+            "complexity_score",
+            "complexity_reasons",
+            "clarity_warnings",
+            "page_suggestions",
+            "expanded_narration_suggestions",
+            "updated_at",
+        )
+        .order_by("project_id", "-updated_at", "-id")
+    )
+    for report in reports:
+        if report.project_id not in lookup:
+            lookup[report.project_id] = _lesson_quality_from_report(report)
+    return lookup
+
+
+def _analytics_payload_with_lesson_intelligence(payload: dict[str, Any], *, requested_by_id: int) -> dict[str, Any]:
+    safe_payload = dict(payload or {})
+    lesson_quality = _safe_json_dict(safe_payload.get("lesson_quality"))
+    weak_lessons = [dict(row) for row in _safe_list(lesson_quality.get("weak_lessons")) if isinstance(row, dict)]
+    strong_lessons = [dict(row) for row in _safe_list(lesson_quality.get("strong_lessons")) if isinstance(row, dict)]
+    if not weak_lessons and not strong_lessons:
+        tables = _safe_json_dict(safe_payload.get("tables"))
+        weak_lessons = [dict(row) for row in _safe_list(tables.get("top_lessons"))[:10] if isinstance(row, dict)]
+        strong_lessons = [dict(row) for row in _safe_list(tables.get("recent_lessons"))[:5] if isinstance(row, dict)]
+    lesson_ids = []
+    for row in weak_lessons + strong_lessons:
+        lesson_id = _safe_int(row.get("lesson_id") or row.get("id"), 0)
+        if lesson_id:
+            lesson_ids.append(lesson_id)
+    report_lookup = _latest_lesson_quality_reports(lesson_ids, requested_by_id=requested_by_id)
+
+    def enrich(rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+        enriched = []
+        for row in rows[:limit]:
+            lesson_id = _safe_int(row.get("lesson_id") or row.get("id"), 0)
+            next_row = _compact_lesson_row(row, title_chars=140)
+            if lesson_id in report_lookup:
+                next_row["lesson_intelligence"] = report_lookup[lesson_id]
+            enriched.append(next_row)
+        return enriched
+
+    enriched_weak = enrich(weak_lessons, limit=10)
+    enriched_strong = enrich(strong_lessons, limit=5)
+    report_hashes = [
+        row.get("lesson_intelligence", {}).get("report_hash")
+        for row in enriched_weak + enriched_strong
+        if isinstance(row.get("lesson_intelligence"), dict)
+    ]
+    quality_payload = {
+        **lesson_quality,
+        "weak_lessons": enriched_weak,
+        "strong_lessons": enriched_strong,
+        "lesson_intelligence_report_count": len([item for item in report_hashes if item]),
+        "lesson_intelligence_hash": hashlib.sha256(
+            json.dumps(sorted(item for item in report_hashes if item), ensure_ascii=False).encode(
+                "utf-8",
+                errors="ignore",
+            )
+        ).hexdigest()
+        if report_hashes
+        else "",
+    }
+    safe_payload["lesson_quality"] = _scrub_private(quality_payload)
+    return safe_payload
+
+
 def build_analytics_intelligence_input(
     requested_by,
     analytics_payload: dict[str, Any],
@@ -523,6 +672,10 @@ def build_analytics_intelligence_input(
 
     limit = int(max_chars if max_chars is not None else _int_setting("ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS", 20000))
     safe_payload, compaction = _compact_analytics_payload(analytics_payload, max_chars=limit)
+    safe_payload = _analytics_payload_with_lesson_intelligence(
+        safe_payload,
+        requested_by_id=int(getattr(requested_by, "id", 0) or 0),
+    )
     detection_text = json.dumps(
         {
             "summary": safe_payload.get("summary"),
@@ -545,6 +698,12 @@ def build_analytics_intelligence_input(
     }
     source_json = json.dumps(source_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     input_chars = len(source_json)
+    lesson_quality = _safe_json_dict(safe_payload.get("lesson_quality"))
+    compaction = {
+        **(compaction or {}),
+        "compact_char_count": input_chars,
+        "lesson_quality_report_count": _safe_int(lesson_quality.get("lesson_intelligence_report_count"), 0),
+    }
     filters = safe_payload.get("filters") if isinstance(safe_payload.get("filters"), dict) else {}
     date_range = {
         "from": _clean_text(filters.get("from"), max_chars=20),
@@ -740,6 +899,7 @@ def _empty_analytics_payload_like(analytics: dict[str, Any]) -> dict[str, Any]:
             "limit": _safe_int(_safe_json_dict(analytics.get("qualitative_feedback")).get("limit"), 0),
             "max_comment_chars": _safe_int(_safe_json_dict(analytics.get("qualitative_feedback")).get("max_comment_chars"), 0),
         },
+        "lesson_quality": _safe_json_dict(analytics.get("lesson_quality")),
         "filters": _safe_json_dict(analytics.get("filters")),
         "meta": {
             "contract": _clean_text(meta.get("contract"), max_chars=60),
@@ -768,6 +928,18 @@ def _analytics_chunk_payload(input_payload: dict[str, Any], *, section: str, row
         chunk_analytics["recent_activity"] = rows
     elif section == "recent_comments":
         chunk_analytics["qualitative_feedback"]["recent_comments"] = rows
+    elif section == "weak_lessons":
+        chunk_analytics["lesson_quality"] = {
+            **_safe_json_dict(chunk_analytics.get("lesson_quality")),
+            "weak_lessons": rows,
+            "strong_lessons": [],
+        }
+    elif section == "strong_lessons":
+        chunk_analytics["lesson_quality"] = {
+            **_safe_json_dict(chunk_analytics.get("lesson_quality")),
+            "weak_lessons": [],
+            "strong_lessons": rows,
+        }
     else:
         chunk_analytics = analytics
     payload = {
@@ -810,6 +982,7 @@ def _analytics_chunk_payloads(input_payload: dict[str, Any]) -> list[dict[str, A
     tables = analytics.get("tables") if isinstance(analytics.get("tables"), dict) else {}
     charts = analytics.get("charts") if isinstance(analytics.get("charts"), dict) else {}
     feedback = analytics.get("qualitative_feedback") if isinstance(analytics.get("qualitative_feedback"), dict) else {}
+    lesson_quality = analytics.get("lesson_quality") if isinstance(analytics.get("lesson_quality"), dict) else {}
     sections = [
         ("engagement_trend", _safe_list(charts.get("engagement_trend"))),
         ("top_lessons", _safe_list(tables.get("top_lessons"))),
@@ -817,6 +990,8 @@ def _analytics_chunk_payloads(input_payload: dict[str, Any]) -> list[dict[str, A
         ("top_categories", _safe_list(tables.get("top_categories") or charts.get("category_popularity"))),
         ("recent_activity", _safe_list(analytics.get("recent_activity"))),
         ("recent_comments", _safe_list(feedback.get("recent_comments"))),
+        ("weak_lessons", _safe_list(lesson_quality.get("weak_lessons"))),
+        ("strong_lessons", _safe_list(lesson_quality.get("strong_lessons"))),
     ]
     total_rows = sum(len(rows) for _, rows in sections)
     row_threshold = max(
@@ -1027,6 +1202,8 @@ def analyze_analytics_ollama_background(
         "prompt_version": ANALYTICS_INTELLIGENCE_PROMPT_VERSION,
         **run_identity,
         **chunk_metadata,
+        **intelligence_runtime_profile_metadata(),
+        "chunk_concurrency": ollama_chunk_concurrency(),
         "timeout_seconds": timeout_seconds,
     }
     return normalized
@@ -1163,7 +1340,13 @@ def analytics_report_response_payload(
                 "run_key",
                 "model",
                 "prompt_version",
+                "hardware_profile",
                 "input_fingerprint",
+                "chunk_max_chars",
+                "chunk_concurrency",
+                "chunk_timeout_min_seconds",
+                "chunk_timeout_max_seconds",
+                "total_timeout_max_seconds",
                 "chunked",
                 "chunk_count",
                 "completed_chunks",
@@ -1185,6 +1368,7 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
     filters = _safe_json_dict(payload.get("filters"))
     meta = _safe_json_dict(payload.get("meta"))
     feedback = _safe_json_dict(payload.get("qualitative_feedback"))
+    lesson_quality = _safe_json_dict(payload.get("lesson_quality"))
     source_counts = {
         "engagement_trend": len(_safe_list(charts.get("engagement_trend"))),
         "top_lessons": len(_safe_list(tables.get("top_lessons"))),
@@ -1192,6 +1376,8 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
         "top_categories": len(_safe_list(tables.get("top_categories") or charts.get("category_popularity"))),
         "recent_activity": len(_safe_list(payload.get("recent_activity"))),
         "recent_comments": len(_safe_list(feedback.get("recent_comments"))),
+        "weak_lessons": len(_safe_list(lesson_quality.get("weak_lessons"))),
+        "strong_lessons": len(_safe_list(lesson_quality.get("strong_lessons"))),
     }
 
     def build_payload(limits: dict[str, int], *, title_chars: int = 160, include_activity_messages: bool = False) -> dict[str, Any]:
@@ -1280,6 +1466,7 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
                     "limit": _safe_int(feedback.get("limit"), len(comments)),
                     "max_comment_chars": _safe_int(feedback.get("max_comment_chars"), 0),
                 },
+                "lesson_quality": _compact_lesson_quality(lesson_quality, title_chars=title_chars),
                 "filters": filters,
                 "meta": {
                     "contract": _clean_text(meta.get("contract"), max_chars=60),
@@ -1295,12 +1482,12 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
     original_safe = _safe_analytics_payload(payload)
     original_chars = len(json.dumps(original_safe, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     candidates = [
-        ({"engagement_trend": 90, "top_lessons": 60, "recent_lessons": 30, "top_categories": 30, "recent_activity": 60, "recent_comments": 50}, 160),
-        ({"engagement_trend": 45, "top_lessons": 30, "recent_lessons": 20, "top_categories": 20, "recent_activity": 30, "recent_comments": 30}, 140),
-        ({"engagement_trend": 30, "top_lessons": 15, "recent_lessons": 10, "top_categories": 10, "recent_activity": 20, "recent_comments": 20}, 120),
-        ({"engagement_trend": 14, "top_lessons": 8, "recent_lessons": 6, "top_categories": 8, "recent_activity": 12, "recent_comments": 12}, 100),
-        ({"engagement_trend": 7, "top_lessons": 5, "recent_lessons": 3, "top_categories": 5, "recent_activity": 6, "recent_comments": 6}, 90),
-        ({"engagement_trend": 0, "top_lessons": 3, "recent_lessons": 0, "top_categories": 3, "recent_activity": 0, "recent_comments": 3}, 80),
+        ({"engagement_trend": 90, "top_lessons": 60, "recent_lessons": 30, "top_categories": 30, "recent_activity": 60, "recent_comments": 50, "weak_lessons": 10, "strong_lessons": 5}, 160),
+        ({"engagement_trend": 45, "top_lessons": 30, "recent_lessons": 20, "top_categories": 20, "recent_activity": 30, "recent_comments": 30, "weak_lessons": 10, "strong_lessons": 5}, 140),
+        ({"engagement_trend": 30, "top_lessons": 15, "recent_lessons": 10, "top_categories": 10, "recent_activity": 20, "recent_comments": 20, "weak_lessons": 10, "strong_lessons": 5}, 120),
+        ({"engagement_trend": 14, "top_lessons": 8, "recent_lessons": 6, "top_categories": 8, "recent_activity": 12, "recent_comments": 12, "weak_lessons": 8, "strong_lessons": 5}, 100),
+        ({"engagement_trend": 7, "top_lessons": 5, "recent_lessons": 3, "top_categories": 5, "recent_activity": 6, "recent_comments": 6, "weak_lessons": 5, "strong_lessons": 3}, 90),
+        ({"engagement_trend": 0, "top_lessons": 3, "recent_lessons": 0, "top_categories": 3, "recent_activity": 0, "recent_comments": 3, "weak_lessons": 3, "strong_lessons": 2}, 80),
     ]
     chosen = build_payload(candidates[0][0], title_chars=candidates[0][1])
     chosen_limits = candidates[0][0]
@@ -1329,7 +1516,7 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
 
 
 def _compact_lesson_row(row: dict[str, Any], *, title_chars: int) -> dict[str, Any]:
-    return {
+    payload = {
         "lesson_id": _safe_int(row.get("lesson_id") or row.get("id"), 0),
         "id": _safe_int(row.get("id") or row.get("lesson_id"), 0),
         "title": _clean_text(row.get("title") or row.get("name") or "Untitled lesson", max_chars=title_chars),
@@ -1350,7 +1537,36 @@ def _compact_lesson_row(row: dict[str, Any], *, title_chars: int) -> dict[str, A
         "comments": _safe_int(row.get("comments"), 0),
         "engagement_events": _safe_int(row.get("engagement_events"), 0),
         "estimated_watch_minutes": _safe_float(row.get("estimated_watch_minutes"), 0.0),
+        "has_cover": bool(row.get("has_cover")),
+        "missing_cover": bool(row.get("missing_cover")),
     }
+    if isinstance(row.get("lesson_intelligence"), dict):
+        payload["lesson_intelligence"] = _scrub_private(row.get("lesson_intelligence"))
+    return payload
+
+
+def _compact_lesson_quality(lesson_quality: dict[str, Any], *, title_chars: int) -> dict[str, Any]:
+    weak_lessons = [
+        _compact_lesson_row(row, title_chars=title_chars)
+        for row in _safe_list(lesson_quality.get("weak_lessons"))[:10]
+        if isinstance(row, dict)
+    ]
+    strong_lessons = [
+        _compact_lesson_row(row, title_chars=title_chars)
+        for row in _safe_list(lesson_quality.get("strong_lessons"))[:5]
+        if isinstance(row, dict)
+    ]
+    return _scrub_private(
+        {
+            "weak_lessons": weak_lessons,
+            "strong_lessons": strong_lessons,
+            "missing_cover_count": _safe_int(lesson_quality.get("missing_cover_count"), 0),
+            "with_cover_count": _safe_int(lesson_quality.get("with_cover_count"), 0),
+            "lesson_intelligence_report_count": _safe_int(lesson_quality.get("lesson_intelligence_report_count"), 0),
+            "lesson_intelligence_hash": _clean_text(lesson_quality.get("lesson_intelligence_hash"), max_chars=80),
+            "limitations": _scrub_private(_safe_list(lesson_quality.get("limitations"))[:4]),
+        }
+    )
 
 
 def _safe_analytics_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1360,6 +1576,7 @@ def _safe_analytics_payload(payload: dict[str, Any]) -> dict[str, Any]:
     filters = _safe_json_dict(payload.get("filters"))
     meta = _safe_json_dict(payload.get("meta"))
     feedback = _safe_json_dict(payload.get("qualitative_feedback"))
+    lesson_quality = _safe_json_dict(payload.get("lesson_quality"))
     return {
         "summary": _scrub_private(summary),
         "charts": {
@@ -1378,6 +1595,7 @@ def _safe_analytics_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "limit": _safe_int(feedback.get("limit"), 0),
             "max_comment_chars": _safe_int(feedback.get("max_comment_chars"), 0),
         },
+        "lesson_quality": _compact_lesson_quality(lesson_quality, title_chars=160),
         "filters": _scrub_private(filters),
         "meta": {
             "contract": _clean_text(meta.get("contract"), max_chars=60),
@@ -1436,6 +1654,9 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
     return (
         f"You are a publisher analytics analyst. Return JSON only. {language_instruction}"
         "Use only the analytics data provided. Do not invent trends, viewer identities, or private data. "
+        "Treat this as aggregate strategy work, not transcript analysis: connect performance drops to lesson quality "
+        "summaries, complexity, clarity warnings, missing examples or short narration signals, cover-image signals, "
+        "and sanitized learner comments when those fields are present. "
         "Do not edit lessons, trigger rendering, or perform hidden actions. "
         "Return keys: analytics_summary, health_score, risk_level, insights, recommendations, "
         "lesson_actions, category_actions, limitations. "

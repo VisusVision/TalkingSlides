@@ -384,6 +384,7 @@ def test_post_analyze_returns_heuristic_and_queues_ollama_enhancement(monkeypatc
     assert response.data["enhancement_pending"] is True
     assert response.data["enhancement_status"] == "pending"
     assert response.data["enhancement_provider"] == "ollama"
+    assert response.data["metadata"]["sections"]["summary"]["provider"] == "heuristic"
     attempts = response.data["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
     assert attempts[0]["status"] == "queued"
@@ -395,6 +396,8 @@ def test_post_analyze_returns_heuristic_and_queues_ollama_enhancement(monkeypatc
     assert enhancement["queue"] == "intelligence-test"
     assert enhancement["task_id"] == "fake-intelligence-task"
     assert enhancement["queued_at"]
+    assert enhancement["sections"]["summary"]["status"] == "pending"
+    assert enhancement["sections"]["expanded_narration"]["provider"] == "ollama"
 
     latest = _client(owner).get(_latest_url(project))
 
@@ -609,6 +612,7 @@ def test_lesson_enhancement_task_start_sets_running(monkeypatch):
     assert enhancement["status"] == "running"
     assert enhancement["task_id"] == "task-started"
     assert enhancement["started_at"]
+    assert enhancement["sections"]["clarity"]["status"] == "running"
     assert report.metadata["provider_chain_attempts"][0]["status"] == "running"
 
 
@@ -722,6 +726,8 @@ def test_background_success_updates_report_to_ollama(monkeypatch):
     assert enhancement["started_at"]
     assert enhancement["finished_at"]
     assert enhancement["timeout_seconds"] == captured["timeout"]
+    assert enhancement["sections"]["summary"]["status"] == "done"
+    assert enhancement["sections"]["expanded_narration"]["provider"] == "ollama"
     suggestion = latest.data["expanded_narration_suggestions"][0]
     assert suggestion["draft_narration"].startswith("In this part")
     assert suggestion["draft_narration"] != suggestion["advice"]
@@ -840,14 +846,71 @@ def test_lesson_chunk_failure_returns_partial_ollama_report(monkeypatch):
     task_result = enhance_lesson_intelligence_report.run(response.data["id"], response.data["source_hash"])
     latest = _client(owner).get(_latest_url(project))
 
-    assert task_result["status"] == "done"
+    assert task_result["status"] == "partial"
     assert latest.data["provider"] == "ollama"
+    assert latest.data["enhancement_status"] == "partial"
     assert latest.data["provider_chain_attempts"][0]["status"] == "partial"
     report = LessonIntelligenceReport.objects.get(pk=response.data["id"])
     enhancement = report.metadata["progressive_enhancement"]
     assert enhancement["failed_chunks"] >= 1
     assert enhancement["partial_enhancement"] is True
     assert report.metadata["partial_enhancement"] is True
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+)
+def test_lesson_partial_section_failure_keeps_heuristic_section(monkeypatch):
+    owner = _make_user("li_section_partial_owner")
+    project = _make_project(owner)
+    _add_page(
+        project,
+        order=0,
+        key="p1",
+        original="- Objective\n- Algorithm\n- Example",
+        narration="Algorithm parameters and loss function.",
+    )
+
+    provider_payload = {
+        "provider": "ollama",
+        "lesson_summary": "Ollama summary with stronger context.",
+        "short_description": "Ollama short description.",
+        "complexity_level": "intermediate",
+        "complexity_score": 62,
+        "complexity_reasons": ["Ollama complexity signal."],
+        "clarity_warnings": [{"type": "clarity", "message": "Add a concrete example."}],
+        "page_suggestions": [{"page_number": 1, "page_key": "p1", "type": "example", "suggestion": "Add an example."}],
+        "expanded_narration_suggestions": [],
+        "suggested_tags": ["ollama"],
+        "limitations": [],
+    }
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": json.dumps(provider_payload)})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+    heuristic_suggestion = response.data["expanded_narration_suggestions"][0]["draft_narration"]
+
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    task_result = enhance_lesson_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(owner).get(_latest_url(project))
+    report = LessonIntelligenceReport.objects.get(pk=response.data["id"])
+    sections = report.metadata["progressive_enhancement"]["sections"]
+
+    assert task_result["status"] == "partial"
+    assert latest.data["enhancement_status"] == "partial"
+    assert latest.data["summary"] == "Ollama summary with stronger context."
+    assert latest.data["expanded_narration_suggestions"][0]["draft_narration"] == heuristic_suggestion
+    assert sections["summary"]["status"] == "done"
+    assert sections["expanded_narration"]["status"] == "failed"
+    assert sections["expanded_narration"]["provider"] == "heuristic"
 
 
 @override_settings(
