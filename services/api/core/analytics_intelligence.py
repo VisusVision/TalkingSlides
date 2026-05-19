@@ -13,6 +13,7 @@ from django.conf import settings
 
 from core.intelligence_language import detect_lesson_language, resolve_output_language
 from core.intelligence_progressive import (
+    bounded_adaptive_background_timeout,
     enhancement_response_fields,
     first_provider_name,
     provider_attempt as progressive_provider_attempt,
@@ -101,6 +102,8 @@ class HeuristicAnalyticsIntelligenceProvider:
         tables = analytics.get("tables") if isinstance(analytics.get("tables"), dict) else {}
         charts = analytics.get("charts") if isinstance(analytics.get("charts"), dict) else {}
         meta = analytics.get("meta") if isinstance(analytics.get("meta"), dict) else {}
+        feedback = analytics.get("qualitative_feedback") if isinstance(analytics.get("qualitative_feedback"), dict) else {}
+        recent_comments = [item for item in _safe_list(feedback.get("recent_comments")) if isinstance(item, dict)]
 
         total_lessons = _safe_int(summary.get("total_lessons"), 0)
         published_lessons = _safe_int(summary.get("published_lessons"), 0)
@@ -137,6 +140,8 @@ class HeuristicAnalyticsIntelligenceProvider:
         limitations = _base_limitations(meta, output_language=output_language)
         if input_payload.get("input_truncated"):
             limitations.append(_analytics_text(output_language, "large_dataset_limitation"))
+        if bool(feedback.get("truncated") or meta.get("comment_feedback_truncated")):
+            limitations.append(_analytics_text(output_language, "comment_feedback_truncated"))
 
         if total_lessons <= 0:
             insights.append(
@@ -310,6 +315,17 @@ class HeuristicAnalyticsIntelligenceProvider:
                     )
                 )
 
+        if recent_comments:
+            sample = _clean_text(recent_comments[0].get("text"), max_chars=120)
+            insights.append(
+                _insight(
+                    "recent_comment_feedback",
+                    "low",
+                    _analytics_text(output_language, "recent_comment_feedback", count=len(recent_comments)),
+                    sample,
+                )
+            )
+
         recommendations = _dedupe_by_message(recommendations)
         lesson_actions.extend(_lesson_actions(top_lessons, recent_lessons, output_language=output_language))
         category_actions.extend(_category_actions(categories, has_activity=has_activity, output_language=output_language))
@@ -370,6 +386,7 @@ class OllamaAnalyticsIntelligenceProvider:
     provider_name = "ollama"
 
     def __init__(self, *, background: bool = False) -> None:
+        self.background = bool(background)
         self.base_url = _string_setting(
             "OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL",
             _string_setting("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
@@ -390,12 +407,19 @@ class OllamaAnalyticsIntelligenceProvider:
                 self.timeout_seconds,
                 cap_setting="ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS",
             )
+        self.last_timeout_seconds = self.timeout_seconds
 
     def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
             raise AnalyticsIntelligenceProviderUnavailable("Ollama base URL is not configured")
         if not self.model:
             raise AnalyticsIntelligenceProviderUnavailable("Ollama analytics intelligence model is not configured")
+        timeout_seconds = (
+            adaptive_analytics_intelligence_timeout(input_payload, base_seconds=self.timeout_seconds)
+            if self.background
+            else self.timeout_seconds
+        )
+        self.last_timeout_seconds = timeout_seconds
 
         request_payload = {
             "model": self.model,
@@ -411,7 +435,7 @@ class OllamaAnalyticsIntelligenceProvider:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8")
             data = json.loads(body)
         except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
@@ -429,6 +453,7 @@ class OllamaAnalyticsIntelligenceProvider:
             **dict(normalized.get("metadata") or {}),
             "model": self.model,
             "base_url_configured": bool(self.base_url),
+            "timeout_seconds": timeout_seconds,
         }
         return normalized
 
@@ -606,6 +631,31 @@ def progressive_analytics_ollama_enabled(chain: list[str] | None = None) -> bool
     return _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True) and provider_chain_contains_ollama(provider_chain)
 
 
+def adaptive_analytics_intelligence_timeout(input_payload: dict[str, Any], *, base_seconds: float | None = None) -> float:
+    payload = input_payload if isinstance(input_payload, dict) else {}
+    analytics = payload.get("analytics") if isinstance(payload.get("analytics"), dict) else {}
+    tables = analytics.get("tables") if isinstance(analytics.get("tables"), dict) else {}
+    charts = analytics.get("charts") if isinstance(analytics.get("charts"), dict) else {}
+    feedback = analytics.get("qualitative_feedback") if isinstance(analytics.get("qualitative_feedback"), dict) else {}
+    recent_comments = feedback.get("recent_comments") if isinstance(feedback.get("recent_comments"), list) else []
+    row_count = (
+        len(_safe_list(tables.get("top_lessons")))
+        + len(_safe_list(tables.get("recent_lessons")))
+        + len(_safe_list(tables.get("top_categories") or charts.get("category_popularity")))
+    )
+    base = (
+        float(base_seconds)
+        if base_seconds is not None
+        else _background_provider_timeout(cap_setting="ANALYTICS_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS")
+    )
+    return bounded_adaptive_background_timeout(
+        base_seconds=base,
+        input_chars=_safe_int(payload.get("input_chars"), 0),
+        page_count=row_count,
+        comment_count=len(recent_comments),
+    )
+
+
 def analyze_analytics_heuristic_immediate(
     analytics_input: AnalyticsIntelligenceInput,
     *,
@@ -673,6 +723,7 @@ def analyze_analytics_ollama_background(
         "compaction": analytics_input.compaction or {},
         "input_char_count": analytics_input.input_chars,
         "analytics_filters": _safe_json_dict(analytics_input.analytics_payload.get("filters")),
+        "timeout_seconds": getattr(provider, "last_timeout_seconds", None),
     }
     return normalized
 
@@ -818,12 +869,14 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
     tables = _safe_json_dict(payload.get("tables"))
     filters = _safe_json_dict(payload.get("filters"))
     meta = _safe_json_dict(payload.get("meta"))
+    feedback = _safe_json_dict(payload.get("qualitative_feedback"))
     source_counts = {
         "engagement_trend": len(_safe_list(charts.get("engagement_trend"))),
         "top_lessons": len(_safe_list(tables.get("top_lessons"))),
         "recent_lessons": len(_safe_list(tables.get("recent_lessons"))),
         "top_categories": len(_safe_list(tables.get("top_categories") or charts.get("category_popularity"))),
         "recent_activity": len(_safe_list(payload.get("recent_activity"))),
+        "recent_comments": len(_safe_list(feedback.get("recent_comments"))),
     }
 
     def build_payload(limits: dict[str, int], *, title_chars: int = 160, include_activity_messages: bool = False) -> dict[str, Any]:
@@ -882,6 +935,19 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
             if include_activity_messages:
                 item["message"] = _clean_text(row.get("message") or row.get("description"), max_chars=240)
             activity.append(item)
+        comment_limit = limits.get("recent_comments", 0)
+        comments = []
+        for row in _safe_list(feedback.get("recent_comments"))[:comment_limit]:
+            if not isinstance(row, dict):
+                continue
+            comments.append(
+                {
+                    "lesson_id": _safe_int(row.get("lesson_id"), 0),
+                    "lesson_title": _clean_text(row.get("lesson_title") or row.get("title"), max_chars=title_chars),
+                    "text": _clean_text(row.get("text"), max_chars=320),
+                    "created_at": _clean_text(row.get("created_at"), max_chars=40),
+                }
+            )
         return _scrub_private(
             {
                 "summary": summary,
@@ -895,11 +961,18 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
                     "top_categories": categories,
                 },
                 "recent_activity": activity,
+                "qualitative_feedback": {
+                    "recent_comments": comments,
+                    "truncated": bool(feedback.get("truncated")),
+                    "limit": _safe_int(feedback.get("limit"), len(comments)),
+                    "max_comment_chars": _safe_int(feedback.get("max_comment_chars"), 0),
+                },
                 "filters": filters,
                 "meta": {
                     "contract": _clean_text(meta.get("contract"), max_chars=60),
                     "scope": _clean_text(meta.get("scope"), max_chars=40),
                     "estimated_metrics": bool(meta.get("estimated_metrics")),
+                    "comment_feedback_truncated": bool(meta.get("comment_feedback_truncated")),
                     "estimated_fields": _scrub_private(_safe_list(meta.get("estimated_fields"))[:12]),
                     "missing_metrics": _scrub_private(_safe_list(meta.get("missing_metrics"))[:12]),
                 },
@@ -909,10 +982,10 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
     original_safe = _safe_analytics_payload(payload)
     original_chars = len(json.dumps(original_safe, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     candidates = [
-        ({"engagement_trend": 30, "top_lessons": 10, "recent_lessons": 10, "top_categories": 10, "recent_activity": 20}, 160),
-        ({"engagement_trend": 14, "top_lessons": 8, "recent_lessons": 6, "top_categories": 8, "recent_activity": 12}, 140),
-        ({"engagement_trend": 7, "top_lessons": 5, "recent_lessons": 3, "top_categories": 5, "recent_activity": 6}, 100),
-        ({"engagement_trend": 0, "top_lessons": 3, "recent_lessons": 0, "top_categories": 3, "recent_activity": 0}, 80),
+        ({"engagement_trend": 30, "top_lessons": 10, "recent_lessons": 10, "top_categories": 10, "recent_activity": 20, "recent_comments": 20}, 160),
+        ({"engagement_trend": 14, "top_lessons": 8, "recent_lessons": 6, "top_categories": 8, "recent_activity": 12, "recent_comments": 12}, 140),
+        ({"engagement_trend": 7, "top_lessons": 5, "recent_lessons": 3, "top_categories": 5, "recent_activity": 6, "recent_comments": 6}, 100),
+        ({"engagement_trend": 0, "top_lessons": 3, "recent_lessons": 0, "top_categories": 3, "recent_activity": 0, "recent_comments": 3}, 80),
     ]
     chosen = build_payload(candidates[0][0], title_chars=candidates[0][1])
     chosen_limits = candidates[0][0]
@@ -971,6 +1044,7 @@ def _safe_analytics_payload(payload: dict[str, Any]) -> dict[str, Any]:
     tables = _safe_json_dict(payload.get("tables"))
     filters = _safe_json_dict(payload.get("filters"))
     meta = _safe_json_dict(payload.get("meta"))
+    feedback = _safe_json_dict(payload.get("qualitative_feedback"))
     return {
         "summary": _scrub_private(summary),
         "charts": {
@@ -983,11 +1057,18 @@ def _safe_analytics_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "top_categories": _scrub_private(_safe_list(tables.get("top_categories"))[:12]),
         },
         "recent_activity": _scrub_private(_safe_list(payload.get("recent_activity"))[:30]),
+        "qualitative_feedback": {
+            "recent_comments": _scrub_private(_safe_list(feedback.get("recent_comments"))[:50]),
+            "truncated": bool(feedback.get("truncated")),
+            "limit": _safe_int(feedback.get("limit"), 0),
+            "max_comment_chars": _safe_int(feedback.get("max_comment_chars"), 0),
+        },
         "filters": _scrub_private(filters),
         "meta": {
             "contract": _clean_text(meta.get("contract"), max_chars=60),
             "scope": _clean_text(meta.get("scope"), max_chars=40),
             "estimated_metrics": bool(meta.get("estimated_metrics")),
+            "comment_feedback_truncated": bool(meta.get("comment_feedback_truncated")),
             "estimated_fields": _scrub_private(_safe_list(meta.get("estimated_fields"))[:20]),
             "missing_metrics": _scrub_private(_safe_list(meta.get("missing_metrics"))[:20]),
         },
@@ -1055,6 +1136,8 @@ def _output_language(input_payload: dict[str, Any]) -> str:
 def _analytics_text(language: str, key: str, **kwargs: Any) -> str:
     if language == "tr":
         messages = {
+            "comment_feedback_truncated": "Recent learner comments were capped or shortened before analysis.",
+            "recent_comment_feedback": f"The latest {kwargs.get('count', 0)} comments add qualitative learner feedback to this analysis.",
             "large_dataset_limitation": "Veri seti büyük olduğu için bazı analiz satırları özetlendi veya çıkarıldı.",
             "no_lessons_insight": "Bu analiz kapsamında içerik üretici dersi bulunamadı.",
             "publish_first_lesson": "İlerleme, tamamlama, beğeni ve yorum sinyallerini ölçebilmek için odaklı bir ilk ders yayınlayın.",
@@ -1089,6 +1172,8 @@ def _analytics_text(language: str, key: str, **kwargs: Any) -> str:
         }
         return messages.get(key, key)
     messages = {
+        "comment_feedback_truncated": "Recent learner comments were capped or shortened before analysis.",
+        "recent_comment_feedback": f"The latest {kwargs.get('count', 0)} comments add qualitative learner feedback to this analysis.",
         "large_dataset_limitation": "Some analytics rows were omitted because the dataset was large.",
         "no_lessons_insight": "No creator lessons were found in this analytics scope.",
         "publish_first_lesson": "Publish a focused first lesson so progress, completion, likes, and comments can be measured.",

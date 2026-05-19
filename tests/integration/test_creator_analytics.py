@@ -18,6 +18,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
+from django.test import override_settings  # noqa: E402
 from django.utils import timezone  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
@@ -30,6 +31,18 @@ from core.models import (  # noqa: E402
     Project,
     UserProfile,
 )
+
+
+class _FakeAsyncResult:
+    id = "fake-analytics-schedule-task"
+
+
+def _fake_dispatch(calls):
+    def dispatch(task_name, *, args=None, kwargs=None, queue=None):
+        calls.append({"task_name": task_name, "args": args or [], "kwargs": kwargs or {}, "queue": queue})
+        return _FakeAsyncResult()
+
+    return dispatch
 
 
 def _make_user(
@@ -220,6 +233,137 @@ def test_recent_activity_includes_comments_likes_and_progress_without_viewer_ide
     assert by_type["comment"]["message"] == "A viewer commented on Activity lesson."
     _assert_no_viewer_identity_keys(recent_activity)
     assert "creator_activity_viewer" not in json.dumps(recent_activity)
+
+
+@pytest.mark.django_db
+@override_settings(
+    ANALYTICS_INTELLIGENCE_RECENT_COMMENTS_LIMIT=1,
+    ANALYTICS_INTELLIGENCE_COMMENT_MAX_CHARS=40,
+)
+def test_creator_analytics_includes_sanitized_recent_comment_feedback():
+    creator = _make_user("creator_comment_signal_owner", role="publisher")
+    viewer = _make_user("creator_comment_signal_viewer")
+    lesson = _make_project(creator, "Comment signal lesson")
+    LessonComment.objects.create(
+        user=viewer,
+        project=lesson,
+        text="Great pacing; email me at learner@example.com and ask @private_handle about examples.",
+    )
+    LessonComment.objects.create(user=viewer, project=lesson, text="Second comment is omitted by limit.")
+
+    response = _client(creator).get("/api/v1/me/analytics/?range=30")
+
+    assert response.status_code == 200
+    feedback = response.data["qualitative_feedback"]
+    assert len(feedback["recent_comments"]) == 1
+    comment = feedback["recent_comments"][0]
+    assert comment["lesson_title"] == "Comment signal lesson"
+    serialized = json.dumps(feedback)
+    assert "learner@example.com" not in serialized
+    assert "@private_handle" not in serialized
+    assert "creator_comment_signal_viewer" not in serialized
+    assert feedback["truncated"] is True
+
+
+@pytest.mark.django_db
+@override_settings(
+    ANALYTICS_INTELLIGENCE_AUTO_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS=3600,
+    INTELLIGENCE_CELERY_QUEUE="intelligence-test",
+)
+def test_comment_create_schedules_analytics_intelligence(monkeypatch):
+    creator = _make_user("creator_comment_schedule_owner", role="publisher")
+    viewer = _make_user("creator_comment_schedule_viewer")
+    lesson = _make_project(creator, "Comment schedule lesson")
+    calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(calls))
+
+    response = _client(viewer).post(
+        f"/api/v1/catalog/{lesson.id}/comments/",
+        {"text": "This helped."},
+        format="json",
+    )
+
+    assert response.status_code == 201
+    assert calls
+    assert calls[0]["task_name"] == "worker.tasks.schedule_creator_analytics_intelligence"
+    assert calls[0]["queue"] == "intelligence-test"
+    assert calls[0]["args"] == [creator.id]
+    assert calls[0]["kwargs"]["reason"] == "lesson_comment_created"
+
+
+@pytest.mark.django_db
+@override_settings(
+    ANALYTICS_INTELLIGENCE_AUTO_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS=3600,
+    ANALYTICS_INTELLIGENCE_MIN_PROGRESS_EVENT_DELTA=5,
+    INTELLIGENCE_CELERY_QUEUE="intelligence-test",
+)
+def test_repeated_progress_events_are_throttled(monkeypatch):
+    creator = _make_user("creator_progress_schedule_owner", role="publisher")
+    viewers = [_make_user(f"creator_progress_schedule_viewer_{index}") for index in range(3)]
+    lesson = _make_project(creator, "Progress schedule lesson")
+    calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(calls))
+
+    for index, viewer in enumerate(viewers):
+        response = _client(viewer).post(
+            f"/api/v1/catalog/{lesson.id}/progress/",
+            {"progress_pct": 10 + index},
+            format="json",
+        )
+        assert response.status_code == 200
+
+    assert len(calls) == 1
+    assert calls[0]["task_name"] == "worker.tasks.schedule_creator_analytics_intelligence"
+
+
+@pytest.mark.django_db
+@override_settings(INTELLIGENCE_CELERY_QUEUE="intelligence-test")
+def test_publish_transition_schedules_lesson_and_analytics_intelligence(monkeypatch):
+    creator = _make_user("creator_publish_schedule_owner", role="publisher")
+    lesson = _make_project(creator, "Publish schedule lesson", published=False)
+    lesson.status = "ready"
+    lesson.save(update_fields=["status", "updated_at"])
+    calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(calls))
+
+    response = _client(creator).patch(
+        f"/api/v1/projects/{lesson.id}/",
+        {"is_published": True},
+        format="json",
+    )
+
+    assert response.status_code == 200
+    task_names = [call["task_name"] for call in calls]
+    assert "worker.tasks.schedule_lesson_intelligence" in task_names
+    assert "worker.tasks.schedule_creator_analytics_intelligence" in task_names
+    assert all(call["queue"] == "intelligence-test" for call in calls)
+
+
+@pytest.mark.django_db
+def test_worker_render_completion_schedule_helpers_use_intelligence_queue(monkeypatch):
+    creator = _make_user("creator_worker_schedule_owner", role="publisher")
+    lesson = _make_project(creator, "Worker schedule lesson")
+    monkeypatch.setenv("INTELLIGENCE_CELERY_QUEUE", "intelligence-test")
+    calls = []
+
+    def fake_apply_async(*, args=None, kwargs=None, queue=None):
+        calls.append({"args": args or [], "kwargs": kwargs or {}, "queue": queue})
+        return _FakeAsyncResult()
+
+    from worker import tasks as worker_tasks  # noqa: E402
+
+    monkeypatch.setattr(worker_tasks.schedule_lesson_intelligence, "apply_async", fake_apply_async)
+    monkeypatch.setattr(worker_tasks.schedule_creator_analytics_intelligence, "apply_async", fake_apply_async)
+
+    worker_tasks._schedule_lesson_intelligence_after_worker_event(lesson.id, reason="render_completed")
+    worker_tasks._schedule_creator_analytics_after_worker_event(lesson.id, reason="render_completed")
+
+    assert calls == [
+        {"args": [lesson.id], "kwargs": {"reason": "render_completed", "force": False}, "queue": "intelligence-test"},
+        {"args": [creator.id], "kwargs": {"reason": "render_completed", "force": False}, "queue": "intelligence-test"},
+    ]
 
 
 @pytest.mark.django_db

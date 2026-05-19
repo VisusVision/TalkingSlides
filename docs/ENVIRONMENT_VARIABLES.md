@@ -157,8 +157,20 @@ Columns:
 | `ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
 | `INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | `20` | Upper bound for synchronous Ollama calls so API workers can return fallback before Gunicorn timeout. |
 | `INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED` | API/worker | Optional | Recommended | `true` | Queues background Ollama enhancement while returning heuristic reports immediately. |
-| `INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Recommended | `120` | Background Ollama timeout for progressive intelligence enhancement. |
+| `INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Legacy/fallback | `120` | Legacy background Ollama timeout input. Adaptive background settings now determine the effective timeout. |
+| `INTELLIGENCE_BACKGROUND_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | `60` | Minimum adaptive background intelligence timeout. |
+| `INTELLIGENCE_BACKGROUND_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `300` | Maximum adaptive background intelligence timeout. |
+| `INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS` | worker | Optional | Recommended | `4` | Additional adaptive timeout per 1000 input characters. |
+| `INTELLIGENCE_BACKGROUND_TIMEOUT_PER_PAGE_SECONDS` | worker | Optional | Recommended | `2` | Additional adaptive timeout per lesson page or analytics row. |
+| `INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS` | worker | Optional | Recommended | `1` | Additional adaptive timeout per recent analytics comment. |
+| `ANALYTICS_INTELLIGENCE_AUTO_ENABLED` | API/worker | Optional | Recommended | `true` | Enables event-driven creator analytics intelligence scheduling. |
+| `ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS` | API/worker | Optional | Recommended | `3600` | Minimum interval between automatic analytics intelligence schedules for routine events. |
+| `ANALYTICS_INTELLIGENCE_MIN_PROGRESS_EVENT_DELTA` | API/worker | Optional | Recommended | `5` | Progress-event threshold used with throttling before scheduling analytics intelligence again. |
+| `ANALYTICS_INTELLIGENCE_RECENT_COMMENTS_LIMIT` | API/worker | Optional | Recommended | `20` | Max recent comments included as sanitized qualitative analytics feedback. |
+| `ANALYTICS_INTELLIGENCE_COMMENT_MAX_CHARS` | API/worker | Optional | Recommended | `280` | Max characters per recent comment included in analytics intelligence input. |
 | `INTELLIGENCE_CELERY_QUEUE` | API/worker | Optional | Recommended | render queue | Queue used for progressive intelligence enhancement tasks. Local compose consumes `render` by default; use a dedicated queue only if a worker consumes it. |
+| `INTELLIGENCE_CELERY_QUEUE_DEFAULT` | API/worker | Optional | Optional | render queue | Fallback queue name used when `INTELLIGENCE_CELERY_QUEUE` is unset. |
+| `INTELLIGENCE_RECOMMENDED_DEDICATED_QUEUE` | docs/config | Optional | Optional | `intelligence` | Documented target queue name for dedicated low-priority intelligence workers. |
 | `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` | API | Optional | Recommended | `900` | Pending/running enhancement age before it is marked failed so polling can stop and re-analyze can queue again. |
 | `LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | global cap | Lesson-specific synchronous cap. |
 | `ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | global cap | Analytics-specific synchronous cap. |
@@ -171,6 +183,8 @@ Columns:
 Keep synchronous Ollama timeout caps lower than the API/Gunicorn worker timeout. Docker uses Gunicorn without an explicit `--timeout`, so the effective default is 30 seconds; a provider timeout above that can kill the worker before heuristic fallback is returned. Long-running local LLM analysis should use the background job/polling flow before raising these caps.
 
 For the current local worker, use `INTELLIGENCE_CELERY_QUEUE=render`. If you prefer `INTELLIGENCE_CELERY_QUEUE=celery`, configure `CELERY_WORKER_QUEUES=celery,render` or run a dedicated worker for `celery`.
+
+Production should prefer `INTELLIGENCE_CELERY_QUEUE=intelligence` with a separate worker consuming only `intelligence` and concurrency `1`. This keeps Ollama analysis behind render/TTS/avatar resource needs instead of sharing the critical render queue.
 
 ## Subtitle Translation and Moderation-adjacent Providers
 

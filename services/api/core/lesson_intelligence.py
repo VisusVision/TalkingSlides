@@ -14,6 +14,7 @@ from django.conf import settings
 from core.drafts import get_studio_transcript_pages
 from core.intelligence_language import detect_lesson_language, resolve_output_language
 from core.intelligence_progressive import (
+    bounded_adaptive_background_timeout,
     enhancement_response_fields,
     first_provider_name,
     provider_attempt as progressive_provider_attempt,
@@ -405,6 +406,7 @@ class OllamaLessonIntelligenceProvider:
     provider_name = "ollama"
 
     def __init__(self, *, background: bool = False) -> None:
+        self.background = bool(background)
         self.base_url = _string_setting(
             "OLLAMA_LESSON_INTELLIGENCE_BASE_URL",
             _string_setting("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
@@ -420,12 +422,19 @@ class OllamaLessonIntelligenceProvider:
                 configured_timeout,
                 cap_setting="LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS",
             )
+        self.last_timeout_seconds = self.timeout_seconds
 
     def analyze_lesson(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
             raise LessonIntelligenceProviderUnavailable("Ollama base URL is not configured")
         if not self.model:
             raise LessonIntelligenceProviderUnavailable("Ollama lesson intelligence model is not configured")
+        timeout_seconds = (
+            adaptive_lesson_intelligence_timeout(input_payload, base_seconds=self.timeout_seconds)
+            if self.background
+            else self.timeout_seconds
+        )
+        self.last_timeout_seconds = timeout_seconds
 
         request_payload = {
             "model": self.model,
@@ -441,7 +450,7 @@ class OllamaLessonIntelligenceProvider:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8")
             data = json.loads(body)
         except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
@@ -459,6 +468,7 @@ class OllamaLessonIntelligenceProvider:
             **dict(normalized.get("metadata") or {}),
             "model": self.model,
             "base_url_configured": bool(self.base_url),
+            "timeout_seconds": timeout_seconds,
         }
         return normalized
 
@@ -644,6 +654,21 @@ def progressive_ollama_enabled(chain: list[str] | None = None) -> bool:
     return _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True) and provider_chain_contains_ollama(provider_chain)
 
 
+def adaptive_lesson_intelligence_timeout(input_payload: dict[str, Any], *, base_seconds: float | None = None) -> float:
+    payload = input_payload if isinstance(input_payload, dict) else {}
+    pages = [page for page in payload.get("pages", []) if isinstance(page, dict)]
+    base = (
+        float(base_seconds)
+        if base_seconds is not None
+        else _background_provider_timeout(cap_setting="LESSON_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS")
+    )
+    return bounded_adaptive_background_timeout(
+        base_seconds=base,
+        input_chars=_safe_int(payload.get("input_chars") or payload.get("source_chars"), 0),
+        page_count=len(pages),
+    )
+
+
 def analyze_lesson_heuristic_immediate(
     lesson_input: LessonIntelligenceInput,
     *,
@@ -709,6 +734,7 @@ def analyze_lesson_ollama_background(
         "input_truncated": lesson_input.input_truncated,
         "source_char_count": lesson_input.source_chars,
         "input_char_count": lesson_input.input_chars,
+        "timeout_seconds": getattr(provider, "last_timeout_seconds", None),
     }
     return normalized
 

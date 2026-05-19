@@ -28,6 +28,7 @@ from rest_framework.test import APIClient  # noqa: E402
 from core.lesson_intelligence import (  # noqa: E402
     LessonIntelligenceProviderUnavailable,
     PaidLessonIntelligenceProvider,
+    adaptive_lesson_intelligence_timeout,
     analyze_with_provider_chain,
     build_lesson_intelligence_input,
 )
@@ -657,7 +658,7 @@ def test_background_success_updates_report_to_ollama(monkeypatch):
     latest = _client(owner).get(_latest_url(project))
 
     assert task_result["status"] == "done"
-    assert captured["timeout"] == 120
+    assert 60 <= captured["timeout"] < 120
     assert latest.data["provider"] == "ollama"
     assert latest.data["fallback_used"] is False
     assert latest.data["summary"] == "Ollama generated lesson summary."
@@ -667,11 +668,35 @@ def test_background_success_updates_report_to_ollama(monkeypatch):
     enhancement = report.metadata["progressive_enhancement"]
     assert enhancement["started_at"]
     assert enhancement["finished_at"]
+    assert enhancement["timeout_seconds"] == captured["timeout"]
     suggestion = latest.data["expanded_narration_suggestions"][0]
     assert suggestion["draft_narration"].startswith("In this part")
     assert suggestion["draft_narration"] != suggestion["advice"]
     assert latest.data["provider_chain_attempts"][0]["status"] == "success"
     assert "draft_narration" in captured["body"]
+
+
+@override_settings(
+    INTELLIGENCE_BACKGROUND_TIMEOUT_MIN_SECONDS=60,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_MAX_SECONDS=140,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=5,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_PAGE_SECONDS=3,
+)
+def test_adaptive_lesson_timeout_scales_and_respects_max():
+    small = {
+        "input_chars": 1000,
+        "pages": [{"page_key": "p1", "narration_text": "Short"}],
+    }
+    large = {
+        "input_chars": 60000,
+        "pages": [{"page_key": f"p{index}", "narration_text": "Long"} for index in range(40)],
+    }
+
+    small_timeout = adaptive_lesson_intelligence_timeout(small, base_seconds=120)
+    large_timeout = adaptive_lesson_intelligence_timeout(large, base_seconds=120)
+
+    assert small_timeout < large_timeout
+    assert large_timeout == 140
 
 
 @override_settings(

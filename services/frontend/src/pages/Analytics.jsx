@@ -399,15 +399,15 @@ function ProviderLabel({ report }) {
   if (report.fallback_used) {
     return (
       <span className="inline-flex items-center rounded-full bg-amber-400/15 px-3 py-1 text-xs font-semibold text-amber-300">
-        Fallback heuristic used
+        Basic fallback insight
       </span>
     );
   }
   const provider = String(report.provider || '').toLowerCase();
   const label = provider === 'ollama'
-    ? 'Ollama enhanced'
+    ? 'Ollama enhanced insight'
     : provider === 'heuristic'
-      ? 'Heuristic analysis'
+      ? 'Basic insight'
       : provider
         ? `${provider} analysis`
         : 'Analysis';
@@ -435,9 +435,9 @@ function AnalyticsEnhancementLabel({ report }) {
   const label = pending
     ? 'Ollama enhancement running'
     : status === 'done'
-      ? 'Ollama enhanced'
+      ? 'Ollama enhanced insight'
       : failed
-        ? 'Ollama enhancement failed; heuristic analysis kept'
+        ? 'Basic fallback insight; Ollama enhancement failed'
         : '';
   if (!label) return null;
   const className = failed
@@ -729,8 +729,6 @@ export default function Analytics({ user }) {
   const [intelligenceError, setIntelligenceError] = useState('');
   const [intelligenceCopied, setIntelligenceCopied] = useState(false);
   const [intelligenceLoadedFilterKey, setIntelligenceLoadedFilterKey] = useState('');
-  const analyticsAutoRunKeysRef = useRef(new Set());
-  const analyticsInitialAutoRunDoneRef = useRef(false);
 
   const canCreateLesson = canAccessStudio(user);
   const canReviewModeration = isStaffUser(user);
@@ -904,45 +902,6 @@ export default function Analytics({ user }) {
       setIntelligenceAnalyzing(false);
     }
   }, [analyticsFilterKey, analyticsFilters, intelligenceReport]);
-
-  useEffect(() => {
-    if (!canCreateLesson || analyticsInitialAutoRunDoneRef.current) return;
-    if (intelligenceLoadedFilterKey !== analyticsFilterKey || intelligenceLoading || intelligenceAnalyzing) return;
-
-    const report = intelligenceReport || null;
-    const status = String(report?.status || '').toLowerCase();
-    if (report?.enabled === false || status === 'disabled' || status === 'failed') {
-      analyticsInitialAutoRunDoneRef.current = true;
-      return;
-    }
-    if (analyticsEnhancementPending(report)) return;
-
-    const missingReport = !report?.id || status === 'empty';
-    const staleReport = analyticsIntelligenceIsStale(report);
-    if (!missingReport && !staleReport) {
-      analyticsInitialAutoRunDoneRef.current = true;
-      return;
-    }
-
-    const sourceKey = report?.current_source_hash || report?.report_source_hash || report?.source_hash || 'empty';
-    const autoRunKey = `${analyticsFilterKey}:${sourceKey}:${missingReport ? 'missing' : 'stale'}`;
-    if (analyticsAutoRunKeysRef.current.has(autoRunKey)) {
-      analyticsInitialAutoRunDoneRef.current = true;
-      return;
-    }
-
-    analyticsInitialAutoRunDoneRef.current = true;
-    analyticsAutoRunKeysRef.current.add(autoRunKey);
-    handleAnalyzeAnalytics({ auto: true });
-  }, [
-    analyticsFilterKey,
-    canCreateLesson,
-    handleAnalyzeAnalytics,
-    intelligenceAnalyzing,
-    intelligenceLoadedFilterKey,
-    intelligenceLoading,
-    intelligenceReport,
-  ]);
 
   const handleCopyIntelligence = async () => {
     const text = analyticsIntelligenceCopyText(intelligenceReport);
@@ -1421,7 +1380,7 @@ export default function Analytics({ user }) {
         {intelligenceEnhancementFailed && (
           <div className="flex items-start gap-2 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-200">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <span>{intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}</span>
+            <span>{intelligenceReport?.enhancement_error_safe || 'Basic fallback insight; Ollama enhancement failed.'}</span>
           </div>
         )}
 
@@ -1514,7 +1473,7 @@ export default function Analytics({ user }) {
           <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
             <p className="text-sm text-[var(--text-secondary)]">{stats.insight}</p>
             <p className="mt-2 text-xs text-[var(--text-secondary)]">
-              Run analysis when you want advisory insights for the selected analytics range.
+              Smart insights are being prepared automatically when creator analytics change.
             </p>
           </div>
         )}

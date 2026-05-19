@@ -45,6 +45,7 @@ avatar_queue = str(os.environ.get("CELERY_AVATAR_QUEUE", "avatar") or "avatar").
 intelligence_queue = str(
     os.environ.get("INTELLIGENCE_CELERY_QUEUE")
     or os.environ.get("CELERY_INTELLIGENCE_QUEUE")
+    or os.environ.get("INTELLIGENCE_CELERY_QUEUE_DEFAULT")
     or render_queue
 ).strip() or render_queue
 legacy_queue = str(os.environ.get("CELERY_LEGACY_QUEUE", "celery") or "celery").strip() or "celery"
@@ -69,6 +70,8 @@ app.conf.task_routes = {
     "worker.tasks.fallback_avatar_render": {"queue": avatar_queue},
     "worker.tasks.avatar_cache_cleanup": {"queue": avatar_queue},
     "worker.tasks.cleanup_avatar_cache": {"queue": avatar_queue},
+    "worker.tasks.schedule_lesson_intelligence": {"queue": intelligence_queue},
+    "worker.tasks.schedule_creator_analytics_intelligence": {"queue": intelligence_queue},
     "worker.tasks.enhance_lesson_intelligence_report": {"queue": intelligence_queue},
     "worker.tasks.enhance_analytics_intelligence_report": {"queue": intelligence_queue},
 }

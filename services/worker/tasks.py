@@ -88,6 +88,15 @@ def _avatar_queue_name() -> str:
     return str(os.environ.get("CELERY_AVATAR_QUEUE", "avatar") or "avatar").strip() or "avatar"
 
 
+def _intelligence_queue_name() -> str:
+    return str(
+        os.environ.get("INTELLIGENCE_CELERY_QUEUE")
+        or os.environ.get("CELERY_INTELLIGENCE_QUEUE")
+        or os.environ.get("INTELLIGENCE_CELERY_QUEUE_DEFAULT")
+        or _render_queue_name()
+    ).strip() or _render_queue_name()
+
+
 def _queue_for_avatar_options(avatar_options: dict[str, Any] | None) -> str:
     return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _render_queue_name()
 
@@ -344,6 +353,32 @@ def _notify_render_completed(project_id: str | int) -> None:
         notify_render_completed(project_id, _latest_video_export_job_id(project_id))
     except Exception:
         logger.warning("Render completion notification hook failed for project=%s", project_id, exc_info=True)
+
+
+def _schedule_lesson_intelligence_after_worker_event(project_id: str | int, *, reason: str, force: bool = False) -> None:
+    try:
+        schedule_lesson_intelligence.apply_async(
+            args=[int(project_id)],
+            kwargs={"reason": str(reason or "auto"), "force": bool(force)},
+            queue=_intelligence_queue_name(),
+        )
+    except Exception:
+        logger.warning("Lesson intelligence worker schedule dispatch failed for project=%s", project_id, exc_info=True)
+
+
+def _schedule_creator_analytics_after_worker_event(project_id: str | int, *, reason: str, force: bool = False) -> None:
+    try:
+        from core.models import Project
+
+        project = Project.objects.filter(pk=int(project_id)).only("user_id").first()
+        if project and project.user_id:
+            schedule_creator_analytics_intelligence.apply_async(
+                args=[int(project.user_id)],
+                kwargs={"reason": str(reason or "auto"), "force": bool(force)},
+                queue=_intelligence_queue_name(),
+            )
+    except Exception:
+        logger.warning("Analytics intelligence worker schedule dispatch failed for project=%s", project_id, exc_info=True)
 
 
 def _notify_render_failed(project_id: str | int) -> None:
@@ -4904,7 +4939,14 @@ def _replace_intelligence_attempt(metadata: dict[str, Any], provider: str, statu
     return metadata
 
 
-def _mark_lesson_intelligence_enhancement(report_id: int, status_value: str, *, task_id: str = "", error: Exception | str | None = None):
+def _mark_lesson_intelligence_enhancement(
+    report_id: int,
+    status_value: str,
+    *,
+    task_id: str = "",
+    timeout_seconds: float | int | None = None,
+    error: Exception | str | None = None,
+):
     from core.intelligence_progressive import merge_enhancement_metadata
     from core.models import LessonIntelligenceReport
 
@@ -4916,6 +4958,7 @@ def _mark_lesson_intelligence_enhancement(report_id: int, status_value: str, *, 
         provider="ollama",
         status=status_value,
         task_id=task_id,
+        timeout_seconds=timeout_seconds,
         error=error,
     )
     if status_value in {"running", "done", "failed"}:
@@ -4925,7 +4968,14 @@ def _mark_lesson_intelligence_enhancement(report_id: int, status_value: str, *, 
     return report
 
 
-def _mark_analytics_intelligence_enhancement(report_id: int, status_value: str, *, task_id: str = "", error: Exception | str | None = None):
+def _mark_analytics_intelligence_enhancement(
+    report_id: int,
+    status_value: str,
+    *,
+    task_id: str = "",
+    timeout_seconds: float | int | None = None,
+    error: Exception | str | None = None,
+):
     from core.intelligence_progressive import merge_enhancement_metadata
     from core.models import AnalyticsIntelligenceReport
 
@@ -4937,6 +4987,7 @@ def _mark_analytics_intelligence_enhancement(report_id: int, status_value: str, 
         provider="ollama",
         status=status_value,
         task_id=task_id,
+        timeout_seconds=timeout_seconds,
         error=error,
     )
     if status_value in {"running", "done", "failed"}:
@@ -4946,12 +4997,53 @@ def _mark_analytics_intelligence_enhancement(report_id: int, status_value: str, 
     return report
 
 
+@app.task(bind=True, name="worker.tasks.schedule_lesson_intelligence", max_retries=0)
+def schedule_lesson_intelligence(
+    self,
+    project_id: int,
+    reason: str = "auto",
+    requested_by_id: int | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Create or refresh the quick lesson report and queue slow enhancement."""
+    try:
+        from core.views import schedule_lesson_intelligence as schedule
+
+        return schedule(
+            int(project_id),
+            reason=str(reason or "auto"),
+            requested_by_id=requested_by_id,
+            force=bool(force),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("schedule_lesson_intelligence task failed project=%s error=%s", project_id, exc.__class__.__name__)
+        return {"status": "failed", "project_id": int(project_id), "error": exc.__class__.__name__}
+
+
+@app.task(bind=True, name="worker.tasks.schedule_creator_analytics_intelligence", max_retries=0)
+def schedule_creator_analytics_intelligence(
+    self,
+    user_id: int,
+    reason: str = "auto",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Create or refresh the quick analytics report and queue slow enhancement."""
+    try:
+        from core.views import schedule_creator_analytics_intelligence as schedule
+
+        return schedule(int(user_id), reason=str(reason or "auto"), force=bool(force))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("schedule_creator_analytics_intelligence task failed user=%s error=%s", user_id, exc.__class__.__name__)
+        return {"status": "failed", "user_id": int(user_id), "error": exc.__class__.__name__}
+
+
 @app.task(bind=True, name="worker.tasks.enhance_lesson_intelligence_report", max_retries=0)
 def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -> dict[str, Any]:
     """Run slow Ollama lesson analysis outside the API request path."""
     from core.intelligence_progressive import merge_enhancement_metadata
     from core.lesson_intelligence import (
         LessonIntelligenceInputError,
+        adaptive_lesson_intelligence_timeout,
         analyze_lesson_ollama_background,
         apply_analysis_to_report,
         build_lesson_intelligence_input,
@@ -4961,6 +5053,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
     report_id = int(report_id)
     expected_source_hash = str(source_hash or "").strip()
     task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+    timeout_seconds = None
     report = _mark_lesson_intelligence_enhancement(report_id, "running", task_id=task_id)
     if report is None:
         return {"report_id": report_id, "status": "missing"}
@@ -4979,7 +5072,9 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             _mark_lesson_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
             return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
 
+        timeout_seconds = adaptive_lesson_intelligence_timeout(lesson_input.to_provider_payload())
         analysis = analyze_lesson_ollama_background(lesson_input, chain=report.provider_chain)
+        timeout_seconds = (analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}).get("timeout_seconds") or timeout_seconds
         analysis_metadata = {
             **dict(analysis.get("metadata") or {}),
             "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
@@ -4989,12 +5084,19 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             provider="ollama",
             status="done",
             task_id=task_id,
+            timeout_seconds=timeout_seconds,
         )
         report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
         return {"report_id": report.id, "status": "done", "provider": report.provider}
     except (LessonIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Lesson intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
-        _mark_lesson_intelligence_enhancement(report_id, "failed", task_id=task_id, error=f"{exc.__class__.__name__}: {exc}")
+        _mark_lesson_intelligence_enhancement(
+            report_id,
+            "failed",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            error=f"{exc.__class__.__name__}: {exc}",
+        )
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 
 
@@ -5011,6 +5113,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
 
     from core.analytics_intelligence import (
         AnalyticsIntelligenceInputError,
+        adaptive_analytics_intelligence_timeout,
         analyze_analytics_ollama_background,
         apply_analytics_analysis_to_report,
         build_analytics_intelligence_input,
@@ -5022,6 +5125,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
     report_id = int(report_id)
     expected_source_hash = str(source_hash or "").strip()
     task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+    timeout_seconds = None
     report = _mark_analytics_intelligence_enhancement(report_id, "running", task_id=task_id)
     if report is None:
         return {"report_id": report_id, "status": "missing"}
@@ -5061,7 +5165,9 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
             return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
 
+        timeout_seconds = adaptive_analytics_intelligence_timeout(analytics_input.to_provider_payload())
         analysis = analyze_analytics_ollama_background(analytics_input, chain=report.provider_chain)
+        timeout_seconds = (analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}).get("timeout_seconds") or timeout_seconds
         analysis_metadata = {
             **dict(analysis.get("metadata") or {}),
             "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
@@ -5071,12 +5177,19 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             provider="ollama",
             status="done",
             task_id=task_id,
+            timeout_seconds=timeout_seconds,
         )
         report = apply_analytics_analysis_to_report(report, analysis, source_hash=analytics_input.source_hash)
         return {"report_id": report.id, "status": "done", "provider": report.provider}
     except (AnalyticsIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Analytics intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
-        _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error=f"{exc.__class__.__name__}: {exc}")
+        _mark_analytics_intelligence_enhancement(
+            report_id,
+            "failed",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            error=f"{exc.__class__.__name__}: {exc}",
+        )
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 
 
@@ -6186,6 +6299,8 @@ def concat_and_finalize(
         )
         _mark_project_ready_after_successful_render(project_id)
         _notify_render_completed(project_id)
+        _schedule_lesson_intelligence_after_worker_event(project_id, reason="render_completed")
+        _schedule_creator_analytics_after_worker_event(project_id, reason="render_completed")
         try:
             video_frame_audit = _run_auto_video_frame_audit_after_render(
                 project_id,
@@ -6426,6 +6541,8 @@ def process_pptx_to_video(
             tts_settings = _draft_render_tts_settings(project_id, tts_settings)
         else:
             slides = _sync_transcript_pages_from_export(project_id, slides)
+            if _intelligence_queue_name() != _render_queue_name():
+                _schedule_lesson_intelligence_after_worker_event(project_id, reason="transcript_extracted")
         n_slides = len(slides)
         logger.info("Step 1 done: %d slides ready for parallel rendering", n_slides)
 

@@ -28,6 +28,7 @@ from rest_framework.test import APIClient  # noqa: E402
 from core.analytics_intelligence import (  # noqa: E402
     AnalyticsIntelligenceProviderUnavailable,
     PaidAnalyticsIntelligenceProvider,
+    adaptive_analytics_intelligence_timeout,
     analyze_analytics_with_provider_chain,
     build_analytics_intelligence_input,
 )
@@ -596,7 +597,7 @@ def test_background_success_updates_analytics_report_to_ollama(monkeypatch):
     assert response.data["provider"] == "heuristic"
     assert response.data["enhancement_pending"] is True
     assert task_result["status"] == "done"
-    assert captured["timeout"] == 120
+    assert 60 <= captured["timeout"] < 120
     assert latest.data["provider"] == "ollama"
     assert latest.data["fallback_used"] is False
     assert latest.data["summary"] == "Ollama analytics summary."
@@ -606,8 +607,43 @@ def test_background_success_updates_analytics_report_to_ollama(monkeypatch):
     enhancement = report.metadata["progressive_enhancement"]
     assert enhancement["started_at"]
     assert enhancement["finished_at"]
+    assert enhancement["timeout_seconds"] == captured["timeout"]
     assert latest.data["provider_chain_attempts"][0]["status"] == "success"
     assert "Analytics payload" in captured["body"]
+
+
+@override_settings(
+    INTELLIGENCE_BACKGROUND_TIMEOUT_MIN_SECONDS=60,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_MAX_SECONDS=180,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=4,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_PAGE_SECONDS=2,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS=1,
+)
+def test_adaptive_analytics_timeout_scales_and_respects_max():
+    small = {
+        "input_chars": 1000,
+        "analytics": {
+            "tables": {"top_lessons": [{"lesson_id": 1}], "recent_lessons": [], "top_categories": []},
+            "qualitative_feedback": {"recent_comments": []},
+        },
+    }
+    large = {
+        "input_chars": 80000,
+        "analytics": {
+            "tables": {
+                "top_lessons": [{"lesson_id": index} for index in range(30)],
+                "recent_lessons": [{"lesson_id": index} for index in range(30)],
+                "top_categories": [{"category_slug": f"cat-{index}"} for index in range(20)],
+            },
+            "qualitative_feedback": {"recent_comments": [{"text": "Useful"} for _ in range(50)]},
+        },
+    }
+
+    small_timeout = adaptive_analytics_intelligence_timeout(small, base_seconds=120)
+    large_timeout = adaptive_analytics_intelligence_timeout(large, base_seconds=120)
+
+    assert small_timeout < large_timeout
+    assert large_timeout == 180
 
 
 @override_settings(

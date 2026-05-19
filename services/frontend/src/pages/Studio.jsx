@@ -998,10 +998,10 @@ function ModerationPanel({
 
 function lessonIntelligenceProviderLabel(report) {
   if (report?.enabled === false) return 'Disabled';
-  if (report?.fallback_used) return 'Fallback heuristic used';
+  if (report?.fallback_used) return 'Heuristic fallback kept';
   const provider = String(report?.provider || '').toLowerCase();
   if (provider === 'ollama') return 'Ollama enhanced';
-  if (provider === 'heuristic') return 'Heuristic analysis';
+  if (provider === 'heuristic') return 'Quick heuristic summary';
   if (provider) return `${provider.charAt(0).toUpperCase()}${provider.slice(1)} analysis`;
   return 'No analysis yet';
 }
@@ -1020,7 +1020,7 @@ function lessonIntelligenceEnhancementLabel(report) {
   if (provider !== 'ollama') return '';
   if (['pending', 'running'].includes(status)) return 'Ollama enhancement running';
   if (status === 'done') return 'Ollama enhanced';
-  if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Ollama enhancement failed; heuristic analysis kept';
+  if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Heuristic fallback kept';
   return '';
 }
 
@@ -1257,15 +1257,15 @@ function LessonIntelligencePanel({
       )}
       {enhancementFailed && (
         <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
-          {report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
+          {report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic fallback kept.'}
         </p>
       )}
 
       {!loading && enabled && !hasReport && !error && (
         <div className="mt-4 rounded-xl bg-[color:var(--surface-muted)] p-4">
-          <p className="text-sm font-semibold text-[var(--text-primary)]">No analysis yet</p>
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Analysis preparing...</p>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Run an analysis to review summary, complexity, warnings, and narration suggestions.
+            A quick summary appears here when transcript text is available.
           </p>
         </div>
       )}
