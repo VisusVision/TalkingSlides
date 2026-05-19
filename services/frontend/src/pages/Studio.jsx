@@ -1014,12 +1014,29 @@ function lessonIntelligenceEnhancementPending(report) {
   return Boolean(report?.enhancement_pending || ['pending', 'running'].includes(lessonIntelligenceEnhancementStatus(report)));
 }
 
+function lessonIntelligenceEnhancementMeta(report) {
+  return report?.metadata?.progressive_enhancement || {};
+}
+
 function lessonIntelligenceEnhancementLabel(report) {
   const status = lessonIntelligenceEnhancementStatus(report);
   const provider = String(report?.enhancement_provider || '').toLowerCase();
   if (provider !== 'ollama') return '';
-  if (['pending', 'running'].includes(status)) return 'Ollama enhancement running';
-  if (status === 'done') return 'Ollama enhanced';
+  const meta = lessonIntelligenceEnhancementMeta(report);
+  const phase = String(meta.phase || '').toLowerCase();
+  const chunkCount = Number(meta.chunk_count || report?.metadata?.chunk_count || 0);
+  const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
+  const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
+  const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
+  if (['pending', 'running'].includes(status)) {
+    if (phase === 'synthesizing') return 'Synthesizing final insight';
+    if (chunkCount > 1) return `Ollama analyzing ${processedChunks}/${chunkCount} chunks`;
+    return 'Ollama enhancement running';
+  }
+  if (status === 'done') {
+    if (failedChunks > 0) return 'Some chunks failed; partial enhancement used';
+    return 'Ollama enhanced';
+  }
   if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Heuristic fallback kept';
   return '';
 }

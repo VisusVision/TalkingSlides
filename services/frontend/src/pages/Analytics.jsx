@@ -426,16 +426,30 @@ function analyticsEnhancementPending(report) {
   return Boolean(report?.enhancement_pending || ['pending', 'running'].includes(analyticsEnhancementStatus(report)));
 }
 
+function analyticsEnhancementMeta(report) {
+  return report?.metadata?.progressive_enhancement || {};
+}
+
 function AnalyticsEnhancementLabel({ report }) {
   const status = analyticsEnhancementStatus(report);
   const provider = String(report?.enhancement_provider || '').toLowerCase();
   if (provider !== 'ollama') return null;
   const failed = ['failed', 'unavailable', 'disabled', 'stale'].includes(status);
   const pending = ['pending', 'running'].includes(status);
+  const meta = analyticsEnhancementMeta(report);
+  const phase = String(meta.phase || '').toLowerCase();
+  const chunkCount = Number(meta.chunk_count || report?.metadata?.chunk_count || 0);
+  const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
+  const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
+  const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
   const label = pending
-    ? 'Ollama enhancement running'
+    ? (phase === 'synthesizing'
+      ? 'Synthesizing final insight'
+      : chunkCount > 1
+        ? `Ollama analyzing ${processedChunks}/${chunkCount} chunks`
+        : 'Ollama enhancement running')
     : status === 'done'
-      ? 'Ollama enhanced insight'
+      ? (failedChunks > 0 ? 'Some chunks failed; partial enhancement used' : 'Ollama enhanced insight')
       : failed
         ? 'Basic fallback insight; Ollama enhancement failed'
         : '';

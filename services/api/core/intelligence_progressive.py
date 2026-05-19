@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -34,6 +36,92 @@ def _float_setting(name: str, default: float, *, minimum: float | None = None, m
     if maximum is not None:
         value = min(float(maximum), value)
     return value
+
+
+def _int_setting(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
+    try:
+        value = int(getattr(settings, name, default))
+    except (TypeError, ValueError):
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return value
+
+
+def stable_json_fingerprint(payload: Any) -> str:
+    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def build_intelligence_run_identity(
+    *,
+    kind: str,
+    owner_id: int | str,
+    source_hash: str,
+    provider: str,
+    model: str,
+    output_language: str,
+    prompt_version: str,
+    filters: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    input_payload = {
+        "kind": str(kind or "").strip().lower(),
+        "owner_id": str(owner_id or ""),
+        "source_hash": str(source_hash or ""),
+        "provider": str(provider or "").strip().lower(),
+        "model": str(model or "").strip(),
+        "output_language": str(output_language or "auto").strip().lower() or "auto",
+        "prompt_version": str(prompt_version or "").strip(),
+        "filters": filters if isinstance(filters, dict) else {},
+    }
+    return {
+        "run_key": stable_json_fingerprint(input_payload),
+        "source_hash": input_payload["source_hash"],
+        "provider": input_payload["provider"],
+        "model": input_payload["model"],
+        "output_language": input_payload["output_language"],
+        "prompt_version": input_payload["prompt_version"],
+        "input_fingerprint": stable_json_fingerprint(
+            {
+                "kind": input_payload["kind"],
+                "owner_id": input_payload["owner_id"],
+                "source_hash": input_payload["source_hash"],
+                "filters": input_payload["filters"],
+            }
+        ),
+    }
+
+
+def enhancement_lock_key(run_key: str) -> str:
+    normalized = str(run_key or "").strip()
+    return f"intelligence:enhancement:run:{normalized}" if normalized else ""
+
+
+def ollama_chunk_max_chars() -> int:
+    return _int_setting("INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS", 6000, minimum=1000, maximum=50000)
+
+
+def ollama_chunk_timeout_seconds(input_chars: int) -> float:
+    min_seconds = _float_setting("INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS", 45.0, minimum=1.0, maximum=3600.0)
+    max_seconds = _float_setting(
+        "INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS",
+        120.0,
+        minimum=min_seconds,
+        maximum=3600.0,
+    )
+    per_1000_chars = _float_setting("INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS", 4.0, minimum=0.0, maximum=60.0)
+    try:
+        chars = max(0, int(input_chars or 0))
+    except (TypeError, ValueError):
+        chars = 0
+    adaptive = min_seconds + (chars / 1000.0) * per_1000_chars
+    return round(max(min_seconds, min(max_seconds, adaptive)), 2)
+
+
+def ollama_total_timeout_budget_seconds() -> float:
+    return _float_setting("INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS", 600.0, minimum=30.0, maximum=7200.0)
 
 
 def bounded_adaptive_background_timeout(
@@ -94,6 +182,7 @@ def enhancement_metadata(
     timeout_seconds: float | int | None = None,
     error: Exception | str | None = None,
     enabled: bool = True,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now = timezone.now().isoformat()
     normalized_status = str(status or "pending").strip().lower()
@@ -108,12 +197,17 @@ def enhancement_metadata(
         "task_id": str(task_id or ""),
         "queue": str(queue or "").strip(),
         "error": safe_enhancement_error(error),
+        "last_update_at": now,
     }
     if timeout_seconds is not None:
         try:
             payload["timeout_seconds"] = float(timeout_seconds)
         except (TypeError, ValueError):
             pass
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if value is not None:
+                payload[str(key)] = value
     return payload
 
 
@@ -127,6 +221,7 @@ def merge_enhancement_metadata(
     timeout_seconds: float | int | None = None,
     error: Exception | str | None = None,
     enabled: bool | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source = dict(metadata or {})
     current = source.get(PROGRESSIVE_ENHANCEMENT_KEY)
@@ -158,10 +253,16 @@ def merge_enhancement_metadata(
             enhancement["finished_at"] = now
         if normalized_status in {"failed", "stale"}:
             enhancement["failed_at"] = now
+    if isinstance(extra, dict):
+        for key, value in extra.items():
+            if value is None:
+                continue
+            enhancement[str(key)] = value
     if error is not None:
         enhancement["error"] = safe_enhancement_error(error)
     elif status in {"done", "pending", "running"}:
         enhancement["error"] = ""
+    enhancement["last_update_at"] = now
 
     source[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
     return source

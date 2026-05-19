@@ -163,6 +163,13 @@ Columns:
 | `INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS` | worker | Optional | Recommended | `4` | Additional adaptive timeout per 1000 input characters. |
 | `INTELLIGENCE_BACKGROUND_TIMEOUT_PER_PAGE_SECONDS` | worker | Optional | Recommended | `2` | Additional adaptive timeout per lesson page or analytics row. |
 | `INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS` | worker | Optional | Recommended | `1` | Additional adaptive timeout per recent analytics comment. |
+| `INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS` | worker | Optional | Recommended | `6000` | Maximum lesson/analytics content target for one background Ollama chunk. |
+| `INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES` | worker | Optional | Optional | `8` | Maximum lesson pages grouped into one Ollama lesson chunk. |
+| `INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS` | worker | Optional | Optional | `10` | Maximum analytics rows grouped into one Ollama analytics chunk. |
+| `INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD` | worker | Optional | Optional | `40` | Analytics row count that can still use one-shot Ollama when prompt size is small. |
+| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | `45` | Minimum timeout for one background Ollama chunk request. |
+| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `120` | Maximum timeout for one background Ollama chunk request. |
+| `INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `600` | Maximum total budget for one chunked Ollama enhancement task. |
 | `ANALYTICS_INTELLIGENCE_AUTO_ENABLED` | API/worker | Optional | Recommended | `true` | Enables event-driven creator analytics intelligence scheduling. |
 | `ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS` | API/worker | Optional | Recommended | `3600` | Minimum interval between automatic analytics intelligence schedules for routine events. |
 | `ANALYTICS_INTELLIGENCE_MIN_PROGRESS_EVENT_DELTA` | API/worker | Optional | Recommended | `5` | Progress-event threshold used with throttling before scheduling analytics intelligence again. |

@@ -30,8 +30,10 @@ from core.analytics_intelligence import (  # noqa: E402
     PaidAnalyticsIntelligenceProvider,
     adaptive_analytics_intelligence_timeout,
     analyze_analytics_with_provider_chain,
+    analytics_ollama_run_identity,
     build_analytics_intelligence_input,
 )
+from core.intelligence_progressive import ollama_chunk_timeout_seconds  # noqa: E402
 from core.models import (  # noqa: E402
     AnalyticsIntelligenceReport,
     Category,
@@ -378,6 +380,58 @@ def test_duplicate_analytics_analyze_does_not_enqueue_duplicate_for_same_source(
 @override_settings(
     ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_MODEL="qwen-old",
+)
+def test_analytics_dedupe_run_key_allows_different_model(monkeypatch):
+    publisher = _make_user("ai_model_change_owner")
+    viewer = _make_user("ai_model_change_viewer", role="student")
+    lesson = _make_project(publisher, "Model change analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(publisher).post(_analyze_url(), {}, format="json")
+    first_report = AnalyticsIntelligenceReport.objects.get(pk=first.data["id"])
+    first_run_key = first_report.metadata["run_key"]
+
+    with override_settings(OLLAMA_ANALYTICS_INTELLIGENCE_MODEL="qwen-new"):
+        second = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert second.data["source_hash"] == first.data["source_hash"]
+    assert len(dispatch_calls) == 2
+    second_report = AnalyticsIntelligenceReport.objects.get(pk=second.data["id"])
+    assert second_report.metadata["run_key"] != first_run_key
+    assert second_report.metadata["model"] == "qwen-new"
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+)
+def test_analytics_dedupe_allows_different_output_language(monkeypatch):
+    publisher = _make_user("ai_language_change_owner")
+    viewer = _make_user("ai_language_change_viewer", role="student")
+    lesson = _make_project(publisher, "Language change analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(publisher).post(_analyze_url(), {"output_language": "en"}, format="json")
+    second = _client(publisher).post(_analyze_url(), {"output_language": "tr"}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert second.data["source_hash"] != first.data["source_hash"]
+    assert len(dispatch_calls) == 2
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
 )
 def test_force_analytics_analyze_requeues_fresh_pending_enhancement(monkeypatch):
     publisher = _make_user("ai_force_requeue_owner")
@@ -610,6 +664,119 @@ def test_background_success_updates_analytics_report_to_ollama(monkeypatch):
     assert enhancement["timeout_seconds"] == captured["timeout"]
     assert latest.data["provider_chain_attempts"][0]["status"] == "success"
     assert "Analytics payload" in captured["body"]
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=1200,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=2,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=10,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=25,
+)
+def test_large_analytics_ollama_background_uses_chunks(monkeypatch):
+    publisher = _make_user("ai_chunk_owner")
+    viewer = _make_user("ai_chunk_viewer", role="student")
+    for index in range(8):
+        lesson = _make_project(publisher, f"Chunk analytics lesson {index}")
+        _progress(viewer, lesson, 50 + index)
+        LessonLike.objects.create(user=viewer, project=lesson)
+        LessonComment.objects.create(user=viewer, project=lesson, text=f"Can you explain topic {index} with more examples?")
+    captured = []
+
+    def fake_urlopen(request, timeout):
+        captured.append({"timeout": timeout, "body": request.data.decode("utf-8")})
+        payload = {
+            "provider": "ollama",
+            "analytics_summary": f"Chunk analytics summary {len(captured)}.",
+            "health_score": 70,
+            "risk_level": "medium",
+            "insights": [{"type": "chunk", "message": f"Chunk {len(captured)} insight."}],
+            "recommendations": [{"type": "comments", "message": "Learners want more examples."}],
+            "lesson_actions": [{"lesson_title": "Chunk analytics lesson", "message": "Add examples."}],
+            "category_actions": [],
+            "limitations": [],
+        }
+        return _FakeOllamaResponse({"response": json.dumps(payload)})
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(publisher).get(_latest_url())
+
+    assert task_result["status"] == "done"
+    assert latest.data["provider"] == "ollama"
+    assert len(captured) > 1
+    assert all(10 <= item["timeout"] <= 25 for item in captured)
+    assert "ai_chunk_viewer" not in json.dumps(captured)
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["phase"] == "done"
+    assert enhancement["chunk_count"] == len(captured)
+    assert enhancement["completed_chunks"] == len(captured)
+    assert enhancement["failed_chunks"] == 0
+    assert report.metadata["chunked"] is True
+    assert report.metadata["prompt_version"] == "analytics-intelligence-v2"
+    assert "Learners want more examples" in json.dumps(latest.data)
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=1200,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=1,
+)
+def test_analytics_chunk_failure_returns_partial_ollama_report(monkeypatch):
+    publisher = _make_user("ai_chunk_partial_owner")
+    viewer = _make_user("ai_chunk_partial_viewer", role="student")
+    for index in range(4):
+        lesson = _make_project(publisher, f"Partial analytics lesson {index}")
+        _progress(viewer, lesson, 60 + index)
+        LessonComment.objects.create(user=viewer, project=lesson, text=f"Question about lesson {index}.")
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise URLError("timed out")
+        payload = {
+            "provider": "ollama",
+            "analytics_summary": "Successful analytics chunk.",
+            "health_score": 74,
+            "risk_level": "medium",
+            "insights": [{"type": "partial", "message": "Recovered partial analytics insight."}],
+            "recommendations": [],
+            "lesson_actions": [],
+            "category_actions": [],
+            "limitations": [],
+        }
+        return _FakeOllamaResponse({"response": json.dumps(payload)})
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(publisher).get(_latest_url())
+
+    assert task_result["status"] == "done"
+    assert latest.data["provider"] == "ollama"
+    assert latest.data["provider_chain_attempts"][0]["status"] == "partial"
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["failed_chunks"] >= 1
+    assert enhancement["partial_enhancement"] is True
+    assert report.metadata["partial_enhancement"] is True
 
 
 @override_settings(

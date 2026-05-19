@@ -12,6 +12,10 @@ Lesson Intelligence and Analytics Intelligence use the same production-safety po
 
 When the background Ollama call succeeds, the same report row is updated to `provider=ollama`, `fallback_used=false`, and `metadata.progressive_enhancement.status=done`. If Ollama fails or a queued task becomes stale, the heuristic report stays visible and the enhancement status becomes `failed` with a sanitized error reason.
 
+Large lessons and creator analytics payloads are processed as chunked Ollama workloads. Each chunk receives a bounded timeout, failed chunks fall back to heuristic coverage, and successful chunks are synthesized into the normal report shape. Progress is recorded in `metadata.progressive_enhancement` with `phase`, `chunk_count`, `completed_chunks`, `failed_chunks`, and `partial_enhancement` so the UI can show chunk progress without re-posting analysis.
+
+Background dedupe uses a formal run key that includes intelligence kind, owner/project, source hash, provider, Ollama model, output language, prompt/schema version, and analytics filters. The same unchanged run is not queued twice, but changing model, output language, prompt version, source data, or using force re-analysis creates a new run.
+
 The queue is controlled by `INTELLIGENCE_CELERY_QUEUE`. The default follows the render queue (`render` in the local compose setup), so progressive intelligence is consumed by the current worker without hidden configuration. If you route intelligence to a dedicated queue, start a worker that consumes that queue.
 
 For production, prefer a dedicated low-priority worker so local LLM analysis cannot sit ahead of render, TTS, or avatar work:
@@ -43,6 +47,8 @@ INTELLIGENCE_CELERY_QUEUE=render
 ```
 
 Use smaller/faster models only if you want Ollama to fit inside synchronous limits.
+
+Ollama scaling is local hardware bound. `qwen2.5:7b` is useful for lesson quality when the machine can handle it; for analytics, a smaller local model can be preferable if speed matters more than nuanced synthesis. Cloud or paid providers are not implemented in this branch.
 
 ## Automatic Scheduling
 
@@ -81,6 +87,19 @@ INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS=1
 ```
 
 Lesson background timeouts scale with input characters and page count. Analytics timeouts scale with input characters, lesson/category rows, and recent comment count. The timeout used is recorded in `metadata.progressive_enhancement.timeout_seconds` when available.
+
+Chunk-level Ollama controls:
+
+```text
+INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=6000
+INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES=8
+INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=10
+INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=45
+INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=120
+INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS=600
+```
+
+`INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS` controls how much lesson or analytics content is sent to one local Ollama request. Page/item limits keep individual chunks predictable even when text is short but arrays are large. The per-chunk timeout is bounded by the min/max values, and the whole Celery task stops adding chunks after the total budget. Partial completion still produces a terminal `done` report with `partial_enhancement=true`; full Ollama failure leaves the heuristic report in place and marks enhancement `failed`.
 
 Pending or running enhancement metadata is considered stale after `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` seconds, default `900`. A stale enhancement is marked failed so the frontend stops polling and a later manual re-analyze can queue a new task.
 

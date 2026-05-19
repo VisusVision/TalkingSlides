@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,9 +14,13 @@ from django.conf import settings
 
 from core.intelligence_language import detect_lesson_language, resolve_output_language
 from core.intelligence_progressive import (
+    build_intelligence_run_identity,
     bounded_adaptive_background_timeout,
     enhancement_response_fields,
     first_provider_name,
+    ollama_chunk_max_chars,
+    ollama_chunk_timeout_seconds,
+    ollama_total_timeout_budget_seconds,
     provider_attempt as progressive_provider_attempt,
     provider_chain_contains_ollama,
 )
@@ -24,6 +29,7 @@ from core.models import AnalyticsIntelligenceReport, LessonIntelligenceReport
 
 logger = logging.getLogger(__name__)
 
+ANALYTICS_INTELLIGENCE_PROMPT_VERSION = "analytics-intelligence-v2"
 RISK_LEVELS = {"low", "medium", "high"}
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
 WHITESPACE_RE = re.compile(r"\s+")
@@ -88,14 +94,14 @@ class AnalyticsIntelligenceInput:
 class AnalyticsIntelligenceProvider(Protocol):
     provider_name: str
 
-    def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_analytics(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         ...
 
 
 class HeuristicAnalyticsIntelligenceProvider:
     provider_name = "heuristic"
 
-    def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_analytics(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         output_language = _output_language(input_payload)
         analytics = input_payload.get("analytics") if isinstance(input_payload.get("analytics"), dict) else {}
         summary = analytics.get("summary") if isinstance(analytics.get("summary"), dict) else {}
@@ -409,15 +415,19 @@ class OllamaAnalyticsIntelligenceProvider:
             )
         self.last_timeout_seconds = self.timeout_seconds
 
-    def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_analytics(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         if not self.base_url:
             raise AnalyticsIntelligenceProviderUnavailable("Ollama base URL is not configured")
         if not self.model:
             raise AnalyticsIntelligenceProviderUnavailable("Ollama analytics intelligence model is not configured")
         timeout_seconds = (
-            adaptive_analytics_intelligence_timeout(input_payload, base_seconds=self.timeout_seconds)
-            if self.background
-            else self.timeout_seconds
+            float(timeout_seconds_override)
+            if timeout_seconds_override is not None
+            else (
+                adaptive_analytics_intelligence_timeout(input_payload, base_seconds=self.timeout_seconds)
+                if self.background
+                else self.timeout_seconds
+            )
         )
         self.last_timeout_seconds = timeout_seconds
 
@@ -464,7 +474,7 @@ class PaidAnalyticsIntelligenceProvider:
     def __init__(self, provider_name: str) -> None:
         self.provider_name = str(provider_name or "external").strip().lower() or "external"
 
-    def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_analytics(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         if not _bool_setting("ANALYTICS_INTELLIGENCE_ALLOW_EXTERNAL", False):
             raise AnalyticsIntelligenceProviderUnavailable("external analytics intelligence providers are disabled")
         raise AnalyticsIntelligenceProviderUnavailable(
@@ -631,6 +641,23 @@ def progressive_analytics_ollama_enabled(chain: list[str] | None = None) -> bool
     return _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True) and provider_chain_contains_ollama(provider_chain)
 
 
+def analytics_ollama_run_identity(analytics_input: AnalyticsIntelligenceInput) -> dict[str, str]:
+    return build_intelligence_run_identity(
+        kind="analytics",
+        owner_id=analytics_input.requested_by_id,
+        source_hash=analytics_input.source_hash,
+        provider="ollama",
+        model=_string_setting("OLLAMA_ANALYTICS_INTELLIGENCE_MODEL", "qwen2.5:7b-instruct"),
+        output_language=analytics_input.output_language,
+        prompt_version=ANALYTICS_INTELLIGENCE_PROMPT_VERSION,
+        filters={
+            "scope": analytics_input.scope,
+            "date_range": analytics_input.date_range,
+            "category_filter": analytics_input.category_filter,
+        },
+    )
+
+
 def adaptive_analytics_intelligence_timeout(input_payload: dict[str, Any], *, base_seconds: float | None = None) -> float:
     payload = input_payload if isinstance(input_payload, dict) else {}
     analytics = payload.get("analytics") if isinstance(payload.get("analytics"), dict) else {}
@@ -700,21 +727,295 @@ def analyze_analytics_heuristic_immediate(
     return normalized
 
 
+def _empty_analytics_payload_like(analytics: dict[str, Any]) -> dict[str, Any]:
+    meta = _safe_json_dict(analytics.get("meta"))
+    return {
+        "summary": _safe_json_dict(analytics.get("summary")),
+        "charts": {"engagement_trend": [], "category_popularity": []},
+        "tables": {"top_lessons": [], "recent_lessons": [], "top_categories": []},
+        "recent_activity": [],
+        "qualitative_feedback": {
+            "recent_comments": [],
+            "truncated": bool(_safe_json_dict(analytics.get("qualitative_feedback")).get("truncated")),
+            "limit": _safe_int(_safe_json_dict(analytics.get("qualitative_feedback")).get("limit"), 0),
+            "max_comment_chars": _safe_int(_safe_json_dict(analytics.get("qualitative_feedback")).get("max_comment_chars"), 0),
+        },
+        "filters": _safe_json_dict(analytics.get("filters")),
+        "meta": {
+            "contract": _clean_text(meta.get("contract"), max_chars=60),
+            "scope": _clean_text(meta.get("scope"), max_chars=40),
+            "estimated_metrics": bool(meta.get("estimated_metrics")),
+            "comment_feedback_truncated": bool(meta.get("comment_feedback_truncated")),
+            "estimated_fields": _scrub_private(_safe_list(meta.get("estimated_fields"))[:20]),
+            "missing_metrics": _scrub_private(_safe_list(meta.get("missing_metrics"))[:20]),
+        },
+    }
+
+
+def _analytics_chunk_payload(input_payload: dict[str, Any], *, section: str, rows: list[Any], total: int, index: int) -> dict[str, Any]:
+    analytics = input_payload.get("analytics") if isinstance(input_payload.get("analytics"), dict) else {}
+    chunk_analytics = _empty_analytics_payload_like(analytics)
+    if section == "engagement_trend":
+        chunk_analytics["charts"]["engagement_trend"] = rows
+    elif section == "top_lessons":
+        chunk_analytics["tables"]["top_lessons"] = rows
+    elif section == "recent_lessons":
+        chunk_analytics["tables"]["recent_lessons"] = rows
+    elif section == "top_categories":
+        chunk_analytics["tables"]["top_categories"] = rows
+        chunk_analytics["charts"]["category_popularity"] = rows
+    elif section == "recent_activity":
+        chunk_analytics["recent_activity"] = rows
+    elif section == "recent_comments":
+        chunk_analytics["qualitative_feedback"]["recent_comments"] = rows
+    else:
+        chunk_analytics = analytics
+    payload = {
+        **dict(input_payload),
+        "analytics": _scrub_private(chunk_analytics),
+        "chunk": {
+            "index": index,
+            "count": total,
+            "section": section,
+            "item_count": len(rows),
+        },
+    }
+    payload["input_chars"] = len(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str))
+    return payload
+
+
+def _split_analytics_rows(rows: list[Any], *, target_chars: int) -> list[list[Any]]:
+    chunks: list[list[Any]] = []
+    current: list[Any] = []
+    current_chars = 0
+    max_items = max(1, _int_setting("INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS", 10))
+    for row in rows:
+        item = _scrub_private(row)
+        item_chars = len(json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str))
+        if current and (len(current) >= max_items or current_chars + item_chars > target_chars):
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append(item)
+        current_chars += item_chars
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _analytics_chunk_payloads(input_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    serialized = json.dumps(input_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    max_chars = ollama_chunk_max_chars()
+    analytics = input_payload.get("analytics") if isinstance(input_payload.get("analytics"), dict) else {}
+    tables = analytics.get("tables") if isinstance(analytics.get("tables"), dict) else {}
+    charts = analytics.get("charts") if isinstance(analytics.get("charts"), dict) else {}
+    feedback = analytics.get("qualitative_feedback") if isinstance(analytics.get("qualitative_feedback"), dict) else {}
+    sections = [
+        ("engagement_trend", _safe_list(charts.get("engagement_trend"))),
+        ("top_lessons", _safe_list(tables.get("top_lessons"))),
+        ("recent_lessons", _safe_list(tables.get("recent_lessons"))),
+        ("top_categories", _safe_list(tables.get("top_categories") or charts.get("category_popularity"))),
+        ("recent_activity", _safe_list(analytics.get("recent_activity"))),
+        ("recent_comments", _safe_list(feedback.get("recent_comments"))),
+    ]
+    total_rows = sum(len(rows) for _, rows in sections)
+    row_threshold = max(
+        _int_setting("INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS", 10),
+        _int_setting("INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD", 40),
+    )
+    if len(serialized) <= max_chars and total_rows <= row_threshold:
+        return [dict(input_payload)]
+
+    prepared: list[tuple[str, list[Any]]] = []
+    target_chars = max(600, int(max_chars * 0.7))
+    for section, rows in sections:
+        valid_rows = [row for row in rows if isinstance(row, (dict, str))]
+        if not valid_rows:
+            continue
+        for part in _split_analytics_rows(valid_rows, target_chars=target_chars):
+            prepared.append((section, part))
+    if not prepared:
+        return [dict(input_payload)]
+    total = len(prepared)
+    return [
+        _analytics_chunk_payload(input_payload, section=section, rows=rows, total=total, index=index)
+        for index, (section, rows) in enumerate(prepared, start=1)
+    ]
+
+
+def _dedupe_analytics_items(items: list[Any], *, limit: int) -> list[Any]:
+    seen: set[str] = set()
+    output: list[Any] = []
+    for item in items:
+        if isinstance(item, dict):
+            identity = str(item.get("message") or item.get("lesson_title") or item.get("category") or "") or json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        else:
+            identity = str(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        output.append(item)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _analytics_chunk_limitation(language: str, key: str, *, failed: int = 0, total: int = 0) -> str:
+    if language == "tr":
+        if key == "partial":
+            return f"Ollama {total} analiz parçasından {failed} tanesini tamamlayamadı; rapor kısmi geliştirme içeriyor."
+        if key == "budget":
+            return "Ollama toplam süre sınırına ulaştı; kalan analitik sinyaller hızlı analizle korundu."
+        return "Büyük analitik yükü parçalara ayrılarak analiz edildi."
+    if key == "partial":
+        return f"Ollama could not complete {failed} of {total} analytics chunks; the report uses partial enhancement."
+    if key == "budget":
+        return "Ollama reached the total time budget; remaining analytics signals kept heuristic coverage."
+    return "Large analytics workload was analyzed in chunks."
+
+
+def _synthesize_analytics_chunk_results(
+    analytics_input: AnalyticsIntelligenceInput,
+    *,
+    chunk_count: int,
+    completed_chunks: int,
+    failed_chunks: int,
+    chunk_results: list[dict[str, Any]],
+    chunk_limitations: list[str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    language = analytics_input.output_language
+    summaries = [_clean_text(result.get("analytics_summary") or result.get("summary"), max_chars=500) for result in chunk_results]
+    summaries = [summary for summary in summaries if summary]
+    summary = _clean_text(" ".join(summaries), max_chars=1600)
+    if not summary:
+        summary = "Ollama analyzed the available analytics chunks." if language != "tr" else "Ollama mevcut analitik parçaları analiz etti."
+    scores = [max(0, min(100, _safe_int(result.get("health_score"), 50))) for result in chunk_results]
+    health_score = int(round(sum(scores) / max(1, len(scores))))
+    insights: list[Any] = []
+    recommendations: list[Any] = []
+    lesson_actions: list[Any] = []
+    category_actions: list[Any] = []
+    limitations: list[Any] = [_analytics_chunk_limitation(language, "chunked")]
+    for result in chunk_results:
+        insights.extend(_safe_list(result.get("insights")))
+        recommendations.extend(_safe_list(result.get("recommendations")))
+        lesson_actions.extend(_safe_list(result.get("lesson_actions")))
+        category_actions.extend(_safe_list(result.get("category_actions")))
+        limitations.extend(_safe_list(result.get("limitations")))
+    if failed_chunks:
+        limitations.append(_analytics_chunk_limitation(language, "partial", failed=failed_chunks, total=chunk_count))
+    limitations.extend(chunk_limitations)
+    return {
+        "provider": "ollama",
+        "analytics_summary": summary,
+        "health_score": health_score,
+        "risk_level": _risk_level(health_score),
+        "insights": _dedupe_analytics_items(insights, limit=16),
+        "recommendations": _dedupe_analytics_items(recommendations, limit=16),
+        "lesson_actions": _dedupe_analytics_items(lesson_actions, limit=16),
+        "category_actions": _dedupe_analytics_items(category_actions, limit=16),
+        "limitations": _dedupe_analytics_items(limitations, limit=12),
+        "metadata": {
+            "chunked": True,
+            "chunk_count": chunk_count,
+            "completed_chunks": completed_chunks,
+            "failed_chunks": failed_chunks,
+            "chunk_limitations": chunk_limitations,
+            "partial_enhancement": bool(failed_chunks),
+            "timeout_seconds": timeout_seconds,
+        },
+    }
+
+
 def analyze_analytics_ollama_background(
     analytics_input: AnalyticsIntelligenceInput,
     *,
     chain: list[str] | None = None,
+    progress_callback=None,
 ) -> dict[str, Any]:
     provider_chain = chain or analytics_provider_chain_from_settings()
     input_payload = analytics_input.to_provider_payload()
     provider = OllamaAnalyticsIntelligenceProvider(background=True)
-    result = provider.analyze_analytics(input_payload)
-    normalized = _normalize_provider_result(result, provider_name=provider.provider_name)
+    run_identity = analytics_ollama_run_identity(analytics_input)
+    chunks = _analytics_chunk_payloads(input_payload)
+    should_chunk = len(chunks) > 1
+    if not should_chunk:
+        result = provider.analyze_analytics(input_payload)
+        normalized = _normalize_provider_result(result, provider_name=provider.provider_name)
+        chunk_metadata = {"chunked": False, "chunk_count": 1, "completed_chunks": 1, "failed_chunks": 0}
+        provider_attempt = progressive_provider_attempt("ollama", "success")
+        timeout_seconds = getattr(provider, "last_timeout_seconds", None)
+    else:
+        chunk_count = len(chunks)
+        if callable(progress_callback):
+            progress_callback("chunking", chunk_count, 0, 0)
+        started_at = time.monotonic()
+        total_budget = ollama_total_timeout_budget_seconds()
+        completed_chunks = 0
+        failed_chunks = 0
+        chunk_results: list[dict[str, Any]] = []
+        chunk_limitations: list[str] = []
+        if callable(progress_callback):
+            progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks)
+        for chunk_payload in chunks:
+            elapsed = time.monotonic() - started_at
+            remaining = max(0.0, total_budget - elapsed)
+            if remaining < 1.0:
+                failed_chunks += 1
+                chunk_limitations.append(_analytics_chunk_limitation(analytics_input.output_language, "budget"))
+                if callable(progress_callback):
+                    progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks)
+                continue
+            chunk_timeout = min(ollama_chunk_timeout_seconds(_safe_int(chunk_payload.get("input_chars"), 0)), remaining)
+            try:
+                result = provider.analyze_analytics(chunk_payload, timeout_seconds_override=chunk_timeout)
+                normalized_chunk = _normalize_provider_result(result, provider_name=provider.provider_name)
+                completed_chunks += 1
+            except Exception as exc:  # noqa: BLE001
+                failed_chunks += 1
+                chunk_limitations.append(f"chunk_failed:{exc.__class__.__name__}")
+                fallback = HeuristicAnalyticsIntelligenceProvider().analyze_analytics(chunk_payload)
+                normalized_chunk = _normalize_provider_result(fallback, provider_name="heuristic")
+            chunk_results.append(normalized_chunk)
+            if callable(progress_callback):
+                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks)
+        if completed_chunks <= 0:
+            raise AnalyticsIntelligenceProviderUnavailable("Ollama chunk analysis failed for all chunks")
+        if callable(progress_callback):
+            progress_callback("synthesizing", chunk_count, completed_chunks, failed_chunks)
+        timeout_seconds = round(min(total_budget, time.monotonic() - started_at), 2)
+        normalized = _normalize_provider_result(
+            _synthesize_analytics_chunk_results(
+                analytics_input,
+                chunk_count=chunk_count,
+                completed_chunks=completed_chunks,
+                failed_chunks=failed_chunks,
+                chunk_results=chunk_results,
+                chunk_limitations=chunk_limitations,
+                timeout_seconds=timeout_seconds,
+            ),
+            provider_name=provider.provider_name,
+        )
+        chunk_metadata = {
+            "chunked": True,
+            "chunk_count": chunk_count,
+            "completed_chunks": completed_chunks,
+            "failed_chunks": failed_chunks,
+            "chunk_limitations": chunk_limitations,
+            "partial_enhancement": bool(failed_chunks),
+        }
+        provider_attempt = progressive_provider_attempt("ollama", "partial" if failed_chunks else "success")
     normalized["provider_chain"] = provider_chain
     normalized["fallback_used"] = False
     normalized["metadata"] = {
         **dict(normalized.get("metadata") or {}),
-        "provider_chain_attempts": [progressive_provider_attempt("ollama", "success")],
+        "provider_chain_attempts": [provider_attempt],
         "source_hash": analytics_input.source_hash,
         "detected_language": analytics_input.detected_language,
         "output_language": analytics_input.output_language,
@@ -723,7 +1024,10 @@ def analyze_analytics_ollama_background(
         "compaction": analytics_input.compaction or {},
         "input_char_count": analytics_input.input_chars,
         "analytics_filters": _safe_json_dict(analytics_input.analytics_payload.get("filters")),
-        "timeout_seconds": getattr(provider, "last_timeout_seconds", None),
+        "prompt_version": ANALYTICS_INTELLIGENCE_PROMPT_VERSION,
+        **run_identity,
+        **chunk_metadata,
+        "timeout_seconds": timeout_seconds,
     }
     return normalized
 
@@ -845,6 +1149,7 @@ def analytics_report_response_payload(
             for key, value in (report.metadata if isinstance(report.metadata, dict) else {}).items()
             if key in {
                 "provider_chain_attempts",
+                "progressive_enhancement",
                 "input_char_count",
                 "total_lessons",
                 "published_lessons",
@@ -855,6 +1160,16 @@ def analytics_report_response_payload(
                 "language_confidence",
                 "input_truncated",
                 "compaction",
+                "run_key",
+                "model",
+                "prompt_version",
+                "input_fingerprint",
+                "chunked",
+                "chunk_count",
+                "completed_chunks",
+                "failed_chunks",
+                "chunk_limitations",
+                "partial_enhancement",
             }
         },
         "error_message": report.error_message,
@@ -942,10 +1257,8 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
                 continue
             comments.append(
                 {
-                    "lesson_id": _safe_int(row.get("lesson_id"), 0),
                     "lesson_title": _clean_text(row.get("lesson_title") or row.get("title"), max_chars=title_chars),
                     "text": _clean_text(row.get("text"), max_chars=320),
-                    "created_at": _clean_text(row.get("created_at"), max_chars=40),
                 }
             )
         return _scrub_private(
@@ -982,9 +1295,11 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
     original_safe = _safe_analytics_payload(payload)
     original_chars = len(json.dumps(original_safe, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
     candidates = [
-        ({"engagement_trend": 30, "top_lessons": 10, "recent_lessons": 10, "top_categories": 10, "recent_activity": 20, "recent_comments": 20}, 160),
-        ({"engagement_trend": 14, "top_lessons": 8, "recent_lessons": 6, "top_categories": 8, "recent_activity": 12, "recent_comments": 12}, 140),
-        ({"engagement_trend": 7, "top_lessons": 5, "recent_lessons": 3, "top_categories": 5, "recent_activity": 6, "recent_comments": 6}, 100),
+        ({"engagement_trend": 90, "top_lessons": 60, "recent_lessons": 30, "top_categories": 30, "recent_activity": 60, "recent_comments": 50}, 160),
+        ({"engagement_trend": 45, "top_lessons": 30, "recent_lessons": 20, "top_categories": 20, "recent_activity": 30, "recent_comments": 30}, 140),
+        ({"engagement_trend": 30, "top_lessons": 15, "recent_lessons": 10, "top_categories": 10, "recent_activity": 20, "recent_comments": 20}, 120),
+        ({"engagement_trend": 14, "top_lessons": 8, "recent_lessons": 6, "top_categories": 8, "recent_activity": 12, "recent_comments": 12}, 100),
+        ({"engagement_trend": 7, "top_lessons": 5, "recent_lessons": 3, "top_categories": 5, "recent_activity": 6, "recent_comments": 6}, 90),
         ({"engagement_trend": 0, "top_lessons": 3, "recent_lessons": 0, "top_categories": 3, "recent_activity": 0, "recent_comments": 3}, 80),
     ]
     chosen = build_payload(candidates[0][0], title_chars=candidates[0][1])
@@ -1048,17 +1363,17 @@ def _safe_analytics_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "summary": _scrub_private(summary),
         "charts": {
-            "engagement_trend": _scrub_private(_safe_list(charts.get("engagement_trend"))[-90:]),
-            "category_popularity": _scrub_private(_safe_list(charts.get("category_popularity"))[:12]),
+            "engagement_trend": _scrub_private(_safe_list(charts.get("engagement_trend"))[-120:]),
+            "category_popularity": _scrub_private(_safe_list(charts.get("category_popularity"))[:30]),
         },
         "tables": {
-            "top_lessons": _scrub_private(_safe_list(tables.get("top_lessons"))[:20]),
-            "recent_lessons": _scrub_private(_safe_list(tables.get("recent_lessons"))[:20]),
-            "top_categories": _scrub_private(_safe_list(tables.get("top_categories"))[:12]),
+            "top_lessons": _scrub_private(_safe_list(tables.get("top_lessons"))[:60]),
+            "recent_lessons": _scrub_private(_safe_list(tables.get("recent_lessons"))[:30]),
+            "top_categories": _scrub_private(_safe_list(tables.get("top_categories"))[:30]),
         },
-        "recent_activity": _scrub_private(_safe_list(payload.get("recent_activity"))[:30]),
+        "recent_activity": _scrub_private(_safe_list(payload.get("recent_activity"))[:60]),
         "qualitative_feedback": {
-            "recent_comments": _scrub_private(_safe_list(feedback.get("recent_comments"))[:50]),
+            "recent_comments": _scrub_private(_safe_list(feedback.get("recent_comments"))[:100]),
             "truncated": bool(feedback.get("truncated")),
             "limit": _safe_int(feedback.get("limit"), 0),
             "max_comment_chars": _safe_int(feedback.get("max_comment_chars"), 0),
@@ -1110,6 +1425,8 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
         "detected_language": input_payload.get("detected_language") or "unknown",
         "output_language": output_language,
         "input_truncated": bool(input_payload.get("input_truncated")),
+        "prompt_version": ANALYTICS_INTELLIGENCE_PROMPT_VERSION,
+        "chunk": input_payload.get("chunk") if isinstance(input_payload.get("chunk"), dict) else {},
     }
     language_instruction = (
         "Respond in Turkish. Keep JSON keys in English, but all user-facing text values in Turkish. "

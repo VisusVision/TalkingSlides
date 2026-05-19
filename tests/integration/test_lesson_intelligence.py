@@ -29,9 +29,12 @@ from core.lesson_intelligence import (  # noqa: E402
     LessonIntelligenceProviderUnavailable,
     PaidLessonIntelligenceProvider,
     adaptive_lesson_intelligence_timeout,
+    analyze_lesson_ollama_background,
     analyze_with_provider_chain,
     build_lesson_intelligence_input,
+    lesson_ollama_run_identity,
 )
+from core.intelligence_progressive import ollama_chunk_timeout_seconds  # noqa: E402
 from core.models import LessonIntelligenceReport, Project, TranscriptPage, UserProfile  # noqa: E402
 
 
@@ -425,6 +428,56 @@ def test_duplicate_lesson_analyze_does_not_enqueue_duplicate_for_same_source(mon
 @override_settings(
     LESSON_INTELLIGENCE_ENABLED=True,
     LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_MODEL="qwen-old",
+)
+def test_lesson_dedupe_run_key_allows_different_model(monkeypatch):
+    owner = _make_user("li_model_change_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(owner).post(_analyze_url(project), {}, format="json")
+    first_report = LessonIntelligenceReport.objects.get(pk=first.data["id"])
+    first_run_key = first_report.metadata["run_key"]
+
+    with override_settings(OLLAMA_LESSON_INTELLIGENCE_MODEL="qwen-new"):
+        second = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert second.data["source_hash"] == first.data["source_hash"]
+    assert len(dispatch_calls) == 2
+    second_report = LessonIntelligenceReport.objects.get(pk=second.data["id"])
+    assert second_report.metadata["run_key"] != first_run_key
+    assert second_report.metadata["model"] == "qwen-new"
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+)
+def test_lesson_dedupe_allows_different_output_language(monkeypatch):
+    owner = _make_user("li_language_change_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(owner).post(_analyze_url(project), {"output_language": "en"}, format="json")
+    second = _client(owner).post(_analyze_url(project), {"output_language": "tr"}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert second.data["source_hash"] != first.data["source_hash"]
+    assert len(dispatch_calls) == 2
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
 )
 def test_force_lesson_analyze_requeues_fresh_pending_enhancement(monkeypatch):
     owner = _make_user("li_force_requeue_owner")
@@ -677,6 +730,127 @@ def test_background_success_updates_report_to_ollama(monkeypatch):
 
 
 @override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=900,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES=1,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=10,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=25,
+)
+def test_large_lesson_ollama_background_uses_chunks(monkeypatch):
+    owner = _make_user("li_chunk_owner")
+    project = _make_project(owner)
+    for index in range(4):
+        _add_page(project, order=index, key=f"p{index + 1}", original=f"{_lesson_text()} Extra detail {index}. " * 3)
+    captured = []
+
+    def fake_urlopen(request, timeout):
+        captured.append({"timeout": timeout, "body": request.data.decode("utf-8")})
+        payload = {
+            "provider": "ollama",
+            "lesson_summary": f"Chunk {len(captured)} summary.",
+            "short_description": "Chunk description.",
+            "complexity_level": "intermediate",
+            "complexity_score": 55,
+            "complexity_reasons": ["Chunk signal."],
+            "clarity_warnings": [],
+            "page_suggestions": [{"page_number": len(captured), "page_key": f"p{len(captured)}", "type": "clarity", "suggestion": "Clarify this page."}],
+            "expanded_narration_suggestions": [
+                {
+                    "page_number": len(captured),
+                    "page_key": f"p{len(captured)}",
+                    "type": "short_narration",
+                    "title": "Expand narration",
+                    "advice": "Add context.",
+                    "draft_narration": "Add a concrete explanation for this part.",
+                    "copy_text": "Add a concrete explanation for this part.",
+                }
+            ],
+            "suggested_tags": ["chunked"],
+            "limitations": [],
+        }
+        return _FakeOllamaResponse({"response": json.dumps(payload)})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    task_result = enhance_lesson_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(owner).get(_latest_url(project))
+
+    assert task_result["status"] == "done"
+    assert latest.data["provider"] == "ollama"
+    assert len(captured) > 1
+    assert all(10 <= item["timeout"] <= 25 for item in captured)
+    report = LessonIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["phase"] == "done"
+    assert enhancement["chunk_count"] == len(captured)
+    assert enhancement["completed_chunks"] == len(captured)
+    assert enhancement["failed_chunks"] == 0
+    assert report.metadata["chunked"] is True
+    assert report.metadata["prompt_version"] == "lesson-intelligence-v2"
+    assert report.expanded_narration_suggestions[0]["draft_narration"]
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=900,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES=1,
+)
+def test_lesson_chunk_failure_returns_partial_ollama_report(monkeypatch):
+    owner = _make_user("li_chunk_partial_owner")
+    project = _make_project(owner)
+    for index in range(3):
+        _add_page(project, order=index, key=f"p{index + 1}", original=f"{_lesson_text()} Extra detail {index}. " * 3)
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise URLError("timed out")
+        payload = {
+            "provider": "ollama",
+            "lesson_summary": "Successful chunk summary.",
+            "short_description": "Successful chunk description.",
+            "complexity_level": "intermediate",
+            "complexity_score": 60,
+            "complexity_reasons": ["Recovered from partial chunk failure."],
+            "clarity_warnings": [],
+            "page_suggestions": [],
+            "expanded_narration_suggestions": [],
+            "suggested_tags": ["partial"],
+            "limitations": [],
+        }
+        return _FakeOllamaResponse({"response": json.dumps(payload)})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    task_result = enhance_lesson_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(owner).get(_latest_url(project))
+
+    assert task_result["status"] == "done"
+    assert latest.data["provider"] == "ollama"
+    assert latest.data["provider_chain_attempts"][0]["status"] == "partial"
+    report = LessonIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["failed_chunks"] >= 1
+    assert enhancement["partial_enhancement"] is True
+    assert report.metadata["partial_enhancement"] is True
+
+
+@override_settings(
     INTELLIGENCE_BACKGROUND_TIMEOUT_MIN_SECONDS=60,
     INTELLIGENCE_BACKGROUND_TIMEOUT_MAX_SECONDS=140,
     INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=5,
@@ -697,6 +871,16 @@ def test_adaptive_lesson_timeout_scales_and_respects_max():
 
     assert small_timeout < large_timeout
     assert large_timeout == 140
+
+
+@override_settings(
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=15,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=40,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=10,
+)
+def test_ollama_chunk_timeout_is_bounded():
+    assert ollama_chunk_timeout_seconds(100) == 16
+    assert ollama_chunk_timeout_seconds(100000) == 40
 
 
 @override_settings(

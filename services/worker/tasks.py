@@ -4946,13 +4946,27 @@ def _mark_lesson_intelligence_enhancement(
     task_id: str = "",
     timeout_seconds: float | int | None = None,
     error: Exception | str | None = None,
+    phase: str | None = None,
+    chunk_count: int | None = None,
+    completed_chunks: int | None = None,
+    failed_chunks: int | None = None,
+    extra: dict[str, Any] | None = None,
 ):
-    from core.intelligence_progressive import merge_enhancement_metadata
+    from core.intelligence_progressive import PROGRESSIVE_ENHANCEMENT_KEY, enhancement_lock_key, merge_enhancement_metadata
     from core.models import LessonIntelligenceReport
 
     report = LessonIntelligenceReport.objects.filter(pk=int(report_id)).first()
     if report is None:
         return None
+    progress_extra = dict(extra or {})
+    if phase:
+        progress_extra["phase"] = str(phase)
+    if chunk_count is not None:
+        progress_extra["chunk_count"] = int(chunk_count)
+    if completed_chunks is not None:
+        progress_extra["completed_chunks"] = int(completed_chunks)
+    if failed_chunks is not None:
+        progress_extra["failed_chunks"] = int(failed_chunks)
     metadata = merge_enhancement_metadata(
         report.metadata if isinstance(report.metadata, dict) else {},
         provider="ollama",
@@ -4960,11 +4974,22 @@ def _mark_lesson_intelligence_enhancement(
         task_id=task_id,
         timeout_seconds=timeout_seconds,
         error=error,
+        extra=progress_extra,
     )
     if status_value in {"running", "done", "failed"}:
         _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
     report.metadata = metadata
     report.save(update_fields=["metadata", "updated_at"])
+    if status_value in {"done", "failed"}:
+        try:
+            from django.core.cache import cache
+
+            enhancement = metadata.get(PROGRESSIVE_ENHANCEMENT_KEY) if isinstance(metadata.get(PROGRESSIVE_ENHANCEMENT_KEY), dict) else {}
+            lock_key = enhancement_lock_key(str(enhancement.get("run_key") or metadata.get("run_key") or ""))
+            if lock_key:
+                cache.delete(lock_key)
+        except Exception:
+            pass
     return report
 
 
@@ -4975,13 +5000,27 @@ def _mark_analytics_intelligence_enhancement(
     task_id: str = "",
     timeout_seconds: float | int | None = None,
     error: Exception | str | None = None,
+    phase: str | None = None,
+    chunk_count: int | None = None,
+    completed_chunks: int | None = None,
+    failed_chunks: int | None = None,
+    extra: dict[str, Any] | None = None,
 ):
-    from core.intelligence_progressive import merge_enhancement_metadata
+    from core.intelligence_progressive import PROGRESSIVE_ENHANCEMENT_KEY, enhancement_lock_key, merge_enhancement_metadata
     from core.models import AnalyticsIntelligenceReport
 
     report = AnalyticsIntelligenceReport.objects.filter(pk=int(report_id)).first()
     if report is None:
         return None
+    progress_extra = dict(extra or {})
+    if phase:
+        progress_extra["phase"] = str(phase)
+    if chunk_count is not None:
+        progress_extra["chunk_count"] = int(chunk_count)
+    if completed_chunks is not None:
+        progress_extra["completed_chunks"] = int(completed_chunks)
+    if failed_chunks is not None:
+        progress_extra["failed_chunks"] = int(failed_chunks)
     metadata = merge_enhancement_metadata(
         report.metadata if isinstance(report.metadata, dict) else {},
         provider="ollama",
@@ -4989,11 +5028,22 @@ def _mark_analytics_intelligence_enhancement(
         task_id=task_id,
         timeout_seconds=timeout_seconds,
         error=error,
+        extra=progress_extra,
     )
     if status_value in {"running", "done", "failed"}:
         _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
     report.metadata = metadata
     report.save(update_fields=["metadata", "updated_at"])
+    if status_value in {"done", "failed"}:
+        try:
+            from django.core.cache import cache
+
+            enhancement = metadata.get(PROGRESSIVE_ENHANCEMENT_KEY) if isinstance(metadata.get(PROGRESSIVE_ENHANCEMENT_KEY), dict) else {}
+            lock_key = enhancement_lock_key(str(enhancement.get("run_key") or metadata.get("run_key") or ""))
+            if lock_key:
+                cache.delete(lock_key)
+        except Exception:
+            pass
     return report
 
 
@@ -5047,6 +5097,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         analyze_lesson_ollama_background,
         apply_analysis_to_report,
         build_lesson_intelligence_input,
+        lesson_ollama_run_identity,
     )
     from core.models import LessonIntelligenceReport
 
@@ -5071,10 +5122,63 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         if expected_source_hash and lesson_input.source_hash != expected_source_hash:
             _mark_lesson_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
             return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
+        run_identity = lesson_ollama_run_identity(lesson_input)
+        stored_run_key = str(
+            report_metadata.get("run_key")
+            or (report_metadata.get("progressive_enhancement") if isinstance(report_metadata.get("progressive_enhancement"), dict) else {}).get("run_key")
+            or ""
+        )
+        if stored_run_key and stored_run_key != run_identity.get("run_key"):
+            _mark_lesson_intelligence_enhancement(
+                report_id,
+                "failed",
+                task_id=task_id,
+                error="run_key_changed",
+                extra=run_identity,
+            )
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "run_key_changed"}
 
         timeout_seconds = adaptive_lesson_intelligence_timeout(lesson_input.to_provider_payload())
-        analysis = analyze_lesson_ollama_background(lesson_input, chain=report.provider_chain)
+        _mark_lesson_intelligence_enhancement(
+            report_id,
+            "running",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            phase="chunking",
+            extra=run_identity,
+        )
+
+        def progress_callback(phase: str, chunk_count: int, completed_chunks: int, failed_chunks: int) -> None:
+            _mark_lesson_intelligence_enhancement(
+                report_id,
+                "running",
+                task_id=task_id,
+                timeout_seconds=timeout_seconds,
+                phase=phase,
+                chunk_count=chunk_count,
+                completed_chunks=completed_chunks,
+                failed_chunks=failed_chunks,
+                extra=run_identity,
+            )
+
+        analysis = analyze_lesson_ollama_background(
+            lesson_input,
+            chain=report.provider_chain,
+            progress_callback=progress_callback,
+        )
         timeout_seconds = (analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}).get("timeout_seconds") or timeout_seconds
+        analysis_meta = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+        enhancement_extra = {
+            **run_identity,
+            "phase": "done",
+            "chunked": bool(analysis_meta.get("chunked")),
+            "chunk_count": int(analysis_meta.get("chunk_count") or 0),
+            "completed_chunks": int(analysis_meta.get("completed_chunks") or 0),
+            "failed_chunks": int(analysis_meta.get("failed_chunks") or 0),
+            "partial_enhancement": bool(analysis_meta.get("partial_enhancement")),
+        }
+        if isinstance(analysis_meta.get("chunk_limitations"), list):
+            enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
         analysis_metadata = {
             **dict(analysis.get("metadata") or {}),
             "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
@@ -5085,6 +5189,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             status="done",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
+            extra=enhancement_extra,
         )
         report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
         return {"report_id": report.id, "status": "done", "provider": report.provider}
@@ -5096,6 +5201,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             task_id=task_id,
             timeout_seconds=timeout_seconds,
             error=f"{exc.__class__.__name__}: {exc}",
+            phase="failed",
         )
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 
@@ -5115,6 +5221,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         AnalyticsIntelligenceInputError,
         adaptive_analytics_intelligence_timeout,
         analyze_analytics_ollama_background,
+        analytics_ollama_run_identity,
         apply_analytics_analysis_to_report,
         build_analytics_intelligence_input,
     )
@@ -5164,10 +5271,63 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         if expected_source_hash and analytics_input.source_hash != expected_source_hash:
             _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
             return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
+        run_identity = analytics_ollama_run_identity(analytics_input)
+        stored_run_key = str(
+            report_metadata.get("run_key")
+            or (report_metadata.get("progressive_enhancement") if isinstance(report_metadata.get("progressive_enhancement"), dict) else {}).get("run_key")
+            or ""
+        )
+        if stored_run_key and stored_run_key != run_identity.get("run_key"):
+            _mark_analytics_intelligence_enhancement(
+                report_id,
+                "failed",
+                task_id=task_id,
+                error="run_key_changed",
+                extra=run_identity,
+            )
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "run_key_changed"}
 
         timeout_seconds = adaptive_analytics_intelligence_timeout(analytics_input.to_provider_payload())
-        analysis = analyze_analytics_ollama_background(analytics_input, chain=report.provider_chain)
+        _mark_analytics_intelligence_enhancement(
+            report_id,
+            "running",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            phase="chunking",
+            extra=run_identity,
+        )
+
+        def progress_callback(phase: str, chunk_count: int, completed_chunks: int, failed_chunks: int) -> None:
+            _mark_analytics_intelligence_enhancement(
+                report_id,
+                "running",
+                task_id=task_id,
+                timeout_seconds=timeout_seconds,
+                phase=phase,
+                chunk_count=chunk_count,
+                completed_chunks=completed_chunks,
+                failed_chunks=failed_chunks,
+                extra=run_identity,
+            )
+
+        analysis = analyze_analytics_ollama_background(
+            analytics_input,
+            chain=report.provider_chain,
+            progress_callback=progress_callback,
+        )
         timeout_seconds = (analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}).get("timeout_seconds") or timeout_seconds
+        analysis_meta = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+        enhancement_extra = {
+            **run_identity,
+            "phase": "done",
+            "chunked": bool(analysis_meta.get("chunked")),
+            "chunk_count": int(analysis_meta.get("chunk_count") or 0),
+            "completed_chunks": int(analysis_meta.get("completed_chunks") or 0),
+            "failed_chunks": int(analysis_meta.get("failed_chunks") or 0),
+            "partial_enhancement": bool(analysis_meta.get("partial_enhancement")),
+        }
+        if isinstance(analysis_meta.get("chunk_limitations"), list):
+            enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
         analysis_metadata = {
             **dict(analysis.get("metadata") or {}),
             "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
@@ -5178,6 +5338,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             status="done",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
+            extra=enhancement_extra,
         )
         report = apply_analytics_analysis_to_report(report, analysis, source_hash=analytics_input.source_hash)
         return {"report_id": report.id, "status": "done", "provider": report.provider}
@@ -5189,6 +5350,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             task_id=task_id,
             timeout_seconds=timeout_seconds,
             error=f"{exc.__class__.__name__}: {exc}",
+            phase="failed",
         )
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 
