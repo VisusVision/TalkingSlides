@@ -62,6 +62,7 @@ const LESSON_TABS = ['overview'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
 const SOURCE_TYPES_ACCEPT = '.pptx,.pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,.gif';
 const STUDIO_POLL_INTERVAL_MS = 4000;
+const LESSON_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS = 6000;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
 const STABLE_MODERATION_STATUSES = new Set(['approved', 'admin_approved', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed']);
 
@@ -999,10 +1000,28 @@ function lessonIntelligenceProviderLabel(report) {
   if (report?.enabled === false) return 'Disabled';
   if (report?.fallback_used) return 'Fallback heuristic used';
   const provider = String(report?.provider || '').toLowerCase();
-  if (provider === 'ollama') return 'Ollama analysis';
+  if (provider === 'ollama') return 'Ollama enhanced';
   if (provider === 'heuristic') return 'Heuristic analysis';
   if (provider) return `${provider.charAt(0).toUpperCase()}${provider.slice(1)} analysis`;
   return 'No analysis yet';
+}
+
+function lessonIntelligenceEnhancementStatus(report) {
+  return String(report?.enhancement_status || '').trim().toLowerCase();
+}
+
+function lessonIntelligenceEnhancementPending(report) {
+  return Boolean(report?.enhancement_pending || ['pending', 'running'].includes(lessonIntelligenceEnhancementStatus(report)));
+}
+
+function lessonIntelligenceEnhancementLabel(report) {
+  const status = lessonIntelligenceEnhancementStatus(report);
+  const provider = String(report?.enhancement_provider || '').toLowerCase();
+  if (provider !== 'ollama') return '';
+  if (['pending', 'running'].includes(status)) return 'Ollama enhancement running';
+  if (status === 'done') return 'Ollama enhanced';
+  if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Ollama unavailable; heuristic kept';
+  return '';
 }
 
 function lessonIntelligenceLanguageLabel(report) {
@@ -1155,6 +1174,9 @@ function LessonIntelligencePanel({
   const complexity = report?.complexity || {};
   const score = Number.isFinite(Number(complexity.score)) ? Number(complexity.score) : 0;
   const providerLabel = lessonIntelligenceProviderLabel(report);
+  const enhancementLabel = lessonIntelligenceEnhancementLabel(report);
+  const enhancementPending = lessonIntelligenceEnhancementPending(report);
+  const enhancementFailed = ['failed', 'unavailable', 'disabled', 'stale'].includes(lessonIntelligenceEnhancementStatus(report));
   const copyDisabled = !hasReport || actionBusy || loading;
   const stale = lessonIntelligenceIsStale(report);
 
@@ -1186,6 +1208,17 @@ function LessonIntelligencePanel({
                 Stale
               </span>
             )}
+            {enhancementLabel && (
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                enhancementFailed
+                  ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                  : enhancementPending
+                    ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                    : 'bg-[color:var(--feedback-success-bg)] text-[color:var(--feedback-success-fg)]'
+              }`}>
+                {enhancementLabel}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1193,9 +1226,9 @@ function LessonIntelligencePanel({
             <RefreshCcw size={14} />
             <span>Refresh</span>
           </Button>
-          <Button size="sm" onClick={onAnalyze} disabled={!enabled || loading || Boolean(actionBusy)}>
-            <Sparkles size={14} />
-            <span>{actionBusy ? 'Analyzing...' : stale ? 'Re-analyze' : 'Analyze lesson'}</span>
+          <Button size="sm" onClick={onAnalyze} disabled={!enabled || loading || Boolean(actionBusy) || enhancementPending}>
+            <Sparkles size={14} className={enhancementPending ? 'animate-spin' : ''} />
+            <span>{actionBusy ? 'Analyzing...' : enhancementPending ? 'Enhancing...' : stale ? 'Re-analyze' : 'Analyze lesson'}</span>
           </Button>
         </div>
       </div>
@@ -1220,6 +1253,11 @@ function LessonIntelligencePanel({
       {notice && (
         <p className="mt-3 rounded-xl bg-[color:var(--feedback-success-bg)] px-3 py-2 text-sm text-[color:var(--feedback-success-fg)]">
           {notice}
+        </p>
+      )}
+      {enhancementFailed && (
+        <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
+          {report?.enhancement_error_safe || 'Ollama unavailable; heuristic kept.'}
         </p>
       )}
 
@@ -1747,6 +1785,30 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       window.clearInterval(intervalId);
     };
   }, [refreshSelectedLessonState, selectedLesson?.id, selectedLessonNeedsPolling]);
+
+  useEffect(() => {
+    if (!selectedLesson?.id || !lessonIntelligenceEnhancementPending(selectedLessonIntelligence)) return undefined;
+
+    let active = true;
+    const poll = async () => {
+      try {
+        const payload = await fetchProjectLessonIntelligence(selectedLesson.id);
+        if (!active) return;
+        setLessonIntelligenceByProject((previous) => ({
+          ...previous,
+          [selectedLesson.id]: payload,
+        }));
+      } catch {
+        // Keep the heuristic report visible if a polling read fails.
+      }
+    };
+
+    const intervalId = window.setInterval(poll, LESSON_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [selectedLesson?.id, selectedLessonIntelligence]);
 
   useEffect(() => {
     if (!activeRerenderStatus || !selectedLesson?.id) return;
@@ -2292,6 +2354,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const handleAnalyzeLessonIntelligence = useCallback(async (project, { auto = false } = {}) => {
     if (!project?.id || lessonIntelligenceActionBusy) return null;
+    if (lessonIntelligenceEnhancementPending(lessonIntelligenceByProject[project.id])) return null;
     setLessonIntelligenceActionBusy('analyze');
     setLessonIntelligenceError('');
     setLessonIntelligenceCopied(false);
@@ -2309,7 +2372,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     } finally {
       setLessonIntelligenceActionBusy('');
     }
-  }, [lessonIntelligenceActionBusy]);
+  }, [lessonIntelligenceActionBusy, lessonIntelligenceByProject]);
 
   const handleCopyLessonIntelligence = async () => {
     const text = lessonIntelligenceCopyText(selectedLessonIntelligence);
@@ -2364,6 +2427,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
     const report = selectedLessonIntelligence || null;
     if (report?.enabled === false || report?.status === 'disabled' || report?.status === 'failed') return;
+    if (lessonIntelligenceEnhancementPending(report)) return;
     if (transcriptEditorRef.current?.hasUnsavedChanges?.()) return;
 
     const status = String(report?.status || '').toLowerCase();

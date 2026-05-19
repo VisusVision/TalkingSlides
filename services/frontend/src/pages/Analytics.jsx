@@ -43,6 +43,7 @@ const DONUT_COLORS = [
   '#fb7185',
   '#a78bfa',
 ];
+const ANALYTICS_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS = 6000;
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -404,7 +405,7 @@ function ProviderLabel({ report }) {
   }
   const provider = String(report.provider || '').toLowerCase();
   const label = provider === 'ollama'
-    ? 'Ollama analysis'
+    ? 'Ollama enhanced'
     : provider === 'heuristic'
       ? 'Heuristic analysis'
       : provider
@@ -412,6 +413,40 @@ function ProviderLabel({ report }) {
         : 'Analysis';
   return (
     <span className="inline-flex items-center rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold text-emerald-300">
+      {label}
+    </span>
+  );
+}
+
+function analyticsEnhancementStatus(report) {
+  return String(report?.enhancement_status || '').trim().toLowerCase();
+}
+
+function analyticsEnhancementPending(report) {
+  return Boolean(report?.enhancement_pending || ['pending', 'running'].includes(analyticsEnhancementStatus(report)));
+}
+
+function AnalyticsEnhancementLabel({ report }) {
+  const status = analyticsEnhancementStatus(report);
+  const provider = String(report?.enhancement_provider || '').toLowerCase();
+  if (provider !== 'ollama') return null;
+  const failed = ['failed', 'unavailable', 'disabled', 'stale'].includes(status);
+  const pending = ['pending', 'running'].includes(status);
+  const label = pending
+    ? 'Ollama enhancement running'
+    : status === 'done'
+      ? 'Ollama enhanced'
+      : failed
+        ? 'Ollama unavailable; heuristic kept'
+        : '';
+  if (!label) return null;
+  const className = failed
+    ? 'bg-amber-400/15 text-amber-300'
+    : pending
+      ? 'bg-sky-400/15 text-sky-300'
+      : 'bg-emerald-400/15 text-emerald-300';
+  return (
+    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${className}`}>
       {label}
     </span>
   );
@@ -774,6 +809,28 @@ export default function Analytics({ user }) {
   }, [loadIntelligenceReport, refreshNonce]);
 
   useEffect(() => {
+    if (!analyticsEnhancementPending(intelligenceReport)) return undefined;
+
+    let active = true;
+    const poll = async () => {
+      try {
+        const payload = await fetchMyAnalyticsIntelligence(analyticsFilters);
+        if (!active) return;
+        setIntelligenceReport(payload);
+        setIntelligenceLoadedFilterKey(analyticsFilterKey);
+      } catch {
+        // Keep the heuristic report visible if a polling read fails.
+      }
+    };
+
+    const intervalId = window.setInterval(poll, ANALYTICS_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [analyticsFilterKey, analyticsFilters, intelligenceReport]);
+
+  useEffect(() => {
     if (!canCreateLesson) {
       setCategories([]);
       return;
@@ -830,6 +887,7 @@ export default function Analytics({ user }) {
   };
 
   const handleAnalyzeAnalytics = useCallback(async ({ auto = false } = {}) => {
+    if (analyticsEnhancementPending(intelligenceReport)) return null;
     setIntelligenceAnalyzing(true);
     setIntelligenceError('');
     setIntelligenceCopied(false);
@@ -845,7 +903,7 @@ export default function Analytics({ user }) {
     } finally {
       setIntelligenceAnalyzing(false);
     }
-  }, [analyticsFilterKey, analyticsFilters]);
+  }, [analyticsFilterKey, analyticsFilters, intelligenceReport]);
 
   useEffect(() => {
     if (!canCreateLesson || analyticsInitialAutoRunDoneRef.current) return;
@@ -857,6 +915,7 @@ export default function Analytics({ user }) {
       analyticsInitialAutoRunDoneRef.current = true;
       return;
     }
+    if (analyticsEnhancementPending(report)) return;
 
     const missingReport = !report?.id || status === 'empty';
     const staleReport = analyticsIntelligenceIsStale(report);
@@ -911,6 +970,8 @@ export default function Analytics({ user }) {
     : stats.recentActivity.slice(0, 3);
   const intelligenceStale = analyticsIntelligenceIsStale(intelligenceReport);
   const intelligenceCompacted = analyticsInputWasCompacted(intelligenceReport);
+  const intelligenceEnhancementPending = analyticsEnhancementPending(intelligenceReport);
+  const intelligenceEnhancementFailed = ['failed', 'unavailable', 'disabled', 'stale'].includes(analyticsEnhancementStatus(intelligenceReport));
 
   return (
     <div className="space-y-7 pb-8">
@@ -1315,6 +1376,7 @@ export default function Analytics({ user }) {
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">Smart Insights</p>
                 <ProviderLabel report={intelligenceReport} />
+                <AnalyticsEnhancementLabel report={intelligenceReport} />
                 <IntelligenceLanguageLabel report={intelligenceReport} />
                 {intelligenceStale && (
                   <span className="inline-flex items-center rounded-full bg-amber-400/15 px-3 py-1 text-xs font-semibold text-amber-300">
@@ -1341,11 +1403,11 @@ export default function Analytics({ user }) {
             <button
               type="button"
               onClick={() => handleAnalyzeAnalytics()}
-              disabled={intelligenceAnalyzing || intelligenceReport?.enabled === false}
+              disabled={intelligenceAnalyzing || intelligenceEnhancementPending || intelligenceReport?.enabled === false}
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[image:var(--accent-gradient)] px-4 text-xs font-bold text-white transition hover:scale-105 active:scale-95 disabled:cursor-wait disabled:opacity-60 disabled:hover:scale-100"
             >
-              <RefreshCw size={14} className={intelligenceAnalyzing ? 'animate-spin' : ''} />
-              {intelligenceAnalyzing ? 'Analyzing...' : intelligenceStale ? 'Re-analyze' : 'Analyze analytics'}
+              <RefreshCw size={14} className={(intelligenceAnalyzing || intelligenceEnhancementPending) ? 'animate-spin' : ''} />
+              {intelligenceAnalyzing ? 'Analyzing...' : intelligenceEnhancementPending ? 'Enhancing...' : intelligenceStale ? 'Re-analyze' : 'Analyze analytics'}
             </button>
           </div>
         </div>
@@ -1354,6 +1416,12 @@ export default function Analytics({ user }) {
           <div className="flex items-start gap-2 rounded-2xl bg-[color:var(--feedback-danger-bg)] p-3 text-sm text-[color:var(--feedback-danger-fg)]">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <span>{intelligenceError}</span>
+          </div>
+        )}
+        {intelligenceEnhancementFailed && (
+          <div className="flex items-start gap-2 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-200">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>{intelligenceReport?.enhancement_error_safe || 'Ollama unavailable; heuristic kept.'}</span>
           </div>
         )}
 

@@ -12,6 +12,12 @@ from urllib.request import Request, urlopen
 from django.conf import settings
 
 from core.intelligence_language import detect_lesson_language, resolve_output_language
+from core.intelligence_progressive import (
+    enhancement_response_fields,
+    first_provider_name,
+    provider_attempt as progressive_provider_attempt,
+    provider_chain_contains_ollama,
+)
 from core.models import AnalyticsIntelligenceReport, LessonIntelligenceReport
 
 
@@ -363,7 +369,7 @@ class HeuristicAnalyticsIntelligenceProvider:
 class OllamaAnalyticsIntelligenceProvider:
     provider_name = "ollama"
 
-    def __init__(self) -> None:
+    def __init__(self, *, background: bool = False) -> None:
         self.base_url = _string_setting(
             "OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL",
             _string_setting("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
@@ -375,10 +381,15 @@ class OllamaAnalyticsIntelligenceProvider:
             minimum=0.5,
             maximum=180.0,
         )
-        self.timeout_seconds = _effective_sync_provider_timeout(
-            self.timeout_seconds,
-            cap_setting="ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS",
-        )
+        if background:
+            self.timeout_seconds = _background_provider_timeout(
+                cap_setting="ANALYTICS_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS",
+            )
+        else:
+            self.timeout_seconds = _effective_sync_provider_timeout(
+                self.timeout_seconds,
+                cap_setting="ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS",
+            )
 
     def analyze_analytics(self, input_payload: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
@@ -566,6 +577,7 @@ def analyze_analytics_with_provider_chain(
             "input_truncated": analytics_input.input_truncated,
             "compaction": analytics_input.compaction or {},
             "input_char_count": analytics_input.input_chars,
+            "analytics_filters": _safe_json_dict(analytics_input.analytics_payload.get("filters")),
         }
         return normalized
 
@@ -584,8 +596,85 @@ def analyze_analytics_with_provider_chain(
         "input_truncated": analytics_input.input_truncated,
         "compaction": analytics_input.compaction or {},
         "input_char_count": analytics_input.input_chars,
+        "analytics_filters": _safe_json_dict(analytics_input.analytics_payload.get("filters")),
     }
     return fallback
+
+
+def progressive_analytics_ollama_enabled(chain: list[str] | None = None) -> bool:
+    provider_chain = chain or analytics_provider_chain_from_settings()
+    return _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True) and provider_chain_contains_ollama(provider_chain)
+
+
+def analyze_analytics_heuristic_immediate(
+    analytics_input: AnalyticsIntelligenceInput,
+    *,
+    chain: list[str] | None = None,
+    enhancement_provider: str = "",
+    enhancement_status: str = "",
+) -> dict[str, Any]:
+    provider_chain = chain or analytics_provider_chain_from_settings()
+    input_payload = analytics_input.to_provider_payload()
+    fallback_provider = HeuristicAnalyticsIntelligenceProvider()
+    normalized = _normalize_provider_result(fallback_provider.analyze_analytics(input_payload), provider_name="heuristic")
+    attempts: list[dict[str, str]] = []
+    enhancement_name = str(enhancement_provider or "").strip().lower()
+    for provider_name in provider_chain:
+        name = str(provider_name or "").strip().lower()
+        if not name or name == "auto":
+            continue
+        if name == "heuristic":
+            attempts.append(_provider_attempt("heuristic", "success"))
+        elif enhancement_name and name == enhancement_name:
+            attempts.append(progressive_provider_attempt(name, enhancement_status or "queued"))
+        else:
+            attempts.append(_provider_attempt(name, "skipped", "provider deferred to heuristic fallback"))
+    if not any(item.get("provider") == "heuristic" for item in attempts):
+        attempts.append(_provider_attempt("heuristic", "success"))
+
+    first_provider = first_provider_name(provider_chain)
+    normalized["provider_chain"] = provider_chain
+    normalized["fallback_used"] = bool(first_provider and first_provider != "heuristic")
+    normalized["metadata"] = {
+        **dict(normalized.get("metadata") or {}),
+        "provider_chain_attempts": attempts,
+        "source_hash": analytics_input.source_hash,
+        "detected_language": analytics_input.detected_language,
+        "output_language": analytics_input.output_language,
+        "language_confidence": analytics_input.language_confidence,
+        "input_truncated": analytics_input.input_truncated,
+        "compaction": analytics_input.compaction or {},
+        "input_char_count": analytics_input.input_chars,
+        "analytics_filters": _safe_json_dict(analytics_input.analytics_payload.get("filters")),
+    }
+    return normalized
+
+
+def analyze_analytics_ollama_background(
+    analytics_input: AnalyticsIntelligenceInput,
+    *,
+    chain: list[str] | None = None,
+) -> dict[str, Any]:
+    provider_chain = chain or analytics_provider_chain_from_settings()
+    input_payload = analytics_input.to_provider_payload()
+    provider = OllamaAnalyticsIntelligenceProvider(background=True)
+    result = provider.analyze_analytics(input_payload)
+    normalized = _normalize_provider_result(result, provider_name=provider.provider_name)
+    normalized["provider_chain"] = provider_chain
+    normalized["fallback_used"] = False
+    normalized["metadata"] = {
+        **dict(normalized.get("metadata") or {}),
+        "provider_chain_attempts": [progressive_provider_attempt("ollama", "success")],
+        "source_hash": analytics_input.source_hash,
+        "detected_language": analytics_input.detected_language,
+        "output_language": analytics_input.output_language,
+        "language_confidence": analytics_input.language_confidence,
+        "input_truncated": analytics_input.input_truncated,
+        "compaction": analytics_input.compaction or {},
+        "input_char_count": analytics_input.input_chars,
+        "analytics_filters": _safe_json_dict(analytics_input.analytics_payload.get("filters")),
+    }
+    return normalized
 
 
 def apply_analytics_analysis_to_report(
@@ -647,6 +736,12 @@ def analytics_report_response_payload(
             "status": "empty" if enabled else "disabled",
             "provider": "",
             "fallback_used": False,
+            "provider_chain_attempts": [],
+            "enhancement_available": False,
+            "enhancement_pending": False,
+            "enhancement_status": "",
+            "enhancement_provider": "",
+            "enhancement_error_safe": "",
             "source_hash": "",
             "report_source_hash": "",
             "current_source_hash": current_hash,
@@ -665,6 +760,9 @@ def analytics_report_response_payload(
         }
     report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
     report_hash = str(report.source_hash or "")
+    provider_chain_attempts = report_metadata.get("provider_chain_attempts")
+    if not isinstance(provider_chain_attempts, list):
+        provider_chain_attempts = []
     return {
         "enabled": enabled,
         "id": report.id,
@@ -672,6 +770,8 @@ def analytics_report_response_payload(
         "provider": report.provider,
         "provider_chain": report.provider_chain if isinstance(report.provider_chain, list) else [],
         "fallback_used": bool(report.fallback_used),
+        "provider_chain_attempts": provider_chain_attempts,
+        **enhancement_response_fields(report_metadata),
         "detected_language": str(report_metadata.get("detected_language") or "unknown"),
         "output_language": str(report_metadata.get("output_language") or "en"),
         "language_confidence": float(report_metadata.get("language_confidence") or 0.0),
@@ -1448,3 +1548,8 @@ def _effective_sync_provider_timeout(configured_timeout: float, *, cap_setting: 
     global_cap = _float_setting("INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS", 20.0, minimum=0.5, maximum=60.0)
     cap = _float_setting(cap_setting, global_cap, minimum=0.5, maximum=60.0)
     return min(float(configured_timeout), cap)
+
+
+def _background_provider_timeout(*, cap_setting: str) -> float:
+    global_timeout = _float_setting("INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS", 120.0, minimum=1.0, maximum=600.0)
+    return _float_setting(cap_setting, global_timeout, minimum=1.0, maximum=600.0)

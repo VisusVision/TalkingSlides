@@ -115,10 +115,12 @@ from core.serializers import (
 from core.analytics_intelligence import (
     AnalyticsIntelligenceInputError,
     AnalyticsIntelligenceInputTooLarge,
+    analyze_analytics_heuristic_immediate,
     analytics_intelligence_enabled,
     analytics_provider_chain_from_settings,
     analytics_report_response_payload,
     analyze_analytics_with_provider_chain,
+    progressive_analytics_ollama_enabled,
     apply_analytics_analysis_to_report,
     build_analytics_intelligence_input,
 )
@@ -134,12 +136,22 @@ from core.drafts import (
 from core.lesson_intelligence import (
     LessonIntelligenceInputError,
     LessonIntelligenceInputTooLarge,
+    analyze_lesson_heuristic_immediate,
     analyze_with_provider_chain,
     apply_analysis_to_report,
     build_lesson_intelligence_input,
     lesson_intelligence_enabled,
+    progressive_ollama_enabled,
     provider_chain_from_settings,
     report_response_payload,
+)
+from core.intelligence_progressive import (
+    PROGRESSIVE_ENHANCEMENT_KEY,
+    enhancement_from_metadata,
+    enhancement_metadata,
+    merge_enhancement_metadata,
+    provider_attempt as progressive_provider_attempt,
+    safe_enhancement_error,
 )
 from core.tts_llm_suggestions import pronunciation_suggestion_response
 from core.avatar_readiness import avatar_preview_readiness, normalize_avatar_engine
@@ -198,6 +210,8 @@ _RUN_PROJECT_MODERATION_TASK = "worker.tasks.run_project_moderation"
 _AVATAR_PREVIEW_TASK = "worker.tasks.render_avatar_preview"
 _AVATAR_OVERLAY_TASK = "worker.tasks.render_lesson_avatar_overlay"
 _SUBTITLE_TRANSLATION_TASK = "worker.tasks.generate_translated_subtitle_track_task"
+_LESSON_INTELLIGENCE_ENHANCEMENT_TASK = "worker.tasks.enhance_lesson_intelligence_report"
+_ANALYTICS_INTELLIGENCE_ENHANCEMENT_TASK = "worker.tasks.enhance_analytics_intelligence_report"
 
 
 def _celery_queue_setting(setting_name: str, env_name: str, default: str) -> str:
@@ -211,6 +225,10 @@ def _render_queue_name() -> str:
 
 def _avatar_queue_name() -> str:
     return _celery_queue_setting("CELERY_AVATAR_QUEUE", "CELERY_AVATAR_QUEUE", "avatar")
+
+
+def _intelligence_queue_name() -> str:
+    return _celery_queue_setting("CELERY_INTELLIGENCE_QUEUE", "CELERY_INTELLIGENCE_QUEUE", "celery")
 
 
 def _queue_for_avatar_options(avatar_options: dict | None) -> str:
@@ -6022,6 +6040,155 @@ class ProjectTranscriptView(APIView):
         return Response(payload)
 
 
+def _enhancement_status_for_report(report) -> str:
+    if report is None:
+        return ""
+    return str(enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {}).get("status") or "").lower()
+
+
+def _latest_lesson_report_for_source(project: Project, source_hash: str, *, force: bool = False):
+    done_ollama = (
+        project.lesson_intelligence_reports.filter(source_hash=source_hash, provider="ollama")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if done_ollama and (done_ollama.status == "done" or _enhancement_status_for_report(done_ollama) == "done"):
+        return done_ollama
+    latest = (
+        project.lesson_intelligence_reports.filter(source_hash=source_hash)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if latest is None:
+        return None
+    status_value = _enhancement_status_for_report(latest)
+    if status_value in {"pending", "running"}:
+        return latest
+    if not force and latest.provider == "heuristic":
+        return latest
+    return None
+
+
+def _latest_analytics_report_for_source(user: User, analytics_input, *, force: bool = False):
+    done_ollama = (
+        AnalyticsIntelligenceReport.objects.filter(
+            requested_by=user,
+            scope=analytics_input.scope,
+            date_range=analytics_input.date_range,
+            category_filter=analytics_input.category_filter,
+            source_hash=analytics_input.source_hash,
+            provider="ollama",
+        )
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if done_ollama and (done_ollama.status == "done" or _enhancement_status_for_report(done_ollama) == "done"):
+        return done_ollama
+    latest = (
+        AnalyticsIntelligenceReport.objects.filter(
+            requested_by=user,
+            scope=analytics_input.scope,
+            date_range=analytics_input.date_range,
+            category_filter=analytics_input.category_filter,
+            source_hash=analytics_input.source_hash,
+        )
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if latest is None:
+        return None
+    status_value = _enhancement_status_for_report(latest)
+    if status_value in {"pending", "running"}:
+        return latest
+    if not force and latest.provider == "heuristic":
+        return latest
+    return None
+
+
+def _record_lesson_enhancement_dispatch_failure(report: LessonIntelligenceReport, error: Exception | str):
+    metadata = merge_enhancement_metadata(
+        report.metadata if isinstance(report.metadata, dict) else {},
+        provider="ollama",
+        status="failed",
+        error=f"background_queue_unavailable: {safe_enhancement_error(error)}",
+    )
+    metadata["provider_chain_attempts"] = [
+        progressive_provider_attempt("ollama", "failed", "background_queue_unavailable"),
+        *[
+            item
+            for item in (metadata.get("provider_chain_attempts") if isinstance(metadata.get("provider_chain_attempts"), list) else [])
+            if isinstance(item, dict) and str(item.get("provider") or "").lower() != "ollama"
+        ],
+    ]
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+
+
+def _record_analytics_enhancement_dispatch_failure(report: AnalyticsIntelligenceReport, error: Exception | str):
+    metadata = merge_enhancement_metadata(
+        report.metadata if isinstance(report.metadata, dict) else {},
+        provider="ollama",
+        status="failed",
+        error=f"background_queue_unavailable: {safe_enhancement_error(error)}",
+    )
+    metadata["provider_chain_attempts"] = [
+        progressive_provider_attempt("ollama", "failed", "background_queue_unavailable"),
+        *[
+            item
+            for item in (metadata.get("provider_chain_attempts") if isinstance(metadata.get("provider_chain_attempts"), list) else [])
+            if isinstance(item, dict) and str(item.get("provider") or "").lower() != "ollama"
+        ],
+    ]
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+
+
+def _queue_lesson_intelligence_enhancement(report: LessonIntelligenceReport) -> None:
+    try:
+        async_result = _dispatch_celery_task(
+            _LESSON_INTELLIGENCE_ENHANCEMENT_TASK,
+            args=[report.id, report.source_hash],
+            queue=_intelligence_queue_name(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Lesson intelligence enhancement dispatch failed report=%s error=%s", report.id, exc.__class__.__name__)
+        _record_lesson_enhancement_dispatch_failure(report, exc)
+        return
+
+    task_id = str(getattr(async_result, "id", "") or "")
+    if task_id:
+        report.metadata = merge_enhancement_metadata(
+            report.metadata if isinstance(report.metadata, dict) else {},
+            provider="ollama",
+            status="pending",
+            task_id=task_id,
+        )
+        report.save(update_fields=["metadata", "updated_at"])
+
+
+def _queue_analytics_intelligence_enhancement(report: AnalyticsIntelligenceReport) -> None:
+    try:
+        async_result = _dispatch_celery_task(
+            _ANALYTICS_INTELLIGENCE_ENHANCEMENT_TASK,
+            args=[report.id, report.source_hash],
+            queue=_intelligence_queue_name(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Analytics intelligence enhancement dispatch failed report=%s error=%s", report.id, exc.__class__.__name__)
+        _record_analytics_enhancement_dispatch_failure(report, exc)
+        return
+
+    task_id = str(getattr(async_result, "id", "") or "")
+    if task_id:
+        report.metadata = merge_enhancement_metadata(
+            report.metadata if isinstance(report.metadata, dict) else {},
+            provider="ollama",
+            status="pending",
+            task_id=task_id,
+        )
+        report.save(update_fields=["metadata", "updated_at"])
+
+
 class ProjectLessonIntelligenceView(APIView):
     """GET/POST /api/v1/projects/<project_id>/intelligence/"""
 
@@ -6087,6 +6254,14 @@ class ProjectLessonIntelligenceView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         chain = provider_chain_from_settings()
+        force = bool(request.data.get("force"))
+        existing_report = _latest_lesson_report_for_source(project, lesson_input.source_hash, force=force)
+        if existing_report is not None:
+            return Response(
+                report_response_payload(existing_report, enabled=True, current_source_hash=lesson_input.source_hash),
+                status=status.HTTP_200_OK,
+            )
+
         report = LessonIntelligenceReport.objects.create(
             project=project,
             requested_by=request.user if request.user and request.user.is_authenticated else None,
@@ -6097,7 +6272,19 @@ class ProjectLessonIntelligenceView(APIView):
             source_hash=lesson_input.source_hash,
         )
         try:
-            analysis = analyze_with_provider_chain(lesson_input, chain=chain)
+            if progressive_ollama_enabled(chain):
+                analysis = analyze_lesson_heuristic_immediate(
+                    lesson_input,
+                    chain=chain,
+                    enhancement_provider="ollama",
+                    enhancement_status="queued",
+                )
+                analysis["metadata"] = {
+                    **dict(analysis.get("metadata") or {}),
+                    PROGRESSIVE_ENHANCEMENT_KEY: enhancement_metadata(provider="ollama", status="pending"),
+                }
+            else:
+                analysis = analyze_with_provider_chain(lesson_input, chain=chain)
             report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Lesson intelligence analysis failed project=%s report=%s", project.id, report.id)
@@ -6107,6 +6294,10 @@ class ProjectLessonIntelligenceView(APIView):
             payload = report_response_payload(report, enabled=True, current_source_hash=lesson_input.source_hash)
             payload["error"] = "Lesson Intelligence analysis failed."
             return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        if progressive_ollama_enabled(chain):
+            _queue_lesson_intelligence_enhancement(report)
+            report.refresh_from_db()
 
         return Response(
             report_response_payload(report, enabled=True, current_source_hash=lesson_input.source_hash),
@@ -9267,6 +9458,18 @@ class CreatorAnalyticsIntelligenceView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         chain = analytics_provider_chain_from_settings()
+        force = bool(request.data.get("force"))
+        existing_report = _latest_analytics_report_for_source(request.user, analytics_input, force=force)
+        if existing_report is not None:
+            return Response(
+                analytics_report_response_payload(
+                    existing_report,
+                    enabled=True,
+                    current_source_hash=analytics_input.source_hash,
+                ),
+                status=status.HTTP_200_OK,
+            )
+
         report = AnalyticsIntelligenceReport.objects.create(
             requested_by=request.user if request.user and request.user.is_authenticated else None,
             scope=analytics_input.scope,
@@ -9279,7 +9482,19 @@ class CreatorAnalyticsIntelligenceView(APIView):
             category_filter=analytics_input.category_filter,
         )
         try:
-            analysis = analyze_analytics_with_provider_chain(analytics_input, chain=chain)
+            if progressive_analytics_ollama_enabled(chain):
+                analysis = analyze_analytics_heuristic_immediate(
+                    analytics_input,
+                    chain=chain,
+                    enhancement_provider="ollama",
+                    enhancement_status="queued",
+                )
+                analysis["metadata"] = {
+                    **dict(analysis.get("metadata") or {}),
+                    PROGRESSIVE_ENHANCEMENT_KEY: enhancement_metadata(provider="ollama", status="pending"),
+                }
+            else:
+                analysis = analyze_analytics_with_provider_chain(analytics_input, chain=chain)
             report = apply_analytics_analysis_to_report(
                 report,
                 analysis,
@@ -9297,6 +9512,10 @@ class CreatorAnalyticsIntelligenceView(APIView):
             )
             payload["error"] = "Analytics Intelligence analysis failed."
             return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        if progressive_analytics_ollama_enabled(chain):
+            _queue_analytics_intelligence_enhancement(report)
+            report.refresh_from_db()
 
         return Response(
             analytics_report_response_payload(report, enabled=True, current_source_hash=analytics_input.source_hash),

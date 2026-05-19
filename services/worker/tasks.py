@@ -4885,6 +4885,201 @@ def ping(message: str = "ping") -> str:
     return "pong" if message == "ping" else f"echo: {message}"
 
 
+def _replace_intelligence_attempt(metadata: dict[str, Any], provider: str, status_value: str, error: Exception | str | None = None) -> dict[str, Any]:
+    from core.intelligence_progressive import provider_attempt
+
+    normalized_provider = str(provider or "").strip().lower()
+    attempts = metadata.get("provider_chain_attempts")
+    next_attempts = [item for item in attempts if isinstance(item, dict)] if isinstance(attempts, list) else []
+    replacement = provider_attempt(normalized_provider, status_value, error)
+    replaced = False
+    for index, item in enumerate(next_attempts):
+        if str(item.get("provider") or "").strip().lower() == normalized_provider:
+            next_attempts[index] = replacement
+            replaced = True
+            break
+    if not replaced:
+        next_attempts.insert(0, replacement)
+    metadata["provider_chain_attempts"] = next_attempts
+    return metadata
+
+
+def _mark_lesson_intelligence_enhancement(report_id: int, status_value: str, *, task_id: str = "", error: Exception | str | None = None):
+    from core.intelligence_progressive import merge_enhancement_metadata
+    from core.models import LessonIntelligenceReport
+
+    report = LessonIntelligenceReport.objects.filter(pk=int(report_id)).first()
+    if report is None:
+        return None
+    metadata = merge_enhancement_metadata(
+        report.metadata if isinstance(report.metadata, dict) else {},
+        provider="ollama",
+        status=status_value,
+        task_id=task_id,
+        error=error,
+    )
+    if status_value in {"running", "done", "failed"}:
+        _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+    return report
+
+
+def _mark_analytics_intelligence_enhancement(report_id: int, status_value: str, *, task_id: str = "", error: Exception | str | None = None):
+    from core.intelligence_progressive import merge_enhancement_metadata
+    from core.models import AnalyticsIntelligenceReport
+
+    report = AnalyticsIntelligenceReport.objects.filter(pk=int(report_id)).first()
+    if report is None:
+        return None
+    metadata = merge_enhancement_metadata(
+        report.metadata if isinstance(report.metadata, dict) else {},
+        provider="ollama",
+        status=status_value,
+        task_id=task_id,
+        error=error,
+    )
+    if status_value in {"running", "done", "failed"}:
+        _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+    return report
+
+
+@app.task(bind=True, name="worker.tasks.enhance_lesson_intelligence_report", max_retries=0)
+def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -> dict[str, Any]:
+    """Run slow Ollama lesson analysis outside the API request path."""
+    from core.intelligence_progressive import merge_enhancement_metadata
+    from core.lesson_intelligence import (
+        LessonIntelligenceInputError,
+        analyze_lesson_ollama_background,
+        apply_analysis_to_report,
+        build_lesson_intelligence_input,
+    )
+    from core.models import LessonIntelligenceReport
+
+    report_id = int(report_id)
+    expected_source_hash = str(source_hash or "").strip()
+    task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+    report = _mark_lesson_intelligence_enhancement(report_id, "running", task_id=task_id)
+    if report is None:
+        return {"report_id": report_id, "status": "missing"}
+
+    try:
+        if report.provider == "ollama":
+            metadata = report.metadata if isinstance(report.metadata, dict) else {}
+            if str(metadata.get("progressive_enhancement", {}).get("status") or "") == "done":
+                return {"report_id": report_id, "status": "already_done", "provider": report.provider}
+
+        report = LessonIntelligenceReport.objects.select_related("project").get(pk=report_id)
+        report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
+        output_language = str(report_metadata.get("output_language") or "auto")
+        lesson_input = build_lesson_intelligence_input(report.project, output_language=output_language)
+        if expected_source_hash and lesson_input.source_hash != expected_source_hash:
+            _mark_lesson_intelligence_enhancement(report_id, "stale", task_id=task_id, error="source_hash_changed")
+            return {"report_id": report_id, "status": "stale", "provider": report.provider}
+
+        analysis = analyze_lesson_ollama_background(lesson_input, chain=report.provider_chain)
+        analysis_metadata = {
+            **dict(analysis.get("metadata") or {}),
+            "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
+        }
+        analysis["metadata"] = merge_enhancement_metadata(
+            analysis_metadata,
+            provider="ollama",
+            status="done",
+            task_id=task_id,
+        )
+        report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
+        return {"report_id": report.id, "status": "done", "provider": report.provider}
+    except (LessonIntelligenceInputError, Exception) as exc:  # noqa: BLE001
+        logger.warning("Lesson intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
+        _mark_lesson_intelligence_enhancement(report_id, "failed", task_id=task_id, error=f"{exc.__class__.__name__}: {exc}")
+        return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
+
+
+class _AnalyticsTaskRequest:
+    def __init__(self, *, user, query_params: dict[str, Any]):
+        self.user = user
+        self.query_params = query_params
+
+
+@app.task(bind=True, name="worker.tasks.enhance_analytics_intelligence_report", max_retries=0)
+def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str) -> dict[str, Any]:
+    """Run slow Ollama creator analytics analysis outside the API request path."""
+    from django.contrib.auth.models import User
+
+    from core.analytics_intelligence import (
+        AnalyticsIntelligenceInputError,
+        analyze_analytics_ollama_background,
+        apply_analytics_analysis_to_report,
+        build_analytics_intelligence_input,
+    )
+    from core.models import AnalyticsIntelligenceReport
+    from core.views import CreatorAnalyticsView
+    from core.intelligence_progressive import merge_enhancement_metadata
+
+    report_id = int(report_id)
+    expected_source_hash = str(source_hash or "").strip()
+    task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+    report = _mark_analytics_intelligence_enhancement(report_id, "running", task_id=task_id)
+    if report is None:
+        return {"report_id": report_id, "status": "missing"}
+
+    try:
+        if report.provider == "ollama":
+            metadata = report.metadata if isinstance(report.metadata, dict) else {}
+            if str(metadata.get("progressive_enhancement", {}).get("status") or "") == "done":
+                return {"report_id": report_id, "status": "already_done", "provider": report.provider}
+
+        report = AnalyticsIntelligenceReport.objects.get(pk=report_id)
+        user = User.objects.filter(pk=report.requested_by_id).first()
+        if user is None:
+            _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error="requesting_user_missing")
+            return {"report_id": report_id, "status": "failed", "error": "requesting_user_missing"}
+
+        report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
+        filters = report_metadata.get("analytics_filters") if isinstance(report_metadata.get("analytics_filters"), dict) else {}
+        query_params = {
+            "range": filters.get("range") or (report.date_range or {}).get("range") or 30,
+            "from": filters.get("from") or (report.date_range or {}).get("from") or "",
+            "to": filters.get("to") or (report.date_range or {}).get("to") or "",
+            "category": filters.get("category") or report.category_filter or "",
+            "sort": filters.get("sort") or "views",
+        }
+        analytics_payload = CreatorAnalyticsView().build_payload(
+            _AnalyticsTaskRequest(user=user, query_params=query_params)
+        )
+        output_language = str(report_metadata.get("output_language") or "auto")
+        analytics_input = build_analytics_intelligence_input(
+            user,
+            analytics_payload,
+            scope=report.scope or "creator",
+            output_language=output_language,
+        )
+        if expected_source_hash and analytics_input.source_hash != expected_source_hash:
+            _mark_analytics_intelligence_enhancement(report_id, "stale", task_id=task_id, error="source_hash_changed")
+            return {"report_id": report_id, "status": "stale", "provider": report.provider}
+
+        analysis = analyze_analytics_ollama_background(analytics_input, chain=report.provider_chain)
+        analysis_metadata = {
+            **dict(analysis.get("metadata") or {}),
+            "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
+        }
+        analysis["metadata"] = merge_enhancement_metadata(
+            analysis_metadata,
+            provider="ollama",
+            status="done",
+            task_id=task_id,
+        )
+        report = apply_analytics_analysis_to_report(report, analysis, source_hash=analytics_input.source_hash)
+        return {"report_id": report.id, "status": "done", "provider": report.provider}
+    except (AnalyticsIntelligenceInputError, Exception) as exc:  # noqa: BLE001
+        logger.warning("Analytics intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
+        _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error=f"{exc.__class__.__name__}: {exc}")
+        return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
+
+
 def _subtitle_task_active_key(project_id: int) -> str:
     return f"subtitle-generate-active:{int(project_id)}"
 

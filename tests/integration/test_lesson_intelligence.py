@@ -10,8 +10,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
+SERVICES_ROOT = REPO_ROOT / "services"
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICES_ROOT))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
@@ -23,6 +26,8 @@ from rest_framework.test import APIClient  # noqa: E402
 from core.lesson_intelligence import (  # noqa: E402
     LessonIntelligenceProviderUnavailable,
     PaidLessonIntelligenceProvider,
+    analyze_with_provider_chain,
+    build_lesson_intelligence_input,
 )
 from core.models import LessonIntelligenceReport, Project, TranscriptPage, UserProfile  # noqa: E402
 
@@ -106,6 +111,18 @@ class _FakeOllamaResponse:
 
     def read(self) -> bytes:
         return self.body
+
+
+class _FakeAsyncResult:
+    id = "fake-intelligence-task"
+
+
+def _fake_dispatch(calls):
+    def dispatch(task_name, *, args=None, kwargs=None, queue=None):
+        calls.append({"task_name": task_name, "args": args or [], "kwargs": kwargs or {}, "queue": queue})
+        return _FakeAsyncResult()
+
+    return dispatch
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
@@ -344,19 +361,77 @@ def test_source_hash_changes_when_transcript_changes():
     OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://127.0.0.1:9",
     LESSON_INTELLIGENCE_TIMEOUT_SECONDS=0.5,
 )
-def test_provider_chain_falls_back_when_ollama_unavailable():
+def test_post_analyze_returns_heuristic_and_queues_ollama_enhancement(monkeypatch):
     owner = _make_user("li_ollama_owner")
     project = _make_project(owner)
     _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
 
     response = _client(owner).post(_analyze_url(project), {}, format="json")
 
     assert response.status_code == 200
     assert response.data["provider"] == "heuristic"
     assert response.data["fallback_used"] is True
-    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert response.data["enhancement_available"] is True
+    assert response.data["enhancement_pending"] is True
+    assert response.data["enhancement_status"] == "pending"
+    assert response.data["enhancement_provider"] == "ollama"
+    attempts = response.data["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
-    assert attempts[0]["status"] in {"skipped", "failed"}
+    assert attempts[0]["status"] == "queued"
+    assert dispatch_calls[0]["task_name"] == "worker.tasks.enhance_lesson_intelligence_report"
+
+    latest = _client(owner).get(_latest_url(project))
+
+    assert latest.status_code == 200
+    assert latest.data["id"] == response.data["id"]
+    assert latest.data["enhancement_pending"] is True
+    assert latest.data["enhancement_status"] == "pending"
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+)
+def test_duplicate_lesson_analyze_does_not_enqueue_duplicate_for_same_source(monkeypatch):
+    owner = _make_user("li_duplicate_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(owner).post(_analyze_url(project), {}, format="json")
+    second = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.data["id"] == second.data["id"]
+    assert len(dispatch_calls) == 1
+    assert second.data["enhancement_pending"] is True
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+)
+def test_lesson_stale_source_hash_allows_new_enhancement(monkeypatch):
+    owner = _make_user("li_stale_new_owner")
+    project = _make_project(owner)
+    page = _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    first = _client(owner).post(_analyze_url(project), {}, format="json")
+    page.narration_text = _lesson_text() + " Learners compare four update strategies."
+    page.save(update_fields=["narration_text", "updated_at"])
+    second = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.data["id"] != second.data["id"]
+    assert first.data["source_hash"] != second.data["source_hash"]
+    assert len(dispatch_calls) == 2
 
 
 @override_settings(
@@ -379,16 +454,16 @@ def test_ollama_timeout_uses_sync_cap_and_falls_back(monkeypatch):
 
     monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
 
-    response = _client(owner).post(_analyze_url(project), {}, format="json")
+    lesson_input = build_lesson_intelligence_input(project)
+    analysis = analyze_with_provider_chain(lesson_input, chain=["ollama", "heuristic"])
 
-    assert response.status_code == 200
     assert captured["timeout"] == 20
-    assert response.data["provider"] == "heuristic"
-    assert response.data["fallback_used"] is True
-    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert analysis["provider"] == "heuristic"
+    assert analysis["fallback_used"] is True
+    attempts = analysis["metadata"]["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
     assert attempts[0]["status"] in {"skipped", "failed"}
-    serialized = json.dumps(response.data)
+    serialized = json.dumps(analysis)
     assert "secret-ollama.local" not in serialized
 
 
@@ -398,8 +473,9 @@ def test_ollama_timeout_uses_sync_cap_and_falls_back(monkeypatch):
     OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
     LESSON_INTELLIGENCE_TIMEOUT_SECONDS=8,
     INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS=20,
+    INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS=120,
 )
-def test_successful_mocked_ollama_returns_primary_provider(monkeypatch):
+def test_background_success_updates_report_to_ollama(monkeypatch):
     owner = _make_user("li_ollama_success_owner")
     project = _make_project(owner)
     _add_page(
@@ -442,18 +518,31 @@ def test_successful_mocked_ollama_returns_primary_provider(monkeypatch):
         return _FakeOllamaResponse({"response": json.dumps(provider_payload)})
 
     monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
 
     response = _client(owner).post(_analyze_url(project), {}, format="json")
 
     assert response.status_code == 200
-    assert captured["timeout"] == 8
-    assert response.data["provider"] == "ollama"
-    assert response.data["fallback_used"] is False
-    assert response.data["summary"] == "Ollama generated lesson summary."
-    suggestion = response.data["expanded_narration_suggestions"][0]
+    assert response.data["provider"] == "heuristic"
+    assert response.data["enhancement_pending"] is True
+
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    task_result = enhance_lesson_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(owner).get(_latest_url(project))
+
+    assert task_result["status"] == "done"
+    assert captured["timeout"] == 120
+    assert latest.data["provider"] == "ollama"
+    assert latest.data["fallback_used"] is False
+    assert latest.data["summary"] == "Ollama generated lesson summary."
+    assert latest.data["enhancement_pending"] is False
+    assert latest.data["enhancement_status"] == "done"
+    suggestion = latest.data["expanded_narration_suggestions"][0]
     assert suggestion["draft_narration"].startswith("In this part")
     assert suggestion["draft_narration"] != suggestion["advice"]
-    assert response.data["metadata"]["provider_chain_attempts"][0]["status"] == "success"
+    assert latest.data["provider_chain_attempts"][0]["status"] == "success"
     assert "draft_narration" in captured["body"]
 
 
@@ -467,6 +556,8 @@ def test_invalid_ollama_json_falls_back_to_heuristic(monkeypatch):
     owner = _make_user("li_ollama_invalid_owner")
     project = _make_project(owner)
     _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
 
     def fake_urlopen(request, timeout):
         return _FakeOllamaResponse({"response": "not-json"})
@@ -474,13 +565,21 @@ def test_invalid_ollama_json_falls_back_to_heuristic(monkeypatch):
     monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
 
     response = _client(owner).post(_analyze_url(project), {}, format="json")
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    task_result = enhance_lesson_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(owner).get(_latest_url(project))
 
     assert response.status_code == 200
-    assert response.data["provider"] == "heuristic"
-    assert response.data["fallback_used"] is True
-    attempts = response.data["metadata"]["provider_chain_attempts"]
+    assert task_result["status"] == "failed"
+    assert latest.data["provider"] == "heuristic"
+    assert latest.data["fallback_used"] is True
+    assert latest.data["enhancement_pending"] is False
+    assert latest.data["enhancement_status"] == "failed"
+    assert "ollama.test" not in json.dumps(latest.data)
+    attempts = latest.data["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
-    assert attempts[0]["status"] in {"skipped", "failed"}
+    assert attempts[0]["status"] == "failed"
 
 
 @override_settings(
@@ -629,10 +728,13 @@ def test_long_lesson_does_not_fail_and_reports_truncation_limitation():
     OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://127.0.0.1:9",
     LESSON_INTELLIGENCE_TIMEOUT_SECONDS=0.5,
 )
-def test_ollama_fallback_preserves_turkish_output_language():
+def test_ollama_fallback_preserves_turkish_output_language(monkeypatch):
     owner = _make_user("li_tr_ollama_owner")
     project = _make_project(owner, title="Türkçe Fallback Dersi")
     _add_page(project, order=0, key="p1", original=_turkish_lesson_text())
+
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
 
     response = _client(owner).post(_analyze_url(project), {}, format="json")
 

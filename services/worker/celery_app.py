@@ -42,10 +42,14 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 
 render_queue = str(os.environ.get("CELERY_RENDER_QUEUE", "render") or "render").strip() or "render"
 avatar_queue = str(os.environ.get("CELERY_AVATAR_QUEUE", "avatar") or "avatar").strip() or "avatar"
+intelligence_queue = str(os.environ.get("CELERY_INTELLIGENCE_QUEUE", "celery") or "celery").strip() or "celery"
 legacy_queue = str(os.environ.get("CELERY_LEGACY_QUEUE", "celery") or "celery").strip() or "celery"
 
 app.conf.task_default_queue = str(os.environ.get("CELERY_TASK_DEFAULT_QUEUE", render_queue) or render_queue).strip()
-app.conf.task_queues = tuple(Queue(queue_name) for queue_name in dict.fromkeys([render_queue, avatar_queue, legacy_queue]))
+app.conf.task_queues = tuple(
+    Queue(queue_name)
+    for queue_name in dict.fromkeys([render_queue, avatar_queue, intelligence_queue, legacy_queue])
+)
 app.conf.task_routes = {
     "worker.tasks.process_pptx_to_video": {"queue": render_queue},
     "worker.tasks.export_project": {"queue": render_queue},
@@ -61,6 +65,8 @@ app.conf.task_routes = {
     "worker.tasks.fallback_avatar_render": {"queue": avatar_queue},
     "worker.tasks.avatar_cache_cleanup": {"queue": avatar_queue},
     "worker.tasks.cleanup_avatar_cache": {"queue": avatar_queue},
+    "worker.tasks.enhance_lesson_intelligence_report": {"queue": intelligence_queue},
+    "worker.tasks.enhance_analytics_intelligence_report": {"queue": intelligence_queue},
 }
 
 # Step 4 — discover tasks.py in the worker package

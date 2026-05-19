@@ -6,17 +6,44 @@ Lesson Intelligence and Analytics Intelligence use the same production-safety po
 - `ollama` is optional and local-only.
 - paid/external provider placeholders stay disabled unless a future branch implements and gates them.
 
+## Progressive Ollama Enhancement
+
+`POST /intelligence/analyze/` returns a heuristic report immediately. When the provider chain contains `ollama`, the API stores the heuristic report with `metadata.progressive_enhancement.status=pending`, queues a Celery enhancement task, and the frontend polls `GET /intelligence/` until the enhancement finishes.
+
+When the background Ollama call succeeds, the same report row is updated to `provider=ollama`, `fallback_used=false`, and `metadata.progressive_enhancement.status=done`. If Ollama fails, the heuristic report stays visible and the enhancement status becomes `failed` with a sanitized error reason.
+
+This avoids:
+
+- browser `Failed to fetch` errors from long synchronous requests
+- Gunicorn worker timeouts
+- repeated POST analyze calls while enhancement is pending
+- any transcript edit, autosave, or rerender side effect
+
+For local background quality, `qwen2.5:7b` is a good default:
+
+```text
+LESSON_INTELLIGENCE_PROVIDER_CHAIN=ollama,heuristic
+ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN=ollama,heuristic
+OLLAMA_LESSON_INTELLIGENCE_MODEL=qwen2.5:7b
+OLLAMA_ANALYTICS_INTELLIGENCE_MODEL=qwen2.5:7b
+INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS=120
+```
+
+Use smaller/faster models only if you want Ollama to fit inside synchronous limits.
+
 ## Synchronous Timeout Safety
 
-The API endpoints run analysis synchronously in v1. To prevent a slow local model from killing the API worker, the effective Ollama timeout is:
+The synchronous provider path remains capped for direct provider-chain calls and for deployments that disable progressive enhancement. To prevent a slow local model from killing the API worker, the effective synchronous Ollama timeout is:
 
 ```text
 min(*_INTELLIGENCE_TIMEOUT_SECONDS, *_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS)
 ```
 
-If a specific cap is not set, `INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` is used. The default cap is `20` seconds.
+If a specific cap is not set, `INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` is used. The default cap is `20` seconds. Background enhancement uses `INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS`, default `120` seconds, because it does not block Gunicorn.
 
-Docker currently starts Gunicorn without an explicit `--timeout`, so Gunicorn's default worker timeout is 30 seconds. Keep synchronous provider caps below the API worker timeout. If local LLM analysis needs longer than that, move the analysis to a background job with polling instead of raising the synchronous cap.
+Docker currently starts Gunicorn without an explicit `--timeout`, so Gunicorn's default worker timeout is 30 seconds. Keep synchronous provider caps below the API worker timeout. Long-running local LLM analysis should use the progressive background flow instead of raising the synchronous cap.
+
+Paid/external providers are still future work and remain disabled in this branch.
 
 ## Lesson Intelligence Output
 
