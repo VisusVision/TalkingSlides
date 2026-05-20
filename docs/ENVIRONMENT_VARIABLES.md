@@ -169,9 +169,10 @@ Columns:
 | `INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS` | worker | Optional | Optional | `10` | Maximum analytics rows grouped into one Ollama analytics chunk. |
 | `INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD` | worker | Optional | Optional | `40` | Analytics row count that can still use one-shot Ollama when prompt size is small. |
 | `INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY` | worker | Optional | Optional | profile default | Profile-aware local Ollama chunk concurrency hint. Keep `1` for local CPU/shared hosts; production GPU can use `2-4` if the Ollama host can handle it. |
-| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | `45` | Minimum timeout for one background Ollama chunk request. |
-| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `120` | Maximum timeout for one background Ollama chunk request. |
+| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | profile default | Minimum timeout for one background Ollama chunk request. Local profiles default to `130` so `qwen2.5:7b` has enough time to finish compact JSON chunks on CPU-bound machines. |
+| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | profile default | Maximum timeout for one background Ollama chunk request. Local profiles default to `240`; analytics still has a lower total task budget. |
 | `INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `600` | Maximum total budget for one chunked Ollama enhancement task. |
+| `INTELLIGENCE_RETRY_COOLDOWN_SECONDS` | API/frontend | Optional | Recommended | `60` | Cooldown before a manual Retry Ollama click can create a new attempt after an Ollama fallback failure. `force=true` bypasses it for explicit user actions. |
 | `ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` | worker | Optional | Recommended | `180` | Analytics-specific total background budget; defaults lower than lesson/shared budget so large analytics jobs terminalize sooner. |
 | `ANALYTICS_INTELLIGENCE_AUTO_ENABLED` | API/worker | Optional | Recommended | `true` | Enables event-driven creator analytics intelligence scheduling. |
 | `ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS` | API/worker | Optional | Recommended | `3600` | Minimum interval between automatic analytics intelligence schedules for routine events. |
@@ -190,7 +191,8 @@ Columns:
 | `ANALYTICS_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS` | worker | Optional | Recommended | global background timeout | Analytics-specific background Ollama timeout. |
 | `CELERY_INTELLIGENCE_QUEUE` | API/worker | Optional | Optional | legacy alias | Backward-compatible alias for `INTELLIGENCE_CELERY_QUEUE`. |
 | `OLLAMA_LESSON_INTELLIGENCE_BASE_URL`, `OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL` | API | Optional | If Ollama | `OLLAMA_BASE_URL` fallback | Local Ollama endpoints. |
-| `OLLAMA_LESSON_INTELLIGENCE_MODEL`, `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` | API | Optional | If Ollama | profile default | Local Ollama models. Local lesson defaults favor `qwen2.5:7b-instruct`; local analytics defaults favor `qwen2.5:3b`; production GPU defaults favor larger qwen3 models. |
+| `OLLAMA_LESSON_INTELLIGENCE_MODEL`, `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` | API | Optional | If Ollama | profile default | Local Ollama models. Environment overrides win. Missing models are reported as safe Ollama failures with heuristic fallback. |
+| `OLLAMA_LESSON_INTELLIGENCE_NUM_PREDICT`, `OLLAMA_ANALYTICS_INTELLIGENCE_NUM_PREDICT` | API/worker | Optional | Recommended | `900` / `700` | Maximum Ollama generated tokens per request to keep local JSON responses bounded. |
 
 Keep synchronous Ollama timeout caps lower than the API/Gunicorn worker timeout. Docker uses Gunicorn without an explicit `--timeout`, so the effective default is 30 seconds; a provider timeout above that can kill the worker before heuristic fallback is returned. Long-running local LLM analysis should use the background job/polling flow before raising these caps.
 

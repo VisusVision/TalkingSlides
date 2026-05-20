@@ -27,6 +27,7 @@ from rest_framework.test import APIClient  # noqa: E402
 
 from core.lesson_intelligence import (  # noqa: E402
     LessonIntelligenceProviderUnavailable,
+    OllamaLessonIntelligenceProvider,
     PaidLessonIntelligenceProvider,
     adaptive_lesson_intelligence_timeout,
     analyze_lesson_ollama_background,
@@ -1077,6 +1078,170 @@ def test_invalid_ollama_json_falls_back_to_heuristic(monkeypatch):
     assert second.status_code == 200
     assert second.data["id"] == response.data["id"]
     assert len(dispatch_calls) == 1
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=8,
+)
+def test_lesson_ollama_fenced_json_defaults_optional_fields(monkeypatch):
+    owner = _make_user("li_fenced_json_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    response_text = """```json
+{"lesson_summary":"Fenced summary from Ollama.","complexity_level":"intermediate","complexity_score":55}
+```"""
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": response_text})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    payload = build_lesson_intelligence_input(project).to_provider_payload()
+    result = OllamaLessonIntelligenceProvider().analyze_lesson(payload)
+
+    assert result["lesson_summary"] == "Fenced summary from Ollama."
+    assert result["clarity_warnings"] == []
+    assert result["page_suggestions"] == []
+    assert result["expanded_narration_suggestions"] == []
+    assert result["suggested_tags"] == []
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=8,
+)
+def test_lesson_invalid_json_repair_retry_marks_repaired(monkeypatch):
+    owner = _make_user("li_repair_json_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    calls = []
+    repaired_payload = {
+        "lesson_summary": "Repair converted the answer to JSON.",
+        "complexity_level": "beginner",
+        "complexity_score": 48,
+    }
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        if len(calls) == 1:
+            return _FakeOllamaResponse({"response": "The lesson looks good but this is not JSON."})
+        return _FakeOllamaResponse({"response": json.dumps(repaired_payload)})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    payload = build_lesson_intelligence_input(project).to_provider_payload()
+    result = OllamaLessonIntelligenceProvider().analyze_lesson(payload)
+
+    assert result["lesson_summary"] == "Repair converted the answer to JSON."
+    assert result["metadata"]["repaired"] is True
+    assert result["metadata"]["repair_retry_count"] == 1
+    assert len(calls) == 2
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=600,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES=1,
+)
+def test_lesson_all_chunk_failures_store_safe_diagnostics(monkeypatch):
+    owner = _make_user("li_chunk_diag_owner")
+    project = _make_project(owner)
+    for index in range(2):
+        _add_page(project, order=index, key=f"p{index + 1}", original=f"{_lesson_text()} Extra {index}. " * 4)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    def fake_urlopen(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    task_result = enhance_lesson_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    report = LessonIntelligenceReport.objects.get(pk=response.data["id"])
+    diagnostics = report.metadata["progressive_enhancement"]["chunk_diagnostics"]
+
+    assert task_result["status"] == "failed"
+    assert diagnostics
+    assert diagnostics[0]["chunk_index"] >= 1
+    assert diagnostics[0]["parse_stage"] == "timeout"
+    assert diagnostics[0]["safe_reason"] == "Ollama timed out."
+    assert report.metadata["progressive_enhancement"]["last_failure_reason"] == "Ollama timed out."
+    assert "ollama.test" not in json.dumps(diagnostics)
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=8,
+    INTELLIGENCE_RETRY_COOLDOWN_SECONDS=0,
+)
+def test_lesson_heuristic_fallback_allows_manual_retry_after_cooldown(monkeypatch):
+    owner = _make_user("li_retry_after_failure_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": "not-json"})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    first = _client(owner).post(_analyze_url(project), {}, format="json")
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    enhance_lesson_intelligence_report.run(first.data["id"], first.data["source_hash"])
+    second = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert second.data["run_key"] == first.data["run_key"]
+    assert second.data["retry_count"] == 1
+    assert len(dispatch_calls) == 2
+
+
+@override_settings(
+    LESSON_INTELLIGENCE_ENABLED=True,
+    LESSON_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_LESSON_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    LESSON_INTELLIGENCE_TIMEOUT_SECONDS=8,
+    INTELLIGENCE_RETRY_COOLDOWN_SECONDS=3600,
+)
+def test_lesson_force_bypasses_retry_cooldown_once(monkeypatch):
+    owner = _make_user("li_retry_force_owner")
+    project = _make_project(owner)
+    _add_page(project, order=0, key="p1", original=_lesson_text())
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": "not-json"})
+
+    monkeypatch.setattr("core.lesson_intelligence.urlopen", fake_urlopen)
+
+    first = _client(owner).post(_analyze_url(project), {}, format="json")
+    from worker.tasks import enhance_lesson_intelligence_report  # noqa: E402
+
+    enhance_lesson_intelligence_report.run(first.data["id"], first.data["source_hash"])
+    blocked = _client(owner).post(_analyze_url(project), {}, format="json")
+    forced = _client(owner).post(_analyze_url(project), {"force": True}, format="json")
+
+    assert blocked.data["id"] == first.data["id"]
+    assert forced.data["id"] != first.data["id"]
+    assert forced.data["force"] is True
+    assert forced.data["retry_count"] == 1
+    assert len(dispatch_calls) == 2
 
 
 @override_settings(

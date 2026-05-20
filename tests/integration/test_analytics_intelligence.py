@@ -27,6 +27,7 @@ from rest_framework.test import APIClient  # noqa: E402
 
 from core.analytics_intelligence import (  # noqa: E402
     AnalyticsIntelligenceProviderUnavailable,
+    OllamaAnalyticsIntelligenceProvider,
     PaidAnalyticsIntelligenceProvider,
     adaptive_analytics_intelligence_timeout,
     analyze_analytics_with_provider_chain,
@@ -873,7 +874,7 @@ def test_background_success_updates_analytics_report_to_ollama(monkeypatch):
     assert response.data["provider"] == "heuristic"
     assert response.data["enhancement_pending"] is True
     assert task_result["status"] == "done"
-    assert 45 <= captured["timeout"] < 120
+    assert 45 <= captured["timeout"] <= 180
     assert latest.data["provider"] == "ollama"
     assert latest.data["fallback_used"] is False
     assert latest.data["summary"].startswith("Ollama analytics summary.")
@@ -1139,6 +1140,179 @@ def test_invalid_analytics_ollama_json_falls_back_to_heuristic(monkeypatch):
     assert second.status_code == 200
     assert second.data["id"] == response.data["id"]
     assert len(dispatch_calls) == 1
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=8,
+)
+def test_analytics_ollama_leading_prose_json_and_defaults(monkeypatch):
+    publisher = _make_user("ai_prose_json_owner")
+    viewer = _make_user("ai_prose_json_viewer", role="student")
+    lesson = _make_project(publisher, "Leading prose analytics lesson")
+    _progress(viewer, lesson, 81)
+    analytics_payload = _client(publisher).get(_analytics_url()).data
+    response_text = 'Here is the JSON:\n{"health_score":71,"risk_level":"low","insights":[{"type":"progress","message":"Learners progressed well."}]}'
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": response_text})
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    result = OllamaAnalyticsIntelligenceProvider().analyze_analytics(analytics_input.to_provider_payload())
+
+    assert result["analytics_summary"] == "Learners progressed well."
+    assert result["recommendations"] == []
+    assert result["lesson_actions"] == []
+    assert result["category_actions"] == []
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=8,
+)
+def test_analytics_invalid_json_repair_retry_marks_repaired(monkeypatch):
+    publisher = _make_user("ai_repair_json_owner")
+    viewer = _make_user("ai_repair_json_viewer", role="student")
+    lesson = _make_project(publisher, "Repair analytics lesson")
+    _progress(viewer, lesson, 64)
+    analytics_payload = _client(publisher).get(_analytics_url()).data
+    calls = []
+    repaired_payload = {
+        "analytics_summary": "Repair converted analytics output.",
+        "health_score": 66,
+        "risk_level": "medium",
+        "insights": [],
+        "recommendations": [],
+        "lesson_actions": [],
+        "category_actions": [],
+        "limitations": [],
+    }
+
+    def fake_urlopen(request, timeout):
+        calls.append(json.loads(request.data.decode("utf-8")))
+        if len(calls) == 1:
+            return _FakeOllamaResponse({"response": "not valid JSON"})
+        return _FakeOllamaResponse({"response": json.dumps(repaired_payload)})
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    result = OllamaAnalyticsIntelligenceProvider().analyze_analytics(analytics_input.to_provider_payload())
+
+    assert result["analytics_summary"] == "Repair converted analytics output."
+    assert result["metadata"]["repaired"] is True
+    assert result["metadata"]["repair_retry_count"] == 1
+    assert len(calls) == 2
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=600,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=1,
+)
+def test_analytics_all_chunk_failures_store_safe_diagnostics(monkeypatch):
+    publisher = _make_user("ai_chunk_diag_owner")
+    viewers = [_make_user(f"ai_chunk_diag_viewer_{index}", role="student") for index in range(4)]
+    for index in range(4):
+        lesson = _make_project(publisher, f"Diagnostic analytics lesson {index}")
+        _progress(viewers[index], lesson, 30 + index)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    def fake_urlopen(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    diagnostics = report.metadata["progressive_enhancement"]["chunk_diagnostics"]
+
+    assert task_result["status"] == "failed"
+    assert diagnostics
+    assert diagnostics[0]["chunk_index"] >= 1
+    assert diagnostics[0]["parse_stage"] == "timeout"
+    assert diagnostics[0]["safe_reason"] == "Ollama timed out."
+    assert report.metadata["progressive_enhancement"]["last_failure_reason"] == "Ollama timed out."
+    assert "ollama.test" not in json.dumps(diagnostics)
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=8,
+    INTELLIGENCE_RETRY_COOLDOWN_SECONDS=0,
+)
+def test_analytics_heuristic_fallback_allows_manual_retry_after_cooldown(monkeypatch):
+    publisher = _make_user("ai_retry_after_failure_owner")
+    viewer = _make_user("ai_retry_after_failure_viewer", role="student")
+    lesson = _make_project(publisher, "Retry analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": "not-json"})
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    first = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    enhance_analytics_intelligence_report.run(first.data["id"], first.data["source_hash"])
+    second = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    assert second.status_code == 200
+    assert second.data["id"] != first.data["id"]
+    assert second.data["run_key"] == first.data["run_key"]
+    assert second.data["retry_count"] == 1
+    assert len(dispatch_calls) == 2
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=8,
+    INTELLIGENCE_RETRY_COOLDOWN_SECONDS=3600,
+)
+def test_analytics_force_bypasses_retry_cooldown_once(monkeypatch):
+    publisher = _make_user("ai_retry_force_owner")
+    viewer = _make_user("ai_retry_force_viewer", role="student")
+    lesson = _make_project(publisher, "Force retry analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    def fake_urlopen(request, timeout):
+        return _FakeOllamaResponse({"response": "not-json"})
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    first = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    enhance_analytics_intelligence_report.run(first.data["id"], first.data["source_hash"])
+    blocked = _client(publisher).post(_analyze_url(), {}, format="json")
+    forced = _client(publisher).post(_analyze_url(), {"force": True}, format="json")
+
+    assert blocked.data["id"] == first.data["id"]
+    assert forced.data["id"] != first.data["id"]
+    assert forced.data["force"] is True
+    assert forced.data["retry_count"] == 1
+    assert len(dispatch_calls) == 2
 
 
 @override_settings(

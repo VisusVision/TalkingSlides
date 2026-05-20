@@ -1031,6 +1031,31 @@ function lessonIntelligenceEnhancementPending(report) {
   );
 }
 
+function lessonIntelligenceOllamaFallbackFailed(report) {
+  return Boolean(
+    report?.fallback_used
+    && String(report?.provider || '').toLowerCase() === 'heuristic'
+    && String(report?.enhancement_provider || '').toLowerCase() === 'ollama'
+    && LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report)),
+  );
+}
+
+function lessonIntelligenceRetryOnCooldown(report) {
+  if (!lessonIntelligenceOllamaFallbackFailed(report)) return false;
+  const availableAt = Date.parse(report?.retry_available_at || report?.metadata?.progressive_enhancement?.retry_available_at || '');
+  return Number.isFinite(availableAt) && Date.now() < availableAt;
+}
+
+function lessonIntelligenceUpToDate(report) {
+  return Boolean(
+    report?.id
+    && !lessonIntelligenceIsStale(report)
+    && !lessonIntelligenceEnhancementPending(report)
+    && !lessonIntelligenceOllamaFallbackFailed(report)
+    && String(report?.provider || '').toLowerCase() === 'ollama',
+  );
+}
+
 function lessonIntelligenceEnhancementMeta(report) {
   return report?.metadata?.progressive_enhancement || {};
 }
@@ -1057,7 +1082,10 @@ function lessonIntelligenceEnhancementLabel(report) {
     return 'Ollama enhanced';
   }
   if (status === 'partial') return 'Partial Ollama insight; heuristic kept for some sections.';
-  if (LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)) return 'Ollama enhancement failed; heuristic analysis kept.';
+  if (LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)) {
+    if (lessonIntelligenceOllamaFallbackFailed(report)) return 'Heuristic fallback shown. Retry Ollama';
+    return 'Ollama enhancement failed; heuristic analysis kept.';
+  }
   return '';
 }
 
@@ -1279,6 +1307,23 @@ function LessonIntelligencePanel({
   const enhancementFailed = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report));
   const copyDisabled = !hasReport || actionBusy || loading;
   const stale = lessonIntelligenceIsStale(report);
+  const retryOllama = lessonIntelligenceOllamaFallbackFailed(report);
+  const retryCooldown = lessonIntelligenceRetryOnCooldown(report);
+  const upToDate = lessonIntelligenceUpToDate(report);
+  const analyzeDisabled = !enabled || loading || Boolean(actionBusy) || enhancementPending || retryCooldown || upToDate;
+  const analyzeLabel = actionBusy
+    ? 'Analyzing...'
+    : enhancementPending
+      ? 'Enhancing...'
+      : retryCooldown
+        ? 'Retry available soon'
+        : retryOllama
+          ? 'Retry Ollama'
+          : upToDate
+            ? 'Up to date'
+            : stale
+              ? 'Re-analyze'
+              : 'Analyze lesson';
 
   return (
     <div className="rounded-2xl token-surface p-4">
@@ -1326,9 +1371,9 @@ function LessonIntelligencePanel({
             <RefreshCcw size={14} />
             <span>Refresh</span>
           </Button>
-          <Button size="sm" onClick={onAnalyze} disabled={!enabled || loading || Boolean(actionBusy) || enhancementPending}>
+          <Button size="sm" onClick={onAnalyze} disabled={analyzeDisabled}>
             <Sparkles size={14} className={enhancementPending ? 'animate-spin' : ''} />
-            <span>{actionBusy ? 'Analyzing...' : enhancementPending ? 'Enhancing...' : stale ? 'Re-analyze' : 'Analyze lesson'}</span>
+            <span>{analyzeLabel}</span>
           </Button>
         </div>
       </div>
@@ -1357,7 +1402,8 @@ function LessonIntelligencePanel({
       )}
       {enhancementFailed && (
         <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
-          {report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
+          {retryOllama ? 'Heuristic fallback shown. Retry Ollama when available. ' : ''}
+          {report?.enhancement_last_failure_reason || report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
         </p>
       )}
       {hasReport && <LessonIntelligenceSectionStatusList report={report} />}

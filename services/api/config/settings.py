@@ -473,26 +473,26 @@ INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS = float(
 )
 _INTELLIGENCE_PROFILE_DEFAULTS = {
     "local_low": {
-        "lesson_model": "qwen2.5:7b-instruct",
+        "lesson_model": "qwen2.5:7b",
         "analytics_model": "qwen2.5:3b",
         "chunk_chars": "4000",
         "chunk_pages": "4",
         "chunk_items": "6",
         "row_threshold": "24",
-        "chunk_timeout_min": "60",
-        "chunk_timeout_max": "150",
+        "chunk_timeout_min": "130",
+        "chunk_timeout_max": "240",
         "total_timeout_max": "720",
         "chunk_concurrency": "1",
     },
     "local_mid": {
-        "lesson_model": "qwen2.5:7b-instruct",
+        "lesson_model": "qwen2.5:7b",
         "analytics_model": "qwen2.5:3b",
         "chunk_chars": "6000",
         "chunk_pages": "8",
         "chunk_items": "10",
         "row_threshold": "40",
-        "chunk_timeout_min": "45",
-        "chunk_timeout_max": "120",
+        "chunk_timeout_min": "130",
+        "chunk_timeout_max": "240",
         "total_timeout_max": "600",
         "chunk_concurrency": "1",
     },
@@ -536,6 +536,7 @@ INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS = float(
     os.environ.get("INTELLIGENCE_BACKGROUND_TIMEOUT_PER_COMMENT_SECONDS", "1")
 )
 INTELLIGENCE_ENHANCEMENT_STALE_SECONDS = int(os.environ.get("INTELLIGENCE_ENHANCEMENT_STALE_SECONDS", "900"))
+INTELLIGENCE_RETRY_COOLDOWN_SECONDS = int(os.environ.get("INTELLIGENCE_RETRY_COOLDOWN_SECONDS", "60"))
 INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS = int(
     os.environ.get("INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS", _INTELLIGENCE_PROFILE["chunk_chars"])
 )
@@ -581,6 +582,7 @@ OLLAMA_LESSON_INTELLIGENCE_MODEL = os.environ.get(
     "OLLAMA_LESSON_INTELLIGENCE_MODEL",
     _INTELLIGENCE_PROFILE["lesson_model"],
 ).strip()
+OLLAMA_LESSON_INTELLIGENCE_NUM_PREDICT = int(os.environ.get("OLLAMA_LESSON_INTELLIGENCE_NUM_PREDICT", "900"))
 OPENAI_LESSON_INTELLIGENCE_MODEL = os.environ.get(
     "OPENAI_LESSON_INTELLIGENCE_MODEL",
     "gpt-4o-mini",
@@ -643,6 +645,7 @@ OLLAMA_ANALYTICS_INTELLIGENCE_MODEL = os.environ.get(
     "OLLAMA_ANALYTICS_INTELLIGENCE_MODEL",
     _INTELLIGENCE_PROFILE["analytics_model"],
 ).strip()
+OLLAMA_ANALYTICS_INTELLIGENCE_NUM_PREDICT = int(os.environ.get("OLLAMA_ANALYTICS_INTELLIGENCE_NUM_PREDICT", "700"))
 OPENAI_ANALYTICS_INTELLIGENCE_MODEL = os.environ.get(
     "OPENAI_ANALYTICS_INTELLIGENCE_MODEL",
     "gpt-4o-mini",

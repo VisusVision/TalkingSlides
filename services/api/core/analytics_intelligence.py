@@ -25,6 +25,7 @@ from core.intelligence_progressive import (
     ollama_total_timeout_budget_seconds,
     provider_attempt as progressive_provider_attempt,
     provider_chain_contains_ollama,
+    safe_response_preview,
 )
 from core.models import AnalyticsIntelligenceReport, LessonIntelligenceReport
 
@@ -440,12 +441,57 @@ class OllamaAnalyticsIntelligenceProvider:
         )
         self.last_timeout_seconds = timeout_seconds
 
+        prompt = _ollama_prompt(input_payload)
+        data, elapsed_seconds = self._generate(prompt, timeout_seconds, retry_count=0)
+        response_text = data.get("response") if isinstance(data, dict) else None
+        try:
+            provider_json = data if response_text is None else _json_object_from_text(str(response_text or ""))
+            normalized = _normalize_provider_result(provider_json, provider_name=self.provider_name)
+            repaired = False
+            repair_retry_count = 0
+        except AnalyticsIntelligenceProviderUnavailable as exc:
+            parse_stage = _ollama_parse_stage(exc)
+            try:
+                repair_timeout = min(30.0, max(10.0, timeout_seconds * 0.35))
+                repair_prompt = _ollama_repair_prompt(str(response_text or data or ""), output_language=_output_language(input_payload))
+                repair_data, repair_elapsed = self._generate(repair_prompt, repair_timeout, retry_count=1)
+                repair_text = repair_data.get("response") if isinstance(repair_data, dict) else None
+                repair_json = repair_data if repair_text is None else _json_object_from_text(str(repair_text or ""))
+                normalized = _normalize_provider_result(repair_json, provider_name=self.provider_name)
+                repaired = True
+                repair_retry_count = 1
+                elapsed_seconds = round(elapsed_seconds + repair_elapsed, 2)
+            except Exception as repair_exc:  # noqa: BLE001
+                failure = AnalyticsIntelligenceProviderUnavailable(str(exc))
+                failure.diagnostic = _ollama_failure_diagnostic(
+                    exc,
+                    stage=parse_stage,
+                    model=self.model,
+                    elapsed_seconds=elapsed_seconds,
+                    retry_count=1,
+                    response_preview=safe_response_preview(response_text),
+                    repair_error=repair_exc,
+                )
+                raise failure from exc
+
+        normalized["metadata"] = {
+            **dict(normalized.get("metadata") or {}),
+            "model": self.model,
+            "base_url_configured": bool(self.base_url),
+            "timeout_seconds": timeout_seconds,
+            "elapsed_seconds": elapsed_seconds,
+            "repaired": repaired,
+            "repair_retry_count": repair_retry_count,
+        }
+        return normalized
+
+    def _generate(self, prompt: str, timeout_seconds: float, *, retry_count: int) -> tuple[dict[str, Any], float]:
         request_payload = {
             "model": self.model,
-            "prompt": _ollama_prompt(input_payload),
+            "prompt": prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0},
+            "options": {"temperature": 0, "num_predict": _int_setting("OLLAMA_ANALYTICS_INTELLIGENCE_NUM_PREDICT", 700)},
         }
         request = Request(
             f"{self.base_url}/api/generate",
@@ -453,28 +499,36 @@ class OllamaAnalyticsIntelligenceProvider:
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
         )
+        started_at = time.monotonic()
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8")
             data = json.loads(body)
         except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            raise AnalyticsIntelligenceProviderUnavailable(f"Ollama request failed: {exc.__class__.__name__}") from exc
+            elapsed_seconds = round(time.monotonic() - started_at, 2)
+            failure = AnalyticsIntelligenceProviderUnavailable(f"Ollama request failed: {exc.__class__.__name__}")
+            failure.diagnostic = _ollama_failure_diagnostic(
+                exc,
+                stage=_ollama_stage_for_exception(exc),
+                model=self.model,
+                elapsed_seconds=elapsed_seconds,
+                retry_count=retry_count,
+            )
+            raise failure from exc
 
         if not isinstance(data, dict):
-            raise AnalyticsIntelligenceProviderUnavailable("Ollama response must be a JSON object")
-        response_text = data.get("response")
-        if response_text is None:
-            provider_json = data
-        else:
-            provider_json = _json_object_from_text(str(response_text or ""))
-        normalized = _normalize_provider_result(provider_json, provider_name=self.provider_name)
-        normalized["metadata"] = {
-            **dict(normalized.get("metadata") or {}),
-            "model": self.model,
-            "base_url_configured": bool(self.base_url),
-            "timeout_seconds": timeout_seconds,
-        }
-        return normalized
+            elapsed_seconds = round(time.monotonic() - started_at, 2)
+            failure = AnalyticsIntelligenceProviderUnavailable("Ollama response must be a JSON object")
+            failure.diagnostic = _ollama_failure_diagnostic(
+                failure,
+                stage="json",
+                model=self.model,
+                elapsed_seconds=elapsed_seconds,
+                retry_count=retry_count,
+                response_preview=safe_response_preview(data),
+            )
+            raise failure
+        return data, round(time.monotonic() - started_at, 2)
 
 
 class PaidAnalyticsIntelligenceProvider:
@@ -1160,6 +1214,7 @@ def analyze_analytics_ollama_background(
         failed_chunks = 0
         chunk_results: list[dict[str, Any]] = []
         chunk_limitations: list[str] = []
+        chunk_diagnostics: list[dict[str, Any]] = []
         if callable(progress_callback):
             progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, {"index": 0, "count": chunk_count})
         for position, chunk_payload in enumerate(chunks, start=1):
@@ -1178,13 +1233,32 @@ def analyze_analytics_ollama_background(
                 remaining_chunks = max(1, chunk_count - position + 1)
                 failed_chunks += remaining_chunks
                 chunk_limitations.append(_analytics_chunk_limitation(analytics_input.output_language, "budget"))
+                diagnostic = _chunk_failure_diagnostic(
+                    current_chunk,
+                    {
+                        "model": provider.model,
+                        "error_class": "TimeoutError",
+                        "parse_stage": "timeout",
+                        "reason": "total_budget_exceeded",
+                        "safe_reason": "Ollama time budget was exceeded.",
+                        "elapsed_seconds": round(elapsed, 2),
+                        "retry_count": 0,
+                    },
+                )
+                chunk_diagnostics.append(diagnostic)
                 if callable(progress_callback):
                     progress_callback(
                         "analyzing_chunks",
                         chunk_count,
                         completed_chunks,
                         failed_chunks,
-                        {**current_chunk, "budget_exceeded": True, "skipped_remaining_chunks": remaining_chunks},
+                        {
+                            **current_chunk,
+                            "budget_exceeded": True,
+                            "skipped_remaining_chunks": remaining_chunks,
+                            "chunk_diagnostics": chunk_diagnostics[-10:],
+                            "last_failure_reason": diagnostic.get("safe_reason") or diagnostic.get("reason"),
+                        },
                     )
                 break
             chunk_timeout = min(ollama_chunk_timeout_seconds(_safe_int(chunk_payload.get("input_chars"), 0)), remaining)
@@ -1194,14 +1268,24 @@ def analyze_analytics_ollama_background(
                 completed_chunks += 1
             except Exception as exc:  # noqa: BLE001
                 failed_chunks += 1
-                chunk_limitations.append(f"chunk_failed:{exc.__class__.__name__}")
+                diagnostic = _chunk_failure_diagnostic(current_chunk, _diagnostic_from_exception(exc, model=provider.model))
+                chunk_diagnostics.append(diagnostic)
+                chunk_limitations.append(diagnostic.get("safe_reason") or f"chunk_failed:{exc.__class__.__name__}")
                 fallback = HeuristicAnalyticsIntelligenceProvider().analyze_analytics(chunk_payload)
                 normalized_chunk = _normalize_provider_result(fallback, provider_name="heuristic")
             chunk_results.append(normalized_chunk)
             if callable(progress_callback):
-                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, current_chunk)
+                progress_payload = dict(current_chunk)
+                if chunk_diagnostics:
+                    progress_payload["chunk_diagnostics"] = chunk_diagnostics[-10:]
+                    progress_payload["last_failure_reason"] = chunk_diagnostics[-1].get("safe_reason") or chunk_diagnostics[-1].get("reason")
+                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, progress_payload)
         if completed_chunks <= 0:
-            raise AnalyticsIntelligenceProviderUnavailable("Ollama chunk analysis failed for all chunks")
+            failure = AnalyticsIntelligenceProviderUnavailable("Ollama chunk analysis failed for all chunks")
+            failure.chunk_diagnostics = chunk_diagnostics[-20:]
+            if chunk_diagnostics:
+                failure.last_failure_reason = chunk_diagnostics[-1].get("safe_reason") or chunk_diagnostics[-1].get("reason")
+            raise failure
         if callable(progress_callback):
             progress_callback("synthesizing", chunk_count, completed_chunks, failed_chunks, {"index": chunk_count, "count": chunk_count})
         timeout_seconds = round(min(total_budget, time.monotonic() - started_at), 2)
@@ -1223,6 +1307,7 @@ def analyze_analytics_ollama_background(
             "completed_chunks": completed_chunks,
             "failed_chunks": failed_chunks,
             "chunk_limitations": chunk_limitations,
+            "chunk_diagnostics": chunk_diagnostics[-20:],
             "partial_enhancement": bool(failed_chunks),
         }
         provider_attempt = progressive_provider_attempt("ollama", "partial" if failed_chunks else "success")
@@ -1407,9 +1492,20 @@ def analytics_report_response_payload(
                 "completed_chunks",
                 "failed_chunks",
                 "chunk_limitations",
+                "chunk_diagnostics",
                 "partial_enhancement",
                 "force",
                 "forced_at",
+                "manual_retry",
+                "retry_count",
+                "retry_requested_at",
+                "retry_bypassed_cooldown",
+                "last_ollama_failure_at",
+                "retry_available_at",
+                "retry_cooldown_seconds",
+                "last_failure_reason",
+                "repaired",
+                "repair_retry_count",
             }
         },
         "error_message": report.error_message,
@@ -1679,7 +1775,19 @@ def _normalize_provider_result(raw: Any, *, provider_name: str) -> dict[str, Any
         raise AnalyticsIntelligenceProviderUnavailable("provider result must be a JSON object")
     summary = _clean_text(raw.get("analytics_summary") or raw.get("summary"), max_chars=1600)
     if not summary:
-        raise AnalyticsIntelligenceProviderUnavailable("provider result missing analytics summary")
+        fallback_messages = []
+        for key in ("insights", "recommendations", "lesson_actions", "category_actions"):
+            for item in _safe_json_list(raw.get(key)):
+                if isinstance(item, dict):
+                    message = _clean_text(item.get("message") or item.get("summary") or item.get("evidence"), max_chars=220)
+                else:
+                    message = _clean_text(item, max_chars=220)
+                if message:
+                    fallback_messages.append(message)
+                    break
+            if fallback_messages:
+                break
+        summary = fallback_messages[0] if fallback_messages else "Ollama returned analytics guidance for the selected period."
     health_score = max(0, min(100, _safe_int(raw.get("health_score"), 50)))
     risk_level = str(raw.get("risk_level") or _risk_level(health_score)).strip().lower()
     if risk_level not in RISK_LEVELS:
@@ -1719,6 +1827,8 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
     )
     return (
         f"You are a publisher analytics analyst. Return JSON only. {language_instruction}"
+        "No markdown. No code fences. No prose outside JSON. Keep keys exactly as provided. "
+        "If unsure, use empty arrays while keeping the schema. "
         "Use only the analytics data provided. Do not invent trends, viewer identities, or private data. "
         "Treat this as aggregate strategy work, not transcript analysis: connect performance drops to lesson quality "
         "summaries, complexity, clarity warnings, missing examples or short narration signals, cover-image signals, "
@@ -1727,7 +1837,8 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
         "Return keys: analytics_summary, health_score, risk_level, insights, recommendations, "
         "lesson_actions, category_actions, limitations. "
         "health_score must be an integer 0-100. risk_level must be low, medium, or high. "
-        "Each insight/recommendation/action should be a concise JSON object with type, message, and evidence when useful. "
+        "Keep analytics_summary under 150 words. Return max 4 insights, max 4 recommendations, "
+        "max 4 lesson actions, and max 3 category actions. Each action should be a concise JSON object with type, message, and evidence when useful. "
         f"Analytics payload: {json.dumps(safe_payload, ensure_ascii=False)}"
     )
 
@@ -1735,6 +1846,25 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
 def _output_language(input_payload: dict[str, Any]) -> str:
     language = str(input_payload.get("output_language") or "").strip().lower()
     return language if language in {"tr", "en"} else "en"
+
+
+def _ollama_repair_prompt(raw_response: str, *, output_language: str) -> str:
+    language_instruction = (
+        "Use Turkish for user-facing values. "
+        if output_language == "tr"
+        else "Use English for user-facing values. "
+    )
+    schema = (
+        '{"analytics_summary":"short paragraph","health_score":50,"risk_level":"low|medium|high",'
+        '"insights":[],"recommendations":[],"lesson_actions":[],"category_actions":[],"limitations":[]}'
+    )
+    return (
+        "Convert the following response to valid JSON matching this schema. "
+        "Return JSON only. No markdown. No code fences. Keep keys exactly as provided. "
+        f"{language_instruction}If information is missing, use empty arrays or safe defaults.\n"
+        f"Schema: {schema}\n"
+        f"Response: {str(raw_response or '')[:4000]}"
+    )
 
 
 def _analytics_text(language: str, key: str, **kwargs: Any) -> str:
@@ -2108,19 +2238,119 @@ def _dedupe_by_message(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _json_object_from_text(text: str) -> dict[str, Any]:
     cleaned = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1).strip()
     if not cleaned:
         raise AnalyticsIntelligenceProviderUnavailable("empty provider response")
     try:
         data = json.loads(cleaned)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start < 0 or end <= start:
-            raise AnalyticsIntelligenceProviderUnavailable("provider response was not JSON")
-        data = json.loads(cleaned[start : end + 1])
+    except json.JSONDecodeError as exc:
+        decoder = json.JSONDecoder()
+        for start in (index for index, char in enumerate(cleaned) if char == "{"):
+            try:
+                data, _ = decoder.raw_decode(cleaned[start:])
+                break
+            except json.JSONDecodeError:
+                continue
+        else:
+            raise AnalyticsIntelligenceProviderUnavailable("provider response was not JSON") from exc
     if not isinstance(data, dict):
         raise AnalyticsIntelligenceProviderUnavailable("provider JSON must be an object")
     return data
+
+
+def _ollama_stage_for_exception(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, HTTPError):
+        return "http"
+    if isinstance(exc, URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, TimeoutError) or "timed out" in str(exc).lower():
+            return "timeout"
+        return "http"
+    if isinstance(exc, (OSError, json.JSONDecodeError)):
+        text = str(exc).lower()
+        if "timed out" in text or "timeout" in text:
+            return "timeout"
+        return "json" if isinstance(exc, json.JSONDecodeError) else "http"
+    return "validation"
+
+
+def _ollama_parse_stage(exc: Exception) -> str:
+    text = str(exc or "").lower()
+    if "invalid json" in text or "not json" in text or "was not json" in text or "json response" in text:
+        return "json"
+    if "missing" in text or "must be" in text:
+        return "validation"
+    return _ollama_stage_for_exception(exc)
+
+
+def _ollama_safe_reason(stage: str, exc: Exception | str | None = None) -> str:
+    if stage == "timeout":
+        return "Ollama timed out."
+    if stage == "json":
+        return "Ollama returned invalid JSON."
+    if stage == "validation":
+        return "Ollama response missed required fields."
+    if stage == "http":
+        return "Ollama request failed."
+    return safe_response_preview(exc, limit=120) or "Ollama enhancement failed."
+
+
+def _ollama_failure_diagnostic(
+    exc: Exception | str,
+    *,
+    stage: str,
+    model: str,
+    elapsed_seconds: float,
+    retry_count: int,
+    response_preview: str = "",
+    repair_error: Exception | None = None,
+) -> dict[str, Any]:
+    diagnostic: dict[str, Any] = {
+        "model": str(model or ""),
+        "error_class": exc.__class__.__name__ if isinstance(exc, Exception) else "ProviderError",
+        "parse_stage": stage,
+        "reason": safe_response_preview(exc, limit=120),
+        "safe_reason": _ollama_safe_reason(stage, exc),
+        "elapsed_seconds": round(float(elapsed_seconds or 0.0), 2),
+        "retry_count": int(retry_count or 0),
+    }
+    if isinstance(exc, HTTPError):
+        diagnostic["error_code"] = int(exc.code)
+    if response_preview:
+        diagnostic["response_preview"] = safe_response_preview(response_preview)
+    if repair_error is not None:
+        diagnostic["repair_error_class"] = repair_error.__class__.__name__
+        diagnostic["repair_reason"] = safe_response_preview(repair_error, limit=120)
+    return {key: value for key, value in diagnostic.items() if value not in {"", None}}
+
+
+def _diagnostic_from_exception(exc: Exception, *, model: str) -> dict[str, Any]:
+    diagnostic = getattr(exc, "diagnostic", None)
+    if isinstance(diagnostic, dict):
+        return dict(diagnostic)
+    stage = _ollama_parse_stage(exc)
+    return _ollama_failure_diagnostic(
+        exc,
+        stage=stage,
+        model=model,
+        elapsed_seconds=0.0,
+        retry_count=0,
+    )
+
+
+def _chunk_failure_diagnostic(current_chunk: dict[str, Any], diagnostic: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        **{key: value for key, value in diagnostic.items() if value not in {"", None}},
+        "chunk_index": int(current_chunk.get("index") or 0),
+        "chunk_count": int(current_chunk.get("count") or 0),
+        "section": _clean_text(current_chunk.get("section"), max_chars=80),
+        "item_count": _safe_int(current_chunk.get("item_count"), 0),
+    }
+    return payload
 
 
 def _scrub_private(value: Any) -> Any:

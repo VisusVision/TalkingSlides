@@ -153,6 +153,7 @@ from core.intelligence_progressive import (
     enhancement_lock_key,
     enhancement_from_metadata,
     enhancement_metadata,
+    intelligence_retry_cooldown_seconds,
     lesson_section_statuses,
     merge_enhancement_metadata,
     provider_attempt as progressive_provider_attempt,
@@ -6279,27 +6280,128 @@ def _force_metadata(force: bool) -> dict[str, Any]:
     }
 
 
+def _ollama_fallback_retry_candidate(report) -> bool:
+    if report is None:
+        return False
+    metadata = report.metadata if isinstance(report.metadata, dict) else {}
+    enhancement = enhancement_from_metadata(metadata)
+    return bool(
+        report.provider == "heuristic"
+        and report.fallback_used
+        and str(enhancement.get("provider") or "").strip().lower() == "ollama"
+        and str(enhancement.get("status") or "").strip().lower() == "failed"
+    )
+
+
+def _retry_available_at_for_report(report):
+    metadata = report.metadata if isinstance(report.metadata, dict) else {}
+    enhancement = enhancement_from_metadata(metadata)
+    available_at = _parse_enhancement_timestamp(enhancement.get("retry_available_at"))
+    if available_at is not None:
+        return available_at
+    failure_at = (
+        _parse_enhancement_timestamp(enhancement.get("last_ollama_failure_at"))
+        or _parse_enhancement_timestamp(enhancement.get("failed_at"))
+        or _parse_enhancement_timestamp(enhancement.get("finished_at"))
+        or report.updated_at
+        or report.created_at
+        or timezone.now()
+    )
+    return failure_at + timedelta(seconds=intelligence_retry_cooldown_seconds())
+
+
+def _sync_retry_metadata(report):
+    if report is None or not _ollama_fallback_retry_candidate(report):
+        return report
+    metadata = report.metadata if isinstance(report.metadata, dict) else {}
+    enhancement = enhancement_from_metadata(metadata)
+    available_at = _retry_available_at_for_report(report)
+    failure_at = (
+        str(enhancement.get("last_ollama_failure_at") or "")
+        or str(enhancement.get("failed_at") or "")
+        or timezone.now().isoformat()
+    )
+    retry_count = 0
+    try:
+        retry_count = max(0, int(enhancement.get("retry_count") or metadata.get("retry_count") or 0))
+    except (TypeError, ValueError):
+        retry_count = 0
+    enhancement.update(
+        {
+            "last_ollama_failure_at": failure_at,
+            "retry_available_at": available_at.isoformat(),
+            "retry_cooldown_seconds": intelligence_retry_cooldown_seconds(),
+            "retry_count": retry_count,
+        }
+    )
+    diagnostic_reason = ""
+    diagnostics = enhancement.get("chunk_diagnostics")
+    if isinstance(diagnostics, list) and diagnostics:
+        last_diagnostic = diagnostics[-1]
+        if isinstance(last_diagnostic, dict):
+            diagnostic_reason = str(last_diagnostic.get("safe_reason") or last_diagnostic.get("reason") or "")
+    current_reason = str(enhancement.get("last_failure_reason") or "")
+    if diagnostic_reason and (not current_reason or "chunk analysis failed for all chunks" in current_reason):
+        enhancement["last_failure_reason"] = diagnostic_reason
+    elif not current_reason:
+        enhancement["last_failure_reason"] = enhancement.get("error") or "Ollama enhancement failed."
+    metadata[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+    return report
+
+
+def _retry_cooldown_active(report) -> bool:
+    if report is None or not _ollama_fallback_retry_candidate(report):
+        return False
+    available_at = _retry_available_at_for_report(report)
+    return timezone.now() < available_at
+
+
+def _retry_attempt_metadata(previous_report, *, force: bool, manual_retry: bool) -> dict[str, Any]:
+    if previous_report is None or not _ollama_fallback_retry_candidate(previous_report):
+        return {}
+    metadata = previous_report.metadata if isinstance(previous_report.metadata, dict) else {}
+    enhancement = enhancement_from_metadata(metadata)
+    try:
+        retry_count = max(0, int(enhancement.get("retry_count") or metadata.get("retry_count") or 0)) + 1
+    except (TypeError, ValueError):
+        retry_count = 1
+    return {
+        "manual_retry": bool(manual_retry),
+        "retry_count": retry_count,
+        "retry_requested_at": timezone.now().isoformat(),
+        "retry_bypassed_cooldown": bool(force),
+    }
+
+
 def _latest_lesson_report_for_source(
     project: Project,
     source_hash: str,
     *,
     force: bool = False,
     run_key: str = "",
+    manual_retry: bool = False,
 ):
     normalized_run_key = str(run_key or "").strip()
     if normalized_run_key:
         for report in project.lesson_intelligence_reports.filter(source_hash=source_hash).order_by("-created_at", "-id")[:25]:
             if _report_run_key(report) != normalized_run_key:
                 continue
-            if force and _enhancement_status_for_report(report) in {"pending", "running"}:
+            if force and _enhancement_status_for_report(report) in PENDING_ENHANCEMENT_STATUSES:
                 _mark_lesson_enhancement_failed(report, "Enhancement was superseded by a new analysis request.")
                 return None
             report = _recover_stale_lesson_enhancement(report)
             status_value = _enhancement_status_for_report(report)
-            if status_value in {"pending", "running"}:
+            if status_value in PENDING_ENHANCEMENT_STATUSES:
                 return report
             if bool(enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {}).get("stale")):
                 return None
+            if not force and _ollama_fallback_retry_candidate(report):
+                report = _sync_retry_metadata(report)
+                if manual_retry and not _retry_cooldown_active(report):
+                    return None
+                return report
             if not force and status_value == "failed":
                 return report
             if not force and (report.provider == "ollama" and (report.status == "done" or status_value in {"done", "partial"})):
@@ -6324,12 +6426,17 @@ def _latest_lesson_report_for_source(
     if latest is None:
         return None
     status_value = _enhancement_status_for_report(latest)
-    if status_value in {"pending", "running"}:
+    if status_value in PENDING_ENHANCEMENT_STATUSES:
         if force:
             _mark_lesson_enhancement_failed(latest, "Enhancement was superseded by a new analysis request.")
             return None
         latest = _recover_stale_lesson_enhancement(latest)
-        if _enhancement_status_for_report(latest) not in {"pending", "running"}:
+        if _enhancement_status_for_report(latest) not in PENDING_ENHANCEMENT_STATUSES:
+            return None
+        return latest
+    if not force and _ollama_fallback_retry_candidate(latest):
+        latest = _sync_retry_metadata(latest)
+        if manual_retry and not _retry_cooldown_active(latest):
             return None
         return latest
     if not force and latest.provider == "heuristic":
@@ -6337,7 +6444,7 @@ def _latest_lesson_report_for_source(
     return None
 
 
-def _latest_analytics_report_for_source(user: User, analytics_input, *, force: bool = False, run_key: str = ""):
+def _latest_analytics_report_for_source(user: User, analytics_input, *, force: bool = False, run_key: str = "", manual_retry: bool = False):
     normalized_run_key = str(run_key or "").strip()
     if normalized_run_key:
         reports = AnalyticsIntelligenceReport.objects.filter(
@@ -6350,15 +6457,20 @@ def _latest_analytics_report_for_source(user: User, analytics_input, *, force: b
         for report in reports:
             if _report_run_key(report) != normalized_run_key:
                 continue
-            if force and _enhancement_status_for_report(report) in {"pending", "running"}:
+            if force and _enhancement_status_for_report(report) in PENDING_ENHANCEMENT_STATUSES:
                 _mark_analytics_enhancement_failed(report, "Enhancement was superseded by a new analysis request.")
                 return None
             report = _recover_stale_analytics_enhancement(report)
             status_value = _enhancement_status_for_report(report)
-            if status_value in {"pending", "running"}:
+            if status_value in PENDING_ENHANCEMENT_STATUSES:
                 return report
             if bool(enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {}).get("stale")):
                 return None
+            if not force and _ollama_fallback_retry_candidate(report):
+                report = _sync_retry_metadata(report)
+                if manual_retry and not _retry_cooldown_active(report):
+                    return None
+                return report
             if not force and status_value == "failed":
                 return report
             if not force and (report.provider == "ollama" and (report.status == "done" or status_value in {"done", "partial"})):
@@ -6396,12 +6508,17 @@ def _latest_analytics_report_for_source(user: User, analytics_input, *, force: b
     if latest is None:
         return None
     status_value = _enhancement_status_for_report(latest)
-    if status_value in {"pending", "running"}:
+    if status_value in PENDING_ENHANCEMENT_STATUSES:
         if force:
             _mark_analytics_enhancement_failed(latest, "Enhancement was superseded by a new analysis request.")
             return None
         latest = _recover_stale_analytics_enhancement(latest)
-        if _enhancement_status_for_report(latest) not in {"pending", "running"}:
+        if _enhancement_status_for_report(latest) not in PENDING_ENHANCEMENT_STATUSES:
+            return None
+        return latest
+    if not force and _ollama_fallback_retry_candidate(latest):
+        latest = _sync_retry_metadata(latest)
+        if manual_retry and not _retry_cooldown_active(latest):
             return None
         return latest
     if not force and latest.provider == "heuristic":
@@ -6917,11 +7034,19 @@ class ProjectLessonIntelligenceView(APIView):
         chain = provider_chain_from_settings()
         force = _truthy_request_value(request.data.get("force"))
         run_identity = lesson_ollama_run_identity(lesson_input) if progressive_ollama_enabled(chain) else {}
+        previous_retry_report = _latest_lesson_report_for_source(
+            project,
+            lesson_input.source_hash,
+            force=False,
+            run_key=str(run_identity.get("run_key") or ""),
+            manual_retry=False,
+        )
         existing_report = _latest_lesson_report_for_source(
             project,
             lesson_input.source_hash,
             force=force,
             run_key=str(run_identity.get("run_key") or ""),
+            manual_retry=True,
         )
         if existing_report is not None:
             return Response(
@@ -6944,7 +7069,10 @@ class ProjectLessonIntelligenceView(APIView):
             source_hash=lesson_input.source_hash,
         )
         try:
-            force_metadata = _force_metadata(force)
+            force_metadata = {
+                **_retry_attempt_metadata(previous_retry_report, force=force, manual_retry=True),
+                **_force_metadata(force),
+            }
             if progressive_ollama_enabled(chain):
                 queue_name = _lesson_intelligence_queue_name()
                 identity_metadata = _identity_metadata(run_identity)
@@ -10251,11 +10379,19 @@ class CreatorAnalyticsIntelligenceView(APIView):
         chain = analytics_provider_chain_from_settings()
         force = _truthy_request_value(request.data.get("force"))
         run_identity = analytics_ollama_run_identity(analytics_input) if progressive_analytics_ollama_enabled(chain) else {}
+        previous_retry_report = _latest_analytics_report_for_source(
+            request.user,
+            analytics_input,
+            force=False,
+            run_key=str(run_identity.get("run_key") or ""),
+            manual_retry=False,
+        )
         existing_report = _latest_analytics_report_for_source(
             request.user,
             analytics_input,
             force=force,
             run_key=str(run_identity.get("run_key") or ""),
+            manual_retry=True,
         )
         if existing_report is not None:
             return Response(
@@ -10280,7 +10416,10 @@ class CreatorAnalyticsIntelligenceView(APIView):
             category_filter=analytics_input.category_filter,
         )
         try:
-            force_metadata = _force_metadata(force)
+            force_metadata = {
+                **_retry_attempt_metadata(previous_retry_report, force=force, manual_retry=True),
+                **_force_metadata(force),
+            }
             if progressive_analytics_ollama_enabled(chain):
                 queue_name = _analytics_intelligence_queue_name()
                 identity_metadata = _identity_metadata(run_identity)

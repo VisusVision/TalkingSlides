@@ -45,9 +45,11 @@ This avoids:
 
 Hardware profile defaults are controlled by `INTELLIGENCE_HARDWARE_PROFILE`:
 
-- `local_low`: smaller chunks, concurrency `1`; lesson default `qwen2.5:7b-instruct`, analytics default `qwen2.5:3b`.
-- `local_mid`: medium chunks, concurrency `1`; lesson default `qwen2.5:7b-instruct`, analytics default `qwen2.5:3b`. Configure `qwen3:8b` for lesson quality or `qwen3:4b` for analytics if installed.
-- `production_gpu`: larger chunks, concurrency `2` by default; lesson default `qwen3:14b`, analytics default `qwen3:8b`. Larger models such as `qwen3:32b` are configuration choices, not requirements.
+- `local_low`: smaller chunks, concurrency `1`; use `qwen2.5:7b` or `qwen3:4b` for lessons if installed, and `qwen2.5:3b` or `qwen3:4b` for analytics.
+- `local_mid`: medium chunks, concurrency `1`; use `qwen3:8b` or `qwen2.5:7b` for lesson quality, and `qwen3:4b` or `qwen2.5:3b` for analytics.
+- `production_gpu`: larger chunks, concurrency `2` by default; use `qwen3:14b` or `qwen3:32b` for lessons, and `qwen3:8b` or `qwen3:14b` for analytics.
+
+The committed defaults are conservative local values (`qwen2.5:7b` for lesson and `qwen2.5:3b` for analytics). `OLLAMA_LESSON_INTELLIGENCE_MODEL` and `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` always override profile defaults. If a configured model is missing, the task records a safe Ollama failure reason and keeps the heuristic report.
 
 For local background quality, `qwen2.5:7b` remains a good lesson default:
 
@@ -109,17 +111,20 @@ INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=6000
 INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES=8
 INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=10
 INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY=1
-INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=45
-INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=120
+INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=130
+INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=240
 INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS=600
+INTELLIGENCE_RETRY_COOLDOWN_SECONDS=60
 ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS=180
 ```
 
 `INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS` controls how much lesson or analytics content is sent to one local Ollama request. Page/item limits keep individual chunks predictable even when text is short but arrays are large. The per-chunk timeout is bounded by the min/max values, and the whole Celery task stops adding chunks after the total budget. Partial completion produces a terminal `partial` enhancement with `partial_enhancement=true`; full Ollama failure leaves the heuristic report in place and marks enhancement `failed`.
 
+Ollama JSON requests use JSON mode plus bounded generation (`OLLAMA_LESSON_INTELLIGENCE_NUM_PREDICT`, default `900`; `OLLAMA_ANALYTICS_INTELLIGENCE_NUM_PREDICT`, default `700`). If Ollama returns prose, fenced JSON, or malformed JSON, the provider tries one short repair prompt before marking the chunk failed.
+
 `ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` caps analytics enhancement below the shared lesson/default budget so a large analytics workload terminalizes instead of monopolizing a single local worker.
 
-Pending or running enhancement metadata is considered stale after `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` seconds, default `900`. A stale enhancement is marked failed so the frontend stops polling and a later manual re-analyze can queue a new task.
+Pending or running enhancement metadata is considered stale after `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` seconds, default `900`. A stale enhancement is marked failed so the frontend stops polling and a later manual re-analyze can queue a new task. If Ollama fails after the heuristic fallback is shown, manual Retry Ollama can queue a same-source retry after `INTELLIGENCE_RETRY_COOLDOWN_SECONDS`; automatic scheduling does not loop failed Ollama attempts forever.
 
 Docker currently starts Gunicorn without an explicit `--timeout`, so Gunicorn's default worker timeout is 30 seconds. Keep synchronous provider caps below the API worker timeout. Long-running local LLM analysis should use the progressive background flow instead of raising the synchronous cap.
 

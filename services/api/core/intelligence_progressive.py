@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import timedelta
 from typing import Any
 
 from django.conf import settings
@@ -51,6 +52,10 @@ def _int_setting(name: str, default: int, *, minimum: int | None = None, maximum
     if maximum is not None:
         value = min(int(maximum), value)
     return value
+
+
+def intelligence_retry_cooldown_seconds() -> int:
+    return _int_setting("INTELLIGENCE_RETRY_COOLDOWN_SECONDS", 60, minimum=0, maximum=86400)
 
 
 def stable_json_fingerprint(payload: Any) -> str:
@@ -246,6 +251,15 @@ def safe_enhancement_error(error: Exception | str | None, *, limit: int = 180) -
     return text[: max(0, limit - 1)].rstrip() + "..."
 
 
+def safe_response_preview(text: Exception | str | None, *, limit: int = 300) -> str:
+    preview = safe_enhancement_error(text, limit=limit)
+    if not preview:
+        return ""
+    preview = re.sub(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "[email]", preview)
+    preview = re.sub(r"(?i)\b(bearer|token|api[_-]?key|secret|password)\s*[:=]\s*\S+", r"\1=[redacted]", preview)
+    return preview[:limit].rstrip()
+
+
 def enhancement_metadata(
     *,
     provider: str = "ollama",
@@ -284,6 +298,16 @@ def enhancement_metadata(
                     payload["sections"] = merge_lesson_section_statuses(payload.get("sections"), value)
                 else:
                     payload[str(key)] = value
+    if normalized_status == "failed" and payload.get("provider") == "ollama":
+        failure_at = payload.get("failed_at") or now
+        payload.setdefault("last_ollama_failure_at", failure_at)
+        payload.setdefault("last_failure_reason", safe_enhancement_error(error))
+        payload.setdefault(
+            "retry_available_at",
+            (timezone.now() + timedelta(seconds=intelligence_retry_cooldown_seconds())).isoformat(),
+        )
+        payload.setdefault("retry_cooldown_seconds", intelligence_retry_cooldown_seconds())
+        payload.setdefault("retry_count", 0)
     return payload
 
 
@@ -303,6 +327,7 @@ def merge_enhancement_metadata(
     current = source.get(PROGRESSIVE_ENHANCEMENT_KEY)
     enhancement = dict(current) if isinstance(current, dict) else enhancement_metadata()
     now = timezone.now().isoformat()
+    extra_has_last_failure_reason = isinstance(extra, dict) and bool(extra.get("last_failure_reason"))
 
     if provider is not None:
         enhancement["provider"] = str(provider or "ollama").strip().lower() or "ollama"
@@ -341,6 +366,21 @@ def merge_enhancement_metadata(
         enhancement["error"] = safe_enhancement_error(error)
     elif status in {"done", "pending", "running"}:
         enhancement["error"] = ""
+    if status is not None and str(status or "").strip().lower() == "failed" and str(enhancement.get("provider") or "").strip().lower() == "ollama":
+        failure_at = str(enhancement.get("failed_at") or now)
+        enhancement["last_ollama_failure_at"] = failure_at
+        if error is not None and not extra_has_last_failure_reason:
+            enhancement["last_failure_reason"] = safe_enhancement_error(error)
+        else:
+            enhancement.setdefault("last_failure_reason", safe_enhancement_error(enhancement.get("error")))
+        enhancement["retry_available_at"] = (
+            timezone.now() + timedelta(seconds=intelligence_retry_cooldown_seconds())
+        ).isoformat()
+        enhancement["retry_cooldown_seconds"] = intelligence_retry_cooldown_seconds()
+        try:
+            enhancement["retry_count"] = int(enhancement.get("retry_count") or 0)
+        except (TypeError, ValueError):
+            enhancement["retry_count"] = 0
     enhancement["last_update_at"] = now
 
     source[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
@@ -363,12 +403,29 @@ def enhancement_response_fields(
     provider = str(enhancement.get("provider") or "").strip().lower()
     enabled = bool(enhancement.get("enabled", bool(provider or default_available)))
     available = bool(enabled and (provider or default_available))
+    try:
+        retry_count = max(0, int(enhancement.get("retry_count") or 0))
+    except (TypeError, ValueError):
+        retry_count = 0
+    last_failure_reason = safe_enhancement_error(enhancement.get("last_failure_reason"))
+    if not last_failure_reason or "chunk analysis failed for all chunks" in last_failure_reason:
+        diagnostics = enhancement.get("chunk_diagnostics")
+        if isinstance(diagnostics, list) and diagnostics:
+            last_diagnostic = diagnostics[-1]
+            if isinstance(last_diagnostic, dict):
+                last_failure_reason = safe_enhancement_error(
+                    last_diagnostic.get("safe_reason") or last_diagnostic.get("reason") or last_failure_reason
+                )
     return {
         "enhancement_available": available,
         "enhancement_pending": bool(status in PENDING_ENHANCEMENT_STATUSES),
         "enhancement_status": status,
         "enhancement_provider": provider,
         "enhancement_error_safe": safe_enhancement_error(enhancement.get("error")),
+        "enhancement_last_failure_reason": last_failure_reason,
+        "retry_available_at": str(enhancement.get("retry_available_at") or ""),
+        "retry_cooldown_seconds": intelligence_retry_cooldown_seconds(),
+        "retry_count": retry_count,
     }
 
 

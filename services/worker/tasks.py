@@ -5188,6 +5188,10 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
                     progress_extra["current_chunk_index"] = current_chunk.get("index")
                 if current_chunk.get("section"):
                     progress_extra["current_chunk_name"] = current_chunk.get("section")
+                if isinstance(current_chunk.get("chunk_diagnostics"), list):
+                    progress_extra["chunk_diagnostics"] = current_chunk.get("chunk_diagnostics")
+                if current_chunk.get("last_failure_reason"):
+                    progress_extra["last_failure_reason"] = current_chunk.get("last_failure_reason")
             _mark_lesson_intelligence_enhancement(
                 report_id,
                 "running",
@@ -5230,6 +5234,12 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         }
         if isinstance(analysis_meta.get("chunk_limitations"), list):
             enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
+        if isinstance(analysis_meta.get("chunk_diagnostics"), list):
+            enhancement_extra["chunk_diagnostics"] = analysis_meta.get("chunk_diagnostics")
+            if analysis_meta.get("chunk_diagnostics"):
+                last_diagnostic = analysis_meta.get("chunk_diagnostics")[-1]
+                if isinstance(last_diagnostic, dict):
+                    enhancement_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
         analysis_metadata = {
             **dict(analysis.get("metadata") or {}),
             "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
@@ -5247,6 +5257,17 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
     except (LessonIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Lesson intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
+        failure_extra: dict[str, Any] = {}
+        if isinstance(getattr(exc, "chunk_diagnostics", None), list):
+            failure_extra["chunk_diagnostics"] = getattr(exc, "chunk_diagnostics")[-20:]
+        elif isinstance(getattr(exc, "diagnostic", None), dict):
+            failure_extra["chunk_diagnostics"] = [getattr(exc, "diagnostic")]
+        if getattr(exc, "last_failure_reason", None):
+            failure_extra["last_failure_reason"] = str(getattr(exc, "last_failure_reason") or "")
+        elif isinstance(failure_extra.get("chunk_diagnostics"), list) and failure_extra["chunk_diagnostics"]:
+            last_diagnostic = failure_extra["chunk_diagnostics"][-1]
+            if isinstance(last_diagnostic, dict):
+                failure_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
         _mark_lesson_intelligence_enhancement(
             report_id,
             "failed",
@@ -5254,6 +5275,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             timeout_seconds=timeout_seconds,
             error=f"{exc.__class__.__name__}: {exc}",
             phase="failed",
+            extra=failure_extra,
         )
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 
@@ -5368,6 +5390,10 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
                     progress_extra["current_chunk_index"] = current_chunk.get("index")
                 if current_chunk.get("section"):
                     progress_extra["current_chunk_name"] = current_chunk.get("section")
+                if isinstance(current_chunk.get("chunk_diagnostics"), list):
+                    progress_extra["chunk_diagnostics"] = current_chunk.get("chunk_diagnostics")
+                if current_chunk.get("last_failure_reason"):
+                    progress_extra["last_failure_reason"] = current_chunk.get("last_failure_reason")
             _mark_analytics_intelligence_enhancement(
                 report_id,
                 "running",
@@ -5398,6 +5424,12 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         }
         if isinstance(analysis_meta.get("chunk_limitations"), list):
             enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
+        if isinstance(analysis_meta.get("chunk_diagnostics"), list):
+            enhancement_extra["chunk_diagnostics"] = analysis_meta.get("chunk_diagnostics")
+            if analysis_meta.get("chunk_diagnostics"):
+                last_diagnostic = analysis_meta.get("chunk_diagnostics")[-1]
+                if isinstance(last_diagnostic, dict):
+                    enhancement_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
         analysis_metadata = {
             **dict(analysis.get("metadata") or {}),
             "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
@@ -5414,6 +5446,17 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
     except (AnalyticsIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Analytics intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
+        failure_extra: dict[str, Any] = {}
+        if isinstance(getattr(exc, "chunk_diagnostics", None), list):
+            failure_extra["chunk_diagnostics"] = getattr(exc, "chunk_diagnostics")[-20:]
+        elif isinstance(getattr(exc, "diagnostic", None), dict):
+            failure_extra["chunk_diagnostics"] = [getattr(exc, "diagnostic")]
+        if getattr(exc, "last_failure_reason", None):
+            failure_extra["last_failure_reason"] = str(getattr(exc, "last_failure_reason") or "")
+        elif isinstance(failure_extra.get("chunk_diagnostics"), list) and failure_extra["chunk_diagnostics"]:
+            last_diagnostic = failure_extra["chunk_diagnostics"][-1]
+            if isinstance(last_diagnostic, dict):
+                failure_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
         _mark_analytics_intelligence_enhancement(
             report_id,
             "failed",
@@ -5421,6 +5464,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             timeout_seconds=timeout_seconds,
             error=f"{exc.__class__.__name__}: {exc}",
             phase="failed",
+            extra=failure_extra,
         )
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 

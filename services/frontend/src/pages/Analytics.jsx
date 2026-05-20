@@ -469,6 +469,31 @@ function analyticsEnhancementPending(report) {
   return Boolean(report?.enhancement_pending || ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(report)));
 }
 
+function analyticsOllamaFallbackFailed(report) {
+  return Boolean(
+    report?.fallback_used
+    && String(report?.provider || '').toLowerCase() === 'heuristic'
+    && String(report?.enhancement_provider || '').toLowerCase() === 'ollama'
+    && ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(report)),
+  );
+}
+
+function analyticsRetryOnCooldown(report) {
+  if (!analyticsOllamaFallbackFailed(report)) return false;
+  const availableAt = Date.parse(report?.retry_available_at || report?.metadata?.progressive_enhancement?.retry_available_at || '');
+  return Number.isFinite(availableAt) && Date.now() < availableAt;
+}
+
+function analyticsUpToDate(report) {
+  return Boolean(
+    report?.id
+    && !analyticsIntelligenceIsStale(report)
+    && !analyticsEnhancementPending(report)
+    && !analyticsOllamaFallbackFailed(report)
+    && String(report?.provider || '').toLowerCase() === 'ollama',
+  );
+}
+
 function analyticsEnhancementMeta(report) {
   return report?.metadata?.progressive_enhancement || {};
 }
@@ -495,10 +520,10 @@ function AnalyticsEnhancementLabel({ report }) {
         : 'Ollama enhancement running')
     : status === 'done'
       ? (failedChunks > 0 ? 'Partial Ollama insight; heuristic kept for some sections.' : 'Ollama enhanced insight')
-      : status === 'partial'
-        ? 'Partial Ollama insight; heuristic kept for some sections.'
+    : status === 'partial'
+      ? 'Partial Ollama insight; heuristic kept for some sections.'
       : failed
-        ? 'Ollama enhancement failed; heuristic analysis kept.'
+        ? (analyticsOllamaFallbackFailed(report) ? 'Heuristic fallback shown. Retry Ollama' : 'Ollama enhancement failed; heuristic analysis kept.')
         : '';
   if (!label) return null;
   const className = failed
@@ -992,6 +1017,27 @@ export default function Analytics({ user }) {
   const intelligenceCompacted = analyticsInputWasCompacted(intelligenceReport);
   const intelligenceEnhancementPending = analyticsEnhancementPending(intelligenceReport);
   const intelligenceEnhancementFailed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(intelligenceReport));
+  const intelligenceRetryOllama = analyticsOllamaFallbackFailed(intelligenceReport);
+  const intelligenceRetryCooldown = analyticsRetryOnCooldown(intelligenceReport);
+  const intelligenceUpToDate = analyticsUpToDate(intelligenceReport);
+  const intelligenceButtonDisabled = intelligenceAnalyzing
+    || intelligenceEnhancementPending
+    || intelligenceReport?.enabled === false
+    || intelligenceRetryCooldown
+    || intelligenceUpToDate;
+  const intelligenceButtonLabel = intelligenceAnalyzing
+    ? 'Analyzing...'
+    : intelligenceEnhancementPending
+      ? 'Enhancing...'
+      : intelligenceRetryCooldown
+        ? 'Retry available soon'
+        : intelligenceRetryOllama
+          ? 'Retry Ollama'
+          : intelligenceUpToDate
+            ? 'Up to date'
+            : intelligenceStale
+              ? 'Re-analyze'
+              : 'Analyze analytics';
 
   return (
     <div className="space-y-7 pb-8">
@@ -1426,11 +1472,11 @@ export default function Analytics({ user }) {
             <button
               type="button"
               onClick={() => handleAnalyzeAnalytics({ force: intelligenceStale })}
-              disabled={intelligenceAnalyzing || intelligenceEnhancementPending || intelligenceReport?.enabled === false}
+              disabled={intelligenceButtonDisabled}
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[image:var(--accent-gradient)] px-4 text-xs font-bold text-white transition hover:scale-105 active:scale-95 disabled:cursor-wait disabled:opacity-60 disabled:hover:scale-100"
             >
               <RefreshCw size={14} className={(intelligenceAnalyzing || intelligenceEnhancementPending) ? 'animate-spin' : ''} />
-              {intelligenceAnalyzing ? 'Analyzing...' : intelligenceEnhancementPending ? 'Enhancing...' : intelligenceStale ? 'Re-analyze' : 'Analyze analytics'}
+              {intelligenceButtonLabel}
             </button>
           </div>
         </div>
@@ -1444,7 +1490,10 @@ export default function Analytics({ user }) {
         {intelligenceEnhancementFailed && (
           <div className="flex items-start gap-2 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-200">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <span>{intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}</span>
+            <span>
+              {intelligenceRetryOllama ? 'Heuristic fallback shown. Retry Ollama when available. ' : ''}
+              {intelligenceReport?.enhancement_last_failure_reason || intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
+            </span>
           </div>
         )}
 
