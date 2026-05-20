@@ -35,9 +35,16 @@ ANALYTICS_INTELLIGENCE_PROMPT_VERSION = "analytics-intelligence-v2"
 RISK_LEVELS = {"low", "medium", "high"}
 CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
 WHITESPACE_RE = re.compile(r"\s+")
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
+HANDLE_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_.-]{2,}")
+IDENTITY_LABEL_RE = re.compile(
+    r"\b(?:viewer|learner|user)[\s_-]*(?:id|email|username|name)\b\s*[:=#-]?\s*[^\s,;]*",
+    re.IGNORECASE,
+)
 PRIVATE_KEYS = {
     "avatar_url",
     "email",
+    "full_name",
     "file_path",
     "path",
     "profile_url",
@@ -1484,7 +1491,7 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
                 "value": row.get("value") if isinstance(row.get("value"), (int, float, str, bool)) else None,
             }
             if include_activity_messages:
-                item["message"] = _clean_text(row.get("message") or row.get("description"), max_chars=240)
+                item["message"] = _generic_activity_message(item)
             activity.append(item)
         comment_limit = limits.get("recent_comments", 0)
         comments = []
@@ -1494,7 +1501,7 @@ def _compact_analytics_payload(payload: dict[str, Any], *, max_chars: int) -> tu
             comments.append(
                 {
                     "lesson_title": _clean_text(row.get("lesson_title") or row.get("title"), max_chars=title_chars),
-                    "text": _clean_text(row.get("text"), max_chars=320),
+                    "text": _sanitize_feedback_text(row.get("text"), max_chars=320),
                 }
             )
         return _scrub_private(
@@ -1640,7 +1647,16 @@ def _safe_analytics_payload(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "recent_activity": _scrub_private(_safe_list(payload.get("recent_activity"))[:60]),
         "qualitative_feedback": {
-            "recent_comments": _scrub_private(_safe_list(feedback.get("recent_comments"))[:100]),
+            "recent_comments": [
+                _scrub_private(
+                    {
+                        **row,
+                        "text": _sanitize_feedback_text(row.get("text"), max_chars=320),
+                    }
+                )
+                for row in _safe_list(feedback.get("recent_comments"))[:100]
+                if isinstance(row, dict)
+            ],
             "truncated": bool(feedback.get("truncated")),
             "limit": _safe_int(feedback.get("limit"), 0),
             "max_comment_chars": _safe_int(feedback.get("max_comment_chars"), 0),
@@ -2122,7 +2138,7 @@ def _scrub_private(value: Any) -> Any:
     if isinstance(value, list):
         return [_scrub_private(item) for item in value]
     if isinstance(value, str):
-        cleaned = _clean_text(value, max_chars=1200)
+        cleaned = _sanitize_feedback_text(value, max_chars=1200)
         lower = cleaned.lower()
         if "storage_local" in lower or "node_modules" in lower or ".vite" in lower or "c:/" in lower:
             return ""
@@ -2141,6 +2157,27 @@ def _clean_text(value: Any, *, max_chars: int = 500) -> str:
     if max_chars >= 0:
         text = text[:max_chars].strip()
     return text
+
+
+def _sanitize_feedback_text(value: Any, *, max_chars: int = 500) -> str:
+    text = _clean_text(value, max_chars=max_chars)
+    if not text:
+        return ""
+    text = EMAIL_RE.sub("[email]", text)
+    text = HANDLE_RE.sub("@[handle]", text)
+    text = IDENTITY_LABEL_RE.sub("learner", text)
+    return _clean_text(text, max_chars=max_chars)
+
+
+def _generic_activity_message(item: dict[str, Any]) -> str:
+    activity_type = _clean_text(item.get("type"), max_chars=40).lower()
+    if activity_type == "progress":
+        return f"A learner reached {int(_bounded_percent(item.get('value')))}% progress."
+    if activity_type == "like":
+        return "A learner liked a lesson."
+    if activity_type == "comment":
+        return "A learner commented."
+    return "Learner activity was recorded."
 
 
 def _bounded_percent(value: Any) -> float:

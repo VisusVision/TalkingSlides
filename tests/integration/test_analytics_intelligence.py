@@ -255,6 +255,8 @@ def test_category_imbalance_produces_category_action():
 def test_no_viewer_username_or_id_exposed():
     publisher = _make_user("ai_privacy_owner")
     viewer = _make_user("unique_private_viewer_name", role="student")
+    viewer.email = "unique-private-viewer@example.com"
+    viewer.save(update_fields=["email"])
     lesson = _make_project(publisher, "Privacy analytics lesson")
     _progress(viewer, lesson, 64)
     LessonLike.objects.create(user=viewer, project=lesson)
@@ -264,9 +266,81 @@ def test_no_viewer_username_or_id_exposed():
     serialized = _text(response.data)
     assert response.status_code == 200
     assert "unique_private_viewer_name" not in serialized
+    assert "unique-private-viewer@example.com" not in serialized
     assert "user_id" not in serialized
+    assert "email" not in serialized
     assert "viewer_id" not in serialized
     assert "viewer_username" not in serialized
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_compact_analytics_payload_scrubs_viewer_identity_fields_and_feedback():
+    publisher = _make_user("ai_compact_privacy_owner")
+    viewer = _make_user("ai_compact_private_viewer", role="student")
+    viewer.email = "compact-private-viewer@example.com"
+    viewer.save(update_fields=["email"])
+    analytics_payload = {
+        "summary": {
+            "total_lessons": 1,
+            "published_lessons": 1,
+            "total_views": 1,
+            "unique_viewers": 1,
+            "estimated_watch_time_minutes": 3.0,
+            "completion_rate": 0,
+            "average_progress": 80,
+            "engagement_events": 2,
+            "likes": 1,
+            "comments": 1,
+        },
+        "charts": {
+            "engagement_trend": [{"date": "2026-05-20", "views": 1, "engagement": 2, "completions": 0}],
+            "category_popularity": [],
+        },
+        "tables": {
+            "top_lessons": [{"lesson_id": 7, "title": "Compact privacy lesson", "views": 1, "average_progress": 80}],
+            "recent_lessons": [],
+            "top_categories": [],
+        },
+        "recent_activity": [
+            {
+                "type": "progress",
+                "timestamp": "2026-05-20T10:00:00Z",
+                "lesson_id": 7,
+                "lesson_title": "Compact privacy lesson",
+                "value": 80,
+                "username": viewer.username,
+                "user_id": viewer.id,
+                "viewer_email": viewer.email,
+                "description": f"{viewer.username} reached 80%",
+            }
+        ],
+        "qualitative_feedback": {
+            "recent_comments": [
+                {
+                    "lesson_title": "Compact privacy lesson",
+                    "text": "Please reply to learner@example.com or @private_handle with more examples.",
+                    "username": viewer.username,
+                    "user_id": viewer.id,
+                }
+            ],
+        },
+        "filters": {"from": "2026-05-01", "to": "2026-05-20", "range": 30},
+        "meta": {"contract": "creator_analytics_v1", "scope": "creator"},
+    }
+
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    serialized = json.dumps(analytics_input.to_provider_payload(), sort_keys=True)
+
+    assert viewer.username not in serialized
+    assert viewer.email not in serialized
+    assert "learner@example.com" not in serialized
+    assert "@private_handle" not in serialized
+    assert "user_id" not in serialized
+    assert "viewer_email" not in serialized
+    assert "username" not in serialized
+    assert "[email]" in serialized
+    assert "@[handle]" in serialized
+    assert "Compact privacy lesson" in serialized
 
 
 @override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")

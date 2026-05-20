@@ -96,9 +96,14 @@ def _make_project(
 def _assert_no_viewer_identity_keys(value):
     if isinstance(value, dict):
         assert "user_interest_aggregates" not in value
+        assert "email" not in value
+        assert "full_name" not in value
         assert "user_id" not in value
+        assert "user_email" not in value
         assert "username" not in value
         assert "viewer_id" not in value
+        assert "viewer_email" not in value
+        assert "viewer_username" not in value
         for child in value.values():
             _assert_no_viewer_identity_keys(child)
     elif isinstance(value, list):
@@ -196,9 +201,42 @@ def test_staff_admin_stats_still_load_and_creator_endpoint_stays_scoped():
 
 
 @pytest.mark.django_db
+def test_admin_stats_recent_activity_hides_viewer_identity_details():
+    staff = _make_user("creator_stats_privacy_staff", role="teacher", is_staff=True)
+    creator = _make_user("creator_stats_privacy_owner", role="publisher")
+    viewer = _make_user("creator_stats_private_viewer")
+    viewer.email = "creator-stats-private-viewer@example.com"
+    viewer.first_name = "Private"
+    viewer.last_name = "Viewer"
+    viewer.save(update_fields=["email", "first_name", "last_name"])
+    lesson = _make_project(creator, "Admin privacy lesson")
+
+    LessonProgress.objects.create(user=viewer, project=lesson, progress_pct=82)
+    LessonLike.objects.create(user=viewer, project=lesson)
+    LessonComment.objects.create(user=viewer, project=lesson, text="Admin activity comment")
+
+    response = _client(staff).get("/api/v1/admin/stats/?range=30")
+
+    assert response.status_code == 200
+    recent_activity = response.data["recent_activity"]
+    by_type = {row["type"]: row for row in recent_activity}
+    assert by_type["progress"]["description"] == "A learner reached 82% progress."
+    assert by_type["like"]["description"] == "A learner liked a lesson."
+    assert by_type["comment"]["description"] == "A learner commented."
+    assert by_type["progress"]["lesson_title"] == "Admin privacy lesson"
+    assert "learner_interest_aggregates" in response.data
+    _assert_no_viewer_identity_keys(response.data)
+    serialized = json.dumps(response.data)
+    assert "creator_stats_private_viewer" not in serialized
+    assert "creator-stats-private-viewer@example.com" not in serialized
+
+
+@pytest.mark.django_db
 def test_creator_endpoint_does_not_expose_viewer_identity_details():
     creator = _make_user("creator_privacy_owner", role="teacher")
     viewer = _make_user("creator_privacy_viewer")
+    viewer.email = "creator-privacy-viewer@example.com"
+    viewer.save(update_fields=["email"])
     lesson = _make_project(creator, "Privacy lesson")
     LessonProgress.objects.create(user=viewer, project=lesson, progress_pct=60)
     LessonLike.objects.create(user=viewer, project=lesson)
@@ -207,7 +245,9 @@ def test_creator_endpoint_does_not_expose_viewer_identity_details():
 
     assert response.status_code == 200
     _assert_no_viewer_identity_keys(response.data)
-    assert "creator_privacy_viewer" not in json.dumps(response.data)
+    serialized = json.dumps(response.data)
+    assert "creator_privacy_viewer" not in serialized
+    assert "creator-privacy-viewer@example.com" not in serialized
 
 
 @pytest.mark.django_db
@@ -228,9 +268,9 @@ def test_recent_activity_includes_comments_likes_and_progress_without_viewer_ide
     assert {"progress", "like", "comment"}.issubset(by_type)
     assert by_type["progress"]["label"] == "Progress"
     assert by_type["progress"]["value"] == 65
-    assert by_type["progress"]["message"] == "A viewer made progress on Activity lesson."
-    assert by_type["like"]["message"] == "A viewer liked Activity lesson."
-    assert by_type["comment"]["message"] == "A viewer commented on Activity lesson."
+    assert by_type["progress"]["message"] == "A learner made progress on Activity lesson."
+    assert by_type["like"]["message"] == "A learner liked Activity lesson."
+    assert by_type["comment"]["message"] == "A learner commented on Activity lesson."
     _assert_no_viewer_identity_keys(recent_activity)
     assert "creator_activity_viewer" not in json.dumps(recent_activity)
 

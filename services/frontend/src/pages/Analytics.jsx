@@ -87,6 +87,18 @@ function formatDate(value) {
   return `Updated ${parsed.toLocaleDateString('en-US')}`;
 }
 
+function formatActivityTimestamp(value) {
+  if (!value) return 'Recent';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Recent';
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
 function emptyAnalyticsStats() {
   return {
     metrics: {
@@ -203,12 +215,29 @@ function normalizeRecentActivity(source) {
   if (!Array.isArray(source)) return [];
   return source.slice(0, 30).map((item, index) => ({
     id: `${item?.type || 'activity'}-${item?.lesson_id || index}-${item?.timestamp || index}`,
-    type: String(item?.type || 'activity'),
-    label: String(item?.label || item?.type || 'Activity'),
+    type: String(item?.type || 'activity').toLowerCase(),
     timestamp: String(item?.timestamp || ''),
     title: String(item?.lesson_title || item?.title || 'Lesson activity'),
-    description: String(item?.message || item?.description || 'Activity recorded.'),
-  }));
+    value: item?.value,
+  })).map((item) => {
+    const progress = Math.max(0, Math.min(100, Math.round(toNumber(item.value, 0))));
+    const labels = {
+      progress: 'Progress',
+      like: 'Like',
+      comment: 'Comment',
+    };
+    const descriptions = {
+      progress: `A learner reached ${progress}% progress`,
+      like: 'A learner liked a lesson',
+      comment: 'A learner commented',
+    };
+    return {
+      ...item,
+      label: labels[item.type] || 'Activity',
+      description: descriptions[item.type] || 'Learner activity was recorded',
+      timeLabel: formatActivityTimestamp(item.timestamp),
+    };
+  });
 }
 
 function normalizeCategoryBreakdown(source) {
@@ -1285,9 +1314,12 @@ export default function Analytics({ user }) {
                   <div className="rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <p className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
-                      <span className="shrink-0 rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
-                        {activity.label}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
+                          {activity.label}
+                        </span>
+                        <span className="text-[0.68rem] text-[var(--text-secondary)]">{activity.timeLabel}</span>
+                      </div>
                     </div>
                     <p className="mt-1 text-sm text-[var(--text-secondary)]">{activity.description}</p>
                   </div>

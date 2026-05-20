@@ -9476,52 +9476,56 @@ class AdminStatsDashboardView(APIView):
             cursor += timedelta(days=1)
 
         recent_activity = []
-        for progress in progress_qs.select_related("user", "project").order_by("-updated_at")[:25]:
+        for progress in progress_qs.select_related("project").order_by("-updated_at")[:25]:
+            try:
+                progress_pct = float(progress.progress_pct or 0)
+            except (TypeError, ValueError):
+                progress_pct = 0.0
+            if 0 < progress_pct < 1:
+                progress_pct *= 100.0
+            progress_pct = int(max(0.0, min(100.0, progress_pct)))
             recent_activity.append(
                 {
                     "type": "progress",
                     "timestamp": progress.updated_at.isoformat(),
-                    "username": progress.user.username,
                     "lesson_id": progress.project_id,
                     "lesson_title": progress.project.title,
-                    "value": int(progress.progress_pct),
-                    "description": f"{progress.user.username} reached {int(progress.progress_pct)}%",
+                    "value": progress_pct,
+                    "description": f"A learner reached {progress_pct}% progress.",
                 }
             )
-        for like in like_qs.select_related("user", "project").order_by("-created_at")[:20]:
+        for like in like_qs.select_related("project").order_by("-created_at")[:20]:
             recent_activity.append(
                 {
                     "type": "like",
                     "timestamp": like.created_at.isoformat(),
-                    "username": like.user.username,
                     "lesson_id": like.project_id,
                     "lesson_title": like.project.title,
                     "value": 1,
-                    "description": f"{like.user.username} liked {like.project.title}",
+                    "description": "A learner liked a lesson.",
                 }
             )
-        for comment in comment_qs.select_related("user", "project").order_by("-created_at")[:20]:
+        for comment in comment_qs.select_related("project").order_by("-created_at")[:20]:
             recent_activity.append(
                 {
                     "type": "comment",
                     "timestamp": comment.created_at.isoformat(),
-                    "username": comment.user.username,
                     "lesson_id": comment.project_id,
                     "lesson_title": comment.project.title,
                     "value": 1,
-                    "description": f"{comment.user.username} commented on {comment.project.title}",
+                    "description": "A learner commented.",
                 }
             )
         recent_activity.sort(key=lambda item: item["timestamp"], reverse=True)
         recent_activity = recent_activity[:30]
 
-        user_category_interest = (
-            progress_qs.values("user_id", "project__category__slug", "project__category__name")
+        category_interest = (
+            progress_qs.values("project__category__slug", "project__category__name")
             .annotate(total=Count("id"))
             .order_by("-total")[:80]
         )
-        user_publisher_interest = (
-            progress_qs.values("user_id", "project__user_id", "project__user__username")
+        publisher_interest = (
+            progress_qs.values("project__user_id", "project__user__username")
             .annotate(total=Count("id"))
             .order_by("-total")[:80]
         )
@@ -9557,28 +9561,26 @@ class AdminStatsDashboardView(APIView):
                     "top_categories": category_table[:15],
                 },
                 "recent_activity": recent_activity,
-                "user_interest_aggregates": {
-                    "top_user_categories": [
+                "learner_interest_aggregates": {
+                    "top_categories": [
                         {
-                            "user_id": row["user_id"],
                             "category_slug": row.get("project__category__slug") or "uncategorized",
                             "category_name": row.get("project__category__name") or "Uncategorized",
                             "watch_events": row["total"],
                         }
-                        for row in user_category_interest
+                        for row in category_interest
                     ],
-                    "top_user_publishers": [
+                    "top_publishers": [
                         {
-                            "user_id": row["user_id"],
                             "publisher_id": row.get("project__user_id"),
                             "publisher_name": row.get("project__user__username") or "Unknown",
                             "watch_events": row["total"],
                         }
-                        for row in user_publisher_interest
+                        for row in publisher_interest
                     ],
                     "repeat_watch": {
                         "repeat_viewers": repeat_watch_users,
-                        "definition": "Users with progress across at least 3 distinct lessons in the selected range.",
+                        "definition": "Learners with progress across at least 3 distinct lessons in the selected range.",
                     },
                 },
                 "filters": {
@@ -9608,8 +9610,8 @@ class AdminStatsDashboardView(APIView):
                     ],
                     "placeholder_fields": [
                         "repeat_watch",
-                        "top_user_categories",
-                        "top_user_publishers",
+                        "top_categories",
+                        "top_publishers",
                     ],
                 },
             }
@@ -9682,13 +9684,13 @@ class CreatorAnalyticsView(APIView):
             "comment": "Comment",
         }
         if activity_type == "progress":
-            message = f"A viewer made progress on {lesson_title}."
-            description = f"A viewer reached {int(self._progress_pct(value))}% progress on {lesson_title}."
+            message = f"A learner made progress on {lesson_title}."
+            description = f"A learner reached {int(self._progress_pct(value))}% progress on {lesson_title}."
         elif activity_type == "like":
-            message = f"A viewer liked {lesson_title}."
+            message = f"A learner liked {lesson_title}."
             description = message
         elif activity_type == "comment":
-            message = f"A viewer commented on {lesson_title}."
+            message = f"A learner commented on {lesson_title}."
             description = message
         else:
             message = f"Activity recorded for {lesson_title}."
