@@ -248,6 +248,28 @@ def _intelligence_queue_name() -> str:
     return value or _render_queue_name()
 
 
+def _lesson_intelligence_queue_name() -> str:
+    shared = _intelligence_queue_name()
+    configured = str(getattr(settings, "INTELLIGENCE_LESSON_CELERY_QUEUE", "") or "").strip()
+    if os.environ.get("INTELLIGENCE_LESSON_CELERY_QUEUE") is not None:
+        return configured or shared
+    default_queue = str(getattr(settings, "INTELLIGENCE_CELERY_QUEUE_DEFAULT", "") or "").strip()
+    if configured and configured not in {default_queue, _render_queue_name()}:
+        return configured
+    return shared
+
+
+def _analytics_intelligence_queue_name() -> str:
+    shared = _intelligence_queue_name()
+    configured = str(getattr(settings, "INTELLIGENCE_ANALYTICS_CELERY_QUEUE", "") or "").strip()
+    if os.environ.get("INTELLIGENCE_ANALYTICS_CELERY_QUEUE") is not None:
+        return configured or shared
+    default_queue = str(getattr(settings, "INTELLIGENCE_CELERY_QUEUE_DEFAULT", "") or "").strip()
+    if configured and configured not in {default_queue, _render_queue_name()}:
+        return configured
+    return shared
+
+
 def _queue_for_avatar_options(avatar_options: dict | None) -> str:
     return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _render_queue_name()
 
@@ -5066,7 +5088,7 @@ class ProjectDetailView(APIView):
             _queue_creator_analytics_intelligence_schedule(
                 project.user_id,
                 reason="lesson_published",
-                force=True,
+                force=False,
             )
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
@@ -6248,6 +6270,15 @@ def _identity_metadata(run_identity: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def _force_metadata(force: bool) -> dict[str, Any]:
+    if not force:
+        return {}
+    return {
+        "force": True,
+        "forced_at": timezone.now().isoformat(),
+    }
+
+
 def _latest_lesson_report_for_source(
     project: Project,
     source_hash: str,
@@ -6269,6 +6300,8 @@ def _latest_lesson_report_for_source(
                 return report
             if bool(enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {}).get("stale")):
                 return None
+            if not force and status_value == "failed":
+                return report
             if not force and (report.provider == "ollama" and (report.status == "done" or status_value in {"done", "partial"})):
                 return report
             if not force and report.provider == "heuristic":
@@ -6326,6 +6359,8 @@ def _latest_analytics_report_for_source(user: User, analytics_input, *, force: b
                 return report
             if bool(enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {}).get("stale")):
                 return None
+            if not force and status_value == "failed":
+                return report
             if not force and (report.provider == "ollama" and (report.status == "done" or status_value in {"done", "partial"})):
                 return report
             if not force and report.provider == "heuristic":
@@ -6424,7 +6459,7 @@ def _reserve_enhancement_run_lock(report) -> str:
 
 
 def _queue_lesson_intelligence_enhancement(report: LessonIntelligenceReport) -> None:
-    queue_name = _intelligence_queue_name()
+    queue_name = _lesson_intelligence_queue_name()
     lock_key = _reserve_enhancement_run_lock(report)
     if lock_key == "__duplicate__":
         _mark_lesson_enhancement_failed(report, "duplicate_enhancement_run_already_queued")
@@ -6455,7 +6490,7 @@ def _queue_lesson_intelligence_enhancement(report: LessonIntelligenceReport) -> 
 
 
 def _queue_analytics_intelligence_enhancement(report: AnalyticsIntelligenceReport) -> None:
-    queue_name = _intelligence_queue_name()
+    queue_name = _analytics_intelligence_queue_name()
     lock_key = _reserve_enhancement_run_lock(report)
     if lock_key == "__duplicate__":
         _mark_analytics_enhancement_failed(report, "duplicate_enhancement_run_already_queued")
@@ -6491,7 +6526,7 @@ def _queue_lesson_intelligence_schedule(
     requested_by_id: int | None = None,
     force: bool = False,
 ) -> bool:
-    queue_name = _intelligence_queue_name()
+    queue_name = _lesson_intelligence_queue_name()
     try:
         _dispatch_celery_task(
             _LESSON_INTELLIGENCE_SCHEDULE_TASK,
@@ -6576,7 +6611,7 @@ def _queue_creator_analytics_intelligence_schedule(
         return False
     if not _analytics_auto_should_dispatch(int(user_id), reason=reason, force=force):
         return False
-    queue_name = _intelligence_queue_name()
+    queue_name = _analytics_intelligence_queue_name()
     try:
         _dispatch_celery_task(
             _ANALYTICS_INTELLIGENCE_SCHEDULE_TASK,
@@ -6649,8 +6684,9 @@ def schedule_lesson_intelligence(
         source_hash=lesson_input.source_hash,
     )
     try:
+        force_metadata = _force_metadata(force)
         if progressive_ollama_enabled(chain):
-            queue_name = _intelligence_queue_name()
+            queue_name = _lesson_intelligence_queue_name()
             identity_metadata = _identity_metadata(run_identity)
             analysis = analyze_lesson_heuristic_immediate(
                 lesson_input,
@@ -6661,6 +6697,7 @@ def schedule_lesson_intelligence(
             analysis["metadata"] = {
                 **dict(analysis.get("metadata") or {}),
                 **identity_metadata,
+                **force_metadata,
                 "auto_scheduled_at": timezone.now().isoformat(),
                 "auto_reason": str(reason or "auto"),
                 PROGRESSIVE_ENHANCEMENT_KEY: enhancement_metadata(
@@ -6669,6 +6706,7 @@ def schedule_lesson_intelligence(
                     queue=queue_name,
                     extra={
                         **identity_metadata,
+                        **force_metadata,
                         "sections": lesson_section_statuses(status="pending", provider="ollama"),
                     },
                 ),
@@ -6677,6 +6715,7 @@ def schedule_lesson_intelligence(
             analysis = analyze_with_provider_chain(lesson_input, chain=chain)
             analysis["metadata"] = {
                 **dict(analysis.get("metadata") or {}),
+                **force_metadata,
                 "auto_scheduled_at": timezone.now().isoformat(),
                 "auto_reason": str(reason or "auto"),
             }
@@ -6755,8 +6794,9 @@ def schedule_creator_analytics_intelligence(
         category_filter=analytics_input.category_filter,
     )
     try:
+        force_metadata = _force_metadata(force)
         if progressive_analytics_ollama_enabled(chain):
-            queue_name = _intelligence_queue_name()
+            queue_name = _analytics_intelligence_queue_name()
             identity_metadata = _identity_metadata(run_identity)
             analysis = analyze_analytics_heuristic_immediate(
                 analytics_input,
@@ -6767,19 +6807,21 @@ def schedule_creator_analytics_intelligence(
             analysis["metadata"] = {
                 **dict(analysis.get("metadata") or {}),
                 **identity_metadata,
+                **force_metadata,
                 "auto_scheduled_at": timezone.now().isoformat(),
                 "auto_reason": str(reason or "auto"),
                 PROGRESSIVE_ENHANCEMENT_KEY: enhancement_metadata(
                     provider="ollama",
                     status="pending",
                     queue=queue_name,
-                    extra=identity_metadata,
+                    extra={**identity_metadata, **force_metadata},
                 ),
             }
         else:
             analysis = analyze_analytics_with_provider_chain(analytics_input, chain=chain)
             analysis["metadata"] = {
                 **dict(analysis.get("metadata") or {}),
+                **force_metadata,
                 "auto_scheduled_at": timezone.now().isoformat(),
                 "auto_reason": str(reason or "auto"),
             }
@@ -6814,6 +6856,7 @@ class ProjectLessonIntelligenceView(APIView):
         )
         enabled = lesson_intelligence_enabled()
         current_source_hash = ""
+        current_run_key = ""
         if enabled:
             try:
                 lesson_input = build_lesson_intelligence_input(
@@ -6822,9 +6865,18 @@ class ProjectLessonIntelligenceView(APIView):
                     request_language=request.headers.get("Accept-Language", ""),
                 )
                 current_source_hash = lesson_input.source_hash
+                chain = provider_chain_from_settings()
+                if progressive_ollama_enabled(chain):
+                    current_run_key = str(lesson_ollama_run_identity(lesson_input).get("run_key") or "")
             except (LessonIntelligenceInputTooLarge, LessonIntelligenceInputError):
                 current_source_hash = ""
-        payload = report_response_payload(latest, enabled=enabled, current_source_hash=current_source_hash)
+                current_run_key = ""
+        payload = report_response_payload(
+            latest,
+            enabled=enabled,
+            current_source_hash=current_source_hash,
+            current_run_key=current_run_key,
+        )
         if not enabled:
             payload["message"] = "Lesson Intelligence is disabled."
         return Response(payload, status=status.HTTP_200_OK)
@@ -6863,7 +6915,7 @@ class ProjectLessonIntelligenceView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         chain = provider_chain_from_settings()
-        force = bool(request.data.get("force"))
+        force = _truthy_request_value(request.data.get("force"))
         run_identity = lesson_ollama_run_identity(lesson_input) if progressive_ollama_enabled(chain) else {}
         existing_report = _latest_lesson_report_for_source(
             project,
@@ -6873,7 +6925,12 @@ class ProjectLessonIntelligenceView(APIView):
         )
         if existing_report is not None:
             return Response(
-                report_response_payload(existing_report, enabled=True, current_source_hash=lesson_input.source_hash),
+                report_response_payload(
+                    existing_report,
+                    enabled=True,
+                    current_source_hash=lesson_input.source_hash,
+                    current_run_key=str(run_identity.get("run_key") or ""),
+                ),
                 status=status.HTTP_200_OK,
             )
 
@@ -6887,8 +6944,9 @@ class ProjectLessonIntelligenceView(APIView):
             source_hash=lesson_input.source_hash,
         )
         try:
+            force_metadata = _force_metadata(force)
             if progressive_ollama_enabled(chain):
-                queue_name = _intelligence_queue_name()
+                queue_name = _lesson_intelligence_queue_name()
                 identity_metadata = _identity_metadata(run_identity)
                 analysis = analyze_lesson_heuristic_immediate(
                     lesson_input,
@@ -6899,25 +6957,36 @@ class ProjectLessonIntelligenceView(APIView):
                 analysis["metadata"] = {
                     **dict(analysis.get("metadata") or {}),
                     **identity_metadata,
+                    **force_metadata,
                     PROGRESSIVE_ENHANCEMENT_KEY: enhancement_metadata(
                         provider="ollama",
                         status="pending",
                         queue=queue_name,
                         extra={
                             **identity_metadata,
+                            **force_metadata,
                             "sections": lesson_section_statuses(status="pending", provider="ollama"),
                         },
                     ),
                 }
             else:
                 analysis = analyze_with_provider_chain(lesson_input, chain=chain)
+                analysis["metadata"] = {
+                    **dict(analysis.get("metadata") or {}),
+                    **force_metadata,
+                }
             report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Lesson intelligence analysis failed project=%s report=%s", project.id, report.id)
             report.status = "failed"
             report.error_message = str(exc or exc.__class__.__name__)[:500]
             report.save(update_fields=["status", "error_message", "updated_at"])
-            payload = report_response_payload(report, enabled=True, current_source_hash=lesson_input.source_hash)
+            payload = report_response_payload(
+                report,
+                enabled=True,
+                current_source_hash=lesson_input.source_hash,
+                current_run_key=str(run_identity.get("run_key") or ""),
+            )
             payload["error"] = "Lesson Intelligence analysis failed."
             return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -6926,7 +6995,12 @@ class ProjectLessonIntelligenceView(APIView):
             report.refresh_from_db()
 
         return Response(
-            report_response_payload(report, enabled=True, current_source_hash=lesson_input.source_hash),
+            report_response_payload(
+                report,
+                enabled=True,
+                current_source_hash=lesson_input.source_hash,
+                current_run_key=str(run_identity.get("run_key") or ""),
+            ),
             status=status.HTTP_200_OK,
         )
 
@@ -10129,6 +10203,11 @@ class CreatorAnalyticsIntelligenceView(APIView):
             latest,
             enabled=True,
             current_source_hash=analytics_input.source_hash,
+            current_run_key=(
+                str(analytics_ollama_run_identity(analytics_input).get("run_key") or "")
+                if progressive_analytics_ollama_enabled(analytics_provider_chain_from_settings())
+                else ""
+            ),
         )
         return Response(
             payload,
@@ -10168,7 +10247,7 @@ class CreatorAnalyticsIntelligenceView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         chain = analytics_provider_chain_from_settings()
-        force = bool(request.data.get("force"))
+        force = _truthy_request_value(request.data.get("force"))
         run_identity = analytics_ollama_run_identity(analytics_input) if progressive_analytics_ollama_enabled(chain) else {}
         existing_report = _latest_analytics_report_for_source(
             request.user,
@@ -10182,6 +10261,7 @@ class CreatorAnalyticsIntelligenceView(APIView):
                     existing_report,
                     enabled=True,
                     current_source_hash=analytics_input.source_hash,
+                    current_run_key=str(run_identity.get("run_key") or ""),
                 ),
                 status=status.HTTP_200_OK,
             )
@@ -10198,8 +10278,9 @@ class CreatorAnalyticsIntelligenceView(APIView):
             category_filter=analytics_input.category_filter,
         )
         try:
+            force_metadata = _force_metadata(force)
             if progressive_analytics_ollama_enabled(chain):
-                queue_name = _intelligence_queue_name()
+                queue_name = _analytics_intelligence_queue_name()
                 identity_metadata = _identity_metadata(run_identity)
                 analysis = analyze_analytics_heuristic_immediate(
                     analytics_input,
@@ -10210,15 +10291,20 @@ class CreatorAnalyticsIntelligenceView(APIView):
                 analysis["metadata"] = {
                     **dict(analysis.get("metadata") or {}),
                     **identity_metadata,
+                    **force_metadata,
                     PROGRESSIVE_ENHANCEMENT_KEY: enhancement_metadata(
                         provider="ollama",
                         status="pending",
                         queue=queue_name,
-                        extra=identity_metadata,
+                        extra={**identity_metadata, **force_metadata},
                     ),
                 }
             else:
                 analysis = analyze_analytics_with_provider_chain(analytics_input, chain=chain)
+                analysis["metadata"] = {
+                    **dict(analysis.get("metadata") or {}),
+                    **force_metadata,
+                }
             report = apply_analytics_analysis_to_report(
                 report,
                 analysis,
@@ -10233,6 +10319,7 @@ class CreatorAnalyticsIntelligenceView(APIView):
                 report,
                 enabled=True,
                 current_source_hash=analytics_input.source_hash,
+                current_run_key=str(run_identity.get("run_key") or ""),
             )
             payload["error"] = "Analytics Intelligence analysis failed."
             return Response(payload, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -10242,7 +10329,12 @@ class CreatorAnalyticsIntelligenceView(APIView):
             report.refresh_from_db()
 
         return Response(
-            analytics_report_response_payload(report, enabled=True, current_source_hash=analytics_input.source_hash),
+            analytics_report_response_payload(
+                report,
+                enabled=True,
+                current_source_hash=analytics_input.source_hash,
+                current_run_key=str(run_identity.get("run_key") or ""),
+            ),
             status=status.HTTP_200_OK,
         )
 

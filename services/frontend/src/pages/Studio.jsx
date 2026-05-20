@@ -1010,8 +1010,25 @@ function lessonIntelligenceEnhancementStatus(report) {
   return String(report?.enhancement_status || '').trim().toLowerCase();
 }
 
+const LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES = new Set([
+  'pending',
+  'running',
+  'analyzing_chunks',
+  'synthesizing',
+]);
+const LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES = new Set([
+  'failed',
+  'unavailable',
+  'disabled',
+  'stale',
+  'superseded',
+]);
+
 function lessonIntelligenceEnhancementPending(report) {
-  return Boolean(report?.enhancement_pending || ['pending', 'running'].includes(lessonIntelligenceEnhancementStatus(report)));
+  return Boolean(
+    report?.enhancement_pending
+    || LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report)),
+  );
 }
 
 function lessonIntelligenceEnhancementMeta(report) {
@@ -1028,17 +1045,19 @@ function lessonIntelligenceEnhancementLabel(report) {
   const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
   const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
   const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
-  if (['pending', 'running'].includes(status)) {
+  if (LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(status)) {
     if (phase === 'synthesizing') return 'Synthesizing final insight';
-    if (chunkCount > 1) return `Ollama analyzing ${processedChunks}/${chunkCount} chunks`;
+    const currentChunk = Number(meta.current_chunk_index || meta.current_chunk?.index || 0);
+    const visibleProgress = Math.max(processedChunks, currentChunk);
+    if (chunkCount > 1) return `Ollama analyzing ${visibleProgress}/${chunkCount} chunks`;
     return 'Ollama enhancement running';
   }
   if (status === 'done') {
-    if (failedChunks > 0) return 'Some chunks failed; partial enhancement used';
+    if (failedChunks > 0) return 'Partial Ollama insight; heuristic kept for some sections.';
     return 'Ollama enhanced';
   }
-  if (status === 'partial') return 'Some sections enhanced; heuristic kept where needed';
-  if (['failed', 'unavailable', 'disabled', 'stale'].includes(status)) return 'Heuristic fallback kept';
+  if (status === 'partial') return 'Partial Ollama insight; heuristic kept for some sections.';
+  if (LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)) return 'Ollama enhancement failed; heuristic analysis kept.';
   return '';
 }
 
@@ -1068,7 +1087,7 @@ function lessonIntelligenceSectionEntries(report) {
 
 function lessonIntelligenceSectionText(entry) {
   if (!entry) return '';
-  if (['pending', 'running'].includes(entry.status)) return `${entry.label} analyzing...`;
+  if (LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(entry.status)) return `${entry.label} analyzing...`;
   if (entry.status === 'done' && entry.provider === 'ollama') return `${entry.label} enhanced`;
   if (entry.status === 'done') return `${entry.label} ready`;
   if (entry.status === 'failed') return `${entry.label} heuristic kept`;
@@ -1081,7 +1100,7 @@ function LessonIntelligenceSectionStatusList({ report }) {
   return (
     <div className="mt-3 flex flex-wrap gap-2">
       {entries.map((entry) => {
-        const pending = ['pending', 'running'].includes(entry.status);
+        const pending = LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(entry.status);
         const enhanced = entry.status === 'done' && entry.provider === 'ollama';
         const failed = entry.status === 'failed';
         return (
@@ -1257,7 +1276,7 @@ function LessonIntelligencePanel({
   const providerLabel = lessonIntelligenceProviderLabel(report);
   const enhancementLabel = lessonIntelligenceEnhancementLabel(report);
   const enhancementPending = lessonIntelligenceEnhancementPending(report);
-  const enhancementFailed = ['failed', 'unavailable', 'disabled', 'stale'].includes(lessonIntelligenceEnhancementStatus(report));
+  const enhancementFailed = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report));
   const copyDisabled = !hasReport || actionBusy || loading;
   const stale = lessonIntelligenceIsStale(report);
 
@@ -1338,7 +1357,7 @@ function LessonIntelligencePanel({
       )}
       {enhancementFailed && (
         <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
-          {report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic fallback kept.'}
+          {report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
         </p>
       )}
       {hasReport && <LessonIntelligenceSectionStatusList report={report} />}
@@ -2434,7 +2453,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   };
 
-  const handleAnalyzeLessonIntelligence = useCallback(async (project, { auto = false } = {}) => {
+  const handleAnalyzeLessonIntelligence = useCallback(async (project, { auto = false, force = false } = {}) => {
     if (!project?.id || lessonIntelligenceActionBusy) return null;
     if (lessonIntelligenceEnhancementPending(lessonIntelligenceByProject[project.id])) return null;
     setLessonIntelligenceActionBusy('analyze');
@@ -2442,7 +2461,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setLessonIntelligenceCopied(false);
     setLessonIntelligenceNotice('');
     try {
-      const payload = await analyzeProjectLessonIntelligence(project.id, { force: !auto });
+      const payload = await analyzeProjectLessonIntelligence(project.id, { force: Boolean(force) && !auto });
       setLessonIntelligenceByProject((previous) => ({
         ...previous,
         [project.id]: payload,
@@ -4573,7 +4592,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         copiedSuggestionKey={lessonIntelligenceCopiedItemKey}
                         notice={lessonIntelligenceNotice}
                         onRefresh={() => selectedLesson && refreshLessonIntelligence(selectedLesson.id)}
-                        onAnalyze={() => handleAnalyzeLessonIntelligence(selectedLesson)}
+                        onAnalyze={() => handleAnalyzeLessonIntelligence(
+                          selectedLesson,
+                          { force: lessonIntelligenceIsStale(selectedLessonIntelligence) },
+                        )}
                         onCopy={handleCopyLessonIntelligence}
                         onCopySuggestion={handleCopyLessonIntelligenceItem}
                         onApplyNarrationSuggestion={handleApplyLessonNarrationSuggestion}

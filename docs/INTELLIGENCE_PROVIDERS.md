@@ -20,17 +20,21 @@ Large lessons and creator analytics payloads are processed as chunked Ollama wor
 
 Background dedupe uses a formal run key that includes intelligence kind, owner/project, source hash, provider, Ollama model, hardware profile, output language, prompt/schema version, and analytics filters. For analytics, the source hash also changes when included lesson intelligence summaries, comments, or material analytics aggregates change. The same unchanged run is not queued twice, but changing model, hardware profile, output language, prompt version, source data, or using force re-analysis creates a new run.
 
-The queue is controlled by `INTELLIGENCE_CELERY_QUEUE`. The default follows the render queue (`render` in the local compose setup), so progressive intelligence is consumed by the current worker without hidden configuration. If you route intelligence to a dedicated queue, start a worker that consumes that queue.
+The shared fallback queue is controlled by `INTELLIGENCE_CELERY_QUEUE`. The default follows the render queue (`render` in the local compose setup), so progressive intelligence is consumed by the current worker without hidden configuration. Lesson and analytics work can be split with `INTELLIGENCE_LESSON_CELERY_QUEUE` and `INTELLIGENCE_ANALYTICS_CELERY_QUEUE`; both default to `INTELLIGENCE_CELERY_QUEUE`.
 
 For production, prefer a dedicated low-priority worker so local LLM analysis cannot sit ahead of render, TTS, or avatar work:
 
 ```text
 INTELLIGENCE_CELERY_QUEUE=intelligence
-CELERY_WORKER_QUEUES=intelligence
-# start this worker with --concurrency=1
+INTELLIGENCE_LESSON_CELERY_QUEUE=intelligence-lesson
+INTELLIGENCE_ANALYTICS_CELERY_QUEUE=intelligence-analytics
+CELERY_WORKER_QUEUES=intelligence-lesson
+# start a lesson worker with --concurrency=1
+CELERY_WORKER_QUEUES=intelligence-analytics
+# start an analytics worker with --concurrency=1
 ```
 
-Run that worker with concurrency `1` unless the Ollama host has enough CPU/GPU capacity for parallel prompts. Keep render/avatar workers on their existing queues.
+Run those workers with concurrency `1` unless the Ollama host has enough CPU/GPU capacity for parallel prompts. If resources are tight, give the lesson queue higher priority than analytics. Keep render/avatar workers on their existing queues.
 
 This avoids:
 
@@ -108,9 +112,12 @@ INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY=1
 INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=45
 INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=120
 INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS=600
+ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS=180
 ```
 
 `INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS` controls how much lesson or analytics content is sent to one local Ollama request. Page/item limits keep individual chunks predictable even when text is short but arrays are large. The per-chunk timeout is bounded by the min/max values, and the whole Celery task stops adding chunks after the total budget. Partial completion produces a terminal `partial` enhancement with `partial_enhancement=true`; full Ollama failure leaves the heuristic report in place and marks enhancement `failed`.
+
+`ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` caps analytics enhancement below the shared lesson/default budget so a large analytics workload terminalizes instead of monopolizing a single local worker.
 
 Pending or running enhancement metadata is considered stale after `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` seconds, default `900`. A stale enhancement is marked failed so the frontend stops polling and a later manual re-analyze can queue a new task.
 

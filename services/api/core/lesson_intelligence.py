@@ -797,6 +797,10 @@ def _lesson_chunk_payloads(input_payload: dict[str, Any]) -> list[dict[str, Any]
     return chunk_payloads
 
 
+def lesson_ollama_chunk_count(lesson_input: LessonIntelligenceInput) -> int:
+    return max(1, len(_lesson_chunk_payloads(lesson_input.to_provider_payload())))
+
+
 def _complexity_level_from_score(score: int) -> str:
     if score >= 70:
         return "advanced"
@@ -980,15 +984,19 @@ def analyze_lesson_ollama_background(
     chunks = _lesson_chunk_payloads(input_payload)
     should_chunk = len(chunks) > 1
     if not should_chunk:
+        if callable(progress_callback):
+            progress_callback("analyzing_chunks", 1, 0, 0, {"index": 1, "count": 1})
         result = provider.analyze_lesson(input_payload)
         normalized = _normalize_provider_result(result, provider_name=provider.provider_name)
         chunk_metadata = {"chunked": False, "chunk_count": 1, "completed_chunks": 1, "failed_chunks": 0}
         provider_attempt = progressive_provider_attempt("ollama", "success")
         timeout_seconds = getattr(provider, "last_timeout_seconds", None)
+        if callable(progress_callback):
+            progress_callback("synthesizing", 1, 1, 0, {"index": 1, "count": 1})
     else:
         chunk_count = len(chunks)
         if callable(progress_callback):
-            progress_callback("chunking", chunk_count, 0, 0)
+            progress_callback("analyzing_chunks", chunk_count, 0, 0, {"index": 0, "count": chunk_count})
         started_at = time.monotonic()
         total_budget = ollama_total_timeout_budget_seconds()
         completed_chunks = 0
@@ -996,16 +1004,31 @@ def analyze_lesson_ollama_background(
         chunk_results: list[dict[str, Any]] = []
         chunk_limitations: list[str] = []
         if callable(progress_callback):
-            progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks)
-        for chunk_payload in chunks:
+            progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, {"index": 0, "count": chunk_count})
+        for position, chunk_payload in enumerate(chunks, start=1):
+            chunk_meta = chunk_payload.get("chunk") if isinstance(chunk_payload.get("chunk"), dict) else {}
+            current_chunk = {
+                "index": int(chunk_meta.get("index") or position),
+                "count": int(chunk_meta.get("count") or chunk_count),
+                "page_numbers": chunk_meta.get("page_numbers") if isinstance(chunk_meta.get("page_numbers"), list) else [],
+            }
+            if callable(progress_callback):
+                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, current_chunk)
             elapsed = time.monotonic() - started_at
             remaining = max(0.0, total_budget - elapsed)
             if remaining < 1.0:
-                failed_chunks += 1
+                remaining_chunks = max(1, chunk_count - position + 1)
+                failed_chunks += remaining_chunks
                 chunk_limitations.append(_lesson_chunk_limitation(lesson_input.output_language, "budget"))
                 if callable(progress_callback):
-                    progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks)
-                continue
+                    progress_callback(
+                        "analyzing_chunks",
+                        chunk_count,
+                        completed_chunks,
+                        failed_chunks,
+                        {**current_chunk, "budget_exceeded": True, "skipped_remaining_chunks": remaining_chunks},
+                    )
+                break
             chunk_timeout = min(ollama_chunk_timeout_seconds(_safe_int(chunk_payload.get("input_chars"), 0)), remaining)
             try:
                 result = provider.analyze_lesson(chunk_payload, timeout_seconds_override=chunk_timeout)
@@ -1018,11 +1041,11 @@ def analyze_lesson_ollama_background(
                 normalized_chunk = _normalize_provider_result(fallback, provider_name="heuristic")
             chunk_results.append(normalized_chunk)
             if callable(progress_callback):
-                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks)
+                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, current_chunk)
         if completed_chunks <= 0:
             raise LessonIntelligenceProviderUnavailable("Ollama chunk analysis failed for all chunks")
         if callable(progress_callback):
-            progress_callback("synthesizing", chunk_count, completed_chunks, failed_chunks)
+            progress_callback("synthesizing", chunk_count, completed_chunks, failed_chunks, {"index": chunk_count, "count": chunk_count})
         timeout_seconds = round(min(total_budget, time.monotonic() - started_at), 2)
         normalized = _normalize_provider_result(
             _synthesize_lesson_chunk_results(
@@ -1120,8 +1143,10 @@ def report_response_payload(
     *,
     enabled: bool = True,
     current_source_hash: str = "",
+    current_run_key: str = "",
 ) -> dict[str, Any]:
     current_hash = str(current_source_hash or "")
+    current_key = str(current_run_key or "")
     if report is None:
         return {
             "enabled": enabled,
@@ -1137,6 +1162,11 @@ def report_response_payload(
             "source_hash": "",
             "report_source_hash": "",
             "current_source_hash": current_hash,
+            "run_key": "",
+            "report_run_key": "",
+            "current_run_key": current_key,
+            "run_key_matches": False,
+            "force": False,
             "is_stale": bool(enabled),
             "detected_language": "unknown",
             "output_language": "en",
@@ -1153,6 +1183,8 @@ def report_response_payload(
     report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
     output_language = str(report_metadata.get("output_language") or "en")
     report_hash = str(report.source_hash or "")
+    enhancement = report_metadata.get("progressive_enhancement") if isinstance(report_metadata.get("progressive_enhancement"), dict) else {}
+    report_run_key = str(enhancement.get("run_key") or report_metadata.get("run_key") or "")
     provider_chain_attempts = report_metadata.get("provider_chain_attempts")
     if not isinstance(provider_chain_attempts, list):
         provider_chain_attempts = []
@@ -1171,6 +1203,11 @@ def report_response_payload(
         "source_hash": report_hash,
         "report_source_hash": report_hash,
         "current_source_hash": current_hash,
+        "run_key": report_run_key,
+        "report_run_key": report_run_key,
+        "current_run_key": current_key,
+        "run_key_matches": bool(current_key and report_run_key and current_key == report_run_key),
+        "force": bool(report_metadata.get("force") or enhancement.get("force")),
         "is_stale": bool(enabled and current_hash and report_hash != current_hash),
         "summary": report.summary,
         "short_description": report.short_description,
@@ -1220,6 +1257,8 @@ def report_response_payload(
                 "failed_chunks",
                 "chunk_limitations",
                 "partial_enhancement",
+                "force",
+                "forced_at",
             }
         },
         "error_message": report.error_message,

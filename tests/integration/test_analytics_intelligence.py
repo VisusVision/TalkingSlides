@@ -361,6 +361,29 @@ def test_post_analyze_returns_heuristic_and_queues_analytics_ollama(monkeypatch)
 @override_settings(
     ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    INTELLIGENCE_CELERY_QUEUE="shared-intelligence-test",
+    INTELLIGENCE_ANALYTICS_CELERY_QUEUE="analytics-intelligence-test",
+)
+def test_analytics_intelligence_uses_analytics_queue_setting(monkeypatch):
+    publisher = _make_user("ai_analytics_queue_owner")
+    viewer = _make_user("ai_analytics_queue_viewer", role="student")
+    lesson = _make_project(publisher, "Analytics queue lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    assert response.status_code == 200
+    assert dispatch_calls[0]["task_name"] == "worker.tasks.enhance_analytics_intelligence_report"
+    assert dispatch_calls[0]["queue"] == "analytics-intelligence-test"
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    assert report.metadata["progressive_enhancement"]["queue"] == "analytics-intelligence-test"
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
 )
 def test_duplicate_analytics_analyze_does_not_enqueue_duplicate_for_same_source(monkeypatch):
     publisher = _make_user("ai_duplicate_owner")
@@ -376,6 +399,10 @@ def test_duplicate_analytics_analyze_does_not_enqueue_duplicate_for_same_source(
     assert first.status_code == 200
     assert second.status_code == 200
     assert first.data["id"] == second.data["id"]
+    assert second.data["run_key"] == first.data["run_key"]
+    assert second.data["current_run_key"] == first.data["run_key"]
+    assert second.data["run_key_matches"] is True
+    assert second.data["force"] is False
     assert len(dispatch_calls) == 1
 
 
@@ -472,7 +499,11 @@ def test_force_analytics_analyze_requeues_fresh_pending_enhancement(monkeypatch)
     assert first.status_code == 200
     assert second.status_code == 200
     assert second.data["id"] != first.data["id"]
+    assert second.data["force"] is True
     assert len(dispatch_calls) == 2
+    new_report = AnalyticsIntelligenceReport.objects.get(pk=second.data["id"])
+    assert new_report.metadata["force"] is True
+    assert new_report.metadata["progressive_enhancement"]["force"] is True
     old_report = AnalyticsIntelligenceReport.objects.get(pk=first.data["id"])
     assert old_report.metadata["progressive_enhancement"]["status"] == "failed"
     assert "superseded" in old_report.metadata["progressive_enhancement"]["error"]
@@ -898,6 +929,64 @@ def test_analytics_chunk_failure_returns_partial_ollama_report(monkeypatch):
 
 
 @override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=1200,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=1,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=10,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=25,
+    ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS=2,
+)
+def test_analytics_total_budget_exceeded_returns_terminal_partial(monkeypatch):
+    publisher = _make_user("ai_chunk_budget_owner")
+    viewer = _make_user("ai_chunk_budget_viewer", role="student")
+    for index in range(4):
+        lesson = _make_project(publisher, f"Budget analytics lesson {index}")
+        _progress(viewer, lesson, 60 + index)
+        LessonComment.objects.create(user=viewer, project=lesson, text=f"Question about budget lesson {index}.")
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        payload = {
+            "provider": "ollama",
+            "analytics_summary": "Only the first analytics chunk completed.",
+            "health_score": 70,
+            "risk_level": "medium",
+            "insights": [{"type": "budget", "message": "First analytics chunk completed."}],
+            "recommendations": [],
+            "lesson_actions": [],
+            "category_actions": [],
+            "limitations": [],
+        }
+        return _FakeOllamaResponse({"response": json.dumps(payload)})
+
+    times = iter([0.0, 0.0, 3.0, 3.0])
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+    monkeypatch.setattr("core.analytics_intelligence._analytics_total_timeout_budget_seconds", lambda: 2.0)
+    monkeypatch.setattr("core.analytics_intelligence.time.monotonic", lambda: next(times, 3.0))
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(publisher).get(_latest_url())
+
+    assert task_result["status"] == "partial"
+    assert latest.data["enhancement_pending"] is False
+    assert latest.data["enhancement_status"] == "partial"
+    assert calls["count"] == 1
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["completed_chunks"] == 1
+    assert enhancement["failed_chunks"] == enhancement["chunk_count"] - 1
+    assert any("time budget" in str(item) for item in enhancement["chunk_limitations"])
+
+
+@override_settings(
     INTELLIGENCE_BACKGROUND_TIMEOUT_MIN_SECONDS=60,
     INTELLIGENCE_BACKGROUND_TIMEOUT_MAX_SECONDS=180,
     INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=4,
@@ -971,6 +1060,11 @@ def test_invalid_analytics_ollama_json_falls_back_to_heuristic(monkeypatch):
     attempts = latest.data["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
     assert attempts[0]["status"] == "failed"
+
+    second = _client(publisher).post(_analyze_url(), {}, format="json")
+    assert second.status_code == 200
+    assert second.data["id"] == response.data["id"]
+    assert len(dispatch_calls) == 1
 
 
 @override_settings(

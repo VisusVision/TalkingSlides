@@ -97,6 +97,14 @@ def _intelligence_queue_name() -> str:
     ).strip() or _render_queue_name()
 
 
+def _lesson_intelligence_queue_name() -> str:
+    return str(os.environ.get("INTELLIGENCE_LESSON_CELERY_QUEUE") or _intelligence_queue_name()).strip() or _intelligence_queue_name()
+
+
+def _analytics_intelligence_queue_name() -> str:
+    return str(os.environ.get("INTELLIGENCE_ANALYTICS_CELERY_QUEUE") or _intelligence_queue_name()).strip() or _intelligence_queue_name()
+
+
 def _queue_for_avatar_options(avatar_options: dict[str, Any] | None) -> str:
     return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _render_queue_name()
 
@@ -360,7 +368,7 @@ def _schedule_lesson_intelligence_after_worker_event(project_id: str | int, *, r
         schedule_lesson_intelligence.apply_async(
             args=[int(project_id)],
             kwargs={"reason": str(reason or "auto"), "force": bool(force)},
-            queue=_intelligence_queue_name(),
+            queue=_lesson_intelligence_queue_name(),
         )
     except Exception:
         logger.warning("Lesson intelligence worker schedule dispatch failed for project=%s", project_id, exc_info=True)
@@ -375,7 +383,7 @@ def _schedule_creator_analytics_after_worker_event(project_id: str | int, *, rea
             schedule_creator_analytics_intelligence.apply_async(
                 args=[int(project.user_id)],
                 kwargs={"reason": str(reason or "auto"), "force": bool(force)},
-                queue=_intelligence_queue_name(),
+                queue=_analytics_intelligence_queue_name(),
             )
     except Exception:
         logger.warning("Analytics intelligence worker schedule dispatch failed for project=%s", project_id, exc_info=True)
@@ -5109,6 +5117,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         apply_lesson_section_fallbacks,
         apply_analysis_to_report,
         build_lesson_intelligence_input,
+        lesson_ollama_chunk_count,
         lesson_ollama_run_identity,
         lesson_sections_for_analysis,
     )
@@ -5152,16 +5161,33 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "run_key_changed"}
 
         timeout_seconds = adaptive_lesson_intelligence_timeout(lesson_input.to_provider_payload())
+        chunk_count = lesson_ollama_chunk_count(lesson_input)
         _mark_lesson_intelligence_enhancement(
             report_id,
             "running",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
-            phase="chunking",
+            phase="analyzing_chunks",
+            chunk_count=chunk_count,
+            completed_chunks=0,
+            failed_chunks=0,
             extra=run_identity,
         )
 
-        def progress_callback(phase: str, chunk_count: int, completed_chunks: int, failed_chunks: int) -> None:
+        def progress_callback(
+            phase: str,
+            chunk_count: int,
+            completed_chunks: int,
+            failed_chunks: int,
+            current_chunk: dict[str, Any] | None = None,
+        ) -> None:
+            progress_extra = dict(run_identity)
+            if isinstance(current_chunk, dict):
+                progress_extra["current_chunk"] = current_chunk
+                if current_chunk.get("index") is not None:
+                    progress_extra["current_chunk_index"] = current_chunk.get("index")
+                if current_chunk.get("section"):
+                    progress_extra["current_chunk_name"] = current_chunk.get("section")
             _mark_lesson_intelligence_enhancement(
                 report_id,
                 "running",
@@ -5171,7 +5197,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
                 chunk_count=chunk_count,
                 completed_chunks=completed_chunks,
                 failed_chunks=failed_chunks,
-                extra=run_identity,
+                extra=progress_extra,
             )
 
         analysis = analyze_lesson_ollama_background(
@@ -5247,6 +5273,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         AnalyticsIntelligenceInputError,
         adaptive_analytics_intelligence_timeout,
         analyze_analytics_ollama_background,
+        analytics_ollama_chunk_count,
         analytics_ollama_run_identity,
         apply_analytics_analysis_to_report,
         build_analytics_intelligence_input,
@@ -5314,16 +5341,33 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "run_key_changed"}
 
         timeout_seconds = adaptive_analytics_intelligence_timeout(analytics_input.to_provider_payload())
+        chunk_count = analytics_ollama_chunk_count(analytics_input)
         _mark_analytics_intelligence_enhancement(
             report_id,
             "running",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
-            phase="chunking",
+            phase="analyzing_chunks",
+            chunk_count=chunk_count,
+            completed_chunks=0,
+            failed_chunks=0,
             extra=run_identity,
         )
 
-        def progress_callback(phase: str, chunk_count: int, completed_chunks: int, failed_chunks: int) -> None:
+        def progress_callback(
+            phase: str,
+            chunk_count: int,
+            completed_chunks: int,
+            failed_chunks: int,
+            current_chunk: dict[str, Any] | None = None,
+        ) -> None:
+            progress_extra = dict(run_identity)
+            if isinstance(current_chunk, dict):
+                progress_extra["current_chunk"] = current_chunk
+                if current_chunk.get("index") is not None:
+                    progress_extra["current_chunk_index"] = current_chunk.get("index")
+                if current_chunk.get("section"):
+                    progress_extra["current_chunk_name"] = current_chunk.get("section")
             _mark_analytics_intelligence_enhancement(
                 report_id,
                 "running",
@@ -5333,7 +5377,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
                 chunk_count=chunk_count,
                 completed_chunks=completed_chunks,
                 failed_chunks=failed_chunks,
-                extra=run_identity,
+                extra=progress_extra,
             )
 
         analysis = analyze_analytics_ollama_background(

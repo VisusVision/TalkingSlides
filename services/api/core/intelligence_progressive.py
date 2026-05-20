@@ -10,9 +10,10 @@ from django.utils import timezone
 
 
 PROGRESSIVE_ENHANCEMENT_KEY = "progressive_enhancement"
-PENDING_ENHANCEMENT_STATUSES = {"pending", "running"}
+PENDING_ENHANCEMENT_STATUSES = {"pending", "running", "analyzing_chunks", "synthesizing"}
 TERMINAL_ENHANCEMENT_STATUSES = {"done", "failed", "unavailable", "disabled", "stale"}
 TERMINAL_ENHANCEMENT_STATUSES.add("partial")
+TERMINAL_ENHANCEMENT_STATUSES.add("superseded")
 LESSON_SECTION_KEYS = ("summary", "clarity", "page_suggestions", "expanded_narration", "tags")
 
 

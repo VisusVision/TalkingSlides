@@ -422,8 +422,22 @@ function analyticsEnhancementStatus(report) {
   return String(report?.enhancement_status || '').trim().toLowerCase();
 }
 
+const ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES = new Set([
+  'pending',
+  'running',
+  'analyzing_chunks',
+  'synthesizing',
+]);
+const ANALYTICS_FAILED_ENHANCEMENT_STATUSES = new Set([
+  'failed',
+  'unavailable',
+  'disabled',
+  'stale',
+  'superseded',
+]);
+
 function analyticsEnhancementPending(report) {
-  return Boolean(report?.enhancement_pending || ['pending', 'running'].includes(analyticsEnhancementStatus(report)));
+  return Boolean(report?.enhancement_pending || ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(report)));
 }
 
 function analyticsEnhancementMeta(report) {
@@ -434,26 +448,28 @@ function AnalyticsEnhancementLabel({ report }) {
   const status = analyticsEnhancementStatus(report);
   const provider = String(report?.enhancement_provider || '').toLowerCase();
   if (provider !== 'ollama') return null;
-  const failed = ['failed', 'unavailable', 'disabled', 'stale'].includes(status);
-  const pending = ['pending', 'running'].includes(status);
+  const failed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(status);
+  const pending = ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(status);
   const meta = analyticsEnhancementMeta(report);
   const phase = String(meta.phase || '').toLowerCase();
   const chunkCount = Number(meta.chunk_count || report?.metadata?.chunk_count || 0);
   const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
   const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
   const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
+  const currentChunk = Number(meta.current_chunk_index || meta.current_chunk?.index || 0);
+  const visibleProgress = Math.max(processedChunks, currentChunk);
   const label = pending
     ? (phase === 'synthesizing'
       ? 'Synthesizing final insight'
       : chunkCount > 1
-        ? `Ollama analyzing ${processedChunks}/${chunkCount} chunks`
+        ? `Ollama analyzing ${visibleProgress}/${chunkCount} chunks`
         : 'Ollama enhancement running')
     : status === 'done'
-      ? (failedChunks > 0 ? 'Some chunks failed; partial enhancement used' : 'Ollama enhanced insight')
+      ? (failedChunks > 0 ? 'Partial Ollama insight; heuristic kept for some sections.' : 'Ollama enhanced insight')
       : status === 'partial'
-        ? 'Some chunks failed; partial enhancement used'
+        ? 'Partial Ollama insight; heuristic kept for some sections.'
       : failed
-        ? 'Basic fallback insight; Ollama enhancement failed'
+        ? 'Ollama enhancement failed; heuristic analysis kept.'
         : '';
   if (!label) return null;
   const className = failed
@@ -900,14 +916,14 @@ export default function Analytics({ user }) {
     }
   };
 
-  const handleAnalyzeAnalytics = useCallback(async ({ auto = false } = {}) => {
+  const handleAnalyzeAnalytics = useCallback(async ({ auto = false, force = false } = {}) => {
     if (analyticsEnhancementPending(intelligenceReport)) return null;
     setIntelligenceAnalyzing(true);
     setIntelligenceError('');
     setIntelligenceCopied(false);
 
     try {
-      const payload = await analyzeMyAnalyticsIntelligence(analyticsFilters, { force: !auto });
+      const payload = await analyzeMyAnalyticsIntelligence(analyticsFilters, { force: Boolean(force) && !auto });
       setIntelligenceReport(payload);
       setIntelligenceLoadedFilterKey(analyticsFilterKey);
       return payload;
@@ -946,7 +962,7 @@ export default function Analytics({ user }) {
   const intelligenceStale = analyticsIntelligenceIsStale(intelligenceReport);
   const intelligenceCompacted = analyticsInputWasCompacted(intelligenceReport);
   const intelligenceEnhancementPending = analyticsEnhancementPending(intelligenceReport);
-  const intelligenceEnhancementFailed = ['failed', 'unavailable', 'disabled', 'stale'].includes(analyticsEnhancementStatus(intelligenceReport));
+  const intelligenceEnhancementFailed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(intelligenceReport));
 
   return (
     <div className="space-y-7 pb-8">
@@ -1377,7 +1393,7 @@ export default function Analytics({ user }) {
             )}
             <button
               type="button"
-              onClick={() => handleAnalyzeAnalytics()}
+              onClick={() => handleAnalyzeAnalytics({ force: intelligenceStale })}
               disabled={intelligenceAnalyzing || intelligenceEnhancementPending || intelligenceReport?.enabled === false}
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[image:var(--accent-gradient)] px-4 text-xs font-bold text-white transition hover:scale-105 active:scale-95 disabled:cursor-wait disabled:opacity-60 disabled:hover:scale-100"
             >
@@ -1396,7 +1412,7 @@ export default function Analytics({ user }) {
         {intelligenceEnhancementFailed && (
           <div className="flex items-start gap-2 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-200">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <span>{intelligenceReport?.enhancement_error_safe || 'Basic fallback insight; Ollama enhancement failed.'}</span>
+            <span>{intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}</span>
           </div>
         )}
 

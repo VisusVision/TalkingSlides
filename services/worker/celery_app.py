@@ -48,12 +48,22 @@ intelligence_queue = str(
     or os.environ.get("INTELLIGENCE_CELERY_QUEUE_DEFAULT")
     or render_queue
 ).strip() or render_queue
+lesson_intelligence_queue = str(
+    os.environ.get("INTELLIGENCE_LESSON_CELERY_QUEUE")
+    or intelligence_queue
+).strip() or intelligence_queue
+analytics_intelligence_queue = str(
+    os.environ.get("INTELLIGENCE_ANALYTICS_CELERY_QUEUE")
+    or intelligence_queue
+).strip() or intelligence_queue
 legacy_queue = str(os.environ.get("CELERY_LEGACY_QUEUE", "celery") or "celery").strip() or "celery"
 
 app.conf.task_default_queue = str(os.environ.get("CELERY_TASK_DEFAULT_QUEUE", render_queue) or render_queue).strip()
 app.conf.task_queues = tuple(
     Queue(queue_name)
-    for queue_name in dict.fromkeys([render_queue, avatar_queue, intelligence_queue, legacy_queue])
+    for queue_name in dict.fromkeys(
+        [render_queue, avatar_queue, intelligence_queue, lesson_intelligence_queue, analytics_intelligence_queue, legacy_queue]
+    )
 )
 app.conf.task_routes = {
     "worker.tasks.process_pptx_to_video": {"queue": render_queue},
@@ -70,10 +80,10 @@ app.conf.task_routes = {
     "worker.tasks.fallback_avatar_render": {"queue": avatar_queue},
     "worker.tasks.avatar_cache_cleanup": {"queue": avatar_queue},
     "worker.tasks.cleanup_avatar_cache": {"queue": avatar_queue},
-    "worker.tasks.schedule_lesson_intelligence": {"queue": intelligence_queue},
-    "worker.tasks.schedule_creator_analytics_intelligence": {"queue": intelligence_queue},
-    "worker.tasks.enhance_lesson_intelligence_report": {"queue": intelligence_queue},
-    "worker.tasks.enhance_analytics_intelligence_report": {"queue": intelligence_queue},
+    "worker.tasks.schedule_lesson_intelligence": {"queue": lesson_intelligence_queue},
+    "worker.tasks.schedule_creator_analytics_intelligence": {"queue": analytics_intelligence_queue},
+    "worker.tasks.enhance_lesson_intelligence_report": {"queue": lesson_intelligence_queue},
+    "worker.tasks.enhance_analytics_intelligence_report": {"queue": analytics_intelligence_queue},
 }
 
 # Step 4 — discover tasks.py in the worker package

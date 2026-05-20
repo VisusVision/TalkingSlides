@@ -172,6 +172,7 @@ Columns:
 | `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | `45` | Minimum timeout for one background Ollama chunk request. |
 | `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `120` | Maximum timeout for one background Ollama chunk request. |
 | `INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `600` | Maximum total budget for one chunked Ollama enhancement task. |
+| `ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` | worker | Optional | Recommended | `180` | Analytics-specific total background budget; defaults lower than lesson/shared budget so large analytics jobs terminalize sooner. |
 | `ANALYTICS_INTELLIGENCE_AUTO_ENABLED` | API/worker | Optional | Recommended | `true` | Enables event-driven creator analytics intelligence scheduling. |
 | `ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS` | API/worker | Optional | Recommended | `3600` | Minimum interval between automatic analytics intelligence schedules for routine events. |
 | `ANALYTICS_INTELLIGENCE_MIN_PROGRESS_EVENT_DELTA` | API/worker | Optional | Recommended | `5` | Progress-event threshold used with throttling before scheduling analytics intelligence again. |
@@ -179,6 +180,8 @@ Columns:
 | `ANALYTICS_INTELLIGENCE_COMMENT_MAX_CHARS` | API/worker | Optional | Recommended | `280` | Max characters per recent comment included in analytics intelligence input. |
 | `INTELLIGENCE_CELERY_QUEUE` | API/worker | Optional | Recommended | render queue | Queue used for progressive intelligence enhancement tasks. Local compose consumes `render` by default; use a dedicated queue only if a worker consumes it. |
 | `INTELLIGENCE_CELERY_QUEUE_DEFAULT` | API/worker | Optional | Optional | render queue | Fallback queue name used when `INTELLIGENCE_CELERY_QUEUE` is unset. |
+| `INTELLIGENCE_LESSON_CELERY_QUEUE` | API/worker | Optional | Optional | `INTELLIGENCE_CELERY_QUEUE` | Queue for lesson intelligence schedule/enhancement tasks. Use a dedicated higher-priority worker if lessons should not wait behind analytics. |
+| `INTELLIGENCE_ANALYTICS_CELERY_QUEUE` | API/worker | Optional | Optional | `INTELLIGENCE_CELERY_QUEUE` | Queue for analytics intelligence schedule/enhancement tasks. |
 | `INTELLIGENCE_RECOMMENDED_DEDICATED_QUEUE` | docs/config | Optional | Optional | `intelligence` | Documented target queue name for dedicated low-priority intelligence workers. |
 | `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` | API | Optional | Recommended | `900` | Pending/running enhancement age before it is marked failed so polling can stop and re-analyze can queue again. |
 | `LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | global cap | Lesson-specific synchronous cap. |
@@ -193,7 +196,7 @@ Keep synchronous Ollama timeout caps lower than the API/Gunicorn worker timeout.
 
 For the current local worker, use `INTELLIGENCE_CELERY_QUEUE=render`. If you prefer `INTELLIGENCE_CELERY_QUEUE=celery`, configure `CELERY_WORKER_QUEUES=celery,render` or run a dedicated worker for `celery`.
 
-Production should prefer `INTELLIGENCE_CELERY_QUEUE=intelligence` with a separate worker consuming only `intelligence` and concurrency `1`. This keeps Ollama analysis behind render/TTS/avatar resource needs instead of sharing the critical render queue.
+Production should prefer dedicated intelligence workers with concurrency `1`. Use `INTELLIGENCE_LESSON_CELERY_QUEUE` and `INTELLIGENCE_ANALYTICS_CELERY_QUEUE` if lesson enhancement should have priority over long analytics jobs; otherwise both default to `INTELLIGENCE_CELERY_QUEUE`.
 
 Studio Intelligence is the detailed lesson analyzer. Analytics Intelligence should stay compact: it uses creator metrics, weak/strong lesson stats, sanitized comments, cover signals, and selected `LessonIntelligenceReport` summaries instead of full transcripts.
 
