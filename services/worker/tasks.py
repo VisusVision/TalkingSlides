@@ -88,6 +88,23 @@ def _avatar_queue_name() -> str:
     return str(os.environ.get("CELERY_AVATAR_QUEUE", "avatar") or "avatar").strip() or "avatar"
 
 
+def _intelligence_queue_name() -> str:
+    return str(
+        os.environ.get("INTELLIGENCE_CELERY_QUEUE")
+        or os.environ.get("CELERY_INTELLIGENCE_QUEUE")
+        or os.environ.get("INTELLIGENCE_CELERY_QUEUE_DEFAULT")
+        or _render_queue_name()
+    ).strip() or _render_queue_name()
+
+
+def _lesson_intelligence_queue_name() -> str:
+    return str(os.environ.get("INTELLIGENCE_LESSON_CELERY_QUEUE") or _intelligence_queue_name()).strip() or _intelligence_queue_name()
+
+
+def _analytics_intelligence_queue_name() -> str:
+    return str(os.environ.get("INTELLIGENCE_ANALYTICS_CELERY_QUEUE") or _intelligence_queue_name()).strip() or _intelligence_queue_name()
+
+
 def _queue_for_avatar_options(avatar_options: dict[str, Any] | None) -> str:
     return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _render_queue_name()
 
@@ -344,6 +361,32 @@ def _notify_render_completed(project_id: str | int) -> None:
         notify_render_completed(project_id, _latest_video_export_job_id(project_id))
     except Exception:
         logger.warning("Render completion notification hook failed for project=%s", project_id, exc_info=True)
+
+
+def _schedule_lesson_intelligence_after_worker_event(project_id: str | int, *, reason: str, force: bool = False) -> None:
+    try:
+        schedule_lesson_intelligence.apply_async(
+            args=[int(project_id)],
+            kwargs={"reason": str(reason or "auto"), "force": bool(force)},
+            queue=_lesson_intelligence_queue_name(),
+        )
+    except Exception:
+        logger.warning("Lesson intelligence worker schedule dispatch failed for project=%s", project_id, exc_info=True)
+
+
+def _schedule_creator_analytics_after_worker_event(project_id: str | int, *, reason: str, force: bool = False) -> None:
+    try:
+        from core.models import Project
+
+        project = Project.objects.filter(pk=int(project_id)).only("user_id").first()
+        if project and project.user_id:
+            schedule_creator_analytics_intelligence.apply_async(
+                args=[int(project.user_id)],
+                kwargs={"reason": str(reason or "auto"), "force": bool(force)},
+                queue=_analytics_intelligence_queue_name(),
+            )
+    except Exception:
+        logger.warning("Analytics intelligence worker schedule dispatch failed for project=%s", project_id, exc_info=True)
 
 
 def _notify_render_failed(project_id: str | int) -> None:
@@ -4885,6 +4928,547 @@ def ping(message: str = "ping") -> str:
     return "pong" if message == "ping" else f"echo: {message}"
 
 
+def _replace_intelligence_attempt(metadata: dict[str, Any], provider: str, status_value: str, error: Exception | str | None = None) -> dict[str, Any]:
+    from core.intelligence_progressive import provider_attempt
+
+    normalized_provider = str(provider or "").strip().lower()
+    attempts = metadata.get("provider_chain_attempts")
+    next_attempts = [item for item in attempts if isinstance(item, dict)] if isinstance(attempts, list) else []
+    replacement = provider_attempt(normalized_provider, status_value, error)
+    replaced = False
+    for index, item in enumerate(next_attempts):
+        if str(item.get("provider") or "").strip().lower() == normalized_provider:
+            next_attempts[index] = replacement
+            replaced = True
+            break
+    if not replaced:
+        next_attempts.insert(0, replacement)
+    metadata["provider_chain_attempts"] = next_attempts
+    return metadata
+
+
+def _mark_lesson_intelligence_enhancement(
+    report_id: int,
+    status_value: str,
+    *,
+    task_id: str = "",
+    timeout_seconds: float | int | None = None,
+    error: Exception | str | None = None,
+    phase: str | None = None,
+    chunk_count: int | None = None,
+    completed_chunks: int | None = None,
+    failed_chunks: int | None = None,
+    extra: dict[str, Any] | None = None,
+):
+    from core.intelligence_progressive import (
+        PROGRESSIVE_ENHANCEMENT_KEY,
+        TERMINAL_ENHANCEMENT_STATUSES,
+        enhancement_lock_key,
+        lesson_section_statuses,
+        merge_enhancement_metadata,
+    )
+    from core.models import LessonIntelligenceReport
+
+    report = LessonIntelligenceReport.objects.filter(pk=int(report_id)).first()
+    if report is None:
+        return None
+    progress_extra = dict(extra or {})
+    if phase:
+        progress_extra["phase"] = str(phase)
+    if chunk_count is not None:
+        progress_extra["chunk_count"] = int(chunk_count)
+    if completed_chunks is not None:
+        progress_extra["completed_chunks"] = int(completed_chunks)
+    if failed_chunks is not None:
+        progress_extra["failed_chunks"] = int(failed_chunks)
+    if status_value == "running" and "sections" not in progress_extra:
+        progress_extra["sections"] = lesson_section_statuses(status="running", provider="ollama")
+    if status_value == "failed" and "sections" not in progress_extra:
+        progress_extra["sections"] = lesson_section_statuses(status="failed", provider="heuristic", error=error)
+    metadata = merge_enhancement_metadata(
+        report.metadata if isinstance(report.metadata, dict) else {},
+        provider="ollama",
+        status=status_value,
+        task_id=task_id,
+        timeout_seconds=timeout_seconds,
+        error=error,
+        extra=progress_extra,
+    )
+    if status_value in {"running", "done", "partial", "failed"}:
+        attempt_status = "success" if status_value == "done" else status_value
+        _replace_intelligence_attempt(metadata, "ollama", attempt_status, error)
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+    if status_value in TERMINAL_ENHANCEMENT_STATUSES:
+        try:
+            from django.core.cache import cache
+
+            enhancement = metadata.get(PROGRESSIVE_ENHANCEMENT_KEY) if isinstance(metadata.get(PROGRESSIVE_ENHANCEMENT_KEY), dict) else {}
+            lock_key = enhancement_lock_key(str(enhancement.get("run_key") or metadata.get("run_key") or ""))
+            if lock_key:
+                cache.delete(lock_key)
+        except Exception:
+            pass
+    return report
+
+
+def _mark_analytics_intelligence_enhancement(
+    report_id: int,
+    status_value: str,
+    *,
+    task_id: str = "",
+    timeout_seconds: float | int | None = None,
+    error: Exception | str | None = None,
+    phase: str | None = None,
+    chunk_count: int | None = None,
+    completed_chunks: int | None = None,
+    failed_chunks: int | None = None,
+    extra: dict[str, Any] | None = None,
+):
+    from core.intelligence_progressive import PROGRESSIVE_ENHANCEMENT_KEY, TERMINAL_ENHANCEMENT_STATUSES, enhancement_lock_key, merge_enhancement_metadata
+    from core.models import AnalyticsIntelligenceReport
+
+    report = AnalyticsIntelligenceReport.objects.filter(pk=int(report_id)).first()
+    if report is None:
+        return None
+    progress_extra = dict(extra or {})
+    if phase:
+        progress_extra["phase"] = str(phase)
+    if chunk_count is not None:
+        progress_extra["chunk_count"] = int(chunk_count)
+    if completed_chunks is not None:
+        progress_extra["completed_chunks"] = int(completed_chunks)
+    if failed_chunks is not None:
+        progress_extra["failed_chunks"] = int(failed_chunks)
+    metadata = merge_enhancement_metadata(
+        report.metadata if isinstance(report.metadata, dict) else {},
+        provider="ollama",
+        status=status_value,
+        task_id=task_id,
+        timeout_seconds=timeout_seconds,
+        error=error,
+        extra=progress_extra,
+    )
+    if status_value in {"running", "done", "partial", "failed"}:
+        _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
+    report.metadata = metadata
+    report.save(update_fields=["metadata", "updated_at"])
+    if status_value in TERMINAL_ENHANCEMENT_STATUSES:
+        try:
+            from django.core.cache import cache
+
+            enhancement = metadata.get(PROGRESSIVE_ENHANCEMENT_KEY) if isinstance(metadata.get(PROGRESSIVE_ENHANCEMENT_KEY), dict) else {}
+            lock_key = enhancement_lock_key(str(enhancement.get("run_key") or metadata.get("run_key") or ""))
+            if lock_key:
+                cache.delete(lock_key)
+        except Exception:
+            pass
+    return report
+
+
+@app.task(bind=True, name="worker.tasks.schedule_lesson_intelligence", max_retries=0)
+def schedule_lesson_intelligence(
+    self,
+    project_id: int,
+    reason: str = "auto",
+    requested_by_id: int | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Create or refresh the quick lesson report and queue slow enhancement."""
+    try:
+        from core.views import schedule_lesson_intelligence as schedule
+
+        return schedule(
+            int(project_id),
+            reason=str(reason or "auto"),
+            requested_by_id=requested_by_id,
+            force=bool(force),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("schedule_lesson_intelligence task failed project=%s error=%s", project_id, exc.__class__.__name__)
+        return {"status": "failed", "project_id": int(project_id), "error": exc.__class__.__name__}
+
+
+@app.task(bind=True, name="worker.tasks.schedule_creator_analytics_intelligence", max_retries=0)
+def schedule_creator_analytics_intelligence(
+    self,
+    user_id: int,
+    reason: str = "auto",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Create or refresh the quick analytics report and queue slow enhancement."""
+    try:
+        from core.views import schedule_creator_analytics_intelligence as schedule
+
+        return schedule(int(user_id), reason=str(reason or "auto"), force=bool(force))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("schedule_creator_analytics_intelligence task failed user=%s error=%s", user_id, exc.__class__.__name__)
+        return {"status": "failed", "user_id": int(user_id), "error": exc.__class__.__name__}
+
+
+@app.task(bind=True, name="worker.tasks.enhance_lesson_intelligence_report", max_retries=0)
+def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -> dict[str, Any]:
+    """Run slow Ollama lesson analysis outside the API request path."""
+    from core.intelligence_progressive import merge_enhancement_metadata
+    from core.lesson_intelligence import (
+        LessonIntelligenceInputError,
+        adaptive_lesson_intelligence_timeout,
+        analyze_lesson_ollama_background,
+        apply_lesson_section_fallbacks,
+        apply_analysis_to_report,
+        build_lesson_intelligence_input,
+        lesson_ollama_chunk_count,
+        lesson_ollama_run_identity,
+        lesson_sections_for_analysis,
+    )
+    from core.models import LessonIntelligenceReport
+
+    report_id = int(report_id)
+    expected_source_hash = str(source_hash or "").strip()
+    task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+    timeout_seconds = None
+    report = _mark_lesson_intelligence_enhancement(report_id, "running", task_id=task_id)
+    if report is None:
+        return {"report_id": report_id, "status": "missing"}
+
+    try:
+        if report.provider == "ollama":
+            metadata = report.metadata if isinstance(report.metadata, dict) else {}
+            if str(metadata.get("progressive_enhancement", {}).get("status") or "") == "done":
+                return {"report_id": report_id, "status": "already_done", "provider": report.provider}
+
+        report = LessonIntelligenceReport.objects.select_related("project").get(pk=report_id)
+        report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
+        output_language = str(report_metadata.get("output_language") or "auto")
+        lesson_input = build_lesson_intelligence_input(report.project, output_language=output_language)
+        if expected_source_hash and lesson_input.source_hash != expected_source_hash:
+            _mark_lesson_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
+        run_identity = lesson_ollama_run_identity(lesson_input)
+        stored_run_key = str(
+            report_metadata.get("run_key")
+            or (report_metadata.get("progressive_enhancement") if isinstance(report_metadata.get("progressive_enhancement"), dict) else {}).get("run_key")
+            or ""
+        )
+        if stored_run_key and stored_run_key != run_identity.get("run_key"):
+            _mark_lesson_intelligence_enhancement(
+                report_id,
+                "failed",
+                task_id=task_id,
+                error="run_key_changed",
+                extra=run_identity,
+            )
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "run_key_changed"}
+
+        timeout_seconds = adaptive_lesson_intelligence_timeout(lesson_input.to_provider_payload())
+        chunk_count = lesson_ollama_chunk_count(lesson_input)
+        _mark_lesson_intelligence_enhancement(
+            report_id,
+            "running",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            phase="analyzing_chunks",
+            chunk_count=chunk_count,
+            completed_chunks=0,
+            failed_chunks=0,
+            extra=run_identity,
+        )
+
+        def progress_callback(
+            phase: str,
+            chunk_count: int,
+            completed_chunks: int,
+            failed_chunks: int,
+            current_chunk: dict[str, Any] | None = None,
+        ) -> None:
+            progress_extra = dict(run_identity)
+            if isinstance(current_chunk, dict):
+                progress_extra["current_chunk"] = current_chunk
+                if current_chunk.get("index") is not None:
+                    progress_extra["current_chunk_index"] = current_chunk.get("index")
+                if current_chunk.get("section"):
+                    progress_extra["current_chunk_name"] = current_chunk.get("section")
+                if isinstance(current_chunk.get("chunk_diagnostics"), list):
+                    progress_extra["chunk_diagnostics"] = current_chunk.get("chunk_diagnostics")
+                if current_chunk.get("last_failure_reason"):
+                    progress_extra["last_failure_reason"] = current_chunk.get("last_failure_reason")
+            _mark_lesson_intelligence_enhancement(
+                report_id,
+                "running",
+                task_id=task_id,
+                timeout_seconds=timeout_seconds,
+                phase=phase,
+                chunk_count=chunk_count,
+                completed_chunks=completed_chunks,
+                failed_chunks=failed_chunks,
+                extra=progress_extra,
+            )
+
+        analysis = analyze_lesson_ollama_background(
+            lesson_input,
+            chain=report.provider_chain,
+            progress_callback=progress_callback,
+        )
+        timeout_seconds = (analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}).get("timeout_seconds") or timeout_seconds
+        analysis_meta = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+        section_statuses = lesson_sections_for_analysis(
+            analysis,
+            existing_report=report,
+            provider="ollama",
+        )
+        analysis = apply_lesson_section_fallbacks(report, analysis, section_statuses)
+        has_failed_sections = any(
+            str(item.get("status") or "").strip().lower() == "failed"
+            for item in section_statuses.values()
+            if isinstance(item, dict)
+        )
+        enhancement_extra = {
+            **run_identity,
+            "phase": "done",
+            "chunked": bool(analysis_meta.get("chunked")),
+            "chunk_count": int(analysis_meta.get("chunk_count") or 0),
+            "completed_chunks": int(analysis_meta.get("completed_chunks") or 0),
+            "failed_chunks": int(analysis_meta.get("failed_chunks") or 0),
+            "partial_enhancement": bool(analysis_meta.get("partial_enhancement") or has_failed_sections),
+            "sections": section_statuses,
+        }
+        if isinstance(analysis_meta.get("chunk_limitations"), list):
+            enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
+        if isinstance(analysis_meta.get("chunk_diagnostics"), list):
+            enhancement_extra["chunk_diagnostics"] = analysis_meta.get("chunk_diagnostics")
+            if analysis_meta.get("chunk_diagnostics"):
+                last_diagnostic = analysis_meta.get("chunk_diagnostics")[-1]
+                if isinstance(last_diagnostic, dict):
+                    enhancement_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
+        analysis_metadata = {
+            **dict(analysis.get("metadata") or {}),
+            "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
+            "sections": section_statuses,
+        }
+        analysis["metadata"] = merge_enhancement_metadata(
+            analysis_metadata,
+            provider="ollama",
+            status="partial" if enhancement_extra["partial_enhancement"] else "done",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            extra=enhancement_extra,
+        )
+        report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
+        return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
+    except (LessonIntelligenceInputError, Exception) as exc:  # noqa: BLE001
+        logger.warning("Lesson intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
+        failure_extra: dict[str, Any] = {}
+        if isinstance(getattr(exc, "chunk_diagnostics", None), list):
+            failure_extra["chunk_diagnostics"] = getattr(exc, "chunk_diagnostics")[-20:]
+        elif isinstance(getattr(exc, "diagnostic", None), dict):
+            failure_extra["chunk_diagnostics"] = [getattr(exc, "diagnostic")]
+        if getattr(exc, "last_failure_reason", None):
+            failure_extra["last_failure_reason"] = str(getattr(exc, "last_failure_reason") or "")
+        elif isinstance(failure_extra.get("chunk_diagnostics"), list) and failure_extra["chunk_diagnostics"]:
+            last_diagnostic = failure_extra["chunk_diagnostics"][-1]
+            if isinstance(last_diagnostic, dict):
+                failure_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
+        _mark_lesson_intelligence_enhancement(
+            report_id,
+            "failed",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            error=f"{exc.__class__.__name__}: {exc}",
+            phase="failed",
+            extra=failure_extra,
+        )
+        return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
+
+
+class _AnalyticsTaskRequest:
+    def __init__(self, *, user, query_params: dict[str, Any]):
+        self.user = user
+        self.query_params = query_params
+
+
+@app.task(bind=True, name="worker.tasks.enhance_analytics_intelligence_report", max_retries=0)
+def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str) -> dict[str, Any]:
+    """Run slow Ollama creator analytics analysis outside the API request path."""
+    from django.contrib.auth.models import User
+
+    from core.analytics_intelligence import (
+        AnalyticsIntelligenceInputError,
+        adaptive_analytics_intelligence_timeout,
+        analyze_analytics_ollama_background,
+        analytics_ollama_chunk_count,
+        analytics_ollama_run_identity,
+        apply_analytics_analysis_to_report,
+        build_analytics_intelligence_input,
+    )
+    from core.models import AnalyticsIntelligenceReport
+    from core.views import CreatorAnalyticsView
+    from core.intelligence_progressive import merge_enhancement_metadata
+
+    report_id = int(report_id)
+    expected_source_hash = str(source_hash or "").strip()
+    task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+    timeout_seconds = None
+    report = _mark_analytics_intelligence_enhancement(report_id, "running", task_id=task_id)
+    if report is None:
+        return {"report_id": report_id, "status": "missing"}
+
+    try:
+        if report.provider == "ollama":
+            metadata = report.metadata if isinstance(report.metadata, dict) else {}
+            if str(metadata.get("progressive_enhancement", {}).get("status") or "") == "done":
+                return {"report_id": report_id, "status": "already_done", "provider": report.provider}
+
+        report = AnalyticsIntelligenceReport.objects.get(pk=report_id)
+        user = User.objects.filter(pk=report.requested_by_id).first()
+        if user is None:
+            _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error="requesting_user_missing")
+            return {"report_id": report_id, "status": "failed", "error": "requesting_user_missing"}
+
+        report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
+        filters = report_metadata.get("analytics_filters") if isinstance(report_metadata.get("analytics_filters"), dict) else {}
+        query_params = {
+            "range": filters.get("range") or (report.date_range or {}).get("range") or 30,
+            "from": filters.get("from") or (report.date_range or {}).get("from") or "",
+            "to": filters.get("to") or (report.date_range or {}).get("to") or "",
+            "category": filters.get("category") or report.category_filter or "",
+            "sort": filters.get("sort") or "views",
+        }
+        analytics_payload = CreatorAnalyticsView().build_payload(
+            _AnalyticsTaskRequest(user=user, query_params=query_params)
+        )
+        output_language = str(report_metadata.get("output_language") or "auto")
+        analytics_input = build_analytics_intelligence_input(
+            user,
+            analytics_payload,
+            scope=report.scope or "creator",
+            output_language=output_language,
+        )
+        if expected_source_hash and analytics_input.source_hash != expected_source_hash:
+            _mark_analytics_intelligence_enhancement(report_id, "failed", task_id=task_id, error="source_hash_changed")
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "source_hash_changed"}
+        run_identity = analytics_ollama_run_identity(analytics_input)
+        stored_run_key = str(
+            report_metadata.get("run_key")
+            or (report_metadata.get("progressive_enhancement") if isinstance(report_metadata.get("progressive_enhancement"), dict) else {}).get("run_key")
+            or ""
+        )
+        if stored_run_key and stored_run_key != run_identity.get("run_key"):
+            _mark_analytics_intelligence_enhancement(
+                report_id,
+                "failed",
+                task_id=task_id,
+                error="run_key_changed",
+                extra=run_identity,
+            )
+            return {"report_id": report_id, "status": "failed", "provider": report.provider, "error": "run_key_changed"}
+
+        timeout_seconds = adaptive_analytics_intelligence_timeout(analytics_input.to_provider_payload())
+        chunk_count = analytics_ollama_chunk_count(analytics_input)
+        _mark_analytics_intelligence_enhancement(
+            report_id,
+            "running",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            phase="analyzing_chunks",
+            chunk_count=chunk_count,
+            completed_chunks=0,
+            failed_chunks=0,
+            extra=run_identity,
+        )
+
+        def progress_callback(
+            phase: str,
+            chunk_count: int,
+            completed_chunks: int,
+            failed_chunks: int,
+            current_chunk: dict[str, Any] | None = None,
+        ) -> None:
+            progress_extra = dict(run_identity)
+            if isinstance(current_chunk, dict):
+                progress_extra["current_chunk"] = current_chunk
+                if current_chunk.get("index") is not None:
+                    progress_extra["current_chunk_index"] = current_chunk.get("index")
+                if current_chunk.get("section"):
+                    progress_extra["current_chunk_name"] = current_chunk.get("section")
+                if isinstance(current_chunk.get("chunk_diagnostics"), list):
+                    progress_extra["chunk_diagnostics"] = current_chunk.get("chunk_diagnostics")
+                if current_chunk.get("last_failure_reason"):
+                    progress_extra["last_failure_reason"] = current_chunk.get("last_failure_reason")
+            _mark_analytics_intelligence_enhancement(
+                report_id,
+                "running",
+                task_id=task_id,
+                timeout_seconds=timeout_seconds,
+                phase=phase,
+                chunk_count=chunk_count,
+                completed_chunks=completed_chunks,
+                failed_chunks=failed_chunks,
+                extra=progress_extra,
+            )
+
+        analysis = analyze_analytics_ollama_background(
+            analytics_input,
+            chain=report.provider_chain,
+            progress_callback=progress_callback,
+        )
+        timeout_seconds = (analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}).get("timeout_seconds") or timeout_seconds
+        analysis_meta = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
+        enhancement_extra = {
+            **run_identity,
+            "phase": "done",
+            "chunked": bool(analysis_meta.get("chunked")),
+            "chunk_count": int(analysis_meta.get("chunk_count") or 0),
+            "completed_chunks": int(analysis_meta.get("completed_chunks") or 0),
+            "failed_chunks": int(analysis_meta.get("failed_chunks") or 0),
+            "partial_enhancement": bool(analysis_meta.get("partial_enhancement")),
+        }
+        if isinstance(analysis_meta.get("chunk_limitations"), list):
+            enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
+        if isinstance(analysis_meta.get("chunk_diagnostics"), list):
+            enhancement_extra["chunk_diagnostics"] = analysis_meta.get("chunk_diagnostics")
+            if analysis_meta.get("chunk_diagnostics"):
+                last_diagnostic = analysis_meta.get("chunk_diagnostics")[-1]
+                if isinstance(last_diagnostic, dict):
+                    enhancement_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
+        analysis_metadata = {
+            **dict(analysis.get("metadata") or {}),
+            "progressive_enhancement": (report_metadata.get("progressive_enhancement") if isinstance(report_metadata, dict) else {}),
+        }
+        analysis["metadata"] = merge_enhancement_metadata(
+            analysis_metadata,
+            provider="ollama",
+            status="partial" if enhancement_extra["partial_enhancement"] else "done",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            extra=enhancement_extra,
+        )
+        report = apply_analytics_analysis_to_report(report, analysis, source_hash=analytics_input.source_hash)
+        return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
+    except (AnalyticsIntelligenceInputError, Exception) as exc:  # noqa: BLE001
+        logger.warning("Analytics intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
+        failure_extra: dict[str, Any] = {}
+        if isinstance(getattr(exc, "chunk_diagnostics", None), list):
+            failure_extra["chunk_diagnostics"] = getattr(exc, "chunk_diagnostics")[-20:]
+        elif isinstance(getattr(exc, "diagnostic", None), dict):
+            failure_extra["chunk_diagnostics"] = [getattr(exc, "diagnostic")]
+        if getattr(exc, "last_failure_reason", None):
+            failure_extra["last_failure_reason"] = str(getattr(exc, "last_failure_reason") or "")
+        elif isinstance(failure_extra.get("chunk_diagnostics"), list) and failure_extra["chunk_diagnostics"]:
+            last_diagnostic = failure_extra["chunk_diagnostics"][-1]
+            if isinstance(last_diagnostic, dict):
+                failure_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
+        _mark_analytics_intelligence_enhancement(
+            report_id,
+            "failed",
+            task_id=task_id,
+            timeout_seconds=timeout_seconds,
+            error=f"{exc.__class__.__name__}: {exc}",
+            phase="failed",
+            extra=failure_extra,
+        )
+        return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
+
+
 def _subtitle_task_active_key(project_id: int) -> str:
     return f"subtitle-generate-active:{int(project_id)}"
 
@@ -5991,6 +6575,8 @@ def concat_and_finalize(
         )
         _mark_project_ready_after_successful_render(project_id)
         _notify_render_completed(project_id)
+        _schedule_lesson_intelligence_after_worker_event(project_id, reason="render_completed")
+        _schedule_creator_analytics_after_worker_event(project_id, reason="render_completed")
         try:
             video_frame_audit = _run_auto_video_frame_audit_after_render(
                 project_id,
@@ -6231,6 +6817,8 @@ def process_pptx_to_video(
             tts_settings = _draft_render_tts_settings(project_id, tts_settings)
         else:
             slides = _sync_transcript_pages_from_export(project_id, slides)
+            if _intelligence_queue_name() != _render_queue_name():
+                _schedule_lesson_intelligence_after_worker_event(project_id, reason="transcript_extracted")
         n_slides = len(slides)
         logger.info("Step 1 done: %d slides ready for parallel rendering", n_slides)
 

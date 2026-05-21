@@ -988,6 +988,7 @@ export async function analyzeMyAnalyticsIntelligence(filters = {}, options = {})
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       output_language: options.outputLanguage || options.output_language || 'auto',
+      force: Boolean(options.force),
     }),
   });
   const data = await res.json().catch(() => ({}));
@@ -1153,6 +1154,7 @@ export async function analyzeProjectLessonIntelligence(projectId, options = {}) 
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       output_language: options.outputLanguage || options.output_language || 'auto',
+      force: Boolean(options.force),
     }),
   });
   const data = await res.json().catch(() => ({}));

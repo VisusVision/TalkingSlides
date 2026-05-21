@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   BookOpenText,
   Check,
+  ChevronDown,
   Copy,
   Eye,
   EyeOff,
@@ -55,11 +56,13 @@ import PlaylistManager from '../components/studio/PlaylistManager';
 import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
 import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
 import VideoStage from '../components/player/VideoStage';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 const LESSON_TABS = ['overview'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
 const SOURCE_TYPES_ACCEPT = '.pptx,.pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,.gif';
 const STUDIO_POLL_INTERVAL_MS = 4000;
+const LESSON_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS = 6000;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
 const STABLE_MODERATION_STATUSES = new Set(['approved', 'admin_approved', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed']);
 
@@ -995,12 +998,158 @@ function ModerationPanel({
 
 function lessonIntelligenceProviderLabel(report) {
   if (report?.enabled === false) return 'Disabled';
-  if (report?.fallback_used) return 'Fallback heuristic used';
+  if (report?.fallback_used) return 'Heuristic fallback kept';
   const provider = String(report?.provider || '').toLowerCase();
-  if (provider === 'ollama') return 'Ollama analysis';
-  if (provider === 'heuristic') return 'Heuristic analysis';
+  if (provider === 'ollama') return 'Ollama enhanced';
+  if (provider === 'heuristic') return 'Quick heuristic summary';
   if (provider) return `${provider.charAt(0).toUpperCase()}${provider.slice(1)} analysis`;
   return 'No analysis yet';
+}
+
+function lessonIntelligenceEnhancementStatus(report) {
+  return String(report?.enhancement_status || '').trim().toLowerCase();
+}
+
+const LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES = new Set([
+  'pending',
+  'running',
+  'analyzing_chunks',
+  'synthesizing',
+]);
+const LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES = new Set([
+  'failed',
+  'unavailable',
+  'disabled',
+  'stale',
+  'superseded',
+]);
+
+function lessonIntelligenceEnhancementPending(report) {
+  return Boolean(
+    report?.enhancement_pending
+    || LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report)),
+  );
+}
+
+function lessonIntelligenceOllamaFallbackFailed(report) {
+  return Boolean(
+    report?.fallback_used
+    && String(report?.provider || '').toLowerCase() === 'heuristic'
+    && String(report?.enhancement_provider || '').toLowerCase() === 'ollama'
+    && LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report)),
+  );
+}
+
+function lessonIntelligenceRetryOnCooldown(report) {
+  if (!lessonIntelligenceOllamaFallbackFailed(report)) return false;
+  const availableAt = Date.parse(report?.retry_available_at || report?.metadata?.progressive_enhancement?.retry_available_at || '');
+  return Number.isFinite(availableAt) && Date.now() < availableAt;
+}
+
+function lessonIntelligenceUpToDate(report) {
+  return Boolean(
+    report?.id
+    && !lessonIntelligenceIsStale(report)
+    && !lessonIntelligenceEnhancementPending(report)
+    && !lessonIntelligenceOllamaFallbackFailed(report)
+    && String(report?.provider || '').toLowerCase() === 'ollama',
+  );
+}
+
+function lessonIntelligenceEnhancementMeta(report) {
+  return report?.metadata?.progressive_enhancement || {};
+}
+
+function lessonIntelligenceEnhancementLabel(report) {
+  const status = lessonIntelligenceEnhancementStatus(report);
+  const provider = String(report?.enhancement_provider || '').toLowerCase();
+  if (provider !== 'ollama') return '';
+  const meta = lessonIntelligenceEnhancementMeta(report);
+  const phase = String(meta.phase || '').toLowerCase();
+  const chunkCount = Number(meta.chunk_count || report?.metadata?.chunk_count || 0);
+  const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
+  const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
+  const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
+  if (LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(status)) {
+    if (phase === 'synthesizing') return 'Synthesizing final insight';
+    const currentChunk = Number(meta.current_chunk_index || meta.current_chunk?.index || 0);
+    const visibleProgress = Math.max(processedChunks, currentChunk);
+    if (chunkCount > 1) return `Ollama analyzing ${visibleProgress}/${chunkCount} chunks`;
+    return 'Ollama enhancement running';
+  }
+  if (status === 'done') {
+    if (failedChunks > 0) return 'Partial Ollama insight; heuristic kept for some sections.';
+    return 'Ollama enhanced';
+  }
+  if (status === 'partial') return 'Partial Ollama insight; heuristic kept for some sections.';
+  if (LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)) {
+    if (lessonIntelligenceOllamaFallbackFailed(report)) return 'Heuristic fallback shown. Retry Ollama';
+    return 'Ollama enhancement failed; heuristic analysis kept.';
+  }
+  return '';
+}
+
+const LESSON_INTELLIGENCE_SECTION_LABELS = {
+  summary: 'Summary',
+  clarity: 'Clarity',
+  page_suggestions: 'Page suggestions',
+  expanded_narration: 'Narration suggestions',
+  tags: 'Tags',
+};
+
+function lessonIntelligenceSectionEntries(report) {
+  const progressive = report?.metadata?.progressive_enhancement?.sections;
+  const topLevel = report?.metadata?.sections;
+  const sections = progressive && typeof progressive === 'object' ? progressive : topLevel;
+  if (!sections || typeof sections !== 'object') return [];
+  return Object.entries(LESSON_INTELLIGENCE_SECTION_LABELS)
+    .map(([key, label]) => {
+      const meta = sections[key] && typeof sections[key] === 'object' ? sections[key] : {};
+      const status = String(meta.status || '').trim().toLowerCase();
+      const provider = String(meta.provider || '').trim().toLowerCase();
+      if (!status && !provider) return null;
+      return { key, label, status, provider };
+    })
+    .filter(Boolean);
+}
+
+function lessonIntelligenceSectionText(entry) {
+  if (!entry) return '';
+  if (LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(entry.status)) return `${entry.label} analyzing...`;
+  if (entry.status === 'done' && entry.provider === 'ollama') return `${entry.label} enhanced`;
+  if (entry.status === 'done') return `${entry.label} ready`;
+  if (entry.status === 'failed') return `${entry.label} heuristic kept`;
+  return `${entry.label} ${entry.status || 'ready'}`;
+}
+
+function LessonIntelligenceSectionStatusList({ report }) {
+  const entries = lessonIntelligenceSectionEntries(report);
+  if (!entries.length) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {entries.map((entry) => {
+        const pending = LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(entry.status);
+        const enhanced = entry.status === 'done' && entry.provider === 'ollama';
+        const failed = entry.status === 'failed';
+        return (
+          <span
+            key={entry.key}
+            className={`rounded-full px-3 py-1 text-xs font-semibold ${
+              failed
+                ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                : pending
+                  ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                  : enhanced
+                    ? 'bg-[color:var(--feedback-success-bg)] text-[color:var(--feedback-success-fg)]'
+                    : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
+            }`}
+          >
+            {lessonIntelligenceSectionText(entry)}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 function lessonIntelligenceLanguageLabel(report) {
@@ -1015,10 +1164,14 @@ function lessonIntelligenceInputWasCompacted(report) {
   return Boolean(report?.metadata?.input_truncated);
 }
 
+function lessonIntelligenceIsStale(report) {
+  return Boolean(report?.is_stale);
+}
+
 function lessonIntelligenceItemText(item) {
   if (typeof item === 'string') return item;
   if (!item || typeof item !== 'object') return '';
-  return textValue(item.message || item.suggestion || item.reason || item.text || item.title);
+  return textValue(item.message || item.advice || item.suggestion || item.reason || item.text || item.title);
 }
 
 function lessonIntelligenceItemMeta(item) {
@@ -1028,10 +1181,43 @@ function lessonIntelligenceItemMeta(item) {
   return [page, type].filter(Boolean).join(' - ');
 }
 
+function lessonIntelligenceItemKey(item, index = 0) {
+  if (!item || typeof item !== 'object') return `item-${index}`;
+  return [
+    item.page_key || item.page_number || 'item',
+    item.type || 'suggestion',
+    index,
+  ].map((value) => textValue(value).replace(/\s+/g, '-')).join(':');
+}
+
+function lessonIntelligenceDraftNarration(item) {
+  if (!item || typeof item !== 'object') return '';
+  return textValue(item.draft_narration || item.copy_text).trim();
+}
+
+function getCleanSuggestionCopyText(item) {
+  const draft = lessonIntelligenceDraftNarration(item);
+  if (draft) return draft;
+  if (typeof item === 'string') return item.trim();
+  if (!item || typeof item !== 'object') return '';
+  return textValue(item.copy_text || item.advice || item.suggestion || item.message || item.text || '').trim();
+}
+
+function lessonPublicSummary(report) {
+  return textValue(report?.public_lesson_summary || report?.lesson_summary || report?.summary).trim();
+}
+
+function lessonImprovementSummary(report) {
+  return textValue(report?.improvement_summary || report?.editorial_summary).trim();
+}
+
 function lessonIntelligenceCopyText(report) {
   if (!report) return '';
   const sections = [];
-  if (report.summary) sections.push(`Summary\n${report.summary}`);
+  const improvementSummary = lessonImprovementSummary(report);
+  const publicSummary = lessonPublicSummary(report);
+  if (improvementSummary) sections.push(`Improvement summary\n${improvementSummary}`);
+  if (publicSummary) sections.push(`Lesson overview\n${publicSummary}`);
   const complexity = report.complexity || {};
   if (complexity.level) {
     sections.push(`Complexity\n${complexity.level} (${complexity.score || 0}/100)`);
@@ -1039,9 +1225,8 @@ function lessonIntelligenceCopyText(report) {
   const appendList = (title, items) => {
     if (!Array.isArray(items) || !items.length) return;
     const lines = items.map((item) => {
-      const meta = lessonIntelligenceItemMeta(item);
       const text = lessonIntelligenceItemText(item);
-      return [meta, text].filter(Boolean).join(': ');
+      return text;
     }).filter(Boolean);
     if (lines.length) sections.push(`${title}\n${lines.map((line) => `- ${line}`).join('\n')}`);
   };
@@ -1051,26 +1236,56 @@ function lessonIntelligenceCopyText(report) {
   return sections.join('\n\n');
 }
 
-function LessonIntelligenceList({ title, items, emptyText }) {
+function CollapsibleIntelligenceSection({ title, count = 0, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)]/35">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="focus-ring flex w-full items-center justify-between gap-3 rounded-xl px-3 py-3 text-left"
+      >
+        <span className="min-w-0">
+          <span className="block text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">{title}</span>
+          <span className="mt-0.5 block text-xs text-[var(--text-secondary)]">{count} item{count === 1 ? '' : 's'}</span>
+        </span>
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-[var(--text-secondary)] transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && <div className="space-y-2 px-3 pb-3">{children}</div>}
+    </section>
+  );
+}
+
+function LessonIntelligenceList({ title, items, emptyText, renderActions, renderItem }) {
   const rows = Array.isArray(items) ? items : [];
   return (
-    <div className="space-y-2">
-      <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">{title}</p>
+    <CollapsibleIntelligenceSection title={title} count={rows.length}>
       {rows.length === 0 ? (
         <p className="text-sm text-[var(--text-secondary)]">{emptyText}</p>
       ) : (
         rows.map((item, index) => {
+          if (renderItem) {
+            return renderItem(item, index);
+          }
           const meta = lessonIntelligenceItemMeta(item);
           const text = lessonIntelligenceItemText(item);
           return (
             <article key={`${title}-${index}`} className="rounded-xl bg-[color:var(--surface-muted)] p-3">
               {meta && <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">{meta}</p>}
               <p className="mt-1 text-sm text-[var(--text-primary)]">{text || 'Review this item.'}</p>
+              {renderActions && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {renderActions(item, index)}
+                </div>
+              )}
             </article>
           );
         })
       )}
-    </div>
+    </CollapsibleIntelligenceSection>
   );
 }
 
@@ -1084,6 +1299,10 @@ function LessonIntelligencePanel({
   onAnalyze,
   onRefresh,
   onCopy,
+  onCopySuggestion,
+  onApplyNarrationSuggestion,
+  copiedSuggestionKey,
+  notice,
 }) {
   if (!project) return null;
 
@@ -1093,7 +1312,30 @@ function LessonIntelligencePanel({
   const complexity = report?.complexity || {};
   const score = Number.isFinite(Number(complexity.score)) ? Number(complexity.score) : 0;
   const providerLabel = lessonIntelligenceProviderLabel(report);
+  const enhancementLabel = lessonIntelligenceEnhancementLabel(report);
+  const enhancementPending = lessonIntelligenceEnhancementPending(report);
+  const enhancementFailed = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report));
   const copyDisabled = !hasReport || actionBusy || loading;
+  const stale = lessonIntelligenceIsStale(report);
+  const retryOllama = lessonIntelligenceOllamaFallbackFailed(report);
+  const retryCooldown = lessonIntelligenceRetryOnCooldown(report);
+  const upToDate = lessonIntelligenceUpToDate(report);
+  const improvementSummary = lessonImprovementSummary(report);
+  const publicSummary = lessonPublicSummary(report);
+  const analyzeDisabled = !enabled || loading || Boolean(actionBusy) || enhancementPending || retryCooldown || upToDate;
+  const analyzeLabel = actionBusy
+    ? 'Analyzing...'
+    : enhancementPending
+      ? 'Enhancing...'
+      : retryCooldown
+        ? 'Retry available soon'
+        : retryOllama
+          ? 'Retry Ollama'
+          : upToDate
+            ? 'Up to date'
+            : stale
+              ? 'Re-analyze'
+              : 'Analyze lesson';
 
   return (
     <div className="rounded-2xl token-surface p-4">
@@ -1118,6 +1360,22 @@ function LessonIntelligencePanel({
                 Report #{report.id}
               </span>
             )}
+            {stale && (
+              <span className="rounded-full bg-[color:var(--status-warning-bg)] px-3 py-1 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+                Stale
+              </span>
+            )}
+            {enhancementLabel && (
+              <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                enhancementFailed
+                  ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                  : enhancementPending
+                    ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                    : 'bg-[color:var(--feedback-success-bg)] text-[color:var(--feedback-success-fg)]'
+              }`}>
+                {enhancementLabel}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -1125,9 +1383,9 @@ function LessonIntelligencePanel({
             <RefreshCcw size={14} />
             <span>Refresh</span>
           </Button>
-          <Button size="sm" onClick={onAnalyze} disabled={!enabled || loading || Boolean(actionBusy)}>
-            <Sparkles size={14} />
-            <span>{actionBusy ? 'Analyzing...' : 'Analyze lesson'}</span>
+          <Button size="sm" onClick={onAnalyze} disabled={analyzeDisabled}>
+            <Sparkles size={14} className={enhancementPending ? 'animate-spin' : ''} />
+            <span>{analyzeLabel}</span>
           </Button>
         </div>
       </div>
@@ -1149,12 +1407,24 @@ function LessonIntelligencePanel({
           {error}
         </p>
       )}
+      {notice && (
+        <p className="mt-3 rounded-xl bg-[color:var(--feedback-success-bg)] px-3 py-2 text-sm text-[color:var(--feedback-success-fg)]">
+          {notice}
+        </p>
+      )}
+      {enhancementFailed && (
+        <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
+          {retryOllama ? 'Heuristic fallback shown. Retry Ollama when available. ' : ''}
+          {report?.enhancement_last_failure_reason || report?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
+        </p>
+      )}
+      {hasReport && <LessonIntelligenceSectionStatusList report={report} />}
 
       {!loading && enabled && !hasReport && !error && (
         <div className="mt-4 rounded-xl bg-[color:var(--surface-muted)] p-4">
-          <p className="text-sm font-semibold text-[var(--text-primary)]">No analysis yet</p>
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Analysis preparing...</p>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Run an analysis to review summary, complexity, warnings, and narration suggestions.
+            A quick summary appears here when transcript text is available.
           </p>
         </div>
       )}
@@ -1164,9 +1434,17 @@ function LessonIntelligencePanel({
           <div className="rounded-xl bg-[color:var(--surface-muted)] p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Summary</p>
-                <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">{report.summary}</p>
-                {report.short_description && (
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Studio guidance</p>
+                <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">
+                  {improvementSummary || 'Review clarity, examples, narration depth, and lesson flow before publishing.'}
+                </p>
+                {publicSummary && (
+                  <div className="mt-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3">
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">Lesson overview</p>
+                    <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">{publicSummary}</p>
+                  </div>
+                )}
+                {report.short_description && report.short_description !== publicSummary && (
                   <p className="mt-2 text-xs text-[var(--text-secondary)]">{report.short_description}</p>
                 )}
               </div>
@@ -1196,8 +1474,11 @@ function LessonIntelligencePanel({
             </Button>
           </div>
 
-          {(lessonIntelligenceInputWasCompacted(report) || (Array.isArray(report.limitations) && report.limitations.length > 0)) && (
+          {(stale || lessonIntelligenceInputWasCompacted(report) || (Array.isArray(report.limitations) && report.limitations.length > 0)) && (
             <div className="rounded-xl bg-[color:var(--surface-muted)] p-3 text-sm text-[var(--text-secondary)]">
+              {stale && (
+                <p className="font-semibold text-[color:var(--status-warning-fg)]">This analysis is out of date for the current transcript.</p>
+              )}
               {lessonIntelligenceInputWasCompacted(report) && (
                 <p>Large lesson text was summarized before analysis.</p>
               )}
@@ -1221,11 +1502,59 @@ function LessonIntelligencePanel({
             title="Expanded narration suggestions"
             items={report.expanded_narration_suggestions}
             emptyText="No expanded narration suggestions in the latest report."
+            renderItem={(item, index) => {
+              const key = lessonIntelligenceItemKey(item, index);
+              const pageLabel = item?.page_number ? `Page ${item.page_number}` : 'Page';
+              const title = textValue(item?.title || 'Expand narration');
+              const advice = textValue(item?.advice || item?.suggestion || lessonIntelligenceItemText(item));
+              const draftNarration = lessonIntelligenceDraftNarration(item);
+              const copiedThis = copiedSuggestionKey === key;
+              return (
+                <article key={key} className="space-y-3 rounded-xl bg-[color:var(--surface-muted)] p-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <span className="inline-flex rounded-full bg-[var(--surface-container-highest)] px-2.5 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-primary)]">
+                        {pageLabel}
+                      </span>
+                      <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">{title}</p>
+                    </div>
+                    {item?.ai_generated && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-[color:rgba(208,188,255,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--accent-primary)]">
+                        <Sparkles size={12} />
+                        <span>AI draft</span>
+                      </span>
+                    )}
+                  </div>
+                  {advice && (
+                    <p className="text-sm leading-6 text-[var(--text-secondary)]">{advice}</p>
+                  )}
+                  {draftNarration ? (
+                    <div className="rounded-xl border border-[color:rgba(208,188,255,0.32)] bg-[color:rgba(208,188,255,0.08)] p-3">
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">Draft narration</p>
+                      <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-primary)]">{draftNarration}</p>
+                    </div>
+                  ) : (
+                    <p className="rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
+                      This suggestion does not include draft narration to apply.
+                    </p>
+                  )}
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" onClick={() => onCopySuggestion?.(item, index)} disabled={Boolean(actionBusy) || !getCleanSuggestionCopyText(item)}>
+                      {copiedThis ? <Check size={14} /> : <Copy size={14} />}
+                      <span>{copiedThis ? 'Copied' : 'Copy'}</span>
+                    </Button>
+                    <Button size="sm" onClick={() => onApplyNarrationSuggestion?.(item)} disabled={Boolean(actionBusy) || !draftNarration}>
+                      <Sparkles size={14} />
+                      <span>Apply to page draft</span>
+                    </Button>
+                  </div>
+                </article>
+              );
+            }}
           />
 
-          {Array.isArray(report.suggested_tags) && report.suggested_tags.length > 0 && (
-            <div className="space-y-2">
-              <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Suggested tags</p>
+          {(Array.isArray(report.suggested_tags) && report.suggested_tags.length > 0) && (
+            <CollapsibleIntelligenceSection title="Suggested tags" count={report.suggested_tags.length}>
               <div className="flex flex-wrap gap-2">
                 {report.suggested_tags.map((tag, index) => {
                   const tagLabel = textValue(tag);
@@ -1236,7 +1565,7 @@ function LessonIntelligencePanel({
                   );
                 })}
               </div>
-            </div>
+            </CollapsibleIntelligenceSection>
           )}
         </div>
       )}
@@ -1290,6 +1619,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [lessonIntelligenceActionBusy, setLessonIntelligenceActionBusy] = useState('');
   const [lessonIntelligenceError, setLessonIntelligenceError] = useState('');
   const [lessonIntelligenceCopied, setLessonIntelligenceCopied] = useState(false);
+  const [lessonIntelligenceCopiedItemKey, setLessonIntelligenceCopiedItemKey] = useState('');
+  const [lessonIntelligenceNotice, setLessonIntelligenceNotice] = useState('');
+  const lessonIntelligenceAutoRunKeysRef = useRef(new Set());
   const [sceneActionBusy, setSceneActionBusy] = useState('');
   const [sceneActionMessage, setSceneActionMessage] = useState('');
   const [sceneActionError, setSceneActionError] = useState('');
@@ -1622,6 +1954,30 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [refreshSelectedLessonState, selectedLesson?.id, selectedLessonNeedsPolling]);
 
   useEffect(() => {
+    if (!selectedLesson?.id || !lessonIntelligenceEnhancementPending(selectedLessonIntelligence)) return undefined;
+
+    let active = true;
+    const poll = async () => {
+      try {
+        const payload = await fetchProjectLessonIntelligence(selectedLesson.id);
+        if (!active) return;
+        setLessonIntelligenceByProject((previous) => ({
+          ...previous,
+          [selectedLesson.id]: payload,
+        }));
+      } catch {
+        // Keep the heuristic report visible if a polling read fails.
+      }
+    };
+
+    const intervalId = window.setInterval(poll, LESSON_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [selectedLesson?.id, selectedLessonIntelligence]);
+
+  useEffect(() => {
     if (!activeRerenderStatus || !selectedLesson?.id) return;
     const jobStatus = projectLatestJobStatus(selectedLesson);
     const status = projectRawStatus(selectedLesson);
@@ -1647,11 +2003,15 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     if (!selectedLesson?.id) {
       setLessonIntelligenceError('');
       setLessonIntelligenceCopied(false);
+      setLessonIntelligenceCopiedItemKey('');
+      setLessonIntelligenceNotice('');
       return;
     }
 
     setLessonIntelligenceError('');
     setLessonIntelligenceCopied(false);
+    setLessonIntelligenceCopiedItemKey('');
+    setLessonIntelligenceNotice('');
     refreshLessonIntelligence(selectedLesson.id);
   }, [refreshLessonIntelligence, selectedLesson?.id]);
 
@@ -2159,35 +2519,106 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   };
 
-  const handleAnalyzeLessonIntelligence = async (project) => {
-    if (!project?.id || lessonIntelligenceActionBusy) return;
+  const handleAnalyzeLessonIntelligence = useCallback(async (project, { auto = false, force = false } = {}) => {
+    if (!project?.id || lessonIntelligenceActionBusy) return null;
+    if (lessonIntelligenceEnhancementPending(lessonIntelligenceByProject[project.id])) return null;
     setLessonIntelligenceActionBusy('analyze');
     setLessonIntelligenceError('');
     setLessonIntelligenceCopied(false);
+    setLessonIntelligenceNotice('');
     try {
-      const payload = await analyzeProjectLessonIntelligence(project.id);
+      const payload = await analyzeProjectLessonIntelligence(project.id, { force: Boolean(force) && !auto });
       setLessonIntelligenceByProject((previous) => ({
         ...previous,
         [project.id]: payload,
       }));
+      return payload;
     } catch (err) {
       setLessonIntelligenceError(err.message || 'Lesson analysis failed.');
+      return null;
     } finally {
       setLessonIntelligenceActionBusy('');
     }
-  };
+  }, [lessonIntelligenceActionBusy, lessonIntelligenceByProject]);
 
   const handleCopyLessonIntelligence = async () => {
     const text = lessonIntelligenceCopyText(selectedLessonIntelligence);
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       setLessonIntelligenceCopied(true);
-      window.setTimeout(() => setLessonIntelligenceCopied(false), 1600);
+      window.setTimeout(() => setLessonIntelligenceCopied(false), 2200);
     } catch {
       setLessonIntelligenceError('Could not copy suggestions.');
     }
   };
+
+  const handleCopyLessonIntelligenceItem = async (item, index = 0) => {
+    const copyText = getCleanSuggestionCopyText(item);
+    if (!copyText) return;
+    const itemKey = lessonIntelligenceItemKey(item, index);
+    try {
+      await copyTextToClipboard(copyText);
+      setLessonIntelligenceCopiedItemKey(itemKey);
+      setLessonIntelligenceNotice('Suggestion copied.');
+      window.setTimeout(() => {
+        setLessonIntelligenceCopiedItemKey('');
+        setLessonIntelligenceNotice('');
+      }, 2200);
+    } catch {
+      setLessonIntelligenceError('Could not copy this suggestion.');
+    }
+  };
+
+  const handleApplyLessonNarrationSuggestion = (item) => {
+    const apply = transcriptEditorRef.current?.applyNarrationSuggestion;
+    if (!apply) {
+      setLessonIntelligenceError('Transcript editor is not ready yet.');
+      return;
+    }
+    const result = apply(item);
+    if (!result?.ok) {
+      if (result?.pendingConfirmation) {
+        setLessonIntelligenceError('');
+        setLessonIntelligenceNotice('');
+      } else if (!result?.cancelled) {
+        setLessonIntelligenceError(result?.message || 'Could not apply this suggestion.');
+      }
+      return;
+    }
+    setLessonIntelligenceError('');
+    setLessonIntelligenceNotice('AI draft applied. Review it, then save changes when ready.');
+  };
+
+  useEffect(() => {
+    if (!selectedLesson?.id || loadingLessonIntelligence || lessonIntelligenceActionBusy) return;
+    const hasFetchedReport = Object.prototype.hasOwnProperty.call(lessonIntelligenceByProject, selectedLesson.id);
+    if (!hasFetchedReport) return;
+
+    const report = selectedLessonIntelligence || null;
+    if (report?.enabled === false || report?.status === 'disabled' || report?.status === 'failed') return;
+    if (lessonIntelligenceEnhancementPending(report)) return;
+    if (transcriptEditorRef.current?.hasUnsavedChanges?.()) return;
+
+    const status = String(report?.status || '').toLowerCase();
+    const missingReport = !report?.id || status === 'empty';
+    const staleReport = lessonIntelligenceIsStale(report);
+    if (!missingReport && !(staleReport && activeEditorPanel === 'intelligence')) return;
+
+    const sourceKey = report?.current_source_hash || report?.report_source_hash || report?.source_hash || 'empty';
+    const autoRunKey = `${selectedLesson.id}:${sourceKey}:${missingReport ? 'missing' : 'stale'}`;
+    if (lessonIntelligenceAutoRunKeysRef.current.has(autoRunKey)) return;
+    lessonIntelligenceAutoRunKeysRef.current.add(autoRunKey);
+    handleAnalyzeLessonIntelligence(selectedLesson, { auto: true });
+  }, [
+    activeEditorPanel,
+    handleAnalyzeLessonIntelligence,
+    lessonIntelligenceActionBusy,
+    lessonIntelligenceByProject,
+    loadingLessonIntelligence,
+    selectedLesson,
+    selectedLessonIntelligence,
+  ]);
 
   const handlePublishToggle = async (project, nextPublished) => {
     const moderation = moderationByProject[project.id] || null;
@@ -2724,6 +3155,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setGlobalEditorError('');
 
     try {
+      const hadTranscriptChanges = Boolean(transcriptEditorRef.current?.hasUnsavedChanges?.());
       const ttsResult = await ttsSettingsRef.current?.save?.();
       if (ttsResult?.id) {
         handleProjectUpdated(ttsResult);
@@ -2733,13 +3165,38 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       applyProjectModerationPayload(transcriptResult, 'not_scanned');
       saveLessonNotes();
       await refreshSelectedLessonState(selectedLesson.id, { showLoading: false });
+      if (hadTranscriptChanges) {
+        if (activeEditorPanel === 'intelligence') {
+          await handleAnalyzeLessonIntelligence(selectedLesson, { auto: true });
+        } else {
+          setLessonIntelligenceByProject((previous) => {
+            const current = previous[selectedLesson.id];
+            if (!current) return previous;
+            return {
+              ...previous,
+              [selectedLesson.id]: {
+                ...current,
+                is_stale: true,
+              },
+            };
+          });
+        }
+      }
       setGlobalEditorMessage(triggerRerender ? 'Saved all changes and queued rerender.' : 'Saved all changes.');
     } catch (err) {
       setGlobalEditorError(err.message || 'Could not save all editor changes.');
     } finally {
       setGlobalEditorActionBusy('');
     }
-  }, [applyProjectModerationPayload, handleProjectUpdated, refreshSelectedLessonState, saveLessonNotes, selectedLesson?.id]);
+  }, [
+    activeEditorPanel,
+    applyProjectModerationPayload,
+    handleAnalyzeLessonIntelligence,
+    handleProjectUpdated,
+    refreshSelectedLessonState,
+    saveLessonNotes,
+    selectedLesson,
+  ]);
 
   const handleDiscardDraft = useCallback(async () => {
     if (!selectedLesson?.id || globalEditorActionBusy) return;
@@ -4201,9 +4658,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         error={lessonIntelligenceError}
                         actionBusy={lessonIntelligenceActionBusy}
                         copied={lessonIntelligenceCopied}
+                        copiedSuggestionKey={lessonIntelligenceCopiedItemKey}
+                        notice={lessonIntelligenceNotice}
                         onRefresh={() => selectedLesson && refreshLessonIntelligence(selectedLesson.id)}
-                        onAnalyze={() => handleAnalyzeLessonIntelligence(selectedLesson)}
+                        onAnalyze={() => handleAnalyzeLessonIntelligence(
+                          selectedLesson,
+                          { force: lessonIntelligenceIsStale(selectedLessonIntelligence) },
+                        )}
                         onCopy={handleCopyLessonIntelligence}
+                        onCopySuggestion={handleCopyLessonIntelligenceItem}
+                        onApplyNarrationSuggestion={handleApplyLessonNarrationSuggestion}
                       />
                     ) : (
                       <div className="rounded-2xl token-surface p-4">

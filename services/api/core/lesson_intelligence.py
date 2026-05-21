@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -13,11 +14,27 @@ from django.conf import settings
 
 from core.drafts import get_studio_transcript_pages
 from core.intelligence_language import detect_lesson_language, resolve_output_language
+from core.intelligence_progressive import (
+    build_intelligence_run_identity,
+    bounded_adaptive_background_timeout,
+    enhancement_response_fields,
+    first_provider_name,
+    intelligence_runtime_profile_metadata,
+    lesson_section_statuses,
+    ollama_chunk_max_chars,
+    ollama_chunk_concurrency,
+    ollama_chunk_timeout_seconds,
+    ollama_total_timeout_budget_seconds,
+    provider_attempt as progressive_provider_attempt,
+    provider_chain_contains_ollama,
+    safe_response_preview,
+)
 from core.models import LessonIntelligenceReport, Project
 
 
 logger = logging.getLogger(__name__)
 
+LESSON_INTELLIGENCE_PROMPT_VERSION = "lesson-intelligence-v2"
 COMPLEXITY_LEVELS = {"beginner", "intermediate", "advanced"}
 TECHNICAL_TERMS = {
     "algorithm",
@@ -178,14 +195,14 @@ class LessonIntelligenceInput:
 class LessonIntelligenceProvider(Protocol):
     provider_name: str
 
-    def analyze_lesson(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_lesson(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         ...
 
 
 class HeuristicLessonIntelligenceProvider:
     provider_name = "heuristic"
 
-    def analyze_lesson(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_lesson(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         output_language = _output_language(input_payload)
         pages = [page for page in input_payload.get("pages", []) if isinstance(page, dict)]
         all_text = _clean_text(input_payload.get("input_text"), max_chars=-1)
@@ -273,6 +290,21 @@ class HeuristicLessonIntelligenceProvider:
                         "empty_page",
                     )
                 )
+                expanded_suggestions.append(
+                    _expanded_suggestion(
+                        page_number,
+                        page_key,
+                        _lesson_message(output_language, "empty_page_advice"),
+                        _draft_narration_for_page(
+                            output_language=output_language,
+                            suggestion_type="empty_page",
+                            display_text=display_text,
+                            narration_text=narration_text,
+                        ),
+                        "empty_page",
+                        generated_by=self.provider_name,
+                    )
+                )
                 continue
 
             if page_words > 95:
@@ -308,7 +340,14 @@ class HeuristicLessonIntelligenceProvider:
                         page_number,
                         page_key,
                         _lesson_message(output_language, "bullet_expansion"),
+                        _draft_narration_for_page(
+                            output_language=output_language,
+                            suggestion_type="bullet_expansion",
+                            display_text=display_text,
+                            narration_text=narration_text,
+                        ),
                         "bullet_expansion",
+                        generated_by=self.provider_name,
                     )
                 )
 
@@ -318,7 +357,14 @@ class HeuristicLessonIntelligenceProvider:
                         page_number,
                         page_key,
                         _lesson_message(output_language, "short_narration"),
+                        _draft_narration_for_page(
+                            output_language=output_language,
+                            suggestion_type="short_narration",
+                            display_text=display_text,
+                            narration_text=narration_text,
+                        ),
                         "short_narration",
+                        generated_by=self.provider_name,
                     )
                 )
 
@@ -331,6 +377,12 @@ class HeuristicLessonIntelligenceProvider:
         )
 
         summary = _summary_from_text(input_payload.get("project", {}).get("title"), all_text, output_language=output_language)
+        improvement_summary = _improvement_summary_from_signals(
+            clarity_warnings=clarity_warnings,
+            page_suggestions=page_suggestions,
+            expanded_suggestions=expanded_suggestions,
+            output_language=output_language,
+        )
         limitations = [
             _lesson_message(output_language, "heuristic_limitation"),
             _lesson_message(output_language, "advisory_limitation"),
@@ -343,6 +395,8 @@ class HeuristicLessonIntelligenceProvider:
         return {
             "provider": self.provider_name,
             "lesson_summary": summary,
+            "public_lesson_summary": summary,
+            "improvement_summary": improvement_summary,
             "short_description": _short_description(summary),
             "complexity_level": complexity_level,
             "complexity_score": complexity_score,
@@ -369,26 +423,97 @@ class HeuristicLessonIntelligenceProvider:
 class OllamaLessonIntelligenceProvider:
     provider_name = "ollama"
 
-    def __init__(self) -> None:
+    def __init__(self, *, background: bool = False) -> None:
+        self.background = bool(background)
         self.base_url = _string_setting(
             "OLLAMA_LESSON_INTELLIGENCE_BASE_URL",
             _string_setting("OLLAMA_BASE_URL", "http://host.docker.internal:11434"),
         ).rstrip("/")
         self.model = _string_setting("OLLAMA_LESSON_INTELLIGENCE_MODEL", "qwen2.5:7b-instruct")
-        self.timeout_seconds = _float_setting("LESSON_INTELLIGENCE_TIMEOUT_SECONDS", 30.0, minimum=0.5, maximum=180.0)
+        configured_timeout = _float_setting("LESSON_INTELLIGENCE_TIMEOUT_SECONDS", 30.0, minimum=0.5, maximum=180.0)
+        if background:
+            self.timeout_seconds = _background_provider_timeout(
+                cap_setting="LESSON_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS",
+            )
+        else:
+            self.timeout_seconds = _effective_sync_provider_timeout(
+                configured_timeout,
+                cap_setting="LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS",
+            )
+        self.last_timeout_seconds = self.timeout_seconds
 
-    def analyze_lesson(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_lesson(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         if not self.base_url:
             raise LessonIntelligenceProviderUnavailable("Ollama base URL is not configured")
         if not self.model:
             raise LessonIntelligenceProviderUnavailable("Ollama lesson intelligence model is not configured")
+        timeout_seconds = (
+            float(timeout_seconds_override)
+            if timeout_seconds_override is not None
+            else (
+                adaptive_lesson_intelligence_timeout(input_payload, base_seconds=self.timeout_seconds)
+                if self.background
+                else self.timeout_seconds
+            )
+        )
+        self.last_timeout_seconds = timeout_seconds
 
+        prompt = _ollama_prompt(input_payload)
+        data, elapsed_seconds = self._generate(prompt, timeout_seconds, retry_count=0)
+        response_text = data.get("response") if isinstance(data, dict) else None
+        try:
+            provider_json = data if response_text is None else _json_object_from_text(str(response_text or ""))
+            if isinstance(provider_json, dict):
+                provider_json.setdefault("output_language", _output_language(input_payload))
+            normalized = _normalize_provider_result(provider_json, provider_name=self.provider_name)
+            repaired = False
+            repair_retry_count = 0
+        except LessonIntelligenceProviderUnavailable as exc:
+            parse_stage = _ollama_parse_stage(exc)
+            try:
+                repair_timeout = min(30.0, max(10.0, timeout_seconds * 0.35))
+                repair_prompt = _ollama_repair_prompt(str(response_text or data or ""), output_language=_output_language(input_payload))
+                repair_data, repair_elapsed = self._generate(repair_prompt, repair_timeout, retry_count=1)
+                repair_text = repair_data.get("response") if isinstance(repair_data, dict) else None
+                repair_json = repair_data if repair_text is None else _json_object_from_text(str(repair_text or ""))
+                if isinstance(repair_json, dict):
+                    repair_json.setdefault("output_language", _output_language(input_payload))
+                normalized = _normalize_provider_result(repair_json, provider_name=self.provider_name)
+                repaired = True
+                repair_retry_count = 1
+                elapsed_seconds = round(elapsed_seconds + repair_elapsed, 2)
+            except Exception as repair_exc:  # noqa: BLE001
+                failure = LessonIntelligenceProviderUnavailable(str(exc))
+                failure.__cause__ = exc
+                failure.diagnostic = _ollama_failure_diagnostic(
+                    exc,
+                    stage=parse_stage,
+                    model=self.model,
+                    elapsed_seconds=elapsed_seconds,
+                    retry_count=1,
+                    response_preview=safe_response_preview(response_text),
+                    repair_error=repair_exc,
+                )
+                raise failure from exc
+
+        normalized["metadata"] = {
+            **dict(normalized.get("metadata") or {}),
+            "model": self.model,
+            "base_url_configured": bool(self.base_url),
+            "timeout_seconds": timeout_seconds,
+            "elapsed_seconds": elapsed_seconds,
+            "repaired": repaired,
+            "repair_retry_count": repair_retry_count,
+        }
+        return normalized
+
+    def _generate(self, prompt: str, timeout_seconds: float, *, retry_count: int) -> tuple[dict[str, Any], float]:
         request_payload = {
             "model": self.model,
-            "prompt": _ollama_prompt(input_payload),
+            "prompt": prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0},
+            "options": {"temperature": 0, "num_predict": _int_setting("OLLAMA_LESSON_INTELLIGENCE_NUM_PREDICT", 900)},
         }
         request = Request(
             f"{self.base_url}/api/generate",
@@ -396,27 +521,36 @@ class OllamaLessonIntelligenceProvider:
             headers={"Content-Type": "application/json", "Accept": "application/json"},
             method="POST",
         )
+        started_at = time.monotonic()
         try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
+            with urlopen(request, timeout=timeout_seconds) as response:
                 body = response.read().decode("utf-8")
             data = json.loads(body)
         except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            raise LessonIntelligenceProviderUnavailable(f"Ollama request failed: {exc.__class__.__name__}") from exc
+            elapsed_seconds = round(time.monotonic() - started_at, 2)
+            failure = LessonIntelligenceProviderUnavailable(f"Ollama request failed: {exc.__class__.__name__}")
+            failure.diagnostic = _ollama_failure_diagnostic(
+                exc,
+                stage=_ollama_stage_for_exception(exc),
+                model=self.model,
+                elapsed_seconds=elapsed_seconds,
+                retry_count=retry_count,
+            )
+            raise failure from exc
 
         if not isinstance(data, dict):
-            raise LessonIntelligenceProviderUnavailable("Ollama response must be a JSON object")
-        response_text = data.get("response")
-        if response_text is None:
-            provider_json = data
-        else:
-            provider_json = _json_object_from_text(str(response_text or ""))
-        normalized = _normalize_provider_result(provider_json, provider_name=self.provider_name)
-        normalized["metadata"] = {
-            **dict(normalized.get("metadata") or {}),
-            "model": self.model,
-            "base_url_configured": bool(self.base_url),
-        }
-        return normalized
+            elapsed_seconds = round(time.monotonic() - started_at, 2)
+            failure = LessonIntelligenceProviderUnavailable("Ollama response must be a JSON object")
+            failure.diagnostic = _ollama_failure_diagnostic(
+                failure,
+                stage="json",
+                model=self.model,
+                elapsed_seconds=elapsed_seconds,
+                retry_count=retry_count,
+                response_preview=safe_response_preview(data),
+            )
+            raise failure
+        return data, round(time.monotonic() - started_at, 2)
 
 
 class PaidLessonIntelligenceProvider:
@@ -425,7 +559,7 @@ class PaidLessonIntelligenceProvider:
     def __init__(self, provider_name: str) -> None:
         self.provider_name = str(provider_name or "external").strip().lower() or "external"
 
-    def analyze_lesson(self, input_payload: dict[str, Any]) -> dict[str, Any]:
+    def analyze_lesson(self, input_payload: dict[str, Any], *, timeout_seconds_override: float | None = None) -> dict[str, Any]:
         if not _bool_setting("LESSON_INTELLIGENCE_ALLOW_EXTERNAL", False):
             raise LessonIntelligenceProviderUnavailable("external lesson intelligence providers are disabled")
         raise LessonIntelligenceProviderUnavailable(
@@ -573,6 +707,7 @@ def analyze_with_provider_chain(
             "input_truncated": lesson_input.input_truncated,
             "source_char_count": lesson_input.source_chars,
             "input_char_count": lesson_input.input_chars,
+            "sections": lesson_section_statuses(status="done", provider=normalized["provider"]),
         }
         return normalized
 
@@ -591,8 +726,492 @@ def analyze_with_provider_chain(
         "input_truncated": lesson_input.input_truncated,
         "source_char_count": lesson_input.source_chars,
         "input_char_count": lesson_input.input_chars,
+        "sections": lesson_section_statuses(status="done", provider="heuristic"),
     }
     return fallback
+
+
+def progressive_ollama_enabled(chain: list[str] | None = None) -> bool:
+    provider_chain = chain or provider_chain_from_settings()
+    return _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True) and provider_chain_contains_ollama(provider_chain)
+
+
+def lesson_ollama_run_identity(lesson_input: LessonIntelligenceInput) -> dict[str, str]:
+    return build_intelligence_run_identity(
+        kind="lesson",
+        owner_id=lesson_input.project_id,
+        source_hash=lesson_input.source_hash,
+        provider="ollama",
+        model=_string_setting("OLLAMA_LESSON_INTELLIGENCE_MODEL", "qwen2.5:7b-instruct"),
+        output_language=lesson_input.output_language,
+        prompt_version=LESSON_INTELLIGENCE_PROMPT_VERSION,
+    )
+
+
+def adaptive_lesson_intelligence_timeout(input_payload: dict[str, Any], *, base_seconds: float | None = None) -> float:
+    payload = input_payload if isinstance(input_payload, dict) else {}
+    pages = [page for page in payload.get("pages", []) if isinstance(page, dict)]
+    base = (
+        float(base_seconds)
+        if base_seconds is not None
+        else _background_provider_timeout(cap_setting="LESSON_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS")
+    )
+    return bounded_adaptive_background_timeout(
+        base_seconds=base,
+        input_chars=_safe_int(payload.get("input_chars") or payload.get("source_chars"), 0),
+        page_count=len(pages),
+    )
+
+
+def analyze_lesson_heuristic_immediate(
+    lesson_input: LessonIntelligenceInput,
+    *,
+    chain: list[str] | None = None,
+    enhancement_provider: str = "",
+    enhancement_status: str = "",
+) -> dict[str, Any]:
+    provider_chain = chain or provider_chain_from_settings()
+    input_payload = lesson_input.to_provider_payload()
+    fallback_provider = HeuristicLessonIntelligenceProvider()
+    normalized = _normalize_provider_result(fallback_provider.analyze_lesson(input_payload), provider_name="heuristic")
+    attempts: list[dict[str, str]] = []
+    enhancement_name = str(enhancement_provider or "").strip().lower()
+    for provider_name in provider_chain:
+        name = str(provider_name or "").strip().lower()
+        if not name or name == "auto":
+            continue
+        if name == "heuristic":
+            attempts.append(_provider_attempt("heuristic", "success"))
+        elif enhancement_name and name == enhancement_name:
+            attempts.append(progressive_provider_attempt(name, enhancement_status or "queued"))
+        else:
+            attempts.append(_provider_attempt(name, "skipped", "provider deferred to heuristic fallback"))
+    if not any(item.get("provider") == "heuristic" for item in attempts):
+        attempts.append(_provider_attempt("heuristic", "success"))
+
+    first_provider = first_provider_name(provider_chain)
+    normalized["provider_chain"] = provider_chain
+    normalized["fallback_used"] = bool(first_provider and first_provider != "heuristic")
+    normalized["metadata"] = {
+        **dict(normalized.get("metadata") or {}),
+        "provider_chain_attempts": attempts,
+        "source_hash": lesson_input.source_hash,
+        "detected_language": lesson_input.detected_language,
+        "output_language": lesson_input.output_language,
+        "language_confidence": lesson_input.language_confidence,
+        "input_truncated": lesson_input.input_truncated,
+        "source_char_count": lesson_input.source_chars,
+        "input_char_count": lesson_input.input_chars,
+        "sections": lesson_section_statuses(status="done", provider="heuristic"),
+    }
+    return normalized
+
+
+def _lesson_chunk_page_limit(max_chunk_chars: int) -> int:
+    return max(800, min(2400, int(max_chunk_chars * 0.55)))
+
+
+def _truncate_lesson_page_for_chunk(page: dict[str, Any], *, max_page_chars: int) -> dict[str, Any]:
+    payload = dict(page)
+    for key in ("display_text", "narration_text", "analysis_text"):
+        payload[key] = _clean_text(payload.get(key), max_chars=max_page_chars)
+    return payload
+
+
+def _lesson_chunk_payloads(input_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    pages = [page for page in input_payload.get("pages", []) if isinstance(page, dict)]
+    max_chars = ollama_chunk_max_chars()
+    max_pages = max(1, _int_setting("INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES", 8))
+    max_page_chars = _lesson_chunk_page_limit(max_chars)
+    if not pages:
+        return [dict(input_payload)]
+
+    chunks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    current_chars = 0
+    for page in pages:
+        chunk_page = _truncate_lesson_page_for_chunk(page, max_page_chars=max_page_chars)
+        page_chars = len(json.dumps(chunk_page, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        if current and (len(current) >= max_pages or current_chars + page_chars > max_chars):
+            chunks.append(current)
+            current = []
+            current_chars = 0
+        current.append(chunk_page)
+        current_chars += page_chars
+    if current:
+        chunks.append(current)
+
+    total = len(chunks)
+    chunk_payloads: list[dict[str, Any]] = []
+    project = input_payload.get("project") if isinstance(input_payload.get("project"), dict) else {}
+    description = _clean_text(project.get("description"), max_chars=1200)
+    for index, chunk_pages in enumerate(chunks, start=1):
+        input_text = _compose_input_text(str(project.get("title") or ""), description, chunk_pages)
+        chunk_payload = {
+            **dict(input_payload),
+            "project": {**project, "description": description},
+            "pages": chunk_pages,
+            "input_text": input_text,
+            "input_chars": len(input_text),
+            "source_chars": len(input_text),
+            "chunk": {
+                "index": index,
+                "count": total,
+                "page_numbers": [int(page.get("page_number") or 0) for page in chunk_pages],
+            },
+        }
+        chunk_payloads.append(chunk_payload)
+    return chunk_payloads
+
+
+def lesson_ollama_chunk_count(lesson_input: LessonIntelligenceInput) -> int:
+    return max(1, len(_lesson_chunk_payloads(lesson_input.to_provider_payload())))
+
+
+def _complexity_level_from_score(score: int) -> str:
+    if score >= 70:
+        return "advanced"
+    if score >= 40:
+        return "intermediate"
+    return "beginner"
+
+
+def _dedupe_lesson_objects(items: list[Any], *, key_fields: tuple[str, ...], limit: int) -> list[Any]:
+    seen: set[str] = set()
+    output: list[Any] = []
+    for item in items:
+        if isinstance(item, dict):
+            identity = "|".join(str(item.get(field) or "") for field in key_fields) or json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        else:
+            identity = str(item)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        output.append(item)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _lesson_chunk_limitation(language: str, key: str, *, failed: int = 0, total: int = 0) -> str:
+    if language == "tr":
+        if key == "partial":
+            return f"Ollama {total} parçadan {failed} tanesini tamamlayamadı; başarılı parçalarla kısmi analiz kullanıldı."
+        if key == "budget":
+            return "Ollama toplam süre sınırına ulaştı; kalan parçalar hızlı analizle korundu."
+        return "Büyük ders parçalara ayrılarak analiz edildi."
+    if key == "partial":
+        return f"Ollama could not complete {failed} of {total} chunks; the final report uses partial enhancement."
+    if key == "budget":
+        return "Ollama reached the total time budget; remaining chunks kept heuristic coverage."
+    return "Large lesson was analyzed in chunks."
+
+
+def _synthesize_lesson_chunk_results(
+    lesson_input: LessonIntelligenceInput,
+    *,
+    chunk_count: int,
+    completed_chunks: int,
+    failed_chunks: int,
+    chunk_results: list[dict[str, Any]],
+    chunk_limitations: list[str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    language = lesson_input.output_language
+    summaries = [
+        _clean_text(result.get("public_lesson_summary") or result.get("lesson_summary") or result.get("summary"), max_chars=500)
+        for result in chunk_results
+    ]
+    summaries = [summary for summary in summaries if summary]
+    summary = _clean_text(" ".join(summaries), max_chars=1200)
+    if not summary:
+        summary = "Ollama analyzed the available lesson chunks." if language != "tr" else "Ollama mevcut ders parçalarını analiz etti."
+    improvement_summaries = [
+        _clean_text(result.get("improvement_summary") or result.get("editorial_summary"), max_chars=400)
+        for result in chunk_results
+    ]
+    improvement_summary = _clean_text(" ".join(summary for summary in improvement_summaries if summary), max_chars=900)
+    scores = [max(0, min(100, _safe_int(result.get("complexity_score"), 50))) for result in chunk_results]
+    complexity_score = int(round(sum(scores) / max(1, len(scores))))
+    complexity_reasons: list[Any] = []
+    clarity_warnings: list[Any] = []
+    page_suggestions: list[Any] = []
+    expanded_suggestions: list[Any] = []
+    suggested_tags: list[str] = []
+    limitations: list[Any] = [_lesson_chunk_limitation(language, "chunked")]
+    for result in chunk_results:
+        complexity_reasons.extend(_safe_json_list(result.get("complexity_reasons")))
+        clarity_warnings.extend(_safe_json_list(result.get("clarity_warnings")))
+        page_suggestions.extend(_safe_json_list(result.get("page_suggestions")))
+        expanded_suggestions.extend(_safe_json_list(result.get("expanded_narration_suggestions")))
+        suggested_tags.extend(str(tag) for tag in _safe_json_list(result.get("suggested_tags")) if str(tag).strip())
+        limitations.extend(_safe_json_list(result.get("limitations")))
+    if failed_chunks:
+        limitations.append(_lesson_chunk_limitation(language, "partial", failed=failed_chunks, total=chunk_count))
+    limitations.extend(chunk_limitations)
+
+    if not improvement_summary:
+        improvement_summary = _improvement_summary_from_signals(
+            clarity_warnings=clarity_warnings,
+            page_suggestions=page_suggestions,
+            expanded_suggestions=expanded_suggestions,
+            output_language=language,
+        )
+
+    return {
+        "provider": "ollama",
+        "lesson_summary": summary,
+        "public_lesson_summary": summary,
+        "improvement_summary": improvement_summary,
+        "short_description": _short_description(summary),
+        "complexity_level": _complexity_level_from_score(complexity_score),
+        "complexity_score": complexity_score,
+        "complexity_reasons": _dedupe_lesson_objects(complexity_reasons, key_fields=("message", "reason"), limit=12),
+        "clarity_warnings": _dedupe_lesson_objects(clarity_warnings, key_fields=("page_number", "type", "message"), limit=16),
+        "page_suggestions": _dedupe_lesson_objects(page_suggestions, key_fields=("page_number", "page_key", "type", "suggestion"), limit=16),
+        "expanded_narration_suggestions": _dedupe_lesson_objects(
+            _normalize_expanded_narration_suggestions(expanded_suggestions, provider_name="ollama"),
+            key_fields=("page_number", "page_key", "type", "draft_narration"),
+            limit=16,
+        ),
+        "suggested_tags": list(dict.fromkeys(tag.strip().lower() for tag in suggested_tags if tag.strip()))[:12],
+        "limitations": _dedupe_lesson_objects(limitations, key_fields=("message",), limit=12),
+        "metadata": {
+            "chunked": True,
+            "chunk_count": chunk_count,
+            "completed_chunks": completed_chunks,
+            "failed_chunks": failed_chunks,
+            "chunk_limitations": chunk_limitations,
+            "partial_enhancement": bool(failed_chunks),
+            "timeout_seconds": timeout_seconds,
+        },
+    }
+
+
+def lesson_sections_for_analysis(
+    analysis: dict[str, Any],
+    *,
+    existing_report: LessonIntelligenceReport | None = None,
+    provider: str = "ollama",
+) -> dict[str, dict[str, Any]]:
+    existing = existing_report
+    section_specs = {
+        "summary": [
+            "public_lesson_summary",
+            "improvement_summary",
+            "lesson_summary",
+            "summary",
+            "short_description",
+            "complexity_level",
+            "complexity_score",
+        ],
+        "clarity": ["clarity_warnings", "complexity_reasons"],
+        "page_suggestions": ["page_suggestions"],
+        "expanded_narration": ["expanded_narration_suggestions"],
+        "tags": ["suggested_tags"],
+    }
+    existing_values = {
+        "summary": bool(existing and (existing.summary or existing.short_description or existing.complexity_score)),
+        "clarity": bool(existing and (existing.clarity_warnings or existing.complexity_reasons)),
+        "page_suggestions": bool(existing and existing.page_suggestions),
+        "expanded_narration": bool(existing and existing.expanded_narration_suggestions),
+        "tags": bool(existing and existing.suggested_tags),
+    }
+    statuses: dict[str, dict[str, Any]] = {}
+    for section, fields in section_specs.items():
+        has_new = any(bool(analysis.get(field)) for field in fields)
+        if has_new or not existing_values[section]:
+            statuses[section] = {
+                "status": "done",
+                "provider": provider,
+            }
+        else:
+            statuses[section] = {
+                "status": "failed",
+                "provider": "heuristic",
+                "error": "ollama_section_empty",
+            }
+    return statuses
+
+
+def apply_lesson_section_fallbacks(
+    report: LessonIntelligenceReport,
+    analysis: dict[str, Any],
+    sections: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    merged = dict(analysis)
+    if str(sections.get("summary", {}).get("status") or "") == "failed":
+        merged["lesson_summary"] = report.summary
+        merged["summary"] = report.summary
+        merged["short_description"] = report.short_description
+        merged["complexity_level"] = report.complexity_level
+        merged["complexity_score"] = report.complexity_score
+        merged["complexity_reasons"] = report.complexity_reasons
+    if str(sections.get("clarity", {}).get("status") or "") == "failed":
+        merged["clarity_warnings"] = report.clarity_warnings
+        merged["complexity_reasons"] = report.complexity_reasons
+    if str(sections.get("page_suggestions", {}).get("status") or "") == "failed":
+        merged["page_suggestions"] = report.page_suggestions
+    if str(sections.get("expanded_narration", {}).get("status") or "") == "failed":
+        merged["expanded_narration_suggestions"] = report.expanded_narration_suggestions
+    if str(sections.get("tags", {}).get("status") or "") == "failed":
+        merged["suggested_tags"] = report.suggested_tags
+    return merged
+
+
+def analyze_lesson_ollama_background(
+    lesson_input: LessonIntelligenceInput,
+    *,
+    chain: list[str] | None = None,
+    progress_callback=None,
+) -> dict[str, Any]:
+    provider_chain = chain or provider_chain_from_settings()
+    input_payload = lesson_input.to_provider_payload()
+    provider = OllamaLessonIntelligenceProvider(background=True)
+    run_identity = lesson_ollama_run_identity(lesson_input)
+    chunks = _lesson_chunk_payloads(input_payload)
+    should_chunk = len(chunks) > 1
+    if not should_chunk:
+        if callable(progress_callback):
+            progress_callback("analyzing_chunks", 1, 0, 0, {"index": 1, "count": 1})
+        result = provider.analyze_lesson(input_payload)
+        normalized = _normalize_provider_result(result, provider_name=provider.provider_name)
+        chunk_metadata = {"chunked": False, "chunk_count": 1, "completed_chunks": 1, "failed_chunks": 0}
+        provider_attempt = progressive_provider_attempt("ollama", "success")
+        timeout_seconds = getattr(provider, "last_timeout_seconds", None)
+        if callable(progress_callback):
+            progress_callback("synthesizing", 1, 1, 0, {"index": 1, "count": 1})
+    else:
+        chunk_count = len(chunks)
+        if callable(progress_callback):
+            progress_callback("analyzing_chunks", chunk_count, 0, 0, {"index": 0, "count": chunk_count})
+        started_at = time.monotonic()
+        total_budget = ollama_total_timeout_budget_seconds()
+        completed_chunks = 0
+        failed_chunks = 0
+        chunk_results: list[dict[str, Any]] = []
+        chunk_limitations: list[str] = []
+        chunk_diagnostics: list[dict[str, Any]] = []
+        if callable(progress_callback):
+            progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, {"index": 0, "count": chunk_count})
+        for position, chunk_payload in enumerate(chunks, start=1):
+            chunk_meta = chunk_payload.get("chunk") if isinstance(chunk_payload.get("chunk"), dict) else {}
+            current_chunk = {
+                "index": int(chunk_meta.get("index") or position),
+                "count": int(chunk_meta.get("count") or chunk_count),
+                "page_numbers": chunk_meta.get("page_numbers") if isinstance(chunk_meta.get("page_numbers"), list) else [],
+            }
+            if callable(progress_callback):
+                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, current_chunk)
+            elapsed = time.monotonic() - started_at
+            remaining = max(0.0, total_budget - elapsed)
+            if remaining < 1.0:
+                remaining_chunks = max(1, chunk_count - position + 1)
+                failed_chunks += remaining_chunks
+                chunk_limitations.append(_lesson_chunk_limitation(lesson_input.output_language, "budget"))
+                diagnostic = _chunk_failure_diagnostic(
+                    current_chunk,
+                    {
+                        "model": provider.model,
+                        "error_class": "TimeoutError",
+                        "parse_stage": "timeout",
+                        "reason": "total_budget_exceeded",
+                        "safe_reason": "Ollama time budget was exceeded.",
+                        "elapsed_seconds": round(elapsed, 2),
+                        "retry_count": 0,
+                    },
+                )
+                chunk_diagnostics.append(diagnostic)
+                if callable(progress_callback):
+                    progress_callback(
+                        "analyzing_chunks",
+                        chunk_count,
+                        completed_chunks,
+                        failed_chunks,
+                        {
+                            **current_chunk,
+                            "budget_exceeded": True,
+                            "skipped_remaining_chunks": remaining_chunks,
+                            "chunk_diagnostics": chunk_diagnostics[-10:],
+                            "last_failure_reason": diagnostic.get("safe_reason") or diagnostic.get("reason"),
+                        },
+                    )
+                break
+            chunk_timeout = min(ollama_chunk_timeout_seconds(_safe_int(chunk_payload.get("input_chars"), 0)), remaining)
+            try:
+                result = provider.analyze_lesson(chunk_payload, timeout_seconds_override=chunk_timeout)
+                normalized_chunk = _normalize_provider_result(result, provider_name=provider.provider_name)
+                completed_chunks += 1
+            except Exception as exc:  # noqa: BLE001
+                failed_chunks += 1
+                diagnostic = _chunk_failure_diagnostic(current_chunk, _diagnostic_from_exception(exc, model=provider.model))
+                chunk_diagnostics.append(diagnostic)
+                chunk_limitations.append(diagnostic.get("safe_reason") or f"chunk_failed:{exc.__class__.__name__}")
+                fallback = HeuristicLessonIntelligenceProvider().analyze_lesson(chunk_payload)
+                normalized_chunk = _normalize_provider_result(fallback, provider_name="heuristic")
+            chunk_results.append(normalized_chunk)
+            if callable(progress_callback):
+                progress_payload = dict(current_chunk)
+                if chunk_diagnostics:
+                    progress_payload["chunk_diagnostics"] = chunk_diagnostics[-10:]
+                    progress_payload["last_failure_reason"] = chunk_diagnostics[-1].get("safe_reason") or chunk_diagnostics[-1].get("reason")
+                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, progress_payload)
+        if completed_chunks <= 0:
+            failure = LessonIntelligenceProviderUnavailable("Ollama chunk analysis failed for all chunks")
+            failure.chunk_diagnostics = chunk_diagnostics[-20:]
+            if chunk_diagnostics:
+                failure.last_failure_reason = chunk_diagnostics[-1].get("safe_reason") or chunk_diagnostics[-1].get("reason")
+            raise failure
+        if callable(progress_callback):
+            progress_callback("synthesizing", chunk_count, completed_chunks, failed_chunks, {"index": chunk_count, "count": chunk_count})
+        timeout_seconds = round(min(total_budget, time.monotonic() - started_at), 2)
+        normalized = _normalize_provider_result(
+            _synthesize_lesson_chunk_results(
+                lesson_input,
+                chunk_count=chunk_count,
+                completed_chunks=completed_chunks,
+                failed_chunks=failed_chunks,
+                chunk_results=chunk_results,
+                chunk_limitations=chunk_limitations,
+                timeout_seconds=timeout_seconds,
+            ),
+            provider_name=provider.provider_name,
+        )
+        chunk_metadata = {
+            "chunked": True,
+            "chunk_count": chunk_count,
+            "completed_chunks": completed_chunks,
+            "failed_chunks": failed_chunks,
+            "chunk_limitations": chunk_limitations,
+            "chunk_diagnostics": chunk_diagnostics[-20:],
+            "partial_enhancement": bool(failed_chunks),
+        }
+        provider_attempt = progressive_provider_attempt("ollama", "partial" if failed_chunks else "success")
+    normalized["provider_chain"] = provider_chain
+    normalized["fallback_used"] = False
+    normalized["metadata"] = {
+        **dict(normalized.get("metadata") or {}),
+        "provider_chain_attempts": [provider_attempt],
+        "source_hash": lesson_input.source_hash,
+        "detected_language": lesson_input.detected_language,
+        "output_language": lesson_input.output_language,
+        "language_confidence": lesson_input.language_confidence,
+        "input_truncated": lesson_input.input_truncated,
+        "source_char_count": lesson_input.source_chars,
+        "input_char_count": lesson_input.input_chars,
+        "prompt_version": LESSON_INTELLIGENCE_PROMPT_VERSION,
+        **run_identity,
+        **chunk_metadata,
+        **intelligence_runtime_profile_metadata(),
+        "chunk_concurrency": ollama_chunk_concurrency(),
+        "timeout_seconds": timeout_seconds,
+    }
+    return normalized
 
 
 def apply_analysis_to_report(
@@ -601,12 +1220,34 @@ def apply_analysis_to_report(
     *,
     source_hash: str,
 ) -> LessonIntelligenceReport:
+    public_lesson_summary = _clean_text(
+        analysis.get("public_lesson_summary") or analysis.get("lesson_summary") or analysis.get("summary"),
+        max_chars=1200,
+    )
+    improvement_summary = _clean_text(
+        analysis.get("improvement_summary") or analysis.get("editorial_summary"),
+        max_chars=900,
+    )
+    if not improvement_summary:
+        improvement_summary = _improvement_summary_from_signals(
+            clarity_warnings=_safe_json_list(analysis.get("clarity_warnings")),
+            page_suggestions=_safe_json_list(analysis.get("page_suggestions")),
+            expanded_suggestions=_safe_json_list(analysis.get("expanded_narration_suggestions")),
+            output_language=str(_safe_json_dict(analysis.get("metadata")).get("output_language") or "en"),
+        )
+    analysis_metadata = _safe_json_dict(analysis.get("metadata"))
+    analysis_metadata.update(
+        {
+            "public_lesson_summary": public_lesson_summary,
+            "improvement_summary": improvement_summary,
+        }
+    )
     report.status = "done"
     report.provider = str(analysis.get("provider") or "heuristic").strip().lower()
     report.provider_chain = list(analysis.get("provider_chain") or provider_chain_from_settings())
     report.fallback_used = bool(analysis.get("fallback_used"))
     report.source_hash = source_hash
-    report.summary = str(analysis.get("lesson_summary") or analysis.get("summary") or "")
+    report.summary = public_lesson_summary
     report.short_description = str(analysis.get("short_description") or "")
     report.complexity_level = str(analysis.get("complexity_level") or "beginner")
     report.complexity_score = max(0, min(100, _safe_int(analysis.get("complexity_score"), 0)))
@@ -616,7 +1257,7 @@ def apply_analysis_to_report(
     report.expanded_narration_suggestions = _safe_json_list(analysis.get("expanded_narration_suggestions"))
     report.suggested_tags = _safe_json_list(analysis.get("suggested_tags"))
     report.limitations = _safe_json_list(analysis.get("limitations"))
-    report.metadata = _safe_json_dict(analysis.get("metadata"))
+    report.metadata = analysis_metadata
     report.error_message = ""
     report.save(
         update_fields=[
@@ -643,17 +1284,44 @@ def apply_analysis_to_report(
     return report
 
 
-def report_response_payload(report: LessonIntelligenceReport | None, *, enabled: bool = True) -> dict[str, Any]:
+def report_response_payload(
+    report: LessonIntelligenceReport | None,
+    *,
+    enabled: bool = True,
+    current_source_hash: str = "",
+    current_run_key: str = "",
+) -> dict[str, Any]:
+    current_hash = str(current_source_hash or "")
+    current_key = str(current_run_key or "")
     if report is None:
         return {
             "enabled": enabled,
             "status": "empty" if enabled else "disabled",
             "provider": "",
             "fallback_used": False,
+            "provider_chain_attempts": [],
+            "enhancement_available": False,
+            "enhancement_pending": False,
+            "enhancement_status": "",
+            "enhancement_provider": "",
+            "enhancement_error_safe": "",
+            "source_hash": "",
+            "report_source_hash": "",
+            "current_source_hash": current_hash,
+            "run_key": "",
+            "report_run_key": "",
+            "current_run_key": current_key,
+            "run_key_matches": False,
+            "force": False,
+            "is_stale": bool(enabled),
             "detected_language": "unknown",
             "output_language": "en",
             "language_confidence": 0.0,
             "summary": "",
+            "lesson_summary": "",
+            "public_lesson_summary": "",
+            "improvement_summary": "",
+            "editorial_summary": "",
             "short_description": "",
             "complexity": {"level": "", "display_label": "", "score": 0, "reasons": []},
             "clarity_warnings": [],
@@ -664,6 +1332,31 @@ def report_response_payload(report: LessonIntelligenceReport | None, *, enabled:
         }
     report_metadata = report.metadata if isinstance(report.metadata, dict) else {}
     output_language = str(report_metadata.get("output_language") or "en")
+    report_hash = str(report.source_hash or "")
+    enhancement = report_metadata.get("progressive_enhancement") if isinstance(report_metadata.get("progressive_enhancement"), dict) else {}
+    report_run_key = str(enhancement.get("run_key") or report_metadata.get("run_key") or "")
+    provider_chain_attempts = report_metadata.get("provider_chain_attempts")
+    if not isinstance(provider_chain_attempts, list):
+        provider_chain_attempts = []
+    public_lesson_summary = _clean_text(
+        report_metadata.get("public_lesson_summary") or report.summary,
+        max_chars=1200,
+    )
+    improvement_summary = _clean_text(
+        report_metadata.get("improvement_summary") or report_metadata.get("editorial_summary"),
+        max_chars=900,
+    )
+    if not improvement_summary:
+        improvement_summary = _improvement_summary_from_signals(
+            clarity_warnings=report.clarity_warnings if isinstance(report.clarity_warnings, list) else [],
+            page_suggestions=report.page_suggestions if isinstance(report.page_suggestions, list) else [],
+            expanded_suggestions=(
+                report.expanded_narration_suggestions
+                if isinstance(report.expanded_narration_suggestions, list)
+                else []
+            ),
+            output_language=output_language,
+        )
     return {
         "enabled": enabled,
         "id": report.id,
@@ -671,11 +1364,25 @@ def report_response_payload(report: LessonIntelligenceReport | None, *, enabled:
         "provider": report.provider,
         "provider_chain": report.provider_chain if isinstance(report.provider_chain, list) else [],
         "fallback_used": bool(report.fallback_used),
+        "provider_chain_attempts": provider_chain_attempts,
+        **enhancement_response_fields(report_metadata),
         "detected_language": str(report_metadata.get("detected_language") or "unknown"),
         "output_language": output_language,
         "language_confidence": float(report_metadata.get("language_confidence") or 0.0),
-        "source_hash": report.source_hash,
-        "summary": report.summary,
+        "source_hash": report_hash,
+        "report_source_hash": report_hash,
+        "current_source_hash": current_hash,
+        "run_key": report_run_key,
+        "report_run_key": report_run_key,
+        "current_run_key": current_key,
+        "run_key_matches": bool(current_key and report_run_key and current_key == report_run_key),
+        "force": bool(report_metadata.get("force") or enhancement.get("force")),
+        "is_stale": bool(enabled and current_hash and report_hash != current_hash),
+        "summary": public_lesson_summary,
+        "lesson_summary": public_lesson_summary,
+        "public_lesson_summary": public_lesson_summary,
+        "improvement_summary": improvement_summary,
+        "editorial_summary": improvement_summary,
         "short_description": report.short_description,
         "complexity": {
             "level": report.complexity_level,
@@ -697,6 +1404,7 @@ def report_response_payload(report: LessonIntelligenceReport | None, *, enabled:
             for key, value in (report.metadata if isinstance(report.metadata, dict) else {}).items()
             if key in {
                 "provider_chain_attempts",
+                "progressive_enhancement",
                 "page_count",
                 "input_char_count",
                 "source_char_count",
@@ -705,6 +1413,38 @@ def report_response_payload(report: LessonIntelligenceReport | None, *, enabled:
                 "output_language",
                 "language_confidence",
                 "input_truncated",
+                "run_key",
+                "model",
+                "prompt_version",
+                "hardware_profile",
+                "input_fingerprint",
+                "chunk_max_chars",
+                "chunk_concurrency",
+                "chunk_timeout_min_seconds",
+                "chunk_timeout_max_seconds",
+                "total_timeout_max_seconds",
+                "sections",
+                "chunked",
+                "chunk_count",
+                "completed_chunks",
+                "failed_chunks",
+                "chunk_limitations",
+                "chunk_diagnostics",
+                "partial_enhancement",
+                "force",
+                "forced_at",
+                "manual_retry",
+                "retry_count",
+                "retry_requested_at",
+                "retry_bypassed_cooldown",
+                "last_ollama_failure_at",
+                "retry_available_at",
+                "retry_cooldown_seconds",
+                "last_failure_reason",
+                "repaired",
+                "repair_retry_count",
+                "public_lesson_summary",
+                "improvement_summary",
             }
         },
         "error_message": report.error_message,
@@ -721,26 +1461,84 @@ def _normalize_provider_result(raw: Any, *, provider_name: str) -> dict[str, Any
     if level not in COMPLEXITY_LEVELS:
         level = "intermediate"
     score = max(0, min(100, _safe_int(raw.get("complexity_score", complexity.get("score")), 50)))
-    summary = _clean_text(raw.get("lesson_summary") or raw.get("summary"), max_chars=1200)
+    summary = _clean_text(raw.get("public_lesson_summary") or raw.get("lesson_summary") or raw.get("summary"), max_chars=1200)
     short_description = _clean_text(raw.get("short_description"), max_chars=260)
     if not summary:
         raise LessonIntelligenceProviderUnavailable("provider result missing lesson summary")
     if not short_description:
         short_description = _short_description(summary)
+    clarity_warnings = _safe_json_list(raw.get("clarity_warnings"))
+    page_suggestions = _safe_json_list(raw.get("page_suggestions"))
+    expanded_suggestions = _normalize_expanded_narration_suggestions(
+        raw.get("expanded_narration_suggestions"),
+        provider_name=provider_name,
+    )
+    improvement_summary = _clean_text(raw.get("improvement_summary") or raw.get("editorial_summary"), max_chars=900)
+    if not improvement_summary:
+        improvement_summary = _improvement_summary_from_signals(
+            clarity_warnings=clarity_warnings,
+            page_suggestions=page_suggestions,
+            expanded_suggestions=expanded_suggestions,
+            output_language=str(raw.get("output_language") or "en"),
+        )
     return {
         "provider": str(raw.get("provider") or provider_name or "heuristic").strip().lower(),
         "lesson_summary": summary,
+        "public_lesson_summary": summary,
+        "improvement_summary": improvement_summary,
         "short_description": short_description,
         "complexity_level": level,
         "complexity_score": score,
         "complexity_reasons": _safe_json_list(raw.get("complexity_reasons") or complexity.get("reasons")),
-        "clarity_warnings": _safe_json_list(raw.get("clarity_warnings")),
-        "page_suggestions": _safe_json_list(raw.get("page_suggestions")),
-        "expanded_narration_suggestions": _safe_json_list(raw.get("expanded_narration_suggestions")),
+        "clarity_warnings": clarity_warnings,
+        "page_suggestions": page_suggestions,
+        "expanded_narration_suggestions": expanded_suggestions,
         "suggested_tags": _safe_json_list(raw.get("suggested_tags")),
         "limitations": _safe_json_list(raw.get("limitations")),
         "metadata": _safe_json_dict(raw.get("metadata")),
     }
+
+
+def _normalize_expanded_narration_suggestions(raw: Any, *, provider_name: str) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in _safe_json_list(raw):
+        if isinstance(item, str):
+            normalized.append(
+                {
+                    "page_number": 0,
+                    "page_key": "",
+                    "type": "expanded_narration",
+                    "title": "Expand narration",
+                    "advice": item,
+                    "suggestion": item,
+                    "draft_narration": "",
+                    "copy_text": "",
+                    "generated_by": provider_name,
+                    "ai_generated": True,
+                }
+            )
+            continue
+        if not isinstance(item, dict):
+            continue
+        suggestion_type = str(item.get("type") or "expanded_narration").strip() or "expanded_narration"
+        title = _clean_text(item.get("title"), max_chars=120) or _expanded_suggestion_title(suggestion_type)
+        advice = _clean_text(item.get("advice") or item.get("suggestion") or item.get("message"), max_chars=700)
+        draft = _clean_text(item.get("draft_narration") or item.get("copy_text"), max_chars=1200)
+        normalized.append(
+            {
+                "page_number": _safe_int(item.get("page_number"), 0),
+                "page_key": _clean_text(item.get("page_key"), max_chars=80),
+                "type": suggestion_type,
+                "title": title,
+                "advice": advice,
+                "suggestion": advice,
+                "draft_narration": draft,
+                "copy_text": draft,
+                "generated_by": _clean_text(item.get("generated_by"), max_chars=40) or provider_name,
+                "ai_generated": bool(item.get("ai_generated", True)),
+            }
+        )
+    return normalized
 
 
 def _ollama_prompt(input_payload: dict[str, Any]) -> str:
@@ -752,6 +1550,8 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
         "detected_language": input_payload.get("detected_language") or "unknown",
         "output_language": output_language,
         "input_truncated": bool(input_payload.get("input_truncated")),
+        "prompt_version": LESSON_INTELLIGENCE_PROMPT_VERSION,
+        "chunk": input_payload.get("chunk") if isinstance(input_payload.get("chunk"), dict) else {},
     }
     language_instruction = (
         "Respond in Turkish. Keep JSON keys in English, but all user-facing text values in Turkish. "
@@ -760,21 +1560,53 @@ def _ollama_prompt(input_payload: dict[str, Any]) -> str:
     )
     return (
         f"You are a lesson quality analyst for publisher Studio. Return JSON only. {language_instruction}"
+        "No markdown. No code fences. No prose outside JSON. Keep keys exactly as provided. "
+        "If unsure, use empty arrays while keeping the schema. "
         "Do not edit lesson text, do not trigger rendering, and do not suggest hidden actions. "
-        "Focus on clarity, structure, narration quality, and learner comprehension.\n"
+        "Focus on clarity, structure, narration quality, and learner comprehension. "
+        "Return both public_lesson_summary and improvement_summary. "
+        "public_lesson_summary explains what the lesson is about for students. "
+        "improvement_summary is publisher-facing and says what to improve before publishing. "
+        "Keep public_lesson_summary under 90 words, improvement_summary under 90 words, short_description one sentence, max 2 clarity warnings, "
+        "max 2 page suggestions, max 2 narration suggestions, max 5 tags, and draft narration under 90 words.\n"
         "Required JSON shape: {"
-        "\"lesson_summary\":\"short paragraph\","
+        "\"public_lesson_summary\":\"student-facing lesson overview\","
+        "\"improvement_summary\":\"publisher-facing improvement guidance\","
+        "\"lesson_summary\":\"same as public_lesson_summary\","
         "\"short_description\":\"one sentence\","
         "\"complexity_level\":\"beginner|intermediate|advanced\","
         "\"complexity_score\":0,"
         "\"complexity_reasons\":[\"reason\"],"
         "\"clarity_warnings\":[{\"type\":\"warning_type\",\"severity\":\"low|medium|high\",\"message\":\"text\"}],"
         "\"page_suggestions\":[{\"page_number\":1,\"page_key\":\"key\",\"type\":\"suggestion_type\",\"suggestion\":\"text\"}],"
-        "\"expanded_narration_suggestions\":[{\"page_number\":1,\"page_key\":\"key\",\"type\":\"suggestion_type\",\"suggestion\":\"text\"}],"
+        "\"expanded_narration_suggestions\":[{\"page_number\":1,\"page_key\":\"key\",\"type\":\"short_narration\",\"title\":\"Expand narration\",\"advice\":\"why this helps\",\"draft_narration\":\"actual narration to apply\",\"copy_text\":\"same useful narration text\",\"generated_by\":\"ollama\",\"ai_generated\":true}],"
         "\"suggested_tags\":[\"tag\"],"
         "\"limitations\":[\"limitation\"]"
         "}.\n"
         f"Lesson JSON:\n{json.dumps(safe_payload, ensure_ascii=False)}"
+    )
+
+
+def _ollama_repair_prompt(raw_response: str, *, output_language: str) -> str:
+    language_instruction = (
+        "Use Turkish for user-facing values. "
+        if output_language == "tr"
+        else "Use English for user-facing values. "
+    )
+    schema = (
+        '{"public_lesson_summary":"student-facing lesson overview",'
+        '"improvement_summary":"publisher-facing improvement guidance",'
+        '"lesson_summary":"same as public_lesson_summary","short_description":"one sentence",'
+        '"complexity_level":"beginner|intermediate|advanced","complexity_score":0,'
+        '"complexity_reasons":[],"clarity_warnings":[],"page_suggestions":[],'
+        '"expanded_narration_suggestions":[],"suggested_tags":[],"limitations":[]}'
+    )
+    return (
+        "Convert the following response to valid JSON matching this schema. "
+        "Return JSON only. No markdown. No code fences. Keep keys exactly as provided. "
+        f"{language_instruction}If information is missing, use empty arrays or safe defaults.\n"
+        f"Schema: {schema}\n"
+        f"Response: {str(raw_response or '')[:4000]}"
     )
 
 
@@ -786,18 +1618,110 @@ def _json_object_from_text(text: str) -> dict[str, Any]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
+        decoder = json.JSONDecoder()
+        for start in (index for index, char in enumerate(raw) if char == "{"):
             try:
-                data = json.loads(raw[start : end + 1])
+                data, _ = decoder.raw_decode(raw[start:])
+                break
             except json.JSONDecodeError:
-                raise LessonIntelligenceProviderUnavailable("provider returned invalid JSON") from exc
+                continue
         else:
             raise LessonIntelligenceProviderUnavailable("provider returned invalid JSON") from exc
     if not isinstance(data, dict):
         raise LessonIntelligenceProviderUnavailable("provider JSON response must be an object")
     return data
+
+
+def _ollama_stage_for_exception(exc: Exception) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    if isinstance(exc, HTTPError):
+        return "http"
+    if isinstance(exc, URLError):
+        reason = getattr(exc, "reason", None)
+        if isinstance(reason, TimeoutError) or "timed out" in str(exc).lower():
+            return "timeout"
+        return "http"
+    if isinstance(exc, (OSError, json.JSONDecodeError)):
+        text = str(exc).lower()
+        if "timed out" in text or "timeout" in text:
+            return "timeout"
+        return "json" if isinstance(exc, json.JSONDecodeError) else "http"
+    return "validation"
+
+
+def _ollama_parse_stage(exc: Exception) -> str:
+    text = str(exc or "").lower()
+    if "invalid json" in text or "not json" in text or "json response" in text:
+        return "json"
+    if "missing" in text or "must be" in text:
+        return "validation"
+    return _ollama_stage_for_exception(exc)
+
+
+def _ollama_safe_reason(stage: str, exc: Exception | str | None = None) -> str:
+    if stage == "timeout":
+        return "Ollama timed out."
+    if stage == "json":
+        return "Ollama returned invalid JSON."
+    if stage == "validation":
+        return "Ollama response missed required fields."
+    if stage == "http":
+        return "Ollama request failed."
+    return safe_response_preview(exc, limit=120) or "Ollama enhancement failed."
+
+
+def _ollama_failure_diagnostic(
+    exc: Exception | str,
+    *,
+    stage: str,
+    model: str,
+    elapsed_seconds: float,
+    retry_count: int,
+    response_preview: str = "",
+    repair_error: Exception | None = None,
+) -> dict[str, Any]:
+    diagnostic: dict[str, Any] = {
+        "model": str(model or ""),
+        "error_class": exc.__class__.__name__ if isinstance(exc, Exception) else "ProviderError",
+        "parse_stage": stage,
+        "reason": safe_response_preview(exc, limit=120),
+        "safe_reason": _ollama_safe_reason(stage, exc),
+        "elapsed_seconds": round(float(elapsed_seconds or 0.0), 2),
+        "retry_count": int(retry_count or 0),
+    }
+    if isinstance(exc, HTTPError):
+        diagnostic["error_code"] = int(exc.code)
+    if response_preview:
+        diagnostic["response_preview"] = safe_response_preview(response_preview)
+    if repair_error is not None:
+        diagnostic["repair_error_class"] = repair_error.__class__.__name__
+        diagnostic["repair_reason"] = safe_response_preview(repair_error, limit=120)
+    return {key: value for key, value in diagnostic.items() if value not in {"", None}}
+
+
+def _diagnostic_from_exception(exc: Exception, *, model: str) -> dict[str, Any]:
+    diagnostic = getattr(exc, "diagnostic", None)
+    if isinstance(diagnostic, dict):
+        return dict(diagnostic)
+    stage = _ollama_parse_stage(exc)
+    return _ollama_failure_diagnostic(
+        exc,
+        stage=stage,
+        model=model,
+        elapsed_seconds=0.0,
+        retry_count=0,
+    )
+
+
+def _chunk_failure_diagnostic(current_chunk: dict[str, Any], diagnostic: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        **{key: value for key, value in diagnostic.items() if value not in {"", None}},
+        "chunk_index": int(current_chunk.get("index") or 0),
+        "chunk_count": int(current_chunk.get("count") or 0),
+        "page_numbers": current_chunk.get("page_numbers") if isinstance(current_chunk.get("page_numbers"), list) else [],
+    }
+    return payload
 
 
 def _output_language(input_payload: dict[str, Any]) -> str:
@@ -832,6 +1756,7 @@ def _lesson_message(language: str, key: str, **kwargs: Any) -> str:
             "missing_intro": "Açılış, hedefleri veya öğrencinin ne öğreneceğini yeterince net tanıtmıyor.",
             "missing_conclusion": "Kapanış, dersi özetlemiyor veya sonraki adımları net vermiyor.",
             "empty_page_suggestion": "Bu slayta öğrenme bağlamı kazandırmak için kısa bir anlatım notu ekleyin.",
+            "empty_page_advice": "Bu slaytta kullanılabilir anlatım yok; öğrenciye bağlam, hedef ve geçiş veren kısa bir anlatım gerekir.",
             "reduce_density_suggestion": "Görsel yoğunluğu azaltmak için bu sayfayı bölün veya ayrıntıları anlatıma taşıyın.",
             "bullets_without_explanation": "Madde ağırlıklı slayt metni daha açıklayıcı anlatım gerektirebilir.",
             "explain_bullets_suggestion": "Öğrencinin yalnızca listeyi değil, gerekçeyi de duyması için maddeler arasına açıklayıcı anlatım ekleyin.",
@@ -851,6 +1776,7 @@ def _lesson_message(language: str, key: str, **kwargs: Any) -> str:
         "missing_intro": "The opening does not clearly introduce goals or what the learner will learn.",
         "missing_conclusion": "The ending does not clearly recap the lesson or provide next steps.",
         "empty_page_suggestion": "Add a short narration note so this slide has learning context.",
+        "empty_page_advice": "This slide has no usable narration; add a short explanation that gives learners context, the goal, and a transition.",
         "reduce_density_suggestion": "Split this page or move detail into narration to reduce visual density.",
         "bullets_without_explanation": "Bullet-heavy slide text may need more explanatory narration.",
         "explain_bullets_suggestion": "Add explanatory narration between bullet points so learners hear the reasoning, not just the list.",
@@ -933,6 +1859,64 @@ def _summary_from_text(title: Any, text: str, *, output_language: str = "en") ->
     return "Lesson transcript needs more detail before a reliable summary can be generated."
 
 
+def _improvement_summary_from_signals(
+    *,
+    clarity_warnings: list[Any],
+    page_suggestions: list[Any],
+    expanded_suggestions: list[Any],
+    output_language: str = "en",
+) -> str:
+    signal_types: set[str] = set()
+    for item in list(clarity_warnings or []) + list(page_suggestions or []) + list(expanded_suggestions or []):
+        if isinstance(item, dict):
+            signal_types.add(str(item.get("type") or "").strip().lower())
+        elif isinstance(item, str):
+            signal_types.add(item.strip().lower())
+
+    if output_language == "tr":
+        focus: list[str] = []
+        if {"missing_examples", "example", "concrete_example"} & signal_types:
+            focus.append("daha somut ornekler")
+        if {"short_narration", "bullets_without_explanation", "bullet_expansion", "expanded_narration"} & signal_types:
+            focus.append("daha uzun ve ogretici anlatim")
+        if {"long_sentences", "complex_language"} & signal_types:
+            focus.append("daha sade dil")
+        if {"missing_intro", "intro"} & signal_types:
+            focus.append("daha net giris")
+        if {"missing_conclusion", "conclusion"} & signal_types:
+            focus.append("daha guclu kapanis")
+        if {"dense_slide", "reduce_density", "empty_page"} & signal_types:
+            focus.append("daha temiz sayfa yapisi")
+        if not focus:
+            return "Bu ders genel olarak kullanilabilir; yayina almadan once anlatim akisini, ornekleri ve kapanisi hizlica gozden gecirin."
+        return _truncate(
+            "Bu ders konuyu anlatmaya basliyor, ancak yayina almadan once "
+            f"{', '.join(focus[:3])} uzerinde calismak dersi daha anlasilir hale getirir.",
+            900,
+        )
+
+    focus = []
+    if {"missing_examples", "example", "concrete_example"} & signal_types:
+        focus.append("more concrete examples")
+    if {"short_narration", "bullets_without_explanation", "bullet_expansion", "expanded_narration"} & signal_types:
+        focus.append("longer teaching narration")
+    if {"long_sentences", "complex_language"} & signal_types:
+        focus.append("simpler language")
+    if {"missing_intro", "intro"} & signal_types:
+        focus.append("a clearer opening")
+    if {"missing_conclusion", "conclusion"} & signal_types:
+        focus.append("a stronger wrap-up")
+    if {"dense_slide", "reduce_density", "empty_page"} & signal_types:
+        focus.append("cleaner page structure")
+    if not focus:
+        return "This lesson is broadly usable; before publishing, review the flow, examples, and ending for one more pass."
+    return _truncate(
+        "This lesson explains the topic, but it will be stronger with "
+        f"{', '.join(focus[:3])}. Prioritize those edits before publishing.",
+        900,
+    )
+
+
 def _short_description(summary: str) -> str:
     first = _sentences(summary)
     return _truncate(first[0] if first else summary, 180)
@@ -980,13 +1964,99 @@ def _page_suggestion(page_number: int, page_key: str, suggestion: str, suggestio
     }
 
 
-def _expanded_suggestion(page_number: int, page_key: str, suggestion: str, suggestion_type: str) -> dict[str, Any]:
+def _expanded_suggestion(
+    page_number: int,
+    page_key: str,
+    advice: str,
+    draft_narration: str,
+    suggestion_type: str,
+    *,
+    generated_by: str = "heuristic",
+) -> dict[str, Any]:
+    clean_draft = _clean_text(draft_narration, max_chars=900)
     return {
         "page_number": page_number,
         "page_key": page_key,
         "type": suggestion_type,
-        "suggestion": suggestion,
+        "title": _expanded_suggestion_title(suggestion_type),
+        "advice": advice,
+        "suggestion": advice,
+        "draft_narration": clean_draft,
+        "copy_text": clean_draft,
+        "generated_by": generated_by,
+        "ai_generated": True,
     }
+
+
+def _expanded_suggestion_title(suggestion_type: str) -> str:
+    normalized = str(suggestion_type or "").strip().lower()
+    if normalized == "empty_page":
+        return "Add narration"
+    return "Expand narration"
+
+
+def _draft_narration_for_page(
+    *,
+    output_language: str,
+    suggestion_type: str,
+    display_text: str,
+    narration_text: str,
+) -> str:
+    source = _clean_text(display_text or narration_text, max_chars=650)
+    bullet_items = _bullet_items(display_text or narration_text)
+    if output_language == "tr":
+        if not source:
+            return (
+                "Bu bölümde slaydın ana fikrini kısa ve net biçimde tanıtıyoruz. "
+                "Öğrenciye önce konunun neden önemli olduğunu söylüyor, ardından basit bir örnekle bağlantı kuruyoruz. "
+                "Son olarak bir sonraki adıma geçmeden önce öğrenilmesi gereken noktayı özetliyoruz."
+            )
+        if bullet_items:
+            items = ", ".join(bullet_items[:3])
+            return _truncate(
+                "Bu bölümde listedeki ana noktaları birlikte anlamlandırıyoruz: "
+                f"{items}. Her madde, dersin ana fikrine nasıl katkı verdiğini gösteren kısa bir açıklamayla ele alınır. "
+                "Böylece öğrenci yalnızca listeyi okumaz, maddeler arasındaki ilişkiyi de duyar.",
+                900,
+            )
+        return _truncate(
+            f"Bu bölümde ana fikri şöyle açıklıyoruz: {source}. "
+            "Bunu somut bir örnekle düşünürsek, öğrenci kavramın nerede kullanılacağını daha kolay görür. "
+            "Bir sonraki adımda bu fikri dersin devamındaki uygulamayla ilişkilendiriyoruz.",
+            900,
+        )
+    if not source:
+        return (
+            "In this part, we introduce the slide's main idea in clear learner-friendly language. "
+            "First, we explain why the point matters, then we connect it to a simple example. "
+            "Before moving on, we summarize the takeaway learners should remember."
+        )
+    if bullet_items:
+        items = ", ".join(bullet_items[:3])
+        return _truncate(
+            "In this part, we connect the bullet points into a clear explanation: "
+            f"{items}. Each point should be described in terms of why it matters and how it supports the main idea. "
+            "That gives learners the reasoning behind the list instead of only reading the items.",
+            900,
+        )
+    return _truncate(
+        f"In this part, we explain the key idea: {source}. "
+        "A simple example can make the concept easier to place in a real learning context. "
+        "Then we transition to the next step by showing how this idea will be used in the rest of the lesson.",
+        900,
+    )
+
+
+def _bullet_items(text: str) -> list[str]:
+    items: list[str] = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not re.match(r"^[-*•]\s+", stripped):
+            continue
+        item = re.sub(r"^[-*•]\s+", "", stripped).strip()
+        if item:
+            items.append(_truncate(item, 120))
+    return items
 
 
 def _compose_input_text(title: str, description: str, pages: list[dict[str, Any]]) -> str:
@@ -1155,3 +2225,18 @@ def _float_setting(name: str, default: float, *, minimum: float, maximum: float)
     except (TypeError, ValueError):
         parsed = float(default)
     return min(maximum, max(minimum, parsed))
+
+
+def _effective_sync_provider_timeout(configured_timeout: float, *, cap_setting: str) -> float:
+    cap = _float_setting(
+        cap_setting,
+        _float_setting("INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS", 20.0, minimum=0.5, maximum=60.0),
+        minimum=0.5,
+        maximum=60.0,
+    )
+    return min(float(configured_timeout), cap)
+
+
+def _background_provider_timeout(*, cap_setting: str) -> float:
+    global_timeout = _float_setting("INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS", 120.0, minimum=1.0, maximum=600.0)
+    return _float_setting(cap_setting, global_timeout, minimum=1.0, maximum=600.0)

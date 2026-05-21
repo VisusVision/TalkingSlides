@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronDown,
   Clock3,
   Copy,
   Eye,
@@ -26,6 +27,7 @@ import {
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { canAccessStudio } from '../lib/auth';
+import { copyTextToClipboard } from '../utils/clipboard';
 
 const RANGE_OPTIONS = [
   { key: '7', label: 'Last 7 days' },
@@ -41,6 +43,7 @@ const DONUT_COLORS = [
   '#fb7185',
   '#a78bfa',
 ];
+const ANALYTICS_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS = 6000;
 
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
@@ -58,6 +61,41 @@ function compactNumber(value, options = {}) {
 
 function percent(value) {
   return `${Math.max(0, Math.min(100, Math.round(toNumber(value))))}%`;
+}
+
+function formatPercentMetric(value) {
+  const normalized = typeof value === 'string' ? value.replace('%', '').trim() : value;
+  return percent(normalized);
+}
+
+function humanizeAnalyticsSignal(signal) {
+  const text = String(signal || '').trim();
+  if (!text) return '';
+  const completionMatch = text.match(/\bcompletion(?:_rate)?\s*=\s*([0-9]+(?:\.[0-9]+)?%?)/i);
+  const progressMatch = text.match(/\b(?:average_)?progress\s*=\s*([0-9]+(?:\.[0-9]+)?%?)/i);
+  const compactProgressMatch = text.match(/\b([0-9]+(?:\.[0-9]+)?)%\s+completion,\s+([0-9]+(?:\.[0-9]+)?)%\s+average progress\b/i);
+  if (compactProgressMatch) {
+    const completion = formatPercentMetric(compactProgressMatch[1]);
+    const progress = formatPercentMetric(compactProgressMatch[2]);
+    const sentence = `About ${completion} of learners completed these lessons, while the average viewer reached ${progress} of the lesson.`;
+    return text.replace(compactProgressMatch[0], sentence);
+  }
+  if (completionMatch && progressMatch) {
+    const completion = formatPercentMetric(completionMatch[1]);
+    const progress = formatPercentMetric(progressMatch[1]);
+    return `About ${completion} of learners completed these lessons, while the average viewer reached ${progress} of the lesson.`;
+  }
+  if (completionMatch) {
+    return `About ${formatPercentMetric(completionMatch[1])} of learners completed these lessons.`;
+  }
+  if (progressMatch) {
+    return `The average viewer reached ${formatPercentMetric(progressMatch[1])} of the lesson.`;
+  }
+  return text
+    .replace(/\bcompletion_rate\b/gi, 'completion')
+    .replace(/\baverage_progress\b/gi, 'average progress')
+    .replace(/\bengagement_score\b/gi, 'engagement score')
+    .replace(/_/g, ' ');
 }
 
 function rangeDates(rangeKey) {
@@ -82,6 +120,18 @@ function formatDate(value) {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return 'Recently updated';
   return `Updated ${parsed.toLocaleDateString('en-US')}`;
+}
+
+function formatActivityTimestamp(value) {
+  if (!value) return 'Recent';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Recent';
+  return parsed.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 function emptyAnalyticsStats() {
@@ -200,12 +250,29 @@ function normalizeRecentActivity(source) {
   if (!Array.isArray(source)) return [];
   return source.slice(0, 30).map((item, index) => ({
     id: `${item?.type || 'activity'}-${item?.lesson_id || index}-${item?.timestamp || index}`,
-    type: String(item?.type || 'activity'),
-    label: String(item?.label || item?.type || 'Activity'),
+    type: String(item?.type || 'activity').toLowerCase(),
     timestamp: String(item?.timestamp || ''),
     title: String(item?.lesson_title || item?.title || 'Lesson activity'),
-    description: String(item?.message || item?.description || 'Activity recorded.'),
-  }));
+    value: item?.value,
+  })).map((item) => {
+    const progress = Math.max(0, Math.min(100, Math.round(toNumber(item.value, 0))));
+    const labels = {
+      progress: 'Progress',
+      like: 'Like',
+      comment: 'Comment',
+    };
+    const descriptions = {
+      progress: `A learner reached ${progress}% progress`,
+      like: 'A learner liked a lesson',
+      comment: 'A learner commented',
+    };
+    return {
+      ...item,
+      label: labels[item.type] || 'Activity',
+      description: descriptions[item.type] || 'Learner activity was recorded',
+      timeLabel: formatActivityTimestamp(item.timestamp),
+    };
+  });
 }
 
 function normalizeCategoryBreakdown(source) {
@@ -396,20 +463,111 @@ function ProviderLabel({ report }) {
   if (report.fallback_used) {
     return (
       <span className="inline-flex items-center rounded-full bg-amber-400/15 px-3 py-1 text-xs font-semibold text-amber-300">
-        Fallback heuristic used
+        Basic fallback insight
       </span>
     );
   }
   const provider = String(report.provider || '').toLowerCase();
   const label = provider === 'ollama'
-    ? 'Ollama analysis'
+    ? 'Ollama enhanced insight'
     : provider === 'heuristic'
-      ? 'Heuristic analysis'
+      ? 'Basic insight'
       : provider
         ? `${provider} analysis`
         : 'Analysis';
   return (
     <span className="inline-flex items-center rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold text-emerald-300">
+      {label}
+    </span>
+  );
+}
+
+function analyticsEnhancementStatus(report) {
+  return String(report?.enhancement_status || '').trim().toLowerCase();
+}
+
+const ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES = new Set([
+  'pending',
+  'running',
+  'analyzing_chunks',
+  'synthesizing',
+]);
+const ANALYTICS_FAILED_ENHANCEMENT_STATUSES = new Set([
+  'failed',
+  'unavailable',
+  'disabled',
+  'stale',
+  'superseded',
+]);
+
+function analyticsEnhancementPending(report) {
+  return Boolean(report?.enhancement_pending || ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(report)));
+}
+
+function analyticsOllamaFallbackFailed(report) {
+  return Boolean(
+    report?.fallback_used
+    && String(report?.provider || '').toLowerCase() === 'heuristic'
+    && String(report?.enhancement_provider || '').toLowerCase() === 'ollama'
+    && ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(report)),
+  );
+}
+
+function analyticsRetryOnCooldown(report) {
+  if (!analyticsOllamaFallbackFailed(report)) return false;
+  const availableAt = Date.parse(report?.retry_available_at || report?.metadata?.progressive_enhancement?.retry_available_at || '');
+  return Number.isFinite(availableAt) && Date.now() < availableAt;
+}
+
+function analyticsUpToDate(report) {
+  return Boolean(
+    report?.id
+    && !analyticsIntelligenceIsStale(report)
+    && !analyticsEnhancementPending(report)
+    && !analyticsOllamaFallbackFailed(report)
+    && String(report?.provider || '').toLowerCase() === 'ollama',
+  );
+}
+
+function analyticsEnhancementMeta(report) {
+  return report?.metadata?.progressive_enhancement || {};
+}
+
+function AnalyticsEnhancementLabel({ report }) {
+  const status = analyticsEnhancementStatus(report);
+  const provider = String(report?.enhancement_provider || '').toLowerCase();
+  if (provider !== 'ollama') return null;
+  const failed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(status);
+  const pending = ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(status);
+  const meta = analyticsEnhancementMeta(report);
+  const phase = String(meta.phase || '').toLowerCase();
+  const chunkCount = Number(meta.chunk_count || report?.metadata?.chunk_count || 0);
+  const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
+  const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
+  const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
+  const currentChunk = Number(meta.current_chunk_index || meta.current_chunk?.index || 0);
+  const visibleProgress = Math.max(processedChunks, currentChunk);
+  const label = pending
+    ? (phase === 'synthesizing'
+      ? 'Synthesizing final insight'
+      : chunkCount > 1
+        ? `Ollama analyzing ${visibleProgress}/${chunkCount} chunks`
+        : 'Ollama enhancement running')
+    : status === 'done'
+      ? (failedChunks > 0 ? 'Partial Ollama insight; heuristic kept for some sections.' : 'Ollama enhanced insight')
+    : status === 'partial'
+      ? 'Partial Ollama insight; heuristic kept for some sections.'
+      : failed
+        ? (analyticsOllamaFallbackFailed(report) ? 'Heuristic fallback shown. Retry Ollama' : 'Ollama enhancement failed; heuristic analysis kept.')
+        : '';
+  if (!label) return null;
+  const className = failed
+    ? 'bg-amber-400/15 text-amber-300'
+    : pending
+      ? 'bg-sky-400/15 text-sky-300'
+      : 'bg-emerald-400/15 text-emerald-300';
+  return (
+    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${className}`}>
       {label}
     </span>
   );
@@ -435,6 +593,10 @@ function IntelligenceLanguageLabel({ report }) {
 
 function analyticsInputWasCompacted(report) {
   return Boolean(report?.metadata?.input_truncated || report?.metadata?.compaction?.input_truncated);
+}
+
+function analyticsIntelligenceIsStale(report) {
+  return Boolean(report?.is_stale);
 }
 
 function RiskBadge({ level, outputLanguage = 'en' }) {
@@ -495,24 +657,48 @@ function HealthScoreRing({ value }) {
 }
 
 function intelligenceItemText(item) {
-  if (typeof item === 'string') return item;
+  if (typeof item === 'string') return humanizeAnalyticsSignal(item);
   if (!item || typeof item !== 'object') return '';
-  return String(item.message || item.recommendation || item.title || item.type || '');
+  return humanizeAnalyticsSignal(item.message || item.recommendation || item.title || item.type || '');
 }
 
 function intelligenceItemDetail(item) {
   if (!item || typeof item !== 'object') return '';
-  return String(item.evidence || item.action_label || '');
+  return humanizeAnalyticsSignal(item.evidence || item.action_label || '');
+}
+
+function CollapsibleAnalyticsSection({ title, count = 0, icon: Icon = Lightbulb, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <section className="rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-muted)]/20">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="focus-ring flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <Icon size={16} className="shrink-0 text-[var(--accent-primary)]" />
+          <span className="min-w-0">
+            <span className="block text-sm font-bold text-[var(--text-primary)]">{title}</span>
+            <span className="mt-0.5 block text-xs text-[var(--text-secondary)]">
+              {count} item{count === 1 ? '' : 's'}
+            </span>
+          </span>
+        </span>
+        <ChevronDown
+          size={16}
+          className={`shrink-0 text-[var(--text-secondary)] transition-transform ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+      {open && <div className="space-y-2 px-4 pb-4">{children}</div>}
+    </section>
+  );
 }
 
 function IntelligenceList({ title, items, emptyText, icon: Icon = Lightbulb }) {
   const visibleItems = Array.isArray(items) ? items.filter(Boolean).slice(0, 6) : [];
   return (
-    <div className="space-y-3">
-      <div className="flex items-center gap-2">
-        <Icon size={16} className="text-[var(--accent-primary)]" />
-        <h3 className="text-sm font-bold text-[var(--text-primary)]">{title}</h3>
-      </div>
+    <CollapsibleAnalyticsSection title={title} count={visibleItems.length} icon={Icon}>
       {visibleItems.length > 0 ? (
         <div className="space-y-2">
           {visibleItems.map((item, index) => {
@@ -529,7 +715,58 @@ function IntelligenceList({ title, items, emptyText, icon: Icon = Lightbulb }) {
       ) : (
         <p className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-3 text-sm text-[var(--text-secondary)]">{emptyText}</p>
       )}
-    </div>
+    </CollapsibleAnalyticsSection>
+  );
+}
+
+function analyticsActionLabel(item) {
+  const type = String(item?.type || '').toLowerCase();
+  if (type.includes('example') || type.includes('intro')) return 'Add examples';
+  if (type.includes('narration') || type.includes('segment') || type.includes('pacing')) return 'Expand narration';
+  if (type.includes('cover') || type.includes('discovery') || type.includes('category')) return 'Improve organization';
+  if (type.includes('completion') || type.includes('progress') || type.includes('retention')) return 'Review complex lessons';
+  if (type.includes('engagement') || type.includes('comment')) return 'Prompt learner response';
+  return humanizeAnalyticsSignal(type).replace(/\b\w/g, (char) => char.toUpperCase()) || 'Review priority';
+}
+
+function analyticsPriorityItems(report) {
+  const recommendations = Array.isArray(report?.recommendations) ? report.recommendations : [];
+  const lessonActions = Array.isArray(report?.lesson_actions) ? report.lesson_actions : [];
+  return [...recommendations, ...lessonActions].filter(Boolean).slice(0, 4);
+}
+
+function PriorityFixList({ report }) {
+  const items = analyticsPriorityItems(report);
+  return (
+    <section className="space-y-3">
+      <div>
+        <p className="text-sm font-bold text-[var(--text-primary)]">What to fix first</p>
+        <p className="mt-1 text-xs text-[var(--text-secondary)]">Start with the highest-signal lesson improvements from this range.</p>
+      </div>
+      {items.length > 0 ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {items.map((item, index) => {
+            const text = intelligenceItemText(item);
+            const detail = intelligenceItemDetail(item);
+            const lessonTitle = humanizeAnalyticsSignal(item?.lesson_title || '');
+            return (
+              <article key={`priority-fix-${index}-${text}`} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-muted)]/25 p-4">
+                <span className="inline-flex rounded-full bg-[color:rgba(208,188,255,0.14)] px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">
+                  {analyticsActionLabel(item)}
+                </span>
+                {lessonTitle && <p className="mt-3 text-xs font-semibold text-[var(--text-secondary)]">{lessonTitle}</p>}
+                <p className="mt-2 text-sm font-semibold leading-relaxed text-[var(--text-primary)]">{text || 'Review this analytics signal.'}</p>
+                {detail && <p className="mt-2 text-xs leading-relaxed text-[var(--text-secondary)]">{detail}</p>}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="rounded-xl bg-[color:var(--surface-muted)]/25 p-4 text-sm text-[var(--text-secondary)]">
+          No priority fixes yet. More learner activity will make this section more specific.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -540,7 +777,7 @@ function analyticsIntelligenceCopyText(report) {
     `Health score: ${toNumber(report.health_score)} / 100`,
     `Risk: ${report.risk_level || 'unknown'}`,
     '',
-    report.summary || '',
+    humanizeAnalyticsSignal(report.summary || ''),
     '',
     'Insights:',
     ...(Array.isArray(report.insights) ? report.insights : []).map((item) => `- ${intelligenceItemText(item)}`),
@@ -663,6 +900,7 @@ export default function Analytics({ user }) {
   const [intelligenceAnalyzing, setIntelligenceAnalyzing] = useState(false);
   const [intelligenceError, setIntelligenceError] = useState('');
   const [intelligenceCopied, setIntelligenceCopied] = useState(false);
+  const [intelligenceLoadedFilterKey, setIntelligenceLoadedFilterKey] = useState('');
 
   const canCreateLesson = canAccessStudio(user);
   const canReviewModeration = isStaffUser(user);
@@ -675,6 +913,7 @@ export default function Analytics({ user }) {
       category: categorySlug || undefined,
     };
   }, [categorySlug, rangeKey]);
+  const analyticsFilterKey = useMemo(() => JSON.stringify(analyticsFilters), [analyticsFilters]);
 
   const loadStats = useCallback(async (activeRef = { current: true }) => {
     setLoading(true);
@@ -704,21 +943,24 @@ export default function Analytics({ user }) {
   const loadIntelligenceReport = useCallback(async (activeRef = { current: true }) => {
     setIntelligenceLoading(true);
     setIntelligenceError('');
+    setIntelligenceLoadedFilterKey('');
 
     try {
       const payload = await fetchMyAnalyticsIntelligence(analyticsFilters);
       if (!activeRef.current) return;
       setIntelligenceReport(payload);
+      setIntelligenceLoadedFilterKey(analyticsFilterKey);
     } catch (intelligenceLoadError) {
       if (!activeRef.current) return;
       setIntelligenceReport(null);
+      setIntelligenceLoadedFilterKey(analyticsFilterKey);
       setIntelligenceError(intelligenceLoadError.message || 'Analytics Intelligence is unavailable.');
     } finally {
       if (activeRef.current) {
         setIntelligenceLoading(false);
       }
     }
-  }, [analyticsFilters]);
+  }, [analyticsFilterKey, analyticsFilters]);
 
   useEffect(() => {
     const activeRef = { current: true };
@@ -735,6 +977,28 @@ export default function Analytics({ user }) {
       activeRef.current = false;
     };
   }, [loadIntelligenceReport, refreshNonce]);
+
+  useEffect(() => {
+    if (!analyticsEnhancementPending(intelligenceReport)) return undefined;
+
+    let active = true;
+    const poll = async () => {
+      try {
+        const payload = await fetchMyAnalyticsIntelligence(analyticsFilters);
+        if (!active) return;
+        setIntelligenceReport(payload);
+        setIntelligenceLoadedFilterKey(analyticsFilterKey);
+      } catch {
+        // Keep the heuristic report visible if a polling read fails.
+      }
+    };
+
+    const intervalId = window.setInterval(poll, ANALYTICS_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [analyticsFilterKey, analyticsFilters, intelligenceReport]);
 
   useEffect(() => {
     if (!canCreateLesson) {
@@ -792,28 +1056,32 @@ export default function Analytics({ user }) {
     }
   };
 
-  const handleAnalyzeAnalytics = async () => {
+  const handleAnalyzeAnalytics = useCallback(async ({ auto = false, force = false } = {}) => {
+    if (analyticsEnhancementPending(intelligenceReport)) return null;
     setIntelligenceAnalyzing(true);
     setIntelligenceError('');
     setIntelligenceCopied(false);
 
     try {
-      const payload = await analyzeMyAnalyticsIntelligence(analyticsFilters);
+      const payload = await analyzeMyAnalyticsIntelligence(analyticsFilters, { force: Boolean(force) && !auto });
       setIntelligenceReport(payload);
+      setIntelligenceLoadedFilterKey(analyticsFilterKey);
+      return payload;
     } catch (analyzeError) {
       setIntelligenceError(analyzeError.message || 'Analytics analysis failed.');
+      return null;
     } finally {
       setIntelligenceAnalyzing(false);
     }
-  };
+  }, [analyticsFilterKey, analyticsFilters, intelligenceReport]);
 
   const handleCopyIntelligence = async () => {
     const text = analyticsIntelligenceCopyText(intelligenceReport);
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await copyTextToClipboard(text);
       setIntelligenceCopied(true);
-      window.setTimeout(() => setIntelligenceCopied(false), 1600);
+      window.setTimeout(() => setIntelligenceCopied(false), 2200);
     } catch {
       setIntelligenceError('Could not copy analytics suggestions.');
     }
@@ -831,6 +1099,31 @@ export default function Analytics({ user }) {
   const visibleRecentActivity = recentActivityExpanded
     ? stats.recentActivity
     : stats.recentActivity.slice(0, 3);
+  const intelligenceStale = analyticsIntelligenceIsStale(intelligenceReport);
+  const intelligenceCompacted = analyticsInputWasCompacted(intelligenceReport);
+  const intelligenceEnhancementPending = analyticsEnhancementPending(intelligenceReport);
+  const intelligenceEnhancementFailed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(intelligenceReport));
+  const intelligenceRetryOllama = analyticsOllamaFallbackFailed(intelligenceReport);
+  const intelligenceRetryCooldown = analyticsRetryOnCooldown(intelligenceReport);
+  const intelligenceUpToDate = analyticsUpToDate(intelligenceReport);
+  const intelligenceButtonDisabled = intelligenceAnalyzing
+    || intelligenceEnhancementPending
+    || intelligenceReport?.enabled === false
+    || intelligenceRetryCooldown
+    || intelligenceUpToDate;
+  const intelligenceButtonLabel = intelligenceAnalyzing
+    ? 'Analyzing...'
+    : intelligenceEnhancementPending
+      ? 'Enhancing...'
+      : intelligenceRetryCooldown
+        ? 'Retry available soon'
+        : intelligenceRetryOllama
+          ? 'Retry Ollama'
+          : intelligenceUpToDate
+            ? 'Up to date'
+            : intelligenceStale
+              ? 'Re-analyze'
+              : 'Analyze analytics';
 
   return (
     <div className="space-y-7 pb-8">
@@ -1153,9 +1446,12 @@ export default function Analytics({ user }) {
                   <div className="rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
                     <div className="flex items-center justify-between gap-3">
                       <p className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
-                      <span className="shrink-0 rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
-                        {activity.label}
-                      </span>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
+                          {activity.label}
+                        </span>
+                        <span className="text-[0.68rem] text-[var(--text-secondary)]">{activity.timeLabel}</span>
+                      </div>
                     </div>
                     <p className="mt-1 text-sm text-[var(--text-secondary)]">{activity.description}</p>
                   </div>
@@ -1235,7 +1531,13 @@ export default function Analytics({ user }) {
               <div className="flex flex-wrap items-center gap-2">
                 <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">Smart Insights</p>
                 <ProviderLabel report={intelligenceReport} />
+                <AnalyticsEnhancementLabel report={intelligenceReport} />
                 <IntelligenceLanguageLabel report={intelligenceReport} />
+                {intelligenceStale && (
+                  <span className="inline-flex items-center rounded-full bg-amber-400/15 px-3 py-1 text-xs font-semibold text-amber-300">
+                    Stale
+                  </span>
+                )}
               </div>
               <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--text-secondary)]">
                 Suggestions are advisory. They do not change your lessons until you edit them.
@@ -1255,12 +1557,12 @@ export default function Analytics({ user }) {
             )}
             <button
               type="button"
-              onClick={handleAnalyzeAnalytics}
-              disabled={intelligenceAnalyzing || intelligenceReport?.enabled === false}
+              onClick={() => handleAnalyzeAnalytics({ force: intelligenceStale })}
+              disabled={intelligenceButtonDisabled}
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[image:var(--accent-gradient)] px-4 text-xs font-bold text-white transition hover:scale-105 active:scale-95 disabled:cursor-wait disabled:opacity-60 disabled:hover:scale-100"
             >
-              <RefreshCw size={14} className={intelligenceAnalyzing ? 'animate-spin' : ''} />
-              {intelligenceAnalyzing ? 'Analyzing...' : 'Analyze analytics'}
+              <RefreshCw size={14} className={(intelligenceAnalyzing || intelligenceEnhancementPending) ? 'animate-spin' : ''} />
+              {intelligenceButtonLabel}
             </button>
           </div>
         </div>
@@ -1271,6 +1573,15 @@ export default function Analytics({ user }) {
             <span>{intelligenceError}</span>
           </div>
         )}
+        {intelligenceEnhancementFailed && (
+          <div className="flex items-start gap-2 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-200">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <span>
+              {intelligenceRetryOllama ? 'Heuristic fallback shown. Retry Ollama when available. ' : ''}
+              {intelligenceReport?.enhancement_last_failure_reason || intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
+            </span>
+          </div>
+        )}
 
         {intelligenceLoading && !intelligenceReport ? (
           <div className="flex min-h-28 items-center justify-center rounded-2xl bg-[color:var(--surface-muted)]/25 text-sm text-[var(--text-secondary)]">
@@ -1279,40 +1590,58 @@ export default function Analytics({ user }) {
           </div>
         ) : intelligenceReport?.status === 'done' ? (
           <div className="space-y-6">
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
-              <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
-                <div className="flex items-center gap-2">
-                  <Gauge size={17} className="text-[var(--accent-primary)]" />
-                  <p className="text-sm font-bold text-[var(--text-primary)]">Analytics summary</p>
-                </div>
-                <p className="mt-3 text-sm leading-relaxed text-[var(--text-secondary)]">{intelligenceReport.summary}</p>
+            {(intelligenceStale || intelligenceCompacted) && (
+              <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-3 text-sm text-[var(--text-secondary)]">
+                {intelligenceStale && (
+                  <p className="font-semibold text-amber-300">This analytics report is out of date for the selected filters.</p>
+                )}
+                {intelligenceCompacted && (
+                  <p className={intelligenceStale ? 'mt-1' : ''}>Large analytics dataset summarized before analysis.</p>
+                )}
               </div>
-              <div className="flex items-center justify-between gap-5 rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
-                <div>
-                  <p className="label-sm">Health</p>
+            )}
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="rounded-xl border border-[color:rgba(208,188,255,0.24)] bg-[color:rgba(208,188,255,0.08)] p-5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Gauge size={17} className="text-[var(--accent-primary)]" />
+                  <p className="text-sm font-bold text-[var(--text-primary)]">Smart insight</p>
                   <RiskBadge
                     level={intelligenceReport.risk_level}
                     outputLanguage={intelligenceReport.output_language}
                   />
-                  <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">
-                    Based on aggregate creator analytics for the selected range.
+                </div>
+                <p className="mt-3 text-sm leading-relaxed text-[var(--text-primary)]">
+                  {humanizeAnalyticsSignal(intelligenceReport.summary)}
+                </p>
+                <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">
+                  Based on aggregate creator analytics for the selected range.
+                </p>
+              </div>
+              <div className="flex items-center justify-between gap-4 rounded-xl bg-[color:var(--surface-muted)]/25 p-5">
+                <div>
+                  <p className="label-sm">Health</p>
+                  <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
+                    {analyticsActionLabel(analyticsPriorityItems(intelligenceReport)[0])}
                   </p>
+                  <p className="mt-2 text-xs text-[var(--text-secondary)]">Priority signal</p>
                 </div>
                 <HealthScoreRing value={intelligenceReport.health_score} />
               </div>
             </div>
 
-            <div className="grid gap-5 lg:grid-cols-2">
+            <PriorityFixList report={intelligenceReport} />
+
+            <div className="grid gap-4 lg:grid-cols-2">
               <IntelligenceList
-                title="Insights"
+                title="Evidence"
                 items={intelligenceReport.insights}
-                emptyText="No analytics insights yet."
+                emptyText="Evidence appears after lessons collect activity."
                 icon={Lightbulb}
               />
               <IntelligenceList
-                title="Recommendations"
+                title="More recommendations"
                 items={intelligenceReport.recommendations}
-                emptyText="No recommendations yet."
+                emptyText="No additional recommendations yet."
                 icon={CheckCircle2}
               />
               <IntelligenceList
@@ -1322,27 +1651,25 @@ export default function Analytics({ user }) {
                 icon={Eye}
               />
               <IntelligenceList
-                title="Category actions"
+                title="Category patterns"
                 items={intelligenceReport.category_actions}
-                emptyText="Category actions appear when category signals differ."
+                emptyText="Category patterns appear when category signals differ."
                 icon={Filter}
               />
             </div>
 
-            {Array.isArray(intelligenceReport.limitations) && intelligenceReport.limitations.length > 0 && (
-              <div className="rounded-2xl bg-[color:var(--surface-muted)]/20 p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Limitations</p>
-                {analyticsInputWasCompacted(intelligenceReport) && (
-                  <p className="mt-2 text-xs leading-relaxed text-[var(--text-secondary)]">
-                    Large analytics dataset summarized before analysis.
-                  </p>
-                )}
+            {(Array.isArray(intelligenceReport.limitations) && intelligenceReport.limitations.length > 0) && (
+              <CollapsibleAnalyticsSection
+                title="Limitations"
+                count={intelligenceReport.limitations.length}
+                icon={AlertTriangle}
+              >
                 <ul className="mt-2 space-y-1 text-xs leading-relaxed text-[var(--text-secondary)]">
                   {intelligenceReport.limitations.slice(0, 4).map((item, index) => (
                     <li key={`analytics-limitation-${index}`}>{String(item)}</li>
                   ))}
                 </ul>
-              </div>
+              </CollapsibleAnalyticsSection>
             )}
           </div>
         ) : intelligenceReport?.status === 'disabled' || intelligenceReport?.enabled === false ? (
@@ -1353,7 +1680,7 @@ export default function Analytics({ user }) {
           <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
             <p className="text-sm text-[var(--text-secondary)]">{stats.insight}</p>
             <p className="mt-2 text-xs text-[var(--text-secondary)]">
-              Run analysis when you want advisory insights for the selected analytics range.
+              Smart insights are being prepared automatically when creator analytics change.
             </p>
           </div>
         )}
