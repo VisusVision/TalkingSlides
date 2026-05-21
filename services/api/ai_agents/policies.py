@@ -13,6 +13,8 @@ Key rules
   AND moderation-approved (or admin-approved).
 """
 
+from django.conf import settings
+
 # Moderation statuses that ACTIVELY BLOCK publication.
 # Any status not in this set is allowed to publish (including not_scanned,
 # pending, failed — which are informational, not enforcement gates).
@@ -147,7 +149,9 @@ def moderation_is_approved_for_catalog(project) -> bool:
     Used to filter what anonymous/student users see — not what owners see.
     """
     moderation = str(getattr(project, "moderation_status", "") or "")
-    return moderation in APPROVED_MODERATION_STATUSES or moderation == "not_scanned"
+    if moderation in APPROVED_MODERATION_STATUSES:
+        return True
+    return moderation == "not_scanned" and bool(getattr(settings, "PUBLIC_ALLOW_NOT_SCANNED_LESSONS", False))
 
 
 def publication_block_payload(project) -> dict:

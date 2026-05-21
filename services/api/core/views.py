@@ -66,6 +66,7 @@ from rest_framework.exceptions import UnsupportedMediaType, ValidationError
 from rest_framework.authtoken.models import Token
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -2812,10 +2813,8 @@ class MediaStreamView(APIView):
     The raw storage path is never sent to the client.
     """
     permission_classes = [permissions.AllowAny]
-    # Stream traffic (especially HLS segments) is high-frequency by design.
-    # Do not apply DRF request throttles here; playback protection is enforced
-    # by signed tokens, grant/session checks, and risk policy controls.
-    throttle_classes = []
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "stream"
 
     def get(self, request, token):
         requested_type = "video"
@@ -3881,6 +3880,13 @@ def _project_has_completed_render(project: Project) -> bool:
     except AttributeError:
         latest_job = _latest_completed_video_export_job(project)
         return bool(latest_job)
+
+
+def _public_moderation_statuses() -> frozenset[str]:
+    statuses = set(APPROVED_MODERATION_STATUSES)
+    if bool(getattr(settings, "PUBLIC_ALLOW_NOT_SCANNED_LESSONS", False)):
+        statuses.add("not_scanned")
+    return frozenset(statuses)
 
 
 def _is_published_playable_lesson(project: Project) -> bool:
@@ -8219,11 +8225,71 @@ class JobStatusView(APIView):
         return Response(data)
 
 
+VOICE_UPLOAD_ALLOWED_TYPES = {
+    ".wav": {
+        "mimes": {"audio/wav", "audio/wave", "audio/x-wav", "audio/vnd.wave"},
+    },
+}
+VOICE_UPLOAD_MAGIC_READ_BYTES = 64
+
+
+def _uploaded_file_size(uploaded_file) -> int:
+    try:
+        return int(getattr(uploaded_file, "size", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _rewind_uploaded_file(uploaded_file) -> None:
+    try:
+        uploaded_file.seek(0)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _read_voice_magic(uploaded_file) -> bytes:
+    _rewind_uploaded_file(uploaded_file)
+    try:
+        header = uploaded_file.read(VOICE_UPLOAD_MAGIC_READ_BYTES)
+    finally:
+        _rewind_uploaded_file(uploaded_file)
+    return bytes(header or b"")
+
+
+def _looks_like_wav(header: bytes) -> bool:
+    return len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WAVE"
+
+
+def _validate_voice_upload(uploaded_file) -> tuple[bool, str, str]:
+    max_bytes = int(getattr(settings, "AVATAR_VOICE_SAMPLE_MAX_BYTES", 10 * 1024 * 1024) or 10 * 1024 * 1024)
+    size = _uploaded_file_size(uploaded_file)
+    if size <= 0:
+        return False, "voice_file must not be empty.", ""
+    if size > max_bytes:
+        return False, f"voice_file exceeds the {max_bytes} byte limit.", ""
+
+    original_name = str(getattr(uploaded_file, "name", "") or "")
+    extension = Path(original_name).suffix.lower()
+    if extension not in VOICE_UPLOAD_ALLOWED_TYPES:
+        return False, "Unsupported voice_file extension. Upload a WAV file.", ""
+
+    content_type = str(getattr(uploaded_file, "content_type", "") or "").split(";", 1)[0].strip().lower()
+    allowed_mimes = VOICE_UPLOAD_ALLOWED_TYPES[extension]["mimes"]
+    if content_type not in allowed_mimes:
+        return False, "Unsupported voice_file MIME type for WAV audio.", ""
+
+    header = _read_voice_magic(uploaded_file)
+    if extension == ".wav" and not _looks_like_wav(header):
+        return False, "voice_file content does not match WAV audio.", ""
+
+    return True, "", extension
+
+
 class VoiceUploadView(APIView):
     """
     POST /api/v1/users/<user_id>/voice/
 
-    Saves the uploaded audio as the teacher's XTTS v2 reference voice.
+    Saves a validated WAV sample as the teacher's XTTS v2 reference voice.
     File is stored at STORAGE_ROOT/voices/<voice_id>.wav so the TTS
     service can locate it by voice_id.
     """
@@ -8244,6 +8310,10 @@ class VoiceUploadView(APIView):
         if not audio_file:
             return Response({"error": "voice_file is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        is_valid, validation_error, extension = _validate_voice_upload(audio_file)
+        if not is_valid:
+            return Response({"error": validation_error}, status=status.HTTP_400_BAD_REQUEST)
+
         new_voice_id = f"voice_{uuid.uuid4().hex[:12]}"
 
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
@@ -8251,7 +8321,7 @@ class VoiceUploadView(APIView):
         voices_dir.mkdir(parents=True, exist_ok=True)
 
         # Save as .wav — XTTS service expects {voice_id}.wav
-        voice_path = voices_dir / f"{new_voice_id}.wav"
+        voice_path = voices_dir / f"{new_voice_id}{extension}"
         with open(voice_path, "wb") as fh:
             for chunk in audio_file.chunks():
                 fh.write(chunk)
@@ -9068,15 +9138,13 @@ class CatalogListView(APIView):
             if cached is not None:
                 return Response(cached)
 
-        # Public catalog: published + render done + moderation approved/not_scanned.
-        # Lessons that are unscanned (not_scanned) are also shown so that projects
-        # without auto-moderation enabled are not silently hidden from the catalog.
-        # Explicitly rejected/blocked lessons are excluded via moderation_status__in.
+        # Public catalog: published + render done + positively approved moderation.
+        # not_scanned is hidden unless PUBLIC_ALLOW_NOT_SCANNED_LESSONS is explicitly enabled.
         projects = (
             Project.objects.filter(
                 is_published=True,
                 status="ready",
-                moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+                moderation_status__in=_public_moderation_statuses(),
                 jobs__status="done",
             )
             .exclude(moderation_status__in=["admin_rejected", "revision_required"])
@@ -9200,7 +9268,7 @@ class CatalogFeedView(APIView):
             Project.objects.filter(
                 is_published=True,
                 status="ready",
-                moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+                moderation_status__in=_public_moderation_statuses(),
                 jobs__status="done",
             )
             .exclude(moderation_status__in=["admin_rejected", "revision_required"])
@@ -10917,7 +10985,7 @@ def _public_publisher_projects(publisher):
             user=publisher,
             is_published=True,
             status="ready",
-            moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+            moderation_status__in=_public_moderation_statuses(),
             jobs__status="done",
         )
         .exclude(moderation_status__in=["admin_rejected", "revision_required"])
@@ -10933,7 +11001,7 @@ def _public_playlist_items_queryset(queryset=None):
         base.filter(
             project__is_published=True,
             project__status="ready",
-            project__moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+            project__moderation_status__in=_public_moderation_statuses(),
             project__jobs__status="done",
         )
         .exclude(project__moderation_status__in=["admin_rejected", "revision_required"])

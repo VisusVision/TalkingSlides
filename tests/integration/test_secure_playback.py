@@ -690,6 +690,7 @@ def test_playback_grant_rotation_invalidates_previous_grant(monkeypatch):
     class _AuthUser:
         is_authenticated = True
         id = 77
+        pk = 77
         username = "student77"
 
     req.user = _AuthUser()
@@ -797,6 +798,7 @@ def test_logout_epoch_revokes_existing_playback_grant(monkeypatch):
     class _AuthUser:
         is_authenticated = True
         id = 41
+        pk = 41
         username = "student41"
 
     req.user = _AuthUser()
@@ -939,6 +941,7 @@ def test_multi_device_policy_deny_new_blocks_second_session(monkeypatch):
     class _AuthUser:
         is_authenticated = True
         id = 88
+        pk = 88
         username = "student88"
 
     req_one = _DummyRequest()
@@ -985,6 +988,7 @@ def test_multi_device_policy_rotate_old_revokes_previous_session(monkeypatch):
     class _AuthUser:
         is_authenticated = True
         id = 89
+        pk = 89
         username = "student89"
 
     req_one = _DummyRequest()
@@ -1124,6 +1128,7 @@ def test_old_token_invalidated_after_grant_rotation_stream_view(tmp_path, monkey
         is_authenticated = True
         is_active = True
         id = 121
+        pk = 121
         username = "student121"
 
     req1 = _DummyRequest()
@@ -1215,6 +1220,7 @@ def test_repeated_bind_mismatch_revokes_grant(monkeypatch):
     class _AuthUser:
         is_authenticated = True
         id = 91
+        pk = 91
         username = "student91"
 
     req_a = _DummyRequest()
@@ -1596,6 +1602,12 @@ def test_media_stream_invalid_token_does_not_return_json_or_html():
     assert resp.status_code == 403
     assert resp["Content-Type"].startswith("video/mp4")
     assert resp.content == b""
+    assert b"storage_local" not in resp.content
+
+
+def test_media_stream_view_uses_scoped_throttle():
+    assert views.MediaStreamView.throttle_scope == "stream"
+    assert views.MediaStreamView.throttle_classes == [views.ScopedRateThrottle]
 
 
 def test_media_stream_view_allows_browser_like_grant_bound_request(tmp_path, monkeypatch):

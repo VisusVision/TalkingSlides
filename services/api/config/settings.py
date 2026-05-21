@@ -340,6 +340,7 @@ REST_FRAMEWORK = {
         "anon": os.environ.get("DRF_THROTTLE_ANON", "120/min"),
         "user": os.environ.get("DRF_THROTTLE_USER", "600/min"),
         "login": os.environ.get("DRF_THROTTLE_LOGIN", "10/min"),
+        "stream": os.environ.get("DRF_THROTTLE_STREAM", "300/min"),
     },
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
@@ -352,6 +353,8 @@ STORAGE_ROOT = os.environ.get(
     "STORAGE_ROOT",
     str(BASE_DIR.parent.parent / "storage_local"),
 )
+AVATAR_VOICE_SAMPLE_MAX_BYTES = int(os.environ.get("AVATAR_VOICE_SAMPLE_MAX_BYTES", "10485760") or "10485760")
+PUBLIC_ALLOW_NOT_SCANNED_LESSONS = _env_bool("PUBLIC_ALLOW_NOT_SCANNED_LESSONS", False)
 
 # Optional public API origin used for absolute URL generation when request
 # context is unavailable in serializers.

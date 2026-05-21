@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from django.conf import settings
 from django.contrib.auth.models import User
 from django.db.models import Model
 
@@ -17,7 +18,7 @@ from core.models import Job, LessonComment, Notification, Project, PublisherFoll
 
 logger = logging.getLogger(__name__)
 
-PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved", "not_scanned"}
+PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved"}
 SAFE_METADATA_KEYS = {
     "project_id",
     "lesson_id",
@@ -108,7 +109,10 @@ def _public_lesson_is_visible(project: Project | None) -> bool:
         return False
     if str(getattr(project, "status", "") or "") != "ready":
         return False
-    if str(getattr(project, "moderation_status", "") or "") not in PUBLIC_MODERATION_STATUSES:
+    public_statuses = set(PUBLIC_MODERATION_STATUSES)
+    if bool(getattr(settings, "PUBLIC_ALLOW_NOT_SCANNED_LESSONS", False)):
+        public_statuses.add("not_scanned")
+    if str(getattr(project, "moderation_status", "") or "") not in public_statuses:
         return False
     return _project_has_done_render(project)
 

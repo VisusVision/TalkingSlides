@@ -37,6 +37,13 @@ ENV/
 *.swo
 
 # Project specific
+.env
+*.env
+!.env.example
+db.sqlite3
+celerybeat-schedule.db
+services/api/db.sqlite3
+services/api/media/
 storage_local/
 services/api/staticfiles/
 staticfiles/
@@ -57,5 +64,6 @@ node_modules/
 .next/
 out/
 dist/
+.vite/
 .env*
 !.env.example
