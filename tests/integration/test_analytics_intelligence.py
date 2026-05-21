@@ -217,6 +217,32 @@ def test_low_progress_produces_progress_recommendation():
 
 
 @override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_analytics_user_facing_metric_strings_are_humanized():
+    publisher = _make_user("ai_metric_copy_owner")
+    viewer = _make_user("ai_metric_copy_viewer", role="student")
+    lesson = _make_project(publisher, "Metric wording lesson")
+    _progress(viewer, lesson, 77)
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+
+    assert response.status_code == 200
+    visible_parts = [response.data["summary"]]
+    for key in ("insights", "recommendations", "lesson_actions", "category_actions"):
+        for item in response.data.get(key, []):
+            visible_parts.extend(
+                str(item.get(field, ""))
+                for field in ("message", "evidence", "action_label")
+                if isinstance(item, dict)
+            )
+    visible_text = "\n".join(visible_parts)
+    assert "completion_rate" not in visible_text
+    assert "average_progress" not in visible_text
+    assert "engagement_score" not in visible_text
+    assert "%" in visible_text
+    assert "completed these lessons" in visible_text or "average viewer reached" in visible_text
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
 def test_high_engagement_produces_positive_insight():
     publisher = _make_user("ai_engaged_owner")
     viewer = _make_user("ai_engaged_viewer", role="student")

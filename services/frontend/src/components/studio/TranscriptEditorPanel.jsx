@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertTriangle,
   ArrowDown,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react';
 import { fetchJobStatus, fetchProjectTranscript, transcriptPageAction, updateProjectTranscript } from '../../api';
 import Button from '../ui/Button';
+import ModalShell from '../ui/ModalShell';
 
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
@@ -50,6 +52,12 @@ function escapeHtml(value) {
 
 function narrationToHtml(value) {
   return escapeHtml(value).replace(/\r\n|\r|\n/g, '<br />');
+}
+
+function previewText(value, maxChars = 260) {
+  const normalized = textValue(value).replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > maxChars ? `${normalized.slice(0, maxChars - 1).trim()}...` : normalized;
 }
 
 function narrationToEditorDocument(value, html) {
@@ -698,6 +706,44 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
 
   const controlsDisabled = saving || rerendering || actioning;
 
+  const applyNarrationDraftToPage = useCallback(
+    ({ targetPage, targetIndex, nextText, currentNarrationRaw }) => {
+      let updatedPage = null;
+      setDraftPages((current) =>
+        current.map((page, pageIndex) => {
+          if (pageIndex !== targetIndex) return page;
+          const flags = {
+            ...editorTextFlags(page),
+            narration_customized: true,
+          };
+          updatedPage = {
+            ...page,
+            narration_text: nextText,
+            editor_document: {
+              ...(page.editor_document || {}),
+              text: flags,
+            },
+          };
+          return updatedPage;
+        }),
+      );
+      const targetKey = pageKey(targetPage, targetIndex);
+      setAiAppliedDraftsByPageKey((current) => ({
+        ...current,
+        [targetKey]: {
+          previousText: currentNarrationRaw,
+          appliedText: nextText,
+          appliedAt: Date.now(),
+        },
+      }));
+      setError('');
+      setStatusMessage('AI draft applied. Review it, then save changes when ready.');
+      onSelectPage?.(updatedPage || targetPage, targetIndex);
+      return { ok: true, pageIndex: targetIndex, pageKey: targetKey };
+    },
+    [onSelectPage],
+  );
+
   const applyNarrationSuggestion = useCallback((suggestion = {}) => {
     if (controlsDisabled) {
       return { ok: false, message: 'Transcript editor is busy.' };
@@ -729,46 +775,27 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     const targetPage = draftPages[targetIndex];
     const currentNarrationRaw = textValue(targetPage?.narration_text);
     const currentNarration = currentNarrationRaw.trim();
-    if (currentNarration && currentNarration !== nextText) {
-      const confirmed = window.confirm(`Replace current narration for ${pageDescriptor(targetPage, targetIndex)} with this AI draft?`);
-      if (!confirmed) {
-        return { ok: false, cancelled: true, message: 'Suggestion was not applied.' };
-      }
-    }
-
-    let updatedPage = null;
-    setDraftPages((current) =>
-      current.map((page, pageIndex) => {
-        if (pageIndex !== targetIndex) return page;
-        const flags = {
-          ...editorTextFlags(page),
-          narration_customized: true,
-        };
-        updatedPage = {
-          ...page,
-          narration_text: nextText,
-          editor_document: {
-            ...(page.editor_document || {}),
-            text: flags,
-          },
-        };
-        return updatedPage;
-      }),
-    );
-    const targetKey = pageKey(targetPage, targetIndex);
-    setAiAppliedDraftsByPageKey((current) => ({
-      ...current,
-      [targetKey]: {
-        previousText: currentNarrationRaw,
-        appliedText: nextText,
-        appliedAt: Date.now(),
-      },
-    }));
     setError('');
-    setStatusMessage('AI draft applied. Review it, then save changes when ready.');
-    onSelectPage?.(updatedPage || targetPage, targetIndex);
-    return { ok: true, pageIndex: targetIndex, pageKey: targetKey };
-  }, [controlsDisabled, draftPages, onSelectPage]);
+    setStatusMessage('');
+    setPendingConfirmation({
+      kind: 'ai_draft',
+      title: 'Apply AI draft to this page?',
+      pageLabel: pageDescriptor(targetPage, targetIndex),
+      currentPreview: previewText(currentNarration),
+      draftPreview: previewText(nextText),
+      message: currentNarration && currentNarration !== nextText
+        ? 'This will replace the current draft narration for this page.'
+        : 'This page does not have custom narration yet.',
+      confirmLabel: 'Apply AI draft',
+      onConfirm: () => applyNarrationDraftToPage({
+        targetPage,
+        targetIndex,
+        nextText,
+        currentNarrationRaw,
+      }),
+    });
+    return { ok: false, cancelled: true, pendingConfirmation: true, message: 'Review the apply confirmation.' };
+  }, [applyNarrationDraftToPage, controlsDisabled, draftPages]);
 
   const undoAiDraft = useCallback((index) => {
     const page = draftPages[index];
@@ -1018,16 +1045,15 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           </p>
         )}
 
-        {pendingConfirmation && (
-          <div
-            role="dialog"
-            aria-modal="false"
-            className="space-y-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3"
-          >
-            <div>
-              <p className="font-semibold text-[var(--text-primary)]">{pendingConfirmation.title}</p>
-              <p className="mt-1 text-sm text-[var(--text-secondary)]">{pendingConfirmation.message}</p>
-            </div>
+        {typeof document !== 'undefined' && createPortal((
+        <ModalShell
+          open={Boolean(pendingConfirmation)}
+          titleId="transcript-confirmation-title"
+          eyebrow={pendingConfirmation?.kind === 'ai_draft' ? 'AI draft' : 'Transcript action'}
+          title={pendingConfirmation?.title || 'Confirm action'}
+          onClose={() => setPendingConfirmation(null)}
+          maxWidthClass="max-w-2xl"
+          footer={(
             <div className="flex flex-wrap justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={() => setPendingConfirmation(null)} disabled={actioning}>
                 <span>Cancel</span>
@@ -1038,11 +1064,42 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                 onClick={confirmPendingAction}
                 disabled={actioning}
               >
-                <span>{pendingConfirmation.confirmLabel || 'Confirm'}</span>
+                {pendingConfirmation?.kind === 'ai_draft' && <Sparkles size={14} />}
+                <span>{pendingConfirmation?.confirmLabel || 'Confirm'}</span>
               </Button>
             </div>
-          </div>
-        )}
+          )}
+        >
+          {pendingConfirmation?.kind === 'ai_draft' ? (
+            <div className="space-y-4">
+              <p className="text-sm text-[var(--text-secondary)]">
+                This only changes your Studio draft. Save changes when ready.
+              </p>
+              <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3">
+                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">Page</p>
+                <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">{pendingConfirmation.pageLabel}</p>
+                <p className="mt-2 text-xs text-[var(--text-secondary)]">{pendingConfirmation.message}</p>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3">
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">Current narration</p>
+                  <p className="mt-2 min-h-[4rem] whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-primary)]">
+                    {pendingConfirmation.currentPreview || 'No current narration.'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-[color:rgba(208,188,255,0.32)] bg-[color:rgba(208,188,255,0.08)] p-3">
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">AI draft preview</p>
+                  <p className="mt-2 min-h-[4rem] whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-primary)]">
+                    {pendingConfirmation.draftPreview || 'No AI draft text.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className="text-sm leading-6 text-[var(--text-secondary)]">{pendingConfirmation?.message}</p>
+          )}
+        </ModalShell>
+        ), document.body)}
 
         {deletedPages.length > 0 && (
           <div className="space-y-2 rounded-xl bg-[var(--surface-container-high)] p-3">

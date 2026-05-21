@@ -253,6 +253,30 @@ def test_heuristic_response_stable_and_complete():
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_lesson_response_separates_public_and_improvement_summaries():
+    owner = _make_user("li_summary_split_owner")
+    project = _make_project(owner, title="Gradient Descent Basics")
+    _add_page(
+        project,
+        order=0,
+        key="p1",
+        original="- Objective\n- Algorithm\n- Example",
+        narration="Algorithm parameters and loss function.",
+    )
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["public_lesson_summary"] == response.data["summary"]
+    assert response.data["lesson_summary"] == response.data["summary"]
+    assert response.data["improvement_summary"]
+    assert response.data["improvement_summary"] != response.data["public_lesson_summary"]
+    assert "improve" in response.data["improvement_summary"].lower() or "stronger" in response.data["improvement_summary"].lower()
+    assert response.data["metadata"]["public_lesson_summary"] == response.data["public_lesson_summary"]
+    assert response.data["metadata"]["improvement_summary"] == response.data["improvement_summary"]
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
 def test_no_raw_storage_paths_exposed():
     owner = _make_user("li_paths_owner")
     project = _make_project(owner)
@@ -1289,6 +1313,21 @@ def test_turkish_transcript_returns_turkish_user_facing_output():
     assert "Bu ders" in response.data["summary"]
     serialized = json.dumps(response.data, ensure_ascii=False)
     assert "Belirgin örnek" in serialized or "Öneriler" in serialized or "danışma amaçlıdır" in serialized
+
+
+@override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_turkish_lesson_summary_fields_are_localized():
+    owner = _make_user("li_tr_summary_split_owner")
+    project = _make_project(owner, title="Veri Analizi Dersi")
+    _add_page(project, order=0, key="p1", original=_turkish_lesson_text())
+
+    response = _client(owner).post(_analyze_url(project), {}, format="json")
+
+    assert response.status_code == 200
+    assert response.data["output_language"] == "tr"
+    assert "Bu ders" in response.data["public_lesson_summary"]
+    assert "Bu ders" in response.data["improvement_summary"]
+    assert response.data["improvement_summary"] != response.data["public_lesson_summary"]
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")

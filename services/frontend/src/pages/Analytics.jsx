@@ -63,6 +63,41 @@ function percent(value) {
   return `${Math.max(0, Math.min(100, Math.round(toNumber(value))))}%`;
 }
 
+function formatPercentMetric(value) {
+  const normalized = typeof value === 'string' ? value.replace('%', '').trim() : value;
+  return percent(normalized);
+}
+
+function humanizeAnalyticsSignal(signal) {
+  const text = String(signal || '').trim();
+  if (!text) return '';
+  const completionMatch = text.match(/\bcompletion(?:_rate)?\s*=\s*([0-9]+(?:\.[0-9]+)?%?)/i);
+  const progressMatch = text.match(/\b(?:average_)?progress\s*=\s*([0-9]+(?:\.[0-9]+)?%?)/i);
+  const compactProgressMatch = text.match(/\b([0-9]+(?:\.[0-9]+)?)%\s+completion,\s+([0-9]+(?:\.[0-9]+)?)%\s+average progress\b/i);
+  if (compactProgressMatch) {
+    const completion = formatPercentMetric(compactProgressMatch[1]);
+    const progress = formatPercentMetric(compactProgressMatch[2]);
+    const sentence = `About ${completion} of learners completed these lessons, while the average viewer reached ${progress} of the lesson.`;
+    return text.replace(compactProgressMatch[0], sentence);
+  }
+  if (completionMatch && progressMatch) {
+    const completion = formatPercentMetric(completionMatch[1]);
+    const progress = formatPercentMetric(progressMatch[1]);
+    return `About ${completion} of learners completed these lessons, while the average viewer reached ${progress} of the lesson.`;
+  }
+  if (completionMatch) {
+    return `About ${formatPercentMetric(completionMatch[1])} of learners completed these lessons.`;
+  }
+  if (progressMatch) {
+    return `The average viewer reached ${formatPercentMetric(progressMatch[1])} of the lesson.`;
+  }
+  return text
+    .replace(/\bcompletion_rate\b/gi, 'completion')
+    .replace(/\baverage_progress\b/gi, 'average progress')
+    .replace(/\bengagement_score\b/gi, 'engagement score')
+    .replace(/_/g, ' ');
+}
+
 function rangeDates(rangeKey) {
   const days = Math.max(1, Number(rangeKey || 7));
   const to = new Date();
@@ -622,14 +657,14 @@ function HealthScoreRing({ value }) {
 }
 
 function intelligenceItemText(item) {
-  if (typeof item === 'string') return item;
+  if (typeof item === 'string') return humanizeAnalyticsSignal(item);
   if (!item || typeof item !== 'object') return '';
-  return String(item.message || item.recommendation || item.title || item.type || '');
+  return humanizeAnalyticsSignal(item.message || item.recommendation || item.title || item.type || '');
 }
 
 function intelligenceItemDetail(item) {
   if (!item || typeof item !== 'object') return '';
-  return String(item.evidence || item.action_label || '');
+  return humanizeAnalyticsSignal(item.evidence || item.action_label || '');
 }
 
 function CollapsibleAnalyticsSection({ title, count = 0, icon: Icon = Lightbulb, defaultOpen = false, children }) {
@@ -684,6 +719,57 @@ function IntelligenceList({ title, items, emptyText, icon: Icon = Lightbulb }) {
   );
 }
 
+function analyticsActionLabel(item) {
+  const type = String(item?.type || '').toLowerCase();
+  if (type.includes('example') || type.includes('intro')) return 'Add examples';
+  if (type.includes('narration') || type.includes('segment') || type.includes('pacing')) return 'Expand narration';
+  if (type.includes('cover') || type.includes('discovery') || type.includes('category')) return 'Improve organization';
+  if (type.includes('completion') || type.includes('progress') || type.includes('retention')) return 'Review complex lessons';
+  if (type.includes('engagement') || type.includes('comment')) return 'Prompt learner response';
+  return humanizeAnalyticsSignal(type).replace(/\b\w/g, (char) => char.toUpperCase()) || 'Review priority';
+}
+
+function analyticsPriorityItems(report) {
+  const recommendations = Array.isArray(report?.recommendations) ? report.recommendations : [];
+  const lessonActions = Array.isArray(report?.lesson_actions) ? report.lesson_actions : [];
+  return [...recommendations, ...lessonActions].filter(Boolean).slice(0, 4);
+}
+
+function PriorityFixList({ report }) {
+  const items = analyticsPriorityItems(report);
+  return (
+    <section className="space-y-3">
+      <div>
+        <p className="text-sm font-bold text-[var(--text-primary)]">What to fix first</p>
+        <p className="mt-1 text-xs text-[var(--text-secondary)]">Start with the highest-signal lesson improvements from this range.</p>
+      </div>
+      {items.length > 0 ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {items.map((item, index) => {
+            const text = intelligenceItemText(item);
+            const detail = intelligenceItemDetail(item);
+            const lessonTitle = humanizeAnalyticsSignal(item?.lesson_title || '');
+            return (
+              <article key={`priority-fix-${index}-${text}`} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-muted)]/25 p-4">
+                <span className="inline-flex rounded-full bg-[color:rgba(208,188,255,0.14)] px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">
+                  {analyticsActionLabel(item)}
+                </span>
+                {lessonTitle && <p className="mt-3 text-xs font-semibold text-[var(--text-secondary)]">{lessonTitle}</p>}
+                <p className="mt-2 text-sm font-semibold leading-relaxed text-[var(--text-primary)]">{text || 'Review this analytics signal.'}</p>
+                {detail && <p className="mt-2 text-xs leading-relaxed text-[var(--text-secondary)]">{detail}</p>}
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="rounded-xl bg-[color:var(--surface-muted)]/25 p-4 text-sm text-[var(--text-secondary)]">
+          No priority fixes yet. More learner activity will make this section more specific.
+        </p>
+      )}
+    </section>
+  );
+}
+
 function analyticsIntelligenceCopyText(report) {
   if (!report || report.status !== 'done') return '';
   const lines = [
@@ -691,7 +777,7 @@ function analyticsIntelligenceCopyText(report) {
     `Health score: ${toNumber(report.health_score)} / 100`,
     `Risk: ${report.risk_level || 'unknown'}`,
     '',
-    report.summary || '',
+    humanizeAnalyticsSignal(report.summary || ''),
     '',
     'Insights:',
     ...(Array.isArray(report.insights) ? report.insights : []).map((item) => `- ${intelligenceItemText(item)}`),
@@ -1514,40 +1600,48 @@ export default function Analytics({ user }) {
                 )}
               </div>
             )}
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
-              <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
-                <div className="flex items-center gap-2">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="rounded-xl border border-[color:rgba(208,188,255,0.24)] bg-[color:rgba(208,188,255,0.08)] p-5">
+                <div className="flex flex-wrap items-center gap-2">
                   <Gauge size={17} className="text-[var(--accent-primary)]" />
-                  <p className="text-sm font-bold text-[var(--text-primary)]">Analytics summary</p>
-                </div>
-                <p className="mt-3 text-sm leading-relaxed text-[var(--text-secondary)]">{intelligenceReport.summary}</p>
-              </div>
-              <div className="flex items-center justify-between gap-5 rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
-                <div>
-                  <p className="label-sm">Health</p>
+                  <p className="text-sm font-bold text-[var(--text-primary)]">Smart insight</p>
                   <RiskBadge
                     level={intelligenceReport.risk_level}
                     outputLanguage={intelligenceReport.output_language}
                   />
-                  <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">
-                    Based on aggregate creator analytics for the selected range.
+                </div>
+                <p className="mt-3 text-sm leading-relaxed text-[var(--text-primary)]">
+                  {humanizeAnalyticsSignal(intelligenceReport.summary)}
+                </p>
+                <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">
+                  Based on aggregate creator analytics for the selected range.
+                </p>
+              </div>
+              <div className="flex items-center justify-between gap-4 rounded-xl bg-[color:var(--surface-muted)]/25 p-5">
+                <div>
+                  <p className="label-sm">Health</p>
+                  <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">
+                    {analyticsActionLabel(analyticsPriorityItems(intelligenceReport)[0])}
                   </p>
+                  <p className="mt-2 text-xs text-[var(--text-secondary)]">Priority signal</p>
                 </div>
                 <HealthScoreRing value={intelligenceReport.health_score} />
               </div>
             </div>
 
-            <div className="grid gap-5 lg:grid-cols-2">
+            <PriorityFixList report={intelligenceReport} />
+
+            <div className="grid gap-4 lg:grid-cols-2">
               <IntelligenceList
-                title="Insights"
+                title="Evidence"
                 items={intelligenceReport.insights}
-                emptyText="No analytics insights yet."
+                emptyText="Evidence appears after lessons collect activity."
                 icon={Lightbulb}
               />
               <IntelligenceList
-                title="Recommendations"
+                title="More recommendations"
                 items={intelligenceReport.recommendations}
-                emptyText="No recommendations yet."
+                emptyText="No additional recommendations yet."
                 icon={CheckCircle2}
               />
               <IntelligenceList
@@ -1557,9 +1651,9 @@ export default function Analytics({ user }) {
                 icon={Eye}
               />
               <IntelligenceList
-                title="Category actions"
+                title="Category patterns"
                 items={intelligenceReport.category_actions}
-                emptyText="Category actions appear when category signals differ."
+                emptyText="Category patterns appear when category signals differ."
                 icon={Filter}
               />
             </div>

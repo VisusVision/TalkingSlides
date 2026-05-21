@@ -1203,10 +1203,21 @@ function getCleanSuggestionCopyText(item) {
   return textValue(item.copy_text || item.advice || item.suggestion || item.message || item.text || '').trim();
 }
 
+function lessonPublicSummary(report) {
+  return textValue(report?.public_lesson_summary || report?.lesson_summary || report?.summary).trim();
+}
+
+function lessonImprovementSummary(report) {
+  return textValue(report?.improvement_summary || report?.editorial_summary).trim();
+}
+
 function lessonIntelligenceCopyText(report) {
   if (!report) return '';
   const sections = [];
-  if (report.summary) sections.push(`Summary\n${report.summary}`);
+  const improvementSummary = lessonImprovementSummary(report);
+  const publicSummary = lessonPublicSummary(report);
+  if (improvementSummary) sections.push(`Improvement summary\n${improvementSummary}`);
+  if (publicSummary) sections.push(`Lesson overview\n${publicSummary}`);
   const complexity = report.complexity || {};
   if (complexity.level) {
     sections.push(`Complexity\n${complexity.level} (${complexity.score || 0}/100)`);
@@ -1214,9 +1225,8 @@ function lessonIntelligenceCopyText(report) {
   const appendList = (title, items) => {
     if (!Array.isArray(items) || !items.length) return;
     const lines = items.map((item) => {
-      const meta = lessonIntelligenceItemMeta(item);
       const text = lessonIntelligenceItemText(item);
-      return [meta, text].filter(Boolean).join(': ');
+      return text;
     }).filter(Boolean);
     if (lines.length) sections.push(`${title}\n${lines.map((line) => `- ${line}`).join('\n')}`);
   };
@@ -1310,6 +1320,8 @@ function LessonIntelligencePanel({
   const retryOllama = lessonIntelligenceOllamaFallbackFailed(report);
   const retryCooldown = lessonIntelligenceRetryOnCooldown(report);
   const upToDate = lessonIntelligenceUpToDate(report);
+  const improvementSummary = lessonImprovementSummary(report);
+  const publicSummary = lessonPublicSummary(report);
   const analyzeDisabled = !enabled || loading || Boolean(actionBusy) || enhancementPending || retryCooldown || upToDate;
   const analyzeLabel = actionBusy
     ? 'Analyzing...'
@@ -1422,9 +1434,17 @@ function LessonIntelligencePanel({
           <div className="rounded-xl bg-[color:var(--surface-muted)] p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Summary</p>
-                <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">{report.summary}</p>
-                {report.short_description && (
+                <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">Studio guidance</p>
+                <p className="mt-2 text-sm leading-6 text-[var(--text-primary)]">
+                  {improvementSummary || 'Review clarity, examples, narration depth, and lesson flow before publishing.'}
+                </p>
+                {publicSummary && (
+                  <div className="mt-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3">
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">Lesson overview</p>
+                    <p className="mt-1 text-xs leading-relaxed text-[var(--text-secondary)]">{publicSummary}</p>
+                  </div>
+                )}
+                {report.short_description && report.short_description !== publicSummary && (
                   <p className="mt-2 text-xs text-[var(--text-secondary)]">{report.short_description}</p>
                 )}
               </div>
@@ -2558,7 +2578,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
     const result = apply(item);
     if (!result?.ok) {
-      if (!result?.cancelled) {
+      if (result?.pendingConfirmation) {
+        setLessonIntelligenceError('');
+        setLessonIntelligenceNotice('');
+      } else if (!result?.cancelled) {
         setLessonIntelligenceError(result?.message || 'Could not apply this suggestion.');
       }
       return;

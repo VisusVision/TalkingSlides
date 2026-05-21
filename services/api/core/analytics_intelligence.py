@@ -225,7 +225,11 @@ class HeuristicAnalyticsIntelligenceProvider:
                         unique_viewers=unique_viewers,
                         engagement_events=engagement_events,
                     ),
-                    f"completion_rate={completion_rate:.0f}%, average_progress={average_progress:.0f}%",
+                    _analytics_progress_sentence(
+                        output_language,
+                        completion_rate=completion_rate,
+                        average_progress=average_progress,
+                    ),
                 )
             )
 
@@ -235,7 +239,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                         "low_completion",
                         "high",
                         _analytics_text(output_language, "low_completion_insight"),
-                        f"completion_rate={completion_rate:.0f}%",
+                        _analytics_completion_sentence(output_language, completion_rate),
                     )
                 )
                 recommendations.append(
@@ -252,7 +256,7 @@ class HeuristicAnalyticsIntelligenceProvider:
                         "views_low_progress",
                         "high",
                         _analytics_text(output_language, "views_low_progress_insight"),
-                        f"average_progress={average_progress:.0f}%",
+                        _analytics_progress_only_sentence(output_language, average_progress),
                     )
                 )
                 recommendations.append(
@@ -1943,6 +1947,32 @@ def _analytics_text(language: str, key: str, **kwargs: Any) -> str:
     return messages.get(key, key)
 
 
+def _format_percent_metric(value: Any) -> str:
+    return f"{_bounded_percent(value):.0f}%"
+
+
+def _analytics_completion_sentence(language: str, completion_rate: Any) -> str:
+    completion = _format_percent_metric(completion_rate)
+    if language == "tr":
+        return f"Bu aralikta ders tamamlama orani {completion}."
+    return f"About {completion} of learners completed these lessons."
+
+
+def _analytics_progress_only_sentence(language: str, average_progress: Any) -> str:
+    progress = _format_percent_metric(average_progress)
+    if language == "tr":
+        return f"Ortalama izleyici dersin {progress} kadarina ulasti."
+    return f"The average viewer reached {progress} of the lesson."
+
+
+def _analytics_progress_sentence(language: str, *, completion_rate: Any, average_progress: Any) -> str:
+    completion = _format_percent_metric(completion_rate)
+    progress = _format_percent_metric(average_progress)
+    if language == "tr":
+        return f"Dersleri tamamlama orani {completion}; ortalama izleyici dersin {progress} kadarina ulasti."
+    return f"About {completion} of learners completed these lessons, while the average viewer reached {progress} of the lesson."
+
+
 def _analytics_summary(**kwargs) -> str:
     total_lessons = kwargs["total_lessons"]
     published_lessons = kwargs["published_lessons"]
@@ -1966,7 +1996,7 @@ def _analytics_summary(**kwargs) -> str:
         return (
             f"{total_lessons} dersin {published_lessons} tanesi yayında. Bu aralıkta {unique_viewers} tekil izleyiciden "
             f"{total_views} görüntüleme, yaklaşık {watch_minutes:.1f} dakika tahmini izleme, "
-            f"%{completion_rate:.0f} tamamlama, %{average_progress:.0f} ortalama ilerleme, "
+            f"{_analytics_progress_sentence(output_language, completion_rate=completion_rate, average_progress=average_progress)} "
             f"{likes} beğeni ve {comments} yorum var."
         )
     if total_lessons <= 0:
@@ -1978,8 +2008,8 @@ def _analytics_summary(**kwargs) -> str:
         )
     return (
         f"{published_lessons} of {total_lessons} lessons are published. This range has {total_views} views from "
-        f"{unique_viewers} unique viewers, about {watch_minutes:.1f} estimated watch minutes, "
-        f"{completion_rate:.0f}% completion, {average_progress:.0f}% average progress, "
+        f"{unique_viewers} unique viewers and about {watch_minutes:.1f} estimated watch minutes. "
+        f"{_analytics_progress_sentence(output_language, completion_rate=completion_rate, average_progress=average_progress)} "
         f"{likes} likes, and {comments} comments."
     )
 
@@ -2161,7 +2191,11 @@ def _category_actions(
                     "type": "category_retention",
                     "category": name,
                     "message": _analytics_text(output_language, "category_retention"),
-                    "evidence": f"completion={completion:.0f}%, progress={progress:.0f}%",
+                    "evidence": _analytics_progress_sentence(
+                        output_language,
+                        completion_rate=completion,
+                        average_progress=progress,
+                    ),
                 }
             )
     return actions
