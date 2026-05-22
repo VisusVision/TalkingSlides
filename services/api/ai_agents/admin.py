@@ -11,6 +11,7 @@ from .models import (
     AgentFinding,
     AgentRun,
     ModerationAuditEvent,
+    ModerationReport,
     PublicationBlockEvent,
 )
 
@@ -121,6 +122,15 @@ class ModerationAuditEventAdmin(admin.ModelAdmin):
     @admin.display(description="Metadata")
     def metadata_pretty(self, obj):
         return format_html("<pre style='white-space: pre-wrap'>{}</pre>", _compact_json(obj.metadata))
+
+
+@admin.register(ModerationReport)
+class ModerationReportAdmin(admin.ModelAdmin):
+    list_display = ("id", "project", "category", "status", "reporter", "publisher", "created_at", "reviewed_by")
+    search_fields = ("project__title", "reporter__username", "publisher__username", "message")
+    list_filter = ("status", "category", "created_at")
+    readonly_fields = ("created_at", "reviewed_at")
+    list_select_related = ("project", "reporter", "publisher", "reviewed_by", "admin_review_request")
 
 
 @admin.register(AdminReviewRequest)

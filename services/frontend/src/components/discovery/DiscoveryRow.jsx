@@ -1,6 +1,6 @@
 import LessonCard from './LessonCard';
 
-export default function DiscoveryRow({ title, items, onOpenLesson }) {
+export default function DiscoveryRow({ title, items, onOpenLesson, user, onLoginRequest }) {
   if (!items?.length) {
     return null;
   }
@@ -14,7 +14,13 @@ export default function DiscoveryRow({ title, items, onOpenLesson }) {
 
       <div className="rail-scroll flex gap-4 overflow-x-auto pb-3">
         {items.map((lesson) => (
-          <LessonCard key={`${title}-${lesson.id}`} lesson={lesson} onOpen={onOpenLesson} />
+          <LessonCard
+            key={`${title}-${lesson.id}`}
+            lesson={lesson}
+            onOpen={onOpenLesson}
+            user={user}
+            onLoginRequest={onLoginRequest}
+          />
         ))}
       </div>
     </section>

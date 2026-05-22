@@ -4,9 +4,10 @@ import { useNavigate } from 'react-router-dom';
 import { fetchCatalog, fetchCategories } from '../api';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import Button from '../components/ui/Button';
+import LessonActionButton from '../components/moderation/LessonActionButton';
 import { normalizeLesson, formatDuration, formatViews } from '../lib/content';
 
-export default function Browse({ searchQuery }) {
+export default function Browse({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
   const [categories, setCategories] = useState([]);
   const [activeCategory, setActiveCategory] = useState('');
@@ -137,8 +138,15 @@ export default function Browse({ searchQuery }) {
           {filteredLessons.map((lesson) => (
             <article
               key={lesson.id}
-              className="rounded-3xl token-surface-elevated p-4 shadow-soft transition hover:-translate-y-1 hover:shadow-lift"
+              className="relative rounded-3xl token-surface-elevated p-4 shadow-soft transition hover:-translate-y-1 hover:shadow-lift"
             >
+              <LessonActionButton
+                lesson={lesson}
+                user={user}
+                onLoginRequest={onLoginRequest}
+                compact
+                className="absolute right-6 top-6 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+              />
               <div
                 className="mb-3 h-36 rounded-2xl"
                 style={{

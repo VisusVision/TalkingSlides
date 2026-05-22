@@ -10,12 +10,11 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
+  adminRequestLessonChanges,
   approveModerationReviewRequest,
   getModerationReviewRequest,
   listModerationReviewRequests,
   rejectModerationReviewRequest,
-  runAdminProjectModerationAction,
-  sendModerationReviewResponse,
 } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
@@ -169,24 +168,6 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     setResponsesById((previous) => ({ ...previous, [payload.id]: String(payload.admin_response || '') }));
   }, []);
 
-  const handleSendResponse = async (review, detail) => {
-    if (!review?.id) return;
-    const key = `response-${review.id}`;
-    setActionBusy(key);
-    setError('');
-    setNotice('');
-    try {
-      const response = draftAdminResponse(responsesById, review, detail);
-      const payload = await sendModerationReviewResponse(review.id, response);
-      mergeReviewPayload(payload);
-      setNotice('Admin response sent. Review request status was not changed.');
-    } catch (responseError) {
-      setError(responseError.message || 'Could not send admin response.');
-    } finally {
-      setActionBusy('');
-    }
-  };
-
   const handleDecision = async (review, decision, detail = null) => {
     if (!review?.id) return;
     const key = `${decision}-${review.id}`;
@@ -213,15 +194,18 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     }
   };
 
-  const handleProjectAction = async (review, action, detail = null) => {
+  const handleRequestChanges = async (review, detail = null) => {
     if (!review?.project_id) return;
-    const key = `${action}-${review.id}`;
+    const key = `request_changes-${review.id}`;
     setActionBusy(key);
     setError('');
     setNotice('');
     try {
       const response = draftAdminResponse(responsesById, review, detail);
-      const payload = await runAdminProjectModerationAction(review.project_id, action, response);
+      const payload = await adminRequestLessonChanges(review.project_id, {
+        reason: response,
+        unpublish: false,
+      });
       setNotice(payload?.message || 'Moderation action saved.');
       await loadReviewRequests();
     } catch (actionError) {
@@ -333,11 +317,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
               const responseChanged = response !== savedResponse;
               const approveBusy = actionBusy === `approve-${review.id}`;
               const rejectBusy = actionBusy === `reject-${review.id}`;
-              const responseBusy = actionBusy === `response-${review.id}`;
-              const needsReviewBusy = actionBusy === `needs_review-${review.id}`;
               const requestChangesBusy = actionBusy === `request_changes-${review.id}`;
-              const blockBusy = actionBusy === `block-${review.id}`;
-              const rescanBusy = actionBusy === `rescan-${review.id}`;
               const canReview = isOpenReview(review);
 
               return (
@@ -465,33 +445,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                           <Button
                             size="sm"
                             variant="secondary"
-                            onClick={() => handleSendResponse(review, detail)}
-                            disabled={Boolean(actionBusy) || !responseChanged}
-                          >
-                            <span>{responseBusy ? 'Sending...' : 'Send response'}</span>
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleProjectAction(review, 'rescan', detail)}
-                            disabled={Boolean(actionBusy)}
-                          >
-                            <RefreshCcw size={14} />
-                            <span>{rescanBusy ? 'Rescanning...' : 'Rescan'}</span>
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleProjectAction(review, 'needs_review', detail)}
-                            disabled={Boolean(actionBusy)}
-                          >
-                            <AlertTriangle size={14} />
-                            <span>{needsReviewBusy ? 'Saving...' : 'Needs review'}</span>
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={() => handleProjectAction(review, 'request_changes', detail)}
+                            onClick={() => handleRequestChanges(review, detail)}
                             disabled={Boolean(actionBusy)}
                           >
                             <XCircle size={14} />
@@ -500,20 +454,11 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                           <Button
                             size="sm"
                             variant="secondary"
-                            onClick={() => handleProjectAction(review, 'block', detail)}
-                            disabled={Boolean(actionBusy)}
-                          >
-                            <XCircle size={14} />
-                            <span>{blockBusy ? 'Blocking...' : 'Block'}</span>
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="secondary"
                             onClick={() => requestDecision(review, 'reject', detail)}
                             disabled={Boolean(actionBusy)}
                           >
                             <XCircle size={14} />
-                            <span>{rejectBusy ? 'Rejecting...' : 'Reject'}</span>
+                            <span>{rejectBusy ? 'Blocking...' : 'Reject / Block'}</span>
                           </Button>
                           <Button
                             size="sm"

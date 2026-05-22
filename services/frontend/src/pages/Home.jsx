@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { fetchCatalog, fetchCatalogFeed } from '../api';
+import LessonActionButton from '../components/moderation/LessonActionButton';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { fallbackSections, sectionsFromFeed } from '../lib/content';
@@ -91,7 +92,7 @@ function railScrollState(node) {
   };
 }
 
-export default function Home({ searchQuery, user }) {
+export default function Home({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
   const recommendedRailRef = useRef(null);
   const [loading, setLoading] = useState(true);
@@ -261,6 +262,13 @@ export default function Home({ searchQuery, user }) {
     <div className="space-y-12 pb-10">
       {featuredLesson && (
         <section className="relative -mx-3 overflow-hidden rounded-[1.75rem] sm:-mx-6 lg:-mx-8" aria-label="Featured lesson">
+          <LessonActionButton
+            lesson={featuredLesson}
+            user={user}
+            onLoginRequest={onLoginRequest}
+            compact
+            className="absolute right-5 top-24 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700 sm:right-9"
+          />
           <div className="relative h-[66vh] min-h-[540px] max-h-[860px]">
             <div className="absolute inset-0" style={lessonBackground(featuredLesson, 'var(--hero-fallback)')} />
             <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(7,10,16,0.1)_6%,rgba(7,10,16,0.44)_44%,rgba(7,10,16,0.86)_100%)]" />
@@ -354,7 +362,14 @@ export default function Home({ searchQuery, user }) {
 
           <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
             {continueLessons.map((lesson) => (
-              <article key={`continue-${lesson.id}`} className="group overflow-hidden rounded-2xl token-surface-elevated p-0 transition hover:-translate-y-0.5">
+              <article key={`continue-${lesson.id}`} className="group relative overflow-hidden rounded-2xl token-surface-elevated p-0 transition hover:-translate-y-0.5">
+                <LessonActionButton
+                  lesson={lesson}
+                  user={user}
+                  onLoginRequest={onLoginRequest}
+                  compact
+                  className="absolute right-3 top-3 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+                />
                 <button type="button" onClick={() => openLesson(lesson.id)} className="focus-ring block w-full text-left">
                   <div className="relative aspect-video" style={lessonBackground(lesson)}>
                     <div className="absolute inset-0 bg-black/10 transition group-hover:bg-black/0" />
@@ -412,7 +427,14 @@ export default function Home({ searchQuery, user }) {
 
           <div ref={recommendedRailRef} className="rail-scroll flex gap-5 overflow-x-auto pb-2">
             {filteredRecommended.map((lesson) => (
-              <article key={`recommended-${lesson.id}`} className="w-[300px] shrink-0">
+              <article key={`recommended-${lesson.id}`} className="relative w-[300px] shrink-0">
+                <LessonActionButton
+                  lesson={lesson}
+                  user={user}
+                  onLoginRequest={onLoginRequest}
+                  compact
+                  className="absolute right-3 top-3 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+                />
                 <button type="button" className="focus-ring block w-full text-left" onClick={() => openLesson(lesson.id)}>
                   <div className="mb-3 aspect-video overflow-hidden rounded-2xl" style={lessonBackground(lesson)} />
                   <p className="line-clamp-2 font-['Manrope'] text-lg font-bold tracking-[-0.02em] text-[var(--text-primary)]">{lesson.title}</p>
@@ -438,39 +460,56 @@ export default function Home({ searchQuery, user }) {
           </h2>
 
           <div className="grid grid-cols-1 gap-5 md:grid-cols-4 md:grid-rows-2 md:[grid-auto-rows:minmax(9rem,auto)]">
-            <button
-              type="button"
-              onClick={() => openLesson(bentoLessons[0].id)}
-              className="focus-ring relative overflow-hidden rounded-3xl p-0 text-left md:col-span-2 md:row-span-2"
-            >
-              <div className="absolute inset-0" style={lessonBackground(bentoLessons[0])} />
-              <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0.1)_0%,rgba(0,0,0,0.72)_100%)]" />
-              <div className="relative flex h-full min-h-[320px] flex-col justify-end gap-2 p-6">
-                <span className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-white/20 bg-black/20 text-white">
-                  <span className="material-symbols-outlined">neurology</span>
-                </span>
-                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[color:var(--media-text-on-image)]">Masterclass</p>
-                <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[color:var(--media-text-on-image)]">{bentoLessons[0].title}</p>
-                <p className="text-xs text-[color:var(--media-text-on-image)] opacity-85">{bentoLessons[0].teacherName}</p>
-              </div>
-            </button>
-
-            {bentoLessons.slice(1, 5).map((lesson) => (
+            <article className="relative md:col-span-2 md:row-span-2">
+              <LessonActionButton
+                lesson={bentoLessons[0]}
+                user={user}
+                onLoginRequest={onLoginRequest}
+                compact
+                className="absolute right-4 top-4 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+              />
               <button
-                key={`bento-${lesson.id}-${lesson.title}`}
                 type="button"
-                onClick={() => openLesson(lesson.id)}
-                className="focus-ring relative overflow-hidden rounded-3xl p-0 text-left"
+                onClick={() => openLesson(bentoLessons[0].id)}
+                className="focus-ring relative h-full w-full overflow-hidden rounded-3xl p-0 text-left"
               >
-                <div className="absolute inset-0" style={lessonBackground(lesson)} />
-                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0.12)_0%,rgba(0,0,0,0.7)_100%)]" />
-                <div className="relative flex h-full min-h-[150px] flex-col justify-end p-4">
-                  <span className="mb-3 inline-flex h-8 w-8 items-center justify-center rounded-xl border border-white/20 bg-black/20 text-white">
-                    <span className="material-symbols-outlined text-[1rem]">auto_awesome</span>
+                <div className="absolute inset-0" style={lessonBackground(bentoLessons[0])} />
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0.1)_0%,rgba(0,0,0,0.72)_100%)]" />
+                <div className="relative flex h-full min-h-[320px] flex-col justify-end gap-2 p-6 pr-14">
+                  <span className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-white/20 bg-black/20 text-white">
+                    <span className="material-symbols-outlined">neurology</span>
                   </span>
-                  <p className="line-clamp-2 text-sm font-semibold text-[color:var(--media-text-on-image)]">{lesson.title}</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[color:var(--media-text-on-image)]">Masterclass</p>
+                  <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[color:var(--media-text-on-image)]">{bentoLessons[0].title}</p>
+                  <p className="text-xs text-[color:var(--media-text-on-image)] opacity-85">{bentoLessons[0].teacherName}</p>
                 </div>
               </button>
+            </article>
+
+            {bentoLessons.slice(1, 5).map((lesson) => (
+              <article key={`bento-${lesson.id}-${lesson.title}`} className="relative">
+                <LessonActionButton
+                  lesson={lesson}
+                  user={user}
+                  onLoginRequest={onLoginRequest}
+                  compact
+                  className="absolute right-3 top-3 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+                />
+                <button
+                  type="button"
+                  onClick={() => openLesson(lesson.id)}
+                  className="focus-ring relative h-full w-full overflow-hidden rounded-3xl p-0 text-left"
+                >
+                  <div className="absolute inset-0" style={lessonBackground(lesson)} />
+                  <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0.12)_0%,rgba(0,0,0,0.7)_100%)]" />
+                  <div className="relative flex h-full min-h-[150px] flex-col justify-end p-4 pr-12">
+                    <span className="mb-3 inline-flex h-8 w-8 items-center justify-center rounded-xl border border-white/20 bg-black/20 text-white">
+                      <span className="material-symbols-outlined text-[1rem]">auto_awesome</span>
+                    </span>
+                    <p className="line-clamp-2 text-sm font-semibold text-[color:var(--media-text-on-image)]">{lesson.title}</p>
+                  </div>
+                </button>
+              </article>
             ))}
           </div>
         </section>
@@ -481,20 +520,28 @@ export default function Home({ searchQuery, user }) {
           <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Trending Now</h2>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             {trendingLessons.map((lesson, index) => (
-              <button
-                key={`trending-${lesson.id}`}
-                type="button"
-                onClick={() => openLesson(lesson.id)}
-                className="focus-ring flex items-center gap-4 rounded-2xl token-surface-elevated p-4 text-left transition hover:bg-[color:var(--surface-muted)]"
-              >
-                <span className="font-['Manrope'] text-4xl font-extrabold italic tracking-[-0.04em] text-[var(--outline)]">{index + 1}</span>
-                <span>
-                  <span className="line-clamp-2 block text-sm font-semibold text-[var(--text-primary)]">{lesson.title}</span>
-                  <span className="mt-1 block text-[0.66rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
-                    {formatViews(lesson.views)}
+              <article key={`trending-${lesson.id}`} className="relative">
+                <LessonActionButton
+                  lesson={lesson}
+                  user={user}
+                  onLoginRequest={onLoginRequest}
+                  compact
+                  className="absolute right-3 top-3 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+                />
+                <button
+                  type="button"
+                  onClick={() => openLesson(lesson.id)}
+                  className="focus-ring flex min-h-20 w-full items-center gap-4 rounded-2xl token-surface-elevated p-4 pr-14 text-left transition hover:bg-[color:var(--surface-muted)]"
+                >
+                  <span className="font-['Manrope'] text-4xl font-extrabold italic tracking-[-0.04em] text-[var(--outline)]">{index + 1}</span>
+                  <span>
+                    <span className="line-clamp-2 block text-sm font-semibold text-[var(--text-primary)]">{lesson.title}</span>
+                    <span className="mt-1 block text-[0.66rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+                      {formatViews(lesson.views)}
+                    </span>
                   </span>
-                </span>
-              </button>
+                </button>
+              </article>
             ))}
           </div>
         </section>

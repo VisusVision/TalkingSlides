@@ -21,6 +21,7 @@ import {
   uploadProfileAssets,
 } from '../api';
 import Button from '../components/ui/Button';
+import LessonActionButton from '../components/moderation/LessonActionButton';
 import PublicProfileEditor from '../components/profile/PublicProfileEditor';
 import SocialIcon from '../components/ui/SocialIcon';
 import SurfaceCard from '../components/ui/SurfaceCard';
@@ -237,37 +238,46 @@ function StatPill({ icon: Icon, label }) {
   );
 }
 
-function ChannelLessonCard({ lesson, compact = false }) {
+function ChannelLessonCard({ lesson, compact = false, user, onLoginRequest }) {
   const published = formatPublishedDate(lesson.createdAt);
   return (
-    <Link
-      to={`/watch?lesson=${lesson.id}`}
-      className={`focus-ring group grid gap-3 rounded-xl token-surface-elevated p-3 transition hover:-translate-y-0.5 ${compact ? 'sm:grid-cols-[8.5rem_minmax(0,1fr)]' : 'sm:grid-cols-[12rem_minmax(0,1fr)]'}`}
-    >
-      <div className="relative aspect-video overflow-hidden rounded-lg bg-[var(--surface-container-high)]" style={lessonBackground(lesson)}>
-        <span className="absolute inset-0 flex items-center justify-center opacity-0 transition group-hover:opacity-100">
-          <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-black/55 text-white">
-            <PlayCircle size={22} />
-          </span>
-        </span>
-      </div>
-      <div className="min-w-0 space-y-2">
-        <p className="line-clamp-2 text-sm font-semibold text-[var(--text-primary)]">{lesson.title}</p>
-        {!compact && (
-          <p className="line-clamp-2 text-xs text-[var(--text-secondary)]">{lesson.description || 'No description yet.'}</p>
-        )}
-        <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-          <span className="rounded-full bg-[var(--surface-container-high)] px-2.5 py-1">{lesson.categoryName || 'General'}</span>
-          <span className="rounded-full bg-[var(--surface-container-high)] px-2.5 py-1">{formatDuration(lesson.durationMinutes || 8)}</span>
-          {published ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-container-high)] px-2.5 py-1">
-              <Clock3 size={12} />
-              {published}
+    <article className="relative">
+      <Link
+        to={`/watch?lesson=${lesson.id}`}
+        className={`focus-ring group grid gap-3 rounded-xl token-surface-elevated p-3 transition hover:-translate-y-0.5 ${compact ? 'sm:grid-cols-[8.5rem_minmax(0,1fr)]' : 'sm:grid-cols-[12rem_minmax(0,1fr)]'}`}
+      >
+        <div className="relative aspect-video overflow-hidden rounded-lg bg-[var(--surface-container-high)]" style={lessonBackground(lesson)}>
+          <span className="absolute inset-0 flex items-center justify-center opacity-0 transition group-hover:opacity-100">
+            <span className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-black/55 text-white">
+              <PlayCircle size={22} />
             </span>
-          ) : null}
+          </span>
         </div>
-      </div>
-    </Link>
+        <div className="min-w-0 space-y-2 pr-10">
+          <p className="line-clamp-2 text-sm font-semibold text-[var(--text-primary)]">{lesson.title}</p>
+          {!compact && (
+            <p className="line-clamp-2 text-xs text-[var(--text-secondary)]">{lesson.description || 'No description yet.'}</p>
+          )}
+          <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+            <span className="rounded-full bg-[var(--surface-container-high)] px-2.5 py-1">{lesson.categoryName || 'General'}</span>
+            <span className="rounded-full bg-[var(--surface-container-high)] px-2.5 py-1">{formatDuration(lesson.durationMinutes || 8)}</span>
+            {published ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[var(--surface-container-high)] px-2.5 py-1">
+                <Clock3 size={12} />
+                {published}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </Link>
+      <LessonActionButton
+        lesson={lesson}
+        user={user}
+        onLoginRequest={onLoginRequest}
+        compact
+        className="absolute right-4 top-4 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+      />
+    </article>
   );
 }
 
@@ -568,7 +578,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
     return (
       <div className="grid gap-3 xl:grid-cols-2">
         {items.map((lesson) => (
-          <ChannelLessonCard key={lesson.id} lesson={lesson} />
+          <ChannelLessonCard key={lesson.id} lesson={lesson} user={user} onLoginRequest={onLoginRequest} />
         ))}
       </div>
     );
@@ -718,31 +728,40 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
           <div className="space-y-5">
             {featuredLesson ? (
               <>
-                <Link
-                  to={`/watch?lesson=${featuredLesson.id}`}
-                  className="focus-ring group relative flex min-h-[18rem] overflow-hidden rounded-2xl bg-[var(--surface-container-high)] p-5 text-white sm:p-6 lg:min-h-[22rem]"
-                  style={lessonBackground(featuredLesson)}
-                >
-                  <div className="absolute inset-0 bg-black/35 transition group-hover:bg-black/20" />
-                  <div className="relative flex max-w-3xl flex-col justify-end gap-3 self-stretch">
-                    <span className="inline-flex w-fit rounded-full bg-black/45 px-3 py-1 text-xs font-bold uppercase tracking-[0.12em]">Featured video</span>
-                    <h2 className="text-2xl font-bold leading-tight sm:text-3xl">{featuredLesson.title}</h2>
-                    {featuredLesson.description ? (
-                      <p className="line-clamp-2 text-sm leading-6 text-white/85">{featuredLesson.description}</p>
-                    ) : null}
-                    <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-white/90">
-                      <span className="rounded-full bg-black/35 px-2.5 py-1">{featuredLesson.categoryName || 'General'}</span>
-                      <span className="rounded-full bg-black/35 px-2.5 py-1">{formatDuration(featuredLesson.durationMinutes || 8)}</span>
-                      {featuredLesson.createdAt ? (
-                        <span className="rounded-full bg-black/35 px-2.5 py-1">{formatPublishedDate(featuredLesson.createdAt)}</span>
+                <div className="relative">
+                  <Link
+                    to={`/watch?lesson=${featuredLesson.id}`}
+                    className="focus-ring group relative flex min-h-[18rem] overflow-hidden rounded-2xl bg-[var(--surface-container-high)] p-5 text-white sm:p-6 lg:min-h-[22rem]"
+                    style={lessonBackground(featuredLesson)}
+                  >
+                    <div className="absolute inset-0 bg-black/35 transition group-hover:bg-black/20" />
+                    <div className="relative flex max-w-3xl flex-col justify-end gap-3 self-stretch pr-10">
+                      <span className="inline-flex w-fit rounded-full bg-black/45 px-3 py-1 text-xs font-bold uppercase tracking-[0.12em]">Featured video</span>
+                      <h2 className="text-2xl font-bold leading-tight sm:text-3xl">{featuredLesson.title}</h2>
+                      {featuredLesson.description ? (
+                        <p className="line-clamp-2 text-sm leading-6 text-white/85">{featuredLesson.description}</p>
                       ) : null}
+                      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-white/90">
+                        <span className="rounded-full bg-black/35 px-2.5 py-1">{featuredLesson.categoryName || 'General'}</span>
+                        <span className="rounded-full bg-black/35 px-2.5 py-1">{formatDuration(featuredLesson.durationMinutes || 8)}</span>
+                        {featuredLesson.createdAt ? (
+                          <span className="rounded-full bg-black/35 px-2.5 py-1">{formatPublishedDate(featuredLesson.createdAt)}</span>
+                        ) : null}
+                      </div>
+                      <span className="inline-flex w-fit items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-black transition group-hover:translate-x-0.5">
+                        <PlayCircle size={16} />
+                        Watch video
+                      </span>
                     </div>
-                    <span className="inline-flex w-fit items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-black transition group-hover:translate-x-0.5">
-                      <PlayCircle size={16} />
-                      Watch video
-                    </span>
-                  </div>
-                </Link>
+                  </Link>
+                  <LessonActionButton
+                    lesson={featuredLesson}
+                    user={user}
+                    onLoginRequest={onLoginRequest}
+                    compact
+                    className="absolute right-4 top-4 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+                  />
+                </div>
                 <div className="space-y-3">
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm font-semibold text-[var(--text-primary)]">Recent videos</p>
@@ -753,7 +772,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
                   {recentLessons.length ? (
                     <div className="grid gap-3 xl:grid-cols-2">
                       {recentLessons.map((lesson) => (
-                        <ChannelLessonCard key={lesson.id} lesson={lesson} compact />
+                        <ChannelLessonCard key={lesson.id} lesson={lesson} compact user={user} onLoginRequest={onLoginRequest} />
                       ))}
                     </div>
                   ) : (

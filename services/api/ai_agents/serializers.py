@@ -5,7 +5,13 @@ from typing import Any
 
 from rest_framework import serializers
 
-from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun, ModerationAuditEvent
+from ai_agents.models import (
+    AdminReviewRequest,
+    AgentFinding,
+    AgentRun,
+    ModerationAuditEvent,
+    ModerationReport,
+)
 from ai_agents.policies import project_can_publish
 
 
@@ -41,6 +47,14 @@ class RequestAdminReviewSerializer(serializers.Serializer):
     message = serializers.CharField(required=False, allow_blank=True, max_length=2000, default="")
 
 
+class ModerationReportCreateSerializer(serializers.Serializer):
+    category = serializers.ChoiceField(choices=[choice[0] for choice in ModerationReport.CATEGORY_CHOICES])
+    message = serializers.CharField(required=False, allow_blank=True, max_length=2000, default="")
+
+    def validate_message(self, value: str) -> str:
+        return str(value or "").strip()
+
+
 class AdminReviewDecisionSerializer(serializers.Serializer):
     admin_response = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
 
@@ -52,6 +66,7 @@ class AdminProjectModerationActionSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
     note = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
     phase = serializers.CharField(required=False, allow_blank=True, max_length=50, default="manual_admin_rescan")
+    unpublish = serializers.BooleanField(required=False, default=True)
 
     def validate_phase(self, value: str) -> str:
         cleaned = str(value or "manual_admin_rescan").strip() or "manual_admin_rescan"
@@ -117,6 +132,29 @@ def latest_admin_review_payload(project) -> dict[str, Any] | None:
         "reviewed_at": review.reviewed_at,
         "updated_at": review.reviewed_at or review.created_at,
         "reviewed_by_username": _username(review.reviewed_by),
+    }
+
+
+def moderation_report_payload(report: ModerationReport, *, deduped: bool = False) -> dict[str, Any]:
+    project = report.project
+    return {
+        "id": report.id,
+        "project_id": report.project_id,
+        "project_title": getattr(project, "title", "") or "",
+        "publisher_id": report.publisher_id,
+        "publisher_username": _username(report.publisher),
+        "reporter_id": report.reporter_id,
+        "reporter_username": _username(report.reporter),
+        "category": report.category,
+        "category_label": _choice_label(ModerationReport.CATEGORY_CHOICES, report.category),
+        "message": report.message,
+        "status": report.status,
+        "created_at": report.created_at,
+        "reviewed_at": report.reviewed_at,
+        "reviewed_by_id": report.reviewed_by_id,
+        "reviewed_by_username": _username(report.reviewed_by),
+        "admin_review_request_id": report.admin_review_request_id,
+        "deduped": deduped,
     }
 
 
@@ -335,6 +373,11 @@ def _username(user) -> str:
     if not user:
         return ""
     return str(getattr(user, "username", "") or "")
+
+
+def _choice_label(choices, value: str) -> str:
+    lookup = {key: label for key, label in choices}
+    return str(lookup.get(value, value) or "")
 
 
 def _default_message(moderation_status: str) -> str:
