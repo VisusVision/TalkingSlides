@@ -12,6 +12,7 @@ import AppShell from '../components/ui/AppShell';
 import AuthModal from '../components/ui/AuthModal';
 import { ThemeProvider } from '../components/ui/ThemeProvider';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { CapabilitiesProvider } from '../lib/capabilities';
 
 function getRedirectFromSearch(search) {
   const params = new URLSearchParams(search || '');
@@ -168,9 +169,11 @@ function AppWithRouter() {
 export default function App() {
   return (
     <ThemeProvider>
-      <BrowserRouter>
-        <AppWithRouter />
-      </BrowserRouter>
+      <CapabilitiesProvider>
+        <BrowserRouter>
+          <AppWithRouter />
+        </BrowserRouter>
+      </CapabilitiesProvider>
     </ThemeProvider>
   );
 }

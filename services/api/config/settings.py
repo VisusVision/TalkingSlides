@@ -43,6 +43,19 @@ def _env_list(name: str, default: list[str] | None = None) -> list[str]:
     return _split_csv(raw_value)
 
 
+def _env_present(name: str) -> bool:
+    return name in os.environ
+
+
+def _any_env_present(names: list[str] | tuple[str, ...]) -> bool:
+    return any(_env_present(name) for name in names)
+
+
+def _chain_contains_ollama(raw_value: str | None) -> bool:
+    normalized = str(raw_value or "").replace(",", " ")
+    return any(item.strip().lower() == "ollama" for item in normalized.split())
+
+
 def validate_production_settings(
     *,
     env=None,
@@ -502,6 +515,22 @@ GOOGLE_REDIRECT_SUCCESS_URL = os.environ.get("GOOGLE_REDIRECT_SUCCESS_URL", "").
 # ---------------------------------------------------------------------------
 # Optional TTS LLM pronunciation suggestions (Studio assistance only)
 # ---------------------------------------------------------------------------
+_LEGACY_AVATAR_ENV_NAMES = (
+    "AVATAR_ENGINE",
+    "AVATAR_LIVEPORTRAIT_CMD",
+    "AVATAR_MUSETALK_CMD",
+    "AVATAR_ENABLE_COMPOSITE_LESSON",
+    "AVATAR_BOOTSTRAP_ON_WORKER_STARTUP",
+)
+ENABLE_AVATAR = _env_bool(
+    "ENABLE_AVATAR",
+    default=_any_env_present(_LEGACY_AVATAR_ENV_NAMES),
+)
+ENABLE_LOCAL_XTTS = _env_bool(
+    "ENABLE_LOCAL_XTTS",
+    default=_env_bool("XTTS_ENABLED", default=True),
+)
+
 TTS_LLM_SUGGESTIONS_ENABLED = os.environ.get("TTS_LLM_SUGGESTIONS_ENABLED", "false").lower() in {
     "1", "true", "yes", "on"
 }
@@ -517,9 +546,14 @@ TTS_LLM_CONTEXT_MAX_CHARS = int(os.environ.get("TTS_LLM_CONTEXT_MAX_CHARS", "100
 # Optional local Ollama analysis can be enabled through the provider chain.
 # Paid/external providers remain gated by LESSON_INTELLIGENCE_ALLOW_EXTERNAL.
 # ---------------------------------------------------------------------------
+_LEGACY_INTELLIGENCE_DEFAULT = (
+    (_env_present("LESSON_INTELLIGENCE_ENABLED") and _env_bool("LESSON_INTELLIGENCE_ENABLED", default=False))
+    or (_env_present("ANALYTICS_INTELLIGENCE_ENABLED") and _env_bool("ANALYTICS_INTELLIGENCE_ENABLED", default=False))
+)
+ENABLE_INTELLIGENCE = _env_bool("ENABLE_INTELLIGENCE", default=_LEGACY_INTELLIGENCE_DEFAULT)
 LESSON_INTELLIGENCE_ENABLED = os.environ.get(
     "LESSON_INTELLIGENCE_ENABLED",
-    "true" if DEBUG else "false",
+    "true" if ENABLE_INTELLIGENCE else "false",
 ).lower() in {"1", "true", "yes", "on"}
 LESSON_INTELLIGENCE_PROVIDER = os.environ.get("LESSON_INTELLIGENCE_PROVIDER", "heuristic").strip().lower()
 LESSON_INTELLIGENCE_PROVIDER_CHAIN = os.environ.get(
@@ -656,7 +690,7 @@ OPENAI_LESSON_INTELLIGENCE_MODEL = os.environ.get(
 # ---------------------------------------------------------------------------
 ANALYTICS_INTELLIGENCE_ENABLED = os.environ.get(
     "ANALYTICS_INTELLIGENCE_ENABLED",
-    "true" if DEBUG else "false",
+    "true" if ENABLE_INTELLIGENCE else "false",
 ).lower() in {"1", "true", "yes", "on"}
 ANALYTICS_INTELLIGENCE_PROVIDER = os.environ.get("ANALYTICS_INTELLIGENCE_PROVIDER", "heuristic").strip().lower()
 ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN = os.environ.get(
@@ -712,6 +746,16 @@ OPENAI_ANALYTICS_INTELLIGENCE_MODEL = os.environ.get(
     "OPENAI_ANALYTICS_INTELLIGENCE_MODEL",
     "gpt-4o-mini",
 ).strip()
+ENABLE_LOCAL_OLLAMA = _env_bool(
+    "ENABLE_LOCAL_OLLAMA",
+    default=bool(
+        ENABLE_INTELLIGENCE
+        and (
+            _chain_contains_ollama(LESSON_INTELLIGENCE_PROVIDER_CHAIN)
+            or _chain_contains_ollama(ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN)
+        )
+    ),
+)
 
 # ---------------------------------------------------------------------------
 # Subtitle translation providers. Enabled by default, but paid/external API
@@ -809,9 +853,20 @@ STUDIO_SUPERUSER_EDITOR_OVERRIDE_ENABLED = os.environ.get(
 # ---------------------------------------------------------------------------
 # Feature-flagged local visual asset moderation automation
 # ---------------------------------------------------------------------------
-VISUAL_MODERATION_AUTO_ENABLED = os.environ.get("VISUAL_MODERATION_AUTO_ENABLED", "false").lower() in {
-    "1", "true", "yes", "on"
-}
+_VISUAL_MODERATION_CONFIGURED_DEFAULT = (
+    (_env_present("VISUAL_MODERATION_AUTO_ENABLED") and _env_bool("VISUAL_MODERATION_AUTO_ENABLED", default=False))
+    or (_env_present("OCR_MODERATION_AUTO_ENABLED") and _env_bool("OCR_MODERATION_AUTO_ENABLED", default=False))
+    or (_env_present("VIDEO_FRAME_AUDIT_AUTO_ENABLED") and _env_bool("VIDEO_FRAME_AUDIT_AUTO_ENABLED", default=False))
+    or (_env_present("VISUAL_SAFETY_CLASSIFIER_ENABLED") and _env_bool("VISUAL_SAFETY_CLASSIFIER_ENABLED", default=False))
+    or (_env_present("AZURE_CONTENT_SAFETY_ENABLED") and _env_bool("AZURE_CONTENT_SAFETY_ENABLED", default=False))
+    or (_env_present("AZURE_OCR_ENABLED") and _env_bool("AZURE_OCR_ENABLED", default=False))
+    or (_env_present("VISUAL_SAFETY_PROVIDER") and os.environ.get("VISUAL_SAFETY_PROVIDER", "none").strip().lower() not in {"", "none", "noop"})
+)
+ENABLE_VISUAL_MODERATION = _env_bool("ENABLE_VISUAL_MODERATION", default=_VISUAL_MODERATION_CONFIGURED_DEFAULT)
+VISUAL_MODERATION_AUTO_ENABLED = bool(ENABLE_VISUAL_MODERATION) and (
+    os.environ.get("VISUAL_MODERATION_AUTO_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    or not _env_present("VISUAL_MODERATION_AUTO_ENABLED")
+)
 VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION = os.environ.get(
     "VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION",
     "false",
@@ -863,9 +918,10 @@ AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL = os.environ.get(
 # ---------------------------------------------------------------------------
 # Feature-flagged local OCR slide moderation automation
 # ---------------------------------------------------------------------------
-OCR_MODERATION_AUTO_ENABLED = os.environ.get("OCR_MODERATION_AUTO_ENABLED", "false").lower() in {
-    "1", "true", "yes", "on"
-}
+OCR_MODERATION_AUTO_ENABLED = bool(ENABLE_VISUAL_MODERATION) and (
+    os.environ.get("OCR_MODERATION_AUTO_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    or _env_bool("ENABLE_OCR_MODERATION", default=False)
+)
 OCR_MODERATION_BLOCK_RENDER_ON_REJECTION = os.environ.get(
     "OCR_MODERATION_BLOCK_RENDER_ON_REJECTION",
     "false",
@@ -890,15 +946,15 @@ AZURE_OCR_LANG_HINTS = os.environ.get("AZURE_OCR_LANG_HINTS", "en,tr,ar").strip(
 # ---------------------------------------------------------------------------
 # Feature-flagged post-render video frame moderation audit
 # ---------------------------------------------------------------------------
-VIDEO_FRAME_AUDIT_AUTO_ENABLED = os.environ.get("VIDEO_FRAME_AUDIT_AUTO_ENABLED", "false").lower() in {
-    "1", "true", "yes", "on"
-}
+VIDEO_FRAME_AUDIT_AUTO_ENABLED = bool(ENABLE_VISUAL_MODERATION) and (
+    os.environ.get("VIDEO_FRAME_AUDIT_AUTO_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+)
 VIDEO_FRAME_AUDIT_PHASE = os.environ.get("VIDEO_FRAME_AUDIT_PHASE", "video_frame_audit").strip() or "video_frame_audit"
 VIDEO_FRAME_AUDIT_EVERY_SECONDS = float(os.environ.get("VIDEO_FRAME_AUDIT_EVERY_SECONDS", "10"))
 VIDEO_FRAME_AUDIT_MAX_FRAMES = int(os.environ.get("VIDEO_FRAME_AUDIT_MAX_FRAMES", "5"))
 VIDEO_FRAME_AUDIT_RUN_VISUAL_CHECK = os.environ.get("VIDEO_FRAME_AUDIT_RUN_VISUAL_CHECK", "true").lower() in {
     "1", "true", "yes", "on"
-}
+} and bool(ENABLE_VISUAL_MODERATION)
 VIDEO_FRAME_AUDIT_RUN_OCR = os.environ.get("VIDEO_FRAME_AUDIT_RUN_OCR", "false").lower() in {
     "1", "true", "yes", "on"
 }

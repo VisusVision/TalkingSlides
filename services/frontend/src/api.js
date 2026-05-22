@@ -28,6 +28,7 @@ export function normalizeApiBaseUrl(value) {
 export const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/i, "");
 const AUTH_USER_STORAGE_KEY = "auth_user";
+let capabilitiesPromise = null;
 
 function toAbsoluteApiUrl(url) {
   if (!url) return "";
@@ -108,6 +109,28 @@ function apiError(data, fallback) {
   const error = new Error(apiErrorMessage(data, fallback));
   error.details = data;
   return error;
+}
+
+export async function fetchCapabilities({ force = false } = {}) {
+  if (!force && capabilitiesPromise) {
+    return capabilitiesPromise;
+  }
+  capabilitiesPromise = fetch(`${API_BASE_URL}/capabilities/`, {
+    headers: authHeaders(),
+    cache: "no-store",
+  })
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw apiError(data, "Failed to fetch deployment capabilities");
+      }
+      return data;
+    })
+    .catch((error) => {
+      capabilitiesPromise = null;
+      throw error;
+    });
+  return capabilitiesPromise;
 }
 
 export async function fetchAuthenticatedMediaBlobUrl(relPath) {

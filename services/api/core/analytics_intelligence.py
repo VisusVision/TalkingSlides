@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from django.conf import settings
 
+from core.capabilities import intelligence_enabled, local_ollama_enabled
 from core.intelligence_language import detect_lesson_language, resolve_output_language
 from core.intelligence_progressive import (
     build_intelligence_run_identity,
@@ -550,7 +551,7 @@ class PaidAnalyticsIntelligenceProvider:
 
 
 def analytics_intelligence_enabled() -> bool:
-    return _bool_setting("ANALYTICS_INTELLIGENCE_ENABLED", True)
+    return bool(intelligence_enabled() and _bool_setting("ANALYTICS_INTELLIGENCE_ENABLED", True))
 
 
 def analytics_provider_chain_from_settings() -> list[str]:
@@ -862,7 +863,11 @@ def analyze_analytics_with_provider_chain(
 
 def progressive_analytics_ollama_enabled(chain: list[str] | None = None) -> bool:
     provider_chain = chain or analytics_provider_chain_from_settings()
-    return _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True) and provider_chain_contains_ollama(provider_chain)
+    return (
+        local_ollama_enabled()
+        and _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True)
+        and provider_chain_contains_ollama(provider_chain)
+    )
 
 
 def analytics_ollama_run_identity(analytics_input: AnalyticsIntelligenceInput) -> dict[str, str]:

@@ -11,6 +11,8 @@ Profile-specific placeholder examples live in:
 
 Use `scripts/check-production-env.ps1` to validate staging and production-like examples before adapting them to real deployment secrets.
 
+The heavy local services are feature-gated. Minimal local/on-premise deployments can leave Avatar, Intelligence, and visual moderation off; the API exposes the resolved values at `GET /api/v1/capabilities/` so the frontend can hide unavailable UI.
+
 Columns:
 
 - Local: required for ordinary local development.
@@ -132,6 +134,7 @@ Columns:
 | `TTS_SLIDE_PAUSE_MS` | TTS | Optional | Optional | `700` | Slide pause. |
 | `TTS_GLOSSARY_PATH` | TTS | Optional | Recommended | `/app/tts_preprocess/glossary.json` | Glossary path. |
 | `XTTS_ENABLED` | TTS | Optional | If XTTS | `1` | Enables XTTS attempts. |
+| `ENABLE_LOCAL_XTTS` | API/frontend/TTS | Optional | Optional | `1` | Deployment capability flag for local XTTS. When disabled or unavailable, existing gTTS/silence fallback behavior continues. `XTTS_ENABLED` remains a backward-compatible alias for the TTS service. |
 | `XTTS_PRELOAD_ON_STARTUP` | TTS | Optional | Optional | `1` | Preloads XTTS model. |
 | `XTTS_WARMUP_BLOCKING` | TTS | Optional | Optional | `0` | Blocks startup for warmup when enabled. |
 | `XTTS_LOAD_RECOVERY_ATTEMPTS` | TTS | Optional | Recommended | `2` | XTTS transient recovery attempts. |
@@ -149,9 +152,11 @@ Columns:
 
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `LESSON_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | `true` in DEBUG, else `false` | Enables lesson quality analysis. |
+| `ENABLE_INTELLIGENCE` | API/frontend/worker | Optional | Optional | `0` | Master deployment flag for Lesson Intelligence and Analytics Intelligence. When disabled, API endpoints return a disabled response, automatic scheduling is skipped, and frontend intelligence UI is hidden. Existing `LESSON_INTELLIGENCE_ENABLED=true` or `ANALYTICS_INTELLIGENCE_ENABLED=true` still imply enabled for backward compatibility when `ENABLE_INTELLIGENCE` is unset. |
+| `ENABLE_LOCAL_OLLAMA` | API/worker | Optional | If Ollama | `0` unless intelligence uses Ollama | Enables local Ollama enhancement under the master intelligence flag. If disabled, heuristic intelligence can still run when intelligence is enabled. |
+| `LESSON_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | follows `ENABLE_INTELLIGENCE` | Enables lesson quality analysis under the master intelligence flag. |
 | `LESSON_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `ollama,heuristic`. |
-| `ANALYTICS_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | `true` in DEBUG, else `false` | Enables creator analytics insights. |
+| `ANALYTICS_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | follows `ENABLE_INTELLIGENCE` | Enables creator analytics insights under the master intelligence flag. |
 | `ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `ollama,heuristic`. |
 | `LESSON_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
 | `ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
@@ -239,6 +244,7 @@ Studio Intelligence is the detailed lesson analyzer. Analytics Intelligence shou
 
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
+| `ENABLE_AVATAR` | API/frontend/worker-avatar | Optional | Optional | `0` | Master deployment flag for avatar profile, preview, overlay, and render scheduling. When disabled, avatar endpoints return disabled responses, render jobs ignore avatar options, worker avatar scheduling is skipped, and frontend avatar UI is hidden. Existing avatar engine env vars still imply enabled when this is unset. |
 | `AVATAR_ENGINE` | API/worker-avatar | Optional | If avatar | `liveportrait+musetalk` | Selected avatar engine chain. |
 | `AVATAR_BOOTSTRAP_ON_WORKER_STARTUP` | worker-avatar | Optional | Recommended | `0` local template | Controls runtime bootstrap. |
 | `MUSETALK_HOME`, `MUSETALK_MODEL_PATH`, `MUSETALK_ENGINE_VERSION` | worker-avatar | If avatar | If avatar | `/opt/musetalk`, model path | MuseTalk runtime/model config. |
@@ -268,6 +274,7 @@ Many moderation flags are defined in Django settings and documented in [MODERATI
 | `SOURCE_MODERATION_AUTO_ENABLED` | worker/API | Optional | Recommended after validation | `false` | Runs source/text moderation automatically. |
 | `SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION` | worker/API | Optional | Recommended | `true` | Blocks render on rejected source when source moderation is enabled. |
 | `SOURCE_MODERATION_PHASE` | worker/API | Optional | Optional | `source_scan` | Moderation phase label. |
+| `ENABLE_VISUAL_MODERATION` | API/frontend/worker | Optional | Optional | `0` | Master deployment flag for visual asset, OCR, and video frame visual checks. Text/source moderation can still run while this is disabled. Disabled visual scans are recorded as skipped/disabled instead of approved. Existing visual/OCR/provider env vars still imply enabled when this is unset. |
 | `VISUAL_MODERATION_AUTO_ENABLED` | worker/API | Optional | Optional | `false` | Enables visual asset moderation automation. |
 | `VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION` | worker/API | Optional | Policy-dependent | `false` | Blocks render on visual rejection. |
 | `VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION` | API | Optional | Policy-dependent | `false` | Blocks publishing when visual findings reject content. |

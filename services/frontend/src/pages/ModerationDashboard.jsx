@@ -19,6 +19,7 @@ import {
 } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { featureEnabled, useCapabilities } from '../lib/capabilities';
 
 function normalizeReviewRequests(payload) {
   return Array.isArray(payload) ? payload : payload?.results || [];
@@ -81,6 +82,8 @@ function draftAdminResponse(responsesById, review, detail) {
 }
 
 export default function ModerationDashboard({ searchQuery = '' }) {
+  const { capabilities } = useCapabilities();
+  const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
   const [reviewRequests, setReviewRequests] = useState([]);
   const [detailsById, setDetailsById] = useState({});
   const [expandedId, setExpandedId] = useState(null);
@@ -253,10 +256,19 @@ export default function ModerationDashboard({ searchQuery = '' }) {
             Review publisher requests, inspect moderation findings, and approve or reject lessons that need staff attention.
           </p>
         </div>
-        <Button variant="secondary" onClick={loadReviewRequests} disabled={loading || Boolean(actionBusy)}>
-          <RefreshCcw size={16} />
-          <span>Refresh</span>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`rounded-full px-3 py-1.5 text-xs font-semibold ${
+            visualModerationEnabled
+              ? 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
+              : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
+          }`}>
+            {visualModerationEnabled ? 'Visual scan enabled' : 'Visual scan disabled'}
+          </span>
+          <Button variant="secondary" onClick={loadReviewRequests} disabled={loading || Boolean(actionBusy)}>
+            <RefreshCcw size={16} />
+            <span>Refresh</span>
+          </Button>
+        </div>
       </header>
 
       {notice && (

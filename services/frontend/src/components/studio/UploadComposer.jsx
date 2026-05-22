@@ -2,10 +2,13 @@ import { useMemo, useState } from 'react';
 import { CloudUpload, FileText, Sparkles } from 'lucide-react';
 import Button from '../ui/Button';
 import SurfaceCard from '../ui/SurfaceCard';
+import { featureEnabled, useCapabilities } from '../../lib/capabilities';
 
 const ACCEPTED_TYPES = ['.pptx', '.pdf', '.docx', '.txt'];
 
 export default function UploadComposer({ categories, submitting, submitError, onSubmit }) {
+  const { capabilities } = useCapabilities();
+  const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
   const [pauseSec, setPauseSec] = useState('0.2');
@@ -41,7 +44,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
       category,
       pauseSec,
       whiteboardModeAll,
-      avatarEnabled,
+      avatarEnabled: avatarFeatureEnabled && avatarEnabled,
     });
   };
 
@@ -106,17 +109,21 @@ export default function UploadComposer({ categories, submitting, submitError, on
               />
               <span>Whiteboard style on all slides</span>
             </label>
-            <label className="flex items-center gap-2 rounded-2xl bg-[color:var(--surface-muted)] px-3 py-2">
-              <input
-                type="checkbox"
-                checked={avatarEnabled}
-                onChange={(event) => setAvatarEnabled(event.target.checked)}
-              />
-              <span>Render with avatar</span>
-            </label>
-            <p className="px-3 text-xs text-[var(--text-secondary)]">
-              Avatar jobs use the separate avatar queue and can take longer.
-            </p>
+            {avatarFeatureEnabled && (
+              <>
+                <label className="flex items-center gap-2 rounded-2xl bg-[color:var(--surface-muted)] px-3 py-2">
+                  <input
+                    type="checkbox"
+                    checked={avatarEnabled}
+                    onChange={(event) => setAvatarEnabled(event.target.checked)}
+                  />
+                  <span>Render with avatar</span>
+                </label>
+                <p className="px-3 text-xs text-[var(--text-secondary)]">
+                  Avatar jobs use the separate avatar queue and can take longer.
+                </p>
+              </>
+            )}
           </div>
         </div>
 
