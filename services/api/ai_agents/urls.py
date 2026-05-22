@@ -6,6 +6,7 @@ from .views import (
     AdminModerationReviewRequestListView,
     AdminModerationReviewRequestRejectView,
     AdminModerationReviewRequestResponseView,
+    AdminProjectModerationActionView,
     ProjectModerationAdminReviewRequestView,
     ProjectModerationRescanView,
     ProjectModerationSummaryView,
@@ -36,6 +37,11 @@ urlpatterns = [
         "admin/moderation/review-requests/<int:review_id>/response/",
         AdminModerationReviewRequestResponseView.as_view(),
         name="admin-moderation-review-request-response",
+    ),
+    path(
+        "admin/moderation/projects/<int:project_id>/action/",
+        AdminProjectModerationActionView.as_view(),
+        name="admin-project-moderation-action",
     ),
     path(
         "projects/<int:project_id>/moderation/",

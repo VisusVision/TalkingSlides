@@ -11,6 +11,7 @@ import re
 from urllib.parse import urlparse
 
 from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
 from rest_framework import serializers
@@ -110,13 +111,14 @@ def _profile_asset_url(user_id: int | None, kind: str, context: dict | None = No
 
 def _profile_display_name(user: User, profile: UserProfile | None = None) -> str:
     custom = str(getattr(profile, "display_name", "") or "").strip()
-    return custom or user.get_full_name() or user.username
+    full_name = str(user.get_full_name() or "").strip()
+    username = str(getattr(user, "username", "") or "").strip()
+    email_prefix = str(getattr(user, "email", "") or "").split("@", 1)[0].strip()
+    return custom or full_name or username or email_prefix
 
 
 def _profile_display_name_for_public_lesson(user: User, profile: UserProfile | None = None) -> str:
-    if bool(getattr(profile, "is_public_profile", False)):
-        return _profile_display_name(user, profile)
-    return user.get_full_name() or user.username
+    return _profile_display_name(user, profile)
 
 
 def _profile_asset_version(profile: UserProfile | None) -> str | None:
@@ -133,6 +135,52 @@ def _public_profile_logo_url(user: User | None, context: dict | None = None) -> 
     if not getattr(profile, "logo_image_processed", ""):
         return ""
     return _profile_asset_url(getattr(user, "id", None), "logo", context, _profile_asset_version(profile))
+
+
+def _google_picture_cache_key(user_id: int) -> str:
+    return f"auth-google-picture:{user_id}"
+
+
+def _google_profile_picture_url(user: User | None) -> str:
+    if not user or not getattr(user, "id", None):
+        return ""
+    return str(cache.get(_google_picture_cache_key(int(user.id))) or "").strip()
+
+
+def _resolved_profile_photo_url(
+    user: User | None,
+    profile: UserProfile | None = None,
+    context: dict | None = None,
+    *,
+    require_public_profile: bool = False,
+) -> str:
+    if user is None:
+        return ""
+    if profile is None:
+        try:
+            profile = getattr(user, "profile", None)
+        except UserProfile.DoesNotExist:
+            profile = None
+    if (
+        profile
+        and getattr(profile, "logo_image_processed", "")
+        and (not require_public_profile or getattr(profile, "is_public_profile", False))
+    ):
+        return _profile_asset_url(getattr(user, "id", None), "logo", context, _profile_asset_version(profile))
+    return _google_profile_picture_url(user)
+
+
+def _identity_initials(user: User | None, profile: UserProfile | None = None) -> str:
+    if user is None:
+        return ""
+    name = _profile_display_name(user, profile)
+    parts = [part for part in re.split(r"\s+", name.strip()) if part]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[-1][0]).upper()
+    if parts:
+        return parts[0][:2].upper()
+    email_prefix = str(getattr(user, "email", "") or "").split("@", 1)[0].strip()
+    return (email_prefix[:2] or "U").upper()
 
 
 def _strip_social_handle(value: str) -> str:
@@ -846,12 +894,15 @@ class CurrentUserProfileSerializer(serializers.Serializer):
         first_name = user.first_name or ""
         last_name = user.last_name or ""
         display_name = _profile_display_name(user, profile)
+        profile_photo_url = _resolved_profile_photo_url(user, profile, self.context)
         return {
             "id": user.id,
             "username": user.username,
             "first_name": first_name,
             "last_name": last_name,
             "display_name": display_name,
+            "profile_photo_url": profile_photo_url,
+            "profile_initials": _identity_initials(user, profile),
             "bio": profile.bio or "",
             "website_url": profile.website_url or "",
             "contact_email": profile.contact_email or "",
@@ -919,10 +970,38 @@ class CurrentUserProfileSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     profile = UserProfileSerializer(read_only=True)
     voice_profile = VoiceProfileSerializer(read_only=True)
+    display_name = serializers.SerializerMethodField()
+    profile_photo_url = serializers.SerializerMethodField()
+    profile_initials = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ["id", "username", "email", "first_name", "last_name", "profile", "voice_profile", "is_staff", "is_superuser"]
+        fields = [
+            "id", "username", "email", "first_name", "last_name",
+            "display_name", "profile_photo_url", "profile_initials",
+            "profile", "voice_profile", "is_staff", "is_superuser",
+        ]
+
+    def get_display_name(self, obj):
+        try:
+            profile = getattr(obj, "profile", None)
+        except UserProfile.DoesNotExist:
+            profile = None
+        return _profile_display_name(obj, profile)
+
+    def get_profile_photo_url(self, obj):
+        try:
+            profile = getattr(obj, "profile", None)
+        except UserProfile.DoesNotExist:
+            profile = None
+        return _resolved_profile_photo_url(obj, profile, self.context)
+
+    def get_profile_initials(self, obj):
+        try:
+            profile = getattr(obj, "profile", None)
+        except UserProfile.DoesNotExist:
+            profile = None
+        return _identity_initials(obj, profile)
 
 
 class SlideSerializer(serializers.ModelSerializer):
@@ -1127,6 +1206,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
     teacher_username = serializers.SerializerMethodField()
     publisher_logo_url = serializers.SerializerMethodField()
     publisher_avatar_url = serializers.SerializerMethodField()
+    publisher_initials = serializers.SerializerMethodField()
     like_count = serializers.SerializerMethodField()
     comment_count = serializers.SerializerMethodField()
     follower_count = serializers.SerializerMethodField()
@@ -1141,7 +1221,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
             "id", "title", "description",
             "category_name", "category_slug",
             "teacher_id", "teacher_name", "teacher_username",
-            "publisher_logo_url", "publisher_avatar_url",
+            "publisher_logo_url", "publisher_avatar_url", "publisher_initials",
             "like_count", "comment_count", "follower_count", "is_following_publisher",
             "has_video",
             "cover_url", "thumbnail_url",
@@ -1161,10 +1241,17 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
         return obj.user.username if obj.user else ""
 
     def get_publisher_logo_url(self, obj):
-        return _public_profile_logo_url(obj.user, self.context)
+        if obj.user:
+            return _resolved_profile_photo_url(obj.user, getattr(obj.user, "profile", None), self.context)
+        return ""
 
     def get_publisher_avatar_url(self, obj):
-        return _public_profile_logo_url(obj.user, self.context)
+        return self.get_publisher_logo_url(obj)
+
+    def get_publisher_initials(self, obj):
+        if obj.user:
+            return _identity_initials(obj.user, getattr(obj.user, "profile", None))
+        return ""
 
     def get_like_count(self, obj):
         annotated = getattr(obj, "likes_count", None)
@@ -1257,6 +1344,8 @@ class PlaylistPublicSerializer(serializers.ModelSerializer):
     publisher_id = serializers.IntegerField(source="user.id", read_only=True)
     publisher_name = serializers.SerializerMethodField()
     publisher_username = serializers.CharField(source="user.username", read_only=True, default="")
+    publisher_photo_url = serializers.SerializerMethodField()
+    publisher_initials = serializers.SerializerMethodField()
     item_count = serializers.SerializerMethodField()
     cover_url = serializers.SerializerMethodField()
     is_saved = serializers.SerializerMethodField()
@@ -1273,6 +1362,8 @@ class PlaylistPublicSerializer(serializers.ModelSerializer):
             "publisher_id",
             "publisher_name",
             "publisher_username",
+            "publisher_photo_url",
+            "publisher_initials",
             "item_count",
             "cover_url",
             "is_saved",
@@ -1291,6 +1382,16 @@ class PlaylistPublicSerializer(serializers.ModelSerializer):
     def get_publisher_name(self, obj):
         if obj.user:
             return _profile_display_name(obj.user, getattr(obj.user, "profile", None))
+        return ""
+
+    def get_publisher_photo_url(self, obj):
+        if obj.user:
+            return _resolved_profile_photo_url(obj.user, getattr(obj.user, "profile", None), self.context)
+        return ""
+
+    def get_publisher_initials(self, obj):
+        if obj.user:
+            return _identity_initials(obj.user, getattr(obj.user, "profile", None))
         return ""
 
     def get_item_count(self, obj):
@@ -1327,11 +1428,29 @@ class PlaylistPublicSerializer(serializers.ModelSerializer):
 
 class LessonCommentSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
+    display_name = serializers.SerializerMethodField()
+    profile_photo_url = serializers.SerializerMethodField()
+    profile_initials = serializers.SerializerMethodField()
 
     class Meta:
         model = LessonComment
-        fields = ["id", "username", "text", "created_at"]
-        read_only_fields = ["id", "username", "created_at"]
+        fields = ["id", "username", "display_name", "profile_photo_url", "profile_initials", "text", "created_at"]
+        read_only_fields = ["id", "username", "display_name", "profile_photo_url", "profile_initials", "created_at"]
+
+    def _profile(self, obj):
+        try:
+            return getattr(obj.user, "profile", None)
+        except UserProfile.DoesNotExist:
+            return None
+
+    def get_display_name(self, obj):
+        return _profile_display_name(obj.user, self._profile(obj))
+
+    def get_profile_photo_url(self, obj):
+        return _resolved_profile_photo_url(obj.user, self._profile(obj), self.context)
+
+    def get_profile_initials(self, obj):
+        return _identity_initials(obj.user, self._profile(obj))
 
 
 NOTIFICATION_SAFE_METADATA_KEYS = {
@@ -1345,7 +1464,7 @@ NOTIFICATION_SAFE_METADATA_KEYS = {
     "event",
     "is_published",
 }
-NOTIFICATION_PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved", "not_scanned"}
+NOTIFICATION_PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved"}
 
 
 def _notification_safe_metadata(metadata) -> dict:
@@ -1407,7 +1526,11 @@ class NotificationSerializer(serializers.ModelSerializer):
         actor = getattr(obj, "actor_user", None)
         if actor is None:
             return ""
-        return actor.get_full_name() or actor.username
+        try:
+            profile = getattr(actor, "profile", None)
+        except UserProfile.DoesNotExist:
+            profile = None
+        return _profile_display_name(actor, profile)
 
     def _can_expose_project(self, obj) -> bool:
         project = getattr(obj, "project", None)

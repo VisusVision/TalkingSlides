@@ -2569,6 +2569,8 @@ def _run_auto_visual_asset_moderation_after_export(
             }
 
         final_decision = PolicyEngine().combine_results(results)
+        if _visual_provider_unavailable(results):
+            final_decision = "needs_admin_review"
         run = _persist_auto_visual_moderation_results(
             project=project,
             results=results,
@@ -2709,15 +2711,27 @@ def _persist_auto_visual_moderation_results(
         AgentFinding.objects.bulk_create(rows)
 
     try:
-        project.refresh_from_db(fields=["moderation_summary"])
+        project.refresh_from_db(fields=["moderation_status", "moderation_summary", "is_published"])
         existing_summary = dict(project.moderation_summary or {})
         existing_summary["visual_asset_scan"] = {
             **summary,
             "run_id": run.id,
             "phase": phase,
         }
+        update_fields = ["moderation_summary", "updated_at"]
+        if final_decision in {"block", "needs_admin_review"}:
+            project.moderation_status = "revision_required" if final_decision == "block" else "needs_admin_review"
+            existing_summary["moderation_status"] = project.moderation_status
+            if final_decision == "block":
+                existing_summary["message"] = "Visual moderation blocked this lesson pending revision."
+            else:
+                existing_summary["message"] = "Visual moderation requires admin review before publication."
+            if bool(getattr(project, "is_published", False)):
+                project.is_published = False
+                update_fields.append("is_published")
+            update_fields.append("moderation_status")
         project.moderation_summary = existing_summary
-        project.save(update_fields=["moderation_summary", "updated_at"])
+        project.save(update_fields=[*dict.fromkeys(update_fields)])
     except Exception:
         logger.warning("Visual moderation summary update failed for project=%s", project.id, exc_info=True)
 
@@ -2777,6 +2791,28 @@ def _provider_error_metadata(results: list) -> list[dict[str, Any]]:
             }
         )
     return errors
+
+
+def _visual_provider_unavailable(results: list) -> bool:
+    for result in results or []:
+        provider = str(getattr(result, "provider", "") or "")
+        if provider in {"", "local_image_rules"}:
+            continue
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        if metadata.get("provider_error"):
+            return True
+        if metadata.get("skipped"):
+            reason = str(metadata.get("reason") or "")
+            if reason in {
+                "visual_safety_classifier_disabled",
+                "azure_content_safety_disabled",
+                "azure_content_safety_missing_config",
+                "azure_content_safety_timeout",
+                "azure_content_safety_request_error",
+                "azure_content_safety_invalid_response",
+            }:
+                return True
+    return False
 
 
 def _visual_object_id(location: dict[str, Any]) -> str:
@@ -2957,6 +2993,8 @@ def _run_auto_ocr_slide_moderation_after_export(
             findings.extend(text_provider.scan_text(text, ocr_result.location))
 
         final_decision = policy_engine.combine_findings(findings)
+        if _ocr_provider_unavailable(provider_name, ocr_results):
+            final_decision = "needs_admin_review"
         run = _persist_auto_ocr_moderation_results(
             project=project,
             ocr_results=ocr_results,
@@ -3052,15 +3090,27 @@ def _persist_auto_ocr_moderation_results(
         AgentFinding.objects.bulk_create(rows)
 
     try:
-        project.refresh_from_db(fields=["moderation_summary"])
+        project.refresh_from_db(fields=["moderation_status", "moderation_summary", "is_published"])
         existing_summary = dict(project.moderation_summary or {})
         existing_summary["ocr_slide_scan"] = {
             **summary,
             "run_id": run.id,
             "phase": phase,
         }
+        update_fields = ["moderation_summary", "updated_at"]
+        if final_decision in {"block", "needs_admin_review"}:
+            project.moderation_status = "revision_required" if final_decision == "block" else "needs_admin_review"
+            existing_summary["moderation_status"] = project.moderation_status
+            if final_decision == "block":
+                existing_summary["message"] = "OCR moderation blocked this lesson pending revision."
+            else:
+                existing_summary["message"] = "OCR moderation requires admin review before publication."
+            if bool(getattr(project, "is_published", False)):
+                project.is_published = False
+                update_fields.append("is_published")
+            update_fields.append("moderation_status")
         project.moderation_summary = existing_summary
-        project.save(update_fields=["moderation_summary", "updated_at"])
+        project.save(update_fields=[*dict.fromkeys(update_fields)])
     except Exception:
         logger.warning("OCR moderation summary update failed for project=%s", project.id, exc_info=True)
 
@@ -3107,6 +3157,20 @@ def _ocr_provider_raw_for_location(ocr_results: list, location: dict[str, Any]) 
                 },
             }
     return {}
+
+
+def _ocr_provider_unavailable(provider_name: str, ocr_results: list) -> bool:
+    normalized = str(provider_name or "").strip().lower()
+    if normalized in {"", "none", "noop"}:
+        return True
+    for result in ocr_results or []:
+        if bool(getattr(result, "success", False)):
+            continue
+        metadata = dict(getattr(result, "metadata", {}) or {})
+        reason = str(metadata.get("reason") or "")
+        if metadata.get("skipped") or reason or getattr(result, "error_message", ""):
+            return True
+    return False
 
 
 def _ocr_moderation_message(final_decision: str) -> str:

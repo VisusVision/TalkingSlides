@@ -10,14 +10,11 @@ export function isStaffOrAdmin(user) {
 
 export function canAccessStudio(user) {
   if (!user) return false;
-  if (isStaffOrAdmin(user)) {
-    return true;
-  }
   return CREATOR_ALLOWED_ROLES.has(normalizeUserRole(user));
 }
 
 export function canAccessAnalytics(user) {
-  return canAccessStudio(user);
+  return canAccessStudio(user) || isStaffOrAdmin(user);
 }
 
 export function canAccessModeration(user) {

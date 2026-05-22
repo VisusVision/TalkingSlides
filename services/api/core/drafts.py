@@ -78,6 +78,7 @@ def ensure_project_draft_data(project: Project) -> dict[str, Any]:
     metadata.setdefault("created_at", _iso_now())
     metadata.setdefault("updated_at", metadata["created_at"])
     metadata.setdefault("dirty", True)
+    _normalize_draft_dirty_metadata(metadata)
     return draft_data
 
 
@@ -88,6 +89,85 @@ def has_project_draft(project: Project) -> bool:
 
 def has_dirty_draft(project: Project) -> bool:
     return has_project_draft(project)
+
+
+def draft_requires_render(project: Project) -> bool:
+    metadata = get_project_draft_data(project).get("metadata")
+    if not isinstance(metadata, dict) or not metadata.get("dirty"):
+        return False
+    if "render_required" in metadata:
+        return bool(metadata.get("render_required"))
+    if not any(
+        key in metadata
+        for key in (
+            "metadata_dirty",
+            "cover_dirty",
+            "transcript_dirty",
+            "source_dirty",
+            "tts_dirty",
+            "background_dirty",
+            "visual_assets_dirty",
+        )
+    ):
+        return True
+    return bool(
+        metadata.get("transcript_dirty")
+        or metadata.get("source_dirty")
+        or metadata.get("tts_dirty")
+        or metadata.get("background_dirty")
+        or metadata.get("visual_assets_dirty")
+    )
+
+
+def mark_draft_dirty(
+    draft_data: dict[str, Any],
+    *,
+    metadata_dirty: bool = False,
+    cover_dirty: bool = False,
+    transcript_dirty: bool = False,
+    source_dirty: bool = False,
+    tts_dirty: bool = False,
+    background_dirty: bool = False,
+    visual_assets_dirty: bool = False,
+    render_required: bool | None = None,
+) -> dict[str, Any]:
+    metadata = draft_data.setdefault("metadata", {})
+    if metadata_dirty:
+        metadata["metadata_dirty"] = True
+    if cover_dirty:
+        metadata["cover_dirty"] = True
+    if transcript_dirty:
+        metadata["transcript_dirty"] = True
+    if source_dirty:
+        metadata["source_dirty"] = True
+    if tts_dirty:
+        metadata["tts_dirty"] = True
+    if background_dirty:
+        metadata["background_dirty"] = True
+    if visual_assets_dirty:
+        metadata["visual_assets_dirty"] = True
+    if render_required is None:
+        render_required = bool(
+            transcript_dirty
+            or source_dirty
+            or tts_dirty
+            or background_dirty
+            or visual_assets_dirty
+        )
+    metadata["render_required"] = bool(metadata.get("render_required")) or bool(render_required)
+    _normalize_draft_dirty_metadata(metadata)
+    return draft_data
+
+
+def _normalize_draft_dirty_metadata(metadata: dict[str, Any]) -> None:
+    metadata.setdefault("metadata_dirty", False)
+    metadata.setdefault("cover_dirty", False)
+    metadata.setdefault("transcript_dirty", False)
+    metadata.setdefault("source_dirty", False)
+    metadata.setdefault("tts_dirty", False)
+    metadata.setdefault("background_dirty", False)
+    metadata.setdefault("visual_assets_dirty", False)
+    metadata.setdefault("render_required", False)
 
 
 def get_draft_project_fields(project: Project) -> dict[str, Any]:
@@ -122,6 +202,7 @@ def save_project_draft_data(project: Project, draft_data: dict[str, Any], *, dir
     metadata.setdefault("created_at", _iso_now())
     metadata["updated_at"] = _iso_now()
     metadata["dirty"] = bool(dirty)
+    _normalize_draft_dirty_metadata(metadata)
     project.draft_data = draft_data
     project.save(update_fields=["draft_data", "updated_at"])
     return draft_data

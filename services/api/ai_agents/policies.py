@@ -147,7 +147,7 @@ def moderation_is_approved_for_catalog(project) -> bool:
     Used to filter what anonymous/student users see — not what owners see.
     """
     moderation = str(getattr(project, "moderation_status", "") or "")
-    return moderation in APPROVED_MODERATION_STATUSES or moderation == "not_scanned"
+    return moderation in APPROVED_MODERATION_STATUSES
 
 
 def publication_block_payload(project) -> dict:
