@@ -629,8 +629,8 @@ def test_anonymous_cannot_see_drafts():
 
 
 @pytest.mark.django_db
-def test_staff_can_see_any_project():
-    """Staff users must be able to see all projects via the projects list endpoint."""
+def test_staff_cannot_see_non_owned_project_in_studio_list():
+    """Staff users must not see non-owned projects in the Studio projects list."""
     teacher = _make_teacher("staff_proj_teacher")
     staff = _make_staff("staff_proj_staff")
     project = Project.objects.create(
@@ -646,7 +646,7 @@ def test_staff_can_see_any_project():
 
     assert response.status_code == 200
     ids = {item["id"] for item in response.data}
-    assert project.id in ids, "Staff must be able to see all projects"
+    assert project.id not in ids, "Staff must not see non-owned projects in Studio list"
 
 
 @pytest.mark.django_db
