@@ -114,13 +114,13 @@ def test_auto_ocr_enabled_noop_completes_without_findings_or_text_scan(monkeypat
     project.refresh_from_db()
     run = AgentRun.objects.get(project=project, phase="ocr_slide_scan")
     assert result["status"] == "done"
-    assert result["final_decision"] == "allow"
+    assert result["final_decision"] == "needs_admin_review"
     assert result["finding_count"] == 0
     assert result["text_asset_count"] == 0
     assert result["block_render"] is False
     assert run.status == "done"
-    assert run.final_decision == "allow"
-    assert project.moderation_summary["ocr_slide_scan"]["final_decision"] == "allow"
+    assert run.final_decision == "needs_admin_review"
+    assert project.moderation_summary["ocr_slide_scan"]["final_decision"] == "needs_admin_review"
 
 
 @pytest.mark.django_db
@@ -132,8 +132,8 @@ def test_auto_ocr_missing_slide_image_does_not_crash_or_block(monkeypatch, tmp_p
     result = worker_tasks._run_auto_ocr_slide_moderation_after_export(project.id, [_slide(missing_path)])
 
     assert result["status"] == "done"
-    assert result["final_decision"] == "allow"
-    assert result["block_render"] is False
+    assert result["final_decision"] == "needs_admin_review"
+    assert result["block_render"] is True
     assert AgentFinding.objects.filter(run__project=project).count() == 0
 
 
@@ -152,7 +152,7 @@ def test_auto_ocr_empty_text_skips_text_moderation(monkeypatch, tmp_path):
 
     result = worker_tasks._run_auto_ocr_slide_moderation_after_export(project.id, [_slide(image_path)])
 
-    assert result["final_decision"] == "allow"
+    assert result["final_decision"] == "needs_admin_review"
     assert result["finding_count"] == 0
     assert result["text_asset_count"] == 0
 
@@ -169,7 +169,7 @@ def test_auto_ocr_unsafe_text_creates_finding_and_summary_without_project_status
 
     project.refresh_from_db()
     finding = AgentFinding.objects.get(run__project=project)
-    assert result["final_decision"] == "block"
+    assert result["final_decision"] == "needs_admin_review"
     assert result["finding_count"] == 1
     assert result["block_render"] is False
     assert finding.content_type == "ocr"
@@ -179,7 +179,7 @@ def test_auto_ocr_unsafe_text_creates_finding_and_summary_without_project_status
     assert finding.location["asset_type"] == "ocr_text"
     assert finding.provider == "ocr_slide_moderation:local_rules"
     assert finding.provider_raw["ocr_text_length"] == len("I will kill you tomorrow.")
-    assert project.moderation_status == "approved"
+    assert project.moderation_status == "needs_admin_review"
     assert project.moderation_summary["ocr_slide_scan"]["finding_count"] == 1
     assert "visual_asset_scan" not in project.moderation_summary
 
@@ -194,7 +194,7 @@ def test_auto_ocr_block_flag_false_continues_on_unsafe_text(monkeypatch, tmp_pat
 
     result = worker_tasks._run_auto_ocr_slide_moderation_after_export(project.id, [_slide(image_path)])
 
-    assert result["final_decision"] == "block"
+    assert result["final_decision"] == "needs_admin_review"
     assert result["block_render"] is False
 
 
@@ -208,7 +208,7 @@ def test_auto_ocr_block_flag_true_blocks_unsafe_text(monkeypatch, tmp_path):
 
     result = worker_tasks._run_auto_ocr_slide_moderation_after_export(project.id, [_slide(image_path)])
 
-    assert result["final_decision"] == "block"
+    assert result["final_decision"] == "needs_admin_review"
     assert result["block_render"] is True
 
 
@@ -242,4 +242,4 @@ def test_auto_ocr_does_not_import_video_frame_sampling(monkeypatch, tmp_path):
 
     result = worker_tasks._run_auto_ocr_slide_moderation_after_export(project.id, [_slide(image_path)])
 
-    assert result["final_decision"] == "allow"
+    assert result["final_decision"] == "needs_admin_review"
