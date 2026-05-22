@@ -311,7 +311,7 @@ def test_legacy_lesson_without_avatar_state():
         title="Legacy Lesson Without Avatar State",
         avatar_enabled=False,
         avatar_processing_status="none",
-        moderation_status="not_scanned",
+        moderation_status="approved",
     )
 
     factory = APIRequestFactory()
