@@ -295,7 +295,7 @@ def test_auto_ocr_with_mocked_azure_provider_records_findings(monkeypatch, tmp_p
     assert finding.provider == "ocr_slide_moderation:local_rules"
     assert finding.provider_raw["ocr_provider"] == "azure_ocr"
     assert project.moderation_summary["ocr_slide_scan"]["finding_count"] == 1
-    assert project.moderation_status == "approved"
+    assert project.moderation_status == "revision_required"
 
 
 def test_noop_provider_behavior_unchanged(tmp_path):
