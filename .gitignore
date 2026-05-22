@@ -51,6 +51,11 @@ outputs/
 Thumbs.db
 *.ctl
 *.sock
+*.sqlite3
+*.sqlite3-journal
+celerybeat-schedule*
+*_SMOKE_TEST_REPORT.txt
+tatus
 
 # Frontend
 node_modules/
