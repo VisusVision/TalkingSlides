@@ -14,6 +14,7 @@ import {
   getModerationReviewRequest,
   listModerationReviewRequests,
   rejectModerationReviewRequest,
+  runAdminProjectModerationAction,
   sendModerationReviewResponse,
 } from '../api';
 import Button from '../components/ui/Button';
@@ -212,6 +213,24 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     }
   };
 
+  const handleProjectAction = async (review, action, detail = null) => {
+    if (!review?.project_id) return;
+    const key = `${action}-${review.id}`;
+    setActionBusy(key);
+    setError('');
+    setNotice('');
+    try {
+      const response = draftAdminResponse(responsesById, review, detail);
+      const payload = await runAdminProjectModerationAction(review.project_id, action, response);
+      setNotice(payload?.message || 'Moderation action saved.');
+      await loadReviewRequests();
+    } catch (actionError) {
+      setError(actionError.message || 'Could not update moderation state.');
+    } finally {
+      setActionBusy('');
+    }
+  };
+
   const requestDecision = (review, decision, detail) => {
     const response = draftAdminResponse(responsesById, review, detail);
     const savedResponse = savedAdminResponse(review, detail);
@@ -315,6 +334,10 @@ export default function ModerationDashboard({ searchQuery = '' }) {
               const approveBusy = actionBusy === `approve-${review.id}`;
               const rejectBusy = actionBusy === `reject-${review.id}`;
               const responseBusy = actionBusy === `response-${review.id}`;
+              const needsReviewBusy = actionBusy === `needs_review-${review.id}`;
+              const requestChangesBusy = actionBusy === `request_changes-${review.id}`;
+              const blockBusy = actionBusy === `block-${review.id}`;
+              const rescanBusy = actionBusy === `rescan-${review.id}`;
               const canReview = isOpenReview(review);
 
               return (
@@ -354,11 +377,11 @@ export default function ModerationDashboard({ searchQuery = '' }) {
 
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Link
-                      to={`/studio?lesson=${review.project_id}`}
+                      to={`/watch?lesson=${review.project_id}&review=1`}
                       className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
                     >
                       <ExternalLink size={14} />
-                      <span>Open in Studio</span>
+                      <span>Review lesson</span>
                     </Link>
                     <Button size="sm" variant="secondary" onClick={() => handleToggleDetail(review)} disabled={detailLoadingId === review.id}>
                       <ChevronDown size={14} className={expanded ? 'rotate-180 transition' : 'transition'} />
@@ -446,6 +469,42 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                             disabled={Boolean(actionBusy) || !responseChanged}
                           >
                             <span>{responseBusy ? 'Sending...' : 'Send response'}</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleProjectAction(review, 'rescan', detail)}
+                            disabled={Boolean(actionBusy)}
+                          >
+                            <RefreshCcw size={14} />
+                            <span>{rescanBusy ? 'Rescanning...' : 'Rescan'}</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleProjectAction(review, 'needs_review', detail)}
+                            disabled={Boolean(actionBusy)}
+                          >
+                            <AlertTriangle size={14} />
+                            <span>{needsReviewBusy ? 'Saving...' : 'Needs review'}</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleProjectAction(review, 'request_changes', detail)}
+                            disabled={Boolean(actionBusy)}
+                          >
+                            <XCircle size={14} />
+                            <span>{requestChangesBusy ? 'Requesting...' : 'Request changes'}</span>
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => handleProjectAction(review, 'block', detail)}
+                            disabled={Boolean(actionBusy)}
+                          >
+                            <XCircle size={14} />
+                            <span>{blockBusy ? 'Blocking...' : 'Block'}</span>
                           </Button>
                           <Button
                             size="sm"

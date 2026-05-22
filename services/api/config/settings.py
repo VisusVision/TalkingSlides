@@ -799,6 +799,13 @@ SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION = os.environ.get(
 ).lower() in {"1", "true", "yes", "on"}
 SOURCE_MODERATION_PHASE = os.environ.get("SOURCE_MODERATION_PHASE", "source_scan").strip() or "source_scan"
 
+# Studio editor override is intentionally off by default. Staff can review and
+# moderate lessons without gaining publisher editor access.
+STUDIO_SUPERUSER_EDITOR_OVERRIDE_ENABLED = os.environ.get(
+    "STUDIO_SUPERUSER_EDITOR_OVERRIDE_ENABLED",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+
 # ---------------------------------------------------------------------------
 # Feature-flagged local visual asset moderation automation
 # ---------------------------------------------------------------------------

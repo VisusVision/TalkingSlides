@@ -1762,10 +1762,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       && ['pending', 'running', 'processing'].includes(normalizedStatus(activeRerenderStatus)),
   );
   const selectedLessonHasDraft = Boolean(selectedLessonDraftMetadata?.dirty);
+  const selectedDraftRenderRequired = Boolean(selectedLessonDraftMetadata?.render_required);
   const selectedDraftStatusMessage = selectedDraftBlocked
     ? 'Draft blocked by moderation. Edit the highlighted content or discard draft. Public lesson was not changed.'
     : draftRerenderInProgress
       ? 'Draft rerender in progress.'
+      : selectedLessonHasDraft && !selectedDraftRenderRequired
+        ? 'Cover updated. Video rerender not required.'
       : 'Draft changes saved. Public version is unchanged until Save & Rerender succeeds.';
   const moderationFindingsForStudio = useMemo(
     () => (selectedDraftBlocked
@@ -3121,20 +3124,20 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         nextProject.draft_thumbnail_url = cacheBustedMediaUrl(updatedProject.draft_thumbnail_url, cacheToken);
       }
       if (updatedProject?.cover_url) {
-        nextProject.cover_url = preserveCacheBustedMediaUrl(selectedLesson.cover_url, updatedProject.cover_url);
+        nextProject.cover_url = cacheBustedMediaUrl(updatedProject.cover_url, cacheToken);
       }
       if (updatedProject?.thumbnail_url) {
-        nextProject.thumbnail_url = preserveCacheBustedMediaUrl(selectedLesson.thumbnail_url, updatedProject.thumbnail_url);
+        nextProject.thumbnail_url = cacheBustedMediaUrl(updatedProject.thumbnail_url, cacheToken);
       }
       handleProjectUpdated(nextProject);
       setSelectedLessonDraftMetadata(updatedProject?.draft_metadata || {});
-      setSceneActionMessage('Draft cover saved. Public cover is unchanged until Save & Rerender succeeds.');
+      setSceneActionMessage(updatedProject?.message || 'Cover updated. Video rerender not required.');
     } catch (err) {
       setSceneActionError(err.message || 'Could not update lesson cover.');
     } finally {
       setSceneActionBusy('');
     }
-  }, [handleProjectUpdated, selectedLesson?.cover_url, selectedLesson?.id, selectedLesson?.thumbnail_url]);
+  }, [handleProjectUpdated, selectedLesson?.id]);
 
   const handleDraftStatusChange = useCallback((nextStatus) => {
     setSceneDraftStatus((previous) => {
@@ -4178,7 +4181,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         <Button
                           size="sm"
                           onClick={() => handleGlobalEditorSave({ triggerRerender: true })}
-                          disabled={Boolean(globalEditorActionBusy)}
+                          disabled={Boolean(globalEditorActionBusy) || (selectedLessonHasDraft && !selectedDraftRenderRequired)}
                         >
                           <RefreshCcw size={14} />
                           <span>{globalEditorActionBusy === 'rerender' ? 'Saving...' : 'Save & Rerender'}</span>
@@ -4343,7 +4346,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               )}
                               {hasDraftCover && !moderationAssetWarnings.cover && (
                                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                                  Public cover is unchanged until Save & Rerender succeeds.
+                                  Cover updated. Video rerender not required.
                                 </p>
                               )}
                               {moderationAssetWarnings.cover && (

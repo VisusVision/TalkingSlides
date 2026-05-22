@@ -1,37 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, CircleHelp, LogIn, LogOut, Settings as SettingsIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { API_BASE_URL, fetchAuthenticatedMediaBlobUrl } from '../../api';
+import { fetchAuthenticatedMediaBlobUrl } from '../../api';
+import { displayNameFromUser, initialsFromUser, profilePhotoFromUser } from '../../utils/profileIdentity';
 import Button from './Button';
-
-function displayNameFromUser(user) {
-  const firstName = String(user?.first_name || '').trim();
-  const lastName = String(user?.last_name || '').trim();
-  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
-  if (fullName) return fullName;
-
-  const username = String(user?.username || '').trim();
-  if (username) return username;
-
-  return 'VISUS User';
-}
-
-function initialsFromUser(user) {
-  const name = displayNameFromUser(user);
-  if (!name) return 'VV';
-  return name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() || '')
-    .join('');
-}
-
-function toAbsoluteMediaLikeUrl(url) {
-  if (!url) return '';
-  if (/^(https?:|data:|blob:)/i.test(url)) return url;
-  const origin = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
-  return `${origin}${url.startsWith('/') ? url : `/${url}`}`;
-}
 
 function userRoleLabel(user) {
   const roleRaw = String(user?.profile?.role || user?.role || '').trim().toLowerCase();
@@ -83,16 +55,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
     };
   }, [uploadedAvatarPath]);
 
-  const providerAvatarRaw =
-    user?.auth_picture_url ||
-    user?.provider_picture ||
-    user?.picture ||
-    user?.photo_url ||
-    user?.avatar_url ||
-    user?.image_url ||
-    user?.profile?.provider_avatar_url ||
-    '';
-  const avatarSrc = uploadedAvatarUrl || toAbsoluteMediaLikeUrl(providerAvatarRaw);
+  const avatarSrc = profilePhotoFromUser(user, uploadedAvatarUrl);
 
   useEffect(() => {
     setAvatarLoadFailed(false);

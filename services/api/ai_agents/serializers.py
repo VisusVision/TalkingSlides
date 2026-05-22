@@ -5,7 +5,7 @@ from typing import Any
 
 from rest_framework import serializers
 
-from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun
+from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun, ModerationAuditEvent
 from ai_agents.policies import project_can_publish
 
 
@@ -18,6 +18,7 @@ SEVERITY_RANK = {
 
 REVIEWABLE_MODERATION_STATUSES = frozenset(
     {
+        "not_scanned",
         "revision_required",
         "needs_admin_review",
         "admin_rejected",
@@ -44,6 +45,21 @@ class AdminReviewDecisionSerializer(serializers.Serializer):
     admin_response = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
 
 
+class AdminProjectModerationActionSerializer(serializers.Serializer):
+    action = serializers.ChoiceField(
+        choices=["approve", "block", "needs_review", "request_changes", "add_note", "rescan"]
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
+    note = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
+    phase = serializers.CharField(required=False, allow_blank=True, max_length=50, default="manual_admin_rescan")
+
+    def validate_phase(self, value: str) -> str:
+        cleaned = str(value or "manual_admin_rescan").strip() or "manual_admin_rescan"
+        if len(cleaned) > 50:
+            raise serializers.ValidationError("phase must be 50 characters or less.")
+        return cleaned
+
+
 class AdminReviewRequestSerializer(serializers.ModelSerializer):
     class Meta:
         model = AdminReviewRequest
@@ -62,7 +78,7 @@ def moderation_summary_payload(project, *, include_admin_fields: bool = False) -
         and not has_open_review
     )
 
-    return {
+    payload = {
         "project_id": project.id,
         "moderation_status": project.moderation_status,
         "can_publish": project_can_publish(project),
@@ -77,6 +93,16 @@ def moderation_summary_payload(project, *, include_admin_fields: bool = False) -
             for finding in findings
         ],
     }
+    if include_admin_fields:
+        payload["admin_audit_events"] = [
+            moderation_audit_event_payload(event)
+            for event in project.moderation_audit_events.select_related("actor").order_by("-created_at", "-id")[:10]
+        ]
+    else:
+        public_note = summary.get("publisher_admin_note") or summary.get("admin_response") or ""
+        if public_note:
+            payload["admin_note"] = str(public_note)
+    return payload
 
 
 def latest_admin_review_payload(project) -> dict[str, Any] | None:
@@ -146,15 +172,30 @@ def admin_review_detail_payload(review: AdminReviewRequest) -> dict[str, Any]:
                 finding_payload(finding, include_admin_fields=True)
                 for finding in findings
             ],
-            "open_project_studio_hint": f"/studio?lesson={project.id}",
+            "open_project_studio_hint": "",
+            "open_review_hint": f"/watch?lesson={project.id}&review=1",
             "open_watch_timestamp_hint": (
-                f"/watch?lesson={project.id}&t={first_timestamp:g}"
+                f"/watch?lesson={project.id}&review=1&t={first_timestamp:g}"
                 if first_timestamp is not None
-                else ""
+                else f"/watch?lesson={project.id}&review=1"
             ),
         }
     )
     return payload
+
+
+def moderation_audit_event_payload(event: ModerationAuditEvent) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "action": event.action,
+        "reason": event.reason,
+        "previous_status": event.previous_status,
+        "new_status": event.new_status,
+        "actor_id": event.actor_id,
+        "actor_username": _username(event.actor),
+        "created_at": event.created_at,
+        "metadata": event.metadata if isinstance(event.metadata, dict) else {},
+    }
 
 
 def finding_summary_payload(finding: AgentFinding) -> dict[str, Any]:

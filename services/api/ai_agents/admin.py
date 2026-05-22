@@ -10,6 +10,7 @@ from .models import (
     AgentDefinition,
     AgentFinding,
     AgentRun,
+    ModerationAuditEvent,
     PublicationBlockEvent,
 )
 
@@ -107,6 +108,19 @@ class PublicationBlockEventAdmin(admin.ModelAdmin):
         )
         skipped = queryset.count() - updated
         self.message_user(request, f"Marked {updated} publication block event(s) resolved; skipped {skipped}.")
+
+
+@admin.register(ModerationAuditEvent)
+class ModerationAuditEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "project", "action", "actor", "previous_status", "new_status", "created_at")
+    search_fields = ("project__title", "actor__username", "action", "reason")
+    list_filter = ("action", "created_at")
+    readonly_fields = ("created_at", "metadata_pretty")
+    list_select_related = ("project", "actor")
+
+    @admin.display(description="Metadata")
+    def metadata_pretty(self, obj):
+        return format_html("<pre style='white-space: pre-wrap'>{}</pre>", _compact_json(obj.metadata))
 
 
 @admin.register(AdminReviewRequest)

@@ -326,6 +326,7 @@ export async function loginWithGoogle(credential) {
   const data = await res.json();
   setToken(data.token);
   setGoogleAuthProvider(data?.provider || data?.user?.auth_provider || "google");
+  setStoredAuthUser(data?.user || null);
   return data;
 }
 
@@ -593,6 +594,19 @@ export async function sendModerationReviewResponse(id, adminResponse = "") {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(apiErrorMessage(data, "Failed to send moderation review response"));
+  }
+  return data;
+}
+
+export async function runAdminProjectModerationAction(projectId, action, reason = "", phase = "manual_admin_rescan") {
+  const res = await fetch(`${API_BASE_URL}/admin/moderation/projects/${projectId}/action/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ action, reason, phase }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to update moderation state"));
   }
   return data;
 }
@@ -1257,7 +1271,7 @@ export async function applyProjectBackgroundToAll(projectId, payload = {}) {
 export async function uploadProjectCover(projectId, file, options = {}) {
   const formData = new FormData();
   formData.append('cover_file', file);
-  formData.append('draft_only', String(options.draftOnly ?? true));
+  formData.append('draft_only', String(options.draftOnly ?? false));
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/cover/`, {
     method: 'POST',
     headers: authHeaders(),

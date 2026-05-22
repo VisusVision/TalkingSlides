@@ -180,3 +180,43 @@ class AdminReviewRequest(models.Model):
 
     def __str__(self):
         return f"AdminReviewRequest project={self.project_id} status={self.status}"
+
+
+class ModerationAuditEvent(models.Model):
+    ACTION_CHOICES = [
+        ("approve", "Approve"),
+        ("block", "Block"),
+        ("needs_review", "Needs review"),
+        ("request_changes", "Request changes"),
+        ("add_note", "Add note"),
+        ("rescan", "Rescan"),
+    ]
+
+    project = models.ForeignKey(
+        "core.Project",
+        on_delete=models.CASCADE,
+        related_name="moderation_audit_events",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="moderation_audit_events",
+    )
+    action = models.CharField(max_length=40, choices=ACTION_CHOICES)
+    reason = models.TextField(blank=True)
+    previous_status = models.CharField(max_length=30, blank=True)
+    new_status = models.CharField(max_length=30, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["project", "-created_at"], name="ai_agents_m_project_4f4596_idx"),
+            models.Index(fields=["action", "-created_at"], name="ai_agents_m_action_55bb62_idx"),
+        ]
+
+    def __str__(self):
+        return f"ModerationAuditEvent project={self.project_id} action={self.action}"

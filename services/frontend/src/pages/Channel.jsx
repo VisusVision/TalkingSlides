@@ -143,8 +143,8 @@ function selectFeaturedLesson(items) {
   return sortLessonsByNewest(items)[0] || null;
 }
 
-function ChannelAvatar({ imageUrl, name, size = 'large' }) {
-  const initial = String(name || 'P').trim().charAt(0).toUpperCase() || 'P';
+function ChannelAvatar({ imageUrl, name, initials = '', size = 'large' }) {
+  const initial = String(initials || name || 'P').trim().slice(0, 2).toUpperCase() || 'P';
   const sizeClass = size === 'small' ? 'h-10 w-10 text-sm' : 'h-20 w-20 text-2xl sm:h-24 sm:w-24 sm:text-3xl';
   if (imageUrl) {
     return (
@@ -338,7 +338,8 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
   const profilePrivate = Boolean(profile?.profile_private);
   const displayName = profile?.display_name || profile?.username || 'Publisher';
   const username = profile?.username ? `@${profile.username}` : '';
-  const logoUrl = profilePrivate ? '' : profile?.logo_url || profile?.avatar_url || '';
+  const logoUrl = profile?.logo_url || profile?.avatar_url || '';
+  const profileInitials = profile?.initials || profile?.profile_initials || '';
   const hasBanner = Boolean(profile?.banner_url) && !profilePrivate;
   const editValidationErrors = useMemo(() => validatePublicProfileDraft(editDraft), [editDraft]);
   const editHasValidationErrors = Object.keys(editValidationErrors).length > 0;
@@ -606,7 +607,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
         >
           <div className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
             <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-end">
-              <ChannelAvatar imageUrl={logoUrl} name={displayName} />
+              <ChannelAvatar imageUrl={logoUrl} name={displayName} initials={profileInitials} />
               <div className="min-w-0 space-y-3">
                 <div>
                   <p className={`label-sm ${hasBanner ? 'text-white/75' : ''}`}>Channel</p>

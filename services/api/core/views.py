@@ -126,12 +126,15 @@ from core.analytics_intelligence import (
     analytics_ollama_run_identity,
 )
 from core.drafts import (
+    draft_requires_render,
     ensure_project_draft_data,
     get_draft_project_fields,
     get_project_draft_data,
     get_studio_transcript_pages,
     has_dirty_draft,
     has_project_draft,
+    mark_draft_dirty,
+    promote_project_draft,
     save_project_draft_data,
 )
 from core.lesson_intelligence import (
@@ -2778,12 +2781,18 @@ class ProjectCoverImageView(APIView):
             project_fields = draft_data.setdefault("project", {})
             project_fields["cover_image_original"] = cover_rel_path
             project_fields["cover_image_processed"] = cover_rel_path
-            metadata = draft_data.setdefault("metadata", {})
-            metadata["cover_dirty"] = True
-            metadata["visual_assets_dirty"] = True
+            mark_draft_dirty(
+                draft_data,
+                metadata_dirty=True,
+                cover_dirty=True,
+                render_required=False,
+            )
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
-            return Response(ProjectSerializer(project, context={"request": request}).data, status=status.HTTP_200_OK)
+            data = ProjectSerializer(project, context={"request": request}).data
+            data["render_required"] = False
+            data["message"] = "Cover updated. Video rerender not required."
+            return Response(data, status=status.HTTP_200_OK)
 
         project.cover_image_original = cover_rel_path
         project.cover_image_processed = cover_rel_path
@@ -2800,7 +2809,10 @@ class ProjectCoverImageView(APIView):
             asset_path=cover_rel_path,
         )
         project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
-        return Response(ProjectSerializer(project, context={"request": request}).data, status=status.HTTP_200_OK)
+        data = ProjectSerializer(project, context={"request": request}).data
+        data["message"] = "Cover updated. Video rerender not required."
+        data["render_required"] = False
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class MediaStreamView(APIView):
@@ -3338,7 +3350,7 @@ class ProjectSubtitleTrackListView(APIView):
             }
         ]
 
-        can_manage = _can_manage_project(getattr(request, "user", None), project)
+        can_manage = _can_review_project(getattr(request, "user", None), project)
         translated_tracks = TranslatedSubtitleTrack.objects.filter(project=project).select_related("job").order_by("language_code", "id")
         if not can_manage:
             translated_tracks = translated_tracks.filter(status__in=["pending", "processing", "ready", "failed"])
@@ -3372,7 +3384,7 @@ class ProjectSubtitleTrackListView(APIView):
             project = Project.objects.select_related("user").get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        can_manage = _can_manage_project(getattr(request, "user", None), project)
+        can_manage = _can_review_project(getattr(request, "user", None), project)
         is_public_request = not can_manage
         if is_public_request and not _is_published_playable_lesson(project):
             return Response({"error": "Lesson not available."}, status=status.HTTP_404_NOT_FOUND)
@@ -3797,8 +3809,6 @@ def _get_voice_id(user):
 def _is_verified_teacher(user: User | None) -> bool:
     if user is None:
         return False
-    if user.is_staff or user.is_superuser:
-        return True
     profile = getattr(user, "profile", None)
     return bool(profile and profile.role in {"teacher", "publisher"})
 
@@ -3811,21 +3821,46 @@ def _is_staff_user(user) -> bool:
     return bool(user and (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)))
 
 
-def _can_manage_project(user, project: Project) -> bool:
-    """Teacher pipeline access: staff/admin or the authenticated project owner."""
+def _studio_superuser_editor_override_enabled() -> bool:
+    return bool(getattr(settings, "STUDIO_SUPERUSER_EDITOR_OVERRIDE_ENABLED", False))
+
+
+def _is_project_owner(user, project: Project) -> bool:
+    return bool(
+        _is_authenticated_user(user)
+        and project.user_id
+        and int(project.user_id) == int(user.id)
+    )
+
+
+def _can_edit_project(user, project: Project) -> bool:
+    """Studio editor access: owner by default, superuser only with explicit override."""
     if not _is_authenticated_user(user):
         return False
-    if _is_staff_user(user):
+    if _is_project_owner(user, project):
         return True
-    return bool(project.user_id and int(project.user_id) == int(user.id))
+    return bool(
+        getattr(user, "is_superuser", False)
+        and _studio_superuser_editor_override_enabled()
+    )
+
+
+def _can_review_project(user, project: Project) -> bool:
+    """Read-only owner/staff access for watch/review surfaces."""
+    if not _is_authenticated_user(user):
+        return False
+    return _is_project_owner(user, project) or _is_staff_user(user)
+
+
+def _can_manage_project(user, project: Project) -> bool:
+    """Backward-compatible alias for editable Studio ownership checks."""
+    return _can_edit_project(user, project)
 
 
 def _can_run_lesson_intelligence(user, project: Project) -> bool:
     if not _is_authenticated_user(user):
         return False
-    if _is_staff_user(user):
-        return True
-    if not project.user_id or int(project.user_id) != int(user.id):
+    if not _can_edit_project(user, project):
         return False
     profile = getattr(user, "profile", None)
     return bool(profile and profile.role in {"teacher", "publisher"})
@@ -3859,7 +3894,7 @@ def _is_public_lesson(project: Project) -> bool:
     """True only for catalog-visible lessons: published + render done + moderation approved.
 
     This governs public/anonymous access (catalog, social endpoints, playback token).
-    Owner/staff access is always gated by _can_manage_project(), not this function.
+    Owner/staff access is always gated by _can_review_project(), not this function.
     """
     if hasattr(project, "is_published") and not bool(getattr(project, "is_published", False)):
         return False
@@ -3908,7 +3943,7 @@ def _can_access_subtitle_tracks(request, project: Project) -> bool:
 def _can_access_lesson_playback(request, project: Project) -> bool:
     if _is_public_lesson(project):
         return True
-    return _can_manage_project(getattr(request, "user", None), project)
+    return _can_review_project(getattr(request, "user", None), project)
 
 
 def _translation_target_languages() -> list[str]:
@@ -4797,10 +4832,7 @@ class ProjectUploadView(APIView):
     def get(self, request):
         if not _is_verified_teacher(request.user):
             return Response({"error": "Only verified teacher accounts can access projects."}, status=status.HTTP_403_FORBIDDEN)
-        if _is_staff_user(request.user):
-            projects = Project.objects.all().order_by("-created_at")
-        else:
-            projects = Project.objects.filter(user=request.user).order_by("-created_at")
+        projects = Project.objects.filter(user=request.user).order_by("-created_at")
         return Response(ProjectSerializer(projects, many=True, context={"request": request}).data)
 
     def post(self, request):
@@ -5000,6 +5032,7 @@ class ProjectDetailView(APIView):
             if draft_only and not (has_category_id or has_category_name or has_avatar_enabled or has_avatar_placement or has_avatar_runtime_settings or has_is_published):
                 draft_data = ensure_project_draft_data(project)
                 draft_data.setdefault("project", {})["tts_settings"] = updates["tts_settings"]
+                mark_draft_dirty(draft_data, tts_dirty=True, render_required=True)
                 save_project_draft_data(project, draft_data, dirty=True)
                 project.refresh_from_db()
                 return Response(ProjectSerializer(project, context={"request": request}).data)
@@ -5163,7 +5196,42 @@ def _dispatch_project_moderation_rescan(project: Project, request, *, phase: str
     )
 
 
-def _mark_project_text_moderation_stale(project: Project, request, *, changed_fields: set[str]) -> None:
+def _changed_transcript_content_hash(project: Project, changed_page_keys: set[str] | list[str] | None = None) -> str:
+    keys = {str(key) for key in (changed_page_keys or []) if str(key)}
+    pages = _active_transcript_pages(project)
+    if keys:
+        pages = pages.filter(page_key__in=keys)
+    chunks = [
+        f"{page.page_key}:{page.original_text or ''}:{page.narration_text or ''}"
+        for page in pages.order_by("order", "id")
+    ]
+    return hashlib.sha256("\n".join(chunks).encode("utf-8")).hexdigest()
+
+
+def _storage_asset_state_hash(asset_path: str) -> str:
+    rel_path = _normalize_rel_storage_path(asset_path)
+    if not rel_path:
+        return ""
+    try:
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        full_path = _resolve_storage_file(storage_root, rel_path)
+        if full_path is None:
+            full_path = Path(asset_path)
+        if not full_path.exists() or not full_path.is_file():
+            return ""
+        stat = full_path.stat()
+        return hashlib.sha256(f"{rel_path}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _mark_project_text_moderation_stale(
+    project: Project,
+    request,
+    *,
+    changed_fields: set[str],
+    changed_page_keys: set[str] | list[str] | None = None,
+) -> None:
     if not changed_fields:
         return
     phase = "studio_text_edit"
@@ -5186,6 +5254,8 @@ def _mark_project_text_moderation_stale(project: Project, request, *, changed_fi
                 "needs_rescan": not auto_enabled,
                 "reason": "studio_text_changed",
                 "changed_fields": sorted(changed_fields),
+                "changed_page_keys": sorted({str(key) for key in (changed_page_keys or []) if str(key)}),
+                "content_hash": _changed_transcript_content_hash(project, changed_page_keys),
                 "changed_at": changed_at,
             },
         }
@@ -5249,6 +5319,14 @@ def _mark_project_visual_moderation_stale(
     }
     if asset_path:
         stale_payload["asset_path"] = asset_path
+        asset_hash = _storage_asset_state_hash(asset_path)
+        if asset_hash:
+            if asset_type == "cover":
+                stale_payload["cover_hash"] = asset_hash
+            else:
+                stale_payload["slide_image_hashes"] = {
+                    str(getattr(page, "page_key", "") or "asset"): asset_hash,
+                }
     if page is not None:
         stale_payload.update(
             {
@@ -5936,19 +6014,22 @@ class ProjectTranscriptView(APIView):
 
         if draft_only or draft_rerender:
             draft_data, changed_page_keys = _apply_transcript_draft_updates(project, updates)
+            if changed_page_keys:
+                mark_draft_dirty(draft_data, transcript_dirty=True, render_required=True)
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
             rerender_job = None
             if draft_rerender:
-                rerender_job = _queue_transcript_rerender(
-                    project=project,
-                    request=request,
-                    changed_page_keys=changed_page_keys,
-                    pause_sec=pause_sec,
-                    lang_hint=lang_hint,
-                    full_rerender=True,
-                    use_draft=True,
-                )
+                if draft_requires_render(project):
+                    rerender_job = _queue_transcript_rerender(
+                        project=project,
+                        request=request,
+                        changed_page_keys=changed_page_keys,
+                        pause_sec=pause_sec,
+                        lang_hint=lang_hint,
+                        full_rerender=True,
+                        use_draft=True,
+                    )
             payload = {
                 **_studio_transcript_response_payload(project, request),
                 **_project_moderation_state_payload(project),
@@ -5957,6 +6038,10 @@ class ProjectTranscriptView(APIView):
             if rerender_job:
                 payload["rerender_job"] = rerender_job
                 payload["rerender_strategy"] = "draft_full"
+            elif draft_rerender:
+                payload["rerender_job"] = None
+                payload["rerender_strategy"] = "none"
+                payload["message"] = "Video rerender not required."
             if changed_page_keys:
                 payload["intelligence_auto_scheduled"] = _queue_lesson_intelligence_schedule(
                     project.id,
@@ -6085,7 +6170,12 @@ class ProjectTranscriptView(APIView):
 
         if moderation_changed_fields:
             project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
-            _mark_project_text_moderation_stale(project, request, changed_fields=moderation_changed_fields)
+            _mark_project_text_moderation_stale(
+                project,
+                request,
+                changed_fields=moderation_changed_fields,
+                changed_page_keys=changed_page_keys,
+            )
             project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
 
         payload = {
@@ -7196,6 +7286,8 @@ class ProjectTranscriptActionView(APIView):
                 with transaction.atomic():
                     project = Project.objects.select_for_update().get(pk=project.id)
                     draft_data, changed_page_keys = _apply_transcript_draft_action(project, action, request.data)
+                    if changed_page_keys:
+                        mark_draft_dirty(draft_data, transcript_dirty=True, render_required=True)
                     save_project_draft_data(project, draft_data, dirty=True)
             except TranscriptActionError as exc:
                 return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -7204,17 +7296,18 @@ class ProjectTranscriptActionView(APIView):
             rerender_job = None
             rerender_strategy = "none"
             if draft_rerender:
-                rerender_job = _queue_transcript_rerender(
-                    project=project,
-                    request=request,
-                    changed_page_keys=changed_page_keys,
-                    pause_sec=pause_sec,
-                    lang_hint=lang_hint,
-                    full_rerender=True,
-                    use_draft=True,
-                )
-                if rerender_job:
-                    rerender_strategy = "draft_full"
+                if draft_requires_render(project):
+                    rerender_job = _queue_transcript_rerender(
+                        project=project,
+                        request=request,
+                        changed_page_keys=changed_page_keys,
+                        pause_sec=pause_sec,
+                        lang_hint=lang_hint,
+                        full_rerender=True,
+                        use_draft=True,
+                    )
+                    if rerender_job:
+                        rerender_strategy = "draft_full"
             payload = {
                 "project_id": project.id,
                 "action": action,
@@ -7259,6 +7352,7 @@ class ProjectTranscriptActionView(APIView):
                 project,
                 request,
                 changed_fields={"original_text", "narration_text"} if action.startswith("merge") else {"narration_text"},
+                changed_page_keys=changed_page_keys,
             )
 
         # Structural actions can change sequence membership/order, so action-triggered rerender is full-project.
@@ -7397,9 +7491,12 @@ class TranscriptPageSceneView(APIView):
             scene.pop("highlight", None)
             _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
             _set_draft_page_scene(draft_page, scene)
-            metadata = draft_data.setdefault("metadata", {})
-            metadata["background_dirty"] = True
-            metadata["visual_assets_dirty"] = True
+            mark_draft_dirty(
+                draft_data,
+                background_dirty=True,
+                visual_assets_dirty=True,
+                render_required=True,
+            )
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
             return Response(
@@ -7614,8 +7711,7 @@ class TranscriptPageHighlightPreviewView(APIView):
             target = _draft_page_for_ref(draft_data, page_token)
             if target is not None:
                 _set_draft_page_scene(target, scene)
-            metadata = draft_data.setdefault("metadata", {})
-            metadata["background_dirty"] = True
+            mark_draft_dirty(draft_data, background_dirty=True, render_required=True)
             save_project_draft_data(project, draft_data, dirty=True)
             page_payload = _draft_page_response(project, target or draft_page, request)
         else:
@@ -7755,9 +7851,12 @@ class TranscriptPageBackgroundUploadView(APIView):
             scene["background_fit"] = _clean_scene_fit(request.data.get("background_fit"), fallback=scene.get("background_fit", "contain"))
             scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
             _set_draft_page_scene(draft_page, scene)
-            metadata = draft_data.setdefault("metadata", {})
-            metadata["background_dirty"] = True
-            metadata["visual_assets_dirty"] = True
+            mark_draft_dirty(
+                draft_data,
+                background_dirty=True,
+                visual_assets_dirty=True,
+                render_required=True,
+            )
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
             return Response(
@@ -7892,9 +7991,12 @@ class ProjectBackgroundApplyAllView(APIView):
                 if "text_scale" in request.data:
                     scene["text_scale"] = _clean_scene_text_scale(request.data.get("text_scale"), fallback=scene.get("text_scale", 1.0))
                 _set_draft_page_scene(draft_page, scene)
-            metadata = draft_data.setdefault("metadata", {})
-            metadata["background_dirty"] = True
-            metadata["visual_assets_dirty"] = True
+            mark_draft_dirty(
+                draft_data,
+                background_dirty=True,
+                visual_assets_dirty=True,
+                render_required=True,
+            )
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
             return Response(
@@ -7975,6 +8077,15 @@ class ProjectRerenderView(APIView):
             pause_sec = 2.2
 
         use_draft = has_dirty_draft(project)
+        if use_draft and not draft_requires_render(project):
+            promote_project_draft(project)
+            project.refresh_from_db()
+            data = ProjectSerializer(project, context={"request": request}).data
+            data["rerender_job"] = None
+            data["rerender_strategy"] = "none"
+            data["message"] = "Cover updated. Video rerender not required."
+            return Response(data, status=status.HTTP_200_OK)
+
         job = Job.objects.create(project=project, job_type="video_export", status="pending")
         avatar_options = _resolve_avatar_options_for_project(project, request)
         avatar_options = {**avatar_options, "base_job_id": job.id}
@@ -10645,6 +10756,7 @@ class CatalogDetailView(APIView):
         data["publisher_display_name"] = _publisher_public_lesson_display_name(project.user) if project.user else ""
         data["publisher_logo_url"] = _publisher_public_logo_url(request, project.user)
         data["publisher_avatar_url"] = data["publisher_logo_url"]
+        data["publisher_initials"] = _publisher_initials(project.user) if project.user else ""
         data["publisher_follower_count"] = (
             PublisherFollow.objects.filter(publisher=project.user).count()
             if project.user_id
@@ -10868,14 +10980,25 @@ def _is_public_publisher_user(user) -> bool:
 def _publisher_display_name(user) -> str:
     profile = _safe_user_profile(user)
     custom_name = str(getattr(profile, "display_name", "") or "").strip()
-    return custom_name or user.get_full_name() or user.username
+    full_name = str(user.get_full_name() or "").strip()
+    username = str(getattr(user, "username", "") or "").strip()
+    email_prefix = str(getattr(user, "email", "") or "").split("@", 1)[0].strip()
+    return custom_name or full_name or username or email_prefix
 
 
 def _publisher_public_lesson_display_name(user) -> str:
-    profile = _safe_user_profile(user)
-    if profile and getattr(profile, "is_public_profile", False):
-        return _publisher_display_name(user)
-    return user.get_full_name() or user.username
+    return _publisher_display_name(user)
+
+
+def _publisher_initials(user) -> str:
+    display_name = _publisher_display_name(user)
+    parts = [part for part in re.split(r"\s+", display_name.strip()) if part]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[-1][0]).upper()
+    if parts:
+        return parts[0][:2].upper()
+    email_prefix = str(getattr(user, "email", "") or "").split("@", 1)[0].strip()
+    return (email_prefix[:2] or "U").upper()
 
 
 def _can_view_publisher_profile(request, publisher) -> bool:
@@ -10899,16 +11022,14 @@ def _can_access_publisher_channel(request, publisher) -> bool:
 
 def _publisher_public_logo_url(request, publisher) -> str:
     profile = _safe_user_profile(publisher)
-    if not profile or not getattr(profile, "is_public_profile", False):
-        return ""
-    if not getattr(profile, "logo_image_processed", ""):
-        return ""
-    return _profile_asset_url_for_request(
-        request,
-        publisher.id,
-        "logo",
-        _profile_asset_version(profile),
-    )
+    if profile and getattr(profile, "is_public_profile", False) and getattr(profile, "logo_image_processed", ""):
+        return _profile_asset_url_for_request(
+            request,
+            publisher.id,
+            "logo",
+            _profile_asset_version(profile),
+        )
+    return _get_google_profile_picture(publisher)
 
 
 def _public_publisher_projects(publisher):
@@ -10917,7 +11038,7 @@ def _public_publisher_projects(publisher):
             user=publisher,
             is_published=True,
             status="ready",
-            moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+            moderation_status__in=APPROVED_MODERATION_STATUSES,
             jobs__status="done",
         )
         .exclude(moderation_status__in=["admin_rejected", "revision_required"])
@@ -10933,7 +11054,7 @@ def _public_playlist_items_queryset(queryset=None):
         base.filter(
             project__is_published=True,
             project__status="ready",
-            project__moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+            project__moderation_status__in=APPROVED_MODERATION_STATUSES,
             project__jobs__status="done",
         )
         .exclude(project__moderation_status__in=["admin_rejected", "revision_required"])
@@ -10965,6 +11086,8 @@ def _playlist_context_publisher_payload(user) -> dict[str, Any] | None:
         "id": user.id,
         "username": user.username,
         "display_name": _publisher_public_lesson_display_name(user),
+        "photo_url": _publisher_public_logo_url(None, user),
+        "initials": _publisher_initials(user),
     }
 
 
@@ -11021,7 +11144,7 @@ class CatalogPlaylistContextView(APIView):
             return Response({"error": "Lesson not found."}, status=status.HTTP_404_NOT_FOUND)
 
         lesson_is_public = _is_public_lesson(project)
-        can_manage = _can_manage_project(getattr(request, "user", None), project)
+        can_manage = _can_review_project(getattr(request, "user", None), project)
         if not lesson_is_public and not can_manage:
             return Response({"error": "Lesson not found."}, status=status.HTTP_404_NOT_FOUND)
         if not lesson_is_public and not _project_has_completed_render(project):
@@ -11077,6 +11200,8 @@ def _publisher_profile_payload(publisher, request, *, latest_limit: int = 0) -> 
         banner_url = _profile_asset_url_for_request(request, publisher.id, "banner", asset_version)
     if details_visible and profile and getattr(profile, "logo_image_processed", ""):
         logo_url = _profile_asset_url_for_request(request, publisher.id, "logo", asset_version)
+    if not logo_url:
+        logo_url = _get_google_profile_picture(publisher)
     payload = {
         "id": publisher.id,
         "username": publisher.username,
@@ -11084,7 +11209,8 @@ def _publisher_profile_payload(publisher, request, *, latest_limit: int = 0) -> 
         "bio": (getattr(profile, "bio", "") or "") if details_visible else "",
         "banner_url": banner_url,
         "logo_url": logo_url,
-        "avatar_url": "",
+        "avatar_url": logo_url,
+        "initials": _publisher_initials(publisher),
         "website_url": (getattr(profile, "website_url", "") or "") if details_visible else "",
         "contact_email": (getattr(profile, "contact_email", "") or "") if details_visible else "",
         "social_links": (

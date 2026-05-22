@@ -377,8 +377,8 @@ function WatchStudyPanel({
   );
 }
 
-function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, followerCount }) {
-  const initial = String(publisherName || 'V').trim().charAt(0).toUpperCase() || 'V';
+function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, publisherInitials, followerCount }) {
+  const initial = String(publisherInitials || publisherName || 'V').trim().slice(0, 2).toUpperCase() || 'V';
   const avatar = publisherAvatarUrl ? (
     <img
       src={publisherAvatarUrl}
@@ -897,6 +897,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const commentCount = Math.max(0, Number(lesson?.comment_count || 0), comments.length);
   const publisherId = Number(lesson?.publisher_id || lesson?.teacher_id || lesson?.teacherId || 0) || null;
   const publisherName = lesson?.publisher_display_name || lesson?.teacher_name || lesson?.teacherName || 'VISUS Instructor';
+  const publisherInitials = lesson?.publisher_initials || '';
   const publisherAvatarUrl = (
     lesson?.publisher_logo_url
     || lesson?.publisher?.logo_url
@@ -1333,6 +1334,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                             publisherId={publisherId}
                             publisherName={publisherName}
                             publisherAvatarUrl={publisherAvatarUrl}
+                            publisherInitials={publisherInitials}
                             followerCount={publisherFollowerCount}
                           />
                         </div>
@@ -1526,7 +1528,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                       visibleComments.map((comment) => (
                         <article key={comment.id} className="rounded-xl bg-[var(--surface-container-high)] p-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="text-sm font-semibold text-[var(--text-primary)]">{comment.username || 'Viewer'}</p>
+                            <p className="text-sm font-semibold text-[var(--text-primary)]">{comment.display_name || comment.username || 'Viewer'}</p>
                             {comment.created_at && (
                               <span className="text-xs text-[var(--text-secondary)]">{formatCommentDate(comment.created_at)}</span>
                             )}
