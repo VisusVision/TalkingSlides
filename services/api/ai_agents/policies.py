@@ -19,11 +19,22 @@ Key rules
 BLOCKED_MODERATION_STATUSES = frozenset({
     "admin_rejected",
     "revision_required",
+    "needs_admin_review",
+    "failed",
+    "not_scanned",
+    "not_scanned_required",
+    "pending",
+    "processing",
+    "running",
 })
 
 # Moderation statuses accepted for the *public catalog* filter.
 # The catalog applies a stricter rule: only positively-approved lessons appear.
 APPROVED_MODERATION_STATUSES = frozenset({"approved", "admin_approved"})
+PROCESSING_MODERATION_STATUSES = frozenset({"pending", "processing", "running"})
+UNSCANNED_REQUIRED_MODERATION_STATUSES = frozenset({"not_scanned", "not_scanned_required"})
+MANUAL_PUBLICATION_BLOCK_STATUSES = frozenset({"blocked", "rejected", "request_changes", "needs_review"})
+MANUAL_STICKY_RESCAN_BLOCK_STATUSES = frozenset({"blocked", "rejected", "needs_review"})
 
 # The render status that means a video is ready to publish.
 PUBLISHABLE_PROJECT_STATUS = "ready"
@@ -52,13 +63,51 @@ def project_can_publish(project) -> bool:
     """
     render_ready = str(getattr(project, "status", "") or "") == PUBLISHABLE_PROJECT_STATUS
     moderation = str(getattr(project, "moderation_status", "") or "")
-    moderation_blocked = moderation in BLOCKED_MODERATION_STATUSES
-    return (
-        render_ready
-        and not moderation_blocked
-        and not visual_moderation_blocks_publish(project)
-        and not video_frame_audit_blocks_publish(project)
+    if not render_ready:
+        return False
+    if moderation not in APPROVED_MODERATION_STATUSES:
+        return False
+    if manual_moderation_blocks_publish(project):
+        return False
+    if project_has_unresolved_publication_block(project):
+        return False
+    if moderation == "admin_approved":
+        return True
+    return not visual_moderation_blocks_publish(project) and not video_frame_audit_blocks_publish(project)
+
+
+def manual_moderation_blocks_publish(project) -> bool:
+    manual_status = str(getattr(project, "manual_moderation_status", "") or "")
+    return bool(
+        getattr(project, "moderation_blocked_until_review", False)
+        or manual_status in MANUAL_PUBLICATION_BLOCK_STATUSES
     )
+
+
+def publisher_changed_after_manual_decision(project) -> bool:
+    manual_at = getattr(project, "manual_moderation_at", None)
+    changed_at = getattr(project, "latest_publisher_change_at", None)
+    return bool(manual_at and changed_at and changed_at > manual_at)
+
+
+def manual_moderation_prevents_auto_override(project) -> bool:
+    manual_status = str(getattr(project, "manual_moderation_status", "") or "")
+    if manual_status in MANUAL_STICKY_RESCAN_BLOCK_STATUSES and manual_moderation_blocks_publish(project):
+        return True
+    if manual_status == "request_changes" and manual_moderation_blocks_publish(project):
+        return not publisher_changed_after_manual_decision(project)
+    return False
+
+
+def project_has_unresolved_publication_block(project) -> bool:
+    if str(getattr(project, "moderation_status", "") or "") == "admin_approved":
+        return False
+    project_id = getattr(project, "pk", None)
+    if not project_id:
+        return False
+    from ai_agents.models import PublicationBlockEvent
+
+    return PublicationBlockEvent.objects.filter(project_id=project_id, resolved=False).exists()
 
 
 def visual_moderation_blocks_publish(project) -> bool:
@@ -166,13 +215,49 @@ def publication_block_payload(project) -> dict:
             "render_status": render_status,
         }
 
-    if moderation in BLOCKED_MODERATION_STATUSES:
+    if manual_moderation_blocks_publish(project):
+        note = str(getattr(project, "manual_moderation_reason", "") or "").strip()
+        return {
+            "detail": note or "Publish blocked by moderation. Update the lesson and request review.",
+            "reason": "manual_moderation_block",
+            "moderation_status": moderation,
+            "manual_moderation_status": str(getattr(project, "manual_moderation_status", "") or ""),
+            "render_status": render_status,
+        }
+
+    if moderation in PROCESSING_MODERATION_STATUSES:
+        return {
+            "detail": "Moderation in progress. Publishing is temporarily blocked.",
+            "reason": "moderation_processing",
+            "moderation_status": moderation,
+            "render_status": render_status,
+        }
+
+    if moderation in UNSCANNED_REQUIRED_MODERATION_STATUSES:
+        return {
+            "detail": "This lesson must pass moderation before publishing.",
+            "reason": "moderation_required",
+            "moderation_status": moderation,
+            "render_status": render_status,
+        }
+
+    if moderation not in APPROVED_MODERATION_STATUSES:
         return {
             "detail": (
-                "This lesson cannot be published because it was rejected by moderation. "
+                "This lesson cannot be published because moderation has not approved it. "
                 "Please revise the content or request an admin review."
             ),
             "reason": "moderation_rejected",
+            "moderation_status": moderation,
+            "render_status": render_status,
+        }
+
+    if project_has_unresolved_publication_block(project):
+        latest_block = _latest_unresolved_publication_block(project)
+        return {
+            "detail": str(getattr(latest_block, "message_to_user", "") or "").strip()
+            or "This lesson cannot be published until moderation blockers are cleared.",
+            "reason": "publication_block",
             "moderation_status": moderation,
             "render_status": render_status,
         }
@@ -211,6 +296,15 @@ def publication_block_payload(project) -> dict:
         "moderation_status": moderation,
         "render_status": render_status,
     }
+
+
+def _latest_unresolved_publication_block(project):
+    project_id = getattr(project, "pk", None)
+    if not project_id:
+        return None
+    from ai_agents.models import PublicationBlockEvent
+
+    return PublicationBlockEvent.objects.filter(project_id=project_id, resolved=False).order_by("-created_at", "-id").first()
 
 
 def _visual_publish_gate_enabled() -> bool:

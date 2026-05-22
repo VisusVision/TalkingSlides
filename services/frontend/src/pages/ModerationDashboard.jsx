@@ -10,11 +10,15 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
+  adminApproveLesson,
+  adminBlockLesson,
   adminRequestLessonChanges,
   approveModerationReviewRequest,
   getModerationReviewRequest,
+  listModerationReports,
   listModerationReviewRequests,
   rejectModerationReviewRequest,
+  runAdminProjectModerationAction,
 } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
@@ -23,15 +27,35 @@ function normalizeReviewRequests(payload) {
   return Array.isArray(payload) ? payload : payload?.results || [];
 }
 
+function normalizeReports(payload) {
+  const reports = Array.isArray(payload) ? payload : payload?.results || [];
+  return reports.map((report) => ({
+    ...report,
+    id: `report-${report.id}`,
+    report_id: report.id,
+    source_type: 'report',
+    project_id: report.project_id,
+    project_title: report.project_title,
+    requested_by_username: report.reporter_username,
+    publisher_username: report.publisher_username,
+    status: report.status,
+    moderation_status: 'user_report',
+    publisher_message: `User report: ${report.category_label || report.category || 'Report'}${report.message ? `. ${report.message}` : ''}`,
+    created_at: report.created_at,
+  }));
+}
+
 function isOpenReview(review) {
   return String(review?.status || '').trim().toLowerCase() === 'open';
 }
 
 const REVIEW_STATUS_TABS = [
-  { key: 'open', label: 'Open', countLabel: 'open' },
-  { key: 'approved', label: 'Approved', countLabel: 'approved' },
-  { key: 'rejected', label: 'Rejected', countLabel: 'rejected' },
-  { key: 'all', label: 'All history', countLabel: 'total' },
+  { key: 'reports', label: 'Reports / User reports', countLabel: 'reports' },
+  { key: 'needs_review', label: 'Needs review', countLabel: 'items' },
+  { key: 'auto_rejected', label: 'Automatically rejected', countLabel: 'items' },
+  { key: 'rejected_blocked', label: 'Rejected / blocked', countLabel: 'items' },
+  { key: 'request_changes', label: 'Request changes', countLabel: 'items' },
+  { key: 'approved_resolved', label: 'Approved / resolved', countLabel: 'items' },
 ];
 
 function findingLocationLabel(finding) {
@@ -89,7 +113,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
   const [actionBusy, setActionBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [activeStatus, setActiveStatus] = useState('open');
+  const [activeStatus, setActiveStatus] = useState('reports');
   const [pendingDecision, setPendingDecision] = useState(null);
 
   const activeTab = useMemo(
@@ -102,7 +126,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     const q = searchQuery.toLowerCase();
     return reviewRequests.filter((review) => {
       const title = String(review.project_title || `Project #${review.project_id}`).toLowerCase();
-      const publisher = String(review.requested_by_username || '').toLowerCase();
+      const publisher = String(review.publisher_username || review.requested_by_username || '').toLowerCase();
       const status = String(review.status || '').toLowerCase();
       const message = String(review.publisher_message || '').toLowerCase();
       const idStr = String(review.id);
@@ -123,8 +147,13 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     setLoading(true);
     setError('');
     try {
-      const payload = await listModerationReviewRequests(activeStatus);
-      setReviewRequests(normalizeReviewRequests(payload));
+      if (activeStatus === 'reports') {
+        const payload = await listModerationReports('open');
+        setReviewRequests(normalizeReports(payload));
+      } else {
+        const payload = await listModerationReviewRequests({ queue: activeStatus });
+        setReviewRequests(normalizeReviewRequests(payload));
+      }
     } catch (reviewError) {
       setReviewRequests([]);
       setError(reviewError.message || 'Could not load moderation review requests.');
@@ -144,6 +173,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     setError('');
 
     if (!nextExpanded || detailsById[review.id]) return;
+    if (review.source_type !== 'review_request') return;
 
     setDetailLoadingId(review.id);
     try {
@@ -169,21 +199,27 @@ export default function ModerationDashboard({ searchQuery = '' }) {
   }, []);
 
   const handleDecision = async (review, decision, detail = null) => {
-    if (!review?.id) return;
+    if (!review?.project_id) return;
     const key = `${decision}-${review.id}`;
     setActionBusy(key);
     setError('');
     setNotice('');
     try {
       const response = draftAdminResponse(responsesById, review, detail);
-      const payload = decision === 'approve'
-        ? await approveModerationReviewRequest(review.id, response)
-        : await rejectModerationReviewRequest(review.id, response);
-      mergeReviewPayload(payload);
-      if (decision === 'approve') {
-        setNotice('Review request approved.');
+      if (review.source_type === 'review_request') {
+        const payload = decision === 'approve'
+          ? await approveModerationReviewRequest(review.id, response)
+          : await rejectModerationReviewRequest(review.id, response);
+        mergeReviewPayload(payload);
+      } else if (decision === 'approve') {
+        await adminApproveLesson(review.project_id, response);
       } else {
-        setNotice('Review request rejected.');
+        await adminBlockLesson(review.project_id, response);
+      }
+      if (decision === 'approve') {
+        setNotice('Lesson approved.');
+      } else {
+        setNotice('Lesson blocked.');
       }
       setPendingDecision(null);
       await loadReviewRequests();
@@ -204,12 +240,30 @@ export default function ModerationDashboard({ searchQuery = '' }) {
       const response = draftAdminResponse(responsesById, review, detail);
       const payload = await adminRequestLessonChanges(review.project_id, {
         reason: response,
-        unpublish: false,
+        unpublish: true,
       });
       setNotice(payload?.message || 'Moderation action saved.');
       await loadReviewRequests();
     } catch (actionError) {
       setError(actionError.message || 'Could not update moderation state.');
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  const handleRescan = async (review, detail = null) => {
+    if (!review?.project_id) return;
+    const key = `rescan-${review.id}`;
+    setActionBusy(key);
+    setError('');
+    setNotice('');
+    try {
+      const response = draftAdminResponse(responsesById, review, detail);
+      await runAdminProjectModerationAction(review.project_id, 'rescan', response, 'manual_admin_rescan');
+      setNotice('Moderation rescan started.');
+      await loadReviewRequests();
+    } catch (actionError) {
+      setError(actionError.message || 'Could not start moderation rescan.');
     } finally {
       setActionBusy('');
     }
@@ -260,7 +314,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
           <div>
             <p className="label-sm">{activeTab.label}</p>
             <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">
-              Review Requests
+              Moderation queue
             </h2>
           </div>
           <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
@@ -318,7 +372,11 @@ export default function ModerationDashboard({ searchQuery = '' }) {
               const approveBusy = actionBusy === `approve-${review.id}`;
               const rejectBusy = actionBusy === `reject-${review.id}`;
               const requestChangesBusy = actionBusy === `request_changes-${review.id}`;
-              const canReview = isOpenReview(review);
+              const rescanBusy = actionBusy === `rescan-${review.id}`;
+              const canReview = activeStatus !== 'approved_resolved' && (isOpenReview(review) || review.source_type !== 'review_request');
+              const rescanRelevant = ['auto_rejected', 'request_changes'].includes(activeStatus);
+              const rejectLabel = activeStatus === 'auto_rejected' ? 'Keep blocked' : 'Reject / Block';
+              const approveLabel = activeStatus === 'rejected_blocked' ? 'Unreject / Approve' : activeStatus === 'auto_rejected' ? 'Approve override' : 'Approve';
 
               return (
                 <article key={review.id} className="rounded-2xl token-surface p-4">
@@ -333,7 +391,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                        Project #{review.project_id} - requested by {review.requested_by_username || 'publisher'} - {review.moderation_status || 'moderation pending'}
+                        Project #{review.project_id} - publisher {review.publisher_username || 'unknown'} - {review.moderation_status || 'moderation pending'}
                       </p>
                       {!canReview && (
                         <p className="mt-1 text-xs text-[var(--text-secondary)]">
@@ -357,11 +415,11 @@ export default function ModerationDashboard({ searchQuery = '' }) {
 
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Link
-                      to={`/watch?lesson=${review.project_id}&review=1`}
+                      to={`/studio?lesson=${review.project_id}&review=1`}
                       className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
                     >
                       <ExternalLink size={14} />
-                      <span>Review lesson</span>
+                      <span>Open read-only review</span>
                     </Link>
                     <Button size="sm" variant="secondary" onClick={() => handleToggleDetail(review)} disabled={detailLoadingId === review.id}>
                       <ChevronDown size={14} className={expanded ? 'rotate-180 transition' : 'transition'} />
@@ -458,15 +516,26 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                             disabled={Boolean(actionBusy)}
                           >
                             <XCircle size={14} />
-                            <span>{rejectBusy ? 'Blocking...' : 'Reject / Block'}</span>
+                            <span>{rejectBusy ? 'Blocking...' : rejectLabel}</span>
                           </Button>
+                          {rescanRelevant && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => handleRescan(review, detail)}
+                              disabled={Boolean(actionBusy)}
+                            >
+                              <RefreshCcw size={14} />
+                              <span>{rescanBusy ? 'Starting...' : 'Rescan'}</span>
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             onClick={() => requestDecision(review, 'approve', detail)}
                             disabled={Boolean(actionBusy)}
                           >
                             <CheckCircle2 size={14} />
-                            <span>{approveBusy ? 'Approving...' : 'Approve'}</span>
+                            <span>{approveBusy ? 'Approving...' : approveLabel}</span>
                           </Button>
                         </div>
                       </div>

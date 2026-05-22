@@ -19,7 +19,8 @@ import requests
 
 try:
     from tts_preprocess import clean_text_for_tts, prepare_text_for_tts
-except ModuleNotFoundError:
+except (ModuleNotFoundError, ImportError):
+    sys.modules.pop("tts_preprocess", None)
     _TTS_ROOT = Path(__file__).resolve().parents[1] / "tts_service"
     if _TTS_ROOT.exists() and str(_TTS_ROOT) not in sys.path:
         sys.path.insert(0, str(_TTS_ROOT))

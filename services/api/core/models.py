@@ -194,6 +194,14 @@ class Project(models.Model):
         ("admin_rejected", "Admin rejected"),
         ("failed", "Failed"),
     ]
+    MANUAL_MODERATION_STATUS_CHOICES = [
+        ("", "No manual decision"),
+        ("approved", "Approved"),
+        ("blocked", "Blocked"),
+        ("rejected", "Rejected"),
+        ("request_changes", "Request changes"),
+        ("needs_review", "Needs review"),
+    ]
     AVATAR_PROCESSING_STATUS_CHOICES = [
         ("none", "None"),
         ("queued", "Queued"),
@@ -229,6 +237,25 @@ class Project(models.Model):
     )
     moderation_summary = models.JSONField(default=dict, blank=True)
     last_moderation_run_id = models.PositiveIntegerField(null=True, blank=True)
+    manual_moderation_status = models.CharField(
+        max_length=30,
+        choices=MANUAL_MODERATION_STATUS_CHOICES,
+        blank=True,
+        default="",
+        db_index=True,
+    )
+    manual_moderation_reason = models.TextField(blank=True)
+    manual_moderation_by = models.ForeignKey(
+        User,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="manual_moderation_decisions",
+    )
+    manual_moderation_at = models.DateTimeField(null=True, blank=True)
+    moderation_blocked_until_review = models.BooleanField(default=False, db_index=True)
+    latest_publisher_change_at = models.DateTimeField(null=True, blank=True)
+    latest_review_requested_at = models.DateTimeField(null=True, blank=True)
     avatar_enabled_override = models.BooleanField(null=True, blank=True)
     avatar_processing_status = models.CharField(
         max_length=20,
@@ -644,6 +671,10 @@ class Notification(models.Model):
         PUBLISHER_AVATAR_RENDER_FAILED = (
             "publisher_avatar_render_failed",
             "Avatar render failed",
+        )
+        PUBLISHER_LESSON_MODERATION_ACTION = (
+            "publisher_lesson_moderation_action",
+            "Lesson moderation action",
         )
 
     recipient_user = models.ForeignKey(

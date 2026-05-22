@@ -17,7 +17,7 @@ from core.models import Job, LessonComment, Notification, Project, PublisherFoll
 
 logger = logging.getLogger(__name__)
 
-PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved", "not_scanned"}
+PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved"}
 SAFE_METADATA_KEYS = {
     "project_id",
     "lesson_id",
@@ -27,6 +27,9 @@ SAFE_METADATA_KEYS = {
     "base_job_id",
     "status",
     "event",
+    "action",
+    "moderation_status",
+    "manual_moderation_status",
     "is_published",
 }
 FRONTEND_ROUTE_PREFIXES = (
@@ -199,6 +202,72 @@ def notify_lesson_commented(comment: LessonComment | int | None) -> Notification
     except Exception:
         logger.warning("Comment notification failed comment=%s", getattr(comment, "pk", comment), exc_info=True)
         return None
+
+
+def notify_publisher_moderation_action(
+    *,
+    project: Project | int | None,
+    actor_user: User | None = None,
+    action: str,
+    reason: str = "",
+    moderation_status: str = "",
+) -> Notification | None:
+    """Notify a publisher about an admin moderation action on their lesson."""
+    try:
+        resolved_project = _instance_or_none(Project, project)
+        if resolved_project is None or resolved_project.user_id is None:
+            return None
+        clean_action = str(action or "").strip()
+        clean_reason = str(reason or "").strip()
+        title, body = _moderation_notification_copy(
+            project=resolved_project,
+            action=clean_action,
+            reason=clean_reason,
+        )
+        return create_notification(
+            recipient_user=resolved_project.user,
+            actor_user=actor_user,
+            event_type=Notification.EventType.PUBLISHER_LESSON_MODERATION_ACTION,
+            project=resolved_project,
+            title=title,
+            body=body,
+            action_url=f"/studio?lesson={resolved_project.id}",
+            metadata={
+                "project_id": resolved_project.id,
+                "lesson_id": resolved_project.id,
+                "action": clean_action,
+                "moderation_status": moderation_status,
+                "manual_moderation_status": clean_action,
+            },
+        )
+    except Exception:
+        logger.warning(
+            "Moderation notification failed project=%s action=%s",
+            getattr(project, "pk", project),
+            action,
+            exc_info=True,
+        )
+        return None
+
+
+def _moderation_notification_copy(*, project: Project, action: str, reason: str) -> tuple[str, str]:
+    title = _display_title(project)
+    if action == "approve":
+        return "Lesson approved", f"{title} was approved by moderation."
+    if action == "request_changes":
+        body = f"An admin requested changes to {title}. Update the lesson and request review."
+        if reason:
+            body = f"{body} Reason: {reason[:240]}"
+        return "Changes requested for your lesson", body
+    if action in {"block", "reject", "rejected"}:
+        body = f"{title} was blocked by moderation and is not publicly visible."
+        if reason:
+            body = f"{body} Reason: {reason[:240]}"
+        return "Lesson blocked by moderation", body
+    body = f"Moderation status changed for {title}."
+    if reason:
+        body = f"{body} Reason: {reason[:240]}"
+    return "Lesson moderation updated", body
 
 
 def actor_id_matches(actor: User | None, recipient: User | None) -> bool:

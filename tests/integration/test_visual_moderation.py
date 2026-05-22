@@ -131,7 +131,7 @@ def test_cover_image_with_mocked_adult_signal_blocks_or_requires_review(monkeypa
     project.refresh_from_db()
     assert result["final_decision"] in {"block", "needs_admin_review"}
     assert project.moderation_status in {"revision_required", "needs_admin_review"}
-    assert project.is_published is False
+    assert project.is_published is True
 
 
 @pytest.mark.django_db
@@ -178,7 +178,7 @@ def test_visual_provider_unavailable_requires_review_not_silent_approval(tmp_pat
     project.refresh_from_db()
     assert result["final_decision"] == "needs_admin_review"
     assert project.moderation_status == "needs_admin_review"
-    assert project.is_published is False
+    assert project.is_published is True
 
 
 @pytest.mark.django_db

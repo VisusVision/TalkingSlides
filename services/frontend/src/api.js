@@ -355,6 +355,15 @@ export async function fetchProjects() {
   return res.json();
 }
 
+export async function fetchProject(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, { headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch project"));
+  }
+  return data;
+}
+
 export async function createProject(formData) {
   const res = await fetch(`${API_BASE_URL}/projects/`, {
     method: "POST",
@@ -563,7 +572,13 @@ export async function listModerationReports(status = "open") {
 
 export async function listModerationReviewRequests(status = "open") {
   const params = new URLSearchParams();
-  if (status) params.set("status", String(status));
+  if (status && typeof status === "object") {
+    Object.entries(status).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+    });
+  } else if (status) {
+    params.set("status", String(status));
+  }
   const query = params.toString();
   const url = query
     ? `${API_BASE_URL}/admin/moderation/review-requests/?${query}`
@@ -654,7 +669,7 @@ export async function adminApproveLesson(projectId, reason = "") {
   return data;
 }
 
-export async function adminRequestLessonChanges(projectId, { reason = "", unpublish = false } = {}) {
+export async function adminRequestLessonChanges(projectId, { reason = "", unpublish = true } = {}) {
   const res = await fetch(`${API_BASE_URL}/moderation/projects/${projectId}/request-changes/`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),

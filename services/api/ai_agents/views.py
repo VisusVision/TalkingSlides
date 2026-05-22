@@ -7,13 +7,14 @@ from datetime import timedelta
 
 from celery import Celery
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ai_agents.models import AdminReviewRequest, ModerationAuditEvent, ModerationReport, PublicationBlockEvent
-from ai_agents.policies import APPROVED_MODERATION_STATUSES
+from ai_agents.policies import APPROVED_MODERATION_STATUSES, manual_moderation_prevents_auto_override
 from ai_agents.serializers import (
     REVIEWABLE_MODERATION_STATUSES,
     AdminProjectModerationActionSerializer,
@@ -24,9 +25,11 @@ from ai_agents.serializers import (
     RescanModerationSerializer,
     admin_review_detail_payload,
     admin_review_list_payload,
+    admin_project_queue_payload,
     moderation_report_payload,
     moderation_summary_payload,
 )
+from core.notifications import notify_publisher_moderation_action
 from core.models import Project
 
 from .permissions import IsStaffUser, can_manage_project_moderation, is_staff_user
@@ -98,6 +101,15 @@ class ProjectModerationAdminReviewRequestView(APIView):
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
         if not can_manage_project_moderation(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+        if manual_moderation_prevents_auto_override(project):
+            return Response(
+                {
+                    "error": "This lesson is blocked by a manual moderation decision. Only an admin can change it.",
+                    "moderation_status": project.moderation_status,
+                    "manual_moderation_status": getattr(project, "manual_moderation_status", ""),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         if project.moderation_status not in REVIEWABLE_MODERATION_STATUSES:
             return Response(
                 {
@@ -115,6 +127,7 @@ class ProjectModerationAdminReviewRequestView(APIView):
         serializer = RequestAdminReviewSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         with transaction.atomic():
+            now = timezone.now()
             review = AdminReviewRequest.objects.create(
                 project=project,
                 run_id=project.last_moderation_run_id,
@@ -123,7 +136,8 @@ class ProjectModerationAdminReviewRequestView(APIView):
                 status="open",
             )
             project.moderation_status = "needs_admin_review"
-            project.save(update_fields=["moderation_status", "updated_at"])
+            project.latest_review_requested_at = now
+            project.save(update_fields=["moderation_status", "latest_review_requested_at", "updated_at"])
 
         return Response(AdminReviewRequestSerializer(review).data, status=status.HTTP_201_CREATED)
 
@@ -259,6 +273,10 @@ class AdminModerationReviewRequestListView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsStaffUser]
 
     def get(self, request):
+        requested_queue = str(request.query_params.get("queue", "") or "").strip().lower()
+        if requested_queue:
+            return _admin_moderation_queue_response(requested_queue)
+
         queryset = (
             AdminReviewRequest.objects.select_related("project", "requested_by", "reviewed_by", "run")
             .all()
@@ -285,6 +303,57 @@ class AdminModerationReviewRequestDetailView(APIView):
         if review is None:
             return Response({"error": "Review request not found."}, status=status.HTTP_404_NOT_FOUND)
         return Response(admin_review_detail_payload(review), status=status.HTTP_200_OK)
+
+
+def _admin_moderation_queue_response(requested_queue: str):
+    allowed_queues = {
+        "needs_review",
+        "auto_rejected",
+        "rejected_blocked",
+        "request_changes",
+        "approved_resolved",
+    }
+    if requested_queue not in allowed_queues:
+        return Response(
+            {"error": "queue must be one of: approved_resolved, auto_rejected, needs_review, rejected_blocked, request_changes."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if requested_queue == "needs_review":
+        queryset = (
+            AdminReviewRequest.objects.select_related("project", "project__user", "requested_by", "reviewed_by", "run")
+            .filter(status="open")
+            .exclude(project__manual_moderation_status="request_changes")
+            .order_by("-created_at", "-id")
+        )
+        return Response([admin_review_list_payload(review) for review in queryset], status=status.HTTP_200_OK)
+
+    projects = Project.objects.select_related("user").all().order_by("-updated_at", "-id")
+    if requested_queue == "auto_rejected":
+        projects = projects.filter(
+            manual_moderation_status="",
+            moderation_status__in=["revision_required", "needs_admin_review"],
+        )
+    elif requested_queue == "rejected_blocked":
+        projects = projects.filter(
+            Q(manual_moderation_status__in=["blocked", "rejected"])
+            | Q(moderation_status="admin_rejected")
+        )
+    elif requested_queue == "request_changes":
+        projects = projects.filter(
+            Q(manual_moderation_status="request_changes")
+            | Q(moderation_status="revision_required", manual_moderation_status="request_changes")
+        )
+    elif requested_queue == "approved_resolved":
+        projects = projects.filter(
+            moderation_status__in=list(APPROVED_MODERATION_STATUSES),
+            moderation_blocked_until_review=False,
+        )
+
+    return Response(
+        [admin_project_queue_payload(project, queue=requested_queue) for project in projects.distinct()[:200]],
+        status=status.HTTP_200_OK,
+    )
 
 
 class AdminModerationReviewRequestApproveView(APIView):
@@ -366,7 +435,7 @@ def _admin_project_action_response(request, *, project_id: int, forced_action: s
         previous_status = str(project.moderation_status or "")
         new_status = previous_status
         message = ""
-        hide_public = False
+        blocks_public = False
         now = timezone.now()
 
         summary = project.moderation_summary if isinstance(project.moderation_summary, dict) else {}
@@ -380,17 +449,17 @@ def _admin_project_action_response(request, *, project_id: int, forced_action: s
             message = "Admin approved this lesson for publishing."
         elif action == "block":
             new_status = "admin_rejected"
-            hide_public = True
+            blocks_public = True
             was_published_before_action = bool(project.is_published)
             message = "Admin blocked this lesson. It is hidden from public catalog and watch."
         elif action == "needs_review":
             new_status = "needs_admin_review"
-            hide_public = True
+            blocks_public = True
             was_published_before_action = bool(project.is_published)
             message = "Admin marked this lesson as needing review."
         elif action == "request_changes":
             new_status = "revision_required"
-            hide_public = bool(serializer.validated_data.get("unpublish", True))
+            blocks_public = bool(serializer.validated_data.get("unpublish", True))
             was_published_before_action = bool(project.is_published)
             message = "Admin requested changes before this lesson can be published."
         elif action == "add_note":
@@ -403,7 +472,7 @@ def _admin_project_action_response(request, *, project_id: int, forced_action: s
                 "last_actor_username": request.user.username,
                 "last_action_at": now.isoformat(),
                 "reason": reason,
-                "unpublish": hide_public,
+                "unpublish": blocks_public,
                 "was_published_before_action": was_published_before_action,
             }
         )
@@ -413,15 +482,30 @@ def _admin_project_action_response(request, *, project_id: int, forced_action: s
                 "message": message,
                 "admin_review": admin_review,
                 "publisher_admin_note": reason,
+                "manual_moderation_status": _manual_status_for_action(action),
+                "manual_moderation_reason": reason,
+                "moderation_blocked_until_review": blocks_public,
             }
         )
         project.moderation_status = new_status
         project.moderation_summary = summary
-        update_fields = ["moderation_status", "moderation_summary", "updated_at"]
-        if hide_public and project.is_published:
-            project.is_published = False
-            update_fields.append("is_published")
-        elif action == "approve" and not project.is_published and was_published_before_action:
+        update_fields = [
+            "moderation_status",
+            "moderation_summary",
+            "manual_moderation_status",
+            "manual_moderation_reason",
+            "manual_moderation_by",
+            "manual_moderation_at",
+            "moderation_blocked_until_review",
+            "updated_at",
+        ]
+        if action in {"approve", "block", "needs_review", "request_changes"}:
+            project.manual_moderation_status = _manual_status_for_action(action)
+            project.manual_moderation_reason = reason
+            project.manual_moderation_by = request.user
+            project.manual_moderation_at = now
+            project.moderation_blocked_until_review = blocks_public
+        if action == "approve" and not project.is_published and was_published_before_action:
             project.is_published = True
             update_fields.append("is_published")
         project.save(update_fields=update_fields)
@@ -433,24 +517,51 @@ def _admin_project_action_response(request, *, project_id: int, forced_action: s
             reason=reason,
             previous_status=previous_status,
             new_status=new_status,
-            metadata={"unpublish": hide_public},
+            metadata={"blocks_public": blocks_public},
         )
 
         if action == "approve":
+            AdminReviewRequest.objects.filter(project=project, status="open").update(
+                status="approved",
+                reviewed_by=request.user,
+                reviewed_at=now,
+                admin_response=reason,
+            )
             PublicationBlockEvent.objects.filter(project=project, resolved=False).update(
                 resolved=True,
                 resolved_by=request.user,
                 resolved_at=now,
             )
         elif action in {"block", "needs_review", "request_changes"}:
+            if action in {"block", "request_changes"}:
+                AdminReviewRequest.objects.filter(project=project, status="open").update(
+                    status="rejected",
+                    reviewed_by=request.user,
+                    reviewed_at=now,
+                    admin_response=reason,
+                )
             _ensure_manual_publication_block(
                 project=project,
                 actor=request.user,
                 action=action,
                 reason=reason,
             )
+        if action in {"approve", "block", "request_changes"}:
+            ModerationReport.objects.filter(project=project, status="open").update(
+                status="resolved" if action in {"block", "request_changes"} else "reviewed",
+                reviewed_by=request.user,
+                reviewed_at=now,
+            )
 
     project.refresh_from_db()
+    if action in {"approve", "block", "request_changes"}:
+        notify_publisher_moderation_action(
+            project=project,
+            actor_user=request.user,
+            action=action,
+            reason=reason,
+            moderation_status=project.moderation_status,
+        )
     return Response(
         {
             "project_id": project.id,
@@ -466,11 +577,10 @@ def _admin_project_action_response(request, *, project_id: int, forced_action: s
 
 
 def _project_accepts_user_reports(project: Project) -> bool:
-    public_moderation_statuses = APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"})
     return (
         bool(getattr(project, "is_published", False))
         and str(getattr(project, "status", "") or "") == "ready"
-        and str(getattr(project, "moderation_status", "") or "") in public_moderation_statuses
+        and str(getattr(project, "moderation_status", "") or "") in APPROVED_MODERATION_STATUSES
     )
 
 
@@ -507,12 +617,37 @@ def _start_project_moderation_rescan(
     with transaction.atomic():
         locked = Project.objects.select_for_update().get(pk=project.id)
         previous_status = str(locked.moderation_status or "")
+        if manual_moderation_prevents_auto_override(locked):
+            if audit_action:
+                _create_moderation_audit_event(
+                    project=locked,
+                    actor=actor,
+                    action=audit_action,
+                    reason=reason,
+                    previous_status=previous_status,
+                    new_status=previous_status,
+                    metadata={"phase": phase, "skipped": "manual_moderation_block"},
+                )
+            return Response(
+                {
+                    "error": "This lesson is blocked by a manual moderation decision. Only an admin can change it.",
+                    "project_id": locked.id,
+                    "moderation_status": locked.moderation_status,
+                    "manual_moderation_status": locked.manual_moderation_status,
+                    "phase": phase,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        summary = dict(locked.moderation_summary or {})
+        summary.update(
+            {
+                "moderation_status": "pending",
+                "message": "Moderation scan is running.",
+                "phase": phase,
+            }
+        )
         locked.moderation_status = "pending"
-        locked.moderation_summary = {
-            "moderation_status": "pending",
-            "message": "Moderation scan is running.",
-            "phase": phase,
-        }
+        locked.moderation_summary = summary
         locked.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
         if audit_action:
             _create_moderation_audit_event(
@@ -534,12 +669,26 @@ def _start_project_moderation_rescan(
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Could not start moderation scan project=%s phase=%s queue=%s", project.id, phase, queue_name)
-        project.moderation_status = "failed"
-        project.moderation_summary = {
+        project.refresh_from_db()
+        if manual_moderation_prevents_auto_override(project):
+            return Response(
+                {
+                    "error": "Could not start moderation scan; manual moderation block remains active.",
+                    "project_id": project.id,
+                    "moderation_status": project.moderation_status,
+                    "phase": phase,
+                    "queue": queue_name,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        summary = dict(project.moderation_summary or {})
+        summary.update({
             "moderation_status": "failed",
             "message": "Could not start moderation scan.",
             "phase": phase,
-        }
+        })
+        project.moderation_status = "failed"
+        project.moderation_summary = summary
         project.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
         return Response(
             {
@@ -583,6 +732,15 @@ def _create_moderation_audit_event(
         new_status=new_status,
         metadata=metadata or {},
     )
+
+
+def _manual_status_for_action(action: str) -> str:
+    return {
+        "approve": "approved",
+        "block": "blocked",
+        "needs_review": "needs_review",
+        "request_changes": "request_changes",
+    }.get(str(action or ""), "")
 
 
 def _ensure_manual_publication_block(*, project: Project, actor, action: str, reason: str) -> None:
@@ -639,6 +797,7 @@ def _complete_admin_review_request(
         project = review.project
         project.moderation_status = project_moderation_status
         summary = project.moderation_summary if isinstance(project.moderation_summary, dict) else {}
+        manual_action = "approve" if decision_status == "approved" else "block"
         summary.update(
             {
                 "moderation_status": project_moderation_status,
@@ -649,13 +808,27 @@ def _complete_admin_review_request(
                 ),
                 "admin_review_request_id": review.id,
                 "publisher_admin_note": review.admin_response,
+                "manual_moderation_status": _manual_status_for_action(manual_action),
+                "manual_moderation_reason": review.admin_response,
+                "moderation_blocked_until_review": decision_status != "approved",
             }
         )
         project.moderation_summary = summary
-        update_fields = ["moderation_status", "moderation_summary", "updated_at"]
-        if decision_status != "approved" and project.is_published:
-            project.is_published = False
-            update_fields.append("is_published")
+        project.manual_moderation_status = _manual_status_for_action(manual_action)
+        project.manual_moderation_reason = review.admin_response
+        project.manual_moderation_by = request.user
+        project.manual_moderation_at = now
+        project.moderation_blocked_until_review = decision_status != "approved"
+        update_fields = [
+            "moderation_status",
+            "moderation_summary",
+            "manual_moderation_status",
+            "manual_moderation_reason",
+            "manual_moderation_by",
+            "manual_moderation_at",
+            "moderation_blocked_until_review",
+            "updated_at",
+        ]
         project.save(update_fields=update_fields)
 
         _create_moderation_audit_event(
@@ -681,6 +854,18 @@ def _complete_admin_review_request(
                 action="block",
                 reason=review.admin_response,
             )
+        ModerationReport.objects.filter(project=project, status="open").update(
+            status="resolved" if decision_status != "approved" else "reviewed",
+            reviewed_by=request.user,
+            reviewed_at=now,
+        )
 
     review = _get_review_request(review_id)
+    notify_publisher_moderation_action(
+        project=review.project,
+        actor_user=request.user,
+        action="approve" if decision_status == "approved" else "block",
+        reason=review.admin_response,
+        moderation_status=review.project.moderation_status,
+    )
     return Response(admin_review_detail_payload(review), status=status.HTTP_200_OK)

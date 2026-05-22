@@ -157,7 +157,9 @@ def test_admin_block_hides_public_lesson_immediately():
     assert public_before.status_code == 200
     assert response.status_code == 200
     assert project.moderation_status == "admin_rejected"
-    assert project.is_published is False
+    assert project.manual_moderation_status == "blocked"
+    assert project.moderation_blocked_until_review is True
+    assert project.is_published is True
     assert public_after.status_code == 404
     assert PublicationBlockEvent.objects.filter(project=project, resolved=False).exists()
 
@@ -178,7 +180,9 @@ def test_admin_request_changes_creates_publisher_note():
 
     assert response.status_code == 200
     assert project.moderation_status == "revision_required"
-    assert project.is_published is False
+    assert project.manual_moderation_status == "request_changes"
+    assert project.moderation_blocked_until_review is True
+    assert project.is_published is True
     assert project.moderation_summary["publisher_admin_note"] == note
 
 
@@ -223,3 +227,103 @@ def test_non_admin_cannot_call_admin_moderation_actions():
     )
 
     assert response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_admin_block_is_sticky_against_publisher_rescan():
+    publisher = _make_user("sticky_owner", role="publisher")
+    staff = _make_user("sticky_staff", is_staff=True)
+    project = _make_project(publisher)
+
+    block = _client(staff).post(
+        f"/api/v1/moderation/projects/{project.id}/block/",
+        {"reason": "Unsafe example."},
+        format="json",
+    )
+    rescan = _client(publisher).post(
+        f"/api/v1/projects/{project.id}/moderation/rescan/",
+        {"phase": "manual_rescan"},
+        format="json",
+    )
+    project.refresh_from_db()
+
+    assert block.status_code == 200
+    assert rescan.status_code == 409
+    assert project.moderation_status == "admin_rejected"
+    assert project.manual_moderation_status == "blocked"
+    assert project.is_published is True
+    assert _client().get(f"/api/v1/catalog/{project.id}/").status_code == 404
+
+
+@pytest.mark.django_db
+def test_admin_approve_clears_block_without_forcing_unpublished_lesson_public():
+    publisher = _make_user("approve_private_owner", role="publisher")
+    staff = _make_user("approve_private_staff", is_staff=True)
+    project = _make_project(publisher, published=False, moderation_status="admin_rejected")
+    project.manual_moderation_status = "blocked"
+    project.manual_moderation_reason = "Manual block."
+    project.moderation_blocked_until_review = True
+    project.save(update_fields=["manual_moderation_status", "manual_moderation_reason", "moderation_blocked_until_review"])
+    PublicationBlockEvent.objects.create(
+        project=project,
+        blocked_by="admin_manual_action",
+        reason_category="manual_admin_block",
+        highest_severity="high",
+        message_to_user="Manual block.",
+    )
+
+    response = _client(staff).post(
+        f"/api/v1/moderation/projects/{project.id}/approve/",
+        {"reason": "Allowed."},
+        format="json",
+    )
+    project.refresh_from_db()
+
+    assert response.status_code == 200
+    assert project.moderation_status == "admin_approved"
+    assert project.manual_moderation_status == "approved"
+    assert project.moderation_blocked_until_review is False
+    assert project.is_published is False
+    assert PublicationBlockEvent.objects.filter(project=project, resolved=False).count() == 0
+    assert _client().get(f"/api/v1/catalog/{project.id}/").status_code == 404
+
+
+@pytest.mark.django_db
+def test_auto_rejected_and_manual_blocked_projects_remain_in_admin_queues():
+    publisher = _make_user("queue_owner", role="publisher")
+    staff = _make_user("queue_staff", is_staff=True)
+    auto_project = _make_project(publisher, title="Auto rejected", moderation_status="revision_required")
+    blocked_project = _make_project(publisher, title="Manual blocked")
+
+    _client(staff).post(
+        f"/api/v1/moderation/projects/{blocked_project.id}/block/",
+        {"reason": "Manual block."},
+        format="json",
+    )
+
+    auto_queue = _client(staff).get("/api/v1/admin/moderation/review-requests/?queue=auto_rejected")
+    blocked_queue = _client(staff).get("/api/v1/admin/moderation/review-requests/?queue=rejected_blocked")
+
+    assert auto_queue.status_code == 200
+    assert blocked_queue.status_code == 200
+    assert auto_project.id in {row["project_id"] for row in auto_queue.data}
+    assert blocked_project.id in {row["project_id"] for row in blocked_queue.data}
+
+
+@pytest.mark.django_db
+def test_staff_can_review_blocked_lesson_while_student_cannot_watch():
+    publisher = _make_user("blocked_review_owner", role="publisher")
+    staff = _make_user("blocked_review_staff", is_staff=True)
+    student = _make_user("blocked_review_student")
+    project = _make_project(publisher)
+
+    _client(staff).post(
+        f"/api/v1/moderation/projects/{project.id}/block/",
+        {"reason": "Manual block."},
+        format="json",
+    )
+
+    assert _client(student).get(f"/api/v1/catalog/{project.id}/").status_code == 404
+    review = _client(staff).get(f"/api/v1/catalog/{project.id}/")
+    assert review.status_code == 200
+    assert review.data["id"] == project.id
