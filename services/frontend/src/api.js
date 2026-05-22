@@ -30,6 +30,13 @@ const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/i, "");
 const AUTH_USER_STORAGE_KEY = "auth_user";
 let capabilitiesPromise = null;
 
+function capabilitiesUrl({ cacheBust = false } = {}) {
+  const baseUrl = `${API_BASE_URL}/capabilities/`;
+  if (!cacheBust) return baseUrl;
+  const separator = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${separator}_capabilities_ts=${Date.now()}`;
+}
+
 function toAbsoluteApiUrl(url) {
   if (!url) return "";
   if (/^https?:\/\//i.test(url)) return url;
@@ -50,6 +57,7 @@ export function setToken(token) {
   } else {
     localStorage.removeItem("auth_token");
   }
+  clearCapabilitiesCache();
 }
 
 export function getStoredAuthUser() {
@@ -111,12 +119,18 @@ function apiError(data, fallback) {
   return error;
 }
 
+export function clearCapabilitiesCache() {
+  capabilitiesPromise = null;
+}
+
 export async function fetchCapabilities({ force = false } = {}) {
+  if (force) {
+    clearCapabilitiesCache();
+  }
   if (!force && capabilitiesPromise) {
     return capabilitiesPromise;
   }
-  capabilitiesPromise = fetch(`${API_BASE_URL}/capabilities/`, {
-    headers: authHeaders(),
+  const request = fetch(capabilitiesUrl({ cacheBust: force || import.meta.env.DEV }), {
     cache: "no-store",
   })
     .then(async (res) => {
@@ -126,10 +140,12 @@ export async function fetchCapabilities({ force = false } = {}) {
       }
       return data;
     })
-    .catch((error) => {
-      capabilitiesPromise = null;
-      throw error;
+    .finally(() => {
+      if (capabilitiesPromise === request) {
+        capabilitiesPromise = null;
+      }
     });
+  capabilitiesPromise = request;
   return capabilitiesPromise;
 }
 

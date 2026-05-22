@@ -91,6 +91,7 @@ def test_capabilities_endpoint_returns_configured_flags(monkeypatch):
     response = _client().get("/api/v1/capabilities/")
 
     assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store, private"
     features = response.data["features"]
     assert features["avatar"]["enabled"] is True
     assert features["intelligence"]["enabled"] is True

@@ -241,7 +241,9 @@ class CapabilitiesView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def get(self, request):
-        return Response(capabilities_payload())
+        response = Response(capabilities_payload())
+        response["Cache-Control"] = "no-store, private"
+        return response
 
 
 def _feature_disabled_response(feature: str, *, http_status: int = status.HTTP_403_FORBIDDEN) -> Response:

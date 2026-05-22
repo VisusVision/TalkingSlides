@@ -974,12 +974,6 @@ export default function Analytics({ user }) {
   }, [analyticsFilterKey, analyticsFilters, intelligenceFeatureEnabled]);
 
   useEffect(() => {
-    if (!intelligenceFeatureEnabled) {
-      setIntelligenceReport(null);
-      setIntelligenceError('');
-      setIntelligenceLoadedFilterKey('');
-      return undefined;
-    }
     const activeRef = { current: true };
     loadStats(activeRef);
     return () => {
