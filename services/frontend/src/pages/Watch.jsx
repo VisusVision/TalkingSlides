@@ -29,6 +29,7 @@ import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
 import { buildChapters, buildTranscriptLines } from '../lib/watch';
+import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 
 const COMMENT_PREVIEW_LIMIT = 5;
@@ -320,6 +321,7 @@ function contextRowsFromPayload(context, currentLessonId) {
 function WatchStudyPanel({
   lesson,
   videoRef,
+  avatarFeatureEnabled,
   notes,
   onNotesChange,
   onSave,
@@ -332,6 +334,7 @@ function WatchStudyPanel({
 
   return (
     <SurfaceCard data-testid="study-mode-panel" className="space-y-3 p-3 xl:sticky xl:top-4">
+      {avatarFeatureEnabled && (
       <div className="space-y-2">
         {avatar.enabled ? (
           <AvatarOverlayLayer
@@ -348,6 +351,7 @@ function WatchStudyPanel({
           </div>
         )}
       </div>
+      )}
 
       <label className="block text-xs font-medium text-[var(--text-secondary)]">
         Notes
@@ -422,6 +426,8 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, pub
 
 export default function Watch({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
+  const { capabilities } = useCapabilities();
+  const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const videoRef = useRef(null);
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -859,7 +865,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
   useEffect(() => {
     const enhancedPending = Boolean(lesson?.avatar_overlay?.enhanced_pending);
-    if (!activeLessonId || !playbackActive || !enhancedPending || loadingLesson) return undefined;
+    if (!avatarFeatureEnabled || !activeLessonId || !playbackActive || !enhancedPending || loadingLesson) return undefined;
 
     let cancelled = false;
     const pollForEnhancedAvatar = async () => {
@@ -886,6 +892,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     };
   }, [
     activeLessonId,
+    avatarFeatureEnabled,
     loadingLesson,
     playbackActive,
     lesson?.avatar_overlay?.enhanced_pending,
@@ -1215,7 +1222,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           videoRef={videoRef}
           showSubtitleControls={false}
           showLessonDetails={false}
-          avatarOverlayMode={focusMode ? 'disabled' : 'floating'}
+          avatarOverlayMode={!avatarFeatureEnabled || focusMode ? 'disabled' : 'floating'}
           watermarkLesson={lesson}
         />
       );
@@ -1244,7 +1251,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             preferredSubtitleLanguage={preferredSubtitleLanguage}
             selectedSubtitleKey={selectedSubtitleKey}
             onSubtitleKeyChange={setSelectedSubtitleKey}
-            avatarOverlayMode={focusMode ? 'disabled' : 'floating'}
+            avatarOverlayMode={!avatarFeatureEnabled || focusMode ? 'disabled' : 'floating'}
             watermarkLesson={lesson}
           />
         </Suspense>
@@ -1585,6 +1592,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
               <WatchStudyPanel
                 lesson={lesson}
                 videoRef={videoRef}
+                avatarFeatureEnabled={avatarFeatureEnabled}
                 notes={notes}
                 onNotesChange={setNotes}
                 onSave={saveNotes}

@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 from django.conf import settings
 
+from core.capabilities import intelligence_enabled, local_ollama_enabled
 from core.drafts import get_studio_transcript_pages
 from core.intelligence_language import detect_lesson_language, resolve_output_language
 from core.intelligence_progressive import (
@@ -568,7 +569,7 @@ class PaidLessonIntelligenceProvider:
 
 
 def lesson_intelligence_enabled() -> bool:
-    return _bool_setting("LESSON_INTELLIGENCE_ENABLED", True)
+    return bool(intelligence_enabled() and _bool_setting("LESSON_INTELLIGENCE_ENABLED", True))
 
 
 def provider_chain_from_settings() -> list[str]:
@@ -733,7 +734,11 @@ def analyze_with_provider_chain(
 
 def progressive_ollama_enabled(chain: list[str] | None = None) -> bool:
     provider_chain = chain or provider_chain_from_settings()
-    return _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True) and provider_chain_contains_ollama(provider_chain)
+    return (
+        local_ollama_enabled()
+        and _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True)
+        and provider_chain_contains_ollama(provider_chain)
+    )
 
 
 def lesson_ollama_run_identity(lesson_input: LessonIntelligenceInput) -> dict[str, str]:

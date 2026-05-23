@@ -335,7 +335,11 @@ def test_owner_can_upload_custom_page_background(tmp_path):
     )
     force_authenticate(request, user=teacher)
 
-    with override_settings(STORAGE_ROOT=str(tmp_path)):
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
+        VISUAL_MODERATION_AUTO_ENABLED=False,
+    ):
         response = views.TranscriptPageBackgroundUploadView.as_view()(request, project_id=project.id, page_id=page.id)
 
     assert response.status_code == 200
@@ -382,7 +386,8 @@ def test_apply_all_copies_background_scene_settings_to_active_pages():
     )
     force_authenticate(request, user=teacher)
 
-    response = views.ProjectBackgroundApplyAllView.as_view()(request, project_id=project.id)
+    with override_settings(ENABLE_VISUAL_MODERATION=True, VISUAL_MODERATION_AUTO_ENABLED=False):
+        response = views.ProjectBackgroundApplyAllView.as_view()(request, project_id=project.id)
 
     assert response.status_code == 200
     target.refresh_from_db()
@@ -1019,7 +1024,11 @@ def test_cover_upload_updates_project_cover_fields(tmp_path):
     )
     force_authenticate(request, user=teacher)
 
-    with override_settings(STORAGE_ROOT=str(tmp_path)):
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
+        VISUAL_MODERATION_AUTO_ENABLED=False,
+    ):
         response = views.ProjectCoverImageView.as_view()(request, project_id=project.id)
 
     assert response.status_code == 200

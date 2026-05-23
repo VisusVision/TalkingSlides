@@ -48,6 +48,7 @@ def _make_project(username: str, *, status: str = "ready", moderation_status: st
 
 
 def _enable_audit(monkeypatch, *, visual: bool = True, ocr: bool = False) -> None:
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_PHASE", "video_frame_audit", raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_EVERY_SECONDS", 10.0, raising=False)

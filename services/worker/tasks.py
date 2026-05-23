@@ -116,6 +116,70 @@ def _env_enabled(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _env_explicit(name: str) -> bool:
+    return name in os.environ
+
+
+def _avatar_feature_enabled() -> bool:
+    if _env_explicit("ENABLE_AVATAR"):
+        return _env_enabled("ENABLE_AVATAR", False)
+    try:
+        from django.conf import settings
+
+        if bool(getattr(settings, "ENABLE_AVATAR", False)):
+            return True
+    except Exception:
+        pass
+    legacy_names = (
+        "AVATAR_ENGINE",
+        "AVATAR_LIVEPORTRAIT_CMD",
+        "AVATAR_MUSETALK_CMD",
+        "AVATAR_ENABLE_COMPOSITE_LESSON",
+        "AVATAR_BOOTSTRAP_ON_WORKER_STARTUP",
+    )
+    return any(str(os.environ.get(name, "")).strip() for name in legacy_names)
+
+
+def _intelligence_feature_enabled() -> bool:
+    if _env_explicit("ENABLE_INTELLIGENCE"):
+        return _env_enabled("ENABLE_INTELLIGENCE", False)
+    try:
+        from django.conf import settings
+
+        if bool(getattr(settings, "ENABLE_INTELLIGENCE", False)):
+            return True
+        if bool(getattr(settings, "LESSON_INTELLIGENCE_ENABLED", False)):
+            return True
+        if bool(getattr(settings, "ANALYTICS_INTELLIGENCE_ENABLED", False)):
+            return True
+    except Exception:
+        pass
+    return (
+        _env_enabled("LESSON_INTELLIGENCE_ENABLED", False)
+        or _env_enabled("ANALYTICS_INTELLIGENCE_ENABLED", False)
+    )
+
+
+def _visual_moderation_feature_enabled() -> bool:
+    if _env_explicit("ENABLE_VISUAL_MODERATION"):
+        return _env_enabled("ENABLE_VISUAL_MODERATION", False)
+    try:
+        from django.conf import settings
+
+        if bool(getattr(settings, "ENABLE_VISUAL_MODERATION", False)):
+            return True
+    except Exception:
+        pass
+    return (
+        _env_enabled("VISUAL_MODERATION_AUTO_ENABLED", False)
+        or _env_enabled("OCR_MODERATION_AUTO_ENABLED", False)
+        or _env_enabled("VIDEO_FRAME_AUDIT_AUTO_ENABLED", False)
+        or _env_enabled("VISUAL_SAFETY_CLASSIFIER_ENABLED", False)
+        or _env_enabled("AZURE_CONTENT_SAFETY_ENABLED", False)
+        or _env_enabled("AZURE_OCR_ENABLED", False)
+    )
+
+
 def _settings_bool(name: str, default: bool = False) -> bool:
     try:
         from django.conf import settings
@@ -188,6 +252,9 @@ def _avatar_gpu_serial_section(*, stage_name: str):
 
 @worker_ready.connect
 def _log_avatar_engine_startup_status(sender=None, **kwargs):
+    if not _avatar_feature_enabled():
+        logger.info("Worker avatar bootstrap skipped because ENABLE_AVATAR is disabled")
+        return
     if not _env_enabled("AVATAR_BOOTSTRAP_ON_WORKER_STARTUP", True):
         logger.info("Worker avatar bootstrap skipped by AVATAR_BOOTSTRAP_ON_WORKER_STARTUP=0")
         return
@@ -364,6 +431,9 @@ def _notify_render_completed(project_id: str | int) -> None:
 
 
 def _schedule_lesson_intelligence_after_worker_event(project_id: str | int, *, reason: str, force: bool = False) -> None:
+    if not _intelligence_feature_enabled():
+        logger.info("Lesson intelligence schedule skipped project=%s because ENABLE_INTELLIGENCE is disabled", project_id)
+        return
     try:
         schedule_lesson_intelligence.apply_async(
             args=[int(project_id)],
@@ -375,6 +445,9 @@ def _schedule_lesson_intelligence_after_worker_event(project_id: str | int, *, r
 
 
 def _schedule_creator_analytics_after_worker_event(project_id: str | int, *, reason: str, force: bool = False) -> None:
+    if not _intelligence_feature_enabled():
+        logger.info("Analytics intelligence schedule skipped project=%s because ENABLE_INTELLIGENCE is disabled", project_id)
+        return
     try:
         from core.models import Project
 
@@ -2443,8 +2516,32 @@ def _source_moderation_message(moderation_status: str) -> str:
 VISUAL_MODERATION_REVIEW_DECISIONS = {"block", "needs_admin_review"}
 
 
+def _mark_project_scan_disabled(project_id: str | int, *, key: str, phase: str, message: str) -> None:
+    try:
+        from django.utils import timezone
+        from core.models import Project
+
+        project = Project.objects.filter(pk=int(project_id)).first()
+        if project is None:
+            return
+        summary = dict(project.moderation_summary or {})
+        summary[str(key)] = {
+            "enabled": False,
+            "status": "skipped_disabled",
+            "final_decision": "skipped",
+            "phase": str(phase or ""),
+            "disabled": True,
+            "message": str(message or "Visual scan disabled by environment."),
+            "updated_at": timezone.now().isoformat(),
+        }
+        project.moderation_summary = summary
+        project.save(update_fields=["moderation_summary", "updated_at"])
+    except Exception:
+        logger.warning("Could not mark moderation scan disabled project=%s key=%s", project_id, key, exc_info=True)
+
+
 def _visual_moderation_auto_enabled() -> bool:
-    return _settings_bool("VISUAL_MODERATION_AUTO_ENABLED", False)
+    return _visual_moderation_feature_enabled() and _settings_bool("VISUAL_MODERATION_AUTO_ENABLED", False)
 
 
 def _visual_moderation_block_render_on_rejection() -> bool:
@@ -2470,10 +2567,20 @@ def _run_auto_visual_asset_moderation_after_export(
     use_draft: bool = False,
 ) -> dict[str, Any]:
     if not _visual_moderation_auto_enabled():
+        phase = _visual_moderation_phase()
+        _mark_project_scan_disabled(
+            project_id,
+            key="visual_asset_scan",
+            phase=phase,
+            message="Visual scan disabled by environment.",
+        )
         return {
             "enabled": False,
             "status": "skipped_disabled",
             "project_id": int(project_id),
+            "phase": phase,
+            "final_decision": "skipped",
+            "message": "Visual scan disabled by environment.",
             "block_render": False,
         }
 
@@ -2884,7 +2991,7 @@ OCR_TEXT_AGENT_VERSION = "local-rules:v1"
 
 
 def _ocr_moderation_auto_enabled() -> bool:
-    return _settings_bool("OCR_MODERATION_AUTO_ENABLED", False)
+    return _visual_moderation_feature_enabled() and _settings_bool("OCR_MODERATION_AUTO_ENABLED", False)
 
 
 def _ocr_moderation_block_render_on_rejection() -> bool:
@@ -2909,10 +3016,20 @@ def _run_auto_ocr_slide_moderation_after_export(
     job_id: str | int | None = None,
 ) -> dict[str, Any]:
     if not _ocr_moderation_auto_enabled():
+        phase = _ocr_moderation_phase()
+        _mark_project_scan_disabled(
+            project_id,
+            key="ocr_slide_scan",
+            phase=phase,
+            message="OCR visual scan disabled by environment.",
+        )
         return {
             "enabled": False,
             "status": "skipped_disabled",
             "project_id": int(project_id),
+            "phase": phase,
+            "final_decision": "skipped",
+            "message": "OCR visual scan disabled by environment.",
             "block_render": False,
         }
 
@@ -3267,7 +3384,7 @@ VIDEO_FRAME_AUDIT_SUMMARY_KEY = "video_frame_audit"
 
 
 def _video_frame_audit_auto_enabled() -> bool:
-    return _settings_bool("VIDEO_FRAME_AUDIT_AUTO_ENABLED", False)
+    return _visual_moderation_feature_enabled() and _settings_bool("VIDEO_FRAME_AUDIT_AUTO_ENABLED", False)
 
 
 def _video_frame_audit_phase() -> str:
@@ -3293,11 +3410,11 @@ def _video_frame_audit_max_frames() -> int:
 
 
 def _video_frame_audit_run_visual_check() -> bool:
-    return _settings_bool("VIDEO_FRAME_AUDIT_RUN_VISUAL_CHECK", True)
+    return _visual_moderation_feature_enabled() and _settings_bool("VIDEO_FRAME_AUDIT_RUN_VISUAL_CHECK", True)
 
 
 def _video_frame_audit_run_ocr() -> bool:
-    return _settings_bool("VIDEO_FRAME_AUDIT_RUN_OCR", False)
+    return _visual_moderation_feature_enabled() and _settings_bool("VIDEO_FRAME_AUDIT_RUN_OCR", False)
 
 
 def _video_frame_audit_retain_frames() -> bool:
@@ -3314,10 +3431,20 @@ def _run_auto_video_frame_audit_after_render(
     video_path: str | Path,
 ) -> dict[str, Any]:
     if not _video_frame_audit_auto_enabled():
+        phase = _video_frame_audit_phase()
+        _mark_project_scan_disabled(
+            project_id,
+            key=VIDEO_FRAME_AUDIT_SUMMARY_KEY,
+            phase=phase,
+            message="Video frame visual scan disabled by environment.",
+        )
         return {
             "enabled": False,
             "status": "skipped_disabled",
             "project_id": int(project_id),
+            "phase": phase,
+            "final_decision": "skipped",
+            "message": "Video frame visual scan disabled by environment.",
             "block_render": False,
         }
 
@@ -4029,6 +4156,8 @@ def _record_avatar_render_job(
 
 
 def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
+    if not _avatar_feature_enabled():
+        return {"enabled": False, "disabled_reason": "Avatar disabled by environment."}
     if not teacher_id:
         return {"enabled": False}
 
@@ -4126,6 +4255,8 @@ def render_avatar_segment(
     cache_text_hash: str = "",
     avatar_job_id: int | None = None,
 ) -> dict[str, Any]:
+    if not _avatar_feature_enabled():
+        raise RuntimeError("avatar_disabled_by_environment")
     from avatar.canonical_adapters import normalize_avatar_engine
     from avatar.hashing import sha256_file
     from avatar.pipeline import AvatarRenderRequest, render_avatar_segment_local
@@ -4228,6 +4359,13 @@ def render_avatar_segment(
 )
 def render_avatar_preview(self, *, teacher_id: int, job_id: int | None = None) -> dict[str, Any]:
     """Render avatar preview asynchronously through the canonical preview flow only."""
+    if not _avatar_feature_enabled():
+        return {
+            "status": "disabled",
+            "teacher_id": int(teacher_id),
+            "job_id": int(job_id or 0) or None,
+            "error": "Avatar disabled by environment.",
+        }
     from worker.avatar_preview_flow import render_avatar_preview_canonical
 
     with _avatar_gpu_serial_section(stage_name="render_avatar_preview"):
@@ -4244,6 +4382,8 @@ def fallback_avatar_render(self, source_image_path: str, audio_path: str, output
 @app.task(bind=True, name="worker.tasks.render_avatar_lesson")
 def render_avatar_lesson(self, project_id: int, teacher_id: int, segments: list[dict[str, Any]]) -> dict[str, Any]:
     """Batch render all avatar segments for a lesson (idempotent by deterministic output paths)."""
+    if not _avatar_feature_enabled():
+        return {"project_id": int(project_id), "teacher_id": int(teacher_id), "segments": [], "status": "skipped_disabled"}
     outputs: list[dict[str, Any]] = []
     avatar_cfg = _get_teacher_avatar_config(int(teacher_id))
     if not avatar_cfg.get("enabled"):
@@ -4286,6 +4426,15 @@ def render_lesson_avatar_overlay(
     base_job_id: int | None = None,
 ) -> dict[str, Any]:
     """Render lesson avatar artifacts after the base lesson video is available."""
+    if not _avatar_feature_enabled():
+        _mark_project_avatar_state(
+            project_id,
+            status="none",
+            message="",
+            job_id="",
+            clear_output=True,
+        )
+        return {"status": "skipped_disabled", "project_id": int(project_id), "teacher_id": int(teacher_id or 0)}
     try:
         from django.utils import timezone
         from core.models import Job, Project, UserProfile
@@ -4895,6 +5044,15 @@ def _queue_lesson_avatar_overlay_after_base_render(
     output_rel_prefix: str,
 ) -> dict[str, Any]:
     avatar_cfg = dict(avatar_options or {})
+    if not _avatar_feature_enabled():
+        _mark_project_avatar_state(
+            project_id,
+            status="none",
+            message="",
+            job_id="",
+            clear_output=True,
+        )
+        return {"status": "skipped_disabled", "queued": False, "reason": "Avatar disabled by environment."}
     try:
         from core.avatar_runtime_settings import normalize_avatar_runtime_settings
 
@@ -5195,6 +5353,8 @@ def schedule_lesson_intelligence(
     force: bool = False,
 ) -> dict[str, Any]:
     """Create or refresh the quick lesson report and queue slow enhancement."""
+    if not _intelligence_feature_enabled():
+        return {"status": "disabled", "project_id": int(project_id), "reason": "Intelligence disabled by environment."}
     try:
         from core.views import schedule_lesson_intelligence as schedule
 
@@ -5217,6 +5377,8 @@ def schedule_creator_analytics_intelligence(
     force: bool = False,
 ) -> dict[str, Any]:
     """Create or refresh the quick analytics report and queue slow enhancement."""
+    if not _intelligence_feature_enabled():
+        return {"status": "disabled", "user_id": int(user_id), "reason": "Intelligence disabled by environment."}
     try:
         from core.views import schedule_creator_analytics_intelligence as schedule
 
@@ -5229,6 +5391,8 @@ def schedule_creator_analytics_intelligence(
 @app.task(bind=True, name="worker.tasks.enhance_lesson_intelligence_report", max_retries=0)
 def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -> dict[str, Any]:
     """Run slow Ollama lesson analysis outside the API request path."""
+    if not _intelligence_feature_enabled():
+        return {"report_id": int(report_id), "status": "disabled", "reason": "Intelligence disabled by environment."}
     from core.intelligence_progressive import merge_enhancement_metadata
     from core.lesson_intelligence import (
         LessonIntelligenceInputError,
@@ -5409,6 +5573,8 @@ class _AnalyticsTaskRequest:
 @app.task(bind=True, name="worker.tasks.enhance_analytics_intelligence_report", max_retries=0)
 def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str) -> dict[str, Any]:
     """Run slow Ollama creator analytics analysis outside the API request path."""
+    if not _intelligence_feature_enabled():
+        return {"report_id": int(report_id), "status": "disabled", "reason": "Intelligence disabled by environment."}
     from django.contrib.auth.models import User
 
     from core.analytics_intelligence import (

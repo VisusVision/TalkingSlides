@@ -112,6 +112,14 @@ from core.serializers import (
     canonical_project_tts_settings,
     merge_project_tts_settings_patch,
 )
+from core.capabilities import (
+    avatar_enabled,
+    capabilities_payload,
+    disabled_response_payload,
+    feature_disabled_reason,
+    intelligence_enabled,
+    visual_moderation_enabled,
+)
 from core.analytics_intelligence import (
     AnalyticsIntelligenceInputError,
     AnalyticsIntelligenceInputTooLarge,
@@ -191,6 +199,8 @@ from ai_agents.policies import (
 )
 
 try:
+    if not avatar_enabled():
+        raise RuntimeError("Avatar disabled by environment.")
     from avatar.pipeline import AvatarValidationError, preprocess_teacher_avatar_image
     from avatar.preprocess import preprocess_avatar_video
 except Exception:
@@ -224,6 +234,21 @@ _LESSON_INTELLIGENCE_ENHANCEMENT_TASK = "worker.tasks.enhance_lesson_intelligenc
 _ANALYTICS_INTELLIGENCE_ENHANCEMENT_TASK = "worker.tasks.enhance_analytics_intelligence_report"
 _LESSON_INTELLIGENCE_SCHEDULE_TASK = "worker.tasks.schedule_lesson_intelligence"
 _ANALYTICS_INTELLIGENCE_SCHEDULE_TASK = "worker.tasks.schedule_creator_analytics_intelligence"
+
+
+class CapabilitiesView(APIView):
+    """GET /api/v1/capabilities/ - frontend deployment feature contract."""
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        response = Response(capabilities_payload())
+        response["Cache-Control"] = "no-store, private"
+        return response
+
+
+def _feature_disabled_response(feature: str, *, http_status: int = status.HTTP_403_FORBIDDEN) -> Response:
+    return Response(disabled_response_payload(feature), status=http_status)
 
 
 def _celery_queue_setting(setting_name: str, env_name: str, default: str) -> str:
@@ -4349,6 +4374,22 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     teacher = project.user
     if teacher is None:
         return {"enabled": False}
+    if not avatar_enabled():
+        return {
+            "requested": False,
+            "enabled": False,
+            "teacher_id": int(teacher.id),
+            "disabled_reason": feature_disabled_reason("Avatar"),
+            "source_image_rel_path": "",
+            "source_image_original_rel_path": "",
+            "source_video_rel_path": "",
+            "avatar_reference_type": "image",
+            "avatar_runtime_settings": project_avatar_runtime_settings(project),
+            "avatar_source_valid": False,
+            "avatar_source_validation_error": feature_disabled_reason("Avatar"),
+            "avatar_moderation_status": "skipped",
+            "avatar_moderation_blocked": False,
+        }
 
     profile = getattr(teacher, "profile", None)
     if profile is None:
@@ -4357,11 +4398,11 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     request_override = request.data.get("avatar_enabled")
     if request_override is None:
         if project.avatar_enabled_override is None:
-            avatar_enabled = bool(profile.avatar_enabled)
+            avatar_requested = bool(profile.avatar_enabled)
         else:
-            avatar_enabled = bool(project.avatar_enabled_override)
+            avatar_requested = bool(project.avatar_enabled_override)
     else:
-        avatar_enabled = str(request_override).strip().lower() in {"1", "true", "yes", "on"}
+        avatar_requested = str(request_override).strip().lower() in {"1", "true", "yes", "on"}
 
     storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
     source_state = stored_avatar_source_state(profile, storage_root=storage_root)
@@ -4399,8 +4440,8 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     runtime_settings = project_avatar_runtime_settings(project)
 
     return {
-        "requested": bool(avatar_enabled),
-        "enabled": bool(avatar_enabled and is_ready and not disable_reason),
+        "requested": bool(avatar_requested),
+        "enabled": bool(avatar_requested and is_ready and not disable_reason),
         "teacher_id": int(teacher.id),
         "source_image_rel_path": profile.avatar_image_processed or profile.avatar_image_original,
         "source_image_original_rel_path": profile.avatar_image_original or profile.avatar_image_processed,
@@ -4447,6 +4488,8 @@ def _avatar_overlay_defaults_for_project(project: Project) -> dict:
 
 
 def _avatar_active_for_project(project: Project) -> bool:
+    if not avatar_enabled():
+        return False
     project_user = getattr(project, "user", None)
     teacher_profile = getattr(project_user, "profile", None) if project_user else None
     moderation_gate = avatar_image_moderation_gate(teacher_profile) if teacher_profile is not None else {"blocked": False}
@@ -4899,7 +4942,7 @@ class ProjectUploadView(APIView):
         voice_id = _get_voice_id(user)
 
         avatar_enabled_override = False
-        if "avatar_enabled" in request.data:
+        if avatar_enabled() and "avatar_enabled" in request.data:
             avatar_enabled_override = str(request.data.get("avatar_enabled", "")).strip().lower() in {
                 "1",
                 "true",
@@ -5040,6 +5083,10 @@ class ProjectDetailView(APIView):
                 project.refresh_from_db()
                 return Response(ProjectSerializer(project, context={"request": request}).data)
             update_fields.append("tts_settings")
+
+        if has_avatar_enabled or has_avatar_visible or has_avatar_placement or has_avatar_runtime_settings:
+            if not avatar_enabled():
+                return _feature_disabled_response("Avatar")
 
         if has_avatar_enabled:
             raw = str(request.data.get("avatar_enabled", "")).strip().lower()
@@ -5325,6 +5372,19 @@ def _mark_project_visual_moderation_stale(
     asset_path: str = "",
 ) -> None:
     summary = dict(project.moderation_summary or {})
+    if not visual_moderation_enabled():
+        summary["visual_asset_scan"] = {
+            "status": "disabled",
+            "final_decision": "skipped",
+            "disabled": True,
+            "reason": "visual_moderation_disabled",
+            "asset_type": asset_type,
+            "message": "Visual scan disabled for this deployment.",
+            "changed_at": timezone.now().isoformat(),
+        }
+        project.moderation_summary = summary
+        project.save(update_fields=["moderation_summary", "updated_at"])
+        return
     previous_scan = summary.get("visual_asset_scan")
     if not isinstance(previous_scan, dict):
         previous_scan = {}
@@ -5368,7 +5428,7 @@ def _run_auto_visual_moderation_for_changed_asset(
     asset_path: str,
     page: TranscriptPage | None = None,
 ) -> dict | None:
-    if not bool(getattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", False)):
+    if not visual_moderation_enabled() or not bool(getattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", False)):
         return None
     try:
         services_root = Path(__file__).resolve().parents[2]
@@ -6687,6 +6747,9 @@ def _reserve_enhancement_run_lock(report) -> str:
 
 
 def _queue_lesson_intelligence_enhancement(report: LessonIntelligenceReport) -> None:
+    if not intelligence_enabled():
+        _mark_lesson_enhancement_failed(report, feature_disabled_reason("Intelligence"))
+        return
     queue_name = _lesson_intelligence_queue_name()
     lock_key = _reserve_enhancement_run_lock(report)
     if lock_key == "__duplicate__":
@@ -6718,6 +6781,9 @@ def _queue_lesson_intelligence_enhancement(report: LessonIntelligenceReport) -> 
 
 
 def _queue_analytics_intelligence_enhancement(report: AnalyticsIntelligenceReport) -> None:
+    if not intelligence_enabled():
+        _mark_analytics_enhancement_failed(report, feature_disabled_reason("Intelligence"))
+        return
     queue_name = _analytics_intelligence_queue_name()
     lock_key = _reserve_enhancement_run_lock(report)
     if lock_key == "__duplicate__":
@@ -6754,6 +6820,8 @@ def _queue_lesson_intelligence_schedule(
     requested_by_id: int | None = None,
     force: bool = False,
 ) -> bool:
+    if not lesson_intelligence_enabled():
+        return False
     queue_name = _lesson_intelligence_queue_name()
     try:
         _dispatch_celery_task(
@@ -6836,6 +6904,8 @@ def _queue_creator_analytics_intelligence_schedule(
     force: bool = False,
 ) -> bool:
     if not user_id:
+        return False
+    if not analytics_intelligence_enabled():
         return False
     if not _analytics_auto_should_dispatch(int(user_id), reason=reason, force=force):
         return False
@@ -8148,6 +8218,8 @@ class ProjectAvatarRerenderView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, project_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         try:
             project = Project.objects.select_related("user").get(pk=project_id)
         except Project.DoesNotExist:
@@ -8363,6 +8435,8 @@ class VoiceUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         if not (_is_staff_user(request.user) or request.user.id == int(user_id)):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -8412,6 +8486,8 @@ class AvatarProfileView(APIView):
         return None
 
     def get(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         user = self._resolve_user(request, user_id)
         if user is None:
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
@@ -8472,6 +8548,8 @@ class AvatarProfileView(APIView):
         return Response(payload)
 
     def post(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         user = self._resolve_user(request, user_id)
         if user is None:
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
@@ -8643,6 +8721,8 @@ class AvatarProfileView(APIView):
         )
 
     def patch(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         user = self._resolve_user(request, user_id)
         if user is None:
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
@@ -8772,6 +8852,8 @@ class AvatarPreviewRegenerateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         if not (_is_staff_user(request.user) or request.user.id == int(user_id)):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -8850,6 +8932,8 @@ class AvatarPrepareView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         if not (_is_staff_user(request.user) or request.user.id == int(user_id)):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -8986,6 +9070,8 @@ class AvatarPreviewStatusView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, user_id, job_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         if not (_is_staff_user(request.user) or request.user.id == int(user_id)):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -9085,6 +9171,8 @@ class AvatarPreviewDeleteView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def delete(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         if not (_is_staff_user(request.user) or request.user.id == int(user_id)):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
@@ -9131,6 +9219,8 @@ class AvatarOverlayPreferenceView(APIView):
         return default
 
     def get(self, request, project_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
@@ -9144,6 +9234,8 @@ class AvatarOverlayPreferenceView(APIView):
         return Response(AvatarOverlayPreferenceSerializer(pref).data)
 
     def put(self, request, project_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
         try:
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:

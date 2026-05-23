@@ -61,6 +61,7 @@ import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
 import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
+import { featureEnabled, useCapabilities } from '../lib/capabilities';
 
 const LESSON_TABS = ['overview', 'transcript', 'slides'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
@@ -861,6 +862,7 @@ function ModerationPanel({
   onCloseReview,
   onSubmitReview,
   onSelectFinding,
+  visualModerationEnabled = true,
 }) {
   if (!project) return null;
 
@@ -869,7 +871,7 @@ function ModerationPanel({
   const canRequestAdminReview = Boolean(moderation?.can_request_admin_review);
   const canPublish = projectCanPublishFromModeration(project, moderation);
   const visualScan = projectVisualStaleMarker(project, moderation);
-  const visualNeedsRescan = moderationMarkerIsStale(visualScan);
+  const visualNeedsRescan = visualModerationEnabled && moderationMarkerIsStale(visualScan);
   const adminResponse = textValue(moderation?.admin_review?.admin_response).trim();
   const adminNote = textValue(
     moderation?.admin_note
@@ -906,6 +908,11 @@ function ModerationPanel({
             {visualNeedsRescan && (
               <span className="rounded-full bg-[color:var(--status-info-bg)] px-3 py-1 text-xs font-semibold text-[color:var(--status-info-fg)]">
                 Visual recheck needed
+              </span>
+            )}
+            {!visualModerationEnabled && (
+              <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                Visual scan disabled
               </span>
             )}
           </div>
@@ -1677,6 +1684,14 @@ function LessonIntelligencePanel({
 
 export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const navigate = useNavigate();
+  const { capabilities } = useCapabilities();
+  const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
+  const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
+  const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
+  const visibleEditorPanels = useMemo(
+    () => EDITOR_PANELS.filter((panel) => panel !== 'intelligence' || intelligenceFeatureEnabled),
+    [intelligenceFeatureEnabled],
+  );
   const previewVideoRef = useRef(null);
   const previewSectionRef = useRef(null);
   const transcriptEditorRef = useRef(null);
@@ -1743,6 +1758,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [avatarVisibilitySaving, setAvatarVisibilitySaving] = useState(false);
   const [avatarRerendering, setAvatarRerendering] = useState(false);
   const [avatarRerenderMessage, setAvatarRerenderMessage] = useState('');
+
+  useEffect(() => {
+    if (!intelligenceFeatureEnabled && activeEditorPanel === 'intelligence') {
+      setActiveEditorPanel('transcript');
+    }
+  }, [activeEditorPanel, intelligenceFeatureEnabled]);
 
   const filteredProjects = useMemo(() => {
     if (!searchQuery) return projects;
@@ -1911,7 +1932,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const draftCoverUrl = textValue(selectedLesson?.draft_cover_url || selectedLesson?.draft_thumbnail_url);
   const hasDraftCover = Boolean(draftCoverUrl);
   const selectedVisualMarker = projectVisualStaleMarker(selectedLesson, selectedModeration);
-  const coverVisualNeedsRecheck = visualMarkerTargetsCover(selectedVisualMarker)
+  const coverVisualNeedsRecheck = visualModerationEnabled
+    && visualMarkerTargetsCover(selectedVisualMarker)
     && moderationMarkerIsStale(selectedVisualMarker);
   const previewSubtitleSummary = useMemo(
     () => subtitleTrackSummary(previewSubtitleTracks, previewLesson),
@@ -1999,6 +2021,17 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const refreshLessonIntelligence = useCallback(async (projectId, { showLoading = true, preserveError = false } = {}) => {
     if (!projectId) return null;
+    if (!intelligenceFeatureEnabled) {
+      setLessonIntelligenceByProject((previous) => {
+        if (!Object.prototype.hasOwnProperty.call(previous, projectId)) return previous;
+        const next = { ...previous };
+        delete next[projectId];
+        return next;
+      });
+      setLessonIntelligenceError('');
+      setLoadingLessonIntelligence(false);
+      return null;
+    }
     if (showLoading) setLoadingLessonIntelligence(true);
     if (!preserveError) setLessonIntelligenceError('');
     try {
@@ -2016,7 +2049,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     } finally {
       if (showLoading) setLoadingLessonIntelligence(false);
     }
-  }, []);
+  }, [intelligenceFeatureEnabled]);
 
   const refreshProjectTranscript = useCallback(async (projectId, { showLoading = true, preserveOnError = false } = {}) => {
     if (!projectId) return [];
@@ -2042,13 +2075,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const refreshSelectedLessonState = useCallback(async (projectId, { showLoading = false } = {}) => {
     if (!projectId) return;
-    await Promise.all([
+    const refreshes = [
       refreshProjects({ showLoading, preserveOnError: true }),
       refreshProjectModeration(projectId, { showLoading: false, preserveError: true }),
-      refreshLessonIntelligence(projectId, { showLoading: false, preserveError: true }),
       refreshProjectTranscript(projectId, { showLoading: false, preserveOnError: true }),
-    ]);
-  }, [refreshLessonIntelligence, refreshProjectModeration, refreshProjectTranscript, refreshProjects]);
+    ];
+    if (intelligenceFeatureEnabled) {
+      refreshes.push(refreshLessonIntelligence(projectId, { showLoading: false, preserveError: true }));
+    }
+    await Promise.all(refreshes);
+  }, [intelligenceFeatureEnabled, refreshLessonIntelligence, refreshProjectModeration, refreshProjectTranscript, refreshProjects]);
 
   const selectedLessonNeedsPolling = useMemo(() => studioLessonNeedsPolling({
     project: selectedLesson,
@@ -2085,7 +2121,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [refreshSelectedLessonState, selectedLesson?.id, selectedLessonNeedsPolling]);
 
   useEffect(() => {
-    if (!selectedLesson?.id || !lessonIntelligenceEnhancementPending(selectedLessonIntelligence)) return undefined;
+    if (!intelligenceFeatureEnabled || !selectedLesson?.id || !lessonIntelligenceEnhancementPending(selectedLessonIntelligence)) return undefined;
 
     let active = true;
     const poll = async () => {
@@ -2106,7 +2142,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [selectedLesson?.id, selectedLessonIntelligence]);
+  }, [intelligenceFeatureEnabled, selectedLesson?.id, selectedLessonIntelligence]);
 
   useEffect(() => {
     if (!activeRerenderStatus || !selectedLesson?.id) return;
@@ -2131,6 +2167,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [refreshProjectModeration, selectedLesson?.id]);
 
   useEffect(() => {
+    if (!intelligenceFeatureEnabled) {
+      setLessonIntelligenceError('');
+      setLessonIntelligenceCopied(false);
+      setLessonIntelligenceCopiedItemKey('');
+      setLessonIntelligenceNotice('');
+      setLessonIntelligenceByProject({});
+      return;
+    }
     if (!selectedLesson?.id) {
       setLessonIntelligenceError('');
       setLessonIntelligenceCopied(false);
@@ -2144,7 +2188,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setLessonIntelligenceCopiedItemKey('');
     setLessonIntelligenceNotice('');
     refreshLessonIntelligence(selectedLesson.id);
-  }, [refreshLessonIntelligence, selectedLesson?.id]);
+  }, [intelligenceFeatureEnabled, refreshLessonIntelligence, selectedLesson?.id]);
 
   useEffect(() => {
     if (!selectedLesson?.id) {
@@ -2307,7 +2351,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         setEditorCanvas(String(draft.canvas || selectedLesson?.description || ''));
         setPauseSec(String(draft.pauseSec || '0.2'));
         setWhiteboardModeAll(Boolean(draft.whiteboardModeAll));
-        setAvatarEnabled(draft.avatarEnabled === true);
+        setAvatarEnabled(avatarFeatureEnabled && draft.avatarEnabled === true);
         setEditorSavedAtLabel('Draft restored');
         return;
       } catch {
@@ -2320,9 +2364,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setEditorCanvas(selectedLesson?.description || '');
     setPauseSec('0.2');
     setWhiteboardModeAll(false);
-    setAvatarEnabled(Boolean(selectedLesson?.avatar_enabled_override ?? selectedLesson?.avatar_active ?? false));
+    setAvatarEnabled(avatarFeatureEnabled && Boolean(selectedLesson?.avatar_enabled_override ?? selectedLesson?.avatar_active ?? false));
     setEditorSavedAtLabel('');
-  }, [selectedLesson?.avatar_active, selectedLesson?.avatar_enabled_override, selectedLesson?.category_name, selectedLesson?.description, selectedLesson?.id, selectedLesson?.title]);
+  }, [avatarFeatureEnabled, selectedLesson?.avatar_active, selectedLesson?.avatar_enabled_override, selectedLesson?.category_name, selectedLesson?.description, selectedLesson?.id, selectedLesson?.title]);
 
   useEffect(() => {
     setAvatarRerenderMessage('');
@@ -2352,7 +2396,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     if (user?.id) formData.append('user_id', user.id);
     if (pauseSec) formData.append('pause_sec', pauseSec);
     if (whiteboardModeAll) formData.append('whiteboard_mode_all', '1');
-    formData.append('avatar_enabled', avatarEnabled ? '1' : '0');
+    formData.append('avatar_enabled', avatarFeatureEnabled && avatarEnabled ? '1' : '0');
 
     try {
       const createdJob = await createProject(formData);
@@ -2382,7 +2426,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       canvas: editorCanvas,
       pauseSec,
       whiteboardModeAll,
-      avatarEnabled,
+      avatarEnabled: avatarFeatureEnabled && avatarEnabled,
     };
     window.localStorage.setItem(editorDraftKey(selectedLesson?.id), JSON.stringify(draftPayload));
     setEditorSavedAtLabel(`Draft saved at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
@@ -2406,7 +2450,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const handleRerenderProject = async (project, options = {}) => {
     const hasAvatarOverride = Object.prototype.hasOwnProperty.call(options, 'avatarEnabled');
-    const avatarQueueExpected = projectAvatarEnabled(project) && !(hasAvatarOverride && options.avatarEnabled === false);
+    const avatarQueueExpected = avatarFeatureEnabled && projectAvatarEnabled(project) && !(hasAvatarOverride && options.avatarEnabled === false);
     const queueNote = avatarQueueExpected
       ? ' Avatar will continue in the background after the base render is ready.'
       : '';
@@ -2422,7 +2466,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   };
 
   const handleAvatarVisibilityToggle = async (project, nextVisible) => {
-    if (!project?.id || avatarVisibilitySaving) return;
+    if (!avatarFeatureEnabled || !project?.id || avatarVisibilitySaving) return;
     setAvatarVisibilitySaving(true);
     try {
       const updated = await updateProjectAvatarVisible(project.id, nextVisible);
@@ -2457,7 +2501,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, []);
 
   const handleAvatarOnlyRerender = async () => {
-    if (!selectedLesson?.id || avatarRerendering) return;
+    if (!avatarFeatureEnabled || !selectedLesson?.id || avatarRerendering) return;
     setAvatarRerendering(true);
     setAvatarRerenderMessage('');
     try {
@@ -2688,6 +2732,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   };
 
   const handleAnalyzeLessonIntelligence = useCallback(async (project, { auto = false, force = false } = {}) => {
+    if (!intelligenceFeatureEnabled) return null;
     if (!project?.id || lessonIntelligenceActionBusy) return null;
     if (lessonIntelligenceEnhancementPending(lessonIntelligenceByProject[project.id])) return null;
     setLessonIntelligenceActionBusy('analyze');
@@ -2707,7 +2752,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     } finally {
       setLessonIntelligenceActionBusy('');
     }
-  }, [lessonIntelligenceActionBusy, lessonIntelligenceByProject]);
+  }, [intelligenceFeatureEnabled, lessonIntelligenceActionBusy, lessonIntelligenceByProject]);
 
   const handleCopyLessonIntelligence = async () => {
     const text = lessonIntelligenceCopyText(selectedLessonIntelligence);
@@ -2759,6 +2804,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   };
 
   useEffect(() => {
+    if (!intelligenceFeatureEnabled) return;
     if (!selectedLesson?.id || loadingLessonIntelligence || lessonIntelligenceActionBusy) return;
     const hasFetchedReport = Object.prototype.hasOwnProperty.call(lessonIntelligenceByProject, selectedLesson.id);
     if (!hasFetchedReport) return;
@@ -2781,6 +2827,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [
     activeEditorPanel,
     handleAnalyzeLessonIntelligence,
+    intelligenceFeatureEnabled,
     lessonIntelligenceActionBusy,
     lessonIntelligenceByProject,
     loadingLessonIntelligence,
@@ -3070,7 +3117,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const latestRenderStatus = activeRerenderStatus || selectedLesson?.latest_job || null;
   const avatarJobInFlight = ['queued', 'processing'].includes(avatarProcessingStatus(selectedLesson));
   const avatarOnlyRerenderDisabled = (
-    !selectedLesson
+    !avatarFeatureEnabled
+    || !selectedLesson
     || avatarRerendering
     || avatarJobInFlight
     || !projectRenderReady(selectedLesson)
@@ -3344,9 +3392,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       saveLessonNotes();
       await refreshSelectedLessonState(selectedLesson.id, { showLoading: false });
       if (hadTranscriptChanges) {
-        if (activeEditorPanel === 'intelligence') {
+        if (intelligenceFeatureEnabled && activeEditorPanel === 'intelligence') {
           await handleAnalyzeLessonIntelligence(selectedLesson, { auto: true });
-        } else {
+        } else if (intelligenceFeatureEnabled) {
           setLessonIntelligenceByProject((previous) => {
             const current = previous[selectedLesson.id];
             if (!current) return previous;
@@ -3371,6 +3419,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     applyProjectModerationPayload,
     handleAnalyzeLessonIntelligence,
     handleProjectUpdated,
+    intelligenceFeatureEnabled,
     refreshSelectedLessonState,
     saveLessonNotes,
     selectedLesson,
@@ -3444,7 +3493,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       category: editorCategory,
       pauseSec,
       whiteboardModeAll,
-      avatarEnabled,
+      avatarEnabled: avatarFeatureEnabled && avatarEnabled,
     });
 
     if (!created) {
@@ -3597,14 +3646,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         Moderation: {moderationStatusLabel(projectModerationStatus(selectedLesson, selectedModeration))}
                       </span>
                     )}
-                    {selectedLesson && (
+                    {avatarFeatureEnabled && selectedLesson && (
                       <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5">
                         {avatarStatusLabel(selectedLesson)}
                       </span>
                     )}
                   </div>
 
-                  {selectedLesson && !readOnlyReview && (
+                  {avatarFeatureEnabled && selectedLesson && !readOnlyReview && (
                     <div className="space-y-3 border-y border-[var(--border-subtle)] py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
@@ -3719,6 +3768,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             onPlaybackTimeChange={() => {}}
                             videoRef={previewVideoRef}
                             asSurface={false}
+                            avatarOverlayMode={avatarFeatureEnabled ? 'floating' : 'disabled'}
                             captionMissingLabel="Captions will appear after render completes."
                           />
 
@@ -4037,7 +4087,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         <span className={`rounded-full px-2 py-0.5 ${moderationStatusTone(projectModerationStatus(project, projectModeration))}`}>
                           Moderation: {moderationStatusLabel(projectModerationStatus(project, projectModeration))}
                         </span>
-                        {(projectAvatarEnabled(project) || avatarProcessingStatus(project) !== 'none') && (
+                        {avatarFeatureEnabled && (projectAvatarEnabled(project) || avatarProcessingStatus(project) !== 'none') && (
                           <span className="rounded-full bg-[color:var(--surface-muted)] px-2 py-0.5 text-[var(--text-secondary)]">
                             {avatarStatusLabel(project)}
                           </span>
@@ -4429,7 +4479,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 )}
 
                 <div className="rail-scroll relative z-10 -mx-1 flex shrink-0 gap-2 overflow-x-auto bg-[var(--bg-elevated)] px-1 py-1">
-                  {EDITOR_PANELS.map((panel) => {
+                  {visibleEditorPanels.map((panel) => {
                     const selected = activeEditorPanel === panel;
                     const hasModerationWarning = (
                       (panel === 'transcript' && Object.keys(moderationPageWarnings).length > 0)
@@ -4512,14 +4562,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           <span>Whiteboard mode all slides</span>
                         </label>
 
-                        <label className="inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm text-[var(--text-secondary)]">
-                          <input
-                            type="checkbox"
-                            checked={avatarEnabled}
-                            onChange={(event) => setAvatarEnabled(event.target.checked)}
-                          />
-                          <span>Render with avatar</span>
-                        </label>
+                        {avatarFeatureEnabled && (
+                          <label className="inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm text-[var(--text-secondary)]">
+                            <input
+                              type="checkbox"
+                              checked={avatarEnabled}
+                              onChange={(event) => setAvatarEnabled(event.target.checked)}
+                            />
+                            <span>Render with avatar</span>
+                          </label>
+                        )}
                       </div>
                   </div>
 
@@ -4840,6 +4892,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         onCloseReview={() => setReviewDialogOpen(false)}
                         onSubmitReview={() => handleRequestAdminReview(selectedLesson)}
                         onSelectFinding={handleSelectModerationFinding}
+                        visualModerationEnabled={visualModerationEnabled}
                       />
                     ) : (
                       <div className="rounded-2xl token-surface p-4">
@@ -4851,6 +4904,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     )}
                   </div>
 
+                  {intelligenceFeatureEnabled && (
                   <div className={activeEditorPanel === 'intelligence' ? '' : 'hidden'}>
                     {selectedLesson ? (
                       <LessonIntelligencePanel
@@ -4880,6 +4934,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       </div>
                     )}
                   </div>
+                  )}
 
                   <div className={activeEditorPanel === 'notes' ? 'space-y-3' : 'hidden'}>
                       <div>

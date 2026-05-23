@@ -261,6 +261,7 @@ def test_ocr_provider_selection_uses_azure_and_unknown_falls_back_to_noop(monkey
 
 @pytest.mark.django_db
 def test_auto_ocr_with_mocked_azure_provider_records_findings(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "OCR_MODERATION_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "OCR_MODERATION_BLOCK_RENDER_ON_REJECTION", False, raising=False)
     monkeypatch.setattr(settings, "OCR_MODERATION_PHASE", "ocr_slide_scan", raising=False)
