@@ -167,3 +167,11 @@ Watch:
 - HLS manifest/segment errors
 
 Keep the release owner available until smoke and metrics are stable.
+
+## 14. CI Reliability Notes
+
+- CI runs are branch-concurrent; newer pushes cancel older in-progress runs on the same branch.
+- Job-level timeouts are expected safeguards. Timeout failures should be triaged as capacity/flakiness signals first.
+- For backend test failures, inspect the `backend-pytest-junit` artifact (`pytest-report.xml`) before rerun.
+- For e2e failures, inspect `frontend-playwright-report` artifact when available.
+- Flaky rerun approach: rerun the failed job once after artifact triage; repeated failure should be treated as deterministic and fixed before release.

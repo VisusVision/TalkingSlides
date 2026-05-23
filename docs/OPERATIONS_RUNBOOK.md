@@ -133,3 +133,17 @@ Do not manually delete active project folders while jobs are running.
 - Do not run avatar/GPU work in the API process.
 - Do not remove Docker volumes or storage directories without a backup and explicit incident approval.
 - Do not increase avatar concurrency without GPU validation.
+
+## CI Failure Triage Quick Path
+
+When CI fails, check artifacts before re-running blindly:
+
+1. Open the failed GitHub Actions run.
+2. Download `backend-pytest-junit` and inspect `pytest-report.xml` for the first failing test and error type.
+3. Download `frontend-playwright-report` if present and open the Playwright HTML report for failing spec, trace, and screenshot context.
+4. If a job ended due to timeout, treat it as reliability/load contention first, not a feature regression by default.
+5. Re-run only the failed job once after triage. If the same failure repeats, escalate as deterministic failure.
+
+Concurrency note:
+
+- CI uses branch-scoped concurrency with in-progress cancellation enabled. Older runs on the same branch are expected to stop once a newer commit is pushed.

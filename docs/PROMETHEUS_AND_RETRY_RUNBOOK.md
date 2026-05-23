@@ -61,3 +61,13 @@ scrape_configs:
 - Caller not project owner/staff: returns `403`.
 - Job not found: returns `404`.
 - Queue admission guard can reject under saturation with `429` and retry hints.
+
+## CI observability artifacts
+
+For pipeline debugging and regression triage:
+
+- Backend test runs publish a JUnit XML artifact named `backend-pytest-junit` containing `pytest-report.xml`.
+- Frontend e2e runs publish `frontend-playwright-report` when Playwright output exists.
+- Artifact absence with `if-no-files-found: ignore` is non-fatal by design and should not be interpreted as a successful test pass.
+
+Use artifacts as the first source of truth before manual reruns.
