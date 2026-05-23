@@ -61,6 +61,8 @@ RUN ln -s /usr/bin/python3 /usr/bin/python || true && ln -s /usr/bin/pip3 /usr/b
 # Python dependencies
 # ---------------------------------------------------------------------------
 WORKDIR /app
+ENV PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5
 
 COPY services/worker/requirements.txt /tmp/worker-req.txt
 COPY services/api/requirements.txt    /tmp/api-req.txt

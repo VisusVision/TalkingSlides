@@ -184,7 +184,7 @@ def test_owner_can_analyze_draft_lesson():
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
-def test_staff_cannot_analyze_non_owned_project():
+def test_staff_can_analyze():
     owner = _make_user("li_staff_owner")
     staff = _make_user("li_staff", is_staff=True)
     project = _make_project(owner)
@@ -192,7 +192,8 @@ def test_staff_cannot_analyze_non_owned_project():
 
     response = _client(staff).post(_analyze_url(project), {}, format="json")
 
-    assert response.status_code == 403
+    assert response.status_code == 200
+    assert response.data["status"] == "done"
 
 
 @override_settings(LESSON_INTELLIGENCE_ENABLED=True, LESSON_INTELLIGENCE_PROVIDER_CHAIN="heuristic")

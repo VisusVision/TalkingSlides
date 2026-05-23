@@ -192,6 +192,7 @@ from core.avatar_source_validation import (
 )
 from ai_agents.policies import (
     APPROVED_MODERATION_STATUSES,
+    manual_moderation_prevents_auto_override,
     moderation_is_approved_for_catalog,
     publication_block_payload,
     project_can_publish,
@@ -3201,7 +3202,7 @@ class StudioPreviewTokenView(APIView):
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        if not _can_manage_project(request.user, project):
+        if not _can_review_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         job = _latest_completed_video_export_job(project)
@@ -3885,6 +3886,8 @@ def _can_manage_project(user, project: Project) -> bool:
 def _can_run_lesson_intelligence(user, project: Project) -> bool:
     if not _is_authenticated_user(user):
         return False
+    if _is_staff_user(user):
+        return True
     if not _can_edit_project(user, project):
         return False
     profile = getattr(user, "profile", None)
@@ -5010,7 +5013,7 @@ class ProjectDetailView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_manage_project(request.user, project):
+        if not _can_review_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
         return Response(ProjectSerializer(project, context={"request": request}).data)
 
@@ -5282,9 +5285,27 @@ def _mark_project_text_moderation_stale(
     if not changed_fields:
         return
     phase = "studio_text_edit"
-    changed_at = timezone.now().isoformat()
+    changed_at_dt = timezone.now()
+    changed_at = changed_at_dt.isoformat()
+    project.latest_publisher_change_at = changed_at_dt
     summary = dict(project.moderation_summary or {})
     auto_enabled = _source_moderation_auto_enabled()
+    if manual_moderation_prevents_auto_override(project):
+        editor_text_changed = {
+            "status": "manual_block_active",
+            "stale": True,
+            "needs_rescan": False,
+            "reason": "studio_text_changed_manual_block_active",
+            "changed_fields": sorted(changed_fields),
+            "changed_page_keys": sorted({str(key) for key in (changed_page_keys or []) if str(key)}),
+            "content_hash": _changed_transcript_content_hash(project, changed_page_keys),
+            "changed_at": changed_at,
+        }
+        summary["editor_text_changed"] = editor_text_changed
+        summary["message"] = "Studio text changed, but a manual moderation block remains active."
+        project.moderation_summary = summary
+        project.save(update_fields=["moderation_summary", "latest_publisher_change_at", "updated_at"])
+        return
     next_status = "pending" if auto_enabled else "not_scanned"
     summary.update(
         {
@@ -5309,7 +5330,7 @@ def _mark_project_text_moderation_stale(
     )
     project.moderation_status = next_status
     project.moderation_summary = summary
-    project.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
+    project.save(update_fields=["moderation_status", "moderation_summary", "latest_publisher_change_at", "updated_at"])
 
     if not auto_enabled:
         return
@@ -6045,7 +6066,7 @@ class ProjectTranscriptView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_manage_project(request.user, project):
+        if not _can_review_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         return Response(_studio_transcript_response_payload(project, request))
@@ -9271,18 +9292,14 @@ class CatalogListView(APIView):
             if cached is not None:
                 return Response(cached)
 
-        # Public catalog: published + render done + moderation approved/not_scanned.
-        # Lessons that are unscanned (not_scanned) are also shown so that projects
-        # without auto-moderation enabled are not silently hidden from the catalog.
-        # Explicitly rejected/blocked lessons are excluded via moderation_status__in.
+        # Public catalog: published + render done + moderation approved/admin-approved.
         projects = (
             Project.objects.filter(
                 is_published=True,
                 status="ready",
-                moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+                moderation_status__in=APPROVED_MODERATION_STATUSES,
                 jobs__status="done",
             )
-            .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
             .annotate(
                 likes_count=Count("likes", distinct=True),
@@ -9403,10 +9420,9 @@ class CatalogFeedView(APIView):
             Project.objects.filter(
                 is_published=True,
                 status="ready",
-                moderation_status__in=APPROVED_MODERATION_STATUSES | frozenset({"not_scanned"}),
+                moderation_status__in=APPROVED_MODERATION_STATUSES,
                 jobs__status="done",
             )
-            .exclude(moderation_status__in=["admin_rejected", "revision_required"])
             .select_related("user", "category")
             .annotate(
                 likes_count=Count("likes", distinct=True),
@@ -10702,6 +10718,41 @@ class CatalogDetailView(APIView):
 
         job = _latest_completed_video_export_job(project)
         if not job:
+            if _can_review_project(getattr(request, "user", None), project):
+                data = CatalogProjectSerializer(project, context={"request": request}).data
+                data.update(
+                    {
+                        "stream_url": "",
+                        "srt_url": None,
+                        "vtt_url": None,
+                        "subtitle_vtt_url": None,
+                        "has_srt": False,
+                        "has_vtt": False,
+                        "expires_in": 0,
+                        "watermark": "",
+                        "protection": {"mode": "review_no_video"},
+                        "drm": {"enabled": False},
+                        "avatar_overlay": {"enabled": False, "stream_url": "", "defaults": {}},
+                        "avatar_placement": normalize_avatar_placement(),
+                        "avatar_active_for_lesson": _avatar_active_for_project(project),
+                        "avatar_processing_status": getattr(project, "avatar_processing_status", "none"),
+                        "avatar_processing_message": getattr(project, "avatar_processing_message", ""),
+                        "avatar_visible": getattr(project, "avatar_visible", True),
+                        "avatar_available": False,
+                        "playback_status": "video_not_ready",
+                        "video_ready": False,
+                        "mode_debug": {"source": "review_no_video"},
+                        "transcript_pages": _project_transcript_timeline(project, context={"request": request}),
+                        "moderation_status": project.moderation_status,
+                        "moderation_summary": project.moderation_summary if isinstance(project.moderation_summary, dict) else {},
+                        "manual_moderation_status": getattr(project, "manual_moderation_status", ""),
+                        "manual_moderation_reason": getattr(project, "manual_moderation_reason", ""),
+                        "publisher_id": project.user_id,
+                        "publisher_username": project.user.username if project.user else "",
+                        "publisher_display_name": _publisher_public_lesson_display_name(project.user) if project.user else "",
+                    }
+                )
+                return Response(data)
             return Response({"error": "Lesson video not ready."}, status=status.HTTP_404_NOT_FOUND)
 
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")

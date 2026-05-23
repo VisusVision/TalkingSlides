@@ -30,6 +30,7 @@ class ModerationOrchestrator:
     ) -> dict[str, Any]:
         from django.contrib.auth.models import User
         from ai_agents.models import AgentRun
+        from ai_agents.policies import manual_moderation_prevents_auto_override
         from core.models import Project
 
         project = Project.objects.select_related("user").get(pk=int(project_id))
@@ -45,15 +46,38 @@ class ModerationOrchestrator:
             status="running",
         )
 
-        Project.objects.filter(pk=project.id).update(
-            moderation_status="pending",
-            moderation_summary={
-                "moderation_status": "pending",
-                "message": "Moderation scan is running.",
-                "run_id": run.id,
-            },
-            last_moderation_run_id=run.id,
-        )
+        with transaction.atomic():
+            locked = Project.objects.select_for_update().get(pk=project.id)
+            if manual_moderation_prevents_auto_override(locked):
+                summary = {
+                    "moderation_status": locked.moderation_status,
+                    "message": "Moderation scan skipped because a manual admin decision is active.",
+                    "run_id": run.id,
+                    "manual_moderation_status": locked.manual_moderation_status,
+                }
+                run.status = "done"
+                run.final_decision = "manual_block_active"
+                run.summary = summary
+                run.completed_at = timezone.now()
+                run.save(update_fields=["status", "final_decision", "summary", "completed_at"])
+                return {
+                    "status": "skipped_manual_block",
+                    "project_id": project.id,
+                    "run_id": run.id,
+                    "moderation_status": locked.moderation_status,
+                }
+            pending_summary = dict(locked.moderation_summary or {})
+            pending_summary.update(
+                {
+                    "moderation_status": "pending",
+                    "message": "Moderation scan is running.",
+                    "run_id": run.id,
+                }
+            )
+            locked.moderation_status = "pending"
+            locked.moderation_summary = pending_summary
+            locked.last_moderation_run_id = run.id
+            locked.save(update_fields=["moderation_status", "moderation_summary", "last_moderation_run_id", "updated_at"])
         project.refresh_from_db()
 
         try:
@@ -68,13 +92,55 @@ class ModerationOrchestrator:
                 result=result,
             )
             with transaction.atomic():
-                Project.objects.filter(pk=project.id).update(
-                    moderation_status=project_status,
-                    moderation_summary=summary,
-                    last_moderation_run_id=run.id,
-                )
+                locked = Project.objects.select_for_update().get(pk=project.id)
+                if manual_moderation_prevents_auto_override(locked):
+                    skipped_summary = dict(summary)
+                    skipped_summary.update(
+                        {
+                            "moderation_status": locked.moderation_status,
+                            "message": "Automatic moderation did not change this lesson because a manual admin decision is active.",
+                            "manual_moderation_status": locked.manual_moderation_status,
+                        }
+                    )
+                    run.status = "done"
+                    run.final_decision = final_decision
+                    run.input_hash = str(result.metadata.get("input_hash") or "")
+                    run.summary = skipped_summary
+                    run.completed_at = timezone.now()
+                    run.save(update_fields=["status", "final_decision", "input_hash", "summary", "completed_at"])
+                    return {
+                        "status": "skipped_manual_block",
+                        "project_id": project.id,
+                        "run_id": run.id,
+                        "final_decision": final_decision,
+                        "moderation_status": locked.moderation_status,
+                        "finding_count": persisted_count,
+                    }
+                locked.moderation_status = project_status
+                locked.moderation_summary = summary
+                locked.last_moderation_run_id = run.id
+                update_fields = ["moderation_status", "moderation_summary", "last_moderation_run_id", "updated_at"]
+                if project_status in {"approved", "admin_approved"}:
+                    locked.manual_moderation_status = ""
+                    locked.manual_moderation_reason = ""
+                    locked.manual_moderation_by = None
+                    locked.manual_moderation_at = None
+                    locked.moderation_blocked_until_review = False
+                    update_fields.extend(
+                        [
+                            "manual_moderation_status",
+                            "manual_moderation_reason",
+                            "manual_moderation_by",
+                            "manual_moderation_at",
+                            "moderation_blocked_until_review",
+                        ]
+                    )
+                    self._resolve_publication_blocks(locked)
+                locked.save(update_fields=update_fields)
                 if project_status == "revision_required":
-                    self._create_block_event(project, run, result.findings)
+                    self._create_block_event(locked, run, result.findings)
+                if project_status in {"revision_required", "needs_admin_review"}:
+                    self._ensure_auto_review_request(locked, run, project_status)
                 run.status = "done"
                 run.final_decision = final_decision
                 run.input_hash = str(result.metadata.get("input_hash") or "")
@@ -98,11 +164,15 @@ class ModerationOrchestrator:
                 "message": "Moderation scan failed. Please try again or contact support.",
                 "run_id": run.id,
             }
-            Project.objects.filter(pk=project.id).update(
-                moderation_status="failed",
-                moderation_summary=failure_summary,
-                last_moderation_run_id=run.id,
-            )
+            with transaction.atomic():
+                locked = Project.objects.select_for_update().get(pk=project.id)
+                if not manual_moderation_prevents_auto_override(locked):
+                    summary = dict(locked.moderation_summary or {})
+                    summary.update(failure_summary)
+                    locked.moderation_status = "failed"
+                    locked.moderation_summary = summary
+                    locked.last_moderation_run_id = run.id
+                    locked.save(update_fields=["moderation_status", "moderation_summary", "last_moderation_run_id", "updated_at"])
             run.status = "failed"
             run.final_decision = "needs_admin_review"
             run.error_message = error_text
@@ -202,6 +272,12 @@ class ModerationOrchestrator:
         highest = self.policy_engine.highest_priority_finding(findings)
         if highest is None:
             return
+        if PublicationBlockEvent.objects.filter(
+            project=project,
+            resolved=False,
+            reason_category=highest.category,
+        ).exists():
+            return
         PublicationBlockEvent.objects.create(
             project=project,
             run=run,
@@ -210,6 +286,27 @@ class ModerationOrchestrator:
             highest_severity=highest.severity,
             message_to_user=highest.user_message or _summary_message("block"),
             message_to_admin=highest.admin_message or "Blocked by local text moderation.",
+        )
+
+    def _resolve_publication_blocks(self, project) -> None:
+        from ai_agents.models import PublicationBlockEvent
+
+        PublicationBlockEvent.objects.filter(project=project, resolved=False).update(
+            resolved=True,
+            resolved_at=timezone.now(),
+        )
+
+    def _ensure_auto_review_request(self, project, run, project_status: str) -> None:
+        from ai_agents.models import AdminReviewRequest
+
+        AdminReviewRequest.objects.get_or_create(
+            project=project,
+            status="open",
+            defaults={
+                "run": run,
+                "requested_by": None,
+                "publisher_message": _summary_message("needs_admin_review" if project_status == "needs_admin_review" else "block"),
+            },
         )
 
 

@@ -29,8 +29,8 @@ from core.notifications import (  # noqa: E402
 )
 
 
-def _make_user(username: str, *, role: str = "student") -> User:
-    user = User.objects.create_user(username=username, password="pass")
+def _make_user(username: str, *, role: str = "student", is_staff: bool = False) -> User:
+    user = User.objects.create_user(username=username, password="pass", is_staff=is_staff)
     UserProfile.objects.create(user=user, role=role)
     return user
 
@@ -294,6 +294,40 @@ def test_avatar_success_and_failure_create_owner_notifications():
         recipient_user=publisher,
         event_type=Notification.EventType.PUBLISHER_AVATAR_RENDER_FAILED,
     ).count() == 1
+
+
+@pytest.mark.django_db
+def test_admin_moderation_actions_notify_publisher():
+    publisher = _make_user("notify_mod_publisher", role="publisher")
+    staff = _make_user("notify_mod_staff", is_staff=True)
+    lesson = _make_lesson(publisher, "Moderated Lesson")
+
+    request_changes = _client(staff).post(
+        f"/api/v1/moderation/projects/{lesson.id}/request-changes/",
+        {"reason": "Replace the unsafe example."},
+        format="json",
+    )
+    block = _client(staff).post(
+        f"/api/v1/moderation/projects/{lesson.id}/block/",
+        {"reason": "Still unsafe."},
+        format="json",
+    )
+    approve = _client(staff).post(
+        f"/api/v1/moderation/projects/{lesson.id}/approve/",
+        {"reason": "Fixed."},
+        format="json",
+    )
+
+    assert request_changes.status_code == 200
+    assert block.status_code == 200
+    assert approve.status_code == 200
+    notifications = Notification.objects.filter(
+        recipient_user=publisher,
+        event_type=Notification.EventType.PUBLISHER_LESSON_MODERATION_ACTION,
+    ).order_by("id")
+    assert notifications.count() == 3
+    assert [row.metadata["action"] for row in notifications] == ["request_changes", "block", "approve"]
+    assert all(row.action_url == f"/studio?lesson={lesson.id}" for row in notifications)
 
 
 @pytest.mark.django_db

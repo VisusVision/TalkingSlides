@@ -53,7 +53,7 @@ class TestModerationExtraQA:
         project.refresh_from_db()
         
         assert project.moderation_status == "revision_required"
-        assert not AdminReviewRequest.objects.filter(project=project).exists()
+        assert AdminReviewRequest.objects.filter(project=project, status="open").exists()
 
     def test_approved_project_cannot_create_admin_review_request(self):
         user = _make_user("qa_state_2")

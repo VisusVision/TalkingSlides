@@ -111,7 +111,8 @@ def test_staff_admin_can_review_block_and_approve_through_moderation_endpoint():
 
     assert blocked.status_code == 200
     assert project.moderation_status == "admin_rejected"
-    assert project.is_published is False
+    assert project.is_published is True
+    assert project.manual_moderation_status == "blocked"
     assert ModerationAuditEvent.objects.filter(project=project, action="block", actor=staff).exists()
 
     approved = _client(staff).post(
@@ -136,6 +137,41 @@ def test_staff_admin_can_read_watch_review_copy():
 
     assert response.status_code == 200
     assert response.data["id"] == project.id
+
+
+@pytest.mark.django_db
+def test_staff_admin_can_read_project_detail_but_not_patch_non_owner():
+    owner = _make_user("perm_detail_owner", role="publisher")
+    staff = _make_user("perm_detail_staff", role="student", is_staff=True)
+    project = _make_project(owner)
+
+    read = _client(staff).get(f"/api/v1/projects/{project.id}/")
+    edit = _client(staff).patch(f"/api/v1/projects/{project.id}/", {"category_name": "Nope"}, format="json")
+
+    assert read.status_code == 200
+    assert read.data["id"] == project.id
+    assert edit.status_code == 403
+
+
+@pytest.mark.django_db
+def test_staff_admin_review_gets_lesson_content_when_video_not_ready():
+    owner = _make_user("perm_no_video_owner", role="publisher")
+    staff = _make_user("perm_no_video_staff", role="student", is_staff=True)
+    project = Project.objects.create(
+        title="No video lesson",
+        user=owner,
+        status="draft",
+        moderation_status="revision_required",
+        is_published=False,
+    )
+
+    response = _client(staff).get(f"/api/v1/catalog/{project.id}/")
+
+    assert response.status_code == 200
+    assert response.data["id"] == project.id
+    assert response.data["video_ready"] is False
+    assert response.data["playback_status"] == "video_not_ready"
+    assert "transcript_pages" in response.data
 
 
 @pytest.mark.django_db

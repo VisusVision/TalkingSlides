@@ -394,6 +394,15 @@ export async function fetchProjects() {
   return res.json();
 }
 
+export async function fetchProject(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, { headers: authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch project"));
+  }
+  return data;
+}
+
 export async function createProject(formData) {
   const res = await fetch(`${API_BASE_URL}/projects/`, {
     method: "POST",
@@ -570,9 +579,45 @@ export async function requestProjectAdminReview(projectId, message = "") {
   return data;
 }
 
-export async function listModerationReviewRequests(status = "open") {
+export async function reportLesson(projectId, { category, message = "" } = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/report/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ category, message }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to submit lesson report"));
+  }
+  return data;
+}
+
+export async function listModerationReports(status = "open") {
   const params = new URLSearchParams();
   if (status) params.set("status", String(status));
+  const query = params.toString();
+  const url = query
+    ? `${API_BASE_URL}/moderation/reports/?${query}`
+    : `${API_BASE_URL}/moderation/reports/`;
+  const res = await fetch(url, {
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation reports"));
+  }
+  return data;
+}
+
+export async function listModerationReviewRequests(status = "open") {
+  const params = new URLSearchParams();
+  if (status && typeof status === "object") {
+    Object.entries(status).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+    });
+  } else if (status) {
+    params.set("status", String(status));
+  }
   const query = params.toString();
   const url = query
     ? `${API_BASE_URL}/admin/moderation/review-requests/?${query}`
@@ -637,11 +682,56 @@ export async function sendModerationReviewResponse(id, adminResponse = "") {
   return data;
 }
 
-export async function runAdminProjectModerationAction(projectId, action, reason = "", phase = "manual_admin_rescan") {
+export async function adminBlockLesson(projectId, reason = "") {
+  const res = await fetch(`${API_BASE_URL}/moderation/projects/${projectId}/block/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ reason }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to block lesson"));
+  }
+  return data;
+}
+
+export async function adminApproveLesson(projectId, reason = "") {
+  const res = await fetch(`${API_BASE_URL}/moderation/projects/${projectId}/approve/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ reason }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to approve lesson"));
+  }
+  return data;
+}
+
+export async function adminRequestLessonChanges(projectId, { reason = "", unpublish = true } = {}) {
+  const res = await fetch(`${API_BASE_URL}/moderation/projects/${projectId}/request-changes/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ reason, unpublish }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to request lesson changes"));
+  }
+  return data;
+}
+
+export async function runAdminProjectModerationAction(
+  projectId,
+  action,
+  reason = "",
+  phase = "manual_admin_rescan",
+  options = {},
+) {
   const res = await fetch(`${API_BASE_URL}/admin/moderation/projects/${projectId}/action/`, {
     method: "POST",
     headers: authHeaders({ "Content-Type": "application/json" }),
-    body: JSON.stringify({ action, reason, phase }),
+    body: JSON.stringify({ action, reason, phase, ...options }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {

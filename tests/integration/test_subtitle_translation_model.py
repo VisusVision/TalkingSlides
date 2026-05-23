@@ -103,7 +103,7 @@ def _make_ready_project_with_transcript(
         title=f"Translated subtitles {username}",
         user=teacher,
         is_published=published,
-        moderation_status="approved",
+        moderation_status="approved" if published else "not_scanned",
         tts_settings=tts_settings or {},
     )
     job = Job.objects.create(

@@ -43,14 +43,14 @@ def _publish(project: Project, user: User):
 @pytest.mark.parametrize(
     ("moderation_status", "expected"),
     [
-        ("not_scanned", True),
-        ("pending", True),
+        ("not_scanned", False),
+        ("pending", False),
         ("approved", True),
         ("revision_required", False),
-        ("needs_admin_review", True),
+        ("needs_admin_review", False),
         ("admin_approved", True),
         ("admin_rejected", False),
-        ("failed", True),
+        ("failed", False),
     ],
 )
 def test_project_can_publish_requires_ready_and_unblocked_moderation(moderation_status, expected):
@@ -92,7 +92,7 @@ def test_publish_patch_rejects_revision_required_project():
 
     assert response.status_code == 400
     assert response.data["detail"] == (
-        "This lesson cannot be published because it was rejected by moderation. "
+        "This lesson cannot be published because moderation has not approved it. "
         "Please revise the content or request an admin review."
     )
     assert response.data["moderation_status"] == "revision_required"
@@ -116,6 +116,23 @@ def test_publish_patch_allows_approved_project():
     assert response.data["is_published"] is True
     project.refresh_from_db()
     assert project.is_published is True
+
+
+@pytest.mark.django_db
+def test_publish_patch_rejects_pending_moderation_project():
+    teacher = _make_teacher("gate_pending")
+    project = Project.objects.create(
+        title="Pending moderation lesson",
+        user=teacher,
+        status="ready",
+        moderation_status="pending",
+    )
+
+    response = _publish(project, teacher)
+
+    assert response.status_code == 400
+    assert response.data["detail"] == "Moderation in progress. Publishing is temporarily blocked."
+    assert response.data["reason"] == "moderation_processing"
 
 
 @pytest.mark.django_db

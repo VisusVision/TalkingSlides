@@ -1062,6 +1062,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             "id", "user", "user_name", "title", "description",
             "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings",
             "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
+            "manual_moderation_status", "manual_moderation_reason", "manual_moderation_at",
+            "moderation_blocked_until_review", "latest_publisher_change_at", "latest_review_requested_at",
             "is_published", "avatar_enabled_override", "avatar_active", "avatar_processing_status",
             "avatar_processing_message", "avatar_visible", "avatar_available", "avatar_last_job_id",
             "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
@@ -1072,6 +1074,8 @@ class ProjectSerializer(serializers.ModelSerializer):
             "id", "user", "user_name", "description",
             "cover_url", "thumbnail_url", "draft_cover_url", "draft_thumbnail_url", "tts_settings", "status",
             "moderation_status", "moderation_summary", "last_moderation_run_id",
+            "manual_moderation_status", "manual_moderation_reason", "manual_moderation_at",
+            "moderation_blocked_until_review", "latest_publisher_change_at", "latest_review_requested_at",
             "avatar_processing_status", "avatar_processing_message", "avatar_available",
             "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
             "avatar_runtime_settings", "avatar_runtime_status",
@@ -1462,6 +1466,9 @@ NOTIFICATION_SAFE_METADATA_KEYS = {
     "base_job_id",
     "status",
     "event",
+    "action",
+    "moderation_status",
+    "manual_moderation_status",
     "is_published",
 }
 NOTIFICATION_PUBLIC_MODERATION_STATUSES = {"approved", "admin_approved"}

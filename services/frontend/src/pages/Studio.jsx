@@ -30,6 +30,7 @@ import {
   fetchStudioPreviewToken,
   fetchProjectTranscript,
   fetchProjectLessonIntelligence,
+  fetchProject,
   fetchProjects,
   getProjectModeration,
   generateSubtitleTrack,
@@ -42,12 +43,15 @@ import {
   updateProjectPublished,
   fetchSubtitleTracks,
   fetchAuthenticatedAssetBlobUrl,
+  adminApproveLesson,
+  adminBlockLesson,
+  adminRequestLessonChanges,
   previewTranscriptPageHighlight,
   uploadProjectCover,
   uploadTranscriptPageBackground,
   updateProjectAvatarVisible,
 } from '../api';
-import { canAccessStudio } from '../lib/auth';
+import { canAccessStudio, isStaffOrAdmin } from '../lib/auth';
 import { avatarRuntimeStatusMessage } from '../utils/avatarRuntimeSettings';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
@@ -59,7 +63,7 @@ import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 
-const LESSON_TABS = ['overview'];
+const LESSON_TABS = ['overview', 'transcript', 'slides'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
 const SOURCE_TYPES_ACCEPT = '.pptx,.pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,.gif';
 const STUDIO_POLL_INTERVAL_MS = 4000;
@@ -162,13 +166,24 @@ const MODERATION_STATUS_LABELS = {
   needs_admin_review: 'Needs admin review',
   admin_approved: 'Admin approved',
   admin_rejected: 'Admin rejected',
+  request_changes: 'Changes requested',
   failed: 'Scan failed',
 };
 
 // Statuses where moderation BLOCKS publishing (mirrors server-side BLOCKED_MODERATION_STATUSES).
 // All other statuses (not_scanned, pending, failed, approved, needs_admin_review, admin_approved)
 // are allowed — the publish button is enabled and the backend will accept the request.
-const MODERATION_BLOCKED_STATUSES = new Set(['admin_rejected', 'revision_required']);
+const MODERATION_BLOCKED_STATUSES = new Set([
+  'admin_rejected',
+  'revision_required',
+  'needs_admin_review',
+  'failed',
+  'not_scanned',
+  'not_scanned_required',
+  'pending',
+  'processing',
+  'running',
+]);
 
 function plainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
@@ -284,22 +299,35 @@ function moderationSuggestedMessage(status) {
     return 'An admin has rejected this lesson. Publishing is blocked. Contact support if you believe this is a mistake.';
   }
   if (normalized === 'needs_admin_review') {
-    return 'This lesson is awaiting admin review. You can still publish — admin review does not block publication.';
+    return 'This lesson is awaiting admin review. Publishing is blocked until moderation approves it.';
   }
   if (normalized === 'approved' || normalized === 'admin_approved') {
     return 'Moderation approved. This lesson can be published when rendering is complete.';
   }
   if (normalized === 'pending') {
-    return 'Moderation scan is running. You can publish once rendering finishes — scan results will not block publishing unless content is rejected.';
+    return 'Moderation in progress. Publishing is temporarily blocked.';
   }
   if (normalized === 'failed') {
-    return 'Moderation scan failed. You can still publish — resubmit a scan at any time.';
+    return 'Moderation scan failed. Resubmit a scan or request admin review before publishing.';
   }
   // not_scanned
-  return 'Moderation has not scanned this lesson. You can publish once rendering is complete.';
+  return 'This lesson must pass moderation before publishing.';
 }
 
 function moderationMessage(project, moderation = null) {
+  const adminNote = textValue(
+    moderation?.admin_note
+    || moderation?.manual_moderation_reason
+    || project?.manual_moderation_reason
+    || '',
+  ).trim();
+  const manualStatus = String(moderation?.manual_moderation_status || project?.manual_moderation_status || '').trim();
+  if (adminNote && manualStatus === 'request_changes') {
+    return `Admin requested changes. Reason: ${adminNote}. Update the lesson and request review.`;
+  }
+  if (adminNote && ['blocked', 'rejected'].includes(manualStatus)) {
+    return `Publish blocked by moderation. Reason: ${adminNote}`;
+  }
   const textMarker = projectEditorTextStaleMarker(project, moderation);
   if (moderationMarkerIsStale(textMarker)) {
     return textMarker.message || 'Text changed in Studio. Moderation needs to scan the updated text.';
@@ -312,20 +340,16 @@ function moderationMessage(project, moderation = null) {
 }
 
 /**
- * Returns true when the FRONTEND considers publishing allowed.
- * Mirrors the server-side project_can_publish() rule:
- *   - blocked only by admin_rejected or revision_required
- *   - render readiness is checked separately via projectRenderReady()
- * The server is the authoritative source; this is a pre-flight UI guard only.
+ * Returns true when the frontend pre-flight considers publishing allowed.
+ * The server is authoritative.
  */
 function projectCanPublishFromModeration(project, moderation = null) {
   // Trust explicit server-side can_publish if present.
   if (moderation && Object.prototype.hasOwnProperty.call(moderation, 'can_publish')) {
     return Boolean(moderation.can_publish);
   }
-  // Fall back to client-side policy: blocked only by explicit rejection.
   const modStatus = projectModerationStatus(project, moderation);
-  return !MODERATION_BLOCKED_STATUSES.has(modStatus);
+  return modStatus === 'approved' || modStatus === 'admin_approved';
 }
 
 function findingHaystack(finding) {
@@ -849,6 +873,14 @@ function ModerationPanel({
   const visualScan = projectVisualStaleMarker(project, moderation);
   const visualNeedsRescan = visualModerationEnabled && moderationMarkerIsStale(visualScan);
   const adminResponse = textValue(moderation?.admin_review?.admin_response).trim();
+  const adminNote = textValue(
+    moderation?.admin_note
+    || moderation?.manual_moderation_reason
+    || project?.manual_moderation_reason
+    || adminResponse,
+  ).trim();
+  const manualStatus = String(moderation?.manual_moderation_status || project?.manual_moderation_status || '').trim();
+  const rescanBlockedByManualDecision = ['blocked', 'rejected', 'needs_review'].includes(manualStatus);
 
   return (
     <div className="rounded-2xl token-surface p-4">
@@ -890,7 +922,7 @@ function ModerationPanel({
             <RefreshCcw size={14} />
             <span>Refresh moderation status</span>
           </Button>
-          <Button size="sm" variant="secondary" onClick={onRescan} disabled={loading || Boolean(actionBusy)}>
+          <Button size="sm" variant="secondary" onClick={onRescan} disabled={loading || Boolean(actionBusy) || rescanBlockedByManualDecision}>
             <RefreshCcw size={14} />
             <span>Resubmit moderation scan</span>
           </Button>
@@ -909,12 +941,15 @@ function ModerationPanel({
       <p className="mt-3 text-sm text-[var(--text-secondary)]">
         {loading ? 'Loading moderation status...' : moderationMessage(project, moderation)}
       </p>
-      {adminResponse && (
+      {adminNote && (
         <div className="mt-3 rounded-xl border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)] p-3">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--status-info-fg)]">
-            Admin response
+            {manualStatus === 'request_changes' ? 'Admin requested changes' : 'Admin moderation message'}
           </p>
-          <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--text-primary)]">{adminResponse}</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm text-[var(--text-primary)]">{adminNote}</p>
+          {manualStatus === 'request_changes' && (
+            <p className="mt-2 text-sm text-[var(--text-secondary)]">Update the lesson and request review.</p>
+          )}
         </div>
       )}
       {visualNeedsRescan && (
@@ -999,6 +1034,73 @@ function ModerationPanel({
           })
         )}
       </div>
+    </div>
+  );
+}
+
+function AdminReviewActionPanel({
+  response,
+  onResponseChange,
+  onAction,
+  busy,
+  message,
+  error,
+}) {
+  const disabled = Boolean(busy);
+
+  return (
+    <div className="rounded-2xl token-surface p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="label-sm">Staff decision</p>
+          <p className="mt-1 text-sm text-[var(--text-secondary)]">
+            Send publisher guidance, keep the lesson blocked, or approve the review without opening the editor.
+          </p>
+        </div>
+      </div>
+
+      <label className="mt-4 block text-sm text-[var(--text-secondary)]">
+        Admin response
+        <textarea
+          value={response}
+          onChange={(event) => onResponseChange(event.target.value)}
+          maxLength={4000}
+          placeholder="Add a short response for the publisher..."
+          className="focus-ring mt-2 min-h-[88px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]"
+        />
+      </label>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+          <AlertTriangle size={14} />
+          <span>Approving clears moderation blockers. Requesting changes keeps publishing blocked.</span>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button size="sm" variant="secondary" onClick={() => onAction('request_changes')} disabled={disabled}>
+            <FileText size={14} />
+            <span>{busy === 'request_changes' ? 'Requesting...' : 'Request changes'}</span>
+          </Button>
+          <Button size="sm" variant="secondary" onClick={() => onAction('block')} disabled={disabled}>
+            <AlertTriangle size={14} />
+            <span>{busy === 'block' ? 'Blocking...' : 'Keep blocked'}</span>
+          </Button>
+          <Button size="sm" onClick={() => onAction('approve')} disabled={disabled}>
+            <Check size={14} />
+            <span>{busy === 'approve' ? 'Approving...' : 'Approve'}</span>
+          </Button>
+        </div>
+      </div>
+
+      {message && (
+        <p className="mt-3 rounded-xl bg-[color:var(--status-success-bg)] px-3 py-2 text-sm text-[color:var(--status-success-fg)]">
+          {message}
+        </p>
+      )}
+      {error && (
+        <p className="mt-3 rounded-xl bg-[color:var(--feedback-danger-bg)] px-3 py-2 text-sm text-[color:var(--feedback-danger-fg)]">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
@@ -1629,6 +1731,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [moderationError, setModerationError] = useState('');
   const [reviewDialogOpen, setReviewDialogOpen] = useState(false);
   const [reviewMessage, setReviewMessage] = useState('');
+  const [adminReviewResponse, setAdminReviewResponse] = useState('');
+  const [adminReviewActionBusy, setAdminReviewActionBusy] = useState('');
+  const [adminReviewActionMessage, setAdminReviewActionMessage] = useState('');
+  const [adminReviewActionError, setAdminReviewActionError] = useState('');
   const [lessonIntelligenceByProject, setLessonIntelligenceByProject] = useState({});
   const [loadingLessonIntelligence, setLoadingLessonIntelligence] = useState(false);
   const [lessonIntelligenceActionBusy, setLessonIntelligenceActionBusy] = useState('');
@@ -1692,13 +1798,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [lessonNotes, setLessonNotes] = useState('');
   const [lessonNotesSavedAt, setLessonNotesSavedAt] = useState('');
 
+  const requestedLessonId = Number(searchParams.get('lesson') || 0) || null;
+  const isReviewMode = searchParams.get('review') === '1' && isStaffOrAdmin(user);
   const requestedStudioView = searchParams.get('view');
-  const studioView = requestedStudioView === 'editor'
+  const studioView = isReviewMode ? 'lessons' : requestedStudioView === 'editor'
     ? 'editor'
     : requestedStudioView === 'playlists'
       ? 'playlists'
       : 'lessons';
-  const requestedLessonId = Number(searchParams.get('lesson') || 0) || null;
   const isStudioUser = canAccessStudio(user);
 
   const refreshProjects = useCallback(async ({ showLoading = true, preserveOnError = false } = {}) => {
@@ -1707,10 +1814,23 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     if (showLoading) setLoadingProjects(true);
     try {
       const payload = await fetchProjects();
-      const nextProjects = normalizeProjectList(payload);
+      let nextProjects = normalizeProjectList(payload);
+      if (isReviewMode && requestedLessonId && !nextProjects.some((project) => project.id === requestedLessonId)) {
+        const reviewProject = await fetchProject(requestedLessonId);
+        nextProjects = [reviewProject, ...nextProjects.filter((project) => project.id !== reviewProject.id)];
+      }
       setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, nextProjects));
       return nextProjects;
     } catch {
+      if (isReviewMode && requestedLessonId) {
+        try {
+          const reviewProject = await fetchProject(requestedLessonId);
+          setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, [reviewProject]));
+          return [reviewProject];
+        } catch {
+          // Fall through to the standard error handling below.
+        }
+      }
       if (!preserveOnError) {
         setProjects([]);
       }
@@ -1718,7 +1838,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     } finally {
       if (showLoading) setLoadingProjects(false);
     }
-  }, [isStudioUser, user]);
+  }, [isReviewMode, isStudioUser, requestedLessonId, user]);
 
   useEffect(() => {
     if (!user || !isStudioUser) return;
@@ -1756,9 +1876,17 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
     return projects[0];
   }, [projects, selectedLessonId]);
+  const readOnlyReview = Boolean(isReviewMode && selectedLesson);
 
   useEffect(() => {
     selectedLessonIdRef.current = selectedLesson?.id || null;
+  }, [selectedLesson?.id]);
+
+  useEffect(() => {
+    setAdminReviewResponse('');
+    setAdminReviewActionMessage('');
+    setAdminReviewActionError('');
+    setAdminReviewActionBusy('');
   }, [selectedLesson?.id]);
 
   const selectedModeration = selectedLesson?.id ? moderationByProject[selectedLesson.id] || null : null;
@@ -2189,10 +2317,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [selectedLesson?.id]);
 
   useEffect(() => {
-    const handleCreateLessonRequest = () => setCreateModalOpen(true);
+    const handleCreateLessonRequest = () => {
+      if (!readOnlyReview) setCreateModalOpen(true);
+    };
     window.addEventListener('visus:create-lesson-request', handleCreateLessonRequest);
     return () => window.removeEventListener('visus:create-lesson-request', handleCreateLessonRequest);
-  }, []);
+  }, [readOnlyReview]);
 
   useEffect(() => {
     if (!coverFile) {
@@ -2252,6 +2382,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     whiteboardModeAll,
     avatarEnabled,
   }) => {
+    if (readOnlyReview) return null;
     if (!file) return;
 
     setSubmitError('');
@@ -2566,6 +2697,40 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   };
 
+  const handleAdminReviewAction = async (action) => {
+    if (!selectedLesson?.id || adminReviewActionBusy) return;
+    const reason = adminReviewResponse.trim();
+    setAdminReviewActionBusy(action);
+    setAdminReviewActionMessage('');
+    setAdminReviewActionError('');
+    try {
+      let payload = null;
+      let nextStatus = '';
+      if (action === 'approve') {
+        payload = await adminApproveLesson(selectedLesson.id, reason);
+        nextStatus = 'admin_approved';
+      } else if (action === 'block') {
+        payload = await adminBlockLesson(selectedLesson.id, reason);
+        nextStatus = 'admin_rejected';
+      } else {
+        payload = await adminRequestLessonChanges(selectedLesson.id, {
+          reason,
+          unpublish: true,
+        });
+        nextStatus = 'revision_required';
+      }
+
+      if (nextStatus) updateProjectModerationStatus(selectedLesson.id, nextStatus);
+      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, preserveOnError: true });
+      await refreshProjectModeration(selectedLesson.id, { showLoading: false, preserveError: true });
+      setAdminReviewActionMessage(payload?.message || 'Moderation action saved.');
+    } catch (err) {
+      setAdminReviewActionError(err.message || 'Could not update moderation state.');
+    } finally {
+      setAdminReviewActionBusy('');
+    }
+  };
+
   const handleAnalyzeLessonIntelligence = useCallback(async (project, { auto = false, force = false } = {}) => {
     if (!intelligenceFeatureEnabled) return null;
     if (!project?.id || lessonIntelligenceActionBusy) return null;
@@ -2671,6 +2836,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   ]);
 
   const handlePublishToggle = async (project, nextPublished) => {
+    if (readOnlyReview) return;
     const moderation = moderationByProject[project.id] || null;
     if (nextPublished && !projectCanPublishFromModeration(project, moderation)) {
       const message = moderationMessage(project, moderation);
@@ -2697,6 +2863,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const setStudioLocation = useCallback((nextView, lessonId = null) => {
     const nextParams = new URLSearchParams();
     nextParams.set('view', ['editor', 'playlists'].includes(nextView) ? nextView : 'lessons');
+    if (isReviewMode) {
+      nextParams.set('review', '1');
+    }
 
     const targetLessonId = lessonId || selectedLessonId;
     if (targetLessonId) {
@@ -2704,15 +2873,21 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
 
     setSearchParams(nextParams);
-  }, [selectedLessonId, setSearchParams]);
+  }, [isReviewMode, selectedLessonId, setSearchParams]);
 
   const openEditorForProject = (project) => {
+    if (readOnlyReview) return;
     setSelectedLessonId(project.id);
     setStudioLocation('editor', project.id);
   };
 
   const openPreviewForProject = (project) => {
-    if (!project?.id || !projectRenderReady(project)) return;
+    if (!project?.id) return;
+    if (readOnlyReview) {
+      navigate(`/watch?lesson=${project.id}&review=1`);
+      return;
+    }
+    if (!projectRenderReady(project)) return;
     if (project.is_published) {
       navigate(`/watch?lesson=${project.id}`);
       return;
@@ -3382,9 +3557,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       <SurfaceCard className="token-surface-elevated flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="label-sm">Studio Workspace</p>
-          <h1 className="headline-md mt-1 text-[var(--text-primary)]">Teacher Publishing Console</h1>
+          <h1 className="headline-md mt-1 text-[var(--text-primary)]">
+            {readOnlyReview ? 'Read-only Lesson Review' : 'Teacher Publishing Console'}
+          </h1>
         </div>
 
+        {!readOnlyReview && (
         <div className="inline-flex rounded-full token-surface p-1">
           <button
             type="button"
@@ -3420,6 +3598,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             Playlists
           </button>
         </div>
+        )}
       </SurfaceCard>
 
       {submitError && (
@@ -3474,7 +3653,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     )}
                   </div>
 
-                  {avatarFeatureEnabled && selectedLesson && (
+                  {avatarFeatureEnabled && selectedLesson && !readOnlyReview && (
                     <div className="space-y-3 border-y border-[var(--border-subtle)] py-3">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
@@ -3516,19 +3695,21 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   )}
 
                   <div className="flex flex-wrap gap-2">
-                    <Button onClick={() => selectedLesson && openEditorForProject(selectedLesson)} disabled={!selectedLesson}>
-                      <LayoutPanelTop size={16} />
-                      <span>Open Lesson Workspace</span>
-                    </Button>
+                    {!readOnlyReview && (
+                      <Button onClick={() => selectedLesson && openEditorForProject(selectedLesson)} disabled={!selectedLesson}>
+                        <LayoutPanelTop size={16} />
+                        <span>Open Lesson Workspace</span>
+                      </Button>
+                    )}
                     <Button
                       variant="secondary"
                       onClick={() => selectedLesson && openPreviewForProject(selectedLesson)}
-                      disabled={!selectedLesson || !projectRenderReady(selectedLesson)}
+                      disabled={!selectedLesson || (!readOnlyReview && !projectRenderReady(selectedLesson))}
                     >
                       <Eye size={16} />
-                      <span>{selectedLesson?.is_published ? 'Preview In Watch' : 'Preview Draft'}</span>
+                      <span>{readOnlyReview ? 'Open Review Watch' : selectedLesson?.is_published ? 'Preview In Watch' : 'Preview Draft'}</span>
                     </Button>
-                    {selectedLesson && projectRenderReady(selectedLesson) && (
+                    {selectedLesson && projectRenderReady(selectedLesson) && !readOnlyReview && (
                       <Button
                         variant={selectedLesson.is_published ? 'secondary' : 'primary'}
                         onClick={() => handlePublishToggle(selectedLesson, !selectedLesson.is_published)}
@@ -3688,6 +3869,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     onSubmitReview={() => handleRequestAdminReview(selectedLesson)}
                     onSelectFinding={handleSelectModerationFinding}
                   />
+                  {readOnlyReview && selectedLesson && (
+                    <AdminReviewActionPanel
+                      response={adminReviewResponse}
+                      onResponseChange={setAdminReviewResponse}
+                      onAction={handleAdminReviewAction}
+                      busy={adminReviewActionBusy}
+                      message={adminReviewActionMessage}
+                      error={adminReviewActionError}
+                    />
+                  )}
                 </div>
               )}
 
@@ -3700,10 +3891,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         Read-only lesson transcript. Open Studio Editor to make persistent transcript changes.
                       </p>
                     </div>
-                    <Button size="sm" onClick={() => selectedLesson && openEditorForProject(selectedLesson)} disabled={!selectedLesson}>
-                      <LayoutPanelTop size={14} />
-                      <span>Edit in Studio</span>
-                    </Button>
+                    {!readOnlyReview && (
+                      <Button size="sm" onClick={() => selectedLesson && openEditorForProject(selectedLesson)} disabled={!selectedLesson}>
+                        <LayoutPanelTop size={14} />
+                        <span>Edit in Studio</span>
+                      </Button>
+                    )}
                   </div>
 
                   {loadingTranscript ? (
@@ -3903,21 +4096,25 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     </button>
 
                     <div className="mt-3 flex flex-wrap gap-2">
-                      <Button size="sm" onClick={() => openEditorForProject(project)}>
-                        <BookOpenText size={14} />
-                        <span>Open</span>
-                      </Button>
-                      {projectRenderReady(project) && (
-                        <Button variant="secondary" size="sm" onClick={() => openPreviewForProject(project)}>
-                          <Eye size={14} />
-                          <span>{project.is_published ? 'Preview' : 'Draft Preview'}</span>
+                      {!readOnlyReview && (
+                        <Button size="sm" onClick={() => openEditorForProject(project)}>
+                          <BookOpenText size={14} />
+                          <span>Open</span>
                         </Button>
                       )}
-                      <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project)}>
-                        <RefreshCcw size={14} />
-                        <span>Rerender</span>
-                      </Button>
-                      {projectRenderReady(project) && (
+                      {(projectRenderReady(project) || readOnlyReview) && (
+                        <Button variant="secondary" size="sm" onClick={() => openPreviewForProject(project)}>
+                          <Eye size={14} />
+                          <span>{readOnlyReview ? 'Review' : project.is_published ? 'Preview' : 'Draft Preview'}</span>
+                        </Button>
+                      )}
+                      {!readOnlyReview && (
+                        <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project)}>
+                          <RefreshCcw size={14} />
+                          <span>Rerender</span>
+                        </Button>
+                      )}
+                      {projectRenderReady(project) && !readOnlyReview && (
                         <Button
                           variant={project.is_published ? 'secondary' : 'primary'}
                           size="sm"
@@ -3928,10 +4125,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           <span>{project.is_published ? 'Unpublish' : 'Publish'}</span>
                         </Button>
                       )}
-                      <Button variant="ghost" size="sm" onClick={() => handleDeleteProject(project)}>
-                        <Trash2 size={14} />
-                        <span>Delete</span>
-                      </Button>
+                      {!readOnlyReview && (
+                        <Button variant="ghost" size="sm" onClick={() => handleDeleteProject(project)}>
+                          <Trash2 size={14} />
+                          <span>Delete</span>
+                        </Button>
+                      )}
                     </div>
                   </article>
                   );
@@ -4774,14 +4973,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         </>
       )}
 
-      <CreateLessonModal
-        open={createModalOpen}
-        onClose={() => setCreateModalOpen(false)}
-        categories={categories}
-        submitting={submitting}
-        submitError={submitError}
-        onSubmit={handleCreateLessonFromModal}
-      />
+      {!readOnlyReview && (
+        <CreateLessonModal
+          open={createModalOpen}
+          onClose={() => setCreateModalOpen(false)}
+          categories={categories}
+          submitting={submitting}
+          submitError={submitError}
+          onSubmit={handleCreateLessonFromModal}
+        />
+      )}
     </div>
   );
 }

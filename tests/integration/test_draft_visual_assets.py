@@ -291,7 +291,7 @@ def test_unsafe_visual_draft_blocks_promotion_and_keeps_draft_visible(monkeypatc
     assert project.draft_data["metadata"]["moderation_status"] == "needs_admin_review"
     assert studio_project.status_code == 200
     assert studio_project.data["draft_cover_url"].endswith("?draft=1")
-    assert public_cover.status_code == 404
+    assert public_cover.status_code == 200
 
 
 @pytest.mark.django_db

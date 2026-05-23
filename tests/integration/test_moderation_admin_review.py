@@ -381,11 +381,8 @@ def test_admin_detail_includes_useful_finding_location_fields():
     assert finding["timestamp_label"] == "1:12"
     assert finding["ui_anchor"] == "transcript-page-321"
     assert finding["location_label"] == "1:12"
-    assert response.data["open_project_studio_hint"] in {"", f"/studio?lesson={project.id}"}
-    assert response.data["open_watch_timestamp_hint"] in {
-        f"/watch?lesson={project.id}&t=72.4",
-        f"/watch?lesson={project.id}&review=1&t=72.4",
-    }
+    assert response.data["open_project_studio_hint"] == f"/studio?lesson={project.id}&review=1"
+    assert response.data["open_watch_timestamp_hint"] == f"/watch?lesson={project.id}&review=1&t=72.4"
     assert "provider_raw" not in response.data["findings"][0]
 
 

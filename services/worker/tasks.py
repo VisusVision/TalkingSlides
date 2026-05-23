@@ -2676,7 +2676,7 @@ def _run_auto_visual_asset_moderation_after_export(
             }
 
         final_decision = PolicyEngine().combine_results(results)
-        if _visual_provider_unavailable(results):
+        if _visual_provider_unavailable(results) and final_decision != "block":
             final_decision = "needs_admin_review"
         run = _persist_auto_visual_moderation_results(
             project=project,
@@ -2684,6 +2684,7 @@ def _run_auto_visual_asset_moderation_after_export(
             final_decision=final_decision,
             phase=phase,
             job_id=job_id,
+            use_draft=use_draft,
         )
         finding_count = sum(len(result.findings) for result in results)
         block_render = (
@@ -2767,6 +2768,7 @@ def _persist_auto_visual_moderation_results(
     final_decision: str,
     phase: str,
     job_id: str | int | None = None,
+    use_draft: bool = False,
 ):
     from ai_agents.models import AgentFinding, AgentRun
     from django.utils import timezone
@@ -2818,27 +2820,50 @@ def _persist_auto_visual_moderation_results(
         AgentFinding.objects.bulk_create(rows)
 
     try:
-        project.refresh_from_db(fields=["moderation_status", "moderation_summary", "is_published"])
+        from ai_agents.policies import manual_moderation_prevents_auto_override
+
+        project.refresh_from_db(
+            fields=[
+                "moderation_status",
+                "moderation_summary",
+                "manual_moderation_status",
+                "moderation_blocked_until_review",
+                "manual_moderation_at",
+                "latest_publisher_change_at",
+            ]
+        )
         existing_summary = dict(project.moderation_summary or {})
-        existing_summary["visual_asset_scan"] = {
+        summary_key = "draft_visual_asset_scan" if use_draft else "visual_asset_scan"
+        existing_summary[summary_key] = {
             **summary,
             "run_id": run.id,
             "phase": phase,
         }
         update_fields = ["moderation_summary", "updated_at"]
-        if final_decision in {"block", "needs_admin_review"}:
+        if (
+            not use_draft
+            and final_decision in {"block", "needs_admin_review"}
+            and not manual_moderation_prevents_auto_override(project)
+        ):
             project.moderation_status = "revision_required" if final_decision == "block" else "needs_admin_review"
             existing_summary["moderation_status"] = project.moderation_status
             if final_decision == "block":
                 existing_summary["message"] = "Visual moderation blocked this lesson pending revision."
             else:
                 existing_summary["message"] = "Visual moderation requires admin review before publication."
-            if bool(getattr(project, "is_published", False)):
-                project.is_published = False
-                update_fields.append("is_published")
             update_fields.append("moderation_status")
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
+        if (
+            not use_draft
+            and final_decision in {"block", "needs_admin_review"}
+            and not manual_moderation_prevents_auto_override(project)
+        ):
+            _ensure_auto_project_review_request(
+                project,
+                run,
+                "Visual moderation flagged this lesson for admin review.",
+            )
     except Exception:
         logger.warning("Visual moderation summary update failed for project=%s", project.id, exc_info=True)
 
@@ -3110,7 +3135,7 @@ def _run_auto_ocr_slide_moderation_after_export(
             findings.extend(text_provider.scan_text(text, ocr_result.location))
 
         final_decision = policy_engine.combine_findings(findings)
-        if _ocr_provider_unavailable(provider_name, ocr_results):
+        if _ocr_provider_unavailable(provider_name, ocr_results) and final_decision != "block":
             final_decision = "needs_admin_review"
         run = _persist_auto_ocr_moderation_results(
             project=project,
@@ -3207,7 +3232,18 @@ def _persist_auto_ocr_moderation_results(
         AgentFinding.objects.bulk_create(rows)
 
     try:
-        project.refresh_from_db(fields=["moderation_status", "moderation_summary", "is_published"])
+        from ai_agents.policies import manual_moderation_prevents_auto_override
+
+        project.refresh_from_db(
+            fields=[
+                "moderation_status",
+                "moderation_summary",
+                "manual_moderation_status",
+                "moderation_blocked_until_review",
+                "manual_moderation_at",
+                "latest_publisher_change_at",
+            ]
+        )
         existing_summary = dict(project.moderation_summary or {})
         existing_summary["ocr_slide_scan"] = {
             **summary,
@@ -3215,19 +3251,22 @@ def _persist_auto_ocr_moderation_results(
             "phase": phase,
         }
         update_fields = ["moderation_summary", "updated_at"]
-        if final_decision in {"block", "needs_admin_review"}:
+        if final_decision in {"block", "needs_admin_review"} and not manual_moderation_prevents_auto_override(project):
             project.moderation_status = "revision_required" if final_decision == "block" else "needs_admin_review"
             existing_summary["moderation_status"] = project.moderation_status
             if final_decision == "block":
                 existing_summary["message"] = "OCR moderation blocked this lesson pending revision."
             else:
                 existing_summary["message"] = "OCR moderation requires admin review before publication."
-            if bool(getattr(project, "is_published", False)):
-                project.is_published = False
-                update_fields.append("is_published")
             update_fields.append("moderation_status")
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
+        if final_decision in {"block", "needs_admin_review"} and not manual_moderation_prevents_auto_override(project):
+            _ensure_auto_project_review_request(
+                project,
+                run,
+                "OCR moderation flagged this lesson for admin review.",
+            )
     except Exception:
         logger.warning("OCR moderation summary update failed for project=%s", project.id, exc_info=True)
 
@@ -3251,6 +3290,23 @@ def _ocr_moderation_summary(*, final_decision: str, ocr_results: list, findings:
         "provider": _ocr_moderation_provider_name(),
         "job_id": int(job_id) if job_id is not None else None,
     }
+
+
+def _ensure_auto_project_review_request(project, run, message: str) -> None:
+    try:
+        from ai_agents.models import AdminReviewRequest
+
+        AdminReviewRequest.objects.get_or_create(
+            project=project,
+            status="open",
+            defaults={
+                "run": run,
+                "requested_by": None,
+                "publisher_message": str(message or "Automatic moderation flagged this lesson for admin review."),
+            },
+        )
+    except Exception:
+        logger.warning("Auto moderation review request creation failed project=%s", getattr(project, "id", None), exc_info=True)
 
 
 def _ocr_provider_raw_for_location(ocr_results: list, location: dict[str, Any]) -> dict[str, Any]:

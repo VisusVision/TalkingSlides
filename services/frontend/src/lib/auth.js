@@ -10,7 +10,7 @@ export function isStaffOrAdmin(user) {
 
 export function canAccessStudio(user) {
   if (!user) return false;
-  return CREATOR_ALLOWED_ROLES.has(normalizeUserRole(user));
+  return CREATOR_ALLOWED_ROLES.has(normalizeUserRole(user)) || isStaffOrAdmin(user);
 }
 
 export function canAccessAnalytics(user) {

@@ -93,16 +93,26 @@ class Command(BaseCommand):
         review = None
         if options.get("request_review"):
             if project.moderation_status in REVIEWABLE_MODERATION_STATUSES:
-                review = AdminReviewRequest.objects.create(
+                review, created = AdminReviewRequest.objects.get_or_create(
                     project=project,
-                    run_id=project.last_moderation_run_id,
-                    requested_by=owner,
-                    publisher_message=str(options.get("review_message") or "Smoke test review request."),
                     status="open",
+                    defaults={
+                        "run_id": project.last_moderation_run_id,
+                        "requested_by": owner,
+                        "publisher_message": str(options.get("review_message") or "Smoke test review request."),
+                    },
                 )
-                project.moderation_status = "needs_admin_review"
-                project.save(update_fields=["moderation_status", "updated_at"])
-                project.refresh_from_db()
+                if not created:
+                    review.run_id = project.last_moderation_run_id
+                    review.requested_by = owner
+                    review.publisher_message = str(options.get("review_message") or review.publisher_message or "Smoke test review request.")
+                    review.save(update_fields=["run", "requested_by", "publisher_message"])
+                if project.moderation_status != "needs_admin_review":
+                    project.moderation_status = "needs_admin_review"
+                    project.save(update_fields=["moderation_status", "updated_at"])
+                    project.refresh_from_db()
+                else:
+                    project.refresh_from_db()
             else:
                 self.stdout.write(
                     f"Review request skipped: moderation_status={project.moderation_status} is not reviewable."

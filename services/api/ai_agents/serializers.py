@@ -5,8 +5,15 @@ from typing import Any
 
 from rest_framework import serializers
 
-from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun, ModerationAuditEvent
-from ai_agents.policies import project_can_publish
+from ai_agents.models import (
+    AdminReviewRequest,
+    AgentFinding,
+    AgentRun,
+    ModerationAuditEvent,
+    ModerationReport,
+    PublicationBlockEvent,
+)
+from ai_agents.policies import manual_moderation_blocks_publish, project_can_publish
 
 
 SEVERITY_RANK = {
@@ -41,6 +48,14 @@ class RequestAdminReviewSerializer(serializers.Serializer):
     message = serializers.CharField(required=False, allow_blank=True, max_length=2000, default="")
 
 
+class ModerationReportCreateSerializer(serializers.Serializer):
+    category = serializers.ChoiceField(choices=[choice[0] for choice in ModerationReport.CATEGORY_CHOICES])
+    message = serializers.CharField(required=False, allow_blank=True, max_length=2000, default="")
+
+    def validate_message(self, value: str) -> str:
+        return str(value or "").strip()
+
+
 class AdminReviewDecisionSerializer(serializers.Serializer):
     admin_response = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
 
@@ -52,6 +67,7 @@ class AdminProjectModerationActionSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
     note = serializers.CharField(required=False, allow_blank=True, max_length=4000, default="")
     phase = serializers.CharField(required=False, allow_blank=True, max_length=50, default="manual_admin_rescan")
+    unpublish = serializers.BooleanField(required=False, default=True)
 
     def validate_phase(self, value: str) -> str:
         cleaned = str(value or "manual_admin_rescan").strip() or "manual_admin_rescan"
@@ -82,6 +98,13 @@ def moderation_summary_payload(project, *, include_admin_fields: bool = False) -
         "project_id": project.id,
         "moderation_status": project.moderation_status,
         "can_publish": project_can_publish(project),
+        "manual_moderation_status": str(getattr(project, "manual_moderation_status", "") or ""),
+        "manual_moderation_reason": str(getattr(project, "manual_moderation_reason", "") or ""),
+        "manual_moderation_at": getattr(project, "manual_moderation_at", None),
+        "moderation_blocked_until_review": bool(getattr(project, "moderation_blocked_until_review", False)),
+        "publish_blocked_by_moderation": manual_moderation_blocks_publish(project),
+        "latest_publisher_change_at": getattr(project, "latest_publisher_change_at", None),
+        "latest_review_requested_at": getattr(project, "latest_review_requested_at", None),
         "can_request_admin_review": can_request_admin_review,
         "message": message,
         "admin_review": latest_admin_review_payload(project),
@@ -99,7 +122,12 @@ def moderation_summary_payload(project, *, include_admin_fields: bool = False) -
             for event in project.moderation_audit_events.select_related("actor").order_by("-created_at", "-id")[:10]
         ]
     else:
-        public_note = summary.get("publisher_admin_note") or summary.get("admin_response") or ""
+        public_note = (
+            str(getattr(project, "manual_moderation_reason", "") or "").strip()
+            or summary.get("publisher_admin_note")
+            or summary.get("admin_response")
+            or ""
+        )
         if public_note:
             payload["admin_note"] = str(public_note)
     return payload
@@ -120,6 +148,29 @@ def latest_admin_review_payload(project) -> dict[str, Any] | None:
     }
 
 
+def moderation_report_payload(report: ModerationReport, *, deduped: bool = False) -> dict[str, Any]:
+    project = report.project
+    return {
+        "id": report.id,
+        "project_id": report.project_id,
+        "project_title": getattr(project, "title", "") or "",
+        "publisher_id": report.publisher_id,
+        "publisher_username": _username(report.publisher),
+        "reporter_id": report.reporter_id,
+        "reporter_username": _username(report.reporter),
+        "category": report.category,
+        "category_label": _choice_label(ModerationReport.CATEGORY_CHOICES, report.category),
+        "message": report.message,
+        "status": report.status,
+        "created_at": report.created_at,
+        "reviewed_at": report.reviewed_at,
+        "reviewed_by_id": report.reviewed_by_id,
+        "reviewed_by_username": _username(report.reviewed_by),
+        "admin_review_request_id": report.admin_review_request_id,
+        "deduped": deduped,
+    }
+
+
 def admin_review_list_payload(review: AdminReviewRequest) -> dict[str, Any]:
     project = review.project
     findings = _sort_findings_by_severity(list(_findings_for_review(review)))
@@ -127,13 +178,19 @@ def admin_review_list_payload(review: AdminReviewRequest) -> dict[str, Any]:
     run = review.run or _latest_run(project)
     return {
         "id": review.id,
+        "source_type": "review_request",
         "project_id": project.id,
         "project_title": project.title,
         "requested_by_id": review.requested_by_id,
         "requested_by_username": _username(review.requested_by),
-        "publisher_username": _username(review.requested_by),
+        "publisher_username": _username(project.user),
+        "publisher_id": project.user_id,
         "status": review.status,
         "moderation_status": project.moderation_status,
+        "manual_moderation_status": str(getattr(project, "manual_moderation_status", "") or ""),
+        "manual_moderation_reason": str(getattr(project, "manual_moderation_reason", "") or ""),
+        "moderation_blocked_until_review": bool(getattr(project, "moderation_blocked_until_review", False)),
+        "is_published": bool(getattr(project, "is_published", False)),
         "publisher_message": review.publisher_message,
         "admin_response": review.admin_response,
         "created_at": review.created_at,
@@ -172,7 +229,7 @@ def admin_review_detail_payload(review: AdminReviewRequest) -> dict[str, Any]:
                 finding_payload(finding, include_admin_fields=True)
                 for finding in findings
             ],
-            "open_project_studio_hint": "",
+            "open_project_studio_hint": f"/studio?lesson={project.id}&review=1",
             "open_review_hint": f"/watch?lesson={project.id}&review=1",
             "open_watch_timestamp_hint": (
                 f"/watch?lesson={project.id}&review=1&t={first_timestamp:g}"
@@ -182,6 +239,61 @@ def admin_review_detail_payload(review: AdminReviewRequest) -> dict[str, Any]:
         }
     )
     return payload
+
+
+def admin_project_queue_payload(project, *, queue: str = "") -> dict[str, Any]:
+    run = _latest_run(project)
+    findings = _sort_findings_by_severity(list(_findings_for_run(run)))
+    highest = _highest_finding(findings)
+    latest_review = project.admin_review_requests.select_related("requested_by", "reviewed_by").order_by("-created_at", "-id").first()
+    latest_block = (
+        PublicationBlockEvent.objects.filter(project=project, resolved=False)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    updated_at = (
+        getattr(latest_review, "reviewed_at", None)
+        or getattr(latest_review, "created_at", None)
+        or getattr(latest_block, "created_at", None)
+        or project.updated_at
+    )
+    return {
+        "id": f"project-{project.id}",
+        "source_type": "project",
+        "queue": queue,
+        "project_id": project.id,
+        "project_title": project.title,
+        "requested_by_id": getattr(latest_review, "requested_by_id", None),
+        "requested_by_username": _username(getattr(latest_review, "requested_by", None)),
+        "publisher_id": project.user_id,
+        "publisher_username": _username(project.user),
+        "status": getattr(latest_review, "status", "") or "",
+        "moderation_status": project.moderation_status,
+        "manual_moderation_status": str(getattr(project, "manual_moderation_status", "") or ""),
+        "manual_moderation_reason": str(getattr(project, "manual_moderation_reason", "") or ""),
+        "moderation_blocked_until_review": bool(getattr(project, "moderation_blocked_until_review", False)),
+        "is_published": bool(getattr(project, "is_published", False)),
+        "publisher_message": getattr(latest_review, "publisher_message", "") or "",
+        "admin_response": getattr(latest_review, "admin_response", "") or str(getattr(project, "manual_moderation_reason", "") or ""),
+        "created_at": getattr(latest_review, "created_at", None) or getattr(latest_block, "created_at", None) or project.created_at,
+        "requested_at": getattr(latest_review, "created_at", None) or getattr(latest_block, "created_at", None) or project.created_at,
+        "reviewed_at": getattr(latest_review, "reviewed_at", None),
+        "updated_at": updated_at,
+        "reviewed_by_id": getattr(latest_review, "reviewed_by_id", None),
+        "reviewed_by_username": _username(getattr(latest_review, "reviewed_by", None)),
+        "latest_run_id": run.id if run else project.last_moderation_run_id,
+        "latest_final_decision": str(getattr(run, "final_decision", "") or ""),
+        "finding_count": len(findings),
+        "categories_summary": _count_values(findings, "category"),
+        "severities_summary": _count_values(findings, "severity"),
+        "latest_findings_summary": [
+            finding_summary_payload(finding)
+            for finding in findings[:5]
+        ],
+        "highest_severity": highest.severity if highest else str(getattr(latest_block, "highest_severity", "") or ""),
+        "highest_category": highest.category if highest else str(getattr(latest_block, "reason_category", "") or ""),
+        "publication_block_message": str(getattr(latest_block, "message_to_user", "") or ""),
+    }
 
 
 def moderation_audit_event_payload(event: ModerationAuditEvent) -> dict[str, Any]:
@@ -335,6 +447,11 @@ def _username(user) -> str:
     if not user:
         return ""
     return str(getattr(user, "username", "") or "")
+
+
+def _choice_label(choices, value: str) -> str:
+    lookup = {key: label for key, label in choices}
+    return str(lookup.get(value, value) or "")
 
 
 def _default_message(moderation_status: str) -> str:

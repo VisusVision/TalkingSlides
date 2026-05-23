@@ -24,6 +24,7 @@ import ChapterList from '../components/player/ChapterList';
 import TranscriptPanel from '../components/player/TranscriptPanel';
 import NotesPanel from '../components/player/NotesPanel';
 import RelatedLessonsRow from '../components/player/RelatedLessonsRow';
+import LessonActionButton from '../components/moderation/LessonActionButton';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
@@ -1143,6 +1144,15 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
   };
 
+  const handleLessonModerationCompleted = (payload) => {
+    if (!payload || Number(payload.project_id) !== Number(activeLessonId)) return;
+    setLesson((current) => current ? {
+      ...current,
+      moderation_status: payload.moderation_status ?? current.moderation_status,
+      is_published: payload.is_published ?? current.is_published,
+    } : current);
+  };
+
   const handleSubmitComment = async (event) => {
     event.preventDefault();
     if (!activeLessonId || commentSubmitting) return;
@@ -1396,6 +1406,12 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           <span>{followBusy ? 'Saving...' : isFollowingPublisher ? 'Following' : 'Follow'}</span>
                         </Button>
                       )}
+                      <LessonActionButton
+                        lesson={lesson}
+                        user={user}
+                        onLoginRequest={onLoginRequest}
+                        onCompleted={handleLessonModerationCompleted}
+                      />
                     </div>
                   </div>
                   {likeError && (

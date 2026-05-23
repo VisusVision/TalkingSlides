@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 
 export default function ModalShell({
@@ -34,7 +35,7 @@ export default function ModalShell({
     }
   };
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[80] flex items-center justify-center bg-[color:var(--modal-backdrop)] p-3 sm:p-4"
       onMouseDown={handleBackdropMouseDown}
@@ -71,6 +72,7 @@ export default function ModalShell({
           </div>
         ) : null}
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -125,7 +125,7 @@ def test_auto_ocr_enabled_noop_completes_without_findings_or_text_scan(monkeypat
 
 
 @pytest.mark.django_db
-def test_auto_ocr_missing_slide_image_does_not_crash_or_block(monkeypatch, tmp_path):
+def test_auto_ocr_missing_slide_image_requires_admin_review(monkeypatch, tmp_path):
     _enable_ocr(monkeypatch, block=True)
     project = _make_project("auto_ocr_missing_teacher")
     missing_path = tmp_path / "missing.png"
@@ -159,7 +159,7 @@ def test_auto_ocr_empty_text_skips_text_moderation(monkeypatch, tmp_path):
 
 
 @pytest.mark.django_db
-def test_auto_ocr_unsafe_text_creates_finding_and_summary_without_project_status_change(monkeypatch, tmp_path):
+def test_auto_ocr_unsafe_text_creates_finding_and_revision_required_status(monkeypatch, tmp_path):
     _enable_ocr(monkeypatch)
     _patch_ocr_text(monkeypatch, "I will kill you tomorrow.")
     project = _make_project("auto_ocr_unsafe_teacher")
@@ -170,7 +170,7 @@ def test_auto_ocr_unsafe_text_creates_finding_and_summary_without_project_status
 
     project.refresh_from_db()
     finding = AgentFinding.objects.get(run__project=project)
-    assert result["final_decision"] == "needs_admin_review"
+    assert result["final_decision"] == "block"
     assert result["finding_count"] == 1
     assert result["block_render"] is False
     assert finding.content_type == "ocr"
@@ -180,7 +180,7 @@ def test_auto_ocr_unsafe_text_creates_finding_and_summary_without_project_status
     assert finding.location["asset_type"] == "ocr_text"
     assert finding.provider == "ocr_slide_moderation:local_rules"
     assert finding.provider_raw["ocr_text_length"] == len("I will kill you tomorrow.")
-    assert project.moderation_status == "needs_admin_review"
+    assert project.moderation_status == "revision_required"
     assert project.moderation_summary["ocr_slide_scan"]["finding_count"] == 1
     assert "visual_asset_scan" not in project.moderation_summary
 
@@ -195,7 +195,7 @@ def test_auto_ocr_block_flag_false_continues_on_unsafe_text(monkeypatch, tmp_pat
 
     result = worker_tasks._run_auto_ocr_slide_moderation_after_export(project.id, [_slide(image_path)])
 
-    assert result["final_decision"] == "needs_admin_review"
+    assert result["final_decision"] == "block"
     assert result["block_render"] is False
 
 
@@ -209,7 +209,7 @@ def test_auto_ocr_block_flag_true_blocks_unsafe_text(monkeypatch, tmp_path):
 
     result = worker_tasks._run_auto_ocr_slide_moderation_after_export(project.id, [_slide(image_path)])
 
-    assert result["final_decision"] == "needs_admin_review"
+    assert result["final_decision"] == "block"
     assert result["block_render"] is True
 
 

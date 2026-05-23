@@ -7,12 +7,12 @@ Coverage (Part D requirements):
 - Public catalog excludes unpublished lessons
 - Public catalog excludes rejected/blocked moderated lessons
 - Owner can see rejected/blocked lesson in dashboard with status
-- Publish allowed for render-ready lesson with not_scanned moderation
-- Publish allowed for render-ready lesson with pending moderation
+- Publish blocked for render-ready lesson with not_scanned moderation
+- Publish blocked for render-ready lesson with pending moderation
 - Publish allowed for render-ready lesson with approved moderation
 - Publish blocked with clear error for rejected/blocked lesson
 - Anonymous cannot see drafts
-- Staff can see/manage other users' projects
+- Staff can review other users' projects read-only
 """
 
 import os
@@ -466,12 +466,8 @@ def test_catalog_excludes_revision_required_lesson():
 
 
 @pytest.mark.django_db
-def test_catalog_includes_not_scanned_published_lesson():
-    """Public catalog SHOULD show published, render-ready not_scanned lessons.
-
-    When auto-moderation is disabled, lessons will never get an 'approved' status
-    and would be silently hidden. not_scanned is acceptable for the public catalog.
-    """
+def test_catalog_excludes_not_scanned_published_lesson():
+    """Public catalog must hide published, render-ready lessons until moderation approves them."""
     teacher = _make_teacher("catalog_unscanned_teacher")
     unscanned = Project.objects.create(
         title="Unscanned But Published",
@@ -489,12 +485,12 @@ def test_catalog_includes_not_scanned_published_lesson():
 
     assert response.status_code == 200
     ids = {item["id"] for item in response.data}
-    assert unscanned.id in ids, "Catalog must include not_scanned published lessons when auto-moderation is off"
+    assert unscanned.id not in ids, "Catalog must exclude not_scanned published lessons"
 
 
 @pytest.mark.django_db
-def test_publish_allowed_for_render_ready_not_scanned_lesson():
-    """Publish must succeed for a render-ready lesson with not_scanned moderation."""
+def test_publish_blocked_for_render_ready_not_scanned_lesson():
+    """Publish must be blocked for a render-ready lesson with not_scanned moderation."""
     teacher = _make_teacher("pub_not_scanned_teacher")
     project = Project.objects.create(
         title="Unscanned Ready Lesson",
@@ -512,15 +508,17 @@ def test_publish_allowed_for_render_ready_not_scanned_lesson():
     force_authenticate(request, user=teacher)
     response = views.ProjectDetailView.as_view()(request, project_id=project.id)
 
-    assert response.status_code == 200, (
-        f"Publish should be allowed for not_scanned lesson. Got {response.status_code}: {response.data}"
+    assert response.status_code == 400, (
+        f"Publish should be blocked for not_scanned lesson. Got {response.status_code}: {response.data}"
     )
-    assert response.data["is_published"] is True
+    assert response.data["reason"] == "moderation_required"
+    project.refresh_from_db()
+    assert project.is_published is False
 
 
 @pytest.mark.django_db
-def test_publish_allowed_for_render_ready_pending_moderation_lesson():
-    """Publish must succeed for a render-ready lesson with pending moderation."""
+def test_publish_blocked_for_render_ready_pending_moderation_lesson():
+    """Publish must be blocked for a render-ready lesson with pending moderation."""
     teacher = _make_teacher("pub_pending_mod_teacher")
     project = Project.objects.create(
         title="Pending Moderation Ready Lesson",
@@ -538,10 +536,12 @@ def test_publish_allowed_for_render_ready_pending_moderation_lesson():
     force_authenticate(request, user=teacher)
     response = views.ProjectDetailView.as_view()(request, project_id=project.id)
 
-    assert response.status_code == 200, (
-        f"Publish should be allowed for pending moderation lesson. Got {response.status_code}: {response.data}"
+    assert response.status_code == 400, (
+        f"Publish should be blocked for pending moderation lesson. Got {response.status_code}: {response.data}"
     )
-    assert response.data["is_published"] is True
+    assert response.data["reason"] == "moderation_processing"
+    project.refresh_from_db()
+    assert project.is_published is False
 
 
 @pytest.mark.django_db
@@ -629,8 +629,8 @@ def test_anonymous_cannot_see_drafts():
 
 
 @pytest.mark.django_db
-def test_staff_cannot_see_non_owned_project_in_studio_list():
-    """Staff users must not see non-owned projects in the Studio projects list."""
+def test_staff_review_access_is_read_only_and_not_in_studio_list():
+    """Staff users can review another user's project read-only without seeing it in Studio ownership lists."""
     teacher = _make_teacher("staff_proj_teacher")
     staff = _make_staff("staff_proj_staff")
     project = Project.objects.create(
@@ -640,13 +640,30 @@ def test_staff_cannot_see_non_owned_project_in_studio_list():
         moderation_status="pending",
     )
 
-    request = APIRequestFactory().get("/api/v1/projects/")
-    force_authenticate(request, user=staff)
-    response = views.ProjectUploadView.as_view()(request)
+    list_request = APIRequestFactory().get("/api/v1/projects/")
+    force_authenticate(list_request, user=staff)
+    list_response = views.ProjectUploadView.as_view()(list_request)
 
-    assert response.status_code == 200
-    ids = {item["id"] for item in response.data}
+    assert list_response.status_code == 200
+    ids = {item["id"] for item in list_response.data}
     assert project.id not in ids, "Staff must not see non-owned projects in Studio list"
+
+    detail_request = APIRequestFactory().get(f"/api/v1/projects/{project.id}/")
+    force_authenticate(detail_request, user=staff)
+    detail_response = views.ProjectDetailView.as_view()(detail_request, project_id=project.id)
+
+    assert detail_response.status_code == 200
+    assert detail_response.data["id"] == project.id
+
+    patch_request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/",
+        {"is_published": True},
+        format="json",
+    )
+    force_authenticate(patch_request, user=staff)
+    patch_response = views.ProjectDetailView.as_view()(patch_request, project_id=project.id)
+
+    assert patch_response.status_code == 403
 
 
 @pytest.mark.django_db

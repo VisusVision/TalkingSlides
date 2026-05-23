@@ -1,4 +1,5 @@
 import { Clock3, PlayCircle } from 'lucide-react';
+import LessonActionButton from '../moderation/LessonActionButton';
 import { formatDuration, formatViews } from '../../lib/content';
 
 function backgroundFromLesson(lesson) {
@@ -15,12 +16,19 @@ function backgroundFromLesson(lesson) {
   };
 }
 
-export default function LessonCard({ lesson, onOpen, compact = false }) {
+export default function LessonCard({ lesson, onOpen, compact = false, user, onLoginRequest }) {
   return (
     <article
-      className="group reveal-up w-[252px] shrink-0 overflow-hidden rounded-3xl token-surface-elevated p-3 shadow-soft transition duration-300 hover:-translate-y-1.5 hover:shadow-lift"
+      className="group reveal-up relative w-[252px] shrink-0 overflow-hidden rounded-3xl token-surface-elevated p-3 shadow-soft transition duration-300 hover:-translate-y-1.5 hover:shadow-lift"
       style={{ animationDelay: '80ms' }}
     >
+      <LessonActionButton
+        lesson={lesson}
+        user={user}
+        onLoginRequest={onLoginRequest}
+        compact
+        className="absolute right-5 top-5 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+      />
       <button
         type="button"
         className="focus-ring w-full cursor-pointer text-left"

@@ -22,7 +22,7 @@ export default function AppRouter({
 }) {
   return (
     <Routes>
-      <Route path="/" element={<Home searchQuery={searchQuery} user={user} />} />
+      <Route path="/" element={<Home searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
       <Route path="/watch" element={<Watch searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
       <Route
         path="/studio"
@@ -37,7 +37,7 @@ export default function AppRouter({
           </ProtectedRoute>
         )}
       />
-      <Route path="/browse" element={<Browse searchQuery={searchQuery} />} />
+      <Route path="/browse" element={<Browse searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
       <Route
         path="/channel/:userId"
         element={(
