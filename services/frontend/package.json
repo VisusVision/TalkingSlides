@@ -7,8 +7,9 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node -e \"console.log('No frontend unit tests configured yet.')\"",
-    "e2e": "echo \"No e2e tests configured yet\""
+    "test": "vitest run",
+    "test:ci": "vitest run --reporter=basic",
+    "e2e": "npm run test:ci"
   },
   "dependencies": {
     "hls.js": "^1.5.18",
@@ -18,10 +19,13 @@
     "react-router-dom": "^7.14.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.20",
+    "jsdom": "^27.2.0",
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.17",
-    "vite": "^5.2.0"
+    "vite": "^5.2.0",
+    "vitest": "^2.1.9"
   }
 }
