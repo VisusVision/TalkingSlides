@@ -303,7 +303,7 @@ def test_video_frame_audit_includes_mocked_provider_findings(monkeypatch, tmp_pa
 
 
 @pytest.mark.django_db
-def test_project_moderation_status_updates_after_visual_safety_findings(monkeypatch, tmp_path):
+def test_project_moderation_status_moves_to_revision_required_after_visual_safety_findings(monkeypatch, tmp_path):
     _enable_visual_moderation(monkeypatch)
     _enable_azure_visual_safety(monkeypatch)
     _mock_azure_response(monkeypatch, {"categoriesAnalysis": [{"category": "Violence", "severity": 4}]})

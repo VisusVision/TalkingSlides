@@ -629,8 +629,8 @@ def test_anonymous_cannot_see_drafts():
 
 
 @pytest.mark.django_db
-def test_staff_can_review_any_project_read_only():
-    """Staff users can review another user's project but cannot edit it."""
+def test_staff_review_access_is_read_only_and_not_in_studio_list():
+    """Staff users can review another user's project read-only without seeing it in Studio ownership lists."""
     teacher = _make_teacher("staff_proj_teacher")
     staff = _make_staff("staff_proj_staff")
     project = Project.objects.create(
@@ -640,12 +640,20 @@ def test_staff_can_review_any_project_read_only():
         moderation_status="pending",
     )
 
-    request = APIRequestFactory().get(f"/api/v1/projects/{project.id}/")
-    force_authenticate(request, user=staff)
-    response = views.ProjectDetailView.as_view()(request, project_id=project.id)
+    list_request = APIRequestFactory().get("/api/v1/projects/")
+    force_authenticate(list_request, user=staff)
+    list_response = views.ProjectUploadView.as_view()(list_request)
 
-    assert response.status_code == 200
-    assert response.data["id"] == project.id
+    assert list_response.status_code == 200
+    ids = {item["id"] for item in list_response.data}
+    assert project.id not in ids, "Staff must not see non-owned projects in Studio list"
+
+    detail_request = APIRequestFactory().get(f"/api/v1/projects/{project.id}/")
+    force_authenticate(detail_request, user=staff)
+    detail_response = views.ProjectDetailView.as_view()(detail_request, project_id=project.id)
+
+    assert detail_response.status_code == 200
+    assert detail_response.data["id"] == project.id
 
     patch_request = APIRequestFactory().patch(
         f"/api/v1/projects/{project.id}/",
