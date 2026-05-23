@@ -253,6 +253,7 @@ def test_safe_draft_promotion_updates_cover_and_background_and_clears_draft(tmp_
 
 @pytest.mark.django_db
 def test_unsafe_visual_draft_blocks_promotion_and_keeps_draft_visible(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", True, raising=False)

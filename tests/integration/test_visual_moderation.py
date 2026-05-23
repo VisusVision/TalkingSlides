@@ -122,6 +122,7 @@ def test_cover_image_with_mocked_adult_signal_blocks_or_requires_review(monkeypa
 
     with override_settings(
         STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
         VISUAL_MODERATION_AUTO_ENABLED=True,
         VISUAL_SAFETY_PROVIDER="azure_content_safety",
         VISUAL_SAFETY_CLASSIFIER_ENABLED=True,
@@ -147,6 +148,7 @@ def test_ocr_text_image_with_risky_text_is_flagged(monkeypatch, tmp_path):
 
     with override_settings(
         STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
         OCR_MODERATION_AUTO_ENABLED=True,
         OCR_MODERATION_PROVIDER="azure",
     ):
@@ -166,6 +168,7 @@ def test_visual_provider_unavailable_requires_review_not_silent_approval(tmp_pat
 
     with override_settings(
         STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
         VISUAL_MODERATION_AUTO_ENABLED=True,
         VISUAL_SAFETY_PROVIDER="azure_content_safety",
         VISUAL_SAFETY_CLASSIFIER_ENABLED=True,
@@ -194,6 +197,7 @@ def test_historical_educational_ocr_context_not_auto_blocked(monkeypatch, tmp_pa
 
     with override_settings(
         STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
         OCR_MODERATION_AUTO_ENABLED=True,
         OCR_MODERATION_PROVIDER="azure",
     ):
@@ -218,6 +222,7 @@ def test_clean_cover_scan_allows_without_blocking(monkeypatch, tmp_path):
 
     with override_settings(
         STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
         VISUAL_MODERATION_AUTO_ENABLED=True,
         VISUAL_SAFETY_PROVIDER="azure_content_safety",
         VISUAL_SAFETY_CLASSIFIER_ENABLED=True,

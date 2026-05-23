@@ -12,6 +12,7 @@ import AppShell from '../components/ui/AppShell';
 import AuthModal from '../components/ui/AuthModal';
 import { ThemeProvider } from '../components/ui/ThemeProvider';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { CapabilitiesProvider, useCapabilities } from '../lib/capabilities';
 
 function getRedirectFromSearch(search) {
   const params = new URLSearchParams(search || '');
@@ -26,6 +27,7 @@ function getRedirectFromSearch(search) {
 function AppWithRouter() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { refreshCapabilities } = useCapabilities();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState(() => getStoredAuthUser());
@@ -103,6 +105,7 @@ function AppWithRouter() {
 
   const handleLogout = async () => {
     await logout();
+    await refreshCapabilities({ force: true });
     setUser(null);
 
     if (['/studio', '/analytics', '/moderation', '/library', '/my-lessons', '/history'].includes(location.pathname)) {
@@ -119,6 +122,7 @@ function AppWithRouter() {
   const handleLoginSuccess = useCallback((nextUser) => {
     setUser(nextUser);
     setAuthModalOpen(false);
+    void refreshCapabilities({ force: true });
 
     const redirectTarget = pendingRedirect || getRedirectFromSearch(location.search);
     setPendingRedirect('');
@@ -129,7 +133,7 @@ function AppWithRouter() {
     }
 
     clearRedirectQuery();
-  }, [clearRedirectQuery, location.search, navigate, pendingRedirect]);
+  }, [clearRedirectQuery, location.search, navigate, pendingRedirect, refreshCapabilities]);
 
   return (
     <>
@@ -168,9 +172,11 @@ function AppWithRouter() {
 export default function App() {
   return (
     <ThemeProvider>
-      <BrowserRouter>
-        <AppWithRouter />
-      </BrowserRouter>
+      <CapabilitiesProvider>
+        <BrowserRouter>
+          <AppWithRouter />
+        </BrowserRouter>
+      </CapabilitiesProvider>
     </ThemeProvider>
   );
 }

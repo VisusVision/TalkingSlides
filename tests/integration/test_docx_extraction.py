@@ -73,6 +73,10 @@ def test_extract_docx_text_uses_docx_content_not_placeholders(tmp_path, monkeypa
 
     monkeypatch.setattr(pptx_extract, "_HAVE_DOCX", True)
     monkeypatch.setattr(pptx_extract, "_DocxDocument", lambda _path: _FakeDoc())
+    def fail_libreoffice_conversion(*_args, **_kwargs):
+        raise RuntimeError("force python-docx fallback")
+
+    monkeypatch.setattr(pptx_extract, "_convert_via_libreoffice_to_pdf", fail_libreoffice_conversion)
 
     paths = pptx_extract._extract_docx_text(str(docx_path), notes_dir)
 

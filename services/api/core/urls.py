@@ -51,10 +51,11 @@ from .views import (
   AvatarPreviewRegenerateView,
   AvatarPrepareView,
   ProjectAvatarRerenderView,
-  AvatarPreviewStatusView,
-  AvatarPreviewDeleteView,
-  AvatarOverlayPreferenceView,
-  AvatarProfileView,
+    AvatarPreviewStatusView,
+    AvatarPreviewDeleteView,
+    AvatarOverlayPreferenceView,
+    AvatarProfileView,
+    CapabilitiesView,
   AuthProvidersView,
     CatalogDetailView,
   CatalogFeedView,
@@ -131,6 +132,7 @@ router.register(r"jobs", JobViewSet, basename="job")
 
 urlpatterns = [
     # Auth
+    path("capabilities/", CapabilitiesView.as_view(), name="capabilities"),
     path("auth/login/", LoginView.as_view(), name="auth-login"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("auth/me/", MeView.as_view(), name="auth-me"),

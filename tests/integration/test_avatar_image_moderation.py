@@ -67,6 +67,7 @@ def _avatar_url(user: User) -> str:
 
 
 def _enable_azure_visual_safety(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "ENABLE_AVATAR", True, raising=False)
     monkeypatch.setattr(settings, "AVATAR_IMAGE_MODERATION_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "AVATAR_IMAGE_MODERATION_BLOCK_ON_REJECTION", True, raising=False)
     monkeypatch.setattr(settings, "AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL", False, raising=False)
@@ -128,6 +129,7 @@ def _mock_avatar_processing(monkeypatch, tmp_path: Path) -> None:
 @pytest.mark.django_db
 def test_avatar_image_moderation_disabled_does_not_block_upload(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path), raising=False)
+    monkeypatch.setattr(settings, "ENABLE_AVATAR", True, raising=False)
     monkeypatch.setattr(settings, "AVATAR_IMAGE_MODERATION_AUTO_ENABLED", False, raising=False)
     _mock_avatar_processing(monkeypatch, tmp_path)
     teacher = _make_teacher("avatar_disabled_teacher")
@@ -206,6 +208,7 @@ def test_missing_visual_provider_config_skips_fail_open_unless_approval_required
     image_path = _save_image(tmp_path / "avatar.png")
     teacher = _make_teacher("avatar_missing_config_teacher")
     profile = teacher.profile
+    monkeypatch.setattr(settings, "ENABLE_AVATAR", True, raising=False)
     monkeypatch.setattr(settings, "AVATAR_IMAGE_MODERATION_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_SAFETY_PROVIDER", "azure_content_safety", raising=False)
     monkeypatch.setattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", True, raising=False)
@@ -243,6 +246,7 @@ def test_avatar_image_moderation_does_not_mutate_project_moderation_status(monke
 
 @pytest.mark.django_db
 def test_avatar_moderation_diagnostics_do_not_print_secrets(settings):
+    settings.ENABLE_AVATAR = True
     settings.AVATAR_IMAGE_MODERATION_AUTO_ENABLED = True
     settings.AVATAR_IMAGE_MODERATION_BLOCK_ON_REJECTION = True
     settings.AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL = False

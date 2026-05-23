@@ -34,6 +34,7 @@ import {
   uploadVoiceSample,
 } from '../api';
 import { canAccessStudio } from '../lib/auth';
+import { featureEnabled, featureStatusLabel, useCapabilities } from '../lib/capabilities';
 import {
   SOCIAL_LINK_FIELDS,
   normalizedPublicProfilePayload,
@@ -218,6 +219,8 @@ function SettingsSection({
 
 export default function Settings({ user, onUserRefresh }) {
   const { resolvedTheme, setMode } = useTheme();
+  const { capabilities } = useCapabilities();
+  const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const teacherMode = canAccessStudio(user);
   const [reducedMotion, setReducedMotion] = useState(
     () => window.localStorage.getItem(REDUCED_MOTION_KEY) === 'true',
@@ -361,9 +364,41 @@ export default function Settings({ user, onUserRefresh }) {
     ),
     [bannerFile, logoFile, profileDraft, profileEditDraft],
   );
+  const systemFeatureRows = useMemo(() => {
+    const localTts = capabilities?.features?.local_tts || {};
+    const localTtsStatus = String(localTts.status || '').trim().toLowerCase();
+    return [
+      {
+        label: 'Avatar',
+        value: featureStatusLabel(capabilities, 'avatar'),
+        enabled: featureEnabled(capabilities, 'avatar'),
+      },
+      {
+        label: 'Intelligence',
+        value: featureStatusLabel(capabilities, 'intelligence'),
+        enabled: featureEnabled(capabilities, 'intelligence'),
+      },
+      {
+        label: 'Visual moderation',
+        value: featureStatusLabel(capabilities, 'visual_moderation'),
+        enabled: featureEnabled(capabilities, 'visual_moderation'),
+      },
+      {
+        label: 'Local TTS',
+        value: localTts.enabled ? 'Enabled' : localTtsStatus === 'fallback' ? 'Fallback' : 'Fallback',
+        enabled: Boolean(localTts.enabled),
+      },
+    ];
+  }, [capabilities]);
 
   const loadAvatarProfile = useCallback(async () => {
-    if (!teacherMode || !user?.id) return;
+    if (!avatarFeatureEnabled || !teacherMode || !user?.id) {
+      setAvatarProfilePayload(null);
+      setPreviewVideoUrl('');
+      setPreviewJobId('');
+      setPreviewStatusLabel('idle');
+      return;
+    }
 
     try {
       const payload = await fetchAvatarProfile(user.id);
@@ -385,14 +420,14 @@ export default function Settings({ user, onUserRefresh }) {
     } catch (error) {
       setTeacherMessage(error.message || 'Unable to load avatar profile settings.');
     }
-  }, [teacherMode, user?.id]);
+  }, [avatarFeatureEnabled, teacherMode, user?.id]);
 
   useEffect(() => {
     loadAvatarProfile();
   }, [loadAvatarProfile]);
 
   useEffect(() => {
-    if (!previewJobId || !user?.id) return undefined;
+    if (!avatarFeatureEnabled || !previewJobId || !user?.id) return undefined;
 
     let active = true;
     const interval = window.setInterval(async () => {
@@ -431,7 +466,20 @@ export default function Settings({ user, onUserRefresh }) {
       active = false;
       window.clearInterval(interval);
     };
-  }, [loadAvatarProfile, previewJobId, user?.id]);
+  }, [avatarFeatureEnabled, loadAvatarProfile, previewJobId, user?.id]);
+
+  useEffect(() => {
+    if (avatarFeatureEnabled) return;
+    setAvatarModal('');
+    setTeacherBusy(false);
+    setTeacherMessage('');
+    setImageFile(null);
+    setVideoFile(null);
+    setMediaPreviewUrl('');
+    setMediaPreviewType('');
+    setPreviewJobId('');
+    setPreviewVideoUrl('');
+  }, [avatarFeatureEnabled]);
 
   const clearLocalNotes = () => {
     const noteKeys = [];
@@ -549,7 +597,7 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   const handleUploadVoice = async () => {
-    if (!user?.id || !voiceFile) return;
+    if (!avatarFeatureEnabled || !user?.id || !voiceFile) return;
     await runTeacherAction(async () => {
       await uploadVoiceSample(user.id, voiceFile);
       await loadAvatarProfile();
@@ -557,7 +605,7 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   const handleUploadVisualSample = async () => {
-    if (!user?.id || (!imageFile && !videoFile)) return;
+    if (!avatarFeatureEnabled || !user?.id || (!imageFile && !videoFile)) return;
 
     await runTeacherAction(async () => {
       if (videoFile) {
@@ -571,7 +619,7 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   const handleSaveTeacherDefaults = async () => {
-    if (!user?.id) return;
+    if (!avatarFeatureEnabled || !user?.id) return;
 
     await runTeacherAction(async () => {
       await updateAvatarProfile(user.id, avatarSettings);
@@ -581,7 +629,7 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   const handlePrepareAvatar = async () => {
-    if (!user?.id) return;
+    if (!avatarFeatureEnabled || !user?.id) return;
 
     await runTeacherAction(async () => {
       await prepareAvatarProfile(user.id, {
@@ -594,7 +642,7 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   const handleGeneratePreview = async () => {
-    if (!user?.id) return;
+    if (!avatarFeatureEnabled || !user?.id) return;
 
     await runTeacherAction(async () => {
       const queued = await regenerateAvatarPreview(user.id);
@@ -604,7 +652,7 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   const handleDeletePreview = async () => {
-    if (!user?.id) return;
+    if (!avatarFeatureEnabled || !user?.id) return;
 
     await runTeacherAction(async () => {
       await deleteAvatarPreview(user.id);
@@ -625,7 +673,7 @@ export default function Settings({ user, onUserRefresh }) {
           <p className="label-sm">Settings</p>
           <h1 className="display-lg mt-2 text-[var(--text-primary)]">Workspace preferences</h1>
           <p className="body-md mt-3 max-w-2xl">
-            Manage account details, public profile text, playback accessibility, and publisher avatar preferences.
+            Manage account details, public profile text, playback accessibility, and deployment feature visibility.
           </p>
         </SurfaceCard>
 
@@ -815,6 +863,31 @@ export default function Settings({ user, onUserRefresh }) {
         </SettingsSection>
 
         <SettingsSection
+          eyebrow="Deployment"
+          title="System features"
+          caption="Read-only capabilities reported by this deployment."
+          icon={MonitorPlay}
+        >
+          <div className="grid gap-2 sm:grid-cols-2">
+            {systemFeatureRows.map((feature) => (
+              <div
+                key={feature.label}
+                className="flex items-center justify-between gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-2"
+              >
+                <span className="text-sm font-medium text-[var(--text-primary)]">{feature.label}</span>
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                  feature.enabled
+                    ? 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
+                    : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
+                }`}>
+                  {feature.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        </SettingsSection>
+
+        <SettingsSection
           eyebrow="Help"
           title="Support content"
           caption="Open support guidance and contact details."
@@ -829,7 +902,7 @@ export default function Settings({ user, onUserRefresh }) {
           </Link>
         </SettingsSection>
 
-        {teacherMode && (
+        {teacherMode && avatarFeatureEnabled && (
           <SettingsSection
             eyebrow="Avatar Preferences"
             title="Voice and avatar samples"
@@ -895,7 +968,7 @@ export default function Settings({ user, onUserRefresh }) {
       />
 
       <ModalShell
-        open={avatarModal === 'voice'}
+        open={avatarFeatureEnabled && avatarModal === 'voice'}
         eyebrow="Avatar Preferences"
         title="Voice sample"
         titleId="avatar-voice-modal-title"
@@ -935,7 +1008,7 @@ export default function Settings({ user, onUserRefresh }) {
       </ModalShell>
 
       <ModalShell
-        open={avatarModal === 'media'}
+        open={avatarFeatureEnabled && avatarModal === 'media'}
         eyebrow="Avatar Preferences"
         title="Avatar image or video"
         titleId="avatar-media-modal-title"
@@ -999,7 +1072,7 @@ export default function Settings({ user, onUserRefresh }) {
       </ModalShell>
 
       <ModalShell
-        open={avatarModal === 'preview'}
+        open={avatarFeatureEnabled && avatarModal === 'preview'}
         eyebrow="Avatar Preferences"
         title="Avatar preview"
         titleId="avatar-preview-modal-title"

@@ -28,6 +28,14 @@ export function normalizeApiBaseUrl(value) {
 export const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/i, "");
 const AUTH_USER_STORAGE_KEY = "auth_user";
+let capabilitiesPromise = null;
+
+function capabilitiesUrl({ cacheBust = false } = {}) {
+  const baseUrl = `${API_BASE_URL}/capabilities/`;
+  if (!cacheBust) return baseUrl;
+  const separator = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${separator}_capabilities_ts=${Date.now()}`;
+}
 
 function toAbsoluteApiUrl(url) {
   if (!url) return "";
@@ -49,6 +57,7 @@ export function setToken(token) {
   } else {
     localStorage.removeItem("auth_token");
   }
+  clearCapabilitiesCache();
 }
 
 export function getStoredAuthUser() {
@@ -108,6 +117,36 @@ function apiError(data, fallback) {
   const error = new Error(apiErrorMessage(data, fallback));
   error.details = data;
   return error;
+}
+
+export function clearCapabilitiesCache() {
+  capabilitiesPromise = null;
+}
+
+export async function fetchCapabilities({ force = false } = {}) {
+  if (force) {
+    clearCapabilitiesCache();
+  }
+  if (!force && capabilitiesPromise) {
+    return capabilitiesPromise;
+  }
+  const request = fetch(capabilitiesUrl({ cacheBust: force || import.meta.env.DEV }), {
+    cache: "no-store",
+  })
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw apiError(data, "Failed to fetch deployment capabilities");
+      }
+      return data;
+    })
+    .finally(() => {
+      if (capabilitiesPromise === request) {
+        capabilitiesPromise = null;
+      }
+    });
+  capabilitiesPromise = request;
+  return capabilitiesPromise;
 }
 
 export async function fetchAuthenticatedMediaBlobUrl(relPath) {

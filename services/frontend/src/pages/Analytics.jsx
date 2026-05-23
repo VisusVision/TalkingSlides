@@ -27,6 +27,7 @@ import {
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { canAccessStudio } from '../lib/auth';
+import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import { copyTextToClipboard } from '../utils/clipboard';
 
 const RANGE_OPTIONS = [
@@ -883,6 +884,9 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
 }
 
 export default function Analytics({ user }) {
+  const { capabilities } = useCapabilities();
+  const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
+  const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const [rangeKey, setRangeKey] = useState('7');
   const [categorySlug, setCategorySlug] = useState('');
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -941,6 +945,13 @@ export default function Analytics({ user }) {
   }, [analyticsFilters, user]);
 
   const loadIntelligenceReport = useCallback(async (activeRef = { current: true }) => {
+    if (!intelligenceFeatureEnabled) {
+      setIntelligenceReport(null);
+      setIntelligenceError('');
+      setIntelligenceLoadedFilterKey('');
+      setIntelligenceLoading(false);
+      return;
+    }
     setIntelligenceLoading(true);
     setIntelligenceError('');
     setIntelligenceLoadedFilterKey('');
@@ -960,7 +971,7 @@ export default function Analytics({ user }) {
         setIntelligenceLoading(false);
       }
     }
-  }, [analyticsFilterKey, analyticsFilters]);
+  }, [analyticsFilterKey, analyticsFilters, intelligenceFeatureEnabled]);
 
   useEffect(() => {
     const activeRef = { current: true };
@@ -976,10 +987,10 @@ export default function Analytics({ user }) {
     return () => {
       activeRef.current = false;
     };
-  }, [loadIntelligenceReport, refreshNonce]);
+  }, [intelligenceFeatureEnabled, loadIntelligenceReport, refreshNonce]);
 
   useEffect(() => {
-    if (!analyticsEnhancementPending(intelligenceReport)) return undefined;
+    if (!intelligenceFeatureEnabled || !analyticsEnhancementPending(intelligenceReport)) return undefined;
 
     let active = true;
     const poll = async () => {
@@ -998,7 +1009,7 @@ export default function Analytics({ user }) {
       active = false;
       window.clearInterval(intervalId);
     };
-  }, [analyticsFilterKey, analyticsFilters, intelligenceReport]);
+  }, [analyticsFilterKey, analyticsFilters, intelligenceFeatureEnabled, intelligenceReport]);
 
   useEffect(() => {
     if (!canCreateLesson) {
@@ -1044,7 +1055,7 @@ export default function Analytics({ user }) {
     if (user?.id) formData.append('user_id', user.id);
     if (pauseSec) formData.append('pause_sec', pauseSec);
     if (whiteboardModeAll) formData.append('whiteboard_mode_all', '1');
-    formData.append('avatar_enabled', avatarEnabled ? '1' : '0');
+    formData.append('avatar_enabled', avatarFeatureEnabled && avatarEnabled ? '1' : '0');
 
     try {
       await createProject(formData);
@@ -1057,6 +1068,7 @@ export default function Analytics({ user }) {
   };
 
   const handleAnalyzeAnalytics = useCallback(async ({ auto = false, force = false } = {}) => {
+    if (!intelligenceFeatureEnabled) return null;
     if (analyticsEnhancementPending(intelligenceReport)) return null;
     setIntelligenceAnalyzing(true);
     setIntelligenceError('');
@@ -1073,7 +1085,7 @@ export default function Analytics({ user }) {
     } finally {
       setIntelligenceAnalyzing(false);
     }
-  }, [analyticsFilterKey, analyticsFilters, intelligenceReport]);
+  }, [analyticsFilterKey, analyticsFilters, intelligenceFeatureEnabled, intelligenceReport]);
 
   const handleCopyIntelligence = async () => {
     const text = analyticsIntelligenceCopyText(intelligenceReport);
@@ -1521,6 +1533,7 @@ export default function Analytics({ user }) {
         </div>
       </section>
 
+      {intelligenceFeatureEnabled && (
       <SurfaceCard className="space-y-6 border border-[color:rgba(208,188,255,0.2)] bg-[color:rgba(208,188,255,0.08)] p-6 sm:p-8">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-4">
@@ -1685,6 +1698,7 @@ export default function Analytics({ user }) {
           </div>
         )}
       </SurfaceCard>
+      )}
 
       <SurfaceCard className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">

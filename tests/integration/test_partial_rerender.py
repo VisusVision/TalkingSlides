@@ -105,7 +105,11 @@ def test_cover_only_update_creates_cover_moderation_scan_marker(tmp_path):
     owner = _make_user("partial_cover_marker")
     project = _make_project(owner, tmp_path)
 
-    with override_settings(STORAGE_ROOT=str(tmp_path), VISUAL_MODERATION_AUTO_ENABLED=False):
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
+        VISUAL_MODERATION_AUTO_ENABLED=False,
+    ):
         response = _client(owner).post(
             f"/api/v1/projects/{project.id}/cover/",
             {"cover_file": _upload_png("new-cover.png")},

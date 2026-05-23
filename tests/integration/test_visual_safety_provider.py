@@ -92,6 +92,7 @@ def _enable_azure_visual_safety(monkeypatch) -> None:
 
 
 def _enable_visual_moderation(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION", False, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", False, raising=False)
@@ -100,6 +101,7 @@ def _enable_visual_moderation(monkeypatch) -> None:
 
 
 def _enable_video_frame_audit(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_PHASE", "video_frame_audit", raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_EVERY_SECONDS", 10.0, raising=False)

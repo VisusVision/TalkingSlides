@@ -55,6 +55,7 @@ def _slide(path: Path | str, *, index: int = 0, page_key: str = "slide-1") -> di
 
 
 def _enable_ocr(monkeypatch, *, block: bool = False, slides: bool = True) -> None:
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "OCR_MODERATION_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "OCR_MODERATION_BLOCK_RENDER_ON_REJECTION", block, raising=False)
     monkeypatch.setattr(settings, "OCR_MODERATION_PHASE", "ocr_slide_scan", raising=False)

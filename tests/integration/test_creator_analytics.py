@@ -17,6 +17,7 @@ if str(API_ROOT) not in sys.path:
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
+from django.conf import settings  # noqa: E402
 from django.contrib.auth.models import User  # noqa: E402
 from django.test import override_settings  # noqa: E402
 from django.utils import timezone  # noqa: E402
@@ -307,6 +308,8 @@ def test_creator_analytics_includes_sanitized_recent_comment_feedback():
 
 @pytest.mark.django_db
 @override_settings(
+    ENABLE_INTELLIGENCE=True,
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_AUTO_ENABLED=True,
     ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS=3600,
     INTELLIGENCE_CELERY_QUEUE="intelligence-test",
@@ -334,6 +337,8 @@ def test_comment_create_schedules_analytics_intelligence(monkeypatch):
 
 @pytest.mark.django_db
 @override_settings(
+    ENABLE_INTELLIGENCE=True,
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_AUTO_ENABLED=True,
     ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS=3600,
     ANALYTICS_INTELLIGENCE_MIN_PROGRESS_EVENT_DELTA=5,
@@ -359,7 +364,12 @@ def test_repeated_progress_events_are_throttled(monkeypatch):
 
 
 @pytest.mark.django_db
-@override_settings(INTELLIGENCE_CELERY_QUEUE="intelligence-test")
+@override_settings(
+    ENABLE_INTELLIGENCE=True,
+    LESSON_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    INTELLIGENCE_CELERY_QUEUE="intelligence-test",
+)
 def test_publish_transition_schedules_lesson_and_analytics_intelligence(monkeypatch):
     creator = _make_user("creator_publish_schedule_owner", role="publisher")
     lesson = _make_project(creator, "Publish schedule lesson", published=False)
@@ -386,6 +396,9 @@ def test_worker_render_completion_schedule_helpers_use_intelligence_queue(monkey
     creator = _make_user("creator_worker_schedule_owner", role="publisher")
     lesson = _make_project(creator, "Worker schedule lesson")
     monkeypatch.setenv("INTELLIGENCE_CELERY_QUEUE", "intelligence-test")
+    monkeypatch.setattr(settings, "ENABLE_INTELLIGENCE", True, raising=False)
+    monkeypatch.setattr(settings, "LESSON_INTELLIGENCE_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "ANALYTICS_INTELLIGENCE_ENABLED", True, raising=False)
     calls = []
 
     def fake_apply_async(*, args=None, kwargs=None, queue=None):
