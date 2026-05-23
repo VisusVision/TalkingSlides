@@ -27,6 +27,11 @@ from core.models import AvatarOverlayPreference, AvatarRenderJob, Job, Project, 
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _enable_avatar_for_enabled_path_tests(settings):
+    settings.ENABLE_AVATAR = True
+
+
 def _with_session(request):
     middleware = SessionMiddleware(lambda req: None)
     middleware.process_request(request)
@@ -300,7 +305,7 @@ def test_frontend_watch_exposes_single_focus_mode_for_study_layout():
     assert "mode=\"study-panel\"" in source
     assert "data-testid=\"study-mode-panel\"" in source
     assert "data-testid=\"study-mode-notes\"" in source
-    assert "avatarOverlayMode={focusMode ? 'disabled' : 'floating'}" in source
+    assert "avatarOverlayMode={!avatarFeatureEnabled || focusMode ? 'disabled' : 'floating'}" in source
 
 
 def test_frontend_studio_hides_advanced_avatar_runtime_and_placement_controls():
@@ -633,7 +638,7 @@ def test_frontend_watch_polls_for_enhanced_avatar_and_merges_overlay():
 
     assert "AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000" in source
     assert "lesson?.avatar_overlay?.enhanced_pending" in source
-    assert "if (!activeLessonId || !playbackActive || !enhancedPending || loadingLesson) return undefined;" in source
+    assert "if (!avatarFeatureEnabled || !activeLessonId || !playbackActive || !enhancedPending || loadingLesson) return undefined;" in source
     assert "fetchPlaybackToken(activeLessonId)" in source
     assert "mergePlaybackIntoLesson(previous, playbackData)" in source
     assert "nextOverlay.enhanced_available && nextUrl && nextUrl !== currentUrl" in source

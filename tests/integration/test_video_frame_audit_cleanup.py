@@ -77,6 +77,7 @@ def _sampling_result(frame_path: Path) -> VideoFrameSamplingResult:
 
 
 def _enable_audit(monkeypatch, *, retain: bool = False, cleanup: bool = True) -> None:
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_PHASE", "video_frame_audit", raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_EVERY_SECONDS", 10.0, raising=False)
