@@ -140,7 +140,7 @@ def test_auto_visual_corrupt_image_creates_review_finding_without_crash(monkeypa
     assert finding.category == "graphic_content"
     assert finding.decision == "needs_admin_review"
     assert finding.provider_raw["error"] in {"UnidentifiedImageError", "OSError"}
-    assert project.moderation_status == "not_scanned"
+    assert project.moderation_status == "needs_admin_review"
     assert project.moderation_summary["visual_asset_scan"]["finding_count"] == 1
 
 

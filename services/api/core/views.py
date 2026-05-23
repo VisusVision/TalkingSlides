@@ -3861,6 +3861,8 @@ def _can_manage_project(user, project: Project) -> bool:
 def _can_run_lesson_intelligence(user, project: Project) -> bool:
     if not _is_authenticated_user(user):
         return False
+    if _is_staff_user(user):
+        return True
     if not _can_edit_project(user, project):
         return False
     profile = getattr(user, "profile", None)

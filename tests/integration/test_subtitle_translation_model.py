@@ -103,6 +103,7 @@ def _make_ready_project_with_transcript(
         title=f"Translated subtitles {username}",
         user=teacher,
         is_published=published,
+        moderation_status="approved" if published else "not_scanned",
         tts_settings=tts_settings or {},
     )
     job = Job.objects.create(
@@ -1522,7 +1523,12 @@ def test_anonymous_draft_generated_track_cannot_list_or_stream(tmp_path):
 @pytest.mark.django_db
 def test_track_list_includes_original_and_ready_translated_track_with_tokenized_vtt(tmp_path):
     teacher = _make_teacher("translation_public_teacher")
-    project = Project.objects.create(title="Published translated captions", user=teacher, is_published=True)
+    project = Project.objects.create(
+        title="Published translated captions",
+        user=teacher,
+        is_published=True,
+        moderation_status="approved",
+    )
     job = Job.objects.create(
         project=project,
         job_type="video_export",
@@ -1585,7 +1591,7 @@ def test_published_playable_track_list_ignores_stale_project_status(tmp_path):
         title="Published playable translated captions",
         user=teacher,
         status="draft",
-        moderation_status="not_scanned",
+        moderation_status="approved",
         is_published=True,
     )
     job = Job.objects.create(
@@ -1718,7 +1724,12 @@ def test_anonymous_cannot_see_draft_translated_track_but_owner_can(tmp_path):
 @pytest.mark.django_db
 def test_disabled_translation_config_does_not_break_original_track_listing(tmp_path):
     teacher = _make_teacher("translation_disabled_teacher")
-    project = Project.objects.create(title="Original only", user=teacher, is_published=True)
+    project = Project.objects.create(
+        title="Original only",
+        user=teacher,
+        is_published=True,
+        moderation_status="approved",
+    )
     Job.objects.create(
         project=project,
         job_type="video_export",

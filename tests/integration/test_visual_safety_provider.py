@@ -274,7 +274,7 @@ def test_visual_asset_moderation_includes_mocked_provider_findings(monkeypatch, 
     assert result["finding_count"] == 1
     assert result["block_render"] is False
     assert finding.category == "violence"
-    assert project.moderation_status == "approved"
+    assert project.moderation_status == "revision_required"
     assert "azure_content_safety" in project.moderation_summary["visual_asset_scan"]["providers"]
 
 
@@ -303,7 +303,7 @@ def test_video_frame_audit_includes_mocked_provider_findings(monkeypatch, tmp_pa
 
 
 @pytest.mark.django_db
-def test_project_moderation_status_unchanged_after_visual_safety_findings(monkeypatch, tmp_path):
+def test_project_moderation_status_updates_after_visual_safety_findings(monkeypatch, tmp_path):
     _enable_visual_moderation(monkeypatch)
     _enable_azure_visual_safety(monkeypatch)
     _mock_azure_response(monkeypatch, {"categoriesAnalysis": [{"category": "Violence", "severity": 4}]})
@@ -313,7 +313,7 @@ def test_project_moderation_status_unchanged_after_visual_safety_findings(monkey
     worker_tasks._run_auto_visual_asset_moderation_after_export(project.id, [{"image_path": str(image_path)}])
 
     project.refresh_from_db()
-    assert project.moderation_status == "approved"
+    assert project.moderation_status == "revision_required"
 
 
 @pytest.mark.django_db

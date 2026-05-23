@@ -229,7 +229,7 @@ def admin_review_detail_payload(review: AdminReviewRequest) -> dict[str, Any]:
                 finding_payload(finding, include_admin_fields=True)
                 for finding in findings
             ],
-            "open_project_studio_hint": "",
+            "open_project_studio_hint": f"/studio?lesson={project.id}&review=1",
             "open_review_hint": f"/watch?lesson={project.id}&review=1",
             "open_watch_timestamp_hint": (
                 f"/watch?lesson={project.id}&review=1&t={first_timestamp:g}"

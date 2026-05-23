@@ -299,14 +299,14 @@ class ModerationOrchestrator:
     def _ensure_auto_review_request(self, project, run, project_status: str) -> None:
         from ai_agents.models import AdminReviewRequest
 
-        if AdminReviewRequest.objects.filter(project=project, status="open").exists():
-            return
-        AdminReviewRequest.objects.create(
+        AdminReviewRequest.objects.get_or_create(
             project=project,
-            run=run,
-            requested_by=None,
-            publisher_message=_summary_message("needs_admin_review" if project_status == "needs_admin_review" else "block"),
             status="open",
+            defaults={
+                "run": run,
+                "requested_by": None,
+                "publisher_message": _summary_message("needs_admin_review" if project_status == "needs_admin_review" else "block"),
+            },
         )
 
 
