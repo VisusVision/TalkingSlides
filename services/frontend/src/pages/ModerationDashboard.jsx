@@ -20,9 +20,11 @@ import {
   rejectModerationReviewRequest,
   runAdminProjectModerationAction,
 } from '../api';
+import { useSectionState } from '../app/navigationState';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
+import { fuzzySearch } from '../utils/fuzzySearch';
 
 function normalizeReviewRequests(payload) {
   return Array.isArray(payload) ? payload : payload?.results || [];
@@ -104,9 +106,28 @@ function draftAdminResponse(responsesById, review, detail) {
   return savedAdminResponse(review, detail);
 }
 
-export default function ModerationDashboard({ searchQuery = '' }) {
+function reviewSearchText(review) {
+  return [
+    review?.project_title || `Project #${review?.project_id || ''}`,
+    review?.publisher_username,
+    review?.requested_by_username,
+    review?.status,
+    review?.moderation_status,
+    review?.publisher_message,
+    review?.id ? `request ${review.id}` : '',
+    review?.project_id ? `project ${review.project_id}` : '',
+  ].filter(Boolean).join(' ');
+}
+
+export default function ModerationDashboard() {
   const { capabilities } = useCapabilities();
   const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
+  const [moderationState, setModerationState] = useSectionState('moderation', {
+    search: '',
+    activeStatus: 'reports',
+  });
+  const searchQuery = moderationState.search || '';
+  const activeStatus = moderationState.activeStatus || 'reports';
   const [reviewRequests, setReviewRequests] = useState([]);
   const [detailsById, setDetailsById] = useState({});
   const [expandedId, setExpandedId] = useState(null);
@@ -116,7 +137,6 @@ export default function ModerationDashboard({ searchQuery = '' }) {
   const [actionBusy, setActionBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [activeStatus, setActiveStatus] = useState('reports');
   const [pendingDecision, setPendingDecision] = useState(null);
 
   const activeTab = useMemo(
@@ -124,27 +144,13 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     [activeStatus],
   );
   
-  const filteredReviewRequests = useMemo(() => {
-    if (!searchQuery) return reviewRequests;
-    const q = searchQuery.toLowerCase();
-    return reviewRequests.filter((review) => {
-      const title = String(review.project_title || `Project #${review.project_id}`).toLowerCase();
-      const publisher = String(review.publisher_username || review.requested_by_username || '').toLowerCase();
-      const status = String(review.status || '').toLowerCase();
-      const message = String(review.publisher_message || '').toLowerCase();
-      const idStr = String(review.id);
-      const projIdStr = String(review.project_id);
-      
-      return (
-        title.includes(q)
-        || publisher.includes(q)
-        || status.includes(q)
-        || message.includes(q)
-        || idStr.includes(q)
-        || projIdStr.includes(q)
-      );
-    });
-  }, [reviewRequests, searchQuery]);
+  const hasSearch = Boolean(String(searchQuery || '').trim());
+  const reviewSearchResult = useMemo(
+    () => fuzzySearch(reviewRequests, searchQuery, reviewSearchText),
+    [reviewRequests, searchQuery],
+  );
+  const filteredReviewRequests = hasSearch ? reviewSearchResult.items : reviewRequests;
+  const setActiveStatus = (status) => setModerationState({ activeStatus: status });
 
   const loadReviewRequests = useCallback(async () => {
     setLoading(true);
@@ -356,6 +362,12 @@ export default function ModerationDashboard({ searchQuery = '' }) {
           ))}
         </div>
 
+        {!loading && hasSearch && reviewSearchResult.isFuzzyOnly && filteredReviewRequests.length > 0 && (
+          <div className="rounded-2xl bg-[color:var(--surface-muted)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)]">
+            No exact matches. Showing close matches.
+          </div>
+        )}
+
         {loading ? (
           <p className="text-sm text-[var(--text-secondary)]">Loading review requests...</p>
         ) : reviewRequests.length === 0 ? (
@@ -369,6 +381,18 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                 <p className="mt-1 text-sm text-[var(--text-secondary)]">
                   Use the smoke command in the operations docs if you need a test request.
                 </p>
+              </div>
+            </div>
+          </div>
+        ) : filteredReviewRequests.length === 0 ? (
+          <div className="rounded-2xl token-surface p-4">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[color:var(--surface-muted)] text-[var(--text-secondary)]">
+                <ShieldCheck size={18} />
+              </span>
+              <div>
+                <p className="font-semibold text-[var(--text-primary)]">No moderation items match this search.</p>
+                <p className="mt-1 text-sm text-[var(--text-secondary)]">Try another keyword or clear search.</p>
               </div>
             </div>
           </div>

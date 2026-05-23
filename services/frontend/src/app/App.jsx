@@ -13,6 +13,7 @@ import AuthModal from '../components/ui/AuthModal';
 import { ThemeProvider } from '../components/ui/ThemeProvider';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { CapabilitiesProvider, useCapabilities } from '../lib/capabilities';
+import { NavigationStateProvider } from './navigationState';
 
 function getRedirectFromSearch(search) {
   const params = new URLSearchParams(search || '');
@@ -29,7 +30,6 @@ function AppWithRouter() {
   const location = useLocation();
   const { refreshCapabilities } = useCapabilities();
 
-  const [searchQuery, setSearchQuery] = useState('');
   const [user, setUser] = useState(() => getStoredAuthUser());
   const [authLoading, setAuthLoading] = useState(() => !getStoredAuthUser());
   const [authModalOpen, setAuthModalOpen] = useState(false);
@@ -138,8 +138,6 @@ function AppWithRouter() {
   return (
     <>
       <AppShell
-        searchQuery={searchQuery}
-        onSearchQueryChange={setSearchQuery}
         user={user}
         authLoading={authLoading}
         onLoginRequest={handleLoginRequest}
@@ -153,7 +151,6 @@ function AppWithRouter() {
         ) : (
           <AppRouter
             user={user}
-            searchQuery={searchQuery}
             onLoginRequest={handleLoginRequest}
             onUserRefresh={refreshCurrentUser}
           />
@@ -174,7 +171,9 @@ export default function App() {
     <ThemeProvider>
       <CapabilitiesProvider>
         <BrowserRouter>
-          <AppWithRouter />
+          <NavigationStateProvider>
+            <AppWithRouter />
+          </NavigationStateProvider>
         </BrowserRouter>
       </CapabilitiesProvider>
     </ThemeProvider>

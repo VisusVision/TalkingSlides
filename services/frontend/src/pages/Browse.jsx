@@ -2,15 +2,28 @@ import { useEffect, useMemo, useState } from 'react';
 import { Compass, SearchX } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { fetchCatalog, fetchCategories } from '../api';
+import { useSectionState } from '../app/navigationState';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import Button from '../components/ui/Button';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import { normalizeLesson, formatDuration, formatViews } from '../lib/content';
+import { fuzzySearch } from '../utils/fuzzySearch';
 
-export default function Browse({ searchQuery, user, onLoginRequest }) {
+function lessonSearchText(lesson) {
+  return [lesson?.title, lesson?.description, lesson?.teacherName, lesson?.categoryName]
+    .filter(Boolean)
+    .join(' ');
+}
+
+export default function Browse({ user, onLoginRequest }) {
   const navigate = useNavigate();
+  const [browseState, setBrowseState] = useSectionState('browse', {
+    search: '',
+    activeCategory: '',
+  });
+  const searchQuery = browseState.search || '';
+  const activeCategory = browseState.activeCategory || '';
   const [categories, setCategories] = useState([]);
-  const [activeCategory, setActiveCategory] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [lessons, setLessons] = useState([]);
@@ -50,17 +63,13 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
     };
   }, [activeCategory]);
 
-  const filteredLessons = useMemo(() => {
-    const q = String(searchQuery || '').trim().toLowerCase();
-    if (!q) return lessons;
-
-    return lessons.filter((lesson) => {
-      const blob = [lesson.title, lesson.description, lesson.teacherName, lesson.categoryName]
-        .join(' ')
-        .toLowerCase();
-      return blob.includes(q);
-    });
-  }, [lessons, searchQuery]);
+  const hasSearch = Boolean(String(searchQuery || '').trim());
+  const lessonSearchResult = useMemo(
+    () => fuzzySearch(lessons, searchQuery, lessonSearchText),
+    [lessons, searchQuery],
+  );
+  const filteredLessons = hasSearch ? lessonSearchResult.items : lessons;
+  const setActiveCategory = (category) => setBrowseState({ activeCategory: category });
 
   return (
     <div className="space-y-6">
@@ -113,6 +122,12 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
         </div>
       </SurfaceCard>
 
+      {!loading && !error && hasSearch && lessonSearchResult.isFuzzyOnly && filteredLessons.length > 0 && (
+        <SurfaceCard className="rounded-2xl p-4">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">No exact matches. Showing close matches.</p>
+        </SurfaceCard>
+      )}
+
       {loading && (
         <SurfaceCard elevated>
           <p className="body-md">Loading browse catalog...</p>
@@ -128,8 +143,12 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
       {!loading && !error && filteredLessons.length === 0 && (
         <SurfaceCard elevated className="space-y-2 text-center">
           <SearchX className="mx-auto text-[var(--text-secondary)]" size={20} />
-          <p className="title-lg text-[var(--text-primary)]">No lessons found</p>
-          <p className="body-md">Try another keyword or category.</p>
+          <p className="title-lg text-[var(--text-primary)]">
+            {hasSearch && activeCategory ? 'Filters are too restrictive' : hasSearch ? 'No lessons match your search' : 'No lessons found'}
+          </p>
+          <p className="body-md">
+            {hasSearch && activeCategory ? 'Clear the category or search for another keyword.' : 'Try another keyword or category.'}
+          </p>
         </SurfaceCard>
       )}
 

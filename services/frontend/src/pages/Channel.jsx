@@ -20,12 +20,14 @@ import {
   updateMyProfile,
   uploadProfileAssets,
 } from '../api';
+import { useSectionState } from '../app/navigationState';
 import Button from '../components/ui/Button';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import PublicProfileEditor from '../components/profile/PublicProfileEditor';
 import SocialIcon from '../components/ui/SocialIcon';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
+import { fuzzySearch } from '../utils/fuzzySearch';
 import {
   SOCIAL_LINK_FIELDS,
   normalizedPublicProfilePayload,
@@ -319,10 +321,30 @@ function PlaylistCard({ playlist }) {
   );
 }
 
-export default function Channel({ user, searchQuery, onLoginRequest, onUserRefresh }) {
+function channelLessonSearchText(lesson) {
+  return [lesson?.title, lesson?.description, lesson?.categoryName]
+    .filter(Boolean)
+    .join(' ');
+}
+
+function channelPlaylistSearchText(playlist) {
+  return [
+    playlist?.title,
+    playlist?.description,
+    ...(playlist?.lessons || []).map((lesson) => lesson.title),
+  ].filter(Boolean).join(' ');
+}
+
+export default function Channel({ user, onLoginRequest, onUserRefresh }) {
   const { userId } = useParams();
-  const [activeTab, setActiveTab] = useState('home');
-  const [sortValue, setSortValue] = useState('date:desc');
+  const [channelState, setChannelState] = useSectionState('channel', {
+    search: '',
+    activeTab: 'home',
+    sortValue: 'date:desc',
+  });
+  const searchQuery = channelState.search || '';
+  const activeTab = channelState.activeTab || 'home';
+  const sortValue = channelState.sortValue || 'date:desc';
   const [profile, setProfile] = useState(null);
   const [lessons, setLessons] = useState([]);
   const [playlists, setPlaylists] = useState([]);
@@ -366,22 +388,19 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
     ),
     [editBannerFile, editLogoFile, editDraft, profile, user],
   );
-  const filteredLessons = useMemo(() => {
-    const needle = String(searchQuery || '').trim().toLowerCase();
-    if (!needle) return lessons;
-    return lessons.filter((lesson) => (
-      [lesson.title, lesson.description, lesson.categoryName]
-        .some((value) => String(value || '').toLowerCase().includes(needle))
-    ));
-  }, [lessons, searchQuery]);
-  const filteredPlaylists = useMemo(() => {
-    const needle = String(searchQuery || '').trim().toLowerCase();
-    if (!needle) return playlists;
-    return playlists.filter((playlist) => (
-      [playlist.title, playlist.description, ...playlist.lessons.map((lesson) => lesson.title)]
-        .some((value) => String(value || '').toLowerCase().includes(needle))
-    ));
-  }, [playlists, searchQuery]);
+  const hasSearch = Boolean(String(searchQuery || '').trim());
+  const lessonSearchResult = useMemo(
+    () => fuzzySearch(lessons, searchQuery, channelLessonSearchText),
+    [lessons, searchQuery],
+  );
+  const playlistSearchResult = useMemo(
+    () => fuzzySearch(playlists, searchQuery, channelPlaylistSearchText),
+    [playlists, searchQuery],
+  );
+  const filteredLessons = hasSearch ? lessonSearchResult.items : lessons;
+  const filteredPlaylists = hasSearch ? playlistSearchResult.items : playlists;
+  const setActiveTab = (tab) => setChannelState({ activeTab: tab });
+  const setSortValue = (value) => setChannelState({ sortValue: value });
   const newestLessons = useMemo(() => sortLessonsByNewest(filteredLessons), [filteredLessons]);
   const featuredLesson = useMemo(() => selectFeaturedLesson(filteredLessons), [filteredLessons]);
   const recentLessons = useMemo(

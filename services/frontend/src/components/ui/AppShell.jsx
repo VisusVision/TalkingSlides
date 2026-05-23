@@ -4,8 +4,6 @@ import SideRail from './SideRail';
 import MobileBottomNav from './MobileBottomNav';
 
 export default function AppShell({
-  searchQuery,
-  onSearchQueryChange,
   user,
   authLoading,
   onLoginRequest,
@@ -19,8 +17,6 @@ export default function AppShell({
     <div className="relative min-h-screen overflow-x-hidden bg-[var(--bg)] pb-24 md:pb-14">
 
       <Header
-        searchQuery={searchQuery}
-        onSearchQueryChange={onSearchQueryChange}
         user={user}
         authLoading={authLoading}
         onLoginRequest={onLoginRequest}

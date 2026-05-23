@@ -4,14 +4,17 @@ import {
   ChevronRight,
   Clock3,
   PlayCircle,
+  SearchX,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { fetchCatalog, fetchCatalogFeed } from '../api';
+import { useSectionState } from '../app/navigationState';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { fallbackSections, sectionsFromFeed } from '../lib/content';
 import { formatDuration, formatViews } from '../lib/content';
+import { fuzzySearch } from '../utils/fuzzySearch';
 
 const ALL_TOPICS = 'All Topics';
 
@@ -83,6 +86,12 @@ function takeAvoidingSeen(lessons, seenIds, limit, minUnseen = 3) {
   return source.slice(0, limit);
 }
 
+function lessonSearchText(lesson) {
+  return [lesson?.title, lesson?.description, lesson?.teacherName, lesson?.categoryName]
+    .filter(Boolean)
+    .join(' ');
+}
+
 function railScrollState(node) {
   if (!node) return { canScrollLeft: false, canScrollRight: false };
   const maxScrollLeft = Math.max(0, node.scrollWidth - node.clientWidth);
@@ -92,13 +101,18 @@ function railScrollState(node) {
   };
 }
 
-export default function Home({ searchQuery, user, onLoginRequest }) {
+export default function Home({ user, onLoginRequest }) {
   const navigate = useNavigate();
   const recommendedRailRef = useRef(null);
+  const [dashboardState, setDashboardState] = useSectionState('dashboard', {
+    search: '',
+    activeCategory: ALL_TOPICS,
+  });
+  const searchQuery = dashboardState.search || '';
+  const activeCategory = dashboardState.activeCategory || ALL_TOPICS;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sections, setSections] = useState([]);
-  const [activeCategory, setActiveCategory] = useState(ALL_TOPICS);
   const [recommendedRailState, setRecommendedRailState] = useState({
     canScrollLeft: false,
     canScrollRight: false,
@@ -112,7 +126,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
       setError('');
 
       try {
-        const feed = await fetchCatalogFeed({ query: searchQuery, limit: 14 });
+        const feed = await fetchCatalogFeed({ limit: 24 });
         const mapped = sectionsFromFeed(feed);
         if (!active) return;
         setSections(mapped);
@@ -138,9 +152,15 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
     return () => {
       active = false;
     };
-  }, [searchQuery]);
+  }, []);
 
   const allLessons = useMemo(() => flattenUniqueLessons(sections), [sections]);
+  const hasSearch = Boolean(String(searchQuery || '').trim());
+  const searchResult = useMemo(
+    () => fuzzySearch(allLessons, searchQuery, lessonSearchText),
+    [allLessons, searchQuery],
+  );
+  const searchableLessons = hasSearch ? searchResult.items : allLessons;
 
   const categories = useMemo(() => {
     const unique = Array.from(
@@ -156,21 +176,24 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
 
   useEffect(() => {
     if (!categories.includes(activeCategory)) {
-      setActiveCategory(ALL_TOPICS);
+      setDashboardState({ activeCategory: ALL_TOPICS });
     }
-  }, [activeCategory, categories]);
+  }, [activeCategory, categories, setDashboardState]);
 
   const scopedLessons = useMemo(
-    () => lessonsForCategory(allLessons, activeCategory),
-    [activeCategory, allLessons],
+    () => lessonsForCategory(searchableLessons, activeCategory),
+    [activeCategory, searchableLessons],
   );
 
   const featuredLesson = useMemo(() => {
     if (activeCategory !== ALL_TOPICS) {
       return scopedLessons[0] || null;
     }
+    if (hasSearch) {
+      return searchableLessons[0] || null;
+    }
     return sections[0]?.items?.[0] || allLessons[0] || null;
-  }, [activeCategory, allLessons, scopedLessons, sections]);
+  }, [activeCategory, allLessons, hasSearch, scopedLessons, searchableLessons, sections]);
 
   const continueLessons = useMemo(() => (
     scopedLessons
@@ -179,13 +202,14 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
   ), [scopedLessons]);
 
   const recommendedLessons = useMemo(() => {
+    if (hasSearch) return searchableLessons;
     const recommendedSection = sections.find((section) => section.key === 'recommended');
     const bySection = recommendedSection?.items?.length
       ? recommendedSection.items
       : sections.slice(1).flatMap((section) => section.items);
     const pool = bySection.length ? bySection : allLessons;
     return uniqueLessons(pool).slice(0, 10);
-  }, [allLessons, sections]);
+  }, [allLessons, hasSearch, searchableLessons, sections]);
 
   const filteredRecommended = useMemo(() => {
     const candidates = activeCategory === ALL_TOPICS
@@ -257,9 +281,18 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
   }, [updateRecommendedRailState]);
 
   const openLesson = (lessonId) => navigate(`/watch?lesson=${lessonId}`);
+  const updateActiveCategory = useCallback((category) => {
+    setDashboardState({ activeCategory: category });
+  }, [setDashboardState]);
 
   return (
     <div className="space-y-12 pb-10">
+      {!loading && hasSearch && searchResult.isFuzzyOnly && searchableLessons.length > 0 && (
+        <SurfaceCard className="rounded-2xl p-4">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">No exact matches. Showing close matches.</p>
+        </SurfaceCard>
+      )}
+
       {featuredLesson && (
         <section className="relative -mx-3 overflow-hidden rounded-[1.75rem] sm:-mx-6 lg:-mx-8" aria-label="Featured lesson">
           <LessonActionButton
@@ -316,7 +349,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
               <button
                 key={category}
                 type="button"
-                onClick={() => setActiveCategory(category)}
+                onClick={() => updateActiveCategory(category)}
                 className={`focus-ring whitespace-nowrap rounded-full px-5 py-2 text-sm font-semibold transition ${
                   selected
                     ? (category === ALL_TOPICS
@@ -547,10 +580,26 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
         </section>
       )}
 
-      {!loading && allLessons.length === 0 && (
+      {!loading && hasSearch && searchResult.items.length === 0 && (
         <SurfaceCard elevated className="space-y-3 text-center">
+          <SearchX className="mx-auto text-[var(--text-secondary)]" size={20} />
           <p className="title-lg text-[var(--text-primary)]">No lessons matched your search</p>
           <p className="body-md">Try a broader keyword or continue in the full catalog.</p>
+        </SurfaceCard>
+      )}
+
+      {!loading && hasSearch && searchResult.items.length > 0 && scopedLessons.length === 0 && activeCategory !== ALL_TOPICS && (
+        <SurfaceCard elevated className="space-y-3 text-center">
+          <SearchX className="mx-auto text-[var(--text-secondary)]" size={20} />
+          <p className="title-lg text-[var(--text-primary)]">Filters are too restrictive</p>
+          <p className="body-md">Clear the topic filter or try another search.</p>
+        </SurfaceCard>
+      )}
+
+      {!loading && !hasSearch && allLessons.length === 0 && (
+        <SurfaceCard elevated className="space-y-3 text-center">
+          <p className="title-lg text-[var(--text-primary)]">No lessons available yet</p>
+          <p className="body-md">Check the catalog again after lessons are published.</p>
         </SurfaceCard>
       )}
     </div>

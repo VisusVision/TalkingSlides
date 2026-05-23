@@ -15,13 +15,14 @@ import {
   canAccessStudio,
   isSignedIn,
 } from '../../lib/auth';
+import { useNavigationState } from '../../app/navigationState';
 
 const PRIMARY_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
-  { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
-  { to: '/analytics', label: 'Analytics', icon: BarChart3, analyticsOnly: true },
-  { to: '/moderation', label: 'Moderation', icon: ShieldCheck, moderationOnly: true },
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, section: 'dashboard', end: true, resetAlways: true },
+  { to: '/library', label: 'Library', icon: BookOpenText, section: 'library', signedInOnly: true },
+  { to: '/studio', label: 'Studio', icon: SlidersHorizontal, section: 'studio', studioOnly: true },
+  { to: '/analytics', label: 'Analytics', icon: BarChart3, section: 'analytics', analyticsOnly: true },
+  { to: '/moderation', label: 'Moderation', icon: ShieldCheck, section: 'moderation', moderationOnly: true },
 ];
 
 function railItemClass(isActive, expanded) {
@@ -49,9 +50,25 @@ function RailTooltip({ label, rightOffset = true }) {
   );
 }
 
-function RailNavItem({ to, label, icon: Icon, end = false, expanded }) {
+function RailNavItem({
+  to,
+  label,
+  icon: Icon,
+  section = null,
+  resetAlways = false,
+  end = false,
+  expanded,
+  currentSection,
+  navigateToSection,
+}) {
+  const handleClick = (event) => {
+    if (!section || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+    event.preventDefault();
+    navigateToSection(section, { reset: resetAlways || currentSection === section });
+  };
+
   return (
-    <NavLink to={to} end={end} title={label} aria-label={label} className={({ isActive }) => railItemClass(isActive, expanded)}>
+    <NavLink to={to} end={end} title={label} aria-label={label} onClick={handleClick} className={({ isActive }) => railItemClass(isActive, expanded)}>
       {({ isActive }) => (
         <>
           <span
@@ -98,6 +115,7 @@ export default function SideRail({
   onToggleCollapse,
 }) {
   const location = useLocation();
+  const { currentSection, navigateToSection } = useNavigationState();
   const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
   const analyticsAllowed = canAccessAnalytics(user);
@@ -156,8 +174,12 @@ export default function SideRail({
                 to={item.to}
                 label={item.label}
                 icon={item.icon}
+                section={item.section}
+                resetAlways={item.resetAlways}
                 end={item.end}
                 expanded={expanded}
+                currentSection={currentSection}
+                navigateToSection={navigateToSection}
               />
             ))}
           </div>
@@ -179,7 +201,7 @@ export default function SideRail({
               </button>
             ) : null}
 
-            <RailNavItem to="/settings" label="Settings" icon={Settings} expanded={expanded} />
+            <RailNavItem to="/settings" label="Settings" icon={Settings} expanded={expanded} currentSection={currentSection} navigateToSection={navigateToSection} />
             <RailHelpItem to="/help" label="Help" icon={CircleHelp} expanded={expanded} />
           </div>
         </nav>

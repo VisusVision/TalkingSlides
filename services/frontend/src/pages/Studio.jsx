@@ -51,6 +51,7 @@ import {
   uploadTranscriptPageBackground,
   updateProjectAvatarVisible,
 } from '../api';
+import { useSectionState } from '../app/navigationState';
 import { canAccessStudio, isStaffOrAdmin } from '../lib/auth';
 import { avatarRuntimeStatusMessage } from '../utils/avatarRuntimeSettings';
 import Button from '../components/ui/Button';
@@ -62,6 +63,7 @@ import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
+import { fuzzySearch } from '../utils/fuzzySearch';
 
 const LESSON_TABS = ['overview', 'transcript', 'slides'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
@@ -70,6 +72,17 @@ const STUDIO_POLL_INTERVAL_MS = 4000;
 const LESSON_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS = 6000;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
 const STABLE_MODERATION_STATUSES = new Set(['approved', 'admin_approved', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed']);
+
+function projectSearchText(project) {
+  return [
+    project?.title || `Project #${project?.id || ''}`,
+    project?.description,
+    project?.category_name,
+    projectStatusLabel(project),
+    projectPublicationLabel(project),
+    project?.moderation_status,
+  ].filter(Boolean).join(' ');
+}
 
 function normalizeProjectList(payload) {
   return Array.isArray(payload) ? payload : payload.results || [];
@@ -1682,12 +1695,18 @@ function LessonIntelligencePanel({
   );
 }
 
-export default function Studio({ user, searchQuery = '', onLoginRequest }) {
+export default function Studio({ user, onLoginRequest }) {
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
   const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
+  const [studioState, setStudioState] = useSectionState('studio', {
+    search: '',
+    activeTab: 'overview',
+    activeEditorPanel: 'transcript',
+  });
+  const searchQuery = studioState.search || '';
   const visibleEditorPanels = useMemo(
     () => EDITOR_PANELS.filter((panel) => panel !== 'intelligence' || intelligenceFeatureEnabled),
     [intelligenceFeatureEnabled],
@@ -1707,8 +1726,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [submitError, setSubmitError] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [selectedLessonId, setSelectedLessonId] = useState(null);
-  const [activeTab, setActiveTab] = useState('overview');
-  const [activeEditorPanel, setActiveEditorPanel] = useState('transcript');
+  const [activeTab, setActiveTabState] = useState(studioState.activeTab || 'overview');
+  const [activeEditorPanel, setActiveEditorPanelState] = useState(studioState.activeEditorPanel || 'transcript');
   const [transcriptPages, setTranscriptPages] = useState([]);
   const [selectedLessonDraftMetadata, setSelectedLessonDraftMetadata] = useState({});
   const [selectedPageKey, setSelectedPageKey] = useState('');
@@ -1759,30 +1778,44 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [avatarRerendering, setAvatarRerendering] = useState(false);
   const [avatarRerenderMessage, setAvatarRerenderMessage] = useState('');
 
+  const setActiveTab = useCallback((nextTab) => {
+    setActiveTabState((previous) => {
+      const value = typeof nextTab === 'function' ? nextTab(previous) : nextTab;
+      setStudioState({ activeTab: value });
+      return value;
+    });
+  }, [setStudioState]);
+
+  const setActiveEditorPanel = useCallback((nextPanel) => {
+    setActiveEditorPanelState((previous) => {
+      const value = typeof nextPanel === 'function' ? nextPanel(previous) : nextPanel;
+      setStudioState({ activeEditorPanel: value });
+      return value;
+    });
+  }, [setStudioState]);
+
+  useEffect(() => {
+    const nextTab = studioState.activeTab || 'overview';
+    setActiveTabState((previous) => (previous === nextTab ? previous : nextTab));
+  }, [studioState.activeTab]);
+
+  useEffect(() => {
+    const nextPanel = studioState.activeEditorPanel || 'transcript';
+    setActiveEditorPanelState((previous) => (previous === nextPanel ? previous : nextPanel));
+  }, [studioState.activeEditorPanel]);
+
   useEffect(() => {
     if (!intelligenceFeatureEnabled && activeEditorPanel === 'intelligence') {
       setActiveEditorPanel('transcript');
     }
   }, [activeEditorPanel, intelligenceFeatureEnabled]);
 
-  const filteredProjects = useMemo(() => {
-    if (!searchQuery) return projects;
-    const q = searchQuery.toLowerCase();
-    return projects.filter((project) => {
-      const title = String(project.title || `Project #${project.id}`).toLowerCase();
-      const desc = String(project.description || '').toLowerCase();
-      const cat = String(project.category_name || '').toLowerCase();
-      const statusLabel = projectStatusLabel(project).toLowerCase();
-      const pubLabel = projectPublicationLabel(project).toLowerCase();
-      return (
-        title.includes(q)
-        || desc.includes(q)
-        || cat.includes(q)
-        || statusLabel.includes(q)
-        || pubLabel.includes(q)
-      );
-    });
-  }, [projects, searchQuery]);
+  const hasProjectSearch = Boolean(String(searchQuery || '').trim());
+  const projectSearchResult = useMemo(
+    () => fuzzySearch(projects, searchQuery, projectSearchText),
+    [projects, searchQuery],
+  );
+  const filteredProjects = hasProjectSearch ? projectSearchResult.items : projects;
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -4059,7 +4092,17 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               {loadingProjects ? (
                 <p className="text-sm text-[var(--text-secondary)]">Loading lessons...</p>
               ) : (
-                filteredProjects.map((project) => {
+                <>
+                  {hasProjectSearch && projectSearchResult.isFuzzyOnly && filteredProjects.length > 0 && (
+                    <p className="rounded-xl bg-[color:var(--surface-muted)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)]">
+                      No exact matches. Showing close matches.
+                    </p>
+                  )}
+                  {filteredProjects.length === 0 ? (
+                    <p className="rounded-xl bg-[color:var(--surface-muted)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+                      {hasProjectSearch ? 'No lessons match this search.' : 'No lessons available yet.'}
+                    </p>
+                  ) : filteredProjects.map((project) => {
                   const projectModeration = moderationByProject[project.id] || null;
                   return (
                   <article
@@ -4134,7 +4177,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     </div>
                   </article>
                   );
-                })
+                })}
+                </>
               )}
             </SurfaceCard>
           </aside>

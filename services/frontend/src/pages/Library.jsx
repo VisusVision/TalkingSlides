@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, BookOpenText, Heart, History, ListPlus, PlayCircle, Users } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { fetchLikedLessons, fetchUserHistory, getFollowingPublishers, getSavedPlaylists } from '../api';
+import { useSectionState } from '../app/navigationState';
 import LearningLessonCard, { normalizeLearningRows } from '../components/library/LearningLessonCard';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { normalizeLesson } from '../lib/content';
+import { fuzzySearch } from '../utils/fuzzySearch';
 
 const LIBRARY_TABS = [
   { key: 'history', label: 'History', icon: History },
@@ -13,14 +15,11 @@ const LIBRARY_TABS = [
   { key: 'playlists', label: 'Playlists', icon: ListPlus },
 ];
 
-function filterItems(items, query) {
-  const needle = String(query || '').trim().toLowerCase();
-  if (!needle) return items;
-  return items.filter((item) => {
-    const lesson = item.lesson || {};
-    return [lesson.title, lesson.description, lesson.teacherName, lesson.categoryName]
-      .some((value) => String(value || '').toLowerCase().includes(needle));
-  });
+function itemSearchText(item) {
+  const lesson = item?.lesson || {};
+  return [lesson.title, lesson.description, lesson.teacherName, lesson.categoryName]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function normalizeFollowingRows(payload = {}) {
@@ -53,27 +52,20 @@ function normalizeSavedPlaylistRows(payload = {}) {
   }).filter((playlist) => playlist.id);
 }
 
-function filterPublishers(items, query) {
-  const needle = String(query || '').trim().toLowerCase();
-  if (!needle) return items;
-  return items.filter((item) => (
-    [item.display_name, item.username, item.bio]
-      .some((value) => String(value || '').toLowerCase().includes(needle))
-  ));
+function publisherSearchText(item) {
+  return [item?.display_name, item?.username, item?.bio]
+    .filter(Boolean)
+    .join(' ');
 }
 
-function filterPlaylists(items, query) {
-  const needle = String(query || '').trim().toLowerCase();
-  if (!needle) return items;
-  return items.filter((item) => (
-    [
-      item.title,
-      item.description,
-      item.publisherName,
-      item.publisherUsername,
-      ...item.lessons.map((lesson) => lesson.title),
-    ].some((value) => String(value || '').toLowerCase().includes(needle))
-  ));
+function playlistSearchText(item) {
+  return [
+    item?.title,
+    item?.description,
+    item?.publisherName,
+    item?.publisherUsername,
+    ...(item?.lessons || []).map((lesson) => lesson.title),
+  ].filter(Boolean).join(' ');
 }
 
 function EmptyPanel({ icon: Icon, title, body }) {
@@ -195,8 +187,13 @@ function PublisherCard({ publisher }) {
   );
 }
 
-export default function Library({ searchQuery }) {
-  const [activeTab, setActiveTab] = useState('history');
+export default function Library() {
+  const [libraryState, setLibraryState] = useSectionState('library', {
+    search: '',
+    activeTab: 'history',
+  });
+  const searchQuery = libraryState.search || '';
+  const activeTab = libraryState.activeTab || 'history';
   const [historyRows, setHistoryRows] = useState([]);
   const [likedRows, setLikedRows] = useState([]);
   const [followingRows, setFollowingRows] = useState([]);
@@ -240,18 +237,39 @@ export default function Library({ searchQuery }) {
     };
   }, []);
 
-  const visibleHistory = useMemo(() => filterItems(historyRows, searchQuery), [historyRows, searchQuery]);
-  const visibleLiked = useMemo(() => filterItems(likedRows, searchQuery), [likedRows, searchQuery]);
-  const visibleFollowing = useMemo(() => filterPublishers(followingRows, searchQuery), [followingRows, searchQuery]);
-  const visibleSavedPlaylists = useMemo(
-    () => filterPlaylists(savedPlaylistRows, searchQuery),
+  const hasSearch = Boolean(String(searchQuery || '').trim());
+  const historySearch = useMemo(() => fuzzySearch(historyRows, searchQuery, itemSearchText), [historyRows, searchQuery]);
+  const likedSearch = useMemo(() => fuzzySearch(likedRows, searchQuery, itemSearchText), [likedRows, searchQuery]);
+  const followingSearch = useMemo(() => fuzzySearch(followingRows, searchQuery, publisherSearchText), [followingRows, searchQuery]);
+  const savedPlaylistsSearch = useMemo(
+    () => fuzzySearch(savedPlaylistRows, searchQuery, playlistSearchText),
     [savedPlaylistRows, searchQuery],
+  );
+  const visibleHistory = hasSearch ? historySearch.items : historyRows;
+  const visibleLiked = hasSearch ? likedSearch.items : likedRows;
+  const visibleFollowing = hasSearch ? followingSearch.items : followingRows;
+  const visibleSavedPlaylists = hasSearch ? savedPlaylistsSearch.items : savedPlaylistRows;
+
+  const setActiveTab = (tab) => setLibraryState({ activeTab: tab });
+  const activeSearchResult = {
+    history: historySearch,
+    liked: likedSearch,
+    following: followingSearch,
+    playlists: savedPlaylistsSearch,
+  }[activeTab];
+
+  const emptyPanel = (Icon, title, body = '') => (
+    <EmptyPanel
+      icon={Icon}
+      title={hasSearch ? 'No results found.' : title}
+      body={hasSearch ? 'Try another keyword or clear search.' : body}
+    />
   );
 
   const renderActivePanel = () => {
     if (activeTab === 'history') {
       if (!visibleHistory.length) {
-        return <EmptyPanel icon={BookOpenText} title="No watched lessons yet." body="Lessons you start watching will appear here." />;
+        return emptyPanel(BookOpenText, 'No watched lessons yet.', 'Lessons you start watching will appear here.');
       }
       return (
         <div className="grid gap-3">
@@ -264,7 +282,7 @@ export default function Library({ searchQuery }) {
 
     if (activeTab === 'liked') {
       if (!visibleLiked.length) {
-        return <EmptyPanel icon={Heart} title="No liked lessons yet." body="Liked lessons will appear here after you save them from Watch." />;
+        return emptyPanel(Heart, 'No liked lessons yet.', 'Liked lessons will appear here after you save them from Watch.');
       }
       return (
         <div className="grid gap-3">
@@ -277,7 +295,7 @@ export default function Library({ searchQuery }) {
 
     if (activeTab === 'following') {
       if (!visibleFollowing.length) {
-        return <EmptyPanel icon={Users} title="You are not following any publishers yet." />;
+        return emptyPanel(Users, 'You are not following any publishers yet.');
       }
       return (
         <div className="grid gap-3">
@@ -289,7 +307,7 @@ export default function Library({ searchQuery }) {
     }
 
     if (!visibleSavedPlaylists.length) {
-      return <EmptyPanel icon={ListPlus} title="No saved playlists yet." />;
+      return emptyPanel(ListPlus, 'No saved playlists yet.');
     }
     return (
       <div className="grid gap-3">
@@ -332,6 +350,12 @@ export default function Library({ searchQuery }) {
             );
           })}
         </div>
+
+        {!loading && !error && hasSearch && activeSearchResult?.isFuzzyOnly && (
+          <div className="rounded-2xl bg-[color:var(--surface-muted)] px-3 py-2 text-sm font-semibold text-[var(--text-primary)]">
+            No exact matches. Showing close matches.
+          </div>
+        )}
 
         {loading ? (
           <p className="body-md">Loading your library...</p>

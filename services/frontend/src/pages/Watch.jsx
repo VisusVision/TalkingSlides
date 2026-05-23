@@ -16,6 +16,7 @@ import {
   toggleLike,
   toggleFollowPublisher,
 } from '../api';
+import { useSectionState } from '../app/navigationState';
 import VideoStage from '../components/player/VideoStage';
 import AvatarOverlayLayer from '../components/player/AvatarOverlayLayer';
 import UnavailableStage from '../components/player/UnavailableStage';
@@ -31,6 +32,7 @@ import { formatDuration, normalizeLesson } from '../lib/content';
 import { buildChapters, buildTranscriptLines } from '../lib/watch';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
+import { fuzzySearch } from '../utils/fuzzySearch';
 
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
@@ -44,14 +46,10 @@ function normalizeCatalogList(payload) {
   return list.map((item) => normalizeLesson(item));
 }
 
-function lessonSearchMatch(lesson, query) {
-  const q = String(query || '').trim().toLowerCase();
-  if (!q) return true;
-
-  return [lesson.title, lesson.description, lesson.teacherName, lesson.categoryName]
-    .join(' ')
-    .toLowerCase()
-    .includes(q);
+function lessonSearchText(lesson) {
+  return [lesson?.title, lesson?.description, lesson?.teacherName, lesson?.categoryName]
+    .filter(Boolean)
+    .join(' ');
 }
 
 function savedNoteKey(lessonId) {
@@ -424,12 +422,14 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, pub
 
 
 
-export default function Watch({ searchQuery, user, onLoginRequest }) {
+export default function Watch({ user, onLoginRequest }) {
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const videoRef = useRef(null);
   const [searchParams, setSearchParams] = useSearchParams();
+  const [watchState] = useSectionState('watch', { search: '' });
+  const searchQuery = watchState.search || '';
 
   const [catalogLessons, setCatalogLessons] = useState([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
@@ -696,10 +696,12 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     setSavedAtLabel(`Saved at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
   };
 
-  const visibleLessons = useMemo(
-    () => catalogLessons.filter((item) => lessonSearchMatch(item, searchQuery)),
+  const hasSearch = Boolean(String(searchQuery || '').trim());
+  const lessonSearchResult = useMemo(
+    () => fuzzySearch(catalogLessons, searchQuery, lessonSearchText),
     [catalogLessons, searchQuery],
   );
+  const visibleLessons = hasSearch ? lessonSearchResult.items : catalogLessons;
 
   const relatedLessons = useMemo(() => {
     const source = visibleLessons.length ? visibleLessons : catalogLessons;

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Bell, CheckCheck, Search } from 'lucide-react';
+import { Bell, CheckCheck, Search, X } from 'lucide-react';
 import {
   fetchNotificationUnreadCount,
   fetchNotifications,
@@ -16,13 +16,21 @@ import {
 } from '../../utils/notifications';
 import NotificationTypeIcon from './NotificationTypeIcon';
 import ProfileMenu from './ProfileMenu';
+import { useNavigationState } from '../../app/navigationState';
 
-const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics', '/notifications']);
 const NOTIFICATION_DROPDOWN_LIMIT = 5;
 
+const SEARCH_PLACEHOLDERS = {
+  dashboard: 'Search dashboard lessons',
+  studio: 'Search Studio lessons',
+  library: 'Search your learning hub',
+  browse: 'Search catalog lessons',
+  moderation: 'Search moderation queue',
+  watch: 'Search related lessons',
+  channel: 'Search this channel',
+};
+
 export default function Header({
-  searchQuery,
-  onSearchQueryChange,
   user,
   authLoading,
   onLoginRequest,
@@ -30,7 +38,15 @@ export default function Header({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const showSearch = !SEARCH_HIDDEN_PATHS.has(location.pathname);
+  const {
+    currentSearchKey,
+    searchQuery,
+    setSearchQuery,
+    clearCurrentSearch,
+    navigateToSection,
+  } = useNavigationState();
+  const showSearch = Boolean(currentSearchKey);
+  const searchPlaceholder = SEARCH_PLACEHOLDERS[currentSearchKey] || 'Search lessons';
   const isAuthenticated = Boolean(user) && !authLoading;
   const notificationRef = useRef(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
@@ -160,6 +176,39 @@ export default function Header({
     }
   };
 
+  const handleDashboardReset = (event) => {
+    event.preventDefault();
+    navigateToSection('dashboard', { reset: true });
+  };
+
+  const renderSearchInput = (mobile = false) => (
+    <label
+      className={`focus-ring h-10 min-w-0 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] px-3 ${
+        mobile ? 'flex w-full' : 'hidden flex-1 md:flex md:max-w-2xl'
+      }`}
+    >
+      <Search size={16} className="shrink-0 text-[var(--outline)]" />
+      <input
+        value={searchQuery}
+        onChange={(event) => setSearchQuery(event.target.value)}
+        type="search"
+        placeholder={searchPlaceholder}
+        className="h-full min-w-0 flex-1 border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--outline)] focus:outline-none"
+        aria-label={searchPlaceholder}
+      />
+      {searchQuery ? (
+        <button
+          type="button"
+          onClick={clearCurrentSearch}
+          className="focus-ring inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--outline)] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
+          aria-label="Clear search"
+        >
+          <X size={14} />
+        </button>
+      ) : null}
+    </label>
+  );
+
   return (
     <>
       <header className="fixed top-0 z-50 w-full overflow-visible">
@@ -167,6 +216,7 @@ export default function Header({
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <Link
               to="/"
+              onClick={handleDashboardReset}
               className="focus-ring inline-flex shrink-0 items-center"
               aria-label="VISUS VidLab home"
             >
@@ -175,19 +225,7 @@ export default function Header({
               </span>
             </Link>
 
-            {showSearch && (
-              <label className="focus-ring hidden h-10 min-w-0 flex-1 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] px-3 md:flex md:max-w-2xl">
-                <Search size={16} className="text-[var(--outline)]" />
-                <input
-                  value={searchQuery}
-                  onChange={(event) => onSearchQueryChange(event.target.value)}
-                  type="search"
-                  placeholder="Search lessons, teachers, and topics"
-                  className="h-full w-full border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--outline)] focus:outline-none"
-                  aria-label="Global search"
-                />
-              </label>
-            )}
+            {showSearch && renderSearchInput(false)}
           </div>
 
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
@@ -328,10 +366,15 @@ export default function Header({
             />
           </div>
         </div>
+        {showSearch && (
+          <div className="border-t border-[color:var(--border-subtle)] bg-[color:rgba(255,255,255,0.88)] px-3 pb-3 pt-2 backdrop-blur-3xl dark:bg-[color:rgba(17,19,23,0.88)] md:hidden">
+            {renderSearchInput(true)}
+          </div>
+        )}
       </header>
 
       {/* Spacer */}
-      <div className="h-16 w-full" />
+      <div className={showSearch ? 'h-[7.25rem] w-full md:h-16' : 'h-16 w-full'} />
     </>
   );
 }

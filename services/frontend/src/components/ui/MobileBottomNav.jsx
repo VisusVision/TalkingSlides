@@ -6,13 +6,14 @@ import {
   canAccessStudio,
   isSignedIn,
 } from '../../lib/auth';
+import { useNavigationState } from '../../app/navigationState';
 
 const MOBILE_ITEMS = [
-  { to: '/', label: 'Home', icon: LayoutDashboard, end: true },
-  { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
-  { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
-  { to: '/analytics', label: 'Insights', icon: BarChart3, analyticsOnly: true },
-  { to: '/moderation', label: 'Review', icon: ShieldCheck, moderationOnly: true },
+  { to: '/', label: 'Home', icon: LayoutDashboard, section: 'dashboard', end: true, resetAlways: true },
+  { to: '/library', label: 'Library', icon: BookOpenText, section: 'library', signedInOnly: true },
+  { to: '/studio', label: 'Studio', icon: SlidersHorizontal, section: 'studio', studioOnly: true },
+  { to: '/analytics', label: 'Insights', icon: BarChart3, section: 'analytics', analyticsOnly: true },
+  { to: '/moderation', label: 'Review', icon: ShieldCheck, section: 'moderation', moderationOnly: true },
 ];
 
 function mobileItemClass(isActive) {
@@ -24,6 +25,7 @@ function mobileItemClass(isActive) {
 }
 
 export default function MobileBottomNav({ user }) {
+  const { currentSection, navigateToSection } = useNavigationState();
   const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
   const analyticsAllowed = canAccessAnalytics(user);
@@ -43,12 +45,18 @@ export default function MobileBottomNav({ user }) {
     >
       {mobileItems.map((item) => {
         const Icon = item.icon;
+        const handleClick = (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+          event.preventDefault();
+          navigateToSection(item.section, { reset: item.resetAlways || currentSection === item.section });
+        };
 
         return (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.end}
+            onClick={handleClick}
             className={({ isActive }) => mobileItemClass(isActive)}
             aria-label={item.label}
           >

@@ -13,17 +13,20 @@ import Analytics from '../pages/Analytics';
 import ModerationDashboard from '../pages/ModerationDashboard';
 import Settings from '../pages/Settings';
 import ProtectedRoute from './ProtectedRoute';
+import { useNavigationState } from './navigationState';
 
 export default function AppRouter({
   user,
-  searchQuery,
   onLoginRequest,
   onUserRefresh,
 }) {
+  const { resetCounters } = useNavigationState();
+  const routeKey = (section) => `${section}-${resetCounters[section] || 0}`;
+
   return (
     <Routes>
-      <Route path="/" element={<Home searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
-      <Route path="/watch" element={<Watch searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
+      <Route path="/" element={<Home key={routeKey('dashboard')} user={user} onLoginRequest={onLoginRequest} />} />
+      <Route path="/watch" element={<Watch user={user} onLoginRequest={onLoginRequest} />} />
       <Route
         path="/studio"
         element={(
@@ -33,17 +36,17 @@ export default function AppRouter({
             requireStudioRole
             redirectUnauthorizedTo="/"
           >
-            <Studio user={user} searchQuery={searchQuery} onLoginRequest={onLoginRequest} />
+            <Studio key={routeKey('studio')} user={user} onLoginRequest={onLoginRequest} />
           </ProtectedRoute>
         )}
       />
-      <Route path="/browse" element={<Browse searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
+      <Route path="/browse" element={<Browse key={routeKey('browse')} user={user} onLoginRequest={onLoginRequest} />} />
       <Route
         path="/channel/:userId"
         element={(
           <Channel
+            key={routeKey('channel')}
             user={user}
-            searchQuery={searchQuery}
             onLoginRequest={onLoginRequest}
             onUserRefresh={onUserRefresh}
           />
@@ -59,7 +62,7 @@ export default function AppRouter({
             requireAnalyticsRole
             redirectUnauthorizedTo="/"
           >
-            <Analytics user={user} />
+            <Analytics key={routeKey('analytics')} user={user} />
           </ProtectedRoute>
         )}
       />
@@ -83,7 +86,7 @@ export default function AppRouter({
         path="/library"
         element={(
           <ProtectedRoute user={user} onLoginRequest={onLoginRequest}>
-            <Library user={user} searchQuery={searchQuery} onLoginRequest={onLoginRequest} />
+            <Library key={routeKey('library')} user={user} onLoginRequest={onLoginRequest} />
           </ProtectedRoute>
         )}
       />
@@ -91,7 +94,7 @@ export default function AppRouter({
         path="/my-lessons"
         element={(
           <ProtectedRoute user={user} onLoginRequest={onLoginRequest}>
-            <Library user={user} searchQuery={searchQuery} onLoginRequest={onLoginRequest} />
+            <Library key={routeKey('library')} user={user} onLoginRequest={onLoginRequest} />
           </ProtectedRoute>
         )}
       />
@@ -104,7 +107,7 @@ export default function AppRouter({
             requireStaffRole
             redirectUnauthorizedTo="/"
           >
-            <ModerationDashboard user={user} searchQuery={searchQuery} />
+            <ModerationDashboard key={routeKey('moderation')} user={user} />
           </ProtectedRoute>
         )}
       />

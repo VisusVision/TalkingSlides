@@ -24,6 +24,7 @@ import {
   fetchMyAnalytics,
   fetchMyAnalyticsIntelligence,
 } from '../api';
+import { useSectionState } from '../app/navigationState';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { canAccessStudio } from '../lib/auth';
@@ -887,8 +888,12 @@ export default function Analytics({ user }) {
   const { capabilities } = useCapabilities();
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
-  const [rangeKey, setRangeKey] = useState('7');
-  const [categorySlug, setCategorySlug] = useState('');
+  const [analyticsState, setAnalyticsState] = useSectionState('analytics', {
+    rangeKey: '7',
+    categorySlug: '',
+  });
+  const rangeKey = analyticsState.rangeKey || '7';
+  const categorySlug = analyticsState.categorySlug || '';
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -909,6 +914,12 @@ export default function Analytics({ user }) {
   const canCreateLesson = canAccessStudio(user);
   const canReviewModeration = isStaffUser(user);
   const hasActivity = !stats.isEmpty;
+  const setRangeKey = useCallback((nextRangeKey) => {
+    setAnalyticsState({ rangeKey: nextRangeKey });
+  }, [setAnalyticsState]);
+  const setCategorySlug = useCallback((nextCategorySlug) => {
+    setAnalyticsState({ categorySlug: nextCategorySlug });
+  }, [setAnalyticsState]);
   const analyticsFilters = useMemo(() => {
     const dateRange = rangeDates(rangeKey);
     return {
