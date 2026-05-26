@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:ci": "vitest run --reporter=basic",
-    "e2e": "npm run test:ci"
+    "e2e": "playwright test"
   },
   "dependencies": {
     "hls.js": "^1.5.18",
@@ -19,6 +19,7 @@
     "react-router-dom": "^7.14.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@testing-library/jest-dom": "^6.9.1",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.20",
