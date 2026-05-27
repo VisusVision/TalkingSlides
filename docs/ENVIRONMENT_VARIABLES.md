@@ -59,6 +59,12 @@ Columns:
 | `CELERY_RENDER_WORKER_CONCURRENCY` | render worker | Optional | Recommended | `1` | Render worker concurrency. |
 | `CELERY_AVATAR_WORKER_CONCURRENCY` | avatar worker | Optional | Recommended | `1` | Avatar worker concurrency. Keep at 1 per GPU until validated. |
 | `CELERY_WORKER_QUEUES` | worker | Optional | Recommended | `render` | Queues consumed by a worker process. |
+| `CELERY_TASK_ACKS_LATE` | worker | Optional | Recommended | `true` | Acknowledge tasks after execution so worker crashes can requeue reserved work. |
+| `CELERY_TASK_REJECT_ON_WORKER_LOST` | worker | Optional | Recommended | `true` | Requeue work when the worker child process is lost. Requires idempotent task handling. |
+| `CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS` | worker | Optional | Recommended | `43200` | Redis broker visibility timeout. Keep above the longest expected render/avatar task. |
+| `CELERY_TASK_SOFT_TIME_LIMIT` | worker | Optional | Optional | `0` | Global Celery soft time limit in seconds. `0` leaves it disabled. |
+| `CELERY_TASK_TIME_LIMIT` | worker | Optional | Optional | `0` | Global Celery hard time limit in seconds. `0` leaves it disabled. |
+| `CELERY_RESULT_EXPIRES` | worker/API | Optional | Recommended | `86400` | Celery result backend expiry in seconds. |
 
 ## Storage
 

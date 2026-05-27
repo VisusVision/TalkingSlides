@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from django.core.cache import cache
+from django.http import HttpRequest, HttpResponse
+from django.conf import settings
 
 RECENT_WINDOW_SECONDS = 30 * 60
 MAX_RECENT_SAMPLES = 5000
@@ -16,6 +18,7 @@ _QUEUE_WAIT_RECENT_KEY = "perf:queue_wait_recent"
 _ENQUEUE_LATENCY_RECENT_KEY = "perf:enqueue_latency_recent"
 _WORKER_DURATION_RECENT_KEY = "perf:worker_duration_recent"
 _WORKER_RETRY_TOTAL_KEY = "worker_task_retries_total"
+_WORKER_FAILURE_TOTAL_KEY = "worker_task_failures_total"
 _RETRY_STORM_PREVENTED_KEY = "retry_storm_prevented_total"
 _API_5XX_TOTAL_KEY = "api_5xx_total"
 _DEFERRED_RENDER_REQUESTS_KEY = "deferred_render_requests_total"
@@ -140,6 +143,10 @@ def increment_worker_retries() -> int:
     return increment_counter(_WORKER_RETRY_TOTAL_KEY, 1)
 
 
+def increment_worker_failures() -> int:
+    return increment_counter(_WORKER_FAILURE_TOTAL_KEY, 1)
+
+
 def increment_retry_storm_prevented() -> int:
     return increment_counter(_RETRY_STORM_PREVENTED_KEY, 1)
 
@@ -159,3 +166,51 @@ def increment_redis_cache_hit_total() -> int:
 def increment_redis_cache_miss_total() -> int:
     return increment_counter(_REDIS_MISS_TOTAL_KEY, 1)
 
+
+def _prometheus_line(name: str, value: int | float) -> str:
+    numeric = float(value)
+    if math.isfinite(numeric):
+        return f"{name} {numeric:g}"
+    return f"{name} 0"
+
+
+def prometheus_metrics_text() -> str:
+    duration = worker_duration_summary()
+    queue_wait = queue_wait_summary()
+    enqueue = render_enqueue_summary()
+    lines = [
+        "# HELP worker_task_failures_total Total worker task failures observed by the application.",
+        "# TYPE worker_task_failures_total counter",
+        _prometheus_line("worker_task_failures_total", get_counter(_WORKER_FAILURE_TOTAL_KEY)),
+        "# HELP worker_task_retries_total Total worker task retries observed by the application.",
+        "# TYPE worker_task_retries_total counter",
+        _prometheus_line("worker_task_retries_total", get_counter(_WORKER_RETRY_TOTAL_KEY)),
+        "# HELP retry_storm_prevented_total Total worker retries suppressed by retry-storm guards.",
+        "# TYPE retry_storm_prevented_total counter",
+        _prometheus_line("retry_storm_prevented_total", get_counter(_RETRY_STORM_PREVENTED_KEY)),
+        "# HELP worker_task_duration_seconds Recent worker task duration summary.",
+        "# TYPE worker_task_duration_seconds summary",
+        _prometheus_line('worker_task_duration_seconds{quantile="0.50"}', duration.p50),
+        _prometheus_line('worker_task_duration_seconds{quantile="0.95"}', duration.p95),
+        _prometheus_line('worker_task_duration_seconds{quantile="0.99"}', duration.p99),
+        _prometheus_line("worker_task_duration_seconds_count", duration.count),
+        _prometheus_line("worker_task_duration_seconds_sum", duration.sum_value),
+        "# HELP render_queue_wait_seconds Recent render queue wait summary.",
+        "# TYPE render_queue_wait_seconds summary",
+        _prometheus_line('render_queue_wait_seconds{quantile="0.95"}', queue_wait.p95),
+        _prometheus_line("render_queue_wait_seconds_count", queue_wait.count),
+        _prometheus_line("render_queue_wait_seconds_sum", queue_wait.sum_value),
+        "# HELP render_enqueue_latency_seconds Recent render enqueue latency summary.",
+        "# TYPE render_enqueue_latency_seconds summary",
+        _prometheus_line('render_enqueue_latency_seconds{quantile="0.95"}', enqueue.p95),
+        _prometheus_line("render_enqueue_latency_seconds_count", enqueue.count),
+        _prometheus_line("render_enqueue_latency_seconds_sum", enqueue.sum_value),
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def prometheus_metrics_response(request: HttpRequest) -> HttpResponse:
+    token = str(getattr(settings, "PROMETHEUS_METRICS_TOKEN", "") or "").strip()
+    if token and request.headers.get("X-Metrics-Token", "") != token:
+        return HttpResponse("unauthorized\n", status=401, content_type="text/plain; charset=utf-8")
+    return HttpResponse(prometheus_metrics_text(), content_type="text/plain; version=0.0.4; charset=utf-8")
