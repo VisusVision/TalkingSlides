@@ -78,6 +78,12 @@ Terminate HTTPS at a trusted load balancer, ingress, or reverse proxy. With `DEB
 - `SECURE_REFERRER_POLICY=same-origin`
 - `X_FRAME_OPTIONS=DENY`
 
+Optional first CSP rollout:
+
+- `CSP_REPORT_ONLY_ENABLED=true`
+
+This adds telemetry-only `Content-Security-Policy-Report-Only` and leaves enforcing CSP disabled. See [CSP Report-Only foundation](CSP_REPORT_ONLY.md) for the initial policy, report endpoint, and triage workflow.
+
 Only disable SSL redirect for a known reverse-proxy edge case, and document the reason in deployment config.
 
 ## CORS and CSRF

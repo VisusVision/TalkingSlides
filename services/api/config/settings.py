@@ -448,6 +448,28 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = True if not DEBUG else _env_bool("SECURE_HSTS_I
 SECURE_HSTS_PRELOAD = True if not DEBUG else _env_bool("SECURE_HSTS_PRELOAD", default=False)
 SECURE_REFERRER_POLICY = os.environ.get("SECURE_REFERRER_POLICY", "same-origin")
 X_FRAME_OPTIONS = os.environ.get("X_FRAME_OPTIONS", "DENY")
+CSP_REPORT_ONLY_ENABLED = _env_bool("CSP_REPORT_ONLY_ENABLED", default=False)
+CSP_REPORT_ONLY_POLICY = os.environ.get(
+    "CSP_REPORT_ONLY_POLICY",
+    "; ".join(
+        [
+            "default-src 'self'",
+            "base-uri 'self'",
+            "object-src 'none'",
+            "frame-ancestors 'none'",
+            "script-src 'self'",
+            "style-src 'self' 'unsafe-inline'",
+            "img-src 'self' data: blob: https:",
+            "font-src 'self' data:",
+            "media-src 'self' blob: https:",
+            "connect-src 'self' https:",
+            "worker-src 'self' blob:",
+            "manifest-src 'self'",
+            "form-action 'self'",
+        ]
+    ),
+)
+CSP_REPORT_BODY_MAX_BYTES = int(os.environ.get("CSP_REPORT_BODY_MAX_BYTES", "16384"))
 
 validate_production_settings(
     debug=DEBUG,

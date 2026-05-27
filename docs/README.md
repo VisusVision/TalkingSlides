@@ -13,6 +13,7 @@
 - [Environment variables](ENVIRONMENT_VARIABLES.md)
 - [Deployment profiles](DEPLOYMENT_PROFILES.md)
 - [Production deployment](PRODUCTION_DEPLOYMENT.md)
+- [CSP Report-Only foundation](CSP_REPORT_ONLY.md)
 - [Release checklist](RELEASE_CHECKLIST.md)
 - [Secure playback and DRM](SECURE_PLAYBACK_DRM.md)
 - [Avatar pipeline](AVATAR_PIPELINE.md)
