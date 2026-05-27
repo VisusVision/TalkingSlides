@@ -43,6 +43,16 @@ def _env_list(name: str, default: list[str] | None = None) -> list[str]:
     return _split_csv(raw_value)
 
 
+def _env_int(name: str, default: int) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None or str(raw_value).strip() == "":
+        return int(default)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        raise ImproperlyConfigured(f"{name} must be an integer.")
+
+
 def _env_present(name: str) -> bool:
     return name in os.environ
 
@@ -262,6 +272,17 @@ CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", REDIS_URL)
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", REDIS_URL)
 CELERY_RENDER_QUEUE = os.environ.get("CELERY_RENDER_QUEUE", "render")
 CELERY_AVATAR_QUEUE = os.environ.get("CELERY_AVATAR_QUEUE", "avatar")
+CELERY_TASK_ACKS_LATE = _env_bool("CELERY_TASK_ACKS_LATE", default=True)
+CELERY_TASK_REJECT_ON_WORKER_LOST = _env_bool("CELERY_TASK_REJECT_ON_WORKER_LOST", default=True)
+CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS = _env_int("CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS", 12 * 60 * 60)
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "visibility_timeout": max(CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS, 1),
+}
+_CELERY_TASK_SOFT_TIME_LIMIT_SECONDS = _env_int("CELERY_TASK_SOFT_TIME_LIMIT", 0)
+_CELERY_TASK_TIME_LIMIT_SECONDS = _env_int("CELERY_TASK_TIME_LIMIT", 0)
+CELERY_TASK_SOFT_TIME_LIMIT = _CELERY_TASK_SOFT_TIME_LIMIT_SECONDS if _CELERY_TASK_SOFT_TIME_LIMIT_SECONDS > 0 else None
+CELERY_TASK_TIME_LIMIT = _CELERY_TASK_TIME_LIMIT_SECONDS if _CELERY_TASK_TIME_LIMIT_SECONDS > 0 else None
+CELERY_RESULT_EXPIRES = _env_int("CELERY_RESULT_EXPIRES", 24 * 60 * 60)
 INTELLIGENCE_CELERY_QUEUE_DEFAULT = (
     os.environ.get("INTELLIGENCE_CELERY_QUEUE_DEFAULT")
     or CELERY_RENDER_QUEUE
@@ -291,6 +312,7 @@ INTELLIGENCE_RECOMMENDED_DEDICATED_QUEUE = (
 REQUEST_LOG_LEVEL = os.environ.get("REQUEST_LOG_LEVEL", "INFO").strip().upper()
 SLOW_QUERY_LOG_LEVEL = os.environ.get("SLOW_QUERY_LOG_LEVEL", "WARNING").strip().upper()
 SLOW_QUERY_LOG_THRESHOLD_MS = int(os.environ.get("SLOW_QUERY_LOG_THRESHOLD_MS", "750"))
+PROMETHEUS_METRICS_TOKEN = os.environ.get("PROMETHEUS_METRICS_TOKEN", "").strip()
 
 # ---------------------------------------------------------------------------
 # Password validation

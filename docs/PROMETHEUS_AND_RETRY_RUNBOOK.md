@@ -37,6 +37,16 @@ scrape_configs:
 
 - Production safety: do not leave `PROMETHEUS_METRICS_TOKEN` empty unless endpoint access is strictly staff-only on a private network boundary.
 
+## Worker reliability foundation
+
+- Celery workers use late ACK semantics by default (`CELERY_TASK_ACKS_LATE=true`) so a task is acknowledged after execution rather than when it is reserved.
+- `CELERY_TASK_REJECT_ON_WORKER_LOST=true` asks Celery to requeue work when a worker process disappears. This improves crash visibility but requires task paths to stay idempotent before broader retries are enabled.
+- Redis broker visibility is controlled by `CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS` and defaults to 12 hours. Keep it longer than the longest expected render/avatar task to avoid duplicate in-flight delivery.
+- Global task limits are available as `CELERY_TASK_SOFT_TIME_LIMIT` and `CELERY_TASK_TIME_LIMIT`. They default to `0`/disabled to avoid changing current render behavior; set them per environment after staging measurements.
+- `CELERY_RESULT_EXPIRES` defaults to 24 hours to keep result backend growth bounded.
+- Current retry behavior remains intentionally limited. This foundation does not rewrite task retries, attach retry-storm guards, or change chord/render flow.
+- Stuck jobs should be investigated through Job rows that remain `pending` or `running` longer than expected, worker logs keyed by project/job id, and Prometheus worker failure/retry/duration counters. Automated sweeping/reconciliation and DLQ/quarantine are future hardening items.
+
 ## Retry endpoint behavior
 
 - Endpoint: `POST /api/v1/projects/<project_id>/jobs/<job_id>/retry/`
