@@ -29,6 +29,9 @@ Columns:
 | `ALLOWED_HOSTS` | API | Yes | Yes | `localhost,127.0.0.1` | Comma-separated API hostnames. No wildcard in production unless explicitly allowed. |
 | `CSRF_TRUSTED_ORIGINS` | API | Recommended | Yes | local HTTP origins | HTTPS origins trusted for CSRF. |
 | `CORS_ALLOWED_ORIGINS` | API | Recommended | Yes | local frontend origin | Explicit browser origins allowed to call the API. |
+| `CSP_REPORT_ONLY_ENABLED` | API | Optional | Recommended rollout | `false` | Enables telemetry-only `Content-Security-Policy-Report-Only`; does not enforce CSP. |
+| `CSP_REPORT_ONLY_POLICY` | API | Optional | Optional | built-in report-only policy | Overrides the report-only policy during staged rollout. |
+| `CSP_REPORT_BODY_MAX_BYTES` | API | Optional | Optional | `16384` | Maximum request body accepted by `/api/v1/security/csp-report/`. |
 | `CORS_ALLOW_ALL_ORIGINS` | API | Optional | No | `True` for local | Local convenience only; production guard rejects allow-all. |
 | `API_PUBLIC_BASE_URL` | API | Optional | Yes | `http://localhost:8000` | Public API origin used when request context is unavailable. |
 | `GOOGLE_AUTH_ENABLED` | API/frontend | Optional | Optional | `0` | Enables Google auth when OAuth config is present. |
