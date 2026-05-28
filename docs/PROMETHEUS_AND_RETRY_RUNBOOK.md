@@ -47,6 +47,13 @@ scrape_configs:
 - Current retry behavior remains intentionally limited. This foundation does not rewrite task retries, attach retry-storm guards, or change chord/render flow.
 - Stuck jobs should be investigated through Job rows that remain `pending` or `running` longer than expected, worker logs keyed by project/job id, and Prometheus worker failure/retry/duration counters. Automated sweeping/reconciliation and DLQ/quarantine are future hardening items.
 
+## Render job-scoped update deployment note
+
+- Render finalization now carries an explicit render job id through Celery chord callbacks when dispatched by the updated worker.
+- Mixed rolling deployments with old and new render workers are risky because old workers may not accept the newer callback argument shape.
+- Drain in-flight render workers before deploying this change, then restart all render/avatar workers together so queued callbacks and consumers use the same task signatures.
+- Existing queued tasks that do not include `job_id` still fall back to the legacy latest-project-job update path.
+
 ## Retry endpoint behavior
 
 - Endpoint: `POST /api/v1/projects/<project_id>/jobs/<job_id>/retry/`
