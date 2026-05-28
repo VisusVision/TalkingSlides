@@ -3913,11 +3913,39 @@ def _active_video_export_job(project: Project) -> Job | None:
     )
 
 
-def _active_render_job_response(job: Job) -> dict:
+def _render_job_response_avatar_fields(data: dict, avatar_options: dict | None) -> dict:
+    avatar_options = avatar_options or {}
+    data["avatar_processing_status"] = "queued" if avatar_options.get("enabled") else "none"
+    data["avatar_processing_message"] = (
+        "Avatar is still processing and will be added when ready."
+        if avatar_options.get("enabled")
+        else str(avatar_options.get("disabled_reason") or "")
+    )
+    return data
+
+
+def _active_render_job_response(job: Job, avatar_options: dict | None = None) -> dict:
     data = JobSerializer(job).data
+    _render_job_response_avatar_fields(data, avatar_options)
     data["deduped"] = True
     data["existing_job"] = True
     return data
+
+
+def _dispatch_render_job(
+    *,
+    job_id: int,
+    task_args: list,
+    task_kwargs: dict,
+    queue: str,
+) -> None:
+    async_result = _dispatch_celery_task(
+        _PROCESS_PROJECT_RENDER_TASK,
+        args=task_args,
+        kwargs={**task_kwargs, "job_id": job_id},
+        queue=queue,
+    )
+    Job.objects.filter(pk=job_id).update(celery_task_id=async_result.id)
 
 
 def _project_has_completed_video_export(project: Project) -> bool:
@@ -5206,54 +5234,40 @@ def _queue_transcript_rerender(
     use_draft: bool = False,
 ) -> dict | None:
     voice_id = _get_voice_id(project.user)
+    storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+    upload_dir = Path(storage_root) / "uploads" / str(project.id)
+    lesson_files = sorted(upload_dir.glob("lesson.*")) if upload_dir.exists() else []
+    if not lesson_files:
+        return None
 
-    with transaction.atomic():
-        project = Project.objects.select_for_update().get(pk=project.pk)
-        existing_job = _active_video_export_job(project)
-        if existing_job is not None:
-            return _active_render_job_response(existing_job)
-
-        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        upload_dir = Path(storage_root) / "uploads" / str(project.id)
-        lesson_files = sorted(upload_dir.glob("lesson.*")) if upload_dir.exists() else []
-        if not lesson_files:
-            return None
-
-        saved_path = str(lesson_files[0])
-        job = Job.objects.create(project=project, job_type="video_export", status="pending")
-        avatar_options = _resolve_avatar_options_for_project(project, request)
-        avatar_options = {**avatar_options, "base_job_id": job.id}
-        rerender_keys = [] if full_rerender or use_draft else sorted({str(key) for key in changed_page_keys if str(key)})
-        task_args = [
-            str(project.id),
-            saved_path,
-            voice_id,
-            pause_sec,
-            lang_hint,
-            "service",
-            False,
-            avatar_options,
-            rerender_keys,
-            _project_render_tts_settings(project, use_draft=use_draft),
-        ]
-        task_kwargs = {"use_draft": True} if use_draft else {}
-        async_result = _dispatch_celery_task(
-            _PROCESS_PROJECT_RENDER_TASK,
-            args=task_args,
-            kwargs=task_kwargs,
-            queue=_queue_for_avatar_options(avatar_options),
-        )
-        job.celery_task_id = async_result.id
-        job.save(update_fields=["celery_task_id"])
-
-    data = JobSerializer(job).data
-    data["avatar_processing_status"] = "queued" if avatar_options.get("enabled") else "none"
-    data["avatar_processing_message"] = (
-        "Avatar is still processing and will be added when ready."
-        if avatar_options.get("enabled")
-        else str(avatar_options.get("disabled_reason") or "")
+    saved_path = str(lesson_files[0])
+    job = Job.objects.create(project=project, job_type="video_export", status="pending")
+    avatar_options = _resolve_avatar_options_for_project(project, request)
+    avatar_options = {**avatar_options, "base_job_id": job.id}
+    rerender_keys = [] if full_rerender or use_draft else sorted({str(key) for key in changed_page_keys if str(key)})
+    task_args = [
+        str(project.id),
+        saved_path,
+        voice_id,
+        pause_sec,
+        lang_hint,
+        "service",
+        False,
+        avatar_options,
+        rerender_keys,
+        _project_render_tts_settings(project, use_draft=use_draft),
+    ]
+    task_kwargs = {"use_draft": True} if use_draft else {}
+    async_result = _dispatch_celery_task(
+        _PROCESS_PROJECT_RENDER_TASK,
+        args=task_args,
+        kwargs=task_kwargs,
+        queue=_queue_for_avatar_options(avatar_options),
     )
-    return data
+    job.celery_task_id = async_result.id
+    job.save(update_fields=["celery_task_id"])
+    data = JobSerializer(job).data
+    return _render_job_response_avatar_fields(data, avatar_options)
 
 
 def _source_moderation_auto_enabled() -> bool:
@@ -8190,7 +8204,8 @@ class ProjectRerenderView(APIView):
             project = Project.objects.select_for_update().get(pk=project.pk)
             existing_job = _active_video_export_job(project)
             if existing_job is not None:
-                return Response(_active_render_job_response(existing_job), status=status.HTTP_202_ACCEPTED)
+                avatar_options = _resolve_avatar_options_for_project(project, request)
+                return Response(_active_render_job_response(existing_job, avatar_options), status=status.HTTP_202_ACCEPTED)
 
             use_draft = has_dirty_draft(project)
             if use_draft and not draft_requires_render(project):
@@ -8225,23 +8240,17 @@ class ProjectRerenderView(APIView):
                 _project_render_tts_settings(project, use_draft=use_draft),
             ]
             task_kwargs = {"use_draft": True} if use_draft else {}
-            async_result = _dispatch_celery_task(
-                _PROCESS_PROJECT_RENDER_TASK,
-                args=task_args,
-                kwargs=task_kwargs,
-                queue=_queue_for_avatar_options(avatar_options),
-            )
-            job.celery_task_id = async_result.id
-            job.save(update_fields=["celery_task_id"])
+            render_queue = _queue_for_avatar_options(avatar_options)
+
+        _dispatch_render_job(
+            job_id=job.id,
+            task_args=task_args,
+            task_kwargs=task_kwargs,
+            queue=render_queue,
+        )
 
         data = JobSerializer(job).data
-        data["avatar_processing_status"] = "queued" if avatar_options.get("enabled") else "none"
-        data["avatar_processing_message"] = (
-            "Avatar is still processing and will be added when ready."
-            if avatar_options.get("enabled")
-            else str(avatar_options.get("disabled_reason") or "")
-        )
-        return Response(data, status=status.HTTP_202_ACCEPTED)
+        return Response(_render_job_response_avatar_fields(data, avatar_options), status=status.HTTP_202_ACCEPTED)
 
 
 class ProjectAvatarRerenderView(APIView):

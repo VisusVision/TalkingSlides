@@ -128,6 +128,8 @@ def test_project_rerender_returns_existing_active_job_without_creating_duplicate
     assert response.data["status"] == job_status
     assert response.data["deduped"] is True
     assert response.data["existing_job"] is True
+    assert response.data["avatar_processing_status"] == "none"
+    assert response.data["avatar_processing_message"] == ""
     assert Job.objects.filter(project=project, job_type="video_export").count() == 1
     assert captured.sent == []
 
@@ -143,13 +145,16 @@ def test_project_rerender_creates_new_job_when_no_active_job_exists(tmp_path, mo
 
     assert response.status_code == 202
     assert response.data["status"] == "pending"
+    assert response.data["avatar_processing_status"] == "none"
+    assert response.data["avatar_processing_message"] == ""
     assert "deduped" not in response.data
     assert Job.objects.filter(project=project, job_type="video_export").count() == 1
     assert captured.sent[0]["name"] == "worker.tasks.process_pptx_to_video"
+    assert captured.sent[0]["kwargs"]["job_id"] == response.data["id"]
 
 
 @pytest.mark.django_db
-def test_transcript_triggered_rerender_reuses_existing_active_job(tmp_path, monkeypatch):
+def test_transcript_triggered_rerender_creates_new_job_even_with_existing_active_job(tmp_path, monkeypatch):
     _ensure_transcript_table()
     teacher, project = _make_project("transcript_existing_active")
     page = TranscriptPage.objects.create(
@@ -176,11 +181,11 @@ def test_transcript_triggered_rerender_reuses_existing_active_job(tmp_path, monk
         response = views.ProjectTranscriptView.as_view()(request, project_id=project.id)
 
     assert response.status_code == 200
-    assert response.data["rerender_job"]["id"] == existing.id
-    assert response.data["rerender_job"]["deduped"] is True
-    assert response.data["rerender_job"]["existing_job"] is True
-    assert Job.objects.filter(project=project, job_type="video_export").count() == 1
-    assert captured.sent == []
+    assert response.data["rerender_job"]["id"] != existing.id
+    assert response.data["rerender_job"]["status"] == "pending"
+    assert "deduped" not in response.data["rerender_job"]
+    assert Job.objects.filter(project=project, job_type="video_export").count() == 2
+    assert len(captured.sent) == 1
 
 
 @pytest.mark.django_db
@@ -199,6 +204,7 @@ def test_project_rerender_ignores_terminal_old_jobs(tmp_path, monkeypatch, old_s
     assert "deduped" not in response.data
     assert Job.objects.filter(project=project, job_type="video_export").count() == 2
     assert len(captured.sent) == 1
+    assert captured.sent[0]["kwargs"]["job_id"] == response.data["id"]
 
 
 @pytest.mark.django_db
