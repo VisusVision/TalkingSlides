@@ -443,6 +443,32 @@ def _is_current_render_job(project_id: str | int, job_id: str | int | None) -> b
     return latest_id is None or int(latest_id) == int(job_id)
 
 
+def _mark_stale_render_job_skipped(job_id: str | int | None) -> bool:
+    if not job_id:
+        return False
+    try:
+        from django.utils import timezone
+        from core.models import Job
+    except Exception:
+        logger.warning("Stale render job update skipped for job=%s because Django models are unavailable", job_id, exc_info=True)
+        return False
+
+    updates: dict[str, Any] = {
+        "status": "failed",
+        "progress": 100,
+        "error_message": "stale_render_job_skipped",
+    }
+    field_names = {field.name for field in Job._meta.get_fields()}
+    now = timezone.now()
+    if "finished_at" in field_names:
+        updates["finished_at"] = now
+    elif "completed_at" in field_names:
+        updates["completed_at"] = now
+    elif "updated_at" in field_names:
+        updates["updated_at"] = now
+    return bool(Job.objects.filter(id=int(job_id)).update(**updates))
+
+
 def _mark_project_ready_after_successful_render(project_id: str | int) -> None:
     try:
         from django.utils import timezone
@@ -6642,6 +6668,7 @@ def concat_and_finalize(
 
     celery_task_id = str(getattr(getattr(concat_and_finalize, "request", None), "id", "") or "")
     if not _is_current_render_job(project_id, job_id):
+        _mark_stale_render_job_skipped(job_id)
         logger.warning(
             "concat_and_finalize stale render skipped project_id=%s job_id=%s celery_task_id=%s",
             project_id,

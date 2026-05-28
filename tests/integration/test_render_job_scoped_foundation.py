@@ -69,7 +69,7 @@ def test_job_scoped_update_prevents_latest_job_overwrite_regression():
 
 
 @pytest.mark.django_db
-def test_stale_finalize_guard_skips_side_effects(tmp_path, monkeypatch):
+def test_stale_finalize_guard_marks_stale_job_terminal_without_side_effects(tmp_path, monkeypatch):
     project = _make_project("stale_finalize_guard")
     stale_job = Job.objects.create(project=project, job_type="video_export", status="running", progress=80)
     current_job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
@@ -91,8 +91,12 @@ def test_stale_finalize_guard_skips_side_effects(tmp_path, monkeypatch):
     current_job.refresh_from_db()
     assert result["status"] == "stale"
     assert result["skipped"] is True
-    assert stale_job.status == "running"
+    assert stale_job.status == "failed"
+    assert stale_job.progress == 100
+    assert stale_job.error_message == "stale_render_job_skipped"
     assert current_job.status == "pending"
+    assert current_job.progress == 0
+    assert current_job.error_message == ""
     assert not (tmp_path / str(project.id) / "playback_assets.json").exists()
 
 
