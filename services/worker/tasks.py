@@ -373,6 +373,76 @@ def _update_job(
         Job.objects.filter(id=job.id).update(**updates)
 
 
+def _update_job_by_id(
+    job_id: str | int | None,
+    *,
+    status: str | None = None,
+    progress: int | None = None,
+    result_url: str | None = None,
+    srt_url: str | None = None,
+    error_message: str | None = None,
+) -> bool:
+    if not job_id:
+        return False
+    try:
+        from core.models import Job
+    except Exception:
+        logger.warning("_update_job_by_id skipped for job=%s because core.models.Job is unavailable", job_id, exc_info=True)
+        return False
+
+    updates: dict[str, Any] = {}
+    if status is not None:
+        updates["status"] = str(status)
+    if progress is not None:
+        updates["progress"] = max(0, min(int(progress), 100))
+    if result_url is not None:
+        updates["result_url"] = str(result_url)
+    if srt_url is not None:
+        updates["srt_url"] = str(srt_url)
+    if error_message is not None:
+        updates["error_message"] = str(error_message)
+    if not updates:
+        return False
+    return bool(Job.objects.filter(id=int(job_id)).update(**updates))
+
+
+def _update_render_job(
+    project_id: str | int,
+    job_id: str | int | None = None,
+    **updates: Any,
+) -> None:
+    if _update_job_by_id(job_id, **updates):
+        return
+    _update_job(project_id, **updates)
+
+
+def _resolve_render_job_id(project_id: str | int, celery_task_id: str = "") -> int | None:
+    try:
+        from core.models import Job
+
+        task_id = str(celery_task_id or "").strip()
+        if task_id:
+            row = (
+                Job.objects.filter(project_id=int(project_id), job_type="video_export", celery_task_id=task_id)
+                .order_by("-created_at", "-id")
+                .values("id")
+                .first()
+            )
+            if row:
+                return int(row["id"])
+        return _latest_project_job_id(project_id, job_type="video_export")
+    except Exception:
+        logger.warning("Render job id resolution failed for project=%s task=%s", project_id, celery_task_id, exc_info=True)
+        return None
+
+
+def _is_current_render_job(project_id: str | int, job_id: str | int | None) -> bool:
+    if not job_id:
+        return True
+    latest_id = _latest_project_job_id(project_id, job_type="video_export")
+    return latest_id is None or int(latest_id) == int(job_id)
+
+
 def _mark_project_ready_after_successful_render(project_id: str | int) -> None:
     try:
         from django.utils import timezone
@@ -679,7 +749,17 @@ def _package_hls_assets_for_playback(
 def _write_json_sidecar(project_id: str | int, file_name: str, payload: dict[str, Any]) -> str:
     target = Path(STORAGE_ROOT) / str(project_id) / str(file_name)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(target.parent),
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(json.dumps(payload, ensure_ascii=True, indent=2))
+    temp_path.replace(target)
     return str(target)
 
 
@@ -703,7 +783,17 @@ def _avatar_handoff_manifest_dir(project_id: str | int, job_id: str | int) -> Pa
 def _write_avatar_handoff_manifest(project_id: str | int, job_id: str | int, payload: dict[str, Any]) -> str:
     target = _avatar_handoff_manifest_dir(project_id, job_id) / "avatar_handoff.json"
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(target.parent),
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temp_path = Path(handle.name)
+        handle.write(json.dumps(payload, ensure_ascii=True, indent=2))
+    temp_path.replace(target)
     return str(target)
 
 
@@ -5042,6 +5132,7 @@ def _queue_lesson_avatar_overlay_after_base_render(
     ordered_results: list[dict[str, Any]],
     avatar_options: dict[str, Any] | None,
     output_rel_prefix: str,
+    base_job_id: int | None = None,
 ) -> dict[str, Any]:
     avatar_cfg = dict(avatar_options or {})
     if not _avatar_feature_enabled():
@@ -5096,16 +5187,16 @@ def _queue_lesson_avatar_overlay_after_base_render(
         from django.utils import timezone
         from core.models import Job, Project
 
-        base_job_id = int(avatar_cfg.get("base_job_id") or 0) or _latest_project_job_id(project_id, job_type="video_export")
+        resolved_base_job_id = int(base_job_id or avatar_cfg.get("base_job_id") or 0) or _latest_project_job_id(project_id, job_type="video_export")
         job = Job.objects.create(project_id=int(project_id), job_type="avatar_render", status="pending", progress=0)
-        handoff_job_id = base_job_id or job.id
+        handoff_job_id = resolved_base_job_id or job.id
         handoff_manifest_path = _write_avatar_handoff_manifest(
             project_id,
             handoff_job_id,
             {
                 "schema_version": 1,
                 "project_id": int(project_id),
-                "base_job_id": base_job_id,
+                "base_job_id": resolved_base_job_id,
                 "avatar_job_id": job.id,
                 "created_at": timezone.now().isoformat(),
                 "ordered_results": list(ordered_results or []),
@@ -5137,7 +5228,7 @@ def _queue_lesson_avatar_overlay_after_base_render(
                 "output_rel_prefix": str(output_rel_prefix or project_id),
                 "avatar_job_id": int(job.id),
                 "handoff_manifest_path": handoff_manifest_path,
-                "base_job_id": base_job_id,
+                "base_job_id": resolved_base_job_id,
             },
             queue=_avatar_queue_name(),
         )
@@ -5147,7 +5238,7 @@ def _queue_lesson_avatar_overlay_after_base_render(
             "status": "queued",
             "queued": True,
             "job_id": job.id,
-            "base_job_id": base_job_id,
+            "base_job_id": resolved_base_job_id,
             "handoff_manifest_path": handoff_manifest_path,
             "celery_task_id": str(async_result.id or ""),
         }
@@ -6513,6 +6604,7 @@ def concat_and_finalize(
     project_id: str,
     use_draft: bool = False,
     avatar_options: dict[str, Any] | None = None,
+    job_id: int | str | None = None,
 ) -> dict[str, Any]:
     """
     Chord callback: concatenate all per-slide part MP4s into the final video
@@ -6548,10 +6640,30 @@ def concat_and_finalize(
             f"ffmpeg_helpers not importable — check PYTHONPATH. Error: {exc}"
         ) from exc
 
+    celery_task_id = str(getattr(getattr(concat_and_finalize, "request", None), "id", "") or "")
+    if not _is_current_render_job(project_id, job_id):
+        logger.warning(
+            "concat_and_finalize stale render skipped project_id=%s job_id=%s celery_task_id=%s",
+            project_id,
+            job_id,
+            celery_task_id,
+        )
+        return {
+            "status": "stale",
+            "skipped": True,
+            "project_id": int(project_id),
+            "job_id": int(job_id) if job_id else None,
+            "reason": "stale_render_job",
+        }
+
     logger.info(
-        "concat_and_finalize START project=%s slides=%d", project_id, len(results)
+        "concat_and_finalize START project_id=%s job_id=%s celery_task_id=%s slides=%d",
+        project_id,
+        job_id,
+        celery_task_id,
+        len(results),
     )
-    _update_job(project_id, progress=90)
+    _update_render_job(project_id, job_id, progress=90)
 
     try:
         # Sort by index — Celery preserves group order since v4, but defensive
@@ -6573,7 +6685,7 @@ def concat_and_finalize(
         final_video = str(output_dir / f"{project_id}.mp4")
         logger.info("Concatenating %d clips → %s", len(part_paths), final_video)
         concat_videos(part_paths, final_video)
-        _update_job(project_id, progress=95)
+        _update_render_job(project_id, job_id, progress=95)
 
         # Persist the render timeline, then build canonical cue text from active
         # transcript rows so captions never consume provider-normalized TTS text.
@@ -6802,7 +6914,7 @@ def concat_and_finalize(
                 promote_project_draft(project, render_outputs={"page_timeline": page_timeline})
             except Exception:
                 logger.exception("Draft promotion failed after render project=%s", project_id)
-                _update_job(project_id, status="failed", progress=100, error_message="Draft promotion failed after render.")
+                _update_render_job(project_id, job_id, status="failed", progress=100, error_message="Draft promotion failed after render.")
                 raise
 
         _write_playback_sidecar(project_id, playback_assets)
@@ -6813,6 +6925,7 @@ def concat_and_finalize(
                 ordered_results=ordered,
                 avatar_options=avatar_options,
                 output_rel_prefix=output_rel_prefix,
+                base_job_id=int(job_id) if job_id else None,
             )
         render_warning_message = ""
         if source_render_warnings:
@@ -6851,8 +6964,9 @@ def concat_and_finalize(
         )
 
         # Mark the Job as done and record relative file paths
-        _update_job(
+        _update_render_job(
             project_id,
+            job_id,
             status="done",
             progress=100,
             result_url=result_url_rel,
@@ -6884,6 +6998,7 @@ def concat_and_finalize(
             )
 
         result = {
+            "job_id":      int(job_id) if job_id else None,
             "final_video": final_video,
             "result_url":  result_url_rel,
             "srt":         srt_path,
@@ -6920,8 +7035,8 @@ def concat_and_finalize(
 
     except Exception:
         error_trace = tb.format_exc()
-        logger.exception("concat_and_finalize FAILED project=%s", project_id)
-        _update_job(project_id, status="failed", error_message=error_trace)
+        logger.exception("concat_and_finalize FAILED project_id=%s job_id=%s celery_task_id=%s", project_id, job_id, celery_task_id)
+        _update_render_job(project_id, job_id, status="failed", error_message=error_trace)
         _notify_render_failed(project_id)
         raise
 
@@ -6936,6 +7051,7 @@ def merge_and_finalize_segments(
     slides: list[dict[str, Any]],
     rerender_page_keys: list[str] | None = None,
     avatar_options: dict[str, Any] | None = None,
+    job_id: int | str | None = None,
 ) -> dict[str, Any]:
     """Merge rerendered segment outputs with unchanged artifacts, then finalize full lesson."""
     try:
@@ -7013,7 +7129,7 @@ def merge_and_finalize_segments(
 
     # Defensive sort keeps deterministic segment order for concatenation.
     full_results = sorted(full_results, key=lambda item: int(item.get("index") or 0))
-    return concat_and_finalize.apply(args=[full_results, project_id, False, avatar_options]).result
+    return concat_and_finalize.apply(args=[full_results, project_id, False, avatar_options, job_id]).result
 
 
 # ---------------------------------------------------------------------------
@@ -7024,21 +7140,28 @@ def merge_and_finalize_segments(
 def mark_project_render_failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
     """Errback for dispatched render chords so failed headers do not leave jobs running."""
     project_id = kwargs.get("project_id")
-    if project_id is None and args:
+    job_id = kwargs.get("job_id")
+    error_args = args
+    if project_id is None and len(args) >= 2 and str(args[-1]).isdigit() and str(args[-2]).isdigit():
+        project_id = args[-2]
+        job_id = args[-1]
+        error_args = args[:-2]
+    elif project_id is None and args:
         project_id = args[-1]
+        error_args = args[:-1]
     error_parts = [
         _concise_error_text(arg, fallback="", limit=240)
-        for arg in args[:-1]
+        for arg in error_args
         if _concise_error_text(arg, fallback="", limit=240)
     ]
     error_message = "render_pipeline_failed"
     if error_parts:
         error_message = f"{error_message}: {'; '.join(error_parts[:3])}"
     if project_id is not None:
-        logger.error("Render pipeline failed for project=%s errback_args=%s", project_id, args[:-1])
-        _update_job(project_id, status="failed", progress=100, error_message=error_message)
+        logger.error("Render pipeline failed project_id=%s job_id=%s errback_args=%s", project_id, job_id, error_args)
+        _update_render_job(project_id, job_id, status="failed", progress=100, error_message=error_message)
         _notify_render_failed(project_id)
-    return {"status": "failed", "project_id": project_id, "error_message": error_message}
+    return {"status": "failed", "project_id": project_id, "job_id": job_id, "error_message": error_message}
 
 
 @app.task(
@@ -7059,6 +7182,7 @@ def process_pptx_to_video(
     rerender_page_keys: list[str] | None = None,
     tts_settings: dict[str, Any] | None = None,
     use_draft: bool = False,
+    job_id: int | str | None = None,
 ) -> dict[str, Any]:
     """
     Orchestrate the full PPTX → lesson MP4 pipeline.
@@ -7084,8 +7208,15 @@ def process_pptx_to_video(
     Poll ``chord_id`` via the Celery result backend, or watch the Job record
     (updated by :func:`concat_and_finalize`).
     """
-    logger.info("=== process_pptx_to_video START project=%s ===", project_id)
-    _update_job(project_id, status="running", progress=0)
+    celery_task_id = str(getattr(getattr(self, "request", None), "id", "") or "")
+    render_job_id = int(job_id) if job_id else _resolve_render_job_id(project_id, celery_task_id)
+    logger.info(
+        "=== process_pptx_to_video START project_id=%s job_id=%s celery_task_id=%s ===",
+        project_id,
+        render_job_id,
+        celery_task_id,
+    )
+    _update_render_job(project_id, render_job_id, status="running", progress=0)
     self.update_state(state="PROGRESS", meta={"step": "start", "progress": 0})
 
     try:
@@ -7218,7 +7349,7 @@ def process_pptx_to_video(
             language_detection.get("confidence"),
         )
 
-        _update_job(project_id, progress=10)
+        _update_render_job(project_id, render_job_id, progress=10)
         tts_settings_summary = _summarize_tts_settings(tts_settings)
 
         teacher_id: int | None = None
@@ -7285,7 +7416,7 @@ def process_pptx_to_video(
         base_avatar_cfg["enabled"] = False
 
         def _slide_render_signature(slide: dict[str, Any]):
-            errback = mark_project_render_failed.s(project_id).set(queue=pipeline_queue)
+            errback = mark_project_render_failed.s(project_id, render_job_id).set(queue=pipeline_queue)
             return synthesize_and_render_slide.s(
                 slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, base_avatar_cfg, tts_settings
             ).set(queue=pipeline_queue, link_error=errback)
@@ -7295,9 +7426,9 @@ def process_pptx_to_video(
             for slide in target_slides
         )
         if rerender_set:
-            callback = merge_and_finalize_segments.s(project_id, slides, list(rerender_set), avatar_cfg).set(queue=pipeline_queue)
+            callback = merge_and_finalize_segments.s(project_id, slides, list(rerender_set), avatar_cfg, render_job_id).set(queue=pipeline_queue)
         else:
-            callback = concat_and_finalize.s(project_id, bool(use_draft), avatar_cfg).set(queue=pipeline_queue)
+            callback = concat_and_finalize.s(project_id, bool(use_draft), avatar_cfg, render_job_id).set(queue=pipeline_queue)
 
         pipeline     = chord(slide_tasks, callback)
         async_result = pipeline.apply_async(queue=pipeline_queue)
@@ -7312,6 +7443,7 @@ def process_pptx_to_video(
             "chord_id":   async_result.id,
             "n_slides":   len(target_slides),
             "project_id": project_id,
+            "job_id": render_job_id,
             "language_detection": language_detection,
             "rerender_page_keys": list(rerender_set),
             "use_draft": bool(use_draft),
@@ -7340,8 +7472,8 @@ def process_pptx_to_video(
 
     except Exception as exc:
         error_trace = tb.format_exc()
-        logger.exception("process_pptx_to_video FAILED for project=%s", project_id)
-        _update_job(project_id, status="failed", error_message=error_trace)
+        logger.exception("process_pptx_to_video FAILED project_id=%s job_id=%s celery_task_id=%s", project_id, render_job_id, celery_task_id)
+        _update_render_job(project_id, render_job_id, status="failed", error_message=error_trace)
         _notify_render_failed(project_id)
         self.update_state(
             state="FAILURE",
