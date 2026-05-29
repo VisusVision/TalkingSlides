@@ -6714,9 +6714,11 @@ def concat_and_finalize(
         concat_videos(part_paths, final_video)
         _update_render_job(project_id, job_id, progress=95)
 
-        # Persist the render timeline, then build canonical cue text from active
-        # transcript rows so captions never consume provider-normalized TTS text.
-        # Draft renders promote into active rows only after output files are prepared.
+        # Persist the render timeline, then build caption text from the same
+        # render-result snapshot that produced the video. This keeps a single
+        # job from mixing old video/TTS with transcript edits saved after render
+        # dispatch. Draft renders promote into active rows only after output
+        # files are prepared.
         srt_path = str(output_dir / f"{project_id}.srt")
         vtt_path = str(output_dir / f"{project_id}.vtt")
         result_url_rel = f"{output_rel_prefix}/{project_id}.mp4"
@@ -6727,7 +6729,7 @@ def concat_and_finalize(
             subtitle_cues = _fallback_cues_from_render_results(ordered, slide_durations)
         else:
             _update_transcript_timeline(project_id, page_timeline)
-            subtitle_cues = build_subtitle_cues_from_transcript_pages(project_id, ordered, slide_durations)
+            subtitle_cues = _fallback_cues_from_render_results(ordered, slide_durations)
         avatar_segments: list[dict[str, Any]] = []
         avatar_failures: list[dict[str, Any]] = []
         for result in ordered:
