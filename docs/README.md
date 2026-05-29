@@ -36,6 +36,7 @@ These detailed documents are preserved for developer-branch context and should b
 - [Tradeoffs, plus and minus](TRADEOFFS_PLUS_MINUS.md)
 - [Storage cleanup plan](ENV_STORAGE_CLEANUP_PLAN.md)
 - [Repository cleanup audit](REPO_CLEANUP_AUDIT.md)
+- [Render follow-up intent RFC](RENDER_FOLLOWUP_INTENT_RFC.md)
 - [Rerender worker diagnosis](RERENDER_WORKER_DIAGNOSIS.md)
 - [Runtime storage and lesson visibility diagnosis](RUNTIME_STORAGE_AND_LESSON_VISIBILITY_DIAGNOSIS.md)
 - [Secure playback manual test checklist](secure-playback-manual-test-checklist.md)
