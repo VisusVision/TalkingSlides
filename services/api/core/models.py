@@ -9,6 +9,7 @@ Entities:
   Project      - a lesson/course project owned by a Teacher
   Slide        - individual slide within a Project
   Job          - async processing job (TTS render, export, etc.)
+  RenderFollowUpIntent - queued render intent to drain after an active render
   LessonProgress - per-user watch progress (authenticated students)
   LessonLike   - per-user lesson like (authenticated students)
   LessonComment - public comment on a lesson (authenticated students)
@@ -23,6 +24,9 @@ from django.db import models
 from django.db.models import F, Q
 from django.contrib.auth.models import User
 from django.utils.text import slugify
+
+
+RENDER_FOLLOWUP_ACTIVE_STATUSES = ["pending", "claimed", "dispatched"]
 
 
 class UserProfile(models.Model):
@@ -801,6 +805,63 @@ class TranscriptPage(models.Model):
 
     def __str__(self):
         return f"{self.project.title} [{self.page_key}]"
+
+
+class RenderFollowUpIntent(models.Model):
+    """Durable follow-up render request recorded while a render is active."""
+
+    MODE_TARGETED = "targeted"
+    MODE_FULL = "full"
+    MODE_CHOICES = [
+        (MODE_TARGETED, "Targeted"),
+        (MODE_FULL, "Full"),
+    ]
+
+    STATUS_PENDING = "pending"
+    STATUS_CLAIMED = "claimed"
+    STATUS_DISPATCHED = "dispatched"
+    STATUS_CLEARED = "cleared"
+    STATUS_CANCELLED = "cancelled"
+    STATUS_CHOICES = [
+        (STATUS_PENDING, "Pending"),
+        (STATUS_CLAIMED, "Claimed"),
+        (STATUS_DISPATCHED, "Dispatched"),
+        (STATUS_CLEARED, "Cleared"),
+        (STATUS_CANCELLED, "Cancelled"),
+    ]
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="render_followup_intents")
+    mode = models.CharField(max_length=20, choices=MODE_CHOICES, default=MODE_TARGETED)
+    page_keys = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    reason = models.CharField(max_length=120, blank=True)
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="render_followup_intents",
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    claimed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["project"],
+                condition=Q(status__in=RENDER_FOLLOWUP_ACTIVE_STATUSES),
+                name="uniq_active_render_followup_intent",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["project", "status"], name="c_rfi_project_status_idx"),
+        ]
+
+    def __str__(self):
+        return f"RenderFollowUpIntent project={self.project_id} mode={self.mode} status={self.status}"
 
 
 class TranslatedSubtitleTrack(models.Model):
