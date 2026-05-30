@@ -84,6 +84,7 @@ from core.models import (
     PlaylistItem,
     Project,
     PublisherFollow,
+    RenderFollowUpIntent,
     SavedPlaylist,
     SiteHelpContent,
     Slide,
@@ -190,6 +191,7 @@ from core.avatar_source_validation import (
     refresh_avatar_source_validation,
     stored_avatar_source_state,
 )
+from core.render_followup_intents import merge_render_followup_intent
 from ai_agents.policies import (
     APPROVED_MODERATION_STATUSES,
     manual_moderation_prevents_auto_override,
@@ -5270,6 +5272,53 @@ def _queue_transcript_rerender(
     return _render_job_response_avatar_fields(data, avatar_options)
 
 
+def _queue_or_record_transcript_rerender(
+    *,
+    project: Project,
+    request,
+    changed_page_keys: list[str] | set[str],
+    pause_sec: float,
+    lang_hint: str,
+    full_rerender: bool = False,
+    use_draft: bool = False,
+    followup_reason: str,
+) -> tuple[dict | None, dict]:
+    active_job = _active_video_export_job(project)
+    if active_job:
+        mode = RenderFollowUpIntent.MODE_FULL if full_rerender else RenderFollowUpIntent.MODE_TARGETED
+        intent = merge_render_followup_intent(
+            project=project,
+            mode=mode,
+            page_keys=[] if mode == RenderFollowUpIntent.MODE_FULL else changed_page_keys,
+            reason=followup_reason,
+            requested_by=request.user if request.user and request.user.is_authenticated else None,
+            metadata={
+                "source": "transcript",
+                "active_job_id": active_job.id,
+                "use_draft": bool(use_draft),
+            },
+        )
+        return None, {
+            "follow_up_render_intent": True,
+            "queued_follow_up": True,
+            "deduped": True,
+            "render_follow_up_intent_id": intent.id,
+        }
+
+    return (
+        _queue_transcript_rerender(
+            project=project,
+            request=request,
+            changed_page_keys=changed_page_keys,
+            pause_sec=pause_sec,
+            lang_hint=lang_hint,
+            full_rerender=full_rerender,
+            use_draft=use_draft,
+        ),
+        {},
+    )
+
+
 def _source_moderation_auto_enabled() -> bool:
     return bool(getattr(settings, "SOURCE_MODERATION_AUTO_ENABLED", False))
 
@@ -6140,9 +6189,10 @@ class ProjectTranscriptView(APIView):
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
             rerender_job = None
+            followup_payload = {}
             if draft_rerender:
                 if draft_requires_render(project):
-                    rerender_job = _queue_transcript_rerender(
+                    rerender_job, followup_payload = _queue_or_record_transcript_rerender(
                         project=project,
                         request=request,
                         changed_page_keys=changed_page_keys,
@@ -6150,6 +6200,7 @@ class ProjectTranscriptView(APIView):
                         lang_hint=lang_hint,
                         full_rerender=True,
                         use_draft=True,
+                        followup_reason="transcript_text_edit",
                     )
             payload = {
                 **_studio_transcript_response_payload(project, request),
@@ -6159,6 +6210,10 @@ class ProjectTranscriptView(APIView):
             if rerender_job:
                 payload["rerender_job"] = rerender_job
                 payload["rerender_strategy"] = "draft_full"
+            elif followup_payload:
+                payload.update(followup_payload)
+                payload["rerender_job"] = None
+                payload["rerender_strategy"] = "follow_up"
             elif draft_rerender:
                 payload["rerender_job"] = None
                 payload["rerender_strategy"] = "none"
@@ -6280,13 +6335,15 @@ class ProjectTranscriptView(APIView):
                 page_map[page_id] = page
 
         rerender_job = None
+        followup_payload = {}
         if trigger_rerender:
-            rerender_job = _queue_transcript_rerender(
+            rerender_job, followup_payload = _queue_or_record_transcript_rerender(
                 project=project,
                 request=request,
                 changed_page_keys=changed_page_keys,
                 pause_sec=pause_sec,
                 lang_hint=lang_hint,
+                followup_reason="transcript_text_edit",
             )
 
         if moderation_changed_fields:
@@ -6306,6 +6363,10 @@ class ProjectTranscriptView(APIView):
         }
         if rerender_job:
             payload["rerender_job"] = rerender_job
+        if followup_payload:
+            payload.update(followup_payload)
+            payload["rerender_job"] = None
+            payload["rerender_strategy"] = "follow_up"
         if changed_page_keys:
             payload["intelligence_auto_scheduled"] = _queue_lesson_intelligence_schedule(
                 project.id,
@@ -7425,10 +7486,11 @@ class ProjectTranscriptActionView(APIView):
 
             project.refresh_from_db()
             rerender_job = None
+            followup_payload = {}
             rerender_strategy = "none"
             if draft_rerender:
                 if draft_requires_render(project):
-                    rerender_job = _queue_transcript_rerender(
+                    rerender_job, followup_payload = _queue_or_record_transcript_rerender(
                         project=project,
                         request=request,
                         changed_page_keys=changed_page_keys,
@@ -7436,9 +7498,12 @@ class ProjectTranscriptActionView(APIView):
                         lang_hint=lang_hint,
                         full_rerender=True,
                         use_draft=True,
+                        followup_reason="transcript_structural_action",
                     )
                     if rerender_job:
                         rerender_strategy = "draft_full"
+                    elif followup_payload:
+                        rerender_strategy = "follow_up"
             payload = {
                 "project_id": project.id,
                 "action": action,
@@ -7450,6 +7515,8 @@ class ProjectTranscriptActionView(APIView):
                 "has_draft": has_project_draft(project),
                 "draft_metadata": _studio_draft_metadata(project),
             }
+            if followup_payload:
+                payload.update(followup_payload)
             if changed_page_keys:
                 payload["intelligence_auto_scheduled"] = _queue_lesson_intelligence_schedule(
                     project.id,
@@ -7489,18 +7556,22 @@ class ProjectTranscriptActionView(APIView):
         # Structural actions can change sequence membership/order, so action-triggered rerender is full-project.
         # The response still returns changed_page_keys for UI status and later targeted-render refinement.
         rerender_job = None
+        followup_payload = {}
         rerender_strategy = "none"
         if trigger_rerender:
-            rerender_job = _queue_transcript_rerender(
+            rerender_job, followup_payload = _queue_or_record_transcript_rerender(
                 project=project,
                 request=request,
                 changed_page_keys=changed_page_keys,
                 pause_sec=pause_sec,
                 lang_hint=lang_hint,
                 full_rerender=True,
+                followup_reason="transcript_structural_action",
             )
             if rerender_job:
                 rerender_strategy = "full"
+            elif followup_payload:
+                rerender_strategy = "follow_up"
 
         payload = {
             "project_id": project.id,
@@ -7511,6 +7582,8 @@ class ProjectTranscriptActionView(APIView):
             "rerender_job": rerender_job,
             "rerender_strategy": rerender_strategy,
         }
+        if followup_payload:
+            payload.update(followup_payload)
         if changed_page_keys:
             payload["intelligence_auto_scheduled"] = _queue_lesson_intelligence_schedule(
                 project.id,
