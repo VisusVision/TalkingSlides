@@ -131,7 +131,7 @@ def _render_result(tmp_path: Path, *, page_key: str = "s1-p1", text: str = "Upda
     }
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_successful_concat_finalization_dispatches_targeted_followup_intent(tmp_path, monkeypatch):
     project = _make_project("targeted")
     _prepare_lesson_upload(tmp_path, project)
@@ -162,7 +162,7 @@ def test_successful_concat_finalization_dispatches_targeted_followup_intent(tmp_
     assert captured.sent[0]["args"][8] == ["s1-p1"]
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_successful_concat_finalization_dispatches_full_followup_intent(tmp_path, monkeypatch):
     project = _make_project("full")
     _prepare_lesson_upload(tmp_path, project)
@@ -182,7 +182,7 @@ def test_successful_concat_finalization_dispatches_full_followup_intent(tmp_path
     assert captured.sent[0]["args"][8] == []
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_followup_intent_active_job_mismatch_does_not_dispatch(tmp_path, monkeypatch):
     project = _make_project("mismatch")
     _prepare_lesson_upload(tmp_path, project)
@@ -205,7 +205,7 @@ def test_followup_intent_active_job_mismatch_does_not_dispatch(tmp_path, monkeyp
     assert Job.objects.filter(project=project, job_type="video_export").count() == 1
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_stale_finalize_does_not_dispatch_followup_intent(tmp_path, monkeypatch):
     project = _make_project("stale")
     stale_job = Job.objects.create(project=project, job_type="video_export", status="running", progress=80)
@@ -225,7 +225,7 @@ def test_stale_finalize_does_not_dispatch_followup_intent(tmp_path, monkeypatch)
     assert captured.sent == []
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_failed_finalize_does_not_dispatch_followup_intent(tmp_path, monkeypatch):
     project = _make_project("failed")
     _prepare_lesson_upload(tmp_path, project)
@@ -248,7 +248,7 @@ def test_failed_finalize_does_not_dispatch_followup_intent(tmp_path, monkeypatch
     assert Job.objects.filter(project=project, job_type="video_export").count() == 1
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_followup_dispatch_failure_marks_job_failed_and_cancels_intent(tmp_path, monkeypatch):
     project = _make_project("dispatch_failure")
     _prepare_lesson_upload(tmp_path, project)
@@ -274,10 +274,11 @@ def test_followup_dispatch_failure_marks_job_failed_and_cancels_intent(tmp_path,
     assert intent.metadata["dispatch_error"] == "broker unavailable"
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_two_drain_calls_produce_one_followup_job(tmp_path, monkeypatch):
     project = _make_project("duplicate")
     _prepare_lesson_upload(tmp_path, project)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
     job = Job.objects.create(project=project, job_type="video_export", status="done", progress=100)
     RenderFollowUpIntent.objects.create(
         project=project,
@@ -296,10 +297,11 @@ def test_two_drain_calls_produce_one_followup_job(tmp_path, monkeypatch):
     assert Job.objects.filter(project=project, job_type="video_export").count() == 2
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_new_edit_can_create_pending_intent_while_followup_render_is_active(tmp_path, monkeypatch):
     project = _make_project("new_edit")
     _prepare_lesson_upload(tmp_path, project)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
     completed_job = Job.objects.create(project=project, job_type="video_export", status="done", progress=100)
     RenderFollowUpIntent.objects.create(
         project=project,

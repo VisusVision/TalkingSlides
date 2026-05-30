@@ -545,72 +545,94 @@ def _dispatch_claimed_render_followup_intent(project_id: str | int, completed_jo
         logger.warning("Follow-up render drain skipped for project=%s because dependencies are unavailable", project_id, exc_info=True)
         return {"status": "skipped", "reason": "dependencies_unavailable"}
 
-    claimed = claim_render_followup_intent_for_completed_job(project_id=project_id, completed_job_id=completed_job_id)
-    if claimed is None:
-        return {"status": "none"}
+    dispatch_result: dict[str, Any] = {}
 
-    intent, job = claimed
-    try:
-        project = Project.objects.get(pk=int(project_id))
-        upload_path = _latest_lesson_upload_path(project_id)
-        if not upload_path:
-            raise RuntimeError("original_lesson_file_not_found")
-
-        metadata = dict(intent.metadata or {})
+    def _dispatch_after_commit(intent_id: int, job_id: int) -> None:
+        nonlocal dispatch_result
         try:
-            pause_sec = max(0.0, float(metadata.get("pause_sec", 2.2)))
-        except (TypeError, ValueError):
-            pause_sec = 2.2
-        lang_hint = str(metadata.get("lang_hint") or "auto")
-        use_draft = bool(metadata.get("use_draft", False))
-        rerender_page_keys = [] if intent.mode == RenderFollowUpIntent.MODE_FULL else list(intent.page_keys or [])
-        avatar_options = _render_followup_avatar_options(project, job_id=int(job.id))
-        task_args = [
-            str(project_id),
-            upload_path,
-            _render_followup_voice_id(project.user_id),
-            pause_sec,
-            lang_hint,
-            "service",
-            False,
-            avatar_options,
-            rerender_page_keys,
-            _render_followup_tts_settings(project, use_draft=use_draft),
-        ]
-        task_kwargs = {"job_id": int(job.id)}
-        if use_draft:
-            task_kwargs["use_draft"] = True
-        queue = _avatar_queue_name() if bool(avatar_options.get("enabled")) else _render_queue_name()
-        signature = app.signature("worker.tasks.process_pptx_to_video", args=task_args, kwargs=task_kwargs)
-        async_result = signature.apply_async(queue=queue)
-        Job.objects.filter(pk=job.id).update(celery_task_id=async_result.id)
-        mark_render_followup_intent_dispatched(
-            intent_id=int(intent.id),
-            job_id=int(job.id),
-            celery_task_id=str(async_result.id or ""),
+            project = Project.objects.get(pk=int(project_id))
+            intent = RenderFollowUpIntent.objects.get(pk=int(intent_id))
+            job = Job.objects.get(pk=int(job_id))
+            upload_path = _latest_lesson_upload_path(project_id)
+            if not upload_path:
+                raise RuntimeError("original_lesson_file_not_found")
+
+            metadata = dict(intent.metadata or {})
+            try:
+                pause_sec = max(0.0, float(metadata.get("pause_sec", 2.2)))
+            except (TypeError, ValueError):
+                pause_sec = 2.2
+            lang_hint = str(metadata.get("lang_hint") or "auto")
+            use_draft = bool(metadata.get("use_draft", False))
+            rerender_page_keys = [] if intent.mode == RenderFollowUpIntent.MODE_FULL else list(intent.page_keys or [])
+            avatar_options = _render_followup_avatar_options(project, job_id=int(job.id))
+            task_args = [
+                str(project_id),
+                upload_path,
+                _render_followup_voice_id(project.user_id),
+                pause_sec,
+                lang_hint,
+                "service",
+                False,
+                avatar_options,
+                rerender_page_keys,
+                _render_followup_tts_settings(project, use_draft=use_draft),
+            ]
+            task_kwargs = {"job_id": int(job.id)}
+            if use_draft:
+                task_kwargs["use_draft"] = True
+            queue = _avatar_queue_name() if bool(avatar_options.get("enabled")) else _render_queue_name()
+            signature = app.signature("worker.tasks.process_pptx_to_video", args=task_args, kwargs=task_kwargs)
+            async_result = signature.apply_async(queue=queue)
+            Job.objects.filter(pk=job_id).update(celery_task_id=async_result.id)
+            mark_render_followup_intent_dispatched(
+                intent_id=intent_id,
+                job_id=job_id,
+                celery_task_id=str(async_result.id or ""),
+            )
+            logger.info(
+                "Render follow-up intent dispatched project_id=%s completed_job_id=%s intent_id=%s job_id=%s task_id=%s mode=%s",
+                project_id,
+                completed_job_id,
+                intent.id,
+                job.id,
+                async_result.id,
+                intent.mode,
+            )
+            dispatch_result = {"status": "dispatched", "intent_id": intent_id, "job_id": job_id, "celery_task_id": async_result.id}
+        except Exception as exc:
+            error_message = str(exc or "dispatch_failed")
+            logger.exception(
+                "Render follow-up intent dispatch failed project_id=%s completed_job_id=%s intent_id=%s job_id=%s",
+                project_id,
+                completed_job_id,
+                intent_id,
+                job_id,
+            )
+            _update_render_job(project_id, job_id, status="failed", progress=100, error_message=error_message)
+            mark_render_followup_intent_dispatch_failed(intent_id=intent_id, job_id=job_id, error_message=error_message)
+            dispatch_result = {"status": "failed", "intent_id": intent_id, "job_id": job_id, "error_message": error_message}
+
+    try:
+        claimed = claim_render_followup_intent_for_completed_job(
+            project_id=project_id,
+            completed_job_id=completed_job_id,
+            on_commit=_dispatch_after_commit,
         )
-        logger.info(
-            "Render follow-up intent dispatched project_id=%s completed_job_id=%s intent_id=%s job_id=%s task_id=%s mode=%s",
-            project_id,
-            completed_job_id,
-            intent.id,
-            job.id,
-            async_result.id,
-            intent.mode,
-        )
-        return {"status": "dispatched", "intent_id": int(intent.id), "job_id": int(job.id), "celery_task_id": async_result.id}
+        if claimed is None:
+            return {"status": "none"}
+        intent, job = claimed
+        if dispatch_result:
+            return dispatch_result
+        return {"status": "claimed", "intent_id": int(intent.id), "job_id": int(job.id)}
     except Exception as exc:
         error_message = str(exc or "dispatch_failed")
         logger.exception(
-            "Render follow-up intent dispatch failed project_id=%s completed_job_id=%s intent_id=%s job_id=%s",
+            "Render follow-up intent claim failed project_id=%s completed_job_id=%s",
             project_id,
             completed_job_id,
-            intent.id,
-            job.id,
         )
-        _update_render_job(project_id, job.id, status="failed", progress=100, error_message=error_message)
-        mark_render_followup_intent_dispatch_failed(intent_id=int(intent.id), job_id=int(job.id), error_message=error_message)
-        return {"status": "failed", "intent_id": int(intent.id), "job_id": int(job.id), "error_message": error_message}
+        return {"status": "failed", "error_message": error_message}
 
 
 def _mark_project_ready_after_successful_render(project_id: str | int) -> None:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from django.utils import timezone
@@ -119,6 +119,7 @@ def claim_render_followup_intent_for_completed_job(
     *,
     project_id: int | str,
     completed_job_id: int | str | None,
+    on_commit: Callable[[int, int], None] | None = None,
 ) -> tuple[RenderFollowUpIntent, Job] | None:
     """Claim a pending intent and reserve the follow-up render job.
 
@@ -177,6 +178,8 @@ def claim_render_followup_intent_for_completed_job(
         intent.claimed_at = timezone.now()
         intent.metadata = metadata
         intent.save(update_fields=["status", "claimed_at", "metadata", "updated_at"])
+        if on_commit is not None:
+            transaction.on_commit(lambda intent_id=int(intent.id), job_id=int(job.id): on_commit(intent_id, job_id))
         return intent, job
 
 
