@@ -12,6 +12,7 @@ from core.models import Project, RENDER_FOLLOWUP_ACTIVE_STATUSES, RenderFollowUp
 
 STRUCTURAL_REASONS = {
     "structural_action",
+    "transcript_structural_action",
     "transcript_split",
     "transcript_merge",
     "transcript_reorder",
