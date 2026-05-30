@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft for review. This document is intentionally documentation-only and should not be treated as approval to implement model, migration, task, view, frontend, or Celery behavior changes.
+Accepted and implemented through #61-#65. This document records the intended behavior and the policy choices in the merged implementation.
 
 ## Problem
 
@@ -17,14 +17,19 @@ The desired behavior is not to interrupt the active render. Instead, the system 
 
 ## Current State
 
-Recent worker reliability work reduced several adjacent failure modes but does not fully model follow-up render intent as first-class state:
+Recent worker reliability work reduced several adjacent failure modes and now models follow-up render intent as first-class state:
 
+- #61 documented the RenderFollowUpIntent design.
+- #62 added the `RenderFollowUpIntent` model, constraint, and model tests.
+- #63 added the merge helper and merge semantics.
+- #64 records follow-up intent from transcript endpoints when a render is already active.
+- #65 drains pending intent after successful current finalize and dispatches the follow-up render job.
 - #57 worker reliability improved render worker behavior and reduced operational fragility.
 - #58 added a job-scoped finalize guard so stale jobs cannot finalize unrelated active work.
 - #59 added manual active render dedupe to avoid obvious duplicate render dispatch.
 - #60 improved caption snapshot consistency so render inputs are bound to a coherent transcript snapshot.
 
-These changes form the foundation for follow-up intent handling. The missing piece is durable, mergeable intent that survives concurrent edits, active render completion, and worker failure.
+Together these changes provide durable, mergeable intent that survives concurrent edits and is drained after a successful current render finalize.
 
 ## Goals
 
@@ -37,14 +42,13 @@ These changes form the foundation for follow-up intent handling. The missing pie
 
 ## Non-Goals
 
-- Do not implement the model in this RFC.
-- Do not create a migration in this RFC.
-- Do not change render task, view, frontend, or Celery behavior in this RFC.
-- Do not decide UX copy or frontend state presentation in this RFC.
+- Do not interrupt or cancel an active render when follow-up intent is recorded.
+- Do not dispatch follow-up renders after failed or stale finalize paths.
+- Do not change frontend presentation in this policy update.
 
 ## Proposed Model
 
-Introduce a durable `RenderFollowUpIntent` model in a later implementation PR.
+The merged implementation introduces a durable `RenderFollowUpIntent` model.
 
 Fields:
 
@@ -59,7 +63,7 @@ Fields:
 - `claimed_at`: timestamp set when a drain attempt claims the intent.
 - `metadata`: JSON payload for diagnostics, source event details, counters, or future compatibility.
 
-The model should be constrained so each project has at most one active follow-up intent per render context. If draft rendering and active rendering share the same table, the context must be explicit so draft render intent cannot merge with active render intent.
+The model is constrained so each project has at most one active follow-up intent. Active statuses are `pending`, `claimed`, and `dispatched`. Terminal statuses are `cleared` and `cancelled`.
 
 ## Merge Rules
 
@@ -75,30 +79,30 @@ Merge should happen transactionally. If two transcript edits arrive concurrently
 
 ## Drain Flow
 
-When an active render reaches finalize:
+When an active render successfully reaches current finalize:
 
 1. The job-scoped finalize guard verifies that the finalizing job still owns the active render state.
-2. Finalize transitions the active render to its terminal state.
+2. Finalize transitions the active render job to `done`.
 3. The drain step checks for a `pending` follow-up intent for the same project and render context.
 4. If one exists, the drain step claims it by moving `pending -> claimed` and setting `claimed_at`.
-5. The drain step dispatches a new render job from the claimed intent.
-6. After dispatch succeeds, the intent moves `claimed -> dispatched`.
-7. Once the new job is accepted as the active render, the intent can move to `cleared` or be deleted, depending on retention needs.
+5. The drain step creates a new `video_export` job in the same transaction.
+6. Celery dispatch runs in a transaction `on_commit` callback and passes explicit `job_id` to the worker task.
+7. After dispatch succeeds, dispatch metadata is recorded and the intent moves to `cleared`.
 
 The `claimed` and `dispatched` states prevent multiple finalize paths or workers from dispatching duplicate jobs from the same pending intent.
 
 ## Failure Policy
 
-If the active job fails, the follow-up intent should be preserved and still be eligible for dispatch. A failed active render does not mean the transcript edits are obsolete.
+The merged implementation uses success-only drain. Follow-up dispatch is attempted only after a successful current finalize.
 
-Recommended policy:
+Current policy:
 
-- Preserve the pending follow-up intent when the active job fails.
-- Attempt to dispatch the follow-up after the failed job reaches a terminal state.
-- Record failure and retry metadata on the intent or associated render job.
-- Add a poison-loop guard so a permanently failing project cannot dispatch infinite follow-up renders.
+- Successful current finalize drains and dispatches pending follow-up intent.
+- Failed finalize does not dispatch follow-up intent.
+- Stale finalize does not dispatch follow-up intent.
+- Dispatch failure marks the created follow-up job failed and cancels the claimed intent with failure metadata.
 
-The poison-loop guard can be based on consecutive follow-up dispatch failures, recent dispatch count within a time window, or repeated failure signatures in `metadata`.
+This policy reduces render storm risk and avoids automatic loops when a project has a transient or non-transient render failure. Manual retry or a later user edit can create or merge fresh intent and is safer than automatically dispatching more render work from a failed active job.
 
 ## Race Condition Scenarios
 
@@ -108,7 +112,7 @@ Both edits attempt to create or merge a pending targeted intent. The expected re
 
 ### Finalize and Edit at the Same Time
 
-Finalize may claim an existing pending intent while a new edit arrives. The edit must not be lost. If the claimed intent can no longer be merged safely, the edit should create a new pending intent for the next drain cycle.
+Finalize may claim an existing pending intent while a new edit arrives. The merged implementation clears successfully dispatched intent quickly, allowing a later edit during the follow-up render to create a new pending intent for the next drain cycle. There is still a theoretical short `claimed -> cleared` window where the unique active-intent constraint prevents a second pending intent from being created. Fully closing that window would require a constraint or status-model migration and is out of scope for #61-#65.
 
 ### Full and Targeted Collision
 
@@ -116,42 +120,50 @@ If a full intent and targeted intent race, the final durable state must be full.
 
 ### Worker Crash
 
-If a worker crashes after `claimed` but before dispatch, the intent needs a recovery path. A stale `claimed_at` timeout can return the intent to `pending` or allow a repair job to redispatch it.
+The worker registers dispatch in a transaction `on_commit` callback after the claim and job creation commit. If dispatch fails, the follow-up job is marked failed and the intent is cancelled with failure metadata. A process crash immediately after commit but before the callback executes remains a theoretical orphan risk; a future recovery job could scan stale `claimed_at` rows and pending follow-up jobs.
 
 ### Stale Finalize
 
-A stale finalize must not drain or clear follow-up intent for a newer active job. The existing job-scoped finalize guard from #58 should remain the authority for whether a finalize path may mutate active render state.
+A stale finalize must not drain or clear follow-up intent for a newer active job. The existing job-scoped finalize guard remains the authority for whether a finalize path may mutate active render state.
 
 ## PR Breakdown
 
-### PR-1: Model, Migration, and Unit Tests
+### PR-1: Model, Migration, and Unit Tests (#62)
 
 - Add `RenderFollowUpIntent`.
 - Add constraints for one active intent per project and render context.
 - Add status and mode choices.
 - Add tests for model validation and constraints.
 
-### PR-2: API Intent Merge Helper
+### PR-2: API Intent Merge Helper (#63)
 
 - Add a service/helper that creates or merges follow-up intent when edits arrive during an active render.
 - Implement targeted union and full override semantics.
 - Keep draft render intent separate from active render intent.
 
-### PR-3: Finalize Drain
+### PR-3: Transcript Intent Write (#64)
+
+- Record follow-up intent when transcript endpoints request render work while a render is active.
+- Store active job and render request metadata for later drain.
+- Do not dispatch duplicate render work from the API path.
+
+### PR-4: Finalize Drain (#65)
 
 - Add drain logic after successful job-scoped finalize.
 - Claim pending intent before dispatch.
-- Move intent to dispatched or cleared after successful handoff.
+- Dispatch with explicit `job_id` after transaction commit.
+- Move intent to `cleared` after successful handoff.
+- Do not dispatch after failed or stale finalize paths.
 
-### PR-4: Race Condition Tests
+### PR-5: Race Condition Tests (#64-#65)
 
 - Cover concurrent targeted edits.
 - Cover finalize racing with edit.
 - Cover full and targeted collision.
-- Cover worker crash recovery behavior.
+- Cover dispatch failure handling.
 - Cover stale finalize behavior.
 
-### PR-5: Observability and Documentation
+### Future: Observability, Recovery, and Documentation
 
 - Add structured logging for intent create, merge, claim, dispatch, clear, and recovery.
 - Add metrics for pending intent count, claim age, dispatch count, and poison-loop guard trips.
@@ -162,7 +174,8 @@ A stale finalize must not drain or clear follow-up intent for a newer active job
 - Migration risk: constraints and backfill behavior need careful rollout.
 - Render storm risk: poor merge or drain behavior could dispatch too many jobs.
 - Infinite follow-up loop risk: repeated failures could keep creating new work.
-- Stale intent cleanup: old claimed or dispatched intents need a repair or cleanup policy.
+- Stale intent cleanup: old claimed intents and pending follow-up jobs need a repair or cleanup policy.
+- Short claim window: `claimed -> cleared` is brief but not fully eliminated without changing the active-status constraint.
 - UX expectation risk: users may expect edits during active render to appear immediately, while this design queues them for follow-up render.
 
 ## Test Plan
@@ -170,11 +183,12 @@ A stale finalize must not drain or clear follow-up intent for a newer active job
 - Targeted union: two targeted edits create one intent with unioned `page_keys`.
 - Full override: full intent overrides existing targeted intent.
 - Active render while edit: edit during active render creates pending follow-up intent and does not dispatch duplicate active work.
-- Failed active job: pending follow-up intent is preserved and dispatches after terminal failure handling.
+- Failed active job: failed finalize does not dispatch follow-up intent automatically.
+- Stale finalize: stale finalize does not dispatch follow-up intent.
 - Finalize drain: active job finalize claims pending intent and dispatches one new job.
 - Concurrent edits: simultaneous edits do not drop page keys or create duplicate pending intents.
 - Structural action full intent: structural transcript action creates or upgrades to full intent.
 
 ## Decision
 
-Do not implement this change directly from the current task. The next step is RFC review. Implementation should proceed only after the model, merge semantics, drain flow, and failure policy are accepted.
+Implemented in #61-#65 with success-only drain. Future work should focus on observability, stale-claim recovery, and any migration needed to fully remove the short `claimed -> cleared` merge window.
