@@ -5260,14 +5260,13 @@ def _queue_transcript_rerender(
         _project_render_tts_settings(project, use_draft=use_draft),
     ]
     task_kwargs = {"use_draft": True} if use_draft else {}
-    async_result = _dispatch_celery_task(
-        _PROCESS_PROJECT_RENDER_TASK,
-        args=task_args,
-        kwargs=task_kwargs,
+    _dispatch_render_job(
+        job_id=job.id,
+        task_args=task_args,
+        task_kwargs=task_kwargs,
         queue=_queue_for_avatar_options(avatar_options),
     )
-    job.celery_task_id = async_result.id
-    job.save(update_fields=["celery_task_id"])
+    job.refresh_from_db(fields=["celery_task_id"])
     data = JobSerializer(job).data
     return _render_job_response_avatar_fields(data, avatar_options)
 
@@ -5296,6 +5295,8 @@ def _queue_or_record_transcript_rerender(
                 "source": "transcript",
                 "active_job_id": active_job.id,
                 "use_draft": bool(use_draft),
+                "pause_sec": float(pause_sec),
+                "lang_hint": str(lang_hint or "auto"),
             },
         )
         return None, {

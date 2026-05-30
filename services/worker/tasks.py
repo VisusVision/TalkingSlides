@@ -469,6 +469,150 @@ def _mark_stale_render_job_skipped(job_id: str | int | None) -> bool:
     return bool(Job.objects.filter(id=int(job_id)).update(**updates))
 
 
+def _latest_lesson_upload_path(project_id: str | int) -> str:
+    upload_dir = Path(STORAGE_ROOT) / "uploads" / str(project_id)
+    lesson_files = sorted(upload_dir.glob("lesson.*")) if upload_dir.exists() else []
+    return str(lesson_files[0]) if lesson_files else ""
+
+
+def _render_followup_voice_id(user_id: int | None) -> str:
+    if not user_id:
+        return ""
+    try:
+        from core.models import VoiceProfile
+    except Exception:
+        logger.warning("Follow-up render voice lookup skipped for user=%s", user_id, exc_info=True)
+        return ""
+    profile = VoiceProfile.objects.filter(user_id=int(user_id)).first()
+    return str(getattr(profile, "voice_id", "") or "")
+
+
+def _render_followup_tts_settings(project, *, use_draft: bool) -> dict[str, Any] | None:
+    try:
+        from core.serializers import canonical_project_tts_settings
+
+        if use_draft:
+            return _draft_render_tts_settings(project.id, canonical_project_tts_settings(getattr(project, "tts_settings", None)))
+        return canonical_project_tts_settings(getattr(project, "tts_settings", None))
+    except Exception:
+        logger.warning("Follow-up render TTS settings fallback used for project=%s", getattr(project, "id", None), exc_info=True)
+        return None
+
+
+def _render_followup_avatar_options(project, *, job_id: int) -> dict[str, Any]:
+    teacher_id = int(getattr(project, "user_id", 0) or 0) or None
+    teacher_avatar_cfg = _get_teacher_avatar_config(teacher_id)
+    return {
+        "enabled": bool(teacher_avatar_cfg.get("enabled")),
+        "requested": bool(teacher_avatar_cfg.get("enabled")),
+        "teacher_id": teacher_id,
+        "base_job_id": int(job_id),
+        "source_image_rel_path": teacher_avatar_cfg.get("processed_rel_path", ""),
+        "source_image_original_rel_path": teacher_avatar_cfg.get("source_rel_path", ""),
+        "source_video_rel_path": teacher_avatar_cfg.get("video_rel_path", ""),
+        "avatar_reference_type": teacher_avatar_cfg.get("reference_type", "image"),
+        "motion_preset": teacher_avatar_cfg.get("motion_preset", "natural"),
+        "quality_preset": teacher_avatar_cfg.get("quality_preset", "high"),
+        "lipsync_engine": teacher_avatar_cfg.get("lipsync_engine", "musetalk"),
+        "restoration_enabled": bool(teacher_avatar_cfg.get("restoration_enabled")),
+        "liveportrait_enabled": bool(teacher_avatar_cfg.get("liveportrait_enabled", True)),
+        "avatar_runtime_settings": dict(teacher_avatar_cfg.get("avatar_runtime_settings") or {}),
+        "model_version": teacher_avatar_cfg.get("model_version", "musetalk:v1"),
+        "avatar_source_valid": bool(teacher_avatar_cfg.get("avatar_source_valid")),
+        "avatar_source_validation_error": str(teacher_avatar_cfg.get("avatar_source_validation_error") or ""),
+        "avatar_source_hash": str(teacher_avatar_cfg.get("avatar_source_hash") or ""),
+        "avatar_preview_stale": bool(teacher_avatar_cfg.get("avatar_preview_stale")),
+        "avatar_preview_source_hash": str(teacher_avatar_cfg.get("avatar_preview_source_hash") or ""),
+        "avatar_moderation_status": str(teacher_avatar_cfg.get("avatar_moderation_status") or "not_scanned"),
+        "avatar_moderation_blocked": bool(teacher_avatar_cfg.get("avatar_moderation_blocked")),
+        "avatar_moderation_error_code": str(teacher_avatar_cfg.get("avatar_moderation_error_code") or ""),
+        "composite_fallback_allowed": False,
+    }
+
+
+def _dispatch_claimed_render_followup_intent(project_id: str | int, completed_job_id: str | int | None) -> dict[str, Any]:
+    if not completed_job_id or not _is_current_render_job(project_id, completed_job_id):
+        return {"status": "skipped", "reason": "not_current_completed_job"}
+
+    try:
+        from core.models import Job, Project, RenderFollowUpIntent
+        from core.render_followup_intents import (
+            claim_render_followup_intent_for_completed_job,
+            mark_render_followup_intent_dispatch_failed,
+            mark_render_followup_intent_dispatched,
+        )
+    except Exception:
+        logger.warning("Follow-up render drain skipped for project=%s because dependencies are unavailable", project_id, exc_info=True)
+        return {"status": "skipped", "reason": "dependencies_unavailable"}
+
+    claimed = claim_render_followup_intent_for_completed_job(project_id=project_id, completed_job_id=completed_job_id)
+    if claimed is None:
+        return {"status": "none"}
+
+    intent, job = claimed
+    try:
+        project = Project.objects.get(pk=int(project_id))
+        upload_path = _latest_lesson_upload_path(project_id)
+        if not upload_path:
+            raise RuntimeError("original_lesson_file_not_found")
+
+        metadata = dict(intent.metadata or {})
+        try:
+            pause_sec = max(0.0, float(metadata.get("pause_sec", 2.2)))
+        except (TypeError, ValueError):
+            pause_sec = 2.2
+        lang_hint = str(metadata.get("lang_hint") or "auto")
+        use_draft = bool(metadata.get("use_draft", False))
+        rerender_page_keys = [] if intent.mode == RenderFollowUpIntent.MODE_FULL else list(intent.page_keys or [])
+        avatar_options = _render_followup_avatar_options(project, job_id=int(job.id))
+        task_args = [
+            str(project_id),
+            upload_path,
+            _render_followup_voice_id(project.user_id),
+            pause_sec,
+            lang_hint,
+            "service",
+            False,
+            avatar_options,
+            rerender_page_keys,
+            _render_followup_tts_settings(project, use_draft=use_draft),
+        ]
+        task_kwargs = {"job_id": int(job.id)}
+        if use_draft:
+            task_kwargs["use_draft"] = True
+        queue = _avatar_queue_name() if bool(avatar_options.get("enabled")) else _render_queue_name()
+        signature = app.signature("worker.tasks.process_pptx_to_video", args=task_args, kwargs=task_kwargs)
+        async_result = signature.apply_async(queue=queue)
+        Job.objects.filter(pk=job.id).update(celery_task_id=async_result.id)
+        mark_render_followup_intent_dispatched(
+            intent_id=int(intent.id),
+            job_id=int(job.id),
+            celery_task_id=str(async_result.id or ""),
+        )
+        logger.info(
+            "Render follow-up intent dispatched project_id=%s completed_job_id=%s intent_id=%s job_id=%s task_id=%s mode=%s",
+            project_id,
+            completed_job_id,
+            intent.id,
+            job.id,
+            async_result.id,
+            intent.mode,
+        )
+        return {"status": "dispatched", "intent_id": int(intent.id), "job_id": int(job.id), "celery_task_id": async_result.id}
+    except Exception as exc:
+        error_message = str(exc or "dispatch_failed")
+        logger.exception(
+            "Render follow-up intent dispatch failed project_id=%s completed_job_id=%s intent_id=%s job_id=%s",
+            project_id,
+            completed_job_id,
+            intent.id,
+            job.id,
+        )
+        _update_render_job(project_id, job.id, status="failed", progress=100, error_message=error_message)
+        mark_render_followup_intent_dispatch_failed(intent_id=int(intent.id), job_id=int(job.id), error_message=error_message)
+        return {"status": "failed", "intent_id": int(intent.id), "job_id": int(job.id), "error_message": error_message}
+
+
 def _mark_project_ready_after_successful_render(project_id: str | int) -> None:
     try:
         from django.utils import timezone
@@ -7002,6 +7146,7 @@ def concat_and_finalize(
             srt_url=srt_url_rel,
             error_message=completion_warning_message,
         )
+        followup_dispatch = _dispatch_claimed_render_followup_intent(project_id, job_id)
         _mark_project_ready_after_successful_render(project_id)
         _notify_render_completed(project_id)
         _schedule_lesson_intelligence_after_worker_event(project_id, reason="render_completed")
@@ -7043,6 +7188,7 @@ def concat_and_finalize(
             "avatar_status": playback_assets["avatar_status"],
             "background_avatar": background_avatar,
             "source_render_warnings": source_render_warnings,
+            "followup_dispatch": followup_dispatch,
             "n_slides":    len(ordered),
         }
 

@@ -1,13 +1,14 @@
-"""Helpers for recording render follow-up intent without dispatch side effects."""
+"""Helpers for recording and claiming render follow-up intents."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from django.utils import timezone
 from django.db import IntegrityError, transaction
 
-from core.models import Project, RENDER_FOLLOWUP_ACTIVE_STATUSES, RenderFollowUpIntent
+from core.models import Job, Project, RENDER_FOLLOWUP_ACTIVE_STATUSES, RenderFollowUpIntent
 
 
 STRUCTURAL_REASONS = {
@@ -112,6 +113,121 @@ def _merge_render_followup_intent_once(
 
         intent.save(update_fields=sorted(changed_fields))
         return intent
+
+
+def claim_render_followup_intent_for_completed_job(
+    *,
+    project_id: int | str,
+    completed_job_id: int | str | None,
+) -> tuple[RenderFollowUpIntent, Job] | None:
+    """Claim a pending intent and reserve the follow-up render job.
+
+    Dispatch is intentionally left to the caller and should happen only after
+    this transaction commits.
+    """
+
+    if not completed_job_id:
+        return None
+
+    completed_id = int(completed_job_id)
+    with transaction.atomic():
+        project = Project.objects.select_for_update().get(pk=int(project_id))
+        active_job_exists = (
+            Job.objects.select_for_update()
+            .filter(project=project, job_type="video_export", status__in=("pending", "running"))
+            .exclude(pk=completed_id)
+            .exists()
+        )
+        if active_job_exists:
+            return None
+
+        intent = (
+            RenderFollowUpIntent.objects.select_for_update()
+            .filter(project=project, status=RenderFollowUpIntent.STATUS_PENDING)
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if intent is None:
+            return None
+
+        metadata = dict(intent.metadata or {})
+        active_job_id = metadata.get("active_job_id")
+        if str(active_job_id or "") != str(completed_id):
+            metadata.update(
+                {
+                    "cancelled_reason": "active_job_id_mismatch",
+                    "completed_job_id": completed_id,
+                    "cancelled_at": timezone.now().isoformat(),
+                }
+            )
+            intent.status = RenderFollowUpIntent.STATUS_CANCELLED
+            intent.metadata = metadata
+            intent.save(update_fields=["status", "metadata", "updated_at"])
+            return None
+
+        job = Job.objects.create(project=project, job_type="video_export", status="pending")
+        metadata.update(
+            {
+                "claimed_at": timezone.now().isoformat(),
+                "completed_job_id": completed_id,
+                "dispatched_job_id": job.id,
+            }
+        )
+        intent.status = RenderFollowUpIntent.STATUS_CLAIMED
+        intent.claimed_at = timezone.now()
+        intent.metadata = metadata
+        intent.save(update_fields=["status", "claimed_at", "metadata", "updated_at"])
+        return intent, job
+
+
+def mark_render_followup_intent_dispatched(
+    *,
+    intent_id: int | str,
+    job_id: int | str,
+    celery_task_id: str,
+) -> None:
+    now = timezone.now()
+    with transaction.atomic():
+        intent = RenderFollowUpIntent.objects.select_for_update().filter(pk=int(intent_id)).first()
+        if intent is None:
+            return
+        metadata = dict(intent.metadata or {})
+        metadata.update(
+            {
+                "dispatched_job_id": int(job_id),
+                "celery_task_id": str(celery_task_id or ""),
+                "dispatched_at": now.isoformat(),
+                "cleared_at": now.isoformat(),
+            }
+        )
+        intent.status = RenderFollowUpIntent.STATUS_CLEARED
+        intent.metadata = metadata
+        intent.save(update_fields=["status", "metadata", "updated_at"])
+
+
+def mark_render_followup_intent_dispatch_failed(
+    *,
+    intent_id: int | str,
+    job_id: int | str | None,
+    error_message: str,
+) -> None:
+    now = timezone.now()
+    with transaction.atomic():
+        intent = RenderFollowUpIntent.objects.select_for_update().filter(pk=int(intent_id)).first()
+        if intent is None:
+            return
+        metadata = dict(intent.metadata or {})
+        metadata.update(
+            {
+                "dispatch_failed_at": now.isoformat(),
+                "dispatch_error": str(error_message or "dispatch_failed")[:1000],
+            }
+        )
+        if job_id:
+            metadata["dispatched_job_id"] = int(job_id)
+        intent.status = RenderFollowUpIntent.STATUS_CANCELLED
+        intent.metadata = metadata
+        intent.save(update_fields=["status", "metadata", "updated_at"])
 
 
 def _normalize_mode(mode: str, reason: str) -> str:
