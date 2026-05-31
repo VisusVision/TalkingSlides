@@ -56,6 +56,26 @@ Important properties:
 - Runtime media is stored under `STORAGE_ROOT`.
 - Final public catalog visibility depends on publish state, moderation state, project readiness, and completed video export jobs.
 
+### Render Recovery And Reconciliation
+
+Render recovery is intentionally report-only. The API and worker continue to own normal render transitions, while `python manage.py render_recovery_check --dry-run` inspects durable state for operator-visible recovery candidates.
+
+Tracked lifecycle:
+
+```text
+Job(video_export)
+  pending -> running -> done
+                      -> failed
+
+RenderFollowUpIntent
+  pending -> claimed -> cleared
+                    -> cancelled
+```
+
+Follow-up intents are created when transcript changes arrive while a render is already active. After the active render completes, the worker claims a pending intent, reserves a new `video_export` job, dispatches it after transaction commit, then clears the intent once dispatch succeeds. Dispatch failures cancel the intent and mark the reserved job failed.
+
+The reconciliation command detects stale active jobs, stale active follow-up intents, missing task IDs, and intents whose metadata references a render job that is no longer active or no longer exists. It does not mutate data, enqueue work, or delete artifacts.
+
 ## Avatar Pipeline
 
 ```text
