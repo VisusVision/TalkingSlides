@@ -67,6 +67,60 @@ Production operators must define a retention policy before broad usage:
 
 Do not manually delete active project folders while jobs are pending or running.
 
+## Retention And Orphan Reporting
+
+Run the report-only storage retention command before manual cleanup, during incident triage, and as part of storage capacity reviews:
+
+```powershell
+cd services\api
+python manage.py storage_retention_check --dry-run --older-than-days 30
+```
+
+The command reports:
+
+- total filesystem storage size
+- uploads size
+- render output size
+- subtitle size
+- avatar size
+- profile media size
+- moderation frame sample size
+- referenced existing media size
+- orphan candidate size estimate
+- old retention candidates in known safe areas
+
+`--dry-run` is the intended workflow and no files are deleted by the command. Orphan candidates are always report-only.
+
+JSON output is available for operators or future metrics ingestion:
+
+```powershell
+python manage.py storage_retention_check --dry-run --older-than-days 30 --json
+```
+
+If the database schema is unavailable in a local or broken environment, the command still reports filesystem capacity and old safe-area retention candidates, then marks DB reference and orphan checks as skipped.
+
+## Safe Cleanup Policy
+
+Never automatically remove:
+
+- latest render outputs for a project with a DB row
+- published lesson media
+- source uploads needed for rerender/recovery
+- active translated subtitle tracks
+- avatar source media or current preview/output media
+- playback sidecars for existing projects
+
+Report-only cleanup candidates:
+
+- old files under `moderation/video_frames`
+- old files under known temporary folders such as `.storage-smoke` and `tmp`
+- old `.tmp`, `.lock`, and `.part` files
+- top-level numeric render directories without a matching `Project`
+- `uploads/<project_id>` folders without a matching `Project`
+- `avatars/<user_id>` folders without a matching `UserProfile`
+
+Operators should inspect the report and confirm backups before deleting anything manually.
+
 ## Backup Policy
 
 Backups must cover both database rows and media files. Restoring only Postgres or only storage can leave projects pointing to missing assets.
