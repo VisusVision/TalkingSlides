@@ -425,6 +425,10 @@ STORAGE_ROOT = os.environ.get(
     "STORAGE_ROOT",
     str(BASE_DIR.parent.parent / "storage_local"),
 )
+RENDER_RECOVERY_AUDIT_LOG_PATH = os.environ.get(
+    "RENDER_RECOVERY_AUDIT_LOG_PATH",
+    str(Path(STORAGE_ROOT) / "audit" / "render_recovery_actions.jsonl"),
+)
 
 # Optional public API origin used for absolute URL generation when request
 # context is unavailable in serializers.

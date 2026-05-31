@@ -58,7 +58,7 @@ Important properties:
 
 ### Render Recovery And Reconciliation
 
-Render recovery is intentionally report-only. The API and worker continue to own normal render transitions, while `python manage.py render_recovery_check --dry-run` inspects durable state for operator-visible recovery candidates.
+Render recovery starts with report-only reconciliation. The API and worker continue to own normal render transitions, while `python manage.py render_recovery_check --dry-run` inspects durable state for operator-visible recovery candidates.
 
 Tracked lifecycle:
 
@@ -75,6 +75,10 @@ RenderFollowUpIntent
 Follow-up intents are created when transcript changes arrive while a render is already active. After the active render completes, the worker claims a pending intent, reserves a new `video_export` job, dispatches it after transaction commit, then clears the intent once dispatch succeeds. Dispatch failures cancel the intent and mark the reserved job failed.
 
 The reconciliation command detects stale active jobs, stale active follow-up intents, missing task IDs, and intents whose metadata references a render job that is no longer active or no longer exists. It does not mutate data, enqueue work, or delete artifacts.
+
+Manual recovery actions are implemented as an operator-only audit layer through `python manage.py render_recovery_action`. The command supports `inspect`, `resolve`, and `ignore` for explicit `job` or `intent` IDs. `inspect` prints model state and recommendations. `resolve` and `ignore` are annotation-only audit events; they do not update `Job` rows, update `RenderFollowUpIntent` rows, dispatch Celery tasks, retry renders, or clear state-machine transitions.
+
+Dry-run is the default action mode. Executed annotations require `--confirm`; unconfirmed resolve/ignore requests print a non-executed result and do not write audit records. Inspect and confirmed annotations append operator-visible JSONL audit records. The audit file is intentionally outside the database so this layer adds no tables, fields, migrations, scheduled tasks, or background repair loops.
 
 ## Avatar Pipeline
 

@@ -103,6 +103,37 @@ Limitations:
 - The command does not decide whether to retry or fail a job. It only reports category, object ID, age, and recommended investigation action.
 - The age threshold is operator-controlled. A long legitimate render can appear in the report if `--max-age-hours` is too low for the source file or hardware.
 
+## Manual Render Recovery Actions
+
+Use `render_recovery_action` only after reviewing reconciliation findings and confirming the object ID. The command is operator-driven and requires an explicit `--action`, `--type`, and `--id`.
+
+```powershell
+cd services\api
+python manage.py render_recovery_action --action inspect --type job --id 123
+python manage.py render_recovery_action --action inspect --type intent --id 456 --json
+python manage.py render_recovery_action --action resolve --type job --id 123 --confirm
+python manage.py render_recovery_action --action ignore --type intent --id 456 --confirm
+```
+
+Supported actions:
+
+- `inspect`: prints full object state and the current recovery recommendation, if one exists.
+- `resolve`: records that an operator considers the current recovery candidate resolved. This is an annotation-only audit event.
+- `ignore`: records that an operator intentionally ignored the current recovery candidate. This is an annotation-only audit event.
+
+Safety rules:
+
+- Dry-run is the default. Without `--confirm`, resolve and ignore print a non-executed result and do not write an audit record.
+- `--confirm` is required for an executed resolve or ignore annotation.
+- The command does not enqueue Celery tasks, requeue work, delete files, update `Job.status`, update `RenderFollowUpIntent.status`, or call render state-machine helpers.
+- Resolve and ignore require the object to still be a current recovery candidate under the selected `--max-age-hours` threshold.
+
+Audit trail:
+
+- `inspect` and confirmed resolve/ignore annotations write JSON records to the render recovery action audit log. By default this is `STORAGE_ROOT/audit/render_recovery_actions.jsonl`; deployments may set `RENDER_RECOVERY_AUDIT_LOG_PATH`.
+- The same audit payload is included in command output and emitted through structured application logging.
+- Audit records are append-only operational evidence, not product state. If durable in-product annotations are needed later, design that with a migration in a separate PR.
+
 ## Redis Checks
 
 Check:
