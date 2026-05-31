@@ -20,6 +20,7 @@ django.setup()
 from django.contrib.auth.models import User  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.core.management.base import CommandError  # noqa: E402
+from django.test import override_settings  # noqa: E402
 from django.utils import timezone  # noqa: E402
 
 from core.models import Job, Project, RenderFollowUpIntent, UserProfile  # noqa: E402
@@ -186,3 +187,208 @@ def test_recovery_report_graceful_when_query_fails(monkeypatch):
     assert report.findings == []
     assert report.warnings
     assert "database schema unavailable" in report.warnings[0]
+
+
+def _read_audit_records(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def test_render_recovery_action_inspect_outputs_state_and_recommendation(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_inspect")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+
+    stdout = io.StringIO()
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "inspect",
+            "--type",
+            "job",
+            "--id",
+            str(job.id),
+            stdout=stdout,
+        )
+
+    output = stdout.getvalue()
+    assert "Render recovery action: inspect" in output
+    assert f"Object: job#{job.id}" in output
+    assert "pending video_export job exceeded" in output
+    records = _read_audit_records(audit_path)
+    assert records[-1]["action"] == "inspect"
+    assert records[-1]["dry_run"] is True
+    assert records[-1]["executed"] is False
+    assert records[-1]["audit_written"] is True
+
+
+def test_render_recovery_action_resolve_is_audit_only_with_confirm(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_resolve")
+    job = _age_job(
+        Job.objects.create(project=project, job_type="video_export", status="running", celery_task_id="task-1")
+    )
+
+    stdout = io.StringIO()
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "resolve",
+            "--type",
+            "job",
+            "--id",
+            str(job.id),
+            "--confirm",
+            stdout=stdout,
+        )
+
+    job.refresh_from_db()
+    assert job.status == "running"
+    assert job.celery_task_id == "task-1"
+    assert "Executed: True" in stdout.getvalue()
+    records = _read_audit_records(audit_path)
+    assert records[-1]["action"] == "resolve"
+    assert records[-1]["annotation_only"] is True
+    assert records[-1]["executed"] is True
+    assert records[-1]["audit_written"] is True
+
+
+def test_render_recovery_action_ignore_is_audit_only_with_confirm(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_ignore")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"active_job_id": 987654},
+        )
+    )
+
+    stdout = io.StringIO()
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "ignore",
+            "--type",
+            "intent",
+            "--id",
+            str(intent.id),
+            "--confirm",
+            stdout=stdout,
+        )
+
+    intent.refresh_from_db()
+    assert intent.status == RenderFollowUpIntent.STATUS_PENDING
+    assert intent.metadata == {"active_job_id": 987654}
+    records = _read_audit_records(audit_path)
+    assert records[-1]["action"] == "ignore"
+    assert records[-1]["object_type"] == "intent"
+    assert records[-1]["executed"] is True
+    assert records[-1]["audit_written"] is True
+
+
+@pytest.mark.parametrize("action", ["resolve", "ignore"])
+def test_render_recovery_action_missing_confirm_stays_dry_run(tmp_path, action):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_missing_confirm")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            action,
+            "--type",
+            "job",
+            "--id",
+            str(job.id),
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    assert "Dry-run: True" in stdout.getvalue()
+    assert "Executed: False" in stdout.getvalue()
+    assert "No execution performed and no audit record written" in stderr.getvalue()
+    assert _read_audit_records(audit_path) == []
+
+
+def test_render_recovery_action_invalid_id_raises_command_error(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        with pytest.raises(CommandError):
+            call_command("render_recovery_action", "--action", "inspect", "--type", "job", "--id", "987654")
+
+    assert _read_audit_records(audit_path) == []
+
+
+def test_render_recovery_action_invalid_action_raises_command_error():
+    with pytest.raises(CommandError):
+        call_command("render_recovery_action", "--action", "retry", "--type", "job", "--id", "1")
+
+
+def test_render_recovery_action_json_output(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_json")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+
+    stdout = io.StringIO()
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "inspect",
+            "--type",
+            "job",
+            "--id",
+            str(job.id),
+            "--json",
+            stdout=stdout,
+        )
+
+    payload = json.loads(stdout.getvalue())
+    assert payload["action"] == "inspect"
+    assert payload["object_state"]["id"] == job.id
+    assert payload["recommendation"]["findings"]
+    assert payload["audit_record"]["object_id"] == job.id
+
+
+def test_render_recovery_action_generates_audit_for_dry_run_and_execute(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_audit")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "inspect",
+            "--type",
+            "job",
+            "--id",
+            str(job.id),
+            stdout=io.StringIO(),
+        )
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "ignore",
+            "--type",
+            "job",
+            "--id",
+            str(job.id),
+            "--confirm",
+            stdout=io.StringIO(),
+        )
+
+    records = _read_audit_records(audit_path)
+    assert [record["action"] for record in records] == ["inspect", "ignore"]
+    assert records[0]["dry_run"] is True
+    assert records[0]["audit_written"] is True
+    assert records[1]["executed"] is True
+    assert records[1]["audit_written"] is True
