@@ -56,6 +56,35 @@ Operational checks:
 
 Keep avatar worker concurrency at `1` per GPU until benchmarked.
 
+## Observability Report
+
+Use the read-only observability report for a single operator snapshot of render, follow-up intent, storage, and recovery health:
+
+```powershell
+cd services\api
+python manage.py system_observability_report --pretty
+python manage.py system_observability_report --json
+python manage.py system_observability_report --storage-root C:\path\to\storage --older-than-days 30
+```
+
+Metric inventory:
+
+- Render: `active_render_count`, `pending_render_count`, `running_render_count`, `failed_render_count`, `oldest_active_render_age_seconds`.
+- Follow-up intents: `pending_intent_count`, `claimed_intent_count`, `dispatched_intent_count`, `oldest_intent_age_seconds`.
+- Storage: `total_storage_size_bytes`, `orphan_candidate_count`, `retention_candidate_count`, `reclaimable_bytes_estimate`.
+- Recovery: `recovery_candidate_count`, `stale_render_count`, `stale_intent_count`.
+
+Alert candidates to tune per deployment:
+
+- `pending_render_count` or render queue depth grows for more than 5 minutes.
+- `oldest_active_render_age_seconds` exceeds the normal render SLO for the largest accepted source file.
+- `failed_render_count` increases quickly over a 10 minute window.
+- `oldest_intent_age_seconds` exceeds the render completion window.
+- `reclaimable_bytes_estimate` exceeds the reviewed cleanup threshold.
+- `recovery_candidate_count`, `stale_render_count`, or `stale_intent_count` is non-zero after the operator age threshold.
+
+The report is intentionally read-only. It does not inspect live Celery task state, retry work, fail jobs, clear intents, remove storage, or perform automatic remediation. Treat warnings and candidates as investigation leads.
+
 ## Failed Jobs and Retries
 
 When a job fails:
