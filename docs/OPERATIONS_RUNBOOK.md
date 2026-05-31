@@ -69,6 +69,40 @@ When a job fails:
 
 If retry endpoints are enabled, use idempotency/request IDs. See [PROMETHEUS_AND_RETRY_RUNBOOK.md](PROMETHEUS_AND_RETRY_RUNBOOK.md).
 
+## Render Recovery Reconciliation
+
+Use the report-only render reconciliation command when render jobs appear stuck, a worker has crashed or restarted, Redis/Celery dispatch was interrupted, or transcript edits were saved while a render was active.
+
+```powershell
+cd services\api
+python manage.py render_recovery_check --dry-run
+python manage.py render_recovery_check --dry-run --max-age-hours 6
+python manage.py render_recovery_check --dry-run --json
+```
+
+The command is intentionally non-mutating. It never enqueues Celery tasks, updates job rows, clears follow-up intents, or deletes files. The `--dry-run` flag is required as an operator safety acknowledgement.
+
+Operator workflow:
+
+1. Run `render_recovery_check --dry-run` and capture the summary counts.
+2. For `stuck_render_job`, inspect the `Job` row, project ID, Celery task ID, API enqueue logs, worker logs, and generated files under `STORAGE_ROOT`.
+3. For `stuck_followup_intent`, inspect `RenderFollowUpIntent.metadata.active_job_id`, `metadata.dispatched_job_id`, `metadata.celery_task_id`, and the active/completed render history for that project.
+4. For `orphan_recovery_candidate`, verify whether the referenced Celery task exists before manually failing, cancelling, or recreating work.
+5. Only after confirming no live worker still owns the render should an operator manually update database records or request a new render.
+
+Common recovery windows surfaced by the report:
+
+- A `video_export` job was committed, but Celery dispatch failed before `celery_task_id` was saved.
+- A worker marked a job `running` and then crashed before finalization.
+- A follow-up intent remained `pending` because the base render never reached a clean terminal path.
+- A follow-up intent was `claimed`, but process death occurred between database commit and the post-commit task dispatch.
+
+Limitations:
+
+- The command does not ask Celery for live task state; treat findings as recovery candidates that still require log and broker inspection.
+- The command does not decide whether to retry or fail a job. It only reports category, object ID, age, and recommended investigation action.
+- The age threshold is operator-controlled. A long legitimate render can appear in the report if `--max-age-hours` is too low for the source file or hardware.
+
 ## Redis Checks
 
 Check:
