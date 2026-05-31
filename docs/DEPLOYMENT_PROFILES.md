@@ -51,6 +51,7 @@ Required posture:
 - Postgres, not SQLite
 - Redis for Celery/cache
 - HTTPS API and frontend domains
+- existing, readable, writable, durable `STORAGE_ROOT`
 - explicit `ALLOWED_HOSTS`
 - explicit `CORS_ALLOWED_ORIGINS`
 - explicit `CSRF_TRUSTED_ORIGINS`
@@ -87,6 +88,7 @@ Required posture:
 - secure cookies and HSTS enabled by Django production defaults
 - secrets provided by a secret manager or deployment platform
 - durable shared storage visible to API, render worker, TTS, and avatar worker
+- storage smoke check passes with `python manage.py storage_smoke_check`
 - avatar worker on a separate GPU node if avatar generation is enabled
 
 Recommended example:

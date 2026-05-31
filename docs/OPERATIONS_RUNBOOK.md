@@ -113,6 +113,15 @@ Check:
 
 Do not manually delete active project folders while jobs are running.
 
+Run the filesystem smoke check when validating a deployment or diagnosing missing media:
+
+```powershell
+cd services\api
+python manage.py storage_smoke_check
+```
+
+The check writes, reads, and deletes a probe file under `STORAGE_ROOT/.storage-smoke/`.
+
 ## Common Emergency Actions
 
 - Pause or scale down workers if jobs are producing bad output.

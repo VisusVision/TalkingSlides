@@ -155,6 +155,10 @@ if ($Profile -in @("staging", "secure_stream", "drm_protected")) {
     Require-Key -Env $envMap -Name "REDIS_URL" -Reason "Redis is required for Celery/cache in staging and production."
     Require-Key -Env $envMap -Name "STORAGE_ROOT" -Reason "Shared durable media storage must be configured."
     Require-Key -Env $envMap -Name "TTS_SERVICE_URL" -Reason "Render workers need the TTS service."
+    $storageRoot = Get-EnvValue -Env $envMap -Name "STORAGE_ROOT"
+    if (-not [string]::IsNullOrWhiteSpace($storageRoot) -and -not [System.IO.Path]::IsPathRooted($storageRoot)) {
+        Add-Warning "STORAGE_ROOT should be an absolute path. Django rejects relative STORAGE_ROOT when DEBUG=False."
+    }
 }
 
 if ($Profile -in @("staging", "secure_stream")) {

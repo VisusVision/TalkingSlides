@@ -77,6 +77,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\check-production-env
 
 For production, validate the real deployment environment through the platform secret/config view, not by committing a real env file.
 
+Run the storage smoke check against the mounted production media root before serving traffic:
+
+```powershell
+cd services\api
+python manage.py storage_smoke_check
+cd ..\..
+```
+
 ## 7. Backup and Rollback
 
 - Confirm latest Postgres backup completed.

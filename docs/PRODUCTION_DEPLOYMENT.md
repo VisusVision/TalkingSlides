@@ -63,7 +63,16 @@ In container deployments, run migrations as a release step or one-off job before
 
 The current app reads and writes through `STORAGE_ROOT`. Production needs durable shared storage visible to API, render worker, TTS service, and avatar worker. Use an external volume or implement object storage before running horizontally scaled workers. MinIO variables exist for local/future S3-compatible storage, but the active application paths are filesystem-based.
 
-Define backup, retention, quota, and cleanup policies before broad production use.
+When `DEBUG=False`, `STORAGE_ROOT` must be explicitly configured as an existing absolute directory that is readable and writable by the app process. Missing or read-only mounts fail during settings startup instead of later during uploads or renders.
+
+Run a storage smoke check before deploys and after storage mount changes:
+
+```powershell
+cd services\api
+python manage.py storage_smoke_check
+```
+
+Define backup, retention, quota, and cleanup policies before broad production use. See [Storage production readiness](STORAGE_PRODUCTION_READINESS.md).
 
 ## HTTPS, Proxy, and Secure Flags
 

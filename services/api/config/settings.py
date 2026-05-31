@@ -139,6 +139,44 @@ def validate_observability_settings(*, slow_query_threshold_ms: int | None = Non
         raise ImproperlyConfigured("SLOW_QUERY_LOG_THRESHOLD_MS must be >= 50.")
 
 
+def validate_storage_settings(
+    *,
+    env=None,
+    debug: bool | None = None,
+    storage_root: str | os.PathLike[str] | None = None,
+) -> None:
+    """Fail fast for production storage roots that cannot serve shared media."""
+
+    env = os.environ if env is None else env
+    resolved_debug = DEBUG if debug is None else bool(debug)
+    if resolved_debug:
+        return
+
+    root_was_explicit = storage_root is not None or "STORAGE_ROOT" in env
+    raw_root = storage_root if storage_root is not None else env.get("STORAGE_ROOT", STORAGE_ROOT)
+    root_value = str(raw_root or "").strip()
+
+    errors: list[str] = []
+    if not root_was_explicit or not root_value:
+        errors.append("STORAGE_ROOT must be explicitly set when DEBUG=False.")
+    else:
+        root_path = Path(root_value).expanduser()
+        if not root_path.is_absolute():
+            errors.append("STORAGE_ROOT must be an absolute path when DEBUG=False.")
+        elif not root_path.exists():
+            errors.append("STORAGE_ROOT must exist before the app starts when DEBUG=False.")
+        elif not root_path.is_dir():
+            errors.append("STORAGE_ROOT must point to a directory when DEBUG=False.")
+        else:
+            if not os.access(root_path, os.R_OK):
+                errors.append("STORAGE_ROOT must be readable by the app process.")
+            if not os.access(root_path, os.W_OK):
+                errors.append("STORAGE_ROOT must be writable by the app process.")
+
+    if errors:
+        raise ImproperlyConfigured("Invalid storage settings: " + " ".join(errors))
+
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -502,6 +540,7 @@ validate_production_settings(
     cors_allowed_origins=CORS_ALLOWED_ORIGINS,
     cors_allow_all_origins=CORS_ALLOW_ALL_ORIGINS,
 )
+validate_storage_settings(debug=DEBUG)
 validate_observability_settings(slow_query_threshold_ms=SLOW_QUERY_LOG_THRESHOLD_MS)
 
 LOGGING = {

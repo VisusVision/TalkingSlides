@@ -13,6 +13,7 @@
 - [Environment variables](ENVIRONMENT_VARIABLES.md)
 - [Deployment profiles](DEPLOYMENT_PROFILES.md)
 - [Production deployment](PRODUCTION_DEPLOYMENT.md)
+- [Storage production readiness](STORAGE_PRODUCTION_READINESS.md)
 - [CSP Report-Only foundation](CSP_REPORT_ONLY.md)
 - [Release checklist](RELEASE_CHECKLIST.md)
 - [Secure playback and DRM](SECURE_PLAYBACK_DRM.md)

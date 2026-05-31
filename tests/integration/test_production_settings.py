@@ -71,3 +71,36 @@ def test_production_settings_allow_wildcard_hosts_only_when_explicit():
     env = _valid_production_env(ALLOWED_HOSTS="*", ALLOW_WILDCARD_HOSTS="true")
 
     _validate(env)
+
+
+def test_storage_settings_accept_readable_writable_absolute_root(tmp_path):
+    project_settings.validate_storage_settings(
+        env={"STORAGE_ROOT": str(tmp_path)},
+        debug=False,
+        storage_root=str(tmp_path),
+    )
+
+
+def test_storage_settings_reject_missing_explicit_root():
+    with pytest.raises(ImproperlyConfigured, match="STORAGE_ROOT"):
+        project_settings.validate_storage_settings(env={}, debug=False, storage_root=None)
+
+
+def test_storage_settings_reject_relative_root():
+    with pytest.raises(ImproperlyConfigured, match="absolute"):
+        project_settings.validate_storage_settings(
+            env={"STORAGE_ROOT": "storage_local"},
+            debug=False,
+            storage_root="storage_local",
+        )
+
+
+def test_storage_settings_reject_nonexistent_root(tmp_path):
+    missing_root = tmp_path / "missing"
+
+    with pytest.raises(ImproperlyConfigured, match="must exist"):
+        project_settings.validate_storage_settings(
+            env={"STORAGE_ROOT": str(missing_root)},
+            debug=False,
+            storage_root=str(missing_root),
+        )
