@@ -37,6 +37,7 @@ To start the default local stack:
 - Environment variables: [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)
 - Deployment profiles: [docs/DEPLOYMENT_PROFILES.md](docs/DEPLOYMENT_PROFILES.md)
 - Production deployment: [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md)
+- Storage production readiness: [docs/STORAGE_PRODUCTION_READINESS.md](docs/STORAGE_PRODUCTION_READINESS.md)
 - Release checklist: [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
 - Operations runbook: [docs/OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md)
 - Secure playback and DRM: [docs/SECURE_PLAYBACK_DRM.md](docs/SECURE_PLAYBACK_DRM.md)
@@ -64,6 +65,6 @@ When using the Docker Compose development stack:
 
 ## Production Notes
 
-Production must not use committed env files, SQLite fallback, development secrets, wildcard hosts, or CORS allow-all. Start with [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) and [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md), then configure secrets through your deployment platform or secret manager.
+Production must not use committed env files, SQLite fallback, development secrets, wildcard hosts, CORS allow-all, or an unvalidated storage mount. Start with [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md), [docs/ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md), and [docs/STORAGE_PRODUCTION_READINESS.md](docs/STORAGE_PRODUCTION_READINESS.md), then configure secrets through your deployment platform or secret manager.
 
 The stable production shape is API, frontend, render worker, TTS service, Redis, Postgres, storage, and a separately sized GPU avatar worker when avatar generation is enabled.
