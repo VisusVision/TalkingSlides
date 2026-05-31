@@ -122,6 +122,21 @@ python manage.py storage_smoke_check
 
 The check writes, reads, and deletes a probe file under `STORAGE_ROOT/.storage-smoke/`.
 
+For a report-only capacity, retention, and orphan media review:
+
+```powershell
+cd services\api
+python manage.py storage_retention_check --dry-run --older-than-days 30
+```
+
+Use `--json` when the report needs to be archived or parsed:
+
+```powershell
+python manage.py storage_retention_check --dry-run --older-than-days 30 --json
+```
+
+The command does not delete files. Treat orphan candidates as investigation leads. Confirm database state and backups before any manual cleanup.
+
 ## Common Emergency Actions
 
 - Pause or scale down workers if jobs are producing bad output.
