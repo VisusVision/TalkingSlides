@@ -97,8 +97,9 @@ describe("redirect hash auth regressions", () => {
   });
 
   it("ignores missing or blank auth_token hash values", async () => {
-    const replaceState = vi.spyOn(window.history, "replaceState");
     window.history.replaceState({}, "", "/#provider=google&auth_token=%20%20");
+    const replaceState = vi.spyOn(window.history, "replaceState");
+    replaceState.mockClear();
 
     const { root, host } = await renderApp();
 
