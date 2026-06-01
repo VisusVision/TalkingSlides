@@ -90,13 +90,28 @@ Scrape behavior:
 
 Alert candidates to tune per deployment:
 
-- `system_observability_render_pending_count` or render queue depth grows for more than 5 minutes.
-- `system_observability_render_oldest_active_age_seconds` exceeds the normal render SLO for the largest accepted source file.
-- `system_observability_render_failed_count` increases quickly over a 10 minute window.
-- `system_observability_followup_oldest_age_seconds` exceeds the render completion window.
+- `VidlabSystemRecoveryCandidatesPresent`: `system_observability_recovery_candidate_count > 0` for 30 minutes.
+- `VidlabSystemRecoveryCandidateSpike`: recovery candidate count increases by more than 5 within 15 minutes.
+- `VidlabSystemStaleFollowupIntent`: `system_observability_followup_oldest_age_seconds > 1800` for 30 minutes.
+- `VidlabSystemFailedRenderCountHigh`: `system_observability_render_failed_count > 10` for 10 minutes.
+- `VidlabSystemFailedRenderCountSpike`: failed render count increases by more than 5 within 15 minutes.
+- `VidlabSystemOldestActiveRenderTooHigh`: `system_observability_render_oldest_active_age_seconds > 7200` for 15 minutes.
+- `VidlabSystemStaleRenderCandidatesPresent`: `system_observability_recovery_stale_render_count > 0` for 30 minutes.
 - Command-only `reclaimable_bytes_estimate` exceeds the reviewed cleanup threshold.
-- `system_observability_recovery_candidate_count`, `system_observability_recovery_stale_render_count`, or `system_observability_recovery_stale_intent_count` is non-zero after the operator age threshold.
 - Any availability gauge is `0` for longer than one scrape interval.
+
+These rule thresholds are initial staging candidates. Tune them against real source sizes, GPU/CPU class, worker concurrency, expected render duration, and normal failed-job cleanup cadence before treating them as production paging alerts. The current severity label is `warning`, matching the existing alert convention without adding alert delivery integration.
+
+Storage scan alert candidate:
+
+- `system_observability_storage_scan_skipped` remains `1` longer than the deployment expects after a last-known-safe storage cache or scheduled storage export exists.
+
+This candidate is not installed as a live rule yet because current Prometheus scrapes intentionally skip expensive storage walks and emit `system_observability_storage_scan_skipped 1` by design. Enabling a live alert before a cached/scheduled storage export exists would be noisy.
+
+Grafana dashboard:
+
+- `infra/grafana/dashboards/vidlab-render-ops.json` is provisioned by `infra/grafana/provisioning/dashboards/dashboards.yml`.
+- The dashboard keeps the existing `vidlab_*` render queue and latency panels and adds panels for system render counts, oldest active render age, follow-up intent counts and age, recovery candidates, storage placeholder gauges, storage scan skipped state, and section availability.
 
 The report is intentionally read-only. It does not inspect live Celery task state, retry work, fail jobs, clear intents, remove storage, or perform automatic remediation. Treat warnings and candidates as investigation leads.
 
