@@ -11,6 +11,8 @@ from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse
 from django.conf import settings
 
+from core import system_observability
+
 RECENT_WINDOW_SECONDS = 30 * 60
 MAX_RECENT_SAMPLES = 5000
 
@@ -174,6 +176,146 @@ def _prometheus_line(name: str, value: int | float) -> str:
     return f"{name} 0"
 
 
+def _prometheus_bool_line(name: str, value: bool) -> str:
+    return _prometheus_line(name, 1 if value else 0)
+
+
+def _metric_value(report: dict, section_name: str, metric_name: str) -> int | float:
+    section = report.get(section_name) or {}
+    metrics = section.get("metrics") or {}
+    return metrics.get(metric_name) or 0
+
+
+def _section_available(report: dict, section_name: str) -> bool:
+    return bool((report.get(section_name) or {}).get("available"))
+
+
+def _skipped_storage_payload() -> dict:
+    return {
+        "available": False,
+        "metrics": {
+            "total_storage_size_bytes": 0,
+            "orphan_candidate_count": 0,
+            "retention_candidate_count": 0,
+            "reclaimable_bytes_estimate": 0,
+        },
+        "warnings": ["storage_scan_skipped_for_prometheus_scrape"],
+    }
+
+
+def _scrape_safe_system_observability_report() -> dict:
+    render = system_observability._safe_section("render", system_observability._render_metrics)
+    intents = system_observability._safe_section("follow_up_intents", system_observability._intent_metrics)
+    recovery = system_observability._safe_section(
+        "recovery",
+        lambda: system_observability._recovery_metrics(max_age_hours=system_observability.DEFAULT_MAX_AGE_HOURS),
+    )
+    return {
+        "render": system_observability._section_payload(render),
+        "follow_up_intents": system_observability._section_payload(intents),
+        "storage": _skipped_storage_payload(),
+        "recovery": system_observability._section_payload(recovery),
+    }
+
+
+def _system_observability_prometheus_lines() -> list[str]:
+    report = _scrape_safe_system_observability_report()
+    storage_warnings = set((report.get("storage") or {}).get("warnings") or [])
+    storage_scan_skipped = "storage_scan_skipped_for_prometheus_scrape" in storage_warnings
+    return [
+        "# HELP system_observability_render_available Whether render observability metrics were available on this scrape.",
+        "# TYPE system_observability_render_available gauge",
+        _prometheus_bool_line("system_observability_render_available", _section_available(report, "render")),
+        "# HELP system_observability_render_active_count Active render jobs in pending or running status.",
+        "# TYPE system_observability_render_active_count gauge",
+        _prometheus_line("system_observability_render_active_count", _metric_value(report, "render", "active_render_count")),
+        "# HELP system_observability_render_pending_count Render jobs currently pending.",
+        "# TYPE system_observability_render_pending_count gauge",
+        _prometheus_line("system_observability_render_pending_count", _metric_value(report, "render", "pending_render_count")),
+        "# HELP system_observability_render_running_count Render jobs currently running.",
+        "# TYPE system_observability_render_running_count gauge",
+        _prometheus_line("system_observability_render_running_count", _metric_value(report, "render", "running_render_count")),
+        "# HELP system_observability_render_failed_count Render jobs currently failed.",
+        "# TYPE system_observability_render_failed_count gauge",
+        _prometheus_line("system_observability_render_failed_count", _metric_value(report, "render", "failed_render_count")),
+        "# HELP system_observability_render_oldest_active_age_seconds Age in seconds of the oldest active render.",
+        "# TYPE system_observability_render_oldest_active_age_seconds gauge",
+        _prometheus_line(
+            "system_observability_render_oldest_active_age_seconds",
+            _metric_value(report, "render", "oldest_active_render_age_seconds"),
+        ),
+        "# HELP system_observability_followup_available Whether follow-up intent observability metrics were available on this scrape.",
+        "# TYPE system_observability_followup_available gauge",
+        _prometheus_bool_line(
+            "system_observability_followup_available",
+            _section_available(report, "follow_up_intents"),
+        ),
+        "# HELP system_observability_followup_pending_count Render follow-up intents currently pending.",
+        "# TYPE system_observability_followup_pending_count gauge",
+        _prometheus_line(
+            "system_observability_followup_pending_count",
+            _metric_value(report, "follow_up_intents", "pending_intent_count"),
+        ),
+        "# HELP system_observability_followup_claimed_count Render follow-up intents currently claimed.",
+        "# TYPE system_observability_followup_claimed_count gauge",
+        _prometheus_line(
+            "system_observability_followup_claimed_count",
+            _metric_value(report, "follow_up_intents", "claimed_intent_count"),
+        ),
+        "# HELP system_observability_followup_dispatched_count Render follow-up intents currently dispatched.",
+        "# TYPE system_observability_followup_dispatched_count gauge",
+        _prometheus_line(
+            "system_observability_followup_dispatched_count",
+            _metric_value(report, "follow_up_intents", "dispatched_intent_count"),
+        ),
+        "# HELP system_observability_followup_oldest_age_seconds Age in seconds of the oldest active follow-up intent.",
+        "# TYPE system_observability_followup_oldest_age_seconds gauge",
+        _prometheus_line(
+            "system_observability_followup_oldest_age_seconds",
+            _metric_value(report, "follow_up_intents", "oldest_intent_age_seconds"),
+        ),
+        "# HELP system_observability_storage_available Whether storage observability metrics were available on this scrape.",
+        "# TYPE system_observability_storage_available gauge",
+        _prometheus_bool_line("system_observability_storage_available", _section_available(report, "storage")),
+        "# HELP system_observability_storage_scan_skipped Whether expensive storage scanning was skipped for this scrape.",
+        "# TYPE system_observability_storage_scan_skipped gauge",
+        _prometheus_bool_line("system_observability_storage_scan_skipped", storage_scan_skipped),
+        "# HELP system_observability_storage_total_bytes Total bytes reported by the safe storage snapshot.",
+        "# TYPE system_observability_storage_total_bytes gauge",
+        _prometheus_line("system_observability_storage_total_bytes", _metric_value(report, "storage", "total_storage_size_bytes")),
+        "# HELP system_observability_storage_retention_candidate_count Storage retention candidate count from the safe snapshot.",
+        "# TYPE system_observability_storage_retention_candidate_count gauge",
+        _prometheus_line(
+            "system_observability_storage_retention_candidate_count",
+            _metric_value(report, "storage", "retention_candidate_count"),
+        ),
+        "# HELP system_observability_storage_orphan_candidate_count Storage orphan candidate count from the safe snapshot.",
+        "# TYPE system_observability_storage_orphan_candidate_count gauge",
+        _prometheus_line(
+            "system_observability_storage_orphan_candidate_count",
+            _metric_value(report, "storage", "orphan_candidate_count"),
+        ),
+        "# HELP system_observability_storage_reclaimable_bytes_estimate Reclaimable bytes estimate from the safe storage snapshot.",
+        "# TYPE system_observability_storage_reclaimable_bytes_estimate gauge",
+        _prometheus_line(
+            "system_observability_storage_reclaimable_bytes_estimate",
+            _metric_value(report, "storage", "reclaimable_bytes_estimate"),
+        ),
+        "# HELP system_observability_recovery_available Whether recovery observability metrics were available on this scrape.",
+        "# TYPE system_observability_recovery_available gauge",
+        _prometheus_bool_line("system_observability_recovery_available", _section_available(report, "recovery")),
+        "# HELP system_observability_recovery_candidate_count Render recovery candidate count.",
+        "# TYPE system_observability_recovery_candidate_count gauge",
+        _prometheus_line("system_observability_recovery_candidate_count", _metric_value(report, "recovery", "recovery_candidate_count")),
+        "# HELP system_observability_recovery_stale_render_count Stale render count from recovery inspection.",
+        "# TYPE system_observability_recovery_stale_render_count gauge",
+        _prometheus_line("system_observability_recovery_stale_render_count", _metric_value(report, "recovery", "stale_render_count")),
+        "# HELP system_observability_recovery_stale_intent_count Stale follow-up intent count from recovery inspection.",
+        "# TYPE system_observability_recovery_stale_intent_count gauge",
+        _prometheus_line("system_observability_recovery_stale_intent_count", _metric_value(report, "recovery", "stale_intent_count")),
+    ]
+
+
 def prometheus_metrics_text() -> str:
     duration = worker_duration_summary()
     queue_wait = queue_wait_summary()
@@ -206,6 +348,7 @@ def prometheus_metrics_text() -> str:
         _prometheus_line("render_enqueue_latency_seconds_count", enqueue.count),
         _prometheus_line("render_enqueue_latency_seconds_sum", enqueue.sum_value),
     ]
+    lines.extend(_system_observability_prometheus_lines())
     return "\n".join(lines) + "\n"
 
 

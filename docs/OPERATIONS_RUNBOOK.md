@@ -74,14 +74,29 @@ Metric inventory:
 - Storage: `total_storage_size_bytes`, `orphan_candidate_count`, `retention_candidate_count`, `reclaimable_bytes_estimate`.
 - Recovery: `recovery_candidate_count`, `stale_render_count`, `stale_intent_count`.
 
+Prometheus exposes the scrape-safe subset under stable gauge names:
+
+- Render: `system_observability_render_active_count`, `system_observability_render_pending_count`, `system_observability_render_running_count`, `system_observability_render_failed_count`, `system_observability_render_oldest_active_age_seconds`.
+- Follow-up intents: `system_observability_followup_pending_count`, `system_observability_followup_claimed_count`, `system_observability_followup_dispatched_count`, `system_observability_followup_oldest_age_seconds`.
+- Storage placeholders: `system_observability_storage_total_bytes`, `system_observability_storage_retention_candidate_count`, `system_observability_storage_orphan_candidate_count`, `system_observability_storage_reclaimable_bytes_estimate`.
+- Recovery: `system_observability_recovery_candidate_count`, `system_observability_recovery_stale_render_count`, `system_observability_recovery_stale_intent_count`.
+- Degradation gauges: `system_observability_render_available`, `system_observability_followup_available`, `system_observability_storage_available`, `system_observability_storage_scan_skipped`, `system_observability_recovery_available`.
+
+Scrape behavior:
+
+- Render, follow-up intent, and recovery metrics are collected read-only from the database/report helpers on each scrape.
+- Each section degrades independently. If a section cannot be inspected, its availability gauge becomes `0` and its numeric gauges remain present with value `0`.
+- Storage scans are not run on every scrape because retention/orphan/capacity reporting can traverse `STORAGE_ROOT`. Scrapes currently set `system_observability_storage_available 0` and `system_observability_storage_scan_skipped 1`; run `system_observability_report --json` or `storage_retention_check --dry-run` for authoritative storage values.
+
 Alert candidates to tune per deployment:
 
-- `pending_render_count` or render queue depth grows for more than 5 minutes.
-- `oldest_active_render_age_seconds` exceeds the normal render SLO for the largest accepted source file.
-- `failed_render_count` increases quickly over a 10 minute window.
-- `oldest_intent_age_seconds` exceeds the render completion window.
-- `reclaimable_bytes_estimate` exceeds the reviewed cleanup threshold.
-- `recovery_candidate_count`, `stale_render_count`, or `stale_intent_count` is non-zero after the operator age threshold.
+- `system_observability_render_pending_count` or render queue depth grows for more than 5 minutes.
+- `system_observability_render_oldest_active_age_seconds` exceeds the normal render SLO for the largest accepted source file.
+- `system_observability_render_failed_count` increases quickly over a 10 minute window.
+- `system_observability_followup_oldest_age_seconds` exceeds the render completion window.
+- Command-only `reclaimable_bytes_estimate` exceeds the reviewed cleanup threshold.
+- `system_observability_recovery_candidate_count`, `system_observability_recovery_stale_render_count`, or `system_observability_recovery_stale_intent_count` is non-zero after the operator age threshold.
+- Any availability gauge is `0` for longer than one scrape interval.
 
 The report is intentionally read-only. It does not inspect live Celery task state, retry work, fail jobs, clear intents, remove storage, or perform automatic remediation. Treat warnings and candidates as investigation leads.
 
