@@ -82,11 +82,13 @@ Dry-run is the default action mode. Executed annotations require `--confirm`; un
 
 ### Observability Foundation
 
-Production observability is split between scrapeable Prometheus text and operator-run reports. The Prometheus endpoint at `/api/v1/system/metrics/prometheus/` exposes cache-backed worker failure, retry, duration, queue wait, and enqueue latency metrics. The endpoint is token-protected when `PROMETHEUS_METRICS_TOKEN` is configured, and local Prometheus/Grafana config lives under `infra/`.
+Production observability is split between scrapeable Prometheus text and operator-run reports. The Prometheus endpoint at `/api/v1/system/metrics/prometheus/` exposes cache-backed worker failure, retry, duration, queue wait, enqueue latency, and read-only system observability gauges. The endpoint is token-protected when `PROMETHEUS_METRICS_TOKEN` is configured, and local Prometheus/Grafana config lives under `infra/`.
 
 The read-only `python manage.py system_observability_report` command provides a point-in-time health snapshot without changing application behavior. It reads `Job`, `RenderFollowUpIntent`, storage retention data, and render recovery findings, then reports render counts, follow-up intent counts, storage size and reclaim estimates, recovery candidate counts, and environment warnings. Each section degrades independently if the database, storage root, or optional reporting helper is unavailable.
 
-The command intentionally does not mutate database rows, enqueue Celery tasks, inspect live broker task ownership, delete storage files, retry renders, or change playback behavior. It is an operator visibility layer for dashboards, alert design, and incident triage.
+The scrapeable system observability gauges reuse the same read-only render, follow-up intent, and recovery inspection paths. Storage retention/orphan/capacity scans are intentionally not run on every Prometheus scrape because they can walk the storage tree. Scrapes emit stable zero-valued storage gauges plus `system_observability_storage_available 0` and `system_observability_storage_scan_skipped 1`; operators should use the management command for authoritative storage numbers until a last-known-safe cache or scheduled export is designed.
+
+Both the command and scrape path intentionally do not mutate database rows, enqueue Celery tasks, inspect live broker task ownership, delete storage files, retry renders, or change playback behavior. They are operator visibility layers for dashboards, alert design, and incident triage.
 
 ## Avatar Pipeline
 
