@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:ci": "vitest run --reporter=basic",
+    "test:ci": "vitest run",
     "e2e": "playwright test"
   },
   "dependencies": {
