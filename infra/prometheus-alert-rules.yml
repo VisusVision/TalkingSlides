@@ -99,3 +99,13 @@ groups:
         annotations:
           summary: "Stale render candidates present"
           description: "Recovery inspection has reported stale render candidates for 30 minutes. Treat this as an investigation lead, not automatic remediation."
+
+      - alert: VidlabSystemStorageSnapshotUnavailable
+        expr: system_observability_storage_available == 0
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Storage metrics snapshot unavailable"
+          description: "Prometheus cannot read a valid cached storage metrics snapshot for 30 minutes. Run storage_metrics_snapshot and inspect STORAGE_ROOT/observability/storage_metrics_snapshot.json."
