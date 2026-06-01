@@ -88,6 +88,8 @@ The read-only `python manage.py system_observability_report` command provides a 
 
 The scrapeable system observability gauges reuse the same read-only render, follow-up intent, and recovery inspection paths. Storage retention/orphan/capacity scans are intentionally not run on every Prometheus scrape because they can walk the storage tree. Scrapes emit stable zero-valued storage gauges plus `system_observability_storage_available 0` and `system_observability_storage_scan_skipped 1`; operators should use the management command for authoritative storage numbers until a last-known-safe cache or scheduled export is designed.
 
+The provisioned Grafana dashboard in `infra/grafana/dashboards/vidlab-render-ops.json` now includes panels for the scrape-safe render, follow-up intent, recovery, storage placeholder, and section availability gauges. Prometheus alert rules in `infra/prometheus-alert-rules.yml` include initial staging-tuned warning candidates for sustained recovery candidates, stale follow-up intents, failed render count growth, and oldest active render age. They are deliberately investigation signals only; no alert delivery, remediation, retry, cleanup, or render execution behavior is coupled to these rules.
+
 Both the command and scrape path intentionally do not mutate database rows, enqueue Celery tasks, inspect live broker task ownership, delete storage files, retry renders, or change playback behavior. They are operator visibility layers for dashboards, alert design, and incident triage.
 
 ## Avatar Pipeline

@@ -27,3 +27,75 @@ groups:
         annotations:
           summary: "Failed jobs spike"
           description: "More than 15 failed jobs in the last 10 minutes."
+
+  - name: vidlab-system-observability-alerts
+    rules:
+      - alert: VidlabSystemRecoveryCandidatesPresent
+        expr: system_observability_recovery_candidate_count > 0
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Render recovery candidates present"
+          description: "Read-only recovery inspection has reported one or more render recovery candidates for 30 minutes. Inspect logs, Job rows, follow-up intents, and broker state before taking manual action."
+
+      - alert: VidlabSystemRecoveryCandidateSpike
+        expr: (max_over_time(system_observability_recovery_candidate_count[15m]) - min_over_time(system_observability_recovery_candidate_count[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Render recovery candidate count increased quickly"
+          description: "Recovery candidate count increased by more than 5 within 15 minutes. Threshold is an initial staging candidate and should be tuned from baseline data."
+
+      - alert: VidlabSystemStaleFollowupIntent
+        expr: system_observability_followup_oldest_age_seconds > 1800
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Stale render follow-up intent"
+          description: "The oldest active render follow-up intent has exceeded 30 minutes for 30 minutes. Confirm whether a legitimate render is still active before intervening."
+
+      - alert: VidlabSystemFailedRenderCountHigh
+        expr: system_observability_render_failed_count > 10
+        for: 10m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Failed render count high"
+          description: "Current failed render count has remained above 10 for 10 minutes. This is a conservative staging-tuned threshold, not a paging policy."
+
+      - alert: VidlabSystemFailedRenderCountSpike
+        expr: (max_over_time(system_observability_render_failed_count[15m]) - min_over_time(system_observability_render_failed_count[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Failed render count increased quickly"
+          description: "Failed render count increased by more than 5 within 15 minutes. Investigate API and worker logs before retrying jobs."
+
+      - alert: VidlabSystemOldestActiveRenderTooHigh
+        expr: system_observability_render_oldest_active_age_seconds > 7200
+        for: 15m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Oldest active render age too high"
+          description: "The oldest active render has exceeded 2 hours for 15 minutes. Tune this threshold against accepted source sizes and hardware."
+
+      - alert: VidlabSystemStaleRenderCandidatesPresent
+        expr: system_observability_recovery_stale_render_count > 0
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Stale render candidates present"
+          description: "Recovery inspection has reported stale render candidates for 30 minutes. Treat this as an investigation lead, not automatic remediation."
