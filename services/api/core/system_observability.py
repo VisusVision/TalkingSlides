@@ -12,7 +12,7 @@ from django.db import OperationalError, ProgrammingError
 from django.utils import timezone
 
 from core.render_recovery import DEFAULT_MAX_AGE_HOURS, build_render_recovery_report
-from core.storage_retention import build_storage_report
+from core.storage_metrics_snapshot import load_storage_metrics_snapshot
 
 
 ACTIVE_RENDER_STATUSES = ("pending", "running")
@@ -112,21 +112,17 @@ def _intent_metrics() -> ObservabilitySection:
 
 
 def _storage_metrics(*, storage_root: str | Path | None, older_than_days: int) -> ObservabilitySection:
-    report = build_storage_report(
-        storage_root=storage_root,
-        older_than_days=older_than_days,
-    )
-    retention_candidates = report.get("retention_candidates") or []
-    orphan_candidates = report.get("orphan_candidates") or []
-    reclaimable_bytes = sum(int(item.get("size_bytes") or 0) for item in [*retention_candidates, *orphan_candidates])
+    snapshot = load_storage_metrics_snapshot(storage_root=storage_root)
+    metrics = snapshot.metrics
     return ObservabilitySection(
-        available=bool(report.get("db_available", True)),
-        warnings=list(report.get("warnings") or []),
+        available=snapshot.available,
+        warnings=list(snapshot.warnings),
         metrics={
-            "total_storage_size_bytes": int((report.get("capacity") or {}).get("total_bytes") or 0),
-            "orphan_candidate_count": len(orphan_candidates),
-            "retention_candidate_count": len(retention_candidates),
-            "reclaimable_bytes_estimate": reclaimable_bytes,
+            "total_storage_size_bytes": int(metrics.get("total_storage_bytes") or 0),
+            "orphan_candidate_count": int(metrics.get("orphan_candidate_count") or 0),
+            "retention_candidate_count": int(metrics.get("retention_candidate_count") or 0),
+            "reclaimable_bytes_estimate": int(metrics.get("reclaimable_bytes_estimate") or 0),
+            "snapshot_generated_at": metrics.get("generated_at") or "",
         },
     )
 

@@ -126,10 +126,9 @@
     {
       "id": 14,
       "type": "timeseries",
-      "title": "Storage Observability",
+      "title": "Storage Snapshot Observability",
       "datasource": {"type": "prometheus", "uid": "prometheus"},
       "targets": [
-        {"expr": "system_observability_storage_scan_skipped", "legendFormat": "scan skipped"},
         {"expr": "system_observability_storage_available", "legendFormat": "available"},
         {"expr": "system_observability_storage_retention_candidate_count", "legendFormat": "retention candidates"},
         {"expr": "system_observability_storage_orphan_candidate_count", "legendFormat": "orphan candidates"}

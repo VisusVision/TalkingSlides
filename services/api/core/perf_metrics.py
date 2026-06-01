@@ -190,22 +190,13 @@ def _section_available(report: dict, section_name: str) -> bool:
     return bool((report.get(section_name) or {}).get("available"))
 
 
-def _skipped_storage_payload() -> dict:
-    return {
-        "available": False,
-        "metrics": {
-            "total_storage_size_bytes": 0,
-            "orphan_candidate_count": 0,
-            "retention_candidate_count": 0,
-            "reclaimable_bytes_estimate": 0,
-        },
-        "warnings": ["storage_scan_skipped_for_prometheus_scrape"],
-    }
-
-
 def _scrape_safe_system_observability_report() -> dict:
     render = system_observability._safe_section("render", system_observability._render_metrics)
     intents = system_observability._safe_section("follow_up_intents", system_observability._intent_metrics)
+    storage = system_observability._safe_section(
+        "storage",
+        lambda: system_observability._storage_metrics(storage_root=None, older_than_days=30),
+    )
     recovery = system_observability._safe_section(
         "recovery",
         lambda: system_observability._recovery_metrics(max_age_hours=system_observability.DEFAULT_MAX_AGE_HOURS),
@@ -213,15 +204,13 @@ def _scrape_safe_system_observability_report() -> dict:
     return {
         "render": system_observability._section_payload(render),
         "follow_up_intents": system_observability._section_payload(intents),
-        "storage": _skipped_storage_payload(),
+        "storage": system_observability._section_payload(storage),
         "recovery": system_observability._section_payload(recovery),
     }
 
 
 def _system_observability_prometheus_lines() -> list[str]:
     report = _scrape_safe_system_observability_report()
-    storage_warnings = set((report.get("storage") or {}).get("warnings") or [])
-    storage_scan_skipped = "storage_scan_skipped_for_prometheus_scrape" in storage_warnings
     return [
         "# HELP system_observability_render_available Whether render observability metrics were available on this scrape.",
         "# TYPE system_observability_render_available gauge",
@@ -277,9 +266,12 @@ def _system_observability_prometheus_lines() -> list[str]:
         "# HELP system_observability_storage_available Whether storage observability metrics were available on this scrape.",
         "# TYPE system_observability_storage_available gauge",
         _prometheus_bool_line("system_observability_storage_available", _section_available(report, "storage")),
-        "# HELP system_observability_storage_scan_skipped Whether expensive storage scanning was skipped for this scrape.",
+        "# HELP system_observability_storage_snapshot_available Whether a valid cached storage metrics snapshot was available on this scrape.",
+        "# TYPE system_observability_storage_snapshot_available gauge",
+        _prometheus_bool_line("system_observability_storage_snapshot_available", _section_available(report, "storage")),
+        "# HELP system_observability_storage_scan_skipped Whether direct filesystem storage scanning was skipped for this scrape.",
         "# TYPE system_observability_storage_scan_skipped gauge",
-        _prometheus_bool_line("system_observability_storage_scan_skipped", storage_scan_skipped),
+        _prometheus_bool_line("system_observability_storage_scan_skipped", True),
         "# HELP system_observability_storage_total_bytes Total bytes reported by the safe storage snapshot.",
         "# TYPE system_observability_storage_total_bytes gauge",
         _prometheus_line("system_observability_storage_total_bytes", _metric_value(report, "storage", "total_storage_size_bytes")),

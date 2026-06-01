@@ -25,6 +25,11 @@ from django.utils import timezone  # noqa: E402
 from core.models import Job, Project, RenderFollowUpIntent, UserProfile  # noqa: E402
 from core import perf_metrics, system_observability  # noqa: E402
 from core.system_observability import build_system_observability_report  # noqa: E402
+from core.storage_metrics_snapshot import (  # noqa: E402
+    load_storage_metrics_snapshot,
+    storage_metrics_snapshot_path,
+    write_storage_metrics_snapshot,
+)
 
 
 pytestmark = pytest.mark.django_db
@@ -54,6 +59,7 @@ def test_observability_metrics_generation_counts_render_intent_storage_and_recov
     old_file.write_bytes(b"old")
     old_epoch = (timezone.now() - timedelta(days=45)).timestamp()
     os.utime(old_file, (old_epoch, old_epoch))
+    write_storage_metrics_snapshot(storage_root=tmp_path, older_than_days=30)
 
     report = build_system_observability_report(storage_root=tmp_path, retention_older_than_days=30, recovery_max_age_hours=2)
 
@@ -74,6 +80,7 @@ def test_observability_metrics_generation_counts_render_intent_storage_and_recov
 
 def test_system_observability_report_json_output(tmp_path):
     stdout = io.StringIO()
+    write_storage_metrics_snapshot(storage_root=tmp_path)
 
     call_command("system_observability_report", "--json", "--storage-root", str(tmp_path), stdout=stdout)
 
@@ -85,6 +92,7 @@ def test_system_observability_report_json_output(tmp_path):
 
 def test_system_observability_report_pretty_output(tmp_path):
     stdout = io.StringIO()
+    write_storage_metrics_snapshot(storage_root=tmp_path)
 
     call_command("system_observability_report", "--pretty", "--storage-root", str(tmp_path), stdout=stdout)
 
@@ -101,6 +109,7 @@ def test_observability_report_degrades_when_database_is_unavailable(tmp_path, mo
     def raise_db_error():
         raise OperationalError("database unavailable")
 
+    write_storage_metrics_snapshot(storage_root=tmp_path)
     monkeypatch.setattr(system_observability, "_render_metrics", raise_db_error)
 
     report = build_system_observability_report(storage_root=tmp_path)
@@ -114,7 +123,7 @@ def test_observability_report_degrades_when_optional_helper_is_unavailable(tmp_p
     def raise_import_error(*_args, **_kwargs):
         raise ImportError("optional helper unavailable")
 
-    monkeypatch.setattr(system_observability, "build_storage_report", raise_import_error)
+    monkeypatch.setattr(system_observability, "load_storage_metrics_snapshot", raise_import_error)
 
     report = build_system_observability_report(storage_root=tmp_path)
 
@@ -137,6 +146,7 @@ def test_prometheus_observability_metrics_output_contains_expected_names():
         "system_observability_followup_dispatched_count",
         "system_observability_followup_oldest_age_seconds",
         "system_observability_storage_total_bytes",
+        "system_observability_storage_snapshot_available",
         "system_observability_storage_retention_candidate_count",
         "system_observability_storage_orphan_candidate_count",
         "system_observability_storage_reclaimable_bytes_estimate",
@@ -161,11 +171,6 @@ def test_prometheus_observability_degrades_when_database_is_unavailable(monkeypa
 
 
 def test_prometheus_observability_degrades_when_storage_is_unavailable(monkeypatch):
-    def raise_storage_error(*_args, **_kwargs):
-        raise RuntimeError("storage unavailable")
-
-    monkeypatch.setattr(system_observability, "build_storage_report", raise_storage_error)
-
     text = perf_metrics.prometheus_metrics_text()
 
     assert "system_observability_storage_available 0" in text
@@ -205,8 +210,128 @@ def test_prometheus_observability_does_not_trigger_storage_scan(monkeypatch):
     def fail_if_called(*_args, **_kwargs):
         raise AssertionError("storage scan should not run during prometheus scrape")
 
-    monkeypatch.setattr(system_observability, "_storage_metrics", fail_if_called)
+    monkeypatch.setattr("core.storage_metrics_snapshot.build_storage_report", fail_if_called)
 
     text = perf_metrics.prometheus_metrics_text()
 
     assert "system_observability_storage_scan_skipped 1" in text
+
+
+def test_storage_metrics_snapshot_command_generates_snapshot(tmp_path):
+    old_file = tmp_path / "tmp" / "old.tmp"
+    old_file.parent.mkdir()
+    old_file.write_bytes(b"temp")
+    old_epoch = (timezone.now() - timedelta(days=45)).timestamp()
+    os.utime(old_file, (old_epoch, old_epoch))
+    stdout = io.StringIO()
+
+    call_command("storage_metrics_snapshot", "--json", "--storage-root", str(tmp_path), stdout=stdout)
+
+    payload = json.loads(stdout.getvalue())
+    snapshot_path = storage_metrics_snapshot_path(tmp_path)
+    assert snapshot_path.exists()
+    assert payload["snapshot_path"] == str(snapshot_path)
+    assert payload["total_storage_bytes"] >= len(b"temp")
+    assert payload["retention_candidate_count"] == 1
+    written_files = {path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file()}
+    assert written_files == {"observability/storage_metrics_snapshot.json", "tmp/old.tmp"}
+
+
+def test_storage_metrics_snapshot_loads_existing_snapshot(tmp_path):
+    write_storage_metrics_snapshot(storage_root=tmp_path)
+
+    snapshot = load_storage_metrics_snapshot(storage_root=tmp_path)
+
+    assert snapshot.available is True
+    assert snapshot.metrics["total_storage_bytes"] == 0
+    assert snapshot.metrics["generated_at"]
+
+
+def test_storage_metrics_snapshot_missing_degrades_to_zero_values(tmp_path):
+    report = build_system_observability_report(storage_root=tmp_path)
+
+    assert report["storage"]["available"] is False
+    assert report["storage"]["metrics"]["total_storage_size_bytes"] == 0
+    assert "storage_metrics_snapshot_missing" in report["storage"]["warnings"]
+
+
+def test_storage_metrics_snapshot_corrupted_degrades_to_zero_values(tmp_path):
+    snapshot_path = storage_metrics_snapshot_path(tmp_path)
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text("{not-json", encoding="utf-8")
+
+    report = build_system_observability_report(storage_root=tmp_path)
+
+    assert report["storage"]["available"] is False
+    assert report["storage"]["metrics"]["total_storage_size_bytes"] == 0
+    assert any(warning.startswith("storage_metrics_snapshot_unavailable:JSONDecodeError") for warning in report["storage"]["warnings"])
+
+
+def test_storage_metrics_snapshot_invalid_values_degrade_to_zero_values(tmp_path):
+    snapshot_path = storage_metrics_snapshot_path(tmp_path)
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "total_storage_bytes": "not-a-number",
+                "retention_candidate_count": 0,
+                "orphan_candidate_count": 0,
+                "reclaimable_bytes_estimate": 0,
+                "generated_at": timezone.now().isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshot = load_storage_metrics_snapshot(storage_root=tmp_path)
+
+    assert snapshot.available is False
+    assert snapshot.metrics["total_storage_bytes"] == 0
+    assert snapshot.warnings == ["storage_metrics_snapshot_invalid:nonnumeric_total_storage_bytes"]
+
+
+def test_prometheus_observability_reads_snapshot_values(settings, tmp_path):
+    settings.STORAGE_ROOT = str(tmp_path)
+    snapshot_path = storage_metrics_snapshot_path(tmp_path)
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "total_storage_bytes": 123,
+                "retention_candidate_count": 2,
+                "orphan_candidate_count": 3,
+                "reclaimable_bytes_estimate": 99,
+                "generated_at": timezone.now().isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    text = perf_metrics.prometheus_metrics_text()
+
+    assert "system_observability_storage_available 1" in text
+    assert "system_observability_storage_snapshot_available 1" in text
+    assert "system_observability_storage_total_bytes 123" in text
+    assert "system_observability_storage_retention_candidate_count 2" in text
+    assert "system_observability_storage_orphan_candidate_count 3" in text
+    assert "system_observability_storage_reclaimable_bytes_estimate 99" in text
+
+
+def test_prometheus_observability_missing_snapshot_zeroes_values(settings, tmp_path):
+    settings.STORAGE_ROOT = str(tmp_path)
+
+    text = perf_metrics.prometheus_metrics_text()
+
+    assert "system_observability_storage_available 0" in text
+    assert "system_observability_storage_snapshot_available 0" in text
+    assert "system_observability_storage_total_bytes 0" in text
+
+
+def test_prometheus_observability_does_not_mutate_outside_snapshot(settings, tmp_path):
+    settings.STORAGE_ROOT = str(tmp_path)
+    before = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+
+    perf_metrics.prometheus_metrics_text()
+
+    after = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    assert after == before

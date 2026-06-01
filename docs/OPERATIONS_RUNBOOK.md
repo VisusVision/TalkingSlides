@@ -67,26 +67,35 @@ python manage.py system_observability_report --json
 python manage.py system_observability_report --storage-root C:\path\to\storage --older-than-days 30
 ```
 
+Refresh cached storage metrics before expecting Prometheus or Grafana to show current storage values:
+
+```powershell
+python manage.py storage_metrics_snapshot --older-than-days 30
+python manage.py storage_metrics_snapshot --storage-root C:\path\to\storage --older-than-days 30 --json
+```
+
+The snapshot command is the intentional expensive path. It walks storage through the existing retention/orphan/capacity report helper, then writes `STORAGE_ROOT/observability/storage_metrics_snapshot.json`. It does not delete files, enqueue work, perform cleanup, or change render/playback behavior.
+
 Metric inventory:
 
 - Render: `active_render_count`, `pending_render_count`, `running_render_count`, `failed_render_count`, `oldest_active_render_age_seconds`.
 - Follow-up intents: `pending_intent_count`, `claimed_intent_count`, `dispatched_intent_count`, `oldest_intent_age_seconds`.
-- Storage: `total_storage_size_bytes`, `orphan_candidate_count`, `retention_candidate_count`, `reclaimable_bytes_estimate`.
+- Storage: `total_storage_size_bytes`, `orphan_candidate_count`, `retention_candidate_count`, `reclaimable_bytes_estimate`, `snapshot_generated_at`.
 - Recovery: `recovery_candidate_count`, `stale_render_count`, `stale_intent_count`.
 
 Prometheus exposes the scrape-safe subset under stable gauge names:
 
 - Render: `system_observability_render_active_count`, `system_observability_render_pending_count`, `system_observability_render_running_count`, `system_observability_render_failed_count`, `system_observability_render_oldest_active_age_seconds`.
 - Follow-up intents: `system_observability_followup_pending_count`, `system_observability_followup_claimed_count`, `system_observability_followup_dispatched_count`, `system_observability_followup_oldest_age_seconds`.
-- Storage placeholders: `system_observability_storage_total_bytes`, `system_observability_storage_retention_candidate_count`, `system_observability_storage_orphan_candidate_count`, `system_observability_storage_reclaimable_bytes_estimate`.
+- Storage snapshot: `system_observability_storage_total_bytes`, `system_observability_storage_retention_candidate_count`, `system_observability_storage_orphan_candidate_count`, `system_observability_storage_reclaimable_bytes_estimate`.
 - Recovery: `system_observability_recovery_candidate_count`, `system_observability_recovery_stale_render_count`, `system_observability_recovery_stale_intent_count`.
-- Degradation gauges: `system_observability_render_available`, `system_observability_followup_available`, `system_observability_storage_available`, `system_observability_storage_scan_skipped`, `system_observability_recovery_available`.
+- Degradation gauges: `system_observability_render_available`, `system_observability_followup_available`, `system_observability_storage_available`, `system_observability_storage_snapshot_available`, `system_observability_storage_scan_skipped`, `system_observability_recovery_available`.
 
 Scrape behavior:
 
 - Render, follow-up intent, and recovery metrics are collected read-only from the database/report helpers on each scrape.
 - Each section degrades independently. If a section cannot be inspected, its availability gauge becomes `0` and its numeric gauges remain present with value `0`.
-- Storage scans are not run on every scrape because retention/orphan/capacity reporting can traverse `STORAGE_ROOT`. Scrapes currently set `system_observability_storage_available 0` and `system_observability_storage_scan_skipped 1`; run `system_observability_report --json` or `storage_retention_check --dry-run` for authoritative storage values.
+- Storage scans are not run on every scrape because retention/orphan/capacity reporting can traverse `STORAGE_ROOT`. Scrapes read only `STORAGE_ROOT/observability/storage_metrics_snapshot.json`; when it is missing or corrupt, `system_observability_storage_available` becomes `0` and storage value gauges remain present with value `0`.
 
 Alert candidates to tune per deployment:
 
@@ -97,21 +106,16 @@ Alert candidates to tune per deployment:
 - `VidlabSystemFailedRenderCountSpike`: failed render count increases by more than 5 within 15 minutes.
 - `VidlabSystemOldestActiveRenderTooHigh`: `system_observability_render_oldest_active_age_seconds > 7200` for 15 minutes.
 - `VidlabSystemStaleRenderCandidatesPresent`: `system_observability_recovery_stale_render_count > 0` for 30 minutes.
-- Command-only `reclaimable_bytes_estimate` exceeds the reviewed cleanup threshold.
+- `VidlabSystemStorageSnapshotUnavailable`: `system_observability_storage_available == 0` for 30 minutes.
+- Cached `reclaimable_bytes_estimate` exceeds the reviewed cleanup threshold.
 - Any availability gauge is `0` for longer than one scrape interval.
 
 These rule thresholds are initial staging candidates. Tune them against real source sizes, GPU/CPU class, worker concurrency, expected render duration, and normal failed-job cleanup cadence before treating them as production paging alerts. The current severity label is `warning`, matching the existing alert convention without adding alert delivery integration.
 
-Storage scan alert candidate:
-
-- `system_observability_storage_scan_skipped` remains `1` longer than the deployment expects after a last-known-safe storage cache or scheduled storage export exists.
-
-This candidate is not installed as a live rule yet because current Prometheus scrapes intentionally skip expensive storage walks and emit `system_observability_storage_scan_skipped 1` by design. Enabling a live alert before a cached/scheduled storage export exists would be noisy.
-
 Grafana dashboard:
 
 - `infra/grafana/dashboards/vidlab-render-ops.json` is provisioned by `infra/grafana/provisioning/dashboards/dashboards.yml`.
-- The dashboard keeps the existing `vidlab_*` render queue and latency panels and adds panels for system render counts, oldest active render age, follow-up intent counts and age, recovery candidates, storage placeholder gauges, storage scan skipped state, and section availability.
+- The dashboard keeps the existing `vidlab_*` render queue and latency panels and adds panels for system render counts, oldest active render age, follow-up intent counts and age, recovery candidates, cached storage snapshot gauges, and section availability.
 
 The report is intentionally read-only. It does not inspect live Celery task state, retry work, fail jobs, clear intents, remove storage, or perform automatic remediation. Treat warnings and candidates as investigation leads.
 
@@ -260,6 +264,14 @@ python manage.py storage_retention_check --dry-run --older-than-days 30 --json
 ```
 
 The command does not delete files. Treat orphan candidates as investigation leads. Confirm database state and backups before any manual cleanup.
+
+For scrapeable storage metrics, refresh the cached snapshot on an operator-approved cadence:
+
+```powershell
+python manage.py storage_metrics_snapshot --older-than-days 30
+```
+
+Prometheus never runs the storage walk. It reads the snapshot file only and emits zero-valued storage gauges if the file is missing or invalid.
 
 ## Common Emergency Actions
 
