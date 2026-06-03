@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 # ============================================================
 # Dockerfile.worker
 # Purpose : Celery async task worker for AI_ACADEMY.
@@ -67,25 +68,28 @@ ENV PIP_DEFAULT_TIMEOUT=120 \
 COPY services/worker/requirements.txt /tmp/worker-req.txt
 COPY services/api/requirements.txt    /tmp/api-req.txt
 COPY requirements-test.txt            /tmp/test-req.txt
-RUN pip install --no-cache-dir -r /tmp/worker-req.txt -r /tmp/api-req.txt
-RUN if [ "$INSTALL_TEST_DEPS" = "1" ]; then \
-        pip install --no-cache-dir -r /tmp/test-req.txt; \
+RUN --mount=type=cache,target=/root/.cache/pip \
+     pip install -r /tmp/worker-req.txt -r /tmp/api-req.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+     if [ "$INSTALL_TEST_DEPS" = "1" ]; then \
+        pip install -r /tmp/test-req.txt; \
     fi
 
 # MuseTalk primary runtime for real talking-face inference.
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
-     && pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu118 torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
-     && pip install --no-cache-dir openmim==0.3.9 \
+RUN --mount=type=cache,target=/root/.cache/pip \
+     pip install --upgrade pip setuptools wheel \
+     && pip install --index-url https://download.pytorch.org/whl/cu118 torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
+     && pip install openmim==0.3.9 \
      && mim install "mmcv==2.0.1" \
-     && pip install --no-cache-dir "numpy<2" scipy==1.11.4 \
-     && pip install --no-cache-dir mmengine==0.10.4 mmdet==3.1.0 \
-     && pip install --no-cache-dir --no-build-isolation mmpose==1.1.0 \
-     && pip install --no-cache-dir librosa==0.10.2.post1 numba==0.59.1 tqdm==4.66.4 face-alignment==1.4.1 soundfile==0.12.1 opencv-python-headless==4.9.0.80 ffmpeg-python==0.2.0 omegaconf==2.3.0 diffusers==0.30.2 accelerate==0.28.0 transformers==4.39.2 huggingface_hub==0.30.2 einops==0.8.1 moviepy==1.0.3 imageio[ffmpeg]==2.34.1 \
+     && pip install "numpy<2" scipy==1.11.4 \
+     && pip install mmengine==0.10.4 mmdet==3.1.0 \
+     && pip install --no-build-isolation mmpose==1.1.0 \
+     && pip install librosa==0.10.2.post1 numba==0.59.1 tqdm==4.66.4 face-alignment==1.4.1 soundfile==0.12.1 opencv-python-headless==4.9.0.80 ffmpeg-python==0.2.0 omegaconf==2.3.0 diffusers==0.30.2 accelerate==0.28.0 transformers==4.39.2 huggingface_hub==0.30.2 einops==0.8.1 moviepy==1.0.3 imageio[ffmpeg]==2.34.1 \
      && git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git /opt/musetalk \
      && git clone ${LIVEPORTRAIT_REPO} /opt/liveportrait \
      && cd /opt/liveportrait \
      && git checkout ${LIVEPORTRAIT_REF} \
-     && pip install --no-cache-dir onnx==1.16.1 onnxruntime-gpu==1.18.0 lmdb==1.4.1 scikit-image==0.24.0 albumentations==1.4.10 rich==13.7.1 tyro==0.8.5 pykalman==0.9.7 imageio-ffmpeg==0.5.1 \
+     && pip install onnx==1.16.1 onnxruntime-gpu==1.18.0 lmdb==1.4.1 scikit-image==0.24.0 albumentations==1.4.10 rich==13.7.1 tyro==0.8.5 pykalman==0.9.7 imageio-ffmpeg==0.5.1 \
      && python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='KlingTeam/LivePortrait', revision='main', local_dir='/opt/liveportrait/pretrained_weights', local_dir_use_symlinks=False, ignore_patterns=['*.git*','README.md','docs/*'])" \
      && mkdir -p /app/storage_local/models/musetalk
 

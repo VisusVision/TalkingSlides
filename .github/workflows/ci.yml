@@ -122,11 +122,25 @@ jobs:
 
   docker-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
+      - name: Prepare Docker Compose env file
+        run: touch infra/.env
+      - name: Set up Docker Buildx
+        run: docker buildx create --use --name ci-builder
       - name: Docker build smoke
-        run: docker compose -f infra/docker-compose.yml build api worker tts_service
+        working-directory: infra
+        env:
+          DOCKER_BUILD_CACHE_SCOPE: docker-smoke-${{ github.ref_name }}
+        run: |
+          docker buildx bake \
+            --allow=fs.read=.. \
+            --file docker-compose.yml \
+            --progress=plain \
+            --set "*.cache-from=type=gha,scope=${DOCKER_BUILD_CACHE_SCOPE}" \
+            --set "*.cache-to=type=gha,scope=${DOCKER_BUILD_CACHE_SCOPE},mode=max,ignore-error=true" \
+            api worker tts_service
 
   loadtest-smoke:
     runs-on: ubuntu-latest

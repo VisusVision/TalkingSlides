@@ -273,6 +273,26 @@ python manage.py storage_metrics_snapshot --older-than-days 30
 
 Prometheus never runs the storage walk. It reads the snapshot file only and emits zero-valued storage gauges if the file is missing or invalid.
 
+## Docker Worker Build Triage
+
+The worker image is expected to build much more slowly than the API image because it installs GPU/avatar runtime dependencies during the image build. On a cold cache, long pauses in these steps usually indicate dependency download, wheel unpack, or model snapshot export rather than an application-code failure:
+
+- CUDA PyTorch wheels from `download.pytorch.org`.
+- `openmim` / `mmcv` / `mmpose` installation.
+- `onnxruntime-gpu` and related LivePortrait dependencies.
+- MuseTalk and LivePortrait repository clones.
+- Hugging Face `KlingTeam/LivePortrait` snapshot download into `/opt/liveportrait/pretrained_weights`.
+
+Use plain progress output when diagnosing build stalls:
+
+```powershell
+docker compose -f infra\docker-compose.yml build --progress=plain worker
+```
+
+The Dockerfiles use BuildKit pip cache mounts so repeated local builds and CI retries can reuse downloaded Python wheels without baking pip caches into the final image. CI also uses a GitHub Actions Buildx cache for the docker-smoke job. A dependency step can still be slow on the first run for a branch, after cache eviction, after requirements or Dockerfile dependency layers change, or when upstream package/model hosts are slow.
+
+Treat the build as a likely real failure when the same package, clone, or snapshot command exits with a non-zero status on repeated attempts. Treat it as likely cache/cold-download slowness when logs continue to show large wheel downloads, extraction, or Hugging Face file transfer without an exit status.
+
 ## Common Emergency Actions
 
 - Pause or scale down workers if jobs are producing bad output.
@@ -307,3 +327,4 @@ When CI fails, check artifacts before re-running blindly:
 Concurrency note:
 
 - CI uses branch-scoped concurrency with in-progress cancellation enabled. Older runs on the same branch are expected to stop once a newer commit is pushed.
+- The `docker-smoke` job performs real API, worker, and TTS image builds. Its timeout is intentionally longer than backend/frontend jobs because the worker image contains large CUDA, PyTorch, MuseTalk, LivePortrait, and Hugging Face dependency steps.
