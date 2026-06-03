@@ -101,7 +101,7 @@ groups:
           description: "Recovery inspection has reported stale render candidates for 30 minutes. Treat this as an investigation lead, not automatic remediation."
 
       - alert: VidlabSystemStorageSnapshotUnavailable
-        expr: system_observability_storage_available == 0
+        expr: system_observability_storage_snapshot_available == 0
         for: 30m
         labels:
           severity: warning
@@ -109,3 +109,13 @@ groups:
         annotations:
           summary: "Storage metrics snapshot unavailable"
           description: "Prometheus cannot read a valid cached storage metrics snapshot for 30 minutes. Run storage_metrics_snapshot and inspect STORAGE_ROOT/observability/storage_metrics_snapshot.json."
+
+      - alert: VidlabSystemStorageSnapshotStale
+        expr: system_observability_storage_snapshot_available == 1 and system_observability_storage_snapshot_age_seconds > 86400
+        for: 1h
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Storage metrics snapshot stale"
+          description: "The cached storage metrics snapshot is older than 24 hours for 1 hour. This is a conservative staging-tuned warning; refresh it with storage_metrics_snapshot and tune the threshold from deployment cadence."

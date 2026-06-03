@@ -76,6 +76,80 @@ python manage.py storage_metrics_snapshot --storage-root C:\path\to\storage --ol
 
 The snapshot command is the intentional expensive path. It walks storage through the existing retention/orphan/capacity report helper, then writes `STORAGE_ROOT/observability/storage_metrics_snapshot.json`. It does not delete files, enqueue work, perform cleanup, or change render/playback behavior.
 
+Recommended cadence:
+
+- Start with an operator-approved refresh every 6 hours in staging and production.
+- Keep the stale alert threshold at 24 hours until staging data proves a tighter threshold is useful.
+- Run a manual refresh after storage migrations, mount changes, large imports, or incident triage when current storage values matter.
+- Do not run this command from Prometheus scrapes, request handlers, render workers, or playback paths.
+
+Cron example:
+
+```cron
+17 */6 * * * cd /srv/visusvision/services/api && /usr/bin/python manage.py storage_metrics_snapshot --older-than-days 30 >> /var/log/visus-storage-metrics-snapshot.log 2>&1
+```
+
+Systemd service example:
+
+```ini
+[Unit]
+Description=Refresh VisusVision storage metrics snapshot
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/visusvision/services/api
+Environment=DJANGO_SETTINGS_MODULE=config.settings
+ExecStart=/usr/bin/python manage.py storage_metrics_snapshot --older-than-days 30
+```
+
+Systemd timer example:
+
+```ini
+[Unit]
+Description=Run VisusVision storage metrics snapshot refresh every 6 hours
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Kubernetes CronJob example:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-metrics-snapshot
+spec:
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: snapshot
+              image: ai_academy_api:local
+              workingDir: /app
+              command: ["python", "manage.py", "storage_metrics_snapshot", "--older-than-days", "30"]
+              envFrom:
+                - configMapRef:
+                    name: api-env
+              volumeMounts:
+                - name: storage
+                  mountPath: /app/storage_local
+          volumes:
+            - name: storage
+              persistentVolumeClaim:
+                claimName: storage-root
+```
+
 Metric inventory:
 
 - Render: `active_render_count`, `pending_render_count`, `running_render_count`, `failed_render_count`, `oldest_active_render_age_seconds`.
@@ -87,7 +161,7 @@ Prometheus exposes the scrape-safe subset under stable gauge names:
 
 - Render: `system_observability_render_active_count`, `system_observability_render_pending_count`, `system_observability_render_running_count`, `system_observability_render_failed_count`, `system_observability_render_oldest_active_age_seconds`.
 - Follow-up intents: `system_observability_followup_pending_count`, `system_observability_followup_claimed_count`, `system_observability_followup_dispatched_count`, `system_observability_followup_oldest_age_seconds`.
-- Storage snapshot: `system_observability_storage_total_bytes`, `system_observability_storage_retention_candidate_count`, `system_observability_storage_orphan_candidate_count`, `system_observability_storage_reclaimable_bytes_estimate`.
+- Storage snapshot: `system_observability_storage_total_bytes`, `system_observability_storage_retention_candidate_count`, `system_observability_storage_orphan_candidate_count`, `system_observability_storage_reclaimable_bytes_estimate`, `system_observability_storage_snapshot_age_seconds`, `system_observability_storage_snapshot_generated_timestamp`.
 - Recovery: `system_observability_recovery_candidate_count`, `system_observability_recovery_stale_render_count`, `system_observability_recovery_stale_intent_count`.
 - Degradation gauges: `system_observability_render_available`, `system_observability_followup_available`, `system_observability_storage_available`, `system_observability_storage_snapshot_available`, `system_observability_storage_scan_skipped`, `system_observability_recovery_available`.
 
@@ -106,7 +180,8 @@ Alert candidates to tune per deployment:
 - `VidlabSystemFailedRenderCountSpike`: failed render count increases by more than 5 within 15 minutes.
 - `VidlabSystemOldestActiveRenderTooHigh`: `system_observability_render_oldest_active_age_seconds > 7200` for 15 minutes.
 - `VidlabSystemStaleRenderCandidatesPresent`: `system_observability_recovery_stale_render_count > 0` for 30 minutes.
-- `VidlabSystemStorageSnapshotUnavailable`: `system_observability_storage_available == 0` for 30 minutes.
+- `VidlabSystemStorageSnapshotUnavailable`: `system_observability_storage_snapshot_available == 0` for 30 minutes.
+- `VidlabSystemStorageSnapshotStale`: `system_observability_storage_snapshot_age_seconds > 86400` while the snapshot is available for 1 hour.
 - Cached `reclaimable_bytes_estimate` exceeds the reviewed cleanup threshold.
 - Any availability gauge is `0` for longer than one scrape interval.
 
@@ -272,6 +347,25 @@ python manage.py storage_metrics_snapshot --older-than-days 30
 ```
 
 Prometheus never runs the storage walk. It reads the snapshot file only and emits zero-valued storage gauges if the file is missing or invalid.
+
+Manual verification:
+
+```powershell
+python manage.py storage_metrics_snapshot --older-than-days 30 --json
+python manage.py system_observability_report --json
+```
+
+Confirm the report shows `storage.available: true`, a non-empty `snapshot_generated_at`, and a low `snapshot_age_seconds`. Then check Prometheus:
+
+```powershell
+curl http://localhost:8000/api/v1/system/metrics/prometheus/ | findstr system_observability_storage_snapshot
+```
+
+Expected freshness gauges:
+
+- `system_observability_storage_snapshot_available 1`
+- `system_observability_storage_snapshot_age_seconds` close to the time since refresh
+- `system_observability_storage_snapshot_generated_timestamp` greater than `0`
 
 ## Docker Worker Build Triage
 

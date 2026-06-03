@@ -147,6 +147,8 @@ def test_prometheus_observability_metrics_output_contains_expected_names():
         "system_observability_followup_oldest_age_seconds",
         "system_observability_storage_total_bytes",
         "system_observability_storage_snapshot_available",
+        "system_observability_storage_snapshot_age_seconds",
+        "system_observability_storage_snapshot_generated_timestamp",
         "system_observability_storage_retention_candidate_count",
         "system_observability_storage_orphan_candidate_count",
         "system_observability_storage_reclaimable_bytes_estimate",
@@ -245,6 +247,8 @@ def test_storage_metrics_snapshot_loads_existing_snapshot(tmp_path):
     assert snapshot.available is True
     assert snapshot.metrics["total_storage_bytes"] == 0
     assert snapshot.metrics["generated_at"]
+    assert snapshot.metrics["generated_timestamp"] > 0
+    assert snapshot.metrics["age_seconds"] >= 0
 
 
 def test_storage_metrics_snapshot_missing_degrades_to_zero_values(tmp_path):
@@ -294,6 +298,7 @@ def test_prometheus_observability_reads_snapshot_values(settings, tmp_path):
     settings.STORAGE_ROOT = str(tmp_path)
     snapshot_path = storage_metrics_snapshot_path(tmp_path)
     snapshot_path.parent.mkdir(parents=True)
+    generated_at = timezone.now() - timedelta(hours=2)
     snapshot_path.write_text(
         json.dumps(
             {
@@ -301,7 +306,7 @@ def test_prometheus_observability_reads_snapshot_values(settings, tmp_path):
                 "retention_candidate_count": 2,
                 "orphan_candidate_count": 3,
                 "reclaimable_bytes_estimate": 99,
-                "generated_at": timezone.now().isoformat(),
+                "generated_at": generated_at.isoformat(),
             }
         ),
         encoding="utf-8",
@@ -315,6 +320,10 @@ def test_prometheus_observability_reads_snapshot_values(settings, tmp_path):
     assert "system_observability_storage_retention_candidate_count 2" in text
     assert "system_observability_storage_orphan_candidate_count 3" in text
     assert "system_observability_storage_reclaimable_bytes_estimate 99" in text
+    assert "system_observability_storage_snapshot_generated_timestamp " in text
+    age_line = next(line for line in text.splitlines() if line.startswith("system_observability_storage_snapshot_age_seconds "))
+    age_seconds = float(age_line.rsplit(" ", 1)[1])
+    assert 7100 <= age_seconds <= 7300
 
 
 def test_prometheus_observability_missing_snapshot_zeroes_values(settings, tmp_path):
@@ -325,6 +334,22 @@ def test_prometheus_observability_missing_snapshot_zeroes_values(settings, tmp_p
     assert "system_observability_storage_available 0" in text
     assert "system_observability_storage_snapshot_available 0" in text
     assert "system_observability_storage_total_bytes 0" in text
+    assert "system_observability_storage_snapshot_age_seconds 0" in text
+    assert "system_observability_storage_snapshot_generated_timestamp 0" in text
+
+
+def test_prometheus_observability_corrupt_snapshot_zeroes_freshness(settings, tmp_path):
+    settings.STORAGE_ROOT = str(tmp_path)
+    snapshot_path = storage_metrics_snapshot_path(tmp_path)
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text("{not-json", encoding="utf-8")
+
+    text = perf_metrics.prometheus_metrics_text()
+
+    assert "system_observability_storage_available 0" in text
+    assert "system_observability_storage_snapshot_available 0" in text
+    assert "system_observability_storage_snapshot_age_seconds 0" in text
+    assert "system_observability_storage_snapshot_generated_timestamp 0" in text
 
 
 def test_prometheus_observability_does_not_mutate_outside_snapshot(settings, tmp_path):

@@ -269,6 +269,18 @@ def _system_observability_prometheus_lines() -> list[str]:
         "# HELP system_observability_storage_snapshot_available Whether a valid cached storage metrics snapshot was available on this scrape.",
         "# TYPE system_observability_storage_snapshot_available gauge",
         _prometheus_bool_line("system_observability_storage_snapshot_available", _section_available(report, "storage")),
+        "# HELP system_observability_storage_snapshot_age_seconds Age in seconds of the cached storage metrics snapshot.",
+        "# TYPE system_observability_storage_snapshot_age_seconds gauge",
+        _prometheus_line(
+            "system_observability_storage_snapshot_age_seconds",
+            _metric_value(report, "storage", "snapshot_age_seconds"),
+        ),
+        "# HELP system_observability_storage_snapshot_generated_timestamp Unix timestamp when the cached storage metrics snapshot was generated.",
+        "# TYPE system_observability_storage_snapshot_generated_timestamp gauge",
+        _prometheus_line(
+            "system_observability_storage_snapshot_generated_timestamp",
+            _metric_value(report, "storage", "snapshot_generated_timestamp"),
+        ),
         "# HELP system_observability_storage_scan_skipped Whether direct filesystem storage scanning was skipped for this scrape.",
         "# TYPE system_observability_storage_scan_skipped gauge",
         _prometheus_bool_line("system_observability_storage_scan_skipped", True),
