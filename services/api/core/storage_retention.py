@@ -7,10 +7,10 @@ from pathlib import Path
 import time
 from typing import Any
 
-from django.conf import settings
 from django.db.utils import OperationalError, ProgrammingError
 
 from core.models import AvatarRenderJob, Job, Project, TranslatedSubtitleTrack, UserProfile
+from core.storage_adapter import FilesystemStorageAdapter, get_storage_adapter
 
 
 RETENTION_SCAN_DIRS = (
@@ -32,7 +32,7 @@ class StorageFile:
 
 
 def storage_root_path(storage_root: str | Path | None = None) -> Path:
-    return Path(storage_root or getattr(settings, "STORAGE_ROOT", "storage_local")).resolve()
+    return get_storage_adapter(storage_root).root
 
 
 def bytes_to_human(size_bytes: int) -> str:
@@ -50,14 +50,15 @@ def build_storage_report(
     older_than_days: int = 30,
     include_db: bool = True,
 ) -> dict[str, Any]:
-    root = storage_root_path(storage_root)
+    adapter = get_storage_adapter(storage_root)
+    root = adapter.root
     cutoff_epoch = time.time() - (max(int(older_than_days), 1) * 24 * 60 * 60)
-    categories = _capacity_categories(root)
-    retention_candidates = _retention_candidates(root, cutoff_epoch)
+    categories = _capacity_categories(root, adapter)
+    retention_candidates = _retention_candidates(root, adapter, cutoff_epoch)
     warnings: list[str] = []
     if include_db:
         try:
-            orphan_candidates = _orphan_candidates(root, include_db=True)
+            orphan_candidates = _orphan_candidates(root, adapter, include_db=True)
             referenced_paths = _referenced_storage_paths()
             db_available = True
         except (OperationalError, ProgrammingError) as exc:
@@ -69,7 +70,7 @@ def build_storage_report(
         orphan_candidates = []
         referenced_paths = set()
         db_available = False
-    referenced_existing_size = _referenced_existing_size(root, referenced_paths)
+    referenced_existing_size = _referenced_existing_size(root, adapter, referenced_paths)
 
     return {
         "storage_root": str(root),
@@ -77,7 +78,7 @@ def build_storage_report(
         "db_available": db_available,
         "warnings": warnings,
         "capacity": {
-            "total_bytes": _tree_size(root),
+            "total_bytes": _tree_size(root, adapter),
             "referenced_existing_bytes": referenced_existing_size,
             "orphan_estimate_bytes": sum(item["size_bytes"] for item in orphan_candidates),
             "categories": categories,
@@ -88,7 +89,7 @@ def build_storage_report(
     }
 
 
-def _capacity_categories(root: Path) -> dict[str, dict[str, int]]:
+def _capacity_categories(root: Path, adapter: FilesystemStorageAdapter) -> dict[str, dict[str, int]]:
     categories = {
         "uploads": root / "uploads",
         "render_outputs": None,
@@ -102,52 +103,52 @@ def _capacity_categories(root: Path) -> dict[str, dict[str, int]]:
     for name, path in categories.items():
         if path is None:
             continue
-        results[name] = _path_summary(path)
+        results[name] = _path_summary(root, adapter, path)
 
-    render_dirs = [child for child in _iter_children(root) if child.is_dir() and child.name.isdigit()]
-    results["render_outputs"] = _paths_summary(render_dirs)
+    render_dirs = [child for child in _iter_children(root, adapter, root) if child.is_dir() and child.name.isdigit()]
+    results["render_outputs"] = _paths_summary(root, adapter, render_dirs)
     subtitle_dirs = [path / "subtitles" for path in render_dirs if (path / "subtitles").exists()]
-    results["subtitles"] = _paths_summary(subtitle_dirs)
+    results["subtitles"] = _paths_summary(root, adapter, subtitle_dirs)
     return results
 
 
-def _retention_candidates(root: Path, cutoff_epoch: float) -> list[dict[str, Any]]:
+def _retention_candidates(root: Path, adapter: FilesystemStorageAdapter, cutoff_epoch: float) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     for category, rel_dir in RETENTION_SCAN_DIRS:
         base = root / rel_dir
         if not base.exists():
             continue
-        for path in _iter_files(base):
+        for path in _iter_files(root, adapter, base):
             if _is_old(path, cutoff_epoch):
                 candidates.append(_candidate_payload(root, path, category, "old_safe_area"))
 
-    for path in _iter_files(root):
+    for path in _iter_files(root, adapter, root):
         if path.suffix.lower() in RETENTION_SUFFIXES and _is_old(path, cutoff_epoch):
             candidates.append(_candidate_payload(root, path, "temporary", "old_temp_suffix"))
 
     return sorted(_dedupe_candidates(candidates), key=lambda item: item["rel_path"])
 
 
-def _orphan_candidates(root: Path, *, include_db: bool) -> list[dict[str, Any]]:
+def _orphan_candidates(root: Path, adapter: FilesystemStorageAdapter, *, include_db: bool) -> list[dict[str, Any]]:
     if not include_db:
         return []
     project_ids = {str(value) for value in Project.objects.values_list("id", flat=True)}
     user_ids = {str(value) for value in UserProfile.objects.values_list("user_id", flat=True)}
     candidates: list[dict[str, Any]] = []
 
-    for child in _iter_children(root):
+    for child in _iter_children(root, adapter, root):
         if child.is_dir() and child.name.isdigit() and child.name not in project_ids:
-            candidates.append(_directory_candidate(root, child, "orphan_project_render_dir", "project_missing"))
+            candidates.append(_directory_candidate(root, adapter, child, "orphan_project_render_dir", "project_missing"))
 
     uploads = root / "uploads"
-    for child in _iter_children(uploads):
+    for child in _iter_children(root, adapter, uploads):
         if child.is_dir() and child.name.isdigit() and child.name not in project_ids:
-            candidates.append(_directory_candidate(root, child, "orphan_upload_dir", "project_missing"))
+            candidates.append(_directory_candidate(root, adapter, child, "orphan_upload_dir", "project_missing"))
 
     avatars = root / "avatars"
-    for child in _iter_children(avatars):
+    for child in _iter_children(root, adapter, avatars):
         if child.is_dir() and child.name.isdigit() and child.name not in user_ids:
-            candidates.append(_directory_candidate(root, child, "orphan_avatar_dir", "user_profile_missing"))
+            candidates.append(_directory_candidate(root, adapter, child, "orphan_avatar_dir", "user_profile_missing"))
 
     return sorted(candidates, key=lambda item: item["rel_path"])
 
@@ -183,10 +184,10 @@ def _referenced_storage_paths() -> set[str]:
     return refs
 
 
-def _referenced_existing_size(root: Path, refs: set[str]) -> int:
+def _referenced_existing_size(root: Path, adapter: FilesystemStorageAdapter, refs: set[str]) -> int:
     total = 0
     for rel_path in refs:
-        path = _safe_child(root, rel_path)
+        path = _safe_child(root, adapter, rel_path)
         if path and path.exists() and path.is_file():
             total += _file_size(path)
     return total
@@ -199,55 +200,44 @@ def _clean_rel_path(value: Any) -> str:
     return raw
 
 
-def _safe_child(root: Path, rel_path: str) -> Path | None:
+def _safe_child(root: Path, adapter: FilesystemStorageAdapter, rel_path: str) -> Path | None:
     try:
-        candidate = (root / rel_path).resolve()
-        candidate.relative_to(root)
-        return candidate
+        return adapter.resolve_path(rel_path)
     except (OSError, ValueError):
         return None
 
 
-def _path_summary(path: Path) -> dict[str, int]:
-    return _paths_summary([path])
+def _path_summary(root: Path, adapter: FilesystemStorageAdapter, path: Path) -> dict[str, int]:
+    return _paths_summary(root, adapter, [path])
 
 
-def _paths_summary(paths: list[Path]) -> dict[str, int]:
+def _paths_summary(root: Path, adapter: FilesystemStorageAdapter, paths: list[Path]) -> dict[str, int]:
     file_count = 0
     total = 0
     for path in paths:
-        for file_path in _iter_files(path):
+        for file_path in _iter_files(root, adapter, path):
             file_count += 1
             total += _file_size(file_path)
     return {"bytes": total, "files": file_count}
 
 
-def _tree_size(path: Path) -> int:
-    return _path_summary(path)["bytes"]
+def _tree_size(root: Path, adapter: FilesystemStorageAdapter) -> int:
+    return _path_summary(root, adapter, root)["bytes"]
 
 
-def _iter_children(path: Path) -> list[Path]:
-    if not path.exists() or not path.is_dir():
-        return []
+def _iter_children(root: Path, adapter: FilesystemStorageAdapter, path: Path) -> list[Path]:
+    rel_path = _rel_path(root, path)
     try:
-        return list(path.iterdir())
-    except OSError:
+        return adapter.iter_children(rel_path)
+    except ValueError:
         return []
 
 
-def _iter_files(path: Path):
-    if not path.exists():
-        return
-    if path.is_file():
-        yield path
-        return
-    if not path.is_dir():
-        return
+def _iter_files(root: Path, adapter: FilesystemStorageAdapter, path: Path):
+    rel_path = _rel_path(root, path)
     try:
-        for child in path.rglob("*"):
-            if child.is_file():
-                yield child
-    except OSError:
+        yield from adapter.iter_files(rel_path)
+    except ValueError:
         return
 
 
@@ -276,8 +266,8 @@ def _candidate_payload(root: Path, path: Path, category: str, reason: str) -> di
     }
 
 
-def _directory_candidate(root: Path, path: Path, category: str, reason: str) -> dict[str, Any]:
-    summary = _path_summary(path)
+def _directory_candidate(root: Path, adapter: FilesystemStorageAdapter, path: Path, category: str, reason: str) -> dict[str, Any]:
+    summary = _path_summary(root, adapter, path)
     return {
         "category": category,
         "reason": reason,

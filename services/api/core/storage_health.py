@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from django.conf import settings
+from core.storage_adapter import StoragePathTraversalError, get_storage_adapter
 
 
 class StorageHealthError(RuntimeError):
@@ -15,12 +15,11 @@ class StorageHealthError(RuntimeError):
 
 
 def configured_storage_root(storage_root: str | os.PathLike[str] | None = None) -> Path:
-    raw_value = storage_root if storage_root is not None else getattr(settings, "STORAGE_ROOT", "storage_local")
-    return Path(str(raw_value or "")).expanduser()
+    return get_storage_adapter(storage_root).root
 
 
 def validate_filesystem_storage_root(storage_root: str | os.PathLike[str] | None = None) -> Path:
-    root = configured_storage_root(storage_root).resolve()
+    root = configured_storage_root(storage_root)
     if not root.exists():
         raise StorageHealthError(f"storage root does not exist: {root}")
     if not root.is_dir():
@@ -39,21 +38,24 @@ def run_filesystem_storage_smoke(
 ) -> dict[str, Any]:
     """Write, read, and delete a small probe file under STORAGE_ROOT."""
 
+    adapter = get_storage_adapter(storage_root)
     root = validate_filesystem_storage_root(storage_root)
-    smoke_dir = root / namespace
-    probe = smoke_dir / f"probe-{uuid.uuid4().hex}.txt"
+    smoke_dir_rel = str(namespace or ".storage-smoke")
+    probe_rel = f"{smoke_dir_rel}/probe-{uuid.uuid4().hex}.txt"
     payload = f"visus-storage-smoke:{uuid.uuid4().hex}\n".encode("utf-8")
 
     try:
-        smoke_dir.mkdir(parents=True, exist_ok=True)
-        probe.write_bytes(payload)
-        if probe.read_bytes() != payload:
+        adapter.make_dirs(smoke_dir_rel)
+        adapter.write_bytes(probe_rel, payload)
+        if adapter.read_bytes(probe_rel) != payload:
             raise StorageHealthError("storage smoke readback mismatch")
-        probe.unlink()
+        adapter.delete_file(probe_rel)
         try:
-            smoke_dir.rmdir()
+            adapter.resolve_path(smoke_dir_rel).rmdir()
         except OSError:
             pass
+    except StoragePathTraversalError as exc:
+        raise StorageHealthError(f"storage smoke failed: {exc}") from exc
     except StorageHealthError:
         raise
     except Exception as exc:  # noqa: BLE001

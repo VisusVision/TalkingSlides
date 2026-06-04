@@ -1,8 +1,8 @@
 # Storage Production Readiness
 
-VISUS currently stores uploads, generated media, playback sidecars, avatar assets, cache files, and storage observability snapshots through local filesystem paths rooted at `STORAGE_ROOT`. MinIO and S3-style environment variables exist in Docker and env templates, but there is no active S3 adapter and no object-storage read/write path in the application yet.
+VISUS currently stores uploads, generated media, playback sidecars, avatar assets, cache files, and storage observability snapshots through local filesystem paths rooted at `STORAGE_ROOT`. A small filesystem storage adapter exists for low-risk health, retention, and observability helpers. MinIO and S3-style environment variables exist in Docker and env templates, but there is no active S3 adapter and no object-storage read/write path in the application yet.
 
-This document is the production storage contract for live users. It is an operator and architecture decision record only; it does not implement storage adapters, deletion, cleanup automation, or migrations.
+This document is the production storage contract for live users. It is an operator and architecture decision record plus the current adapter migration status; it does not implement S3/MinIO storage, deletion, cleanup automation, quotas, or migrations.
 
 ## Audit Findings
 
@@ -12,7 +12,8 @@ Current filesystem dependencies:
 - Django `MEDIA_ROOT` exists, but lesson media, playback assets, avatars, subtitles, reports, and most generated files use explicit `STORAGE_ROOT` paths.
 - Render and playback code stores relative paths in database rows and sidecar JSON, then resolves them back under `STORAGE_ROOT`.
 - Local Docker Compose mounts repo-root `storage_local/` into API, worker, avatar worker, and TTS containers as `/app/storage_local`.
-- MinIO is started by local Compose and S3 env vars are documented, but active code does not use boto3, django-storages, or a storage adapter.
+- MinIO is started by local Compose and S3 env vars are documented, but active code does not use boto3, django-storages, or an object-storage adapter.
+- `core.storage_adapter.FilesystemStorageAdapter` is the only active adapter. Current adoption is limited to storage smoke checks, storage metrics snapshots, and report-only retention traversal.
 - Existing storage commands are visibility checks only: `storage_smoke_check`, `storage_retention_check --dry-run`, and `storage_metrics_snapshot`.
 
 Known paths under `STORAGE_ROOT`:
@@ -68,6 +69,7 @@ Temporary files:
 Current gaps:
 
 - No active object-storage adapter.
+- Runtime upload, render, playback, avatar, and TTS media paths still use existing filesystem path handling directly.
 - No global quota enforcement.
 - No cleanup automation for old render outputs.
 - No comprehensive project-delete media cleanup.
@@ -219,12 +221,13 @@ Manual approval is required before any destructive action involving user uploads
 
 ## Implementation Roadmap
 
-1. Storage adapter abstraction: introduce a single read/write/list/delete contract while preserving current filesystem behavior behind the interface.
-2. MinIO/S3 adapter: wire S3-compatible object storage for API, worker, TTS, avatar, playback streaming, and sidecar access with least-privilege credentials.
-3. Backup/restore drill: implement operator-owned staging drill automation or scripts and archive evidence for database plus object storage consistency.
-4. Quota and retention execution: add dry-run first, then explicit-confirm execution for safe cleanup candidates and quota reporting.
-5. Project-delete media cleanup: add idempotent manifest-based deletion for all project-owned media, with audit logs and evidence holds.
-6. CDN/private media delivery if needed: add private object delivery, signed URLs or tokenized proxy behavior, CDN caching policy, and protected playback integration.
+1. Storage adapter abstraction: started with a filesystem-only adapter for low-risk health, retention, and observability helpers. High-risk runtime media paths intentionally remain on existing direct filesystem behavior.
+2. Runtime path migration plan: map upload, render, playback, avatar, TTS, subtitles, and moderation paths to adapter operations without changing stored relative paths or response payloads.
+3. MinIO/S3 adapter: wire S3-compatible object storage for API, worker, TTS, avatar, playback streaming, and sidecar access with least-privilege credentials.
+4. Backup/restore drill: implement operator-owned staging drill automation or scripts and archive evidence for database plus object storage consistency.
+5. Quota and retention execution: add dry-run first, then explicit-confirm execution for safe cleanup candidates and quota reporting.
+6. Project-delete media cleanup: add idempotent manifest-based deletion for all project-owned media, with audit logs and evidence holds.
+7. CDN/private media delivery if needed: add private object delivery, signed URLs or tokenized proxy behavior, CDN caching policy, and protected playback integration.
 
 ## Current Validation Commands
 
@@ -245,7 +248,8 @@ These commands do not make storage production-ready. They validate settings, sch
 
 - The active application still depends on filesystem paths.
 - MinIO/S3 is configured but inactive.
-- There is no storage adapter abstraction.
+- The adapter abstraction is filesystem-only and currently adopted only by low-risk helper/reporting code.
+- Upload, render, playback, avatar, and TTS paths have not been migrated to the adapter yet.
 - There is no implemented quota enforcement.
 - There is no implemented project-delete media cleanup.
 - There is no implemented orphan deletion workflow.
