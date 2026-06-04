@@ -808,6 +808,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "is_public_profile",
             "banner_url",
             "logo_url",
+            "banner_image_moderation_status",
+            "banner_image_moderation_summary",
+            "logo_image_moderation_status",
+            "logo_image_moderation_summary",
             "avatar_image_original",
             "avatar_image_processed",
             "avatar_video_original",
@@ -933,6 +937,10 @@ class CurrentUserProfileSerializer(serializers.Serializer):
                 if profile.logo_image_processed
                 else ""
             ),
+            "banner_moderation_status": profile.banner_image_moderation_status,
+            "banner_moderation_summary": profile.banner_image_moderation_summary if isinstance(profile.banner_image_moderation_summary, dict) else {},
+            "logo_moderation_status": profile.logo_image_moderation_status,
+            "logo_moderation_summary": profile.logo_image_moderation_summary if isinstance(profile.logo_image_moderation_summary, dict) else {},
             "role": profile.role,
         }
 

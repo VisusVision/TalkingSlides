@@ -10,8 +10,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
+SERVICES_ROOT = REPO_ROOT / "services"
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICES_ROOT))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
@@ -23,6 +26,8 @@ from PIL import Image  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
 from core.models import Job, Project, UserProfile  # noqa: E402
+from worker.ai_agents import schemas  # noqa: E402
+from worker.ai_agents.providers import visual_safety_provider  # noqa: E402
 
 
 def _client(user: User | None = None) -> APIClient:
@@ -69,6 +74,39 @@ def _make_public_lesson(owner: User, title: str = "Public lesson") -> Project:
     )
     Job.objects.create(project=project, job_type="video_export", status="done", result_url=f"{project.id}.mp4")
     return project
+
+
+class _FakeVisualProvider:
+    provider_name = "fake_profile_visual_provider"
+    agent_slug = "fake_profile_visual_provider"
+    agent_version = "test:v1"
+
+    def __init__(self, decision: str = "allow"):
+        self.decision = decision
+
+    def review_image(self, image_path, location):
+        findings = []
+        if self.decision != "allow":
+            findings.append(
+                schemas.AgentFindingSchema(
+                    category="sexual",
+                    severity="high",
+                    confidence=0.96,
+                    decision=self.decision,
+                    location=location,
+                    user_message="MODERATION TEST: unsafe profile visual marker",
+                )
+            )
+        return schemas.AgentResultSchema(
+            agent_slug=self.agent_slug,
+            agent_version=self.agent_version,
+            modality="image",
+            provider=self.provider_name,
+            decision=self.decision,
+            confidence=0.96 if findings else 0.0,
+            findings=findings,
+            metadata={"skipped": False},
+        )
 
 
 @pytest.mark.django_db
@@ -327,6 +365,111 @@ def test_banner_and_logo_upload_works_for_owner(tmp_path):
     assert publisher.profile.logo_image_processed == f"profiles/{publisher.id}/logo_processed.jpg"
     assert (tmp_path / publisher.profile.banner_image_processed).exists()
     assert (tmp_path / publisher.profile.logo_image_processed).exists()
+
+
+@pytest.mark.django_db
+def test_profile_banner_and_logo_use_semantic_visual_provider_when_configured(monkeypatch, tmp_path):
+    publisher = _make_user("profile_visual_safe_owner")
+    monkeypatch.setattr(
+        visual_safety_provider,
+        "build_visual_safety_provider",
+        lambda provider_name=None: _FakeVisualProvider("allow"),
+    )
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
+        VISUAL_MODERATION_SCAN_PROFILE_IMAGES=True,
+        VISUAL_MODERATION_SCAN_CHANNEL_IMAGES=True,
+        VISUAL_SAFETY_PROVIDER="azure_content_safety",
+        VISUAL_SAFETY_CLASSIFIER_ENABLED=True,
+        VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER=True,
+    ):
+        response = _client(publisher).post(
+            "/api/v1/me/profile-assets/",
+            {
+                "banner_file": _image_file("banner.png", size=(1200, 600)),
+                "logo_file": _image_file("logo.png", size=(640, 640)),
+            },
+            format="multipart",
+        )
+
+    publisher.profile.refresh_from_db()
+    assert response.status_code == 200
+    assert response.data["banner_moderation_status"] == "approved"
+    assert response.data["logo_moderation_status"] == "approved"
+    assert publisher.profile.banner_image_processed
+    assert publisher.profile.logo_image_processed
+    assert publisher.profile.banner_image_pending_processed == ""
+
+
+@pytest.mark.django_db
+def test_profile_logo_provider_unavailable_keeps_previous_approved_image_pending_review(monkeypatch, tmp_path):
+    publisher = _make_user("profile_visual_pending_owner", is_public_profile=True)
+    publisher.profile.logo_image_original = "profiles/existing/logo_original.png"
+    publisher.profile.logo_image_processed = "profiles/existing/logo_processed.jpg"
+    publisher.profile.save(update_fields=["logo_image_original", "logo_image_processed", "updated_at"])
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
+        VISUAL_MODERATION_SCAN_PROFILE_IMAGES=True,
+        VISUAL_MODERATION_SCAN_CHANNEL_IMAGES=True,
+        VISUAL_SAFETY_PROVIDER="none",
+        VISUAL_SAFETY_CLASSIFIER_ENABLED=False,
+        VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER=True,
+        ALLOW_WEAK_LOCAL_VISUAL_APPROVAL=False,
+    ):
+        response = _client(publisher).post(
+            "/api/v1/me/profile-assets/",
+            {"logo_file": _image_file("logo.png", size=(640, 640))},
+            format="multipart",
+        )
+
+    publisher.profile.refresh_from_db()
+    assert response.status_code == 200
+    assert response.data["logo_moderation_status"] == "needs_admin_review"
+    assert response.data["logo_moderation_summary"]["asset_kind"] == "channel_logo"
+    assert response.data["logo_moderation_summary"]["asset_label"] == "Channel logo"
+    assert response.data["logo_moderation_summary"]["reason_title"] == "Visual safety scan unavailable"
+    assert response.data["logo_moderation_summary"]["publisher_reason_message"].startswith(
+        "We could not complete the visual safety scan"
+    )
+    assert publisher.profile.logo_image_processed == "profiles/existing/logo_processed.jpg"
+    assert publisher.profile.logo_image_pending_processed.startswith(f"profiles/{publisher.id}/")
+
+
+@pytest.mark.django_db
+def test_profile_banner_provider_unavailable_keeps_previous_approved_image_pending_review(monkeypatch, tmp_path):
+    publisher = _make_user("profile_banner_visual_pending_owner", is_public_profile=True)
+    publisher.profile.banner_image_original = "profiles/existing/banner_original.png"
+    publisher.profile.banner_image_processed = "profiles/existing/banner_processed.jpg"
+    publisher.profile.save(update_fields=["banner_image_original", "banner_image_processed", "updated_at"])
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        ENABLE_VISUAL_MODERATION=True,
+        VISUAL_MODERATION_SCAN_PROFILE_IMAGES=True,
+        VISUAL_MODERATION_SCAN_CHANNEL_IMAGES=True,
+        VISUAL_SAFETY_PROVIDER="none",
+        VISUAL_SAFETY_CLASSIFIER_ENABLED=False,
+        VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER=True,
+        ALLOW_WEAK_LOCAL_VISUAL_APPROVAL=False,
+    ):
+        response = _client(publisher).post(
+            "/api/v1/me/profile-assets/",
+            {"banner_file": _image_file("banner.png", size=(1200, 600))},
+            format="multipart",
+        )
+
+    publisher.profile.refresh_from_db()
+    assert response.status_code == 200
+    assert response.data["banner_moderation_status"] == "needs_admin_review"
+    assert response.data["banner_moderation_summary"]["asset_kind"] == "channel_banner"
+    assert response.data["banner_moderation_summary"]["asset_label"] == "Channel banner"
+    assert response.data["banner_moderation_summary"]["reason_title"] == "Visual safety scan unavailable"
+    assert publisher.profile.banner_image_processed == "profiles/existing/banner_processed.jpg"
+    assert publisher.profile.banner_image_pending_processed.startswith(f"profiles/{publisher.id}/")
 
 
 @pytest.mark.django_db

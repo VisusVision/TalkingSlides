@@ -2614,15 +2614,16 @@ def _process_profile_asset_image(source_path: Path, destination_path: Path, kind
         raise ValueError("Uploaded file is not a valid image.") from exc
 
 
-def _save_profile_asset(profile: UserProfile, image_file, kind: str) -> None:
+def _save_profile_asset(profile: UserProfile, image_file, kind: str, *, pending: bool = False) -> dict[str, str]:
     if kind not in _PROFILE_ASSET_KINDS:
         raise ValueError("Unsupported profile asset kind.")
     image_ext = _validate_profile_asset_upload(image_file)
     storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local")).resolve()
     asset_dir = storage_root / "profiles" / str(profile.user_id)
     asset_dir.mkdir(parents=True, exist_ok=True)
-    original_path = asset_dir / f"{kind}_original{image_ext}"
-    processed_path = asset_dir / f"{kind}_processed.jpg"
+    suffix = f"_pending_{uuid.uuid4().hex[:10]}" if pending else ""
+    original_path = asset_dir / f"{kind}{suffix}_original{image_ext}"
+    processed_path = asset_dir / f"{kind}{suffix}_processed.jpg"
     _write_uploaded_file(image_file, original_path)
     try:
         _process_profile_asset_image(original_path, processed_path, kind)
@@ -2633,8 +2634,253 @@ def _save_profile_asset(profile: UserProfile, image_file, kind: str) -> None:
             pass
         raise
 
-    setattr(profile, f"{kind}_image_original", str(original_path.relative_to(storage_root)).replace("\\", "/"))
-    setattr(profile, f"{kind}_image_processed", str(processed_path.relative_to(storage_root)).replace("\\", "/"))
+    original_rel = str(original_path.relative_to(storage_root)).replace("\\", "/")
+    processed_rel = str(processed_path.relative_to(storage_root)).replace("\\", "/")
+    return {
+        "original": original_rel,
+        "processed": processed_rel,
+        "original_abs": str(original_path),
+        "processed_abs": str(processed_path),
+    }
+
+
+def _profile_asset_scan_enabled(kind: str) -> bool:
+    if not visual_moderation_enabled():
+        return False
+    if not bool(getattr(settings, "VISUAL_MODERATION_SCAN_PROFILE_IMAGES", True)):
+        return False
+    if kind in _PROFILE_ASSET_KINDS and not bool(getattr(settings, "VISUAL_MODERATION_SCAN_CHANNEL_IMAGES", True)):
+        return False
+    return True
+
+
+def _moderate_profile_asset(profile: UserProfile, *, kind: str, image_path: str) -> dict[str, Any]:
+    if not _profile_asset_scan_enabled(kind):
+        return {
+            "status": "approved",
+            "final_decision": "skipped",
+            "reason": "profile_visual_moderation_disabled",
+            "message": "Profile image moderation is disabled.",
+            "scanned_at": timezone.now().isoformat(),
+        }
+    try:
+        services_root = Path(__file__).resolve().parents[2]
+        if str(services_root) not in sys.path:
+            sys.path.insert(0, str(services_root))
+        from worker.ai_agents.policy_engine import PolicyEngine
+        from worker.ai_agents.providers.local_image_rules_provider import LocalImageRulesProvider
+        from worker.ai_agents.providers.visual_safety_provider import (
+            build_visual_safety_provider,
+            visual_safety_classifier_should_run,
+        )
+        from worker.ai_agents.schemas import FindingLocation
+    except Exception as exc:  # noqa: BLE001
+        return _profile_asset_moderation_summary(
+            kind=kind,
+            status="needs_admin_review",
+            final_decision="needs_admin_review",
+            providers=[],
+            findings=[],
+            reason="profile_visual_moderation_unavailable",
+            provider_errors=[_short_error(exc)],
+        )
+
+    location = FindingLocation(
+        project_id=None,
+        asset_type="profile_banner" if kind == "banner" else "profile_logo",
+        image_path=str(image_path or ""),
+        ui_anchor=f"user-{profile.user_id}-{kind}-image",
+    )
+    providers = [LocalImageRulesProvider()]
+    classifier_requested = bool(visual_safety_classifier_should_run())
+    if classifier_requested:
+        providers.append(build_visual_safety_provider())
+
+    results = []
+    for provider in providers:
+        try:
+            results.append(provider.review_image(str(image_path or ""), location))
+        except Exception as exc:  # noqa: BLE001
+            results.append(_profile_provider_error_result(provider, location, exc))
+
+    final_decision = PolicyEngine().combine_results(results)
+    findings = [finding for result in results for finding in result.findings]
+    safety_results = [result for result in results if str(result.provider or "") != "local_image_rules"]
+    safety_completed = any(not bool((result.metadata or {}).get("skipped")) for result in safety_results)
+    semantic_missing = (
+        bool(getattr(settings, "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True))
+        and not bool(getattr(settings, "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", False))
+        and not safety_completed
+    )
+    if semantic_missing and final_decision != "block":
+        final_decision = "needs_admin_review"
+    if final_decision == "block":
+        status_value = "rejected"
+    elif final_decision == "needs_admin_review" or semantic_missing:
+        status_value = "needs_admin_review"
+    else:
+        status_value = "approved"
+    provider_errors = [
+        str((result.metadata or {}).get("reason") or (result.metadata or {}).get("provider_error") or "")
+        for result in results
+        if bool((result.metadata or {}).get("provider_error")) or bool((result.metadata or {}).get("skipped"))
+    ]
+    return _profile_asset_moderation_summary(
+        kind=kind,
+        status=status_value,
+        final_decision=final_decision,
+        providers=[str(result.provider or "") for result in results if str(result.provider or "")],
+        findings=findings,
+        reason="semantic_visual_provider_unavailable" if semantic_missing else "",
+        provider_errors=[reason for reason in provider_errors if reason],
+        classifier_requested=classifier_requested,
+        safety_completed=safety_completed,
+    )
+
+
+def _profile_provider_error_result(provider, location, exc):
+    from worker.ai_agents.schemas import AgentResultSchema
+
+    return AgentResultSchema(
+        agent_slug=str(getattr(provider, "agent_slug", "profile_visual_provider")),
+        agent_version=str(getattr(provider, "agent_version", "v1")),
+        modality="image",
+        provider=str(getattr(provider, "provider_name", "visual_provider")),
+        decision="allow",
+        confidence=0.0,
+        findings=[],
+        metadata={
+            "skipped": True,
+            "provider_error": True,
+            "reason": "profile_visual_provider_error",
+            "error": _short_error(exc),
+            "location": location.model_dump(exclude_none=True),
+        },
+    )
+
+
+def _profile_asset_moderation_summary(
+    *,
+    kind: str,
+    status: str,
+    final_decision: str,
+    providers: list[str],
+    findings: list,
+    reason: str = "",
+    provider_errors: list[str] | None = None,
+    classifier_requested: bool = False,
+    safety_completed: bool = False,
+) -> dict[str, Any]:
+    asset_kind = "channel_banner" if kind == "banner" else "channel_logo"
+    asset_label = "Channel banner" if kind == "banner" else "Channel logo"
+    provider_unavailable = reason == "semantic_visual_provider_unavailable"
+    reason_title = "Visual safety scan unavailable" if provider_unavailable else (
+        "Unsafe visual detected" if status == "rejected" else "Visual needs admin review" if status == "needs_admin_review" else "Visual approved"
+    )
+    reason_message = (
+        "The semantic visual safety provider did not return a completed result. "
+        "This visual cannot be automatically approved and requires manual admin review before publishing."
+        if provider_unavailable
+        else _profile_asset_moderation_message(status)
+    )
+    return {
+        "status": status,
+        "final_decision": final_decision,
+        "reason": reason,
+        "asset_kind": asset_kind,
+        "asset_label": asset_label,
+        "decision": "blocked" if status == "rejected" else status,
+        "reason_title": reason_title,
+        "reason_message": reason_message,
+        "publisher_reason_message": (
+            "We could not complete the visual safety scan for this channel image. "
+            "An admin must review it before it can become public."
+            if provider_unavailable
+            else _profile_asset_moderation_message(status)
+        ),
+        "admin_reason_message": reason_message,
+        "technical_reason": reason,
+        "finding_count": len(findings),
+        "categories": _count_profile_finding_values(findings, "category"),
+        "severities": _count_profile_finding_values(findings, "severity"),
+        "providers": providers,
+        "provider_errors": provider_errors or [],
+        "classifier_requested": classifier_requested,
+        "safety_completed": safety_completed,
+        "message": _profile_asset_moderation_message(status),
+        "findings": [
+            {
+                "category": str(getattr(finding, "category", "") or ""),
+                "severity": str(getattr(finding, "severity", "") or ""),
+                "decision": str(getattr(finding, "decision", "") or ""),
+                "asset_kind": asset_kind,
+                "asset_label": asset_label,
+                "reason_title": reason_title,
+                "reason_message": reason_message,
+                "user_message": str(getattr(finding, "user_message", "") or ""),
+                "admin_message": str(getattr(finding, "admin_message", "") or ""),
+            }
+            for finding in findings[:10]
+        ],
+        "scanned_at": timezone.now().isoformat(),
+    }
+
+
+def _count_profile_finding_values(findings: list, attr_name: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for finding in findings:
+        key = str(getattr(finding, attr_name, "") or "").strip()
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _profile_asset_moderation_message(status_value: str) -> str:
+    if status_value == "approved":
+        return "Image passed configured visual moderation."
+    if status_value == "rejected":
+        return "Image blocked by moderation."
+    if status_value == "needs_admin_review":
+        return "Image needs manual admin review before it can become public."
+    return "Image moderation status updated."
+
+
+def _short_error(exc: BaseException, limit: int = 240) -> str:
+    return f"{exc.__class__.__name__}: {exc}"[:limit]
+
+
+def _handle_profile_asset_upload(profile: UserProfile, image_file, kind: str) -> list[str]:
+    should_scan = _profile_asset_scan_enabled(kind)
+    paths = _save_profile_asset(profile, image_file, kind, pending=should_scan)
+    summary = _moderate_profile_asset(profile, kind=kind, image_path=paths["processed_abs"]) if should_scan else {
+        "status": "approved",
+        "final_decision": "skipped",
+        "reason": "profile_visual_moderation_disabled",
+        "message": "Profile image moderation is disabled.",
+        "scanned_at": timezone.now().isoformat(),
+    }
+    status_value = str(summary.get("status") or "needs_admin_review").strip().lower()
+    fields = [f"{kind}_image_moderation_status", f"{kind}_image_moderation_summary"]
+    setattr(profile, f"{kind}_image_moderation_status", status_value)
+    setattr(profile, f"{kind}_image_moderation_summary", summary)
+    if status_value == "approved":
+        setattr(profile, f"{kind}_image_original", paths["original"])
+        setattr(profile, f"{kind}_image_processed", paths["processed"])
+        setattr(profile, f"{kind}_image_pending_original", "")
+        setattr(profile, f"{kind}_image_pending_processed", "")
+        fields.extend(
+            [
+                f"{kind}_image_original",
+                f"{kind}_image_processed",
+                f"{kind}_image_pending_original",
+                f"{kind}_image_pending_processed",
+            ]
+        )
+    else:
+        setattr(profile, f"{kind}_image_pending_original", paths["original"])
+        setattr(profile, f"{kind}_image_pending_processed", paths["processed"])
+        fields.extend([f"{kind}_image_pending_original", f"{kind}_image_pending_processed"])
+    return fields
 
 
 class CurrentUserProfileAssetsView(APIView):
@@ -2656,16 +2902,14 @@ class CurrentUserProfileAssetsView(APIView):
         update_fields: list[str] = []
         try:
             if banner_file is not None:
-                _save_profile_asset(profile, banner_file, "banner")
-                update_fields.extend(["banner_image_original", "banner_image_processed"])
+                update_fields.extend(_handle_profile_asset_upload(profile, banner_file, "banner"))
             if logo_file is not None:
-                _save_profile_asset(profile, logo_file, "logo")
-                update_fields.extend(["logo_image_original", "logo_image_processed"])
+                update_fields.extend(_handle_profile_asset_upload(profile, logo_file, "logo"))
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         if update_fields:
-            profile.save(update_fields=[*update_fields, "updated_at"])
+            profile.save(update_fields=[*dict.fromkeys([*update_fields, "updated_at"])])
         request.user.refresh_from_db()
         return Response(CurrentUserProfileSerializer(request.user, context={"request": request}).data)
 

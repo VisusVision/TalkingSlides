@@ -117,6 +117,10 @@ function profileDraftFromUser(user) {
     is_public_profile: Boolean(profile.is_public_profile),
     banner_url: String(profile.banner_url || ''),
     logo_url: String(profile.logo_url || ''),
+    banner_moderation_status: String(profile.banner_moderation_status || profile.banner_image_moderation_status || ''),
+    banner_moderation_summary: profile.banner_moderation_summary || profile.banner_image_moderation_summary || {},
+    logo_moderation_status: String(profile.logo_moderation_status || profile.logo_image_moderation_status || ''),
+    logo_moderation_summary: profile.logo_moderation_summary || profile.logo_image_moderation_summary || {},
   };
 }
 
@@ -135,7 +139,31 @@ function profileDraftFromPayload(payload) {
     is_public_profile: Boolean(payload?.is_public_profile),
     banner_url: String(payload?.banner_url || ''),
     logo_url: String(payload?.logo_url || ''),
+    banner_moderation_status: String(payload?.banner_moderation_status || ''),
+    banner_moderation_summary: payload?.banner_moderation_summary || {},
+    logo_moderation_status: String(payload?.logo_moderation_status || ''),
+    logo_moderation_summary: payload?.logo_moderation_summary || {},
   };
+}
+
+function profileAssetModerationMessage(payload) {
+  const statuses = [
+    ['Banner', payload?.banner_moderation_status, payload?.banner_moderation_summary],
+    ['Logo', payload?.logo_moderation_status, payload?.logo_moderation_summary],
+  ];
+  const pending = statuses.find(([, status]) => status === 'needs_admin_review');
+  if (pending) {
+    return pending[2]?.publisher_reason_message
+      || pending[2]?.reason_message
+      || `${pending[0]} image needs manual admin review before it can become public.`;
+  }
+  const blocked = statuses.find(([, status]) => status === 'rejected');
+  if (blocked) {
+    return blocked[2]?.publisher_reason_message
+      || blocked[2]?.reason_message
+      || `${blocked[0]} image blocked by moderation.`;
+  }
+  return 'Public profile saved.';
 }
 
 function displayNameFromDraft(draft, user) {
@@ -583,7 +611,7 @@ export default function Settings({ user, onUserRefresh }) {
       setBannerFile(null);
       setLogoFile(null);
       await refreshSessionUser();
-      setProfileMessage('Public profile saved.');
+      setProfileMessage(profileAssetModerationMessage(payload));
       setProfileEditorOpen(false);
     } catch (error) {
       const fieldErrors = profileFieldErrorsFromApi(error.details);
