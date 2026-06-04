@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Hls from 'hls.js/light';
+import Hls from 'hls.js';
 import { AlertCircle, Maximize2, Minimize2 } from 'lucide-react';
 import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer';
 import WatermarkOverlay from './WatermarkOverlay';
