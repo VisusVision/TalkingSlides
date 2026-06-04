@@ -12,7 +12,8 @@ from typing import Any
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from core.storage_retention import build_storage_report, storage_root_path
+from core.storage_adapter import get_storage_adapter
+from core.storage_retention import build_storage_report
 
 
 SNAPSHOT_REL_PATH = Path("observability") / "storage_metrics_snapshot.json"
@@ -34,7 +35,7 @@ class StorageMetricsSnapshot:
 
 
 def storage_metrics_snapshot_path(storage_root: str | Path | None = None) -> Path:
-    return storage_root_path(storage_root) / SNAPSHOT_REL_PATH
+    return get_storage_adapter(storage_root).resolve_path(SNAPSHOT_REL_PATH)
 
 
 def build_storage_metrics_snapshot(
@@ -61,18 +62,20 @@ def write_storage_metrics_snapshot(
     older_than_days: int = 30,
 ) -> dict[str, Any]:
     snapshot = build_storage_metrics_snapshot(storage_root=storage_root, older_than_days=older_than_days)
-    path = storage_metrics_snapshot_path(storage_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(f"{path.suffix}.tmp")
-    tmp_path.write_text(json.dumps(snapshot, ensure_ascii=True, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    adapter = get_storage_adapter(storage_root)
+    path = adapter.resolve_path(SNAPSHOT_REL_PATH)
+    tmp_rel_path = SNAPSHOT_REL_PATH.with_suffix(f"{SNAPSHOT_REL_PATH.suffix}.tmp")
+    tmp_path = adapter.resolve_path(tmp_rel_path)
+    adapter.write_text(tmp_rel_path, json.dumps(snapshot, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
     os.replace(tmp_path, path)
     return snapshot
 
 
 def load_storage_metrics_snapshot(*, storage_root: str | Path | None = None) -> StorageMetricsSnapshot:
-    path = storage_metrics_snapshot_path(storage_root)
+    adapter = get_storage_adapter(storage_root)
+    path = adapter.resolve_path(SNAPSHOT_REL_PATH)
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = json.loads(adapter.read_text(SNAPSHOT_REL_PATH))
     except FileNotFoundError:
         return StorageMetricsSnapshot(available=False, warnings=["storage_metrics_snapshot_missing"], path=str(path))
     except (OSError, json.JSONDecodeError) as exc:

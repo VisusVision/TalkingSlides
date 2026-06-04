@@ -16,6 +16,7 @@ django.setup()
 
 from django.core.management import call_command  # noqa: E402
 
+from core.storage_adapter import FilesystemStorageAdapter, StoragePathTraversalError  # noqa: E402
 from core.storage_health import StorageHealthError, run_filesystem_storage_smoke  # noqa: E402
 from core.views import _normalize_rel_storage_path, _resolve_storage_file  # noqa: E402
 
@@ -36,6 +37,39 @@ def test_storage_file_resolution_stays_inside_storage_root(tmp_path):
     assert _resolve_storage_file(storage_root, "1/lesson.mp4") == media_file.resolve()
     assert _resolve_storage_file(storage_root, "../outside.txt") is None
     assert _resolve_storage_file(storage_root, "missing.mp4") is None
+
+
+def test_filesystem_storage_adapter_reads_writes_and_checks_existence(tmp_path):
+    adapter = FilesystemStorageAdapter(tmp_path)
+
+    adapter.write_bytes("nested/blob.bin", b"payload")
+    adapter.write_text("nested/info.txt", "hello")
+
+    assert adapter.exists("nested/blob.bin") is True
+    assert adapter.read_bytes("nested/blob.bin") == b"payload"
+    assert adapter.read_text("nested/info.txt") == "hello"
+    assert adapter.resolve_path("nested/blob.bin") == (tmp_path / "nested" / "blob.bin").resolve()
+
+
+def test_filesystem_storage_adapter_rejects_path_traversal(tmp_path):
+    adapter = FilesystemStorageAdapter(tmp_path)
+
+    for unsafe_path in ("../secret.txt", "nested/../../secret.txt", "/absolute/secret.txt"):
+        with pytest.raises(StoragePathTraversalError):
+            adapter.resolve_path(unsafe_path)
+
+
+def test_filesystem_storage_adapter_scopes_paths_to_storage_root(tmp_path):
+    root = tmp_path / "storage"
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    adapter = FilesystemStorageAdapter(root)
+
+    adapter.write_text("inside.txt", "inside")
+
+    assert adapter.read_text("inside.txt") == "inside"
+    assert outside.read_text(encoding="utf-8") == "outside"
+    assert adapter.resolve_path("inside.txt").is_relative_to(root.resolve())
 
 
 def test_filesystem_storage_smoke_writes_reads_and_deletes_probe(tmp_path):

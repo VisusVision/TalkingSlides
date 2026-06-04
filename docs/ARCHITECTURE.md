@@ -60,6 +60,8 @@ Important properties:
 
 The current runtime storage implementation is filesystem-backed. API, render worker, TTS service, avatar worker, and playback endpoints read and write relative paths under `STORAGE_ROOT`. Local Compose mounts repo-root `storage_local/` into containers as `/app/storage_local`. MinIO and S3-style env vars exist, but there is no active object-storage adapter yet.
 
+`core.storage_adapter.FilesystemStorageAdapter` is the first adapter boundary. It is filesystem-only and currently used by low-risk storage smoke, metrics snapshot, and report-only retention helpers. It preserves existing relative path formats and does not change public URLs, database fields, sidecar JSON, render outputs, playback serving, avatar generation, or TTS generation.
+
 For live multi-user production, the target architecture is S3-compatible object storage such as managed cloud S3 or production-grade MinIO. A durable shared filesystem may be used only as a temporary bridge when it is externally backed up, mounted consistently by every service, monitored, capacity-alerted, and restore-tested in staging.
 
 Storage is classified by durability and deletion risk:
@@ -69,7 +71,7 @@ Storage is classified by durability and deletion risk:
 - Temporary: smoke probes, old temp/lock/part files, scratch directories, and optional caches.
 - Operational evidence: storage metrics snapshots and render recovery audit logs.
 
-Database and media storage must be backed up and restored together. Project deletion currently removes database state but does not guarantee comprehensive media cleanup. Quotas, retention execution, destructive cleanup, orphan reconciliation, and MinIO/S3 delivery remain future implementation work and must not be described as production-ready until implemented.
+Database and media storage must be backed up and restored together. Project deletion currently removes database state but does not guarantee comprehensive media cleanup. Runtime media migration to the adapter, quotas, retention execution, destructive cleanup, orphan reconciliation, and MinIO/S3 delivery remain future implementation work and must not be described as production-ready until implemented.
 
 See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full backup/restore, quota, retention, deletion, and implementation roadmap.
 
