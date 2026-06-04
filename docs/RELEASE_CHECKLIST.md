@@ -2,12 +2,16 @@
 
 Use this checklist for staging and production releases. It is intentionally operational and should be copied into a release ticket when needed.
 
+Release policy, versioning, tag naming, approval, and GitHub Release steps are defined in [RELEASE_PROCESS.md](RELEASE_PROCESS.md). The release tag is the source of truth for a shipped product version, and [../CHANGELOG.md](../CHANGELOG.md) must contain the matching version entry before tagging.
+
 ## 1. Branch Status
 
 - Confirm the branch is current with the intended base branch.
 - Confirm no unrelated files are modified.
 - Confirm no real `.env`, database, `storage_local`, generated media, `node_modules`, or `dist` files are staged.
 - Confirm the target profile is selected: `staging`, `secure_stream`, or `drm_protected`.
+- Confirm the release branch name, target version, release owner, and approver are recorded in the release ticket.
+- Confirm the changelog entry matches the intended release tag.
 
 ```powershell
 git status --short
@@ -93,6 +97,7 @@ cd ..\..
 - Confirm rollback command or platform rollback process.
 - Confirm worker rollback/drain plan if task payloads changed.
 - Record the exact git SHA and image tag.
+- Record whether migrations are backward-compatible and whether rollback requires database restore.
 
 ## 8. Pre-deploy Smoke
 
@@ -158,6 +163,7 @@ Run only on a validated GPU environment:
 9. Deploy avatar worker only if GPU profile is enabled.
 10. Run post-deploy smoke.
 11. Watch logs and metrics.
+12. Create or finalize the GitHub Release only after production approval and smoke evidence are recorded.
 
 ## 13. Post-deploy Monitoring
 

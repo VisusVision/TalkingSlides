@@ -15,7 +15,9 @@
 - [Production deployment](PRODUCTION_DEPLOYMENT.md)
 - [Storage production readiness](STORAGE_PRODUCTION_READINESS.md)
 - [CSP Report-Only foundation](CSP_REPORT_ONLY.md)
+- [Release process](RELEASE_PROCESS.md)
 - [Release checklist](RELEASE_CHECKLIST.md)
+- [Changelog](../CHANGELOG.md)
 - [Secure playback and DRM](SECURE_PLAYBACK_DRM.md)
 - [Avatar pipeline](AVATAR_PIPELINE.md)
 
