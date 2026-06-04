@@ -38,6 +38,8 @@ To start the default local stack:
 - Deployment profiles: [docs/DEPLOYMENT_PROFILES.md](docs/DEPLOYMENT_PROFILES.md)
 - Production deployment: [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md)
 - Storage production readiness: [docs/STORAGE_PRODUCTION_READINESS.md](docs/STORAGE_PRODUCTION_READINESS.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Release process: [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md)
 - Release checklist: [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md)
 - Operations runbook: [docs/OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md)
 - Secure playback and DRM: [docs/SECURE_PLAYBACK_DRM.md](docs/SECURE_PLAYBACK_DRM.md)
