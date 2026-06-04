@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -18,7 +19,14 @@ from django.core.management import call_command  # noqa: E402
 
 from core.storage_adapter import FilesystemStorageAdapter, StoragePathTraversalError  # noqa: E402
 from core.storage_health import StorageHealthError, run_filesystem_storage_smoke  # noqa: E402
-from core.views import _normalize_rel_storage_path, _resolve_storage_file  # noqa: E402
+from core.subtitle_translation import _source_language_code  # noqa: E402
+from core.views import (  # noqa: E402
+    _language_detection_sidecar_for_job,
+    _normalize_rel_storage_path,
+    _playback_sidecar_for_job,
+    _resolve_storage_file,
+    _storage_rel_path_exists,
+)
 
 
 def test_storage_paths_are_normalized_to_safe_relative_paths():
@@ -37,6 +45,73 @@ def test_storage_file_resolution_stays_inside_storage_root(tmp_path):
     assert _resolve_storage_file(storage_root, "1/lesson.mp4") == media_file.resolve()
     assert _resolve_storage_file(storage_root, "../outside.txt") is None
     assert _resolve_storage_file(storage_root, "missing.mp4") is None
+
+
+def test_playback_sidecar_read_uses_storage_adapter_without_changing_payload(tmp_path):
+    adapter = FilesystemStorageAdapter(tmp_path)
+    payload = {
+        "mp4_rel_path": "42/42.mp4",
+        "avatar": {"track_rel_path": "42/avatar/avatar_track.mp4"},
+        "protection_mode": "secure_stream",
+    }
+    adapter.write_text("42/playback_assets.json", json.dumps(payload))
+
+    assert _playback_sidecar_for_job(str(tmp_path), 42) == payload
+
+
+def test_playback_sidecar_missing_or_invalid_still_returns_empty_payload(tmp_path):
+    adapter = FilesystemStorageAdapter(tmp_path)
+
+    assert _playback_sidecar_for_job(str(tmp_path), 42) == {}
+
+    adapter.write_text("42/playback_assets.json", "{")
+
+    assert _playback_sidecar_for_job(str(tmp_path), 42) == {}
+
+
+def test_language_detection_sidecar_read_and_missing_fallback_use_storage_adapter(tmp_path):
+    adapter = FilesystemStorageAdapter(tmp_path)
+    payload = {
+        "detected_language": "tr",
+        "resolved_language": "tr",
+        "source": "detector",
+        "confidence": 0.91,
+        "fallback_used": False,
+        "supported_languages": ["en", "tr"],
+        "detector": "fixture",
+    }
+    adapter.write_text("42/language_detection.json", json.dumps(payload))
+
+    assert _language_detection_sidecar_for_job(str(tmp_path), 42) == payload
+    assert _source_language_code(42, storage_root=tmp_path) == "tr"
+
+    missing = _language_detection_sidecar_for_job(str(tmp_path), 99)
+    assert missing["resolved_language"] == "en"
+    assert missing["source"] == "pending"
+
+
+def test_language_detection_invalid_sidecar_preserves_fallback_behavior(tmp_path):
+    adapter = FilesystemStorageAdapter(tmp_path)
+    adapter.write_text("42/language_detection.json", "{")
+
+    payload = _language_detection_sidecar_for_job(str(tmp_path), 42)
+
+    assert payload["resolved_language"] == "en"
+    assert payload["source"] == "fallback_invalid_sidecar"
+    assert _source_language_code(42, storage_root=tmp_path, fallback="en") == "en"
+
+
+def test_storage_rel_path_exists_uses_adapter_traversal_rejection(tmp_path):
+    adapter = FilesystemStorageAdapter(tmp_path)
+    adapter.write_bytes("42/subtitles/en.vtt", b"WEBVTT")
+    outside = tmp_path.parent / "outside.vtt"
+    outside.write_bytes(b"outside")
+
+    assert _storage_rel_path_exists(str(tmp_path), "42/subtitles/en.vtt") is True
+    assert _storage_rel_path_exists(str(tmp_path), "/42/subtitles/en.vtt") is True
+    assert _storage_rel_path_exists(str(tmp_path), "../outside.vtt") is False
+    assert _storage_rel_path_exists(str(tmp_path), str(outside)) is False
+    assert _storage_rel_path_exists(str(tmp_path), "missing.vtt") is False
 
 
 def test_filesystem_storage_adapter_reads_writes_and_checks_existence(tmp_path):

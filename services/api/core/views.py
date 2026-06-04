@@ -192,6 +192,7 @@ from core.avatar_source_validation import (
     stored_avatar_source_state,
 )
 from core.render_followup_intents import merge_render_followup_intent
+from core.storage_adapter import get_storage_adapter
 from ai_agents.policies import (
     APPROVED_MODERATION_STATUSES,
     manual_moderation_prevents_auto_override,
@@ -825,11 +826,9 @@ def _decode_rel_path(path_token: str | None) -> str:
 
 
 def _playback_sidecar_for_job(storage_root: str, project_id: int) -> dict:
-    sidecar_path = Path(storage_root) / str(project_id) / "playback_assets.json"
-    if not sidecar_path.exists():
-        return {}
     try:
-        return json.loads(sidecar_path.read_text(encoding="utf-8"))
+        raw = get_storage_adapter(storage_root).read_text(f"{project_id}/playback_assets.json", encoding="utf-8")
+        return json.loads(raw)
     except Exception:
         return {}
 
@@ -882,8 +881,12 @@ def _resolve_playback_mode_for_project(project: Project, sidecar: dict | None) -
 
 
 def _language_detection_sidecar_for_job(storage_root: str, project_id: int) -> dict:
-    sidecar_path = Path(storage_root) / str(project_id) / "language_detection.json"
-    if not sidecar_path.exists():
+    try:
+        raw = get_storage_adapter(storage_root).read_text(f"{project_id}/language_detection.json", encoding="utf-8")
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return payload
+    except FileNotFoundError:
         return {
             "detected_language": None,
             "resolved_language": "en",
@@ -893,10 +896,6 @@ def _language_detection_sidecar_for_job(storage_root: str, project_id: int) -> d
             "supported_languages": ["en"],
             "detector": "placeholder_v1",
         }
-    try:
-        payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            return payload
     except Exception:
         pass
     return {
@@ -1932,10 +1931,13 @@ def _subtitle_vtt_rel_path_for_job(job: Job) -> str:
 
 
 def _storage_rel_path_exists(storage_root: str | os.PathLike[str], rel_path: str) -> bool:
-    if not rel_path or ".." in str(rel_path).replace("\\", "/").split("/"):
+    safe_rel = str(rel_path or "").replace("\\", "/").lstrip("/")
+    if not safe_rel:
         return False
-    full_path = Path(storage_root) / str(rel_path).lstrip("/")
-    return full_path.exists() and full_path.is_file()
+    try:
+        return get_storage_adapter(storage_root).resolve_path(safe_rel).is_file()
+    except Exception:
+        return False
 
 
 def _generate_vtt_media_token_for_job(
