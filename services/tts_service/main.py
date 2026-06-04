@@ -29,8 +29,9 @@ import subprocess
 import tempfile
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.responses import FileResponse
@@ -55,7 +56,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger("tts_service")
 
-app = FastAPI(title="AI Academy TTS Service", version="0.2.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    if not XTTS_PRELOAD_ON_STARTUP:
+        logger.info("XTTS preload on startup disabled")
+        yield
+        return
+
+    logger.info("XTTS preload on startup enabled (blocking=%s)", XTTS_WARMUP_BLOCKING)
+    if XTTS_WARMUP_BLOCKING:
+        _warmup_xtts_once()
+    else:
+        _start_xtts_warmup_background()
+    yield
+
+
+app = FastAPI(title="AI Academy TTS Service", version="0.2.0", lifespan=lifespan)
 
 
 def _env_int(name: str, default: int, minimum: int = 0) -> int:
@@ -1170,19 +1187,6 @@ def ready() -> dict:
     if not ready:
         raise HTTPException(status_code=503, detail=payload)
     return payload
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    if not XTTS_PRELOAD_ON_STARTUP:
-        logger.info("XTTS preload on startup disabled")
-        return
-
-    logger.info("XTTS preload on startup enabled (blocking=%s)", XTTS_WARMUP_BLOCKING)
-    if XTTS_WARMUP_BLOCKING:
-        _warmup_xtts_once()
-    else:
-        _start_xtts_warmup_background()
 
 
 @app.post("/synthesize")
