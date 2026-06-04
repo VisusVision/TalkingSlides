@@ -61,7 +61,9 @@ In container deployments, run migrations as a release step or one-off job before
 
 ## Storage
 
-The current app reads and writes through `STORAGE_ROOT`. Production needs durable shared storage visible to API, render worker, TTS service, and avatar worker. Use an external volume or implement object storage before running horizontally scaled workers. MinIO variables exist for local/future S3-compatible storage, but the active application paths are filesystem-based.
+The current app reads and writes through filesystem paths under `STORAGE_ROOT`. Production needs durable shared storage visible to API, render worker, TTS service, and avatar worker. MinIO variables exist for local/future S3-compatible storage, but the active application paths are filesystem-based and no S3 adapter is implemented yet.
+
+For live multi-user production, the recommended target is S3-compatible object storage such as managed cloud S3 or production-grade MinIO. A shared filesystem is only a temporary bridge when it is durable outside the app host, consistently mounted by every service, monitored, backed up, capacity-alerted, and restore-tested in staging.
 
 When `DEBUG=False`, `STORAGE_ROOT` must be explicitly configured as an existing absolute directory that is readable and writable by the app process. Missing or read-only mounts fail during settings startup instead of later during uploads or renders.
 
@@ -73,6 +75,8 @@ python manage.py storage_smoke_check
 ```
 
 Define backup, retention, quota, and cleanup policies before broad production use. See [Storage production readiness](STORAGE_PRODUCTION_READINESS.md).
+
+Do not claim production-ready storage until database and media backups are coordinated, restore has been proven in staging, quota/retention policy is documented, and destructive cleanup remains manual or is implemented through reviewed dry-run/confirm tooling. Project deletion currently does not guarantee comprehensive media cleanup.
 
 ## HTTPS, Proxy, and Secure Flags
 

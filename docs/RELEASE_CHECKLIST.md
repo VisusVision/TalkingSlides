@@ -93,11 +93,25 @@ cd ..\..
 
 - Confirm latest Postgres backup completed.
 - Confirm media storage backup or snapshot policy is healthy.
+- Record the database backup ID and matching media storage snapshot/object version marker for the release window.
+- Confirm the backup cadence meets the current RPO target documented in [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md).
+- Confirm the most recent staging restore drill restored database and media together and verified playback from restored media.
+- Confirm no release ticket claims production-ready storage until object/shared storage, backups, restore evidence, quota policy, retention policy, and deletion contract are explicitly reviewed.
 - Confirm previous image/release artifact is available.
 - Confirm rollback command or platform rollback process.
 - Confirm worker rollback/drain plan if task payloads changed.
 - Record the exact git SHA and image tag.
 - Record whether migrations are backward-compatible and whether rollback requires database restore.
+
+Storage evidence required before v1.0.0:
+
+- Production storage backend decision recorded: S3-compatible object storage target, or a time-boxed durable shared filesystem exception.
+- `python manage.py storage_smoke_check` passes against the production-like storage target.
+- `python manage.py storage_retention_check --dry-run --older-than-days 30 --json` is archived from staging.
+- Storage metrics snapshot freshness is monitored or checked by an assigned operator.
+- Per-user or per-tenant quota policy and alert thresholds are documented.
+- Manual approval process exists before any destructive cleanup.
+- Project-delete media cleanup gap is accepted as an explicit remaining risk or fixed in a later PR.
 
 ## 8. Pre-deploy Smoke
 
@@ -177,6 +191,9 @@ Watch:
 - Postgres connections and slow queries
 - TTS readiness and latency
 - storage capacity
+- storage metrics snapshot freshness
+- quota warning thresholds
+- orphan and retention candidate trends
 - playback 403/404/409 rates
 - HLS manifest/segment errors
 
