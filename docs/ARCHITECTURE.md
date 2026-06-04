@@ -56,6 +56,23 @@ Important properties:
 - Runtime media is stored under `STORAGE_ROOT`.
 - Final public catalog visibility depends on publish state, moderation state, project readiness, and completed video export jobs.
 
+## Storage Architecture Contract
+
+The current runtime storage implementation is filesystem-backed. API, render worker, TTS service, avatar worker, and playback endpoints read and write relative paths under `STORAGE_ROOT`. Local Compose mounts repo-root `storage_local/` into containers as `/app/storage_local`. MinIO and S3-style env vars exist, but there is no active object-storage adapter yet.
+
+For live multi-user production, the target architecture is S3-compatible object storage such as managed cloud S3 or production-grade MinIO. A durable shared filesystem may be used only as a temporary bridge when it is externally backed up, mounted consistently by every service, monitored, capacity-alerted, and restore-tested in staging.
+
+Storage is classified by durability and deletion risk:
+
+- Critical: original uploads, current published render outputs, playback sidecars, HLS assets, profile/avatar source media, voice reference audio, and current avatar outputs.
+- Conditional/regenerable: generated renders, translated subtitles, HLS sidecars, TTS audio, moderation samples, and avatar generated outputs. These still need backups when they are user-visible or expensive/impossible to reproduce exactly.
+- Temporary: smoke probes, old temp/lock/part files, scratch directories, and optional caches.
+- Operational evidence: storage metrics snapshots and render recovery audit logs.
+
+Database and media storage must be backed up and restored together. Project deletion currently removes database state but does not guarantee comprehensive media cleanup. Quotas, retention execution, destructive cleanup, orphan reconciliation, and MinIO/S3 delivery remain future implementation work and must not be described as production-ready until implemented.
+
+See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full backup/restore, quota, retention, deletion, and implementation roadmap.
+
 ### Render Recovery And Reconciliation
 
 Render recovery starts with report-only reconciliation. The API and worker continue to own normal render transitions, while `python manage.py render_recovery_check --dry-run` inspects durable state for operator-visible recovery candidates.

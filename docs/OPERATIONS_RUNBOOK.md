@@ -312,6 +312,9 @@ Check:
 - generated media path exists
 - permissions on mounted volumes
 - backup/retention jobs
+- database backup ID and matching storage snapshot/object version marker
+- quota warning thresholds and current usage trend
+- pending destructive cleanup approvals
 
 Do not manually delete active project folders while jobs are running.
 
@@ -365,6 +368,25 @@ Expected freshness gauges:
 - `system_observability_storage_snapshot_available 1`
 - `system_observability_storage_snapshot_age_seconds` close to the time since refresh
 - `system_observability_storage_snapshot_generated_timestamp` greater than `0`
+
+Production storage contract:
+
+- Live multi-user production should target S3-compatible object storage such as managed cloud S3 or production-grade MinIO. The current app still uses filesystem paths, so object storage requires a future storage adapter PR before it is active.
+- A shared filesystem is only a temporary production bridge when it is durable, externally backed up, mounted consistently by every service, monitored for capacity, and restore-tested in staging.
+- Database and media storage must be backed up and restored together. Record the database backup ID and storage snapshot/object marker as one recovery point.
+- Before v1.0.0, run a staging restore drill that proves project detail, playback, subtitles, profile/avatar media if enabled, and one rerender from restored source uploads.
+- Destructive cleanup requires manual approval, current backup evidence, a dry-run manifest, and archived before/after reports. There is no approved automatic deletion path yet.
+- Project deletion currently does not guarantee comprehensive media cleanup. Treat project-owned uploads/renders/subtitles/avatar media as remaining storage obligations until a manifest-based cleanup PR lands.
+
+Initial storage incident thresholds:
+
+- Warn at 70% capacity.
+- Escalate at 85% capacity.
+- Treat 95% capacity as an incident that may require pausing uploads/renders.
+- Investigate storage metrics snapshots older than 24 hours.
+- Investigate orphan or retention candidate bytes above the operator-reviewed threshold.
+
+See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full classification, backup/restore, quota, retention, and deletion contract.
 
 ## Docker Worker Build Triage
 
