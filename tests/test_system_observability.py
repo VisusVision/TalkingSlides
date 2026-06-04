@@ -35,6 +35,11 @@ from core.storage_metrics_snapshot import (  # noqa: E402
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _isolate_default_storage_root(settings, tmp_path):
+    settings.STORAGE_ROOT = str(tmp_path)
+
+
 def _make_project(username: str) -> Project:
     user = User.objects.create_user(username=username, password="pass")
     UserProfile.objects.create(user=user, role="teacher")
