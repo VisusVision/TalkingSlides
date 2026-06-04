@@ -1012,7 +1012,7 @@ def test_custom_background_slide_render_uses_fit_scale_and_overlay_text(tmp_path
 
 
 @pytest.mark.django_db
-def test_cover_upload_updates_project_cover_fields(tmp_path):
+def test_cover_upload_defaults_to_draft_without_updating_project_cover_fields(tmp_path):
     teacher = _make_teacher("cover_upload_teacher")
     project = Project.objects.create(title="Cover upload", user=teacher)
 
@@ -1033,14 +1033,22 @@ def test_cover_upload_updates_project_cover_fields(tmp_path):
 
     assert response.status_code == 200
     project.refresh_from_db()
-    assert project.cover_image_original.startswith(f"uploads/{project.id}/cover_")
-    assert project.cover_image_processed == project.cover_image_original
+    assert project.cover_image_original == ""
+    assert project.cover_image_processed == ""
+    assert project.draft_data["project"]["cover_image_original"].startswith(f"uploads/{project.id}/cover_")
+    assert project.draft_data["project"]["cover_image_processed"] == project.draft_data["project"]["cover_image_original"]
+    assert project.draft_data["metadata"]["cover_dirty"] is True
     assert project.moderation_summary["visual_asset_scan"]["status"] == "needs_rescan"
     assert project.moderation_summary["visual_asset_scan"]["asset_type"] == "cover"
     assert response.data["moderation_summary"]["visual_asset_scan"]["status"] == "needs_rescan"
     assert response.data["moderation_summary"]["visual_asset_scan"]["asset_type"] == "cover"
-    assert response.data["cover_url"].endswith(f"/api/v1/projects/{project.id}/cover/")
-    assert ProjectSerializer(project, context={"request": request}).data["cover_url"].endswith(f"/api/v1/projects/{project.id}/cover/")
+    assert response.data["cover_url"] == ""
+    assert f"/api/v1/projects/{project.id}/cover/?draft=1" in response.data["draft_cover_url"]
+    assert "cover_v=" in response.data["draft_cover_url"]
+    serialized = ProjectSerializer(project, context={"request": request}).data
+    assert serialized["cover_url"] == ""
+    assert f"/api/v1/projects/{project.id}/cover/?draft=1" in serialized["draft_cover_url"]
+    assert "cover_v=" in serialized["draft_cover_url"]
 
 
 @pytest.mark.django_db

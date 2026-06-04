@@ -2848,6 +2848,18 @@ def _source_moderation_message(moderation_status: str) -> str:
     return f"Source moderation status: {moderation_status or 'unknown'}."
 
 
+def _moderation_result_allows_draft_promotion(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict) or not result.get("enabled"):
+        return False
+    status_value = str(result.get("moderation_status") or result.get("status") or "").strip().lower()
+    decision = str(result.get("final_decision") or "").strip().lower()
+    if status_value in {"failed", "revision_required", "needs_admin_review", "admin_rejected", "block", "blocked", "rejected"}:
+        return False
+    if decision in {"block", "blocked", "rejected", "revision_required", "needs_admin_review"}:
+        return False
+    return status_value in {"approved", "admin_approved", "done", "completed"} or decision in {"allow", "approved", "admin_approved"}
+
+
 VISUAL_MODERATION_REVIEW_DECISIONS = {"block", "needs_admin_review"}
 
 
@@ -7455,10 +7467,19 @@ def concat_and_finalize(
         if use_draft:
             try:
                 from core.models import Project
-                from core.drafts import promote_project_draft
+                from core.drafts import (
+                    mark_project_moderation_approved_after_draft_promotion,
+                    promote_project_draft,
+                )
 
                 project = Project.objects.get(pk=int(project_id))
                 promote_project_draft(project, render_outputs={"page_timeline": page_timeline})
+                project.refresh_from_db()
+                if _moderation_result_allows_draft_promotion(source_moderation):
+                    mark_project_moderation_approved_after_draft_promotion(
+                        project,
+                        message="Draft moderation passed before rerender.",
+                    )
             except Exception:
                 logger.exception("Draft promotion failed after render project=%s", project_id)
                 _update_render_job(project_id, job_id, status="failed", progress=100, error_message="Draft promotion failed after render.")

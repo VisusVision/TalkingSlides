@@ -291,7 +291,8 @@ def test_catalog_exposes_cover_url_and_project_cover_endpoint_streams_file(tmp_p
 
         assert catalog_response.status_code == 200
         lesson = next(item for item in list(catalog_response.data) if item["id"] == project.id)
-        assert lesson["cover_url"].endswith(f"/api/v1/projects/{project.id}/cover/")
+        assert f"/api/v1/projects/{project.id}/cover/" in lesson["cover_url"]
+        assert "cover_v=" in lesson["cover_url"]
 
         cover_request = factory.get(f"/api/v1/projects/{project.id}/cover/")
         cover_response = views.ProjectCoverImageView.as_view()(cover_request, project_id=project.id)

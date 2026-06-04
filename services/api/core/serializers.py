@@ -4,6 +4,7 @@ DRF serializers for AI_ACADEMY core models.
 
 from collections.abc import Mapping
 from copy import deepcopy
+import hashlib
 import ipaddress
 import math
 from pathlib import Path
@@ -72,10 +73,12 @@ def _project_cover_rel_path(project: Project) -> str:
 
 
 def _project_cover_url(project: Project, context: dict | None) -> str:
-    if not _project_cover_rel_path(project):
+    rel_path = _project_cover_rel_path(project)
+    if not rel_path:
         return ""
 
-    url_path = f"/api/v1/projects/{project.id}/cover/"
+    cover_version = hashlib.sha256(rel_path.encode("utf-8")).hexdigest()[:12]
+    url_path = f"/api/v1/projects/{project.id}/cover/?cover_v={cover_version}"
     request = (context or {}).get("request")
     if request is not None:
         try:
@@ -366,10 +369,12 @@ def _project_draft_cover_rel_path(project: Project, context: dict | None) -> str
 
 
 def _project_draft_cover_url(project: Project, context: dict | None) -> str:
-    if not _project_draft_cover_rel_path(project, context):
+    draft_rel_path = _project_draft_cover_rel_path(project, context)
+    if not draft_rel_path:
         return ""
 
-    url_path = f"/api/v1/projects/{project.id}/cover/?draft=1"
+    cover_version = hashlib.sha256(draft_rel_path.encode("utf-8")).hexdigest()[:12]
+    url_path = f"/api/v1/projects/{project.id}/cover/?draft=1&cover_v={cover_version}"
     request = (context or {}).get("request")
     if request is not None:
         try:

@@ -391,8 +391,14 @@ export async function fetchUser(userId) {
 // Projects
 // ---------------------------------------------------------------------------
 
-export async function fetchProjects() {
-  const res = await fetch(`${API_BASE_URL}/projects/`, { headers: authHeaders() });
+export async function fetchProjects(options = {}) {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined && options.limit !== null) params.set("limit", String(options.limit));
+  if (options.offset !== undefined && options.offset !== null) params.set("offset", String(options.offset));
+  const query = String(options.q ?? options.search ?? "").trim();
+  if (query) params.set("q", query);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${API_BASE_URL}/projects/${suffix}`, { headers: authHeaders() });
   if (!res.ok) throw new Error("Failed to fetch projects");
   return res.json();
 }
@@ -438,8 +444,9 @@ export async function rerenderProject(projectId, options = {}) {
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error("Failed to rerender project");
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, "Failed to rerender project");
+  return data;
 }
 
 export async function rerenderProjectAvatar(projectId, options = {}) {
@@ -1340,7 +1347,7 @@ export async function updateProjectTranscript(projectId, pages, options = {}) {
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || 'Failed to save transcript edits');
+    throw new Error(apiErrorMessage(payload, 'Failed to save transcript edits'));
   }
   return res.json();
 }
@@ -1354,6 +1361,19 @@ export async function discardProjectDraft(projectId) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data.error || data.detail || 'Failed to discard draft');
+  }
+  return data;
+}
+
+export async function promoteProjectDraft(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/draft/promote/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw apiError(data, 'Failed to save draft changes');
   }
   return data;
 }
@@ -1418,7 +1438,7 @@ export async function applyProjectBackgroundToAll(projectId, payload = {}) {
 export async function uploadProjectCover(projectId, file, options = {}) {
   const formData = new FormData();
   formData.append('cover_file', file);
-  formData.append('draft_only', String(options.draftOnly ?? false));
+  formData.append('draft_only', String(options.draftOnly ?? true));
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/cover/`, {
     method: 'POST',
     headers: authHeaders(),
