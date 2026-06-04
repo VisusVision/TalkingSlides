@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timezone as datetime_timezone
 from pathlib import Path
 from typing import Any
 
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from core.storage_retention import build_storage_report, storage_root_path
 
@@ -107,7 +109,10 @@ def _coerce_metrics(raw: dict[str, Any]) -> dict[str, Any]:
     metrics = _zero_metrics()
     for key in ("total_storage_bytes", "retention_candidate_count", "orphan_candidate_count", "reclaimable_bytes_estimate"):
         metrics[key] = max(int(raw.get(key) or 0), 0)
-    metrics["generated_at"] = str(raw.get("generated_at") or "")
+    generated_at = _parse_generated_at(raw.get("generated_at"))
+    metrics["generated_at"] = generated_at.isoformat() if generated_at else ""
+    metrics["generated_timestamp"] = generated_at.timestamp() if generated_at else 0
+    metrics["age_seconds"] = max(0, int((timezone.now() - generated_at).total_seconds())) if generated_at else 0
     return metrics
 
 
@@ -118,4 +123,17 @@ def _zero_metrics() -> dict[str, Any]:
         "orphan_candidate_count": 0,
         "reclaimable_bytes_estimate": 0,
         "generated_at": "",
+        "generated_timestamp": 0,
+        "age_seconds": 0,
     }
+
+
+def _parse_generated_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    parsed = parse_datetime(value.strip())
+    if parsed is None:
+        return None
+    if timezone.is_naive(parsed):
+        return timezone.make_aware(parsed, datetime_timezone.utc)
+    return parsed

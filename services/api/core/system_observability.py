@@ -123,6 +123,8 @@ def _storage_metrics(*, storage_root: str | Path | None, older_than_days: int) -
             "retention_candidate_count": int(metrics.get("retention_candidate_count") or 0),
             "reclaimable_bytes_estimate": int(metrics.get("reclaimable_bytes_estimate") or 0),
             "snapshot_generated_at": metrics.get("generated_at") or "",
+            "snapshot_generated_timestamp": float(metrics.get("generated_timestamp") or 0),
+            "snapshot_age_seconds": int(metrics.get("age_seconds") or 0),
         },
     )
 
