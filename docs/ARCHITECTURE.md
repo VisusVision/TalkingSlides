@@ -62,6 +62,17 @@ The current runtime storage implementation is filesystem-backed. API, render wor
 
 `core.storage_adapter.FilesystemStorageAdapter` is the first adapter boundary. It is filesystem-only and currently used by low-risk storage smoke, metrics snapshot, and report-only retention helpers. It preserves existing relative path formats and does not change public URLs, database fields, sidecar JSON, render outputs, playback serving, avatar generation, or TTS generation.
 
+The runtime adoption map keeps object storage behind the current relative-path contract. Original uploads, render outputs, playback sidecars, HLS assets, translated subtitles, profile images, avatar source/generated assets, moderation frame samples, TTS audio, storage reports, and temp/lock/part files have different migration risks. Anything opened by LibreOffice, PyMuPDF, OpenCV, Pillow, ffmpeg, LivePortrait, MuseTalk, or XTTS must remain locally materialized until that caller has an explicit temp-file or streaming contract. Playback compatibility also needs an adapter-backed range/read contract before S3/MinIO can serve MP4/HLS/subtitle/avatar/profile media.
+
+Safe migration order:
+
+1. Keep the existing low-risk filesystem adapter helpers as Phase A.
+2. Move read-only sidecar/report reads behind the adapter as Phase B.
+3. Move write paths that can still write to the filesystem adapter as Phase C.
+4. Prove playback/media serving compatibility as Phase D.
+5. Implement the S3/MinIO adapter as Phase E.
+6. Add signed URL or private media delivery as Phase F only if the product/security model needs it.
+
 For live multi-user production, the target architecture is S3-compatible object storage such as managed cloud S3 or production-grade MinIO. A durable shared filesystem may be used only as a temporary bridge when it is externally backed up, mounted consistently by every service, monitored, capacity-alerted, and restore-tested in staging.
 
 Storage is classified by durability and deletion risk:
@@ -73,7 +84,7 @@ Storage is classified by durability and deletion risk:
 
 Database and media storage must be backed up and restored together. Project deletion currently removes database state but does not guarantee comprehensive media cleanup. Runtime media migration to the adapter, quotas, retention execution, destructive cleanup, orphan reconciliation, and MinIO/S3 delivery remain future implementation work and must not be described as production-ready until implemented.
 
-See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full backup/restore, quota, retention, deletion, and implementation roadmap.
+See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full backup/restore, quota, retention, deletion, runtime adoption map, S3/MinIO implications, and implementation roadmap.
 
 ### Render Recovery And Reconciliation
 
