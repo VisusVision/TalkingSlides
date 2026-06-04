@@ -291,9 +291,9 @@ These runtime paths should not move to object storage until their callers have a
 
 Phase A is already done for low-risk helper boundaries: `FilesystemStorageAdapter` exists, storage smoke checks use it, storage metrics snapshots use it, and report-only retention traversal uses it. These helpers validate adapter shape without touching user media flows.
 
-Phase B has started with adapter-backed read-only helpers for playback/language sidecar JSON reads, translated-subtitle source-language sidecar reads, and safe relative-path existence checks. Continue moving only read-only/runtime report paths where callers already treat missing or invalid files as a warning. Keep render recovery and retention behavior report-only.
+Phase B has adapter-backed read-only helpers for playback/language sidecar JSON reads, translated-subtitle source-language sidecar reads, and safe relative-path existence checks. Continue moving only read-only/runtime report paths where callers already treat missing or invalid files as a warning. Keep render recovery and retention behavior report-only.
 
-Phase C should adopt write paths that can still write to the filesystem adapter. Good candidates are JSON/text sidecars, translated subtitle files, profile image final writes after local processing, and final render metadata writes. The PR must preserve current relative path strings and should not introduce S3 code.
+Phase C is partially adopted for the lowest-risk worker JSON sidecar writes: `playback_assets.json` and `language_detection.json` now resolve paths and parent directories through the filesystem adapter while preserving the existing filesystem temp-file replace behavior and JSON bytes. Remaining Phase C candidates include other JSON/text metadata sidecars and reports only after focused review. Media binary writes, translated subtitle SRT/VTT outputs, upload writes, render video/audio outputs, avatar/TTS generation, streaming/range responses, cleanup, and S3/MinIO stay pending.
 
 Phase D should handle playback and media serving compatibility. Token generation can still sign relative paths, but stream responses need an adapter-backed read/range contract. HLS manifest rewriting must work from object bytes as well as local files. MP4 byte ranges, subtitle conversion, avatar overlay delivery, and profile image serving need compatibility tests before any backend switch.
 
@@ -301,7 +301,7 @@ Phase E should implement the S3/MinIO adapter behind the same contract only afte
 
 Phase F should add signed URL or private media delivery if needed. The decision is product/security dependent: the existing tokenized proxy can remain the compatibility layer, while direct signed URLs or CDN delivery can be added later for scale. Protected HLS key delivery and private avatar/profile media require the stricter path.
 
-The next PR should be Phase B: adapter-backed read-only sidecar/report path helpers plus tests, with no media writes moved and no S3 implementation.
+The next PR should continue Phase C with another narrow JSON/text metadata writer, such as render recovery audit reporting or avatar handoff manifests, only if existing filesystem behavior and stored relative paths can be preserved. Media writes, streaming compatibility, cleanup automation, and S3/MinIO remain separate phases.
 
 ## Future Adapter Test Plan
 

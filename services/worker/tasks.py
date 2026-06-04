@@ -939,8 +939,12 @@ def _package_hls_assets_for_playback(
 
 
 def _write_json_sidecar(project_id: str | int, file_name: str, payload: dict[str, Any]) -> str:
-    target = Path(STORAGE_ROOT) / str(project_id) / str(file_name)
-    target.parent.mkdir(parents=True, exist_ok=True)
+    from core.storage_adapter import get_storage_adapter
+
+    adapter = get_storage_adapter(STORAGE_ROOT)
+    relative_path = f"{project_id}/{file_name}"
+    target = adapter.resolve_path(relative_path)
+    adapter.make_dirs(str(project_id))
     with tempfile.NamedTemporaryFile(
         "w",
         encoding="utf-8",
