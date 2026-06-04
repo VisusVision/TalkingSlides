@@ -88,7 +88,7 @@ def _finding(
 
 
 @pytest.mark.django_db
-def test_visual_publish_gate_disabled_keeps_existing_publish_behavior(settings):
+def test_visual_publish_gate_blocks_latest_unsafe_run_even_when_legacy_flag_is_off(settings):
     settings.VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION = False
     project = _make_ready_project("disabled")
     run = _visual_run(project, final_decision="needs_admin_review")
@@ -96,9 +96,11 @@ def test_visual_publish_gate_disabled_keeps_existing_publish_behavior(settings):
 
     response = _publish(project, project.user)
 
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.data["reason"] == "visual_moderation_rejected"
+    assert response.data["latest_visual_run_id"] == run.id
     project.refresh_from_db()
-    assert project.is_published is True
+    assert project.is_published is False
 
 
 @pytest.mark.django_db

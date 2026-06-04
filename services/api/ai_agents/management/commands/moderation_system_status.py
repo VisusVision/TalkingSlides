@@ -61,6 +61,20 @@ class Command(BaseCommand):
         self.stdout.write("Text providers")
         text = status["text_providers"]
         self.stdout.write(f"  local text rules available: {_yes_no(text['local_text_rules_available'])}")
+        self.stdout.write(f"  text safety provider available: {_yes_no(text['text_safety_provider_available'])}")
+        self.stdout.write(f"  text safety provider: {text['text_safety_provider']}")
+        self.stdout.write(f"  text safety classifier enabled: {_yes_no(text['text_safety_classifier_enabled'])}")
+        self.stdout.write(f"  text safety timeout seconds: {text['text_safety_timeout_seconds']}")
+        self.stdout.write(f"  text safety categories: {', '.join(text['text_safety_categories'])}")
+        self.stdout.write(f"  text safety block severity: {text['text_safety_block_severity']}")
+        self.stdout.write(f"  text safety fallback provider: {text['text_safety_fallback_provider']}")
+        self.stdout.write(
+            f"  Azure Content Safety endpoint configured for text: "
+            f"{_yes_no(text['azure_content_safety_endpoint_configured'])}"
+        )
+        self.stdout.write(
+            f"  Azure Content Safety key configured for text: {_yes_no(text['azure_content_safety_key_configured'])}"
+        )
         self.stdout.write(f"  Ollama enabled: {_yes_no(text['ollama_enabled'])}")
         self.stdout.write(f"  Ollama base URL: {text['ollama_base_url']}")
         self.stdout.write(f"  Ollama text model: {text['ollama_text_model']}")
@@ -232,13 +246,49 @@ def _database_status() -> dict[str, Any]:
 
 
 def _text_provider_status() -> dict[str, Any]:
+    text_safety_status = _safe_text_safety_status()
     return {
         "local_text_rules_available": _import_status("worker.ai_agents.providers.local_rules_provider")["available"],
+        "text_safety_provider_available": _import_status("worker.ai_agents.providers.text_safety_provider")[
+            "available"
+        ],
+        **text_safety_status,
         "ollama_enabled": bool(getattr(settings, "AI_AGENTS_LOCAL_LLM_ENABLED", False)),
         "ollama_base_url": str(getattr(settings, "AI_AGENTS_OLLAMA_BASE_URL", "")),
         "ollama_text_model": str(getattr(settings, "AI_AGENTS_TEXT_MODEL", "")),
         "ollama_timeout_seconds": getattr(settings, "AI_AGENTS_LLM_TIMEOUT_SECONDS", None),
     }
+
+
+def _safe_text_safety_status() -> dict[str, Any]:
+    try:
+        module = importlib.import_module("worker.ai_agents.providers.text_safety_provider")
+        return module.text_safety_provider_status()
+    except Exception:
+        return {
+            "text_safety_provider": str(getattr(settings, "TEXT_SAFETY_PROVIDER", "local_rules") or "local_rules")
+            .strip()
+            .lower(),
+            "text_safety_classifier_enabled": bool(getattr(settings, "TEXT_SAFETY_CLASSIFIER_ENABLED", False)),
+            "text_safety_timeout_seconds": getattr(settings, "TEXT_SAFETY_TIMEOUT_SECONDS", None),
+            "text_safety_categories": [
+                item.strip()
+                for item in str(getattr(settings, "TEXT_SAFETY_CATEGORIES", "") or "").split(",")
+                if item.strip()
+            ],
+            "text_safety_block_severity": getattr(settings, "TEXT_SAFETY_BLOCK_SEVERITY", None),
+            "text_safety_fallback_provider": str(getattr(settings, "TEXT_SAFETY_FALLBACK_PROVIDER", "") or "")
+            .strip()
+            .lower(),
+            "azure_content_safety_enabled": bool(getattr(settings, "AZURE_CONTENT_SAFETY_ENABLED", False)),
+            "azure_content_safety_endpoint_configured": bool(
+                str(getattr(settings, "AZURE_CONTENT_SAFETY_ENDPOINT", "") or "").strip()
+            ),
+            "azure_content_safety_key_configured": bool(
+                str(getattr(settings, "AZURE_CONTENT_SAFETY_KEY", "") or "").strip()
+            ),
+            "azure_content_safety_api_version": str(getattr(settings, "AZURE_CONTENT_SAFETY_API_VERSION", "")),
+        }
 
 
 def _visual_ocr_video_status() -> dict[str, Any]:

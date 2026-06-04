@@ -153,7 +153,7 @@ def test_default_visual_safety_provider_none_makes_no_external_call(monkeypatch,
     assert result.findings == []
 
 
-def test_classifier_disabled_skips_safely(monkeypatch, tmp_path):
+def test_classifier_disabled_returns_provider_unavailable(monkeypatch, tmp_path):
     image_path = _save_image(tmp_path / "safe.png")
     monkeypatch.setattr(settings, "VISUAL_SAFETY_PROVIDER", "azure_content_safety", raising=False)
     monkeypatch.setattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False, raising=False)
@@ -163,13 +163,15 @@ def test_classifier_disabled_skips_safely(monkeypatch, tmp_path):
 
     result = AzureContentSafetyVisualProvider().review_image(str(image_path), _location())
 
-    assert result.decision == "allow"
-    assert result.findings == []
+    assert result.decision == "needs_admin_review"
+    assert result.findings[0].category == "provider_unavailable"
+    assert result.findings[0].decision == "needs_admin_review"
     assert result.metadata["skipped"] is True
     assert result.metadata["reason"] == "visual_safety_classifier_disabled"
+    assert "Unsafe visual detected" not in result.findings[0].user_message
 
 
-def test_missing_azure_endpoint_or_key_skips_safely(monkeypatch, tmp_path):
+def test_missing_azure_endpoint_or_key_returns_provider_unavailable(monkeypatch, tmp_path):
     image_path = _save_image(tmp_path / "safe.png")
     _enable_azure_visual_safety(monkeypatch)
     monkeypatch.setattr(settings, "AZURE_CONTENT_SAFETY_ENDPOINT", "", raising=False)
@@ -177,12 +179,15 @@ def test_missing_azure_endpoint_or_key_skips_safely(monkeypatch, tmp_path):
 
     result = AzureContentSafetyVisualProvider().review_image(str(image_path), _location())
 
-    assert result.decision == "allow"
+    assert result.decision == "needs_admin_review"
+    assert result.findings[0].category == "provider_unavailable"
+    assert result.findings[0].decision == "needs_admin_review"
     assert result.metadata["skipped"] is True
     assert result.metadata["reason"] == "azure_content_safety_missing_config"
+    assert "unsafe visual" not in result.findings[0].user_message.lower()
 
 
-def test_oversized_image_skips_safely(monkeypatch, tmp_path):
+def test_oversized_image_returns_provider_unavailable(monkeypatch, tmp_path):
     image_path = tmp_path / "large.bin"
     image_path.write_bytes(b"x" * 128)
     _enable_azure_visual_safety(monkeypatch)
@@ -190,7 +195,8 @@ def test_oversized_image_skips_safely(monkeypatch, tmp_path):
 
     result = AzureContentSafetyVisualProvider().review_image(str(image_path), _location())
 
-    assert result.decision == "allow"
+    assert result.decision == "needs_admin_review"
+    assert result.findings[0].category == "provider_unavailable"
     assert result.metadata["skipped"] is True
     assert result.metadata["reason"] == "image_too_large"
     assert result.metadata["file_size_bytes"] == 128
@@ -240,7 +246,19 @@ def test_mocked_azure_unsafe_result_maps_findings(monkeypatch, tmp_path):
     assert all(finding.decision == "block" for finding in result.findings)
 
 
-def test_azure_timeout_or_api_error_fails_open(monkeypatch, tmp_path):
+def test_mocked_azure_low_severity_result_requires_admin_review(monkeypatch, tmp_path):
+    image_path = _save_image(tmp_path / "uncertain.png")
+    _enable_azure_visual_safety(monkeypatch)
+    _mock_azure_response(monkeypatch, {"categoriesAnalysis": [{"category": "Violence", "severity": 2}]})
+
+    result = AzureContentSafetyVisualProvider().review_image(str(image_path), _location())
+
+    assert result.decision == "needs_admin_review"
+    assert result.findings[0].category == "violence"
+    assert result.findings[0].decision == "needs_admin_review"
+
+
+def test_azure_timeout_or_api_error_returns_provider_unavailable(monkeypatch, tmp_path):
     image_path = _save_image(tmp_path / "timeout.png")
     _enable_azure_visual_safety(monkeypatch)
 
@@ -251,10 +269,39 @@ def test_azure_timeout_or_api_error_fails_open(monkeypatch, tmp_path):
 
     result = AzureContentSafetyVisualProvider().review_image(str(image_path), _location())
 
-    assert result.decision == "allow"
-    assert result.findings == []
+    assert result.decision == "needs_admin_review"
+    assert result.findings[0].category == "provider_unavailable"
+    assert result.findings[0].decision == "needs_admin_review"
     assert result.metadata["provider_error"] is True
     assert result.metadata["reason"] == "azure_content_safety_timeout"
+    assert "unsafe visual" not in result.findings[0].user_message.lower()
+
+
+@pytest.mark.django_db
+def test_visual_asset_moderation_allows_mocked_provider_safe_result(monkeypatch, tmp_path):
+    _enable_visual_moderation(monkeypatch)
+    _enable_azure_visual_safety(monkeypatch)
+    _mock_azure_response(
+        monkeypatch,
+        {"categoriesAnalysis": [{"category": "Violence", "severity": 0}, {"category": "Sexual", "severity": 0}]},
+    )
+    project = _make_project("visual_safe_integration", status="processing", moderation_status="approved")
+    image_path = _save_image(tmp_path / "safe-slide.png")
+
+    result = worker_tasks._run_auto_visual_asset_moderation_after_export(
+        project.id,
+        [{"index": 0, "source_slide_index": 0, "page_key": "s1-p1", "image_path": str(image_path)}],
+    )
+
+    project.refresh_from_db()
+    run = AgentRun.objects.get(project=project, phase="visual_asset_scan")
+    assert result["status"] == "done"
+    assert result["final_decision"] == "allow"
+    assert result["finding_count"] == 0
+    assert run.final_decision == "allow"
+    assert project.moderation_status == "approved"
+    assert AgentFinding.objects.filter(run__project=project, category="provider_unavailable").count() == 0
+    assert "azure_content_safety" in project.moderation_summary["visual_asset_scan"]["providers"]
 
 
 @pytest.mark.django_db
@@ -300,7 +347,7 @@ def test_video_frame_audit_includes_mocked_provider_findings(monkeypatch, tmp_pa
     assert result["finding_count"] == 1
     assert finding.content_type == "video_frame"
     assert finding.category == "sexual"
-    assert project.moderation_status == "approved"
+    assert project.moderation_status == "revision_required"
     assert "azure_content_safety" in project.moderation_summary["video_frame_audit"]["visual_providers"]
 
 
@@ -319,7 +366,7 @@ def test_project_moderation_status_moves_to_revision_required_after_visual_safet
 
 
 @pytest.mark.django_db
-def test_visual_publish_gate_blocks_only_when_enabled(settings):
+def test_visual_publish_gate_blocks_unsafe_latest_run_even_when_legacy_flag_is_off(settings):
     project = _make_project("visual_gate")
     run = AgentRun.objects.create(
         project=project,
@@ -345,13 +392,13 @@ def test_visual_publish_gate_blocks_only_when_enabled(settings):
     )
 
     settings.VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION = False
-    assert project_can_publish(project) is True
+    assert project_can_publish(project) is False
     settings.VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION = True
     assert project_can_publish(project) is False
 
 
 @pytest.mark.django_db
-def test_video_frame_publish_gate_blocks_only_when_enabled(settings):
+def test_video_frame_publish_gate_blocks_unsafe_latest_run_even_when_legacy_flag_is_off(settings):
     project = _make_project("frame_gate")
     run = AgentRun.objects.create(
         project=project,
@@ -377,7 +424,7 @@ def test_video_frame_publish_gate_blocks_only_when_enabled(settings):
     )
 
     settings.VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION = False
-    assert project_can_publish(project) is True
+    assert project_can_publish(project) is False
     settings.VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION = True
     assert project_can_publish(project) is False
 

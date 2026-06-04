@@ -195,6 +195,7 @@ from core.render_followup_intents import merge_render_followup_intent
 from core.storage_adapter import get_storage_adapter
 from ai_agents.policies import (
     APPROVED_MODERATION_STATUSES,
+    enforce_unpublished_for_unresolved_moderation,
     manual_moderation_prevents_auto_override,
     moderation_is_approved_for_catalog,
     publication_block_payload,
@@ -5206,6 +5207,7 @@ class ProjectDetailView(APIView):
             if has_avatar_runtime_settings:
                 save_project_avatar_runtime_settings(project, request.data.get("avatar_runtime_settings"))
                 project.refresh_from_db()
+        enforce_unpublished_for_unresolved_moderation(project)
         if has_is_published and not was_published and bool(getattr(project, "is_published", False)):
             try:
                 from core.notifications import notify_publisher_posted_lesson

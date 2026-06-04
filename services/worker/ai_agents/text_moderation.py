@@ -6,6 +6,7 @@ import hashlib
 from .policy_engine import PolicyEngine
 from .providers.local_rules_provider import LocalRulesProvider
 from .providers.ollama_provider import OllamaProvider
+from .providers.text_safety_provider import AzureContentSafetyTextProvider, build_text_safety_provider
 from .providers.translation_provider import TranslationModerationProvider, TranslationResult
 from .schemas import AgentFindingSchema, AgentResultSchema, FindingLocation
 
@@ -27,17 +28,95 @@ class TextModerationAgent:
         policy_engine: PolicyEngine | None = None,
         ollama_provider: OllamaProvider | None = None,
         translation_provider: TranslationModerationProvider | None = None,
+        text_safety_provider: AzureContentSafetyTextProvider | None = None,
     ) -> None:
         self.provider = provider or LocalRulesProvider()
         self.policy_engine = policy_engine or PolicyEngine()
         self.ollama_provider = ollama_provider or OllamaProvider()
         self.translation_provider = translation_provider or TranslationModerationProvider()
+        self.text_safety_provider = text_safety_provider if provider is None else None
+        if self.text_safety_provider is None and provider is None:
+            self.text_safety_provider = build_text_safety_provider()
 
     def scan_project(self, project) -> AgentResultSchema:
         items = list(self._content_items(project))
-        findings: list[AgentFindingSchema] = []
         hasher = _hash_items(items)
 
+        project_id = int(project.id)
+        primary_result = self._scan_with_text_safety_provider(items, hasher, project_id=project_id)
+        if primary_result is not None:
+            return primary_result
+
+        return self._scan_with_local_rules(items, hasher, project_id=project_id, fallback_metadata=None)
+
+    def _scan_with_text_safety_provider(
+        self,
+        items: list[TextContentItem],
+        hasher: str,
+        project_id: int,
+    ) -> AgentResultSchema | None:
+        if self.text_safety_provider is None:
+            return None
+
+        findings: list[AgentFindingSchema] = []
+        provider_errors: list[dict] = []
+        scanned_count = 0
+        for item in items:
+            text = str(item.text or "")
+            result = self.text_safety_provider.review_text(text, item.location)
+            scanned_count += 1
+            if result.metadata.get("provider_error"):
+                provider_errors.append(_provider_error_metadata(result.metadata))
+            findings.extend(result.findings)
+
+        if provider_errors and not findings:
+            return self._scan_with_local_rules(
+                items,
+                hasher,
+                project_id=project_id,
+                fallback_metadata={
+                    "primary_provider": self.text_safety_provider.provider_name,
+                    "provider_unavailable": True,
+                    "provider_errors": provider_errors,
+                    "fallback_provider": self.provider.provider_name,
+                },
+            )
+
+        decision = self.policy_engine.combine_findings(findings)
+        confidence = max((finding.confidence for finding in findings), default=0.0)
+        return AgentResultSchema(
+            agent_slug=self.text_safety_provider.agent_slug,
+            agent_version=self.text_safety_provider.agent_version,
+            modality="text",
+            provider=self.text_safety_provider.provider_name,
+            decision=decision,
+            confidence=confidence,
+            findings=findings,
+            metadata={
+                "input_hash": hasher,
+                "scanned_field_count": len(items),
+                "text_safety_provider": self.text_safety_provider.provider_name,
+                "text_safety_provider_called": scanned_count > 0,
+                "provider_unavailable": bool(provider_errors),
+                "provider_errors": provider_errors,
+                "fallback_provider": "",
+                "ollama_enabled": self.ollama_provider.is_enabled(),
+                "ollama_called": False,
+                "ollama_metadata": {},
+                "translation_enabled": self.translation_provider.is_enabled(),
+                "translation_called": False,
+                "translation_metadata": {},
+            },
+        )
+
+    def _scan_with_local_rules(
+        self,
+        items: list[TextContentItem],
+        hasher: str,
+        project_id: int,
+        fallback_metadata: dict | None,
+    ) -> AgentResultSchema:
+        findings: list[AgentFindingSchema] = []
         for item in items:
             text = str(item.text or "")
             findings.extend(self.provider.scan_text(text, item.location))
@@ -50,15 +129,15 @@ class TextModerationAgent:
             ollama_result = self.ollama_provider.review_text(
                 review_text,
                 FindingLocation(
-                    project_id=int(project.id),
+                    project_id=project_id,
                     field_name="project_text",
-                    ui_anchor=f"project-{project.id}-moderation-review",
+                    ui_anchor=f"project-{project_id}-moderation-review",
                 ),
             )
             findings.extend(ollama_result.findings)
         translation_result = None
         if self._should_review_with_translation(local_decision, local_findings, review_text):
-            translation_result = self._review_with_translation(review_text, int(project.id))
+            translation_result = self._review_with_translation(review_text, project_id)
             findings.extend(translation_result.findings)
 
         local_result = AgentResultSchema(
@@ -81,6 +160,10 @@ class TextModerationAgent:
         )
         confidence = max((finding.confidence for finding in findings), default=0.0)
         provider_parts = [self.provider.provider_name, *[result.provider for result in secondary_results]]
+        if fallback_metadata:
+            primary_provider = str(fallback_metadata.get("primary_provider") or "").strip()
+            if primary_provider:
+                provider_parts.insert(0, primary_provider)
         return AgentResultSchema(
             agent_slug=TEXT_AGENT_SLUG,
             agent_version=TEXT_AGENT_VERSION,
@@ -98,6 +181,11 @@ class TextModerationAgent:
                 "translation_enabled": self.translation_provider.is_enabled(),
                 "translation_called": translation_result is not None,
                 "translation_metadata": translation_result.metadata if translation_result is not None else {},
+                "text_safety_provider": str((fallback_metadata or {}).get("primary_provider") or self.provider.provider_name),
+                "text_safety_provider_called": bool(fallback_metadata),
+                "provider_unavailable": bool((fallback_metadata or {}).get("provider_unavailable")),
+                "provider_errors": list((fallback_metadata or {}).get("provider_errors") or []),
+                "fallback_provider": str((fallback_metadata or {}).get("fallback_provider") or ""),
             },
         )
 
@@ -285,3 +373,17 @@ def _hash_items(items: list[TextContentItem]) -> str:
 
 def _short_excerpt(text: str, limit: int = 220) -> str:
     return str(text or "").strip()[:limit]
+
+
+def _provider_error_metadata(metadata: dict) -> dict:
+    allowed = {
+        "reason",
+        "provider_error",
+        "endpoint_configured",
+        "key_configured",
+        "api_version",
+        "classifier_enabled",
+        "azure_enabled",
+        "error",
+    }
+    return {key: metadata[key] for key in allowed if key in metadata}

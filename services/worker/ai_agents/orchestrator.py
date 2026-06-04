@@ -30,7 +30,10 @@ class ModerationOrchestrator:
     ) -> dict[str, Any]:
         from django.contrib.auth.models import User
         from ai_agents.models import AgentRun
-        from ai_agents.policies import manual_moderation_prevents_auto_override
+        from ai_agents.policies import (
+            enforce_unpublished_for_unresolved_moderation,
+            manual_moderation_prevents_auto_override,
+        )
         from core.models import Project
 
         project = Project.objects.select_related("user").get(pk=int(project_id))
@@ -49,6 +52,7 @@ class ModerationOrchestrator:
         with transaction.atomic():
             locked = Project.objects.select_for_update().get(pk=project.id)
             if manual_moderation_prevents_auto_override(locked):
+                enforce_unpublished_for_unresolved_moderation(locked)
                 summary = {
                     "moderation_status": locked.moderation_status,
                     "message": "Moderation scan skipped because a manual admin decision is active.",
@@ -94,6 +98,7 @@ class ModerationOrchestrator:
             with transaction.atomic():
                 locked = Project.objects.select_for_update().get(pk=project.id)
                 if manual_moderation_prevents_auto_override(locked):
+                    enforce_unpublished_for_unresolved_moderation(locked)
                     skipped_summary = dict(summary)
                     skipped_summary.update(
                         {
@@ -120,6 +125,8 @@ class ModerationOrchestrator:
                 locked.moderation_summary = summary
                 locked.last_moderation_run_id = run.id
                 update_fields = ["moderation_status", "moderation_summary", "last_moderation_run_id", "updated_at"]
+                if enforce_unpublished_for_unresolved_moderation(locked, save=False):
+                    update_fields.append("is_published")
                 if project_status in {"approved", "admin_approved"}:
                     locked.manual_moderation_status = ""
                     locked.manual_moderation_reason = ""
@@ -138,7 +145,7 @@ class ModerationOrchestrator:
                     self._resolve_publication_blocks(locked)
                 locked.save(update_fields=update_fields)
                 if project_status == "revision_required":
-                    self._create_block_event(locked, run, result.findings)
+                    self._create_block_event(locked, run, result)
                 if project_status in {"revision_required", "needs_admin_review"}:
                     self._ensure_auto_review_request(locked, run, project_status)
                 run.status = "done"
@@ -172,7 +179,10 @@ class ModerationOrchestrator:
                     locked.moderation_status = "failed"
                     locked.moderation_summary = summary
                     locked.last_moderation_run_id = run.id
-                    locked.save(update_fields=["moderation_status", "moderation_summary", "last_moderation_run_id", "updated_at"])
+                    update_fields = ["moderation_status", "moderation_summary", "last_moderation_run_id", "updated_at"]
+                    if enforce_unpublished_for_unresolved_moderation(locked, save=False):
+                        update_fields.append("is_published")
+                    locked.save(update_fields=[*dict.fromkeys(update_fields)])
             run.status = "failed"
             run.final_decision = "needs_admin_review"
             run.error_message = error_text
@@ -266,9 +276,10 @@ class ModerationOrchestrator:
             ],
         }
 
-    def _create_block_event(self, project, run, findings: list[AgentFindingSchema]) -> None:
+    def _create_block_event(self, project, run, result: AgentResultSchema) -> None:
         from ai_agents.models import PublicationBlockEvent
 
+        findings = result.findings
         highest = self.policy_engine.highest_priority_finding(findings)
         if highest is None:
             return
@@ -281,7 +292,7 @@ class ModerationOrchestrator:
         PublicationBlockEvent.objects.create(
             project=project,
             run=run,
-            blocked_by="text_moderation_local_rules",
+            blocked_by=result.agent_slug or "text_moderation",
             reason_category=highest.category,
             highest_severity=highest.severity,
             message_to_user=highest.user_message or _summary_message("block"),
@@ -328,6 +339,9 @@ def _safe_finding_payload(finding: AgentFindingSchema) -> dict[str, Any]:
         if key in location
     }
     return {
+        "issue_type": "text",
+        "source_kind": "transcript_text",
+        "content_type": "text",
         "category": finding.category,
         "severity": finding.severity,
         "decision": finding.decision,

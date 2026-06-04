@@ -110,12 +110,38 @@ def project_has_unresolved_publication_block(project) -> bool:
     return PublicationBlockEvent.objects.filter(project_id=project_id, resolved=False).exists()
 
 
+def project_has_unresolved_moderation_block(project) -> bool:
+    moderation = str(getattr(project, "moderation_status", "") or "").strip()
+    if moderation in {"revision_required", "needs_admin_review", "admin_rejected", "failed"}:
+        return True
+    if manual_moderation_blocks_publish(project):
+        return True
+    if project_has_unresolved_publication_block(project):
+        return True
+    if moderation == "admin_approved":
+        return False
+    return visual_moderation_blocks_publish(project) or video_frame_audit_blocks_publish(project)
+
+
+def enforce_unpublished_for_unresolved_moderation(project, *, save: bool = True) -> bool:
+    """Fail closed: unresolved moderation blockers must never remain public."""
+    if not bool(getattr(project, "is_published", False)):
+        return False
+    if not project_has_unresolved_moderation_block(project):
+        return False
+    project.is_published = False
+    if save:
+        project.save(update_fields=["is_published", "updated_at"])
+    return True
+
+
 def visual_moderation_blocks_publish(project) -> bool:
     return visual_publication_block_payload(project)["blocked"]
 
 
 def visual_publication_block_payload(project) -> dict:
-    if not _visual_publish_gate_enabled():
+    latest_run = _latest_visual_asset_run(project)
+    if latest_run is None and not _visual_publish_gate_enabled():
         return {
             "blocked": False,
             "reason": "visual_publish_gate_disabled",
@@ -123,7 +149,6 @@ def visual_publication_block_payload(project) -> dict:
             "finding_count": 0,
         }
 
-    latest_run = _latest_visual_asset_run(project)
     if latest_run is None:
         return {
             "blocked": False,
@@ -152,7 +177,8 @@ def video_frame_audit_blocks_publish(project) -> bool:
 
 
 def video_frame_audit_publication_block_payload(project) -> dict:
-    if not _video_frame_audit_publish_gate_enabled():
+    latest_run = _latest_video_frame_audit_run(project)
+    if latest_run is None and not _video_frame_audit_publish_gate_enabled():
         return {
             "blocked": False,
             "reason": "video_frame_audit_publish_gate_disabled",
@@ -160,7 +186,6 @@ def video_frame_audit_publication_block_payload(project) -> dict:
             "finding_count": 0,
         }
 
-    latest_run = _latest_video_frame_audit_run(project)
     if latest_run is None:
         return {
             "blocked": False,

@@ -159,7 +159,7 @@ def test_admin_block_hides_public_lesson_immediately():
     assert project.moderation_status == "admin_rejected"
     assert project.manual_moderation_status == "blocked"
     assert project.moderation_blocked_until_review is True
-    assert project.is_published is True
+    assert project.is_published is False
     assert public_after.status_code == 404
     assert PublicationBlockEvent.objects.filter(project=project, resolved=False).exists()
 
@@ -182,7 +182,7 @@ def test_admin_request_changes_creates_publisher_note():
     assert project.moderation_status == "revision_required"
     assert project.manual_moderation_status == "request_changes"
     assert project.moderation_blocked_until_review is True
-    assert project.is_published is True
+    assert project.is_published is False
     assert project.moderation_summary["publisher_admin_note"] == note
 
 
@@ -203,13 +203,21 @@ def test_admin_approve_restores_public_eligibility_after_review_request_changes(
         {"reason": "Revision accepted."},
         format="json",
     )
-    visible = _client().get(f"/api/v1/catalog/{project.id}/")
+    hidden_after_approve = _client().get(f"/api/v1/catalog/{project.id}/")
     project.refresh_from_db()
 
     assert request_changes.status_code == 200
     assert hidden.status_code == 404
     assert approve.status_code == 200
     assert project.moderation_status == "admin_approved"
+    assert project.is_published is False
+    assert hidden_after_approve.status_code == 404
+
+    publish = _client(publisher).patch(f"/api/v1/projects/{project.id}/", {"is_published": True}, format="json")
+    visible = _client().get(f"/api/v1/catalog/{project.id}/")
+    project.refresh_from_db()
+
+    assert publish.status_code == 200
     assert project.is_published is True
     assert visible.status_code == 200
 
@@ -251,7 +259,7 @@ def test_admin_block_is_sticky_against_publisher_rescan():
     assert rescan.status_code == 409
     assert project.moderation_status == "admin_rejected"
     assert project.manual_moderation_status == "blocked"
-    assert project.is_published is True
+    assert project.is_published is False
     assert _client().get(f"/api/v1/catalog/{project.id}/").status_code == 404
 
 

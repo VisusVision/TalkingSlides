@@ -173,7 +173,10 @@ export async function fetchAuthenticatedAssetBlobUrl(url) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to fetch asset (${res.status})`);
+    const error = new Error(data.error || `Failed to fetch asset (${res.status})`);
+    error.status = res.status;
+    error.url = absolute;
+    throw error;
   }
   const blob = await res.blob();
   return URL.createObjectURL(blob);
@@ -574,7 +577,9 @@ export async function requestProjectAdminReview(projectId, message = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to request admin review"));
+    const error = apiError(data, "Failed to request admin review");
+    error.status = res.status;
+    throw error;
   }
   return data;
 }
@@ -605,6 +610,19 @@ export async function listModerationReports(status = "open") {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(apiErrorMessage(data, "Failed to fetch moderation reports"));
+  }
+  return data;
+}
+
+export async function runModerationReportAction(reportId, action, reason = "") {
+  const res = await fetch(`${API_BASE_URL}/admin/moderation/reports/${reportId}/action/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ action, reason }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to update moderation report"));
   }
   return data;
 }

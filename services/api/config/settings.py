@@ -978,6 +978,30 @@ VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION = os.environ.get(
     "VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION",
     "false",
 ).lower() in {"1", "true", "yes", "on"}
+VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER = os.environ.get(
+    "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+ALLOW_WEAK_LOCAL_VISUAL_APPROVAL = os.environ.get(
+    "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL",
+    "false",
+).lower() in {"1", "true", "yes", "on"}
+VISUAL_MODERATION_SCAN_PROFILE_IMAGES = os.environ.get(
+    "VISUAL_MODERATION_SCAN_PROFILE_IMAGES",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+VISUAL_MODERATION_SCAN_CHANNEL_IMAGES = os.environ.get(
+    "VISUAL_MODERATION_SCAN_CHANNEL_IMAGES",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+VISUAL_MODERATION_SCAN_LESSON_IMAGES = os.environ.get(
+    "VISUAL_MODERATION_SCAN_LESSON_IMAGES",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
+VISUAL_MODERATION_SCAN_AVATAR_ASSETS = os.environ.get(
+    "VISUAL_MODERATION_SCAN_AVATAR_ASSETS",
+    "true",
+).lower() in {"1", "true", "yes", "on"}
 
 VISUAL_SAFETY_PROVIDER = os.environ.get("VISUAL_SAFETY_PROVIDER", "none").strip().lower() or "none"
 VISUAL_SAFETY_CLASSIFIER_ENABLED = os.environ.get("VISUAL_SAFETY_CLASSIFIER_ENABLED", "false").lower() in {
@@ -997,6 +1021,29 @@ AZURE_CONTENT_SAFETY_CATEGORIES = os.environ.get(
     "sexual,violence,self_harm,hate",
 ).strip() or "sexual,violence,self_harm,hate"
 AZURE_CONTENT_SAFETY_BLOCK_SEVERITY = int(os.environ.get("AZURE_CONTENT_SAFETY_BLOCK_SEVERITY", "4") or "4")
+
+_TEXT_SAFETY_DEFAULT_PROVIDER = (
+    "azure_content_safety"
+    if AZURE_CONTENT_SAFETY_ENABLED and AZURE_CONTENT_SAFETY_ENDPOINT and AZURE_CONTENT_SAFETY_KEY
+    else "local_rules"
+)
+TEXT_SAFETY_PROVIDER = (
+    os.environ.get("TEXT_SAFETY_PROVIDER", _TEXT_SAFETY_DEFAULT_PROVIDER).strip().lower()
+    or _TEXT_SAFETY_DEFAULT_PROVIDER
+)
+TEXT_SAFETY_CLASSIFIER_ENABLED = _env_bool(
+    "TEXT_SAFETY_CLASSIFIER_ENABLED",
+    default=TEXT_SAFETY_PROVIDER == "azure_content_safety" and AZURE_CONTENT_SAFETY_ENABLED,
+)
+TEXT_SAFETY_TIMEOUT_SECONDS = float(os.environ.get("TEXT_SAFETY_TIMEOUT_SECONDS", "20") or "20")
+TEXT_SAFETY_CATEGORIES = os.environ.get(
+    "TEXT_SAFETY_CATEGORIES",
+    "sexual,violence,self_harm,hate",
+).strip() or "sexual,violence,self_harm,hate"
+TEXT_SAFETY_BLOCK_SEVERITY = int(os.environ.get("TEXT_SAFETY_BLOCK_SEVERITY", "4") or "4")
+TEXT_SAFETY_FALLBACK_PROVIDER = (
+    os.environ.get("TEXT_SAFETY_FALLBACK_PROVIDER", "local_rules").strip().lower() or "local_rules"
+)
 
 AVATAR_IMAGE_MODERATION_AUTO_ENABLED = os.environ.get(
     "AVATAR_IMAGE_MODERATION_AUTO_ENABLED",

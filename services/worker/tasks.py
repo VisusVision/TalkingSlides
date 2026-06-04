@@ -640,10 +640,16 @@ def _mark_project_ready_after_successful_render(project_id: str | int) -> None:
         from django.utils import timezone
         from core.models import Project
 
-        Project.objects.filter(pk=int(project_id)).update(
-            status="ready",
-            updated_at=timezone.now(),
-        )
+        project = Project.objects.filter(pk=int(project_id)).first()
+        if project is None:
+            return
+        project.status = "ready"
+        update_fields = ["status", "updated_at"]
+        if _project_should_remain_unpublished_for_moderation(project):
+            project.is_published = False
+            update_fields.append("is_published")
+        project.updated_at = timezone.now()
+        project.save(update_fields=[*dict.fromkeys(update_fields)])
         logger.info("Project status set to ready for project=%s", project_id)
     except Exception:
         logger.warning(
@@ -651,6 +657,49 @@ def _mark_project_ready_after_successful_render(project_id: str | int) -> None:
             project_id,
             exc_info=True,
         )
+
+
+def _project_should_remain_unpublished_for_moderation(project) -> bool:
+    try:
+        from ai_agents.policies import project_has_unresolved_moderation_block
+
+        return bool(project_has_unresolved_moderation_block(project))
+    except Exception:
+        moderation = str(getattr(project, "moderation_status", "") or "").strip()
+        manual_status = str(getattr(project, "manual_moderation_status", "") or "").strip()
+        return bool(
+            moderation in {"revision_required", "needs_admin_review", "admin_rejected", "failed"}
+            or manual_status in {"blocked", "rejected", "request_changes", "needs_review"}
+            or getattr(project, "moderation_blocked_until_review", False)
+        )
+
+
+def _enforce_project_unpublished_for_moderation(project, update_fields: list[str] | None = None) -> bool:
+    if not bool(getattr(project, "is_published", False)):
+        return False
+    if not _project_should_remain_unpublished_for_moderation(project):
+        return False
+    project.is_published = False
+    if update_fields is not None:
+        update_fields.append("is_published")
+    return True
+
+
+def _unpublish_project_for_moderation(project_id: str | int) -> None:
+    try:
+        from django.utils import timezone
+        from core.models import Project
+
+        project = Project.objects.filter(pk=int(project_id)).first()
+        if project is None or not bool(getattr(project, "is_published", False)):
+            return
+        if not _project_should_remain_unpublished_for_moderation(project):
+            return
+        project.is_published = False
+        project.updated_at = timezone.now()
+        project.save(update_fields=["is_published", "updated_at"])
+    except Exception:
+        logger.warning("Failed to unpublish project for moderation project=%s", project_id, exc_info=True)
 
 
 def _mark_project_avatar_state(
@@ -2846,11 +2895,22 @@ def _visual_moderation_scan_slides() -> bool:
     return _settings_bool("VISUAL_MODERATION_SCAN_SLIDES", True)
 
 
+def _visual_semantic_provider_required() -> bool:
+    return _settings_bool("VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True)
+
+
+def _weak_local_visual_approval_allowed() -> bool:
+    return _settings_bool("ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", False)
+
+
 def _run_auto_visual_asset_moderation_after_export(
     project_id: str | int,
     export_result: list[dict[str, Any]] | None,
     job_id: str | int | None = None,
     use_draft: bool = False,
+    *,
+    scan_cover: bool | None = None,
+    scan_slides: bool | None = None,
 ) -> dict[str, Any]:
     if not _visual_moderation_auto_enabled():
         phase = _visual_moderation_phase()
@@ -2902,16 +2962,15 @@ def _run_auto_visual_asset_moderation_after_export(
         }
 
     phase = _visual_moderation_phase()
+    scan_cover_enabled = _visual_moderation_scan_cover() if scan_cover is None else bool(scan_cover)
+    scan_slides_enabled = _visual_moderation_scan_slides() if scan_slides is None else bool(scan_slides)
     agent = VisualModerationAgent(provider=LocalImageRulesProvider())
-    safety_agent = (
-        VisualModerationAgent(provider=build_visual_safety_provider())
-        if visual_safety_classifier_should_run()
-        else None
-    )
+    classifier_requested = bool(visual_safety_classifier_should_run())
+    safety_agent = VisualModerationAgent(provider=build_visual_safety_provider()) if classifier_requested else None
     results = []
 
     try:
-        if _visual_moderation_scan_cover():
+        if scan_cover_enabled:
             cover_rel_path = getattr(project, "cover_image_processed", "") or getattr(project, "cover_image_original", "")
             if use_draft:
                 try:
@@ -2930,15 +2989,17 @@ def _run_auto_visual_asset_moderation_after_export(
             if safety_agent is not None:
                 results.append(safety_agent.scan_cover_image(project, image_path=cover_path))
 
-        if _visual_moderation_scan_slides():
+        if scan_slides_enabled:
             for asset in _visual_slide_assets_from_export(export_result or []):
                 results.append(
                     agent.scan_slide_image(
                         project_id=int(project.id),
                         image_path=asset["image_path"],
                         slide_order=asset["slide_order"],
+                        transcript_page_id=asset.get("transcript_page_id"),
                         page_key=asset["page_key"],
                         ui_anchor=asset["ui_anchor"],
+                        asset_type=asset["asset_type"],
                     )
                 )
                 if safety_agent is not None:
@@ -2947,8 +3008,10 @@ def _run_auto_visual_asset_moderation_after_export(
                             project_id=int(project.id),
                             image_path=asset["image_path"],
                             slide_order=asset["slide_order"],
+                            transcript_page_id=asset.get("transcript_page_id"),
                             page_key=asset["page_key"],
                             ui_anchor=asset["ui_anchor"],
+                            asset_type=asset["asset_type"],
                         )
                     )
 
@@ -2962,6 +3025,17 @@ def _run_auto_visual_asset_moderation_after_export(
             }
 
         final_decision = PolicyEngine().combine_results(results)
+        if _visual_semantic_provider_missing(results, classifier_requested=classifier_requested):
+            results.extend(
+                _visual_provider_unavailable_results_for_locations(
+                    results,
+                    fallback_project_id=int(project.id),
+                    fallback_asset_type="cover" if scan_cover_enabled and not scan_slides_enabled else "slide_image",
+                    reason="semantic_visual_provider_unavailable",
+                    modality="image",
+                )
+            )
+            final_decision = PolicyEngine().combine_results(results)
         if _visual_provider_unavailable(results) and final_decision != "block":
             final_decision = "needs_admin_review"
         run = _persist_auto_visual_moderation_results(
@@ -3014,12 +3088,25 @@ def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[
         if image_path:
             seen_paths.add(image_path)
         slide_order = _safe_int_value(slide.get("source_slide_index"), fallback=_safe_int_value(slide.get("index"), fallback=order))
+        asset_type = _normalise_visual_asset_type(slide.get("asset_type") or slide.get("visual_asset_type") or "slide_image")
+        page_key = str(slide.get("page_key") or "")
+        transcript_page_id = _safe_int_optional(slide.get("transcript_page_id") or slide.get("page_id"))
+        ui_anchor = str(slide.get("ui_anchor") or "")
+        if not ui_anchor:
+            if asset_type == "custom_background":
+                ui_anchor = f"custom-background-{page_key or slide_order}"
+            elif asset_type == "draft_visual_asset":
+                ui_anchor = f"draft-visual-asset-{page_key or slide_order}"
+            else:
+                ui_anchor = f"export-slide-{slide_order}-image"
         assets.append(
             {
                 "image_path": image_path,
                 "slide_order": slide_order,
-                "page_key": str(slide.get("page_key") or ""),
-                "ui_anchor": f"export-slide-{slide_order}-image",
+                "transcript_page_id": transcript_page_id,
+                "page_key": page_key,
+                "ui_anchor": ui_anchor,
+                "asset_type": asset_type,
             }
         )
     return assets
@@ -3045,6 +3132,15 @@ def _safe_int_value(value: Any, *, fallback: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return int(fallback)
+
+
+def _safe_int_optional(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _persist_auto_visual_moderation_results(
@@ -3126,25 +3222,26 @@ def _persist_auto_visual_moderation_results(
             "phase": phase,
         }
         update_fields = ["moderation_summary", "updated_at"]
-        if (
+        should_update_project_status = (
             not use_draft
             and final_decision in {"block", "needs_admin_review"}
             and not manual_moderation_prevents_auto_override(project)
-        ):
-            project.moderation_status = "revision_required" if final_decision == "block" else "needs_admin_review"
+        )
+        if should_update_project_status:
+            if final_decision == "block":
+                project.moderation_status = "revision_required"
+            elif str(project.moderation_status or "") not in {"revision_required", "admin_rejected"}:
+                project.moderation_status = "needs_admin_review"
             existing_summary["moderation_status"] = project.moderation_status
             if final_decision == "block":
                 existing_summary["message"] = "Visual moderation blocked this lesson pending revision."
             else:
                 existing_summary["message"] = "Visual moderation requires admin review before publication."
             update_fields.append("moderation_status")
+            _enforce_project_unpublished_for_moderation(project, update_fields)
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
-        if (
-            not use_draft
-            and final_decision in {"block", "needs_admin_review"}
-            and not manual_moderation_prevents_auto_override(project)
-        ):
+        if should_update_project_status:
             _ensure_auto_project_review_request(
                 project,
                 run,
@@ -3211,6 +3308,189 @@ def _provider_error_metadata(results: list) -> list[dict[str, Any]]:
     return errors
 
 
+VISUAL_PROVIDER_UNAVAILABLE_USER_MESSAGE = (
+    "We could not complete the visual safety scan for one or more images/video frames. "
+    "An admin must review it before the lesson can be published."
+)
+VISUAL_PROVIDER_UNAVAILABLE_ADMIN_MESSAGE = (
+    "The semantic visual safety provider did not return a completed result. "
+    "This visual cannot be automatically approved and requires manual admin review before publishing."
+)
+VISUAL_LOCATION_ASSET_TYPES = {
+    "cover",
+    "custom_background",
+    "slide_image",
+    "draft_visual_asset",
+    "video_frame",
+    "ocr_text",
+    "avatar_image",
+    "profile_banner",
+    "profile_logo",
+}
+
+
+def _visual_provider_unavailable_results_for_locations(
+    results: list,
+    *,
+    fallback_project_id: int | None,
+    fallback_asset_type: str,
+    reason: str,
+    modality: str,
+) -> list:
+    location_payloads: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for result in results or []:
+        location_payload = _visual_result_location_payload(result)
+        if not location_payload:
+            continue
+        location_payload["project_id"] = location_payload.get("project_id") or fallback_project_id
+        location_payload["asset_type"] = _normalise_visual_asset_type(
+            location_payload.get("asset_type") or fallback_asset_type
+        )
+        key = (
+            location_payload.get("asset_type"),
+            location_payload.get("image_path"),
+            location_payload.get("frame_path"),
+            location_payload.get("slide_order"),
+            location_payload.get("timestamp_seconds"),
+            location_payload.get("page_key"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        location_payloads.append(location_payload)
+
+    if not location_payloads:
+        location_payloads.append(
+            {
+                "project_id": fallback_project_id,
+                "asset_type": _normalise_visual_asset_type(fallback_asset_type),
+                "ui_anchor": f"project-{fallback_project_id or 'unknown'}-visual-provider",
+            }
+        )
+
+    return [
+        _visual_provider_unavailable_result(
+            project_id=fallback_project_id,
+            asset_type=str(payload.get("asset_type") or fallback_asset_type),
+            reason=reason,
+            modality=modality,
+            location_payload=payload,
+        )
+        for payload in location_payloads
+    ]
+
+
+def _visual_result_location_payload(result) -> dict[str, Any]:
+    metadata = dict(getattr(result, "metadata", {}) or {})
+    location = metadata.get("location")
+    if isinstance(location, dict) and location:
+        return dict(location)
+    for finding in getattr(result, "findings", []) or []:
+        finding_location = getattr(finding, "location", None)
+        if hasattr(finding_location, "model_dump"):
+            payload = finding_location.model_dump(exclude_none=True)
+            if payload:
+                return dict(payload)
+    return {}
+
+
+def _normalise_visual_asset_type(value: Any) -> str:
+    raw = str(value or "slide_image").strip().lower()
+    aliases = {
+        "background": "custom_background",
+        "custom-background": "custom_background",
+        "slide": "slide_image",
+        "frame": "video_frame",
+        "profile_image": "avatar_image",
+        "channel_logo": "profile_logo",
+        "channel_banner": "profile_banner",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in VISUAL_LOCATION_ASSET_TYPES else "slide_image"
+
+
+def _visual_provider_unavailable_result(
+    *,
+    project_id: int | None,
+    asset_type: str,
+    reason: str,
+    modality: str,
+    location_payload: dict[str, Any] | None = None,
+):
+    from .ai_agents.schemas import AgentFindingSchema, AgentResultSchema, FindingLocation
+
+    clean_location = _clean_visual_location_payload(location_payload or {})
+    clean_location["project_id"] = clean_location.get("project_id") or project_id
+    clean_location["asset_type"] = _normalise_visual_asset_type(clean_location.get("asset_type") or asset_type)
+    clean_location["ui_anchor"] = clean_location.get("ui_anchor") or f"project-{project_id or 'unknown'}-visual-provider"
+    location = FindingLocation(**clean_location)
+    finding = AgentFindingSchema(
+        category="provider_unavailable",
+        severity="medium",
+        confidence=0.75,
+        decision="needs_admin_review",
+        location=location,
+        user_message=VISUAL_PROVIDER_UNAVAILABLE_USER_MESSAGE,
+        admin_message=VISUAL_PROVIDER_UNAVAILABLE_ADMIN_MESSAGE,
+        evidence_excerpt=reason,
+    )
+    return AgentResultSchema(
+        agent_slug="visual_safety_provider_unavailable",
+        agent_version="provider-required:v1",
+        modality=modality,
+        provider="visual_safety_provider_unavailable",
+        decision="needs_admin_review",
+        confidence=0.75,
+        findings=[finding],
+        metadata={
+            "provider_error": True,
+            "reason": reason,
+            "provider": "visual_safety_provider_unavailable",
+        },
+    )
+
+
+def _clean_visual_location_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "project_id",
+        "transcript_page_id",
+        "page_key",
+        "slide_order",
+        "asset_type",
+        "image_path",
+        "frame_path",
+        "timestamp_seconds",
+        "timestamp_label",
+        "field_name",
+        "start_char",
+        "end_char",
+        "ui_anchor",
+    }
+    return {key: value for key, value in dict(payload or {}).items() if key in allowed and value not in (None, "")}
+
+
+def _visual_semantic_provider_missing(results: list, *, classifier_requested: bool) -> bool:
+    if not _visual_semantic_provider_required() or _weak_local_visual_approval_allowed():
+        return False
+    if not results:
+        return False
+    semantic_results = [
+        result
+        for result in results
+        if str(getattr(result, "provider", "") or "") not in {"", "local_image_rules", "noop_visual"}
+    ]
+    if not semantic_results:
+        return True
+    if any(
+        bool((getattr(result, "metadata", {}) or {}).get("provider_error"))
+        or any(str(getattr(finding, "category", "") or "") == "provider_unavailable" for finding in getattr(result, "findings", []) or [])
+        for result in semantic_results
+    ):
+        return False
+    return not any(not bool((getattr(result, "metadata", {}) or {}).get("skipped")) for result in semantic_results)
+
+
 def _visual_provider_unavailable(results: list) -> bool:
     for result in results or []:
         provider = str(getattr(result, "provider", "") or "")
@@ -3234,6 +3514,10 @@ def _visual_provider_unavailable(results: list) -> bool:
 
 
 def _visual_object_id(location: dict[str, Any]) -> str:
+    if location.get("transcript_page_id") is not None:
+        return str(location["transcript_page_id"])
+    if location.get("page_key"):
+        return str(location["page_key"])
     if location.get("slide_order") is not None:
         return str(location["slide_order"])
     return str(location.get("project_id") or "")
@@ -3545,6 +3829,7 @@ def _persist_auto_ocr_moderation_results(
             else:
                 existing_summary["message"] = "OCR moderation requires admin review before publication."
             update_fields.append("moderation_status")
+            _enforce_project_unpublished_for_moderation(project, update_fields)
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
         if final_decision in {"block", "needs_admin_review"} and not manual_moderation_prevents_auto_override(project):
@@ -3667,6 +3952,8 @@ def _mark_project_ocr_moderation_blocked(project_id: str | int, moderation_resul
 VIDEO_FRAME_OCR_AGENT_SLUG = "video_frame_ocr_local_rules"
 VIDEO_FRAME_OCR_AGENT_VERSION = "local-rules:v1"
 VIDEO_FRAME_AUDIT_SUMMARY_KEY = "video_frame_audit"
+VIDEO_FRAME_AUDIT_REVIEW_DECISIONS = {"block", "needs_admin_review", "revision_required"}
+VIDEO_FRAME_AUDIT_REVIEW_SEVERITIES = {"high", "critical"}
 
 
 def _video_frame_audit_auto_enabled() -> bool:
@@ -3806,9 +4093,10 @@ def _run_auto_video_frame_audit_after_render(
             }
 
         visual_results = []
+        classifier_requested = bool(visual_safety_classifier_should_run())
         if _video_frame_audit_run_visual_check():
             visual_agents = [VideoFrameModerationAgent(provider=LocalImageRulesProvider())]
-            if visual_safety_classifier_should_run():
+            if classifier_requested:
                 visual_agents.append(VideoFrameModerationAgent(provider=build_visual_safety_provider()))
             for index, frame in enumerate(sampling_result.sampled_frames):
                 for visual_agent in visual_agents:
@@ -3870,6 +4158,19 @@ def _run_auto_video_frame_audit_after_render(
                     ocr_findings.extend(text_provider.scan_text(text, ocr_result.location))
 
         policy_engine = PolicyEngine()
+        if _video_frame_audit_run_visual_check() and _visual_semantic_provider_missing(
+            visual_results,
+            classifier_requested=classifier_requested,
+        ):
+            visual_results.extend(
+                _visual_provider_unavailable_results_for_locations(
+                    visual_results,
+                    fallback_project_id=int(project.id),
+                    fallback_asset_type="video_frame",
+                    reason="semantic_visual_provider_unavailable",
+                    modality="video_frame",
+                )
+            )
         findings = [finding for result in visual_results for finding in result.findings] + list(ocr_findings)
         final_decision = policy_engine.combine_findings(findings)
         run = _persist_auto_video_frame_audit_results(
@@ -4184,15 +4485,62 @@ def _persist_auto_video_frame_audit_results(
         AgentFinding.objects.bulk_create(rows)
 
     try:
-        project.refresh_from_db(fields=["moderation_summary"])
+        from ai_agents.policies import manual_moderation_prevents_auto_override
+
+        project.refresh_from_db(
+            fields=[
+                "moderation_status",
+                "moderation_summary",
+                "manual_moderation_status",
+                "moderation_blocked_until_review",
+                "manual_moderation_at",
+                "latest_publisher_change_at",
+                "is_published",
+                "is_published",
+                "is_published",
+            ]
+        )
         existing_summary = dict(project.moderation_summary or {})
         existing_summary[VIDEO_FRAME_AUDIT_SUMMARY_KEY] = {
             **summary,
             "run_id": run.id,
             "phase": phase,
         }
+        all_findings = [finding for result in visual_results for finding in result.findings] + list(ocr_findings)
+        serious_finding = any(
+            str(getattr(finding, "decision", "") or "") in VIDEO_FRAME_AUDIT_REVIEW_DECISIONS
+            or str(getattr(finding, "severity", "") or "") in VIDEO_FRAME_AUDIT_REVIEW_SEVERITIES
+            for finding in all_findings
+        )
+        should_update_project_status = (
+            run_status == "done"
+            and (final_decision in VIDEO_FRAME_AUDIT_REVIEW_DECISIONS or serious_finding)
+            and not manual_moderation_prevents_auto_override(project)
+        )
+        update_fields = ["moderation_summary", "updated_at"]
+        if should_update_project_status:
+            if final_decision == "block" or any(
+                str(getattr(finding, "decision", "") or "") == "block" for finding in all_findings
+            ):
+                project.moderation_status = "revision_required"
+            elif str(project.moderation_status or "") not in {"revision_required", "admin_rejected"}:
+                project.moderation_status = "needs_admin_review"
+            existing_summary["moderation_status"] = project.moderation_status
+            existing_summary["message"] = (
+                "Video frame audit blocked this lesson pending revision."
+                if project.moderation_status == "revision_required"
+                else "Video frame audit requires admin review before publication."
+            )
+            update_fields.append("moderation_status")
+            _enforce_project_unpublished_for_moderation(project, update_fields)
         project.moderation_summary = existing_summary
-        project.save(update_fields=["moderation_summary", "updated_at"])
+        project.save(update_fields=[*dict.fromkeys(update_fields)])
+        if should_update_project_status:
+            _ensure_auto_project_review_request(
+                project,
+                run,
+                "Video frame audit flagged this lesson for admin review.",
+            )
     except Exception:
         logger.warning("Video frame audit summary update failed for project=%s", project.id, exc_info=True)
 
