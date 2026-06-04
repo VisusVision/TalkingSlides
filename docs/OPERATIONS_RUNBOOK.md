@@ -83,7 +83,7 @@ Recommended cadence:
 - Run a manual refresh after storage migrations, mount changes, large imports, or incident triage when current storage values matter.
 - Do not run this command from Prometheus scrapes, request handlers, render workers, or playback paths.
 
-Cron example:
+Cron example for a VM-style deployment:
 
 ```cron
 17 */6 * * * cd /srv/visusvision/services/api && /usr/bin/python manage.py storage_metrics_snapshot --older-than-days 30 >> /var/log/visus-storage-metrics-snapshot.log 2>&1
@@ -116,39 +116,24 @@ Persistent=true
 WantedBy=timers.target
 ```
 
-Kubernetes CronJob example:
+Kubernetes staging CronJob workflow:
 
-```yaml
-apiVersion: batch/v1
-kind: CronJob
-metadata:
-  name: storage-metrics-snapshot
-spec:
-  schedule: "17 */6 * * *"
-  concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          restartPolicy: Never
-          containers:
-            - name: snapshot
-              image: ai_academy_api:local
-              workingDir: /app
-              command: ["python", "manage.py", "storage_metrics_snapshot", "--older-than-days", "30"]
-              envFrom:
-                - configMapRef:
-                    name: api-env
-              volumeMounts:
-                - name: storage
-                  mountPath: /app/storage_local
-          volumes:
-            - name: storage
-              persistentVolumeClaim:
-                claimName: storage-root
+- Use `infra/k8s/storage-metrics-snapshot-cronjob.yaml` as the staging/operator-owned starting point.
+- Keep `spec.suspend: true` until the staging API image, `api-env` ConfigMap, and storage PVC claim are set to live staging values.
+- The storage PVC must be the same durable `STORAGE_ROOT` volume mounted by the API and workers. Do not point the job at a scratch or empty volume.
+- The manifest runs `python manage.py storage_metrics_snapshot --older-than-days 30 --json`, uses `concurrencyPolicy: Forbid`, and keeps short job history limits.
+- This workflow is not production enablement. Production needs a separate review of schedule, image tags, secrets, storage claim, alert thresholds, and owner escalation.
+
+Apply suspended, then run one manual verification job:
+
+```powershell
+kubectl apply -f infra/k8s/storage-metrics-snapshot-cronjob.yaml
+kubectl -n vidlab create job storage-metrics-snapshot-manual-<timestamp> --from=cronjob/storage-metrics-snapshot
+kubectl -n vidlab logs job/storage-metrics-snapshot-manual-<timestamp>
+kubectl -n vidlab patch cronjob storage-metrics-snapshot -p '{"spec":{"suspend":false}}'
 ```
+
+Before unsuspending, verify the job logs include JSON with `snapshot_path`, and verify `STORAGE_ROOT/observability/storage_metrics_snapshot.json` exists on the shared storage mount.
 
 Metric inventory:
 
@@ -186,6 +171,20 @@ Alert candidates to tune per deployment:
 - Any availability gauge is `0` for longer than one scrape interval.
 
 These rule thresholds are initial staging candidates. Tune them against real source sizes, GPU/CPU class, worker concurrency, expected render duration, and normal failed-job cleanup cadence before treating them as production paging alerts. The current severity label is `warning`, matching the existing alert convention without adding alert delivery integration.
+
+Storage snapshot alert response:
+
+1. Confirm whether the CronJob is suspended or failing:
+
+```powershell
+kubectl -n vidlab get cronjob storage-metrics-snapshot
+kubectl -n vidlab get jobs -l app=storage-metrics-snapshot
+kubectl -n vidlab logs job/<latest-storage-metrics-snapshot-job>
+```
+
+2. If `VidlabSystemStorageSnapshotUnavailable` fires, inspect `STORAGE_ROOT/observability/storage_metrics_snapshot.json` from an API pod or the shared storage mount. Missing or invalid JSON usually means the job never wrote a valid snapshot or wrote to the wrong volume.
+3. If `VidlabSystemStorageSnapshotStale` fires, run a one-off job from the CronJob, then verify `system_observability_storage_snapshot_available 1` and a low `system_observability_storage_snapshot_age_seconds`.
+4. Treat reclaimable bytes and candidate counts as investigation signals only. Do not delete storage, trigger cleanup automation, enforce quotas, retry renders, or change playback from this alert.
 
 Grafana dashboard:
 
