@@ -175,7 +175,7 @@ from core.intelligence_progressive import (
     safe_enhancement_error,
 )
 from core.tts_llm_suggestions import pronunciation_suggestion_response
-from core.avatar_readiness import avatar_preview_readiness, normalize_avatar_engine
+from core.avatar_readiness import avatar_preview_readiness, avatar_setup_status, normalize_avatar_engine
 from core.avatar_placement import (
     apply_avatar_placement_to_preference,
     normalize_avatar_placement,
@@ -4639,10 +4639,30 @@ def _avatar_preview_readiness(profile: UserProfile, voice_profile: VoiceProfile 
     return avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
 
 
-def _avatar_moderation_block_response(profile: UserProfile, gate: dict, *, status_label: str = "avatar_not_prepared"):
+def _avatar_setup_status(
+    profile: UserProfile,
+    voice_profile: VoiceProfile | None,
+    *,
+    storage_root: Path,
+    readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
+
+
+def _avatar_moderation_block_response(
+    profile: UserProfile,
+    gate: dict,
+    *,
+    status_label: str = "avatar_not_prepared",
+    voice_profile: VoiceProfile | None = None,
+    storage_root: Path | None = None,
+):
     profile.avatar_image_status = "rejected"
     profile.avatar_preview_error = str(gate.get("message") or "Avatar source image needs moderation review.")
     profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+    setup_status = None
+    if storage_root is not None:
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root)
     return Response(
         {
             "status": status_label,
@@ -4651,6 +4671,7 @@ def _avatar_moderation_block_response(profile: UserProfile, gate: dict, *, statu
             "avatar_moderation_status": gate.get("status") or profile.avatar_moderation_status,
             "avatar_moderation_summary": gate.get("summary") or profile.avatar_moderation_summary,
             "missing_requirements": [gate.get("error_code") or "avatar_image_moderation_blocked"],
+            **({"avatar_setup_status": setup_status, "action_required": setup_status.get("action_required")} if setup_status else {}),
         },
         status=status.HTTP_400_BAD_REQUEST,
     )
@@ -9406,7 +9427,22 @@ class VoiceUploadView(APIView):
         profile.provider = "xtts_v2"
         profile.save(update_fields=["voice_id", "provider"])
 
-        return Response({"voice_id": new_voice_id, "status": "ready", "provider": "xtts_v2"})
+        user_profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        setup_status = _avatar_setup_status(
+            user_profile,
+            profile,
+            storage_root=Path(storage_root),
+        )
+
+        return Response(
+            {
+                "voice_id": new_voice_id,
+                "status": "ready",
+                "provider": "xtts_v2",
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
+            }
+        )
 
 
 class AvatarProfileView(APIView):
@@ -9446,10 +9482,18 @@ class AvatarProfileView(APIView):
             VoiceProfile.objects.filter(user=user).first(),
             storage_root=storage_root,
         )
+        setup_status = _avatar_setup_status(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=storage_root,
+            readiness=readiness,
+        )
 
         payload = {
             "profile": UserSerializer(user).data.get("profile", {}),
             "readiness": readiness,
+            "avatar_setup_status": setup_status,
+            "action_required": setup_status.get("action_required"),
             "avatar_summary": {
                 "status": profile.avatar_image_status,
                 "model_version": profile.avatar_model_version,
@@ -9474,6 +9518,8 @@ class AvatarProfileView(APIView):
                 "avatar_moderation_status": profile.avatar_moderation_status,
                 "avatar_moderation_summary": profile.avatar_moderation_summary if isinstance(profile.avatar_moderation_summary, dict) else {},
                 "avatar_last_moderation_run_id": profile.avatar_last_moderation_run_id,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
                 "missing_requirements": readiness.get("missing_requirements") or [],
                 "readiness_checks": readiness.get("checks") or {},
                 "composite_configured": _composite_engine_configured(),
@@ -9501,10 +9547,20 @@ class AvatarProfileView(APIView):
         if avatar_file is None and avatar_video_file is None:
             return Response({"error": "avatar_video_file (preferred) or avatar_file is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
         consent_value = str(request.data.get("avatar_consent_confirmed", "")).strip().lower()
         if consent_value not in {"1", "true", "yes", "on"}:
+            setup_status = _avatar_setup_status(
+                profile,
+                VoiceProfile.objects.filter(user=user).first(),
+                storage_root=Path(storage_root),
+            )
             return Response(
-                {"error": "Explicit avatar consent is required before generation."},
+                {
+                    "error": "Explicit avatar consent is required before generation.",
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -9512,7 +9568,6 @@ class AvatarProfileView(APIView):
         profile.avatar_preview_error = ""
         profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
 
-        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
         upload_dir = Path(storage_root) / "avatars" / str(user.id) / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         rel_original = ""
@@ -9541,12 +9596,38 @@ class AvatarProfileView(APIView):
                 profile.avatar_image_status = "rejected"
                 profile.avatar_preview_error = str(exc)
                 profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                setup_status = _avatar_setup_status(
+                    profile,
+                    VoiceProfile.objects.filter(user=user).first(),
+                    storage_root=Path(storage_root),
+                )
+                return Response(
+                    {
+                        "error": str(exc),
+                        "avatar_setup_status": setup_status,
+                        "action_required": setup_status.get("action_required"),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             profile.avatar_image_processed = str(v_result.get("processed_rel_path") or "")
             profile.avatar_video_processed = str(v_result.get("video_rel_path") or rel_video_original)
             profile.avatar_version_hash = str(v_result.get("source_hash") or "")
             result_warnings = list(v_result.get("warnings") or [])
+            processed_rel_path = str(v_result.get("processed_rel_path") or "")
+            if processed_rel_path:
+                processed_abs = Path(storage_root) / processed_rel_path
+                profile.save(update_fields=["avatar_image_processed", "updated_at"])
+                run_avatar_image_moderation(profile, processed_abs, persist=True)
+                moderation_gate = avatar_image_moderation_gate(profile)
+                if moderation_gate.get("blocked"):
+                    return _avatar_moderation_block_response(
+                        profile,
+                        moderation_gate,
+                        status_label="avatar_not_prepared",
+                        voice_profile=VoiceProfile.objects.filter(user=user).first(),
+                        storage_root=Path(storage_root),
+                    )
 
         if avatar_file is not None:
             ext = Path(avatar_file.name).suffix.lower() or ".png"
@@ -9561,7 +9642,13 @@ class AvatarProfileView(APIView):
             run_avatar_image_moderation(profile, saved_original, persist=True)
             moderation_gate = avatar_image_moderation_gate(profile)
             if moderation_gate.get("blocked"):
-                return _avatar_moderation_block_response(profile, moderation_gate, status_label="avatar_not_prepared")
+                return _avatar_moderation_block_response(
+                    profile,
+                    moderation_gate,
+                    status_label="avatar_not_prepared",
+                    voice_profile=VoiceProfile.objects.filter(user=user).first(),
+                    storage_root=Path(storage_root),
+                )
 
             try:
                 result = preprocess_teacher_avatar_image(
@@ -9575,7 +9662,19 @@ class AvatarProfileView(APIView):
                 profile.avatar_image_status = "rejected"
                 profile.avatar_preview_error = str(exc)
                 profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                setup_status = _avatar_setup_status(
+                    profile,
+                    VoiceProfile.objects.filter(user=user).first(),
+                    storage_root=Path(storage_root),
+                )
+                return Response(
+                    {
+                        "error": str(exc),
+                        "avatar_setup_status": setup_status,
+                        "action_required": setup_status.get("action_required"),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             if avatar_video_file is None:
                 # Image-only mode: use processed image as primary identity source.
@@ -9603,7 +9702,19 @@ class AvatarProfileView(APIView):
                 "liveportrait+musetalk is selected but AVATAR_LIVEPORTRAIT_CMD and/or AVATAR_MUSETALK_CMD is not configured"
             )
             profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
-            return Response({"error": profile.avatar_preview_error}, status=status.HTTP_400_BAD_REQUEST)
+            setup_status = _avatar_setup_status(
+                profile,
+                VoiceProfile.objects.filter(user=user).first(),
+                storage_root=Path(storage_root),
+            )
+            return Response(
+                {
+                    "error": profile.avatar_preview_error,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         profile.avatar_reference_type = reference_type
         validation = refresh_avatar_source_validation(profile, storage_root=Path(storage_root), persist=True)
@@ -9611,12 +9722,19 @@ class AvatarProfileView(APIView):
             profile.avatar_image_status = "rejected"
             profile.avatar_preview_error = str(validation.get("error") or "avatar_source_invalid")
             profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+            setup_status = _avatar_setup_status(
+                profile,
+                VoiceProfile.objects.filter(user=user).first(),
+                storage_root=Path(storage_root),
+            )
             return Response(
                 {
                     "error": profile.avatar_preview_error,
                     "error_code": "avatar_source_invalid",
                     "avatar_source_valid": False,
                     "avatar_source_validation_error": profile.avatar_preview_error,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -9650,11 +9768,25 @@ class AvatarProfileView(APIView):
                 "updated_at",
             ]
         )
+        readiness = _avatar_preview_readiness(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=Path(storage_root),
+        )
+        setup_status = _avatar_setup_status(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=Path(storage_root),
+            readiness=readiness,
+        )
 
         return Response(
             {
                 "status": "ready",
                 "profile": UserSerializer(user).data.get("profile", {}),
+                "readiness": readiness,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
                 "warnings": result_warnings,
             }
         )
@@ -9766,6 +9898,8 @@ class AvatarProfileView(APIView):
                 "yes",
                 "on",
             }
+        if not profile.avatar_consent_confirmed:
+            profile.avatar_enabled = False
 
         profile.save(update_fields=[
             "avatar_enabled",
@@ -9782,7 +9916,19 @@ class AvatarProfileView(APIView):
             "avatar_consent_confirmed",
             "updated_at",
         ])
-        return Response({"status": "updated", "profile": UserSerializer(user).data.get("profile", {})})
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        voice_profile = VoiceProfile.objects.filter(user=user).first()
+        readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
+        return Response(
+            {
+                "status": "updated",
+                "profile": UserSerializer(user).data.get("profile", {}),
+                "readiness": readiness,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
+            }
+        )
 
 
 class AvatarPreviewRegenerateView(APIView):
@@ -9816,17 +9962,19 @@ class AvatarPreviewRegenerateView(APIView):
             storage_root=storage_root,
         )
         selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
         if not bool(readiness.get("ready")):
             profile.avatar_last_preview_status = "setup_failed"
-            profile.avatar_image_status = "failed"
-            profile.avatar_preview_error = str(readiness.get("error") or "Avatar is not prepared for preview.")
-            profile.save(update_fields=["avatar_last_preview_status", "avatar_image_status", "avatar_preview_error", "updated_at"])
+            profile.avatar_preview_error = str(setup_status.get("message") or readiness.get("error") or "Avatar is not prepared for preview.")
+            profile.save(update_fields=["avatar_last_preview_status", "avatar_preview_error", "updated_at"])
             return Response(
                 {
-                    "error": readiness.get("error") or "Avatar is not prepared for preview.",
+                    "error": setup_status.get("message") or readiness.get("error") or "Avatar is not prepared for preview.",
                     "error_code": readiness.get("error_code") or "setup_not_prepared",
                     "missing_requirements": readiness.get("missing_requirements") or [],
                     "readiness": readiness,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
                     "normalized_engine": selected_engine,
                     "avatar_engine_selected": selected_engine,
                 },
@@ -9852,6 +10000,15 @@ class AvatarPreviewRegenerateView(APIView):
         profile.avatar_preview_video = ""
         profile.avatar_preview_error = ""
         profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id", "avatar_last_preview_path", "avatar_preview_video", "avatar_preview_error", "updated_at"])
+        queued_setup_status = {
+            **setup_status,
+            "state": "preparing",
+            "action_required": "wait",
+            "primary_action_label": "Preparing avatar",
+            "message": "Avatar preview is being generated.",
+            "can_prepare": False,
+            "can_generate_preview": False,
+        }
 
         return Response(
             {
@@ -9860,6 +10017,8 @@ class AvatarPreviewRegenerateView(APIView):
                 "task_id": async_result.id,
                 "normalized_engine": selected_engine,
                 "avatar_engine_selected": selected_engine,
+                "avatar_setup_status": queued_setup_status,
+                "action_required": queued_setup_status.get("action_required"),
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -9888,13 +10047,6 @@ class AvatarPrepareView(APIView):
         actions: list[str] = []
         warnings: list[str] = []
 
-        if "avatar_enabled" in request.data:
-            profile.avatar_enabled = str(request.data.get("avatar_enabled", "")).strip().lower() in {"1", "true", "yes", "on"}
-            actions.append("avatar_enabled_updated")
-        elif not profile.avatar_enabled:
-            profile.avatar_enabled = True
-            actions.append("avatar_enabled_auto_enabled")
-
         if "avatar_consent_confirmed" in request.data:
             profile.avatar_consent_confirmed = str(request.data.get("avatar_consent_confirmed", "")).strip().lower() in {
                 "1",
@@ -9903,6 +10055,49 @@ class AvatarPrepareView(APIView):
                 "on",
             }
             actions.append("avatar_consent_updated")
+
+        if "avatar_enabled" in request.data:
+            requested_enable = str(request.data.get("avatar_enabled", "")).strip().lower() in {"1", "true", "yes", "on"}
+            profile.avatar_enabled = bool(requested_enable and profile.avatar_consent_confirmed)
+            actions.append("avatar_enabled_updated")
+        elif not profile.avatar_enabled:
+            has_portrait = bool(str(profile.avatar_image_original or "").strip())
+            has_voice = bool(voice_profile and str(voice_profile.voice_id or "").strip())
+            if profile.avatar_consent_confirmed and has_portrait and has_voice:
+                profile.avatar_enabled = True
+                actions.append("avatar_enabled_auto_enabled")
+
+        if not profile.avatar_consent_confirmed:
+            profile.avatar_enabled = False
+
+        profile.save(update_fields=["avatar_enabled", "avatar_consent_confirmed", "updated_at"])
+        initial_readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+        initial_setup_status = _avatar_setup_status(
+            profile,
+            voice_profile,
+            storage_root=storage_root,
+            readiness=initial_readiness,
+        )
+        if initial_setup_status.get("state") in {"missing_consent", "missing_portrait", "missing_voice", "disabled"}:
+            profile.avatar_last_preview_status = "setup_failed"
+            profile.avatar_preview_error = str(initial_setup_status.get("message") or "Avatar setup is incomplete.")
+            profile.save(update_fields=["avatar_last_preview_status", "avatar_preview_error", "updated_at"])
+            return Response(
+                {
+                    "status": "avatar_not_prepared",
+                    "error_code": "setup_not_prepared",
+                    "error": profile.avatar_preview_error,
+                    "missing_requirements": initial_readiness.get("missing_requirements") or [],
+                    "readiness": initial_readiness,
+                    "avatar_setup_status": initial_setup_status,
+                    "action_required": initial_setup_status.get("action_required"),
+                    "normalized_engine": str(initial_readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary)),
+                    "avatar_engine_selected": str(initial_readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary)),
+                    "actions": actions,
+                    "warnings": warnings,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         force_reprocess = str(request.data.get("force_reprocess", "0")).strip().lower() in {"1", "true", "yes", "on"}
         processed_rel = str(profile.avatar_image_processed or "").strip()
@@ -9918,7 +10113,13 @@ class AvatarPrepareView(APIView):
                 run_avatar_image_moderation(profile, original_abs, persist=True)
             moderation_gate = avatar_image_moderation_gate(profile)
             if moderation_gate.get("blocked"):
-                return _avatar_moderation_block_response(profile, moderation_gate, status_label="avatar_not_prepared")
+                return _avatar_moderation_block_response(
+                    profile,
+                    moderation_gate,
+                    status_label="avatar_not_prepared",
+                    voice_profile=voice_profile,
+                    storage_root=storage_root,
+                )
         if should_reprocess:
             if original_abs is None or (not original_abs.exists()) or (not original_abs.is_file()):
                 warnings.append("missing_avatar_image_original")
@@ -9938,12 +10139,17 @@ class AvatarPrepareView(APIView):
                     profile.avatar_image_status = "rejected"
                     profile.avatar_preview_error = str(exc)
                     profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+                    readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+                    setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
                     return Response(
                         {
                             "status": "avatar_not_prepared",
                             "error_code": "crop_too_tight",
-                            "error": str(exc),
+                            "error": setup_status.get("message") or str(exc),
                             "missing_requirements": ["missing_avatar_image_processed", "missing_processed_reference_file"],
+                            "readiness": readiness,
+                            "avatar_setup_status": setup_status,
+                            "action_required": setup_status.get("action_required"),
                             "actions": actions,
                         },
                         status=status.HTTP_400_BAD_REQUEST,
@@ -9955,12 +10161,17 @@ class AvatarPrepareView(APIView):
                 profile.avatar_image_status = "rejected"
                 profile.avatar_preview_error = str(validation.get("error") or "avatar_source_invalid")
                 profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+                readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+                setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
                 return Response(
                     {
                         "status": "avatar_not_prepared",
                         "error_code": "avatar_source_invalid",
-                        "error": profile.avatar_preview_error,
+                        "error": setup_status.get("message") or profile.avatar_preview_error,
                         "missing_requirements": ["avatar_source_invalid"],
+                        "readiness": readiness,
+                        "avatar_setup_status": setup_status,
+                        "action_required": setup_status.get("action_required"),
                         "actions": actions,
                         "warnings": warnings,
                     },
@@ -9969,14 +10180,19 @@ class AvatarPrepareView(APIView):
 
         readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
         selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
         if readiness.get("ready"):
             profile.avatar_image_status = "ready"
             profile.avatar_preview_error = ""
             profile.save(update_fields=["avatar_enabled", "avatar_consent_confirmed", "avatar_image_processed", "avatar_version_hash", "avatar_image_status", "avatar_preview_error", "updated_at"])
+            readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+            setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
             return Response(
                 {
                     "status": "avatar_ready",
                     "readiness": readiness,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
                     "normalized_engine": selected_engine,
                     "avatar_engine_selected": selected_engine,
                     "actions": actions,
@@ -9984,16 +10200,22 @@ class AvatarPrepareView(APIView):
                 }
             )
 
-        profile.avatar_image_status = "failed"
-        profile.avatar_preview_error = str(readiness.get("error") or "Avatar is not prepared for preview.")
-        profile.save(update_fields=["avatar_enabled", "avatar_consent_confirmed", "avatar_image_status", "avatar_preview_error", "updated_at"])
+        if setup_status.get("state") == "failed":
+            profile.avatar_image_status = "failed"
+            update_fields = ["avatar_enabled", "avatar_consent_confirmed", "avatar_image_status", "avatar_preview_error", "updated_at"]
+        else:
+            update_fields = ["avatar_enabled", "avatar_consent_confirmed", "avatar_preview_error", "updated_at"]
+        profile.avatar_preview_error = str(setup_status.get("message") or readiness.get("error") or "Avatar is not prepared for preview.")
+        profile.save(update_fields=update_fields)
         return Response(
             {
                 "status": "avatar_not_prepared",
                 "error_code": "setup_not_prepared",
-                "error": readiness.get("error") or "Avatar is not prepared for preview.",
+                "error": profile.avatar_preview_error,
                 "missing_requirements": readiness.get("missing_requirements") or [],
                 "readiness": readiness,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
                 "normalized_engine": selected_engine,
                 "avatar_engine_selected": selected_engine,
                 "actions": actions,
@@ -10075,6 +10297,24 @@ class AvatarPreviewStatusView(APIView):
             storage_root=Path(getattr(settings, "STORAGE_ROOT", "storage_local")),
         )
         payload["preview_readiness"] = readiness
+        setup_status = _avatar_setup_status(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=Path(getattr(settings, "STORAGE_ROOT", "storage_local")),
+            readiness=readiness,
+        )
+        if payload.get("preview_status") in {"queued", "processing", "rendering"}:
+            setup_status = {
+                **setup_status,
+                "state": "preparing",
+                "action_required": "wait",
+                "primary_action_label": "Preparing avatar",
+                "message": "Avatar preview is being generated.",
+                "can_prepare": False,
+                "can_generate_preview": False,
+            }
+        payload["avatar_setup_status"] = setup_status
+        payload["action_required"] = setup_status.get("action_required")
         selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
         payload["normalized_engine"] = selected_engine
         payload["avatar_engine_selected"] = selected_engine

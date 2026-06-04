@@ -5,6 +5,8 @@
 // both bare origin (http://localhost:8000) and versioned styles
 // (http://localhost:8000/api/v1).
 
+import { avatarSetupErrorMessage } from "./utils/avatarSetupStatus.js";
+
 const DEFAULT_API_BASE_URL = "http://localhost:8000/api/v1";
 
 /**
@@ -834,7 +836,10 @@ export async function uploadVoiceSample(userId, file) {
     headers: authHeaders(),
     body: formData,
   });
-  if (!res.ok) throw new Error("Failed to upload voice sample");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(avatarSetupErrorMessage(data, "Failed to upload voice sample"));
+  }
   return res.json();
 }
 
@@ -844,7 +849,7 @@ export async function fetchAvatarProfile(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to fetch avatar profile");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to fetch avatar profile"));
   }
   return res.json();
 }
@@ -867,7 +872,7 @@ export async function uploadAvatarImage(userId, file, settings = {}) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to upload avatar image");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to upload avatar image"));
   }
   return res.json();
 }
@@ -890,7 +895,7 @@ export async function uploadAvatarVideo(userId, file, settings = {}) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to upload avatar video");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to upload avatar video"));
   }
   return res.json();
 }
@@ -903,7 +908,7 @@ export async function updateAvatarProfile(userId, payload) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to update avatar settings");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to update avatar settings"));
   }
   return res.json();
 }
@@ -915,10 +920,11 @@ export async function regenerateAvatarPreview(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    const err = new Error(data.error || "Failed to regenerate avatar preview");
+    const err = new Error(avatarSetupErrorMessage(data, "Failed to regenerate avatar preview"));
     err.code = data.error_code || "";
     err.missingRequirements = Array.isArray(data.missing_requirements) ? data.missing_requirements : [];
     err.readiness = data.readiness || null;
+    err.avatarSetupStatus = data.avatar_setup_status || data.readiness?.avatar_setup_status || null;
     throw err;
   }
   return res.json();
@@ -932,10 +938,11 @@ export async function prepareAvatarProfile(userId, payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(data.error || "Failed to prepare avatar");
+    const err = new Error(avatarSetupErrorMessage(data, "Failed to prepare avatar"));
     err.code = data.error_code || "setup_not_prepared";
     err.missingRequirements = Array.isArray(data.missing_requirements) ? data.missing_requirements : [];
     err.readiness = data.readiness || null;
+    err.avatarSetupStatus = data.avatar_setup_status || data.readiness?.avatar_setup_status || null;
     throw err;
   }
   return data;
@@ -947,7 +954,7 @@ export async function fetchAvatarPreviewStatus(userId, jobId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to fetch avatar preview status");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to fetch avatar preview status"));
   }
   return res.json();
 }
@@ -959,7 +966,7 @@ export async function deleteAvatarPreview(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to delete avatar preview");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to delete avatar preview"));
   }
   return res.json();
 }
