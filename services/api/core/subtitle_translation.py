@@ -16,6 +16,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.models import Job, Project, TranslatedSubtitleTrack, TranscriptPage
+from core.storage_adapter import get_storage_adapter
 
 
 @dataclass(frozen=True)
@@ -859,11 +860,9 @@ def _storage_root(storage_root: str | Path | None = None) -> Path:
 
 
 def _language_detection_payload(project_id: int, *, storage_root: str | Path | None = None) -> dict:
-    path = _storage_root(storage_root) / str(project_id) / "language_detection.json"
-    if not path.is_file():
-        return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        raw = get_storage_adapter(_storage_root(storage_root)).read_text(f"{project_id}/language_detection.json", encoding="utf-8")
+        data = json.loads(raw)
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}

@@ -248,7 +248,7 @@ These commands do not make storage production-ready. They validate settings, sch
 
 - The active application still depends on filesystem paths.
 - MinIO/S3 is configured but inactive.
-- The adapter abstraction is filesystem-only and currently adopted only by low-risk helper/reporting code.
+- The adapter abstraction is filesystem-only and currently adopted by low-risk helper/reporting code plus a small set of Phase B read-only sidecar/existence helpers.
 - Upload, render, playback, avatar, and TTS paths have not been migrated to the adapter yet.
 - There is no implemented quota enforcement.
 - There is no implemented project-delete media cleanup.
@@ -291,7 +291,7 @@ These runtime paths should not move to object storage until their callers have a
 
 Phase A is already done for low-risk helper boundaries: `FilesystemStorageAdapter` exists, storage smoke checks use it, storage metrics snapshots use it, and report-only retention traversal uses it. These helpers validate adapter shape without touching user media flows.
 
-Phase B should adopt read-only/runtime report paths. Move existence/read helpers for sidecars, storage snapshots, and safe report reads behind the adapter where the caller already treats missing or invalid files as a warning. Keep render recovery and retention behavior report-only.
+Phase B has started with adapter-backed read-only helpers for playback/language sidecar JSON reads, translated-subtitle source-language sidecar reads, and safe relative-path existence checks. Continue moving only read-only/runtime report paths where callers already treat missing or invalid files as a warning. Keep render recovery and retention behavior report-only.
 
 Phase C should adopt write paths that can still write to the filesystem adapter. Good candidates are JSON/text sidecars, translated subtitle files, profile image final writes after local processing, and final render metadata writes. The PR must preserve current relative path strings and should not introduce S3 code.
 
