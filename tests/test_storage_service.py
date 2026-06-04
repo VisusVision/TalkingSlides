@@ -9,6 +9,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 API_ROOT = REPO_ROOT / "services" / "api"
+SERVICES_ROOT = REPO_ROOT / "services"
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICES_ROOT))
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
@@ -27,6 +30,7 @@ from core.views import (  # noqa: E402
     _resolve_storage_file,
     _storage_rel_path_exists,
 )
+from worker import tasks as worker_tasks  # noqa: E402
 
 
 def test_storage_paths_are_normalized_to_safe_relative_paths():
@@ -99,6 +103,52 @@ def test_language_detection_invalid_sidecar_preserves_fallback_behavior(tmp_path
     assert payload["resolved_language"] == "en"
     assert payload["source"] == "fallback_invalid_sidecar"
     assert _source_language_code(42, storage_root=tmp_path, fallback="en") == "en"
+
+
+def test_worker_playback_sidecar_write_uses_adapter_without_changing_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    payload = {
+        "mp4_rel_path": "42/42.mp4",
+        "avatar": {"track_rel_path": "42/avatar/avatar_track.mp4"},
+        "protection_mode": "secure_stream",
+    }
+
+    written_path = worker_tasks._write_playback_sidecar(42, payload)
+
+    sidecar = tmp_path / "42" / "playback_assets.json"
+    assert written_path == str(sidecar)
+    assert sidecar.read_text(encoding="utf-8") == json.dumps(payload, ensure_ascii=True, indent=2)
+    assert _playback_sidecar_for_job(str(tmp_path), 42) == payload
+
+
+def test_worker_language_detection_sidecar_write_creates_parent_and_preserves_format(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    payload = {
+        "detected_language": "tr",
+        "resolved_language": "tr",
+        "source": "detector",
+        "confidence": 0.91,
+        "fallback_used": False,
+        "supported_languages": ["en", "tr"],
+        "detector": "fixture",
+    }
+
+    written_path = worker_tasks._write_language_detection_sidecar(42, payload)
+
+    sidecar = tmp_path / "42" / "language_detection.json"
+    assert written_path == str(sidecar)
+    assert sidecar.parent.is_dir()
+    assert sidecar.read_text(encoding="utf-8") == json.dumps(payload, ensure_ascii=True, indent=2)
+    assert _language_detection_sidecar_for_job(str(tmp_path), 42) == payload
+
+
+def test_worker_json_sidecar_write_rejects_path_traversal(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path / "storage"))
+
+    with pytest.raises(StoragePathTraversalError):
+        worker_tasks._write_json_sidecar("../outside", "playback_assets.json", {"unsafe": True})
+
+    assert not (tmp_path / "outside" / "playback_assets.json").exists()
 
 
 def test_storage_rel_path_exists_uses_adapter_traversal_rejection(tmp_path):
