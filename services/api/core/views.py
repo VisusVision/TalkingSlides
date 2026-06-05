@@ -196,6 +196,7 @@ from core.avatar_source_validation import (
 )
 from core.render_followup_intents import merge_render_followup_intent
 from core.storage_adapter import get_storage_adapter
+from core.storage_json import write_json_metadata_file
 from ai_agents.policies import (
     APPROVED_MODERATION_STATUSES,
     enforce_unpublished_for_unresolved_moderation,
@@ -5178,10 +5179,18 @@ def _write_avatar_rerender_handoff_manifest(
     base_job_id: int,
     payload: dict[str, Any],
 ) -> str:
-    target = storage_root / "projects" / str(project_id) / "renders" / str(base_job_id or "unknown") / "avatar_handoff.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
-    return str(target)
+    relative_path = (
+        Path("projects")
+        / str(project_id)
+        / "renders"
+        / str(base_job_id or "unknown")
+        / "avatar_handoff.json"
+    )
+    return write_json_metadata_file(
+        storage_root=storage_root,
+        relative_path=relative_path,
+        payload=payload,
+    )
 
 
 # ---------------------------------------------------------------------------

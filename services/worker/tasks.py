@@ -988,24 +988,13 @@ def _package_hls_assets_for_playback(
 
 
 def _write_json_sidecar(project_id: str | int, file_name: str, payload: dict[str, Any]) -> str:
-    from core.storage_adapter import get_storage_adapter
+    from core.storage_json import write_json_metadata_file
 
-    adapter = get_storage_adapter(STORAGE_ROOT)
-    relative_path = f"{project_id}/{file_name}"
-    target = adapter.resolve_path(relative_path)
-    adapter.make_dirs(str(project_id))
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=str(target.parent),
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        temp_path = Path(handle.name)
-        handle.write(json.dumps(payload, ensure_ascii=True, indent=2))
-    temp_path.replace(target)
-    return str(target)
+    return write_json_metadata_file(
+        storage_root=STORAGE_ROOT,
+        relative_path=f"{project_id}/{file_name}",
+        payload=payload,
+    )
 
 
 def _read_json_sidecar(project_id: str | int, file_name: str) -> dict[str, Any]:
@@ -1026,20 +1015,21 @@ def _avatar_handoff_manifest_dir(project_id: str | int, job_id: str | int) -> Pa
 
 
 def _write_avatar_handoff_manifest(project_id: str | int, job_id: str | int, payload: dict[str, Any]) -> str:
-    target = _avatar_handoff_manifest_dir(project_id, job_id) / "avatar_handoff.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "w",
-        encoding="utf-8",
-        dir=str(target.parent),
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        temp_path = Path(handle.name)
-        handle.write(json.dumps(payload, ensure_ascii=True, indent=2))
-    temp_path.replace(target)
-    return str(target)
+    from core.storage_json import write_json_metadata_file
+
+    job_part = str(job_id or "unknown").strip() or "unknown"
+    relative_path = (
+        Path("projects")
+        / str(project_id)
+        / "renders"
+        / job_part
+        / "avatar_handoff.json"
+    )
+    return write_json_metadata_file(
+        storage_root=STORAGE_ROOT,
+        relative_path=relative_path,
+        payload=payload,
+    )
 
 
 def _read_avatar_handoff_manifest(path: str | Path) -> dict[str, Any]:

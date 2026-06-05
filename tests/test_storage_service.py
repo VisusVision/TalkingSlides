@@ -30,6 +30,8 @@ from core.storage_adapter import (  # noqa: E402
     get_storage_adapter,
 )
 from core.storage_health import StorageHealthError, run_filesystem_storage_smoke  # noqa: E402
+from core import storage_json  # noqa: E402
+from core import views as core_views  # noqa: E402
 from core.subtitle_translation import _source_language_code  # noqa: E402
 from core.views import (  # noqa: E402
     _language_detection_sidecar_for_job,
@@ -220,6 +222,64 @@ def test_worker_json_sidecar_write_rejects_path_traversal(tmp_path, monkeypatch)
         worker_tasks._write_json_sidecar("../outside", "playback_assets.json", {"unsafe": True})
 
     assert not (tmp_path / "outside" / "playback_assets.json").exists()
+
+
+def test_avatar_handoff_manifest_write_uses_storage_adapter_without_changing_output(tmp_path, monkeypatch):
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    real_adapter = FilesystemStorageAdapter(tmp_path)
+    calls = []
+
+    class TrackingAdapter:
+        root = real_adapter.root
+
+        def resolve_path(self, relative_path):
+            calls.append(("resolve_path", str(relative_path).replace("\\", "/")))
+            return real_adapter.resolve_path(relative_path)
+
+        def make_dirs(self, relative_path):
+            calls.append(("make_dirs", str(relative_path).replace("\\", "/")))
+            return real_adapter.make_dirs(relative_path)
+
+    monkeypatch.setattr(storage_json, "get_storage_adapter", lambda storage_root=None: TrackingAdapter())
+    payload = {"schema_version": 1, "project_id": 42}
+
+    written_path = worker_tasks._write_avatar_handoff_manifest("42", "99", payload)
+
+    sidecar = tmp_path / "projects" / "42" / "renders" / "99" / "avatar_handoff.json"
+    assert written_path == str(sidecar)
+    assert sidecar.read_text(encoding="utf-8") == json.dumps(payload, ensure_ascii=True, indent=2)
+    assert ("resolve_path", "projects/42/renders/99/avatar_handoff.json") in calls
+    assert ("make_dirs", "projects/42/renders/99") in calls
+
+
+def test_api_avatar_rerender_handoff_manifest_write_uses_storage_adapter(tmp_path, monkeypatch):
+    real_adapter = FilesystemStorageAdapter(tmp_path)
+    calls = []
+
+    class TrackingAdapter:
+        def resolve_path(self, relative_path):
+            calls.append(("resolve_path", str(relative_path).replace("\\", "/")))
+            return real_adapter.resolve_path(relative_path)
+
+        def make_dirs(self, relative_path):
+            calls.append(("make_dirs", str(relative_path).replace("\\", "/")))
+            return real_adapter.make_dirs(relative_path)
+
+    monkeypatch.setattr(storage_json, "get_storage_adapter", lambda storage_root=None: TrackingAdapter())
+    payload = {"schema_version": 1, "project_id": 43}
+
+    written_path = core_views._write_avatar_rerender_handoff_manifest(
+        storage_root=tmp_path,
+        project_id=43,
+        base_job_id=100,
+        payload=payload,
+    )
+
+    sidecar = tmp_path / "projects" / "43" / "renders" / "100" / "avatar_handoff.json"
+    assert written_path == str(sidecar)
+    assert sidecar.read_text(encoding="utf-8") == json.dumps(payload, ensure_ascii=True, indent=2)
+    assert ("resolve_path", "projects/43/renders/100/avatar_handoff.json") in calls
+    assert ("make_dirs", "projects/43/renders/100") in calls
 
 
 def test_storage_rel_path_exists_uses_adapter_traversal_rejection(tmp_path):
