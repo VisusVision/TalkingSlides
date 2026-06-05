@@ -8016,7 +8016,7 @@ class ProjectLessonIntelligenceView(APIView):
             project = Project.objects.select_related("user").get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_edit_project(request.user, project):
+        if not _can_run_lesson_intelligence(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
         if not lesson_intelligence_enabled():
             return Response(

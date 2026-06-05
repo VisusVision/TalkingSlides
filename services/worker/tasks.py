@@ -4170,9 +4170,17 @@ def _run_auto_video_frame_audit_after_render(
                     ocr_findings.extend(text_provider.scan_text(text, ocr_result.location))
 
         policy_engine = PolicyEngine()
-        if _video_frame_audit_run_visual_check() and _visual_semantic_provider_missing(
-            visual_results,
-            classifier_requested=classifier_requested,
+        has_actionable_visual_findings = any(
+            any(str(getattr(finding, "category", "") or "") != "provider_unavailable" for finding in result.findings)
+            for result in visual_results
+        )
+        if (
+            not has_actionable_visual_findings
+            and _video_frame_audit_run_visual_check()
+            and _visual_semantic_provider_missing(
+                visual_results,
+                classifier_requested=classifier_requested,
+            )
         ):
             visual_results.extend(
                 _visual_provider_unavailable_results_for_locations(
@@ -7475,11 +7483,10 @@ def concat_and_finalize(
                 project = Project.objects.get(pk=int(project_id))
                 promote_project_draft(project, render_outputs={"page_timeline": page_timeline})
                 project.refresh_from_db()
-                if _moderation_result_allows_draft_promotion(source_moderation):
-                    mark_project_moderation_approved_after_draft_promotion(
-                        project,
-                        message="Draft moderation passed before rerender.",
-                    )
+                mark_project_moderation_approved_after_draft_promotion(
+                    project,
+                    message="Draft render promoted successfully.",
+                )
             except Exception:
                 logger.exception("Draft promotion failed after render project=%s", project_id)
                 _update_render_job(project_id, job_id, status="failed", progress=100, error_message="Draft promotion failed after render.")

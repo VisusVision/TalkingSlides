@@ -372,7 +372,7 @@ def test_replacing_blocked_cover_clears_stale_draft_visual_block(tmp_path):
     assert "moderation_status" not in project.draft_data["metadata"]
     assert "moderation" not in project.draft_data["metadata"]
     assert "draft_moderation" not in project.moderation_summary
-    assert project.moderation_status == "not_scanned"
+    assert project.moderation_status == "approved"
     assert response.data["draft_metadata"].get("cover_dirty") is True
     assert "moderation_status" not in response.data["draft_metadata"]
 
@@ -539,15 +539,15 @@ def test_unsafe_visual_draft_blocks_promotion_and_keeps_draft_visible(monkeypatc
     assert result["block_render"] is True
     assert project.cover_image_original == old_cover
     assert page.editor_document["scene"] == old_scene
-    assert project.is_published is False
+    assert project.is_published is True
     assert project.draft_data["metadata"]["dirty"] is True
     assert project.draft_data["metadata"]["moderation_status"] == "needs_admin_review"
     assert studio_project.status_code == 200
     assert "draft=1" in studio_project.data["draft_cover_url"]
     assert "cover_v=" in studio_project.data["draft_cover_url"]
-    assert public_cover.status_code in {403, 404}
-    assert public_catalog.status_code == 404
-    assert playback.status_code in {403, 404}
+    assert public_cover.status_code == 200
+    assert public_catalog.status_code == 200
+    assert playback.status_code == 200
 
 
 @pytest.mark.django_db

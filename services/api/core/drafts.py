@@ -370,12 +370,8 @@ def mark_draft_moderation_failed(project: Project, moderation_result: dict[str, 
     summary = dict(project.moderation_summary or {})
     summary["draft_moderation"] = draft_summary
     project.draft_data = draft_data
-    project.moderation_status = moderation_status
     project.moderation_summary = summary
-    update_fields = ["draft_data", "moderation_status", "moderation_summary", "updated_at"]
-    if project.is_published:
-        project.is_published = False
-        update_fields.append("is_published")
+    update_fields = ["draft_data", "moderation_summary", "updated_at"]
     project.save(update_fields=[*dict.fromkeys(update_fields)])
     return draft_summary
 
