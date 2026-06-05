@@ -509,7 +509,7 @@ Secure playback compatibility:
 
 Phased implementation plan:
 
-1. Add an S3/MinIO adapter behind feature flag/env config while keeping `local`/filesystem as the default and only active production path.
+1. Add an S3/MinIO adapter behind feature flag/env config while keeping `filesystem` as the default and only active production path.
 2. Add fake-S3/MinIO integration tests for key mapping, metadata, list pagination, missing objects, overwrites, multipart behavior, and private-object reads.
 3. Move additional read paths behind the adapter on the filesystem backend first.
 4. Move safe sidecar writes such as JSON/text metadata that do not require range serving or local engines.

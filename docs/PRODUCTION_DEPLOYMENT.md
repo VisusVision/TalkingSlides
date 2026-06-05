@@ -61,7 +61,7 @@ In container deployments, run migrations as a release step or one-off job before
 
 ## Storage
 
-The current app reads and writes through filesystem paths under `STORAGE_ROOT`. Production needs durable shared storage visible to API, render worker, TTS service, and avatar worker. MinIO variables exist for local/future S3-compatible storage, but the active application paths are filesystem-based and no S3 adapter is implemented yet.
+The current app reads and writes through filesystem paths under `STORAGE_ROOT`. Production needs durable shared storage visible to API, render worker, TTS service, and avatar worker. A boto3-backed S3 adapter foundation exists behind explicit `STORAGE_BACKEND=s3` configuration, but it is for adapter readiness only; active upload, render, playback, avatar, and TTS runtime paths remain filesystem-based until a reviewed migration lands.
 
 For live multi-user production, the recommended target is S3-compatible object storage such as managed cloud S3 or production-grade MinIO. A shared filesystem is only a temporary bridge when it is durable outside the app host, consistently mounted by every service, monitored, backed up, capacity-alerted, and restore-tested in staging.
 
