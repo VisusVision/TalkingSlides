@@ -140,6 +140,8 @@ jobs:
             --progress=plain \
             --set "*.cache-from=type=gha,scope=${DOCKER_BUILD_CACHE_SCOPE}" \
             --set "*.cache-to=type=gha,scope=${DOCKER_BUILD_CACHE_SCOPE},mode=max,ignore-error=true" \
+            --set "worker.args.DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0" \
+            --set "worker.args.INSTALL_OPENMMLAB_DEPS=0" \
             api worker tts_service
 
   loadtest-smoke:

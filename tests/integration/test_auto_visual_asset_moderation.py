@@ -29,7 +29,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E
 
 from ai_agents.models import AgentFinding, AgentRun  # noqa: E402
 from core import views  # noqa: E402
-from core.models import Project, UserProfile  # noqa: E402
+from core.models import Job, Project, UserProfile  # noqa: E402
 from worker import tasks as worker_tasks  # noqa: E402
 from worker.ai_agents.orchestrator import ModerationOrchestrator  # noqa: E402
 from worker.ai_agents.providers.local_image_rules_provider import LocalImageRulesProvider  # noqa: E402
@@ -70,13 +70,24 @@ def _slide(path: Path | str, *, index: int = 0, page_key: str = "slide-1") -> di
     }
 
 
-def _enable_visual(monkeypatch, *, block: bool = False, cover: bool = False, slides: bool = True) -> None:
+def _enable_visual(
+    monkeypatch,
+    *,
+    block: bool = False,
+    cover: bool = False,
+    slides: bool = True,
+    allow_weak: bool = True,
+) -> None:
     monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION", block, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_PHASE", "visual_asset_scan", raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", cover, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", slides, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True, raising=False)
+    monkeypatch.setattr(settings, "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", allow_weak, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_PROVIDER", "none", raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False, raising=False)
 
 
 @pytest.mark.django_db
@@ -109,6 +120,46 @@ def test_auto_visual_enabled_records_allow_run_for_valid_slide(monkeypatch, tmp_
     assert run.status == "done"
     assert run.final_decision == "allow"
     assert project.moderation_summary["visual_asset_scan"]["final_decision"] == "allow"
+
+
+@pytest.mark.django_db
+def test_render_completion_does_not_republish_unresolved_moderation_block():
+    project = _make_project("auto_visual_render_completion_blocked")
+    project.status = "processing"
+    project.moderation_status = "needs_admin_review"
+    project.is_published = True
+    project.save(update_fields=["status", "moderation_status", "is_published"])
+
+    worker_tasks._mark_project_ready_after_successful_render(project.id)
+
+    project.refresh_from_db()
+    assert project.status == "ready"
+    assert project.is_published is False
+
+
+@pytest.mark.django_db
+def test_weak_local_rules_do_not_semantically_approve_by_default(monkeypatch, tmp_path):
+    _enable_visual(monkeypatch, allow_weak=False)
+    project = _make_project("auto_visual_provider_required_teacher")
+    project.status = "ready"
+    project.moderation_status = "approved"
+    project.is_published = True
+    project.save(update_fields=["status", "moderation_status", "is_published"])
+    image_path = _save_image(tmp_path / "valid-provider-required.png")
+
+    result = worker_tasks._run_auto_visual_asset_moderation_after_export(project.id, [_slide(image_path)])
+
+    project.refresh_from_db()
+    finding = AgentFinding.objects.get(run__project=project, category="provider_unavailable")
+    assert result["final_decision"] == "needs_admin_review"
+    assert finding.decision == "needs_admin_review"
+    assert finding.location["asset_type"] == "slide_image"
+    assert finding.location["slide_order"] == 0
+    assert finding.user_message.startswith("We could not complete the visual safety scan")
+    assert finding.admin_message.startswith("The semantic visual safety provider did not return")
+    assert project.moderation_status == "needs_admin_review"
+    assert project.is_published is False
+    assert project.moderation_summary["visual_asset_scan"]["provider_errors"][0]["reason"] == "semantic_visual_provider_unavailable"
 
 
 @pytest.mark.django_db
@@ -239,8 +290,8 @@ def test_cover_upload_triggers_auto_visual_scan_when_enabled(monkeypatch, tmp_pa
     project = _make_project("auto_visual_cover_upload")
     calls = []
 
-    def fake_scan(project_id, export_result, job_id=None):
-        calls.append({"project_id": project_id, "export_result": export_result, "job_id": job_id})
+    def fake_scan(project_id, export_result, job_id=None, **kwargs):
+        calls.append({"project_id": project_id, "export_result": export_result, "job_id": job_id, **kwargs})
         return {"enabled": True, "status": "done", "final_decision": "allow", "finding_count": 0}
 
     monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", fake_scan)
@@ -255,7 +306,64 @@ def test_cover_upload_triggers_auto_visual_scan_when_enabled(monkeypatch, tmp_pa
         response = views.ProjectCoverImageView.as_view()(request, project_id=project.id)
 
     assert response.status_code == 200
-    assert calls == [{"project_id": project.id, "export_result": [], "job_id": None}]
+    project.refresh_from_db()
+    assert project.cover_image_original == ""
+    assert project.cover_image_processed == ""
+    assert project.draft_data["project"]["cover_image_original"].startswith(f"uploads/{project.id}/cover_")
+    assert project.draft_data["metadata"]["cover_dirty"] is True
+    assert calls == [
+        {
+            "project_id": project.id,
+            "export_result": [],
+            "job_id": None,
+            "scan_cover": True,
+            "scan_slides": False,
+            "use_draft": True,
+        }
+    ]
+
+
+@pytest.mark.django_db
+def test_published_cover_upload_unpublishes_when_visual_scan_requires_review(monkeypatch, tmp_path):
+    _enable_visual(monkeypatch, cover=True, slides=False)
+    project = _make_project("auto_visual_cover_unpublish")
+    old_cover = tmp_path / "uploads" / str(project.id) / "active-cover.png"
+    old_cover.parent.mkdir(parents=True, exist_ok=True)
+    _save_image(old_cover)
+    old_cover_rel = f"uploads/{project.id}/active-cover.png"
+    project.cover_image_original = old_cover_rel
+    project.cover_image_processed = old_cover_rel
+    project.status = "ready"
+    project.moderation_status = "approved"
+    project.is_published = True
+    project.save(update_fields=["cover_image_original", "cover_image_processed", "status", "moderation_status", "is_published"])
+    Job.objects.create(project=project, job_type="video_export", status="done", result_url=f"{project.id}/lesson.mp4")
+
+    def fake_scan(project_id, export_result, job_id=None):
+        locked = Project.objects.get(pk=project_id)
+        locked.moderation_status = "needs_admin_review"
+        locked.moderation_summary = {"visual_asset_scan": {"final_decision": "needs_admin_review"}}
+        locked.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
+        return {"enabled": True, "status": "done", "final_decision": "needs_admin_review", "finding_count": 1}
+
+    monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", fake_scan)
+    request = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/cover/",
+        {"cover_file": _image_upload("unsafe-cover.png")},
+        format="multipart",
+    )
+    force_authenticate(request, user=project.user)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.ProjectCoverImageView.as_view()(request, project_id=project.id)
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert project.moderation_status == "needs_admin_review"
+    assert project.is_published is False
+    assert project.cover_image_original == old_cover_rel
+    assert project.cover_image_processed == old_cover_rel
+    assert project.draft_data["project"]["cover_image_original"].startswith(f"uploads/{project.id}/cover_")
 
 
 @pytest.mark.django_db
@@ -273,8 +381,8 @@ def test_custom_background_upload_triggers_auto_visual_scan_when_enabled(monkeyp
     )
     calls = []
 
-    def fake_scan(project_id, export_result, job_id=None):
-        calls.append({"project_id": project_id, "export_result": export_result, "job_id": job_id})
+    def fake_scan(project_id, export_result, job_id=None, **kwargs):
+        calls.append({"project_id": project_id, "export_result": export_result, "job_id": job_id, **kwargs})
         return {"enabled": True, "status": "done", "final_decision": "allow", "finding_count": 0}
 
     monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", fake_scan)
@@ -291,6 +399,54 @@ def test_custom_background_upload_triggers_auto_visual_scan_when_enabled(monkeyp
     assert response.status_code == 200
     assert calls[0]["project_id"] == project.id
     assert calls[0]["job_id"] is None
+    assert calls[0]["scan_cover"] is False
+    assert calls[0]["scan_slides"] is True
     assert len(calls[0]["export_result"]) == 1
     assert calls[0]["export_result"][0]["page_key"] == page.page_key
+    assert calls[0]["export_result"][0]["transcript_page_id"] == page.id
     assert calls[0]["export_result"][0]["image_path"].endswith(".png")
+    assert calls[0]["export_result"][0]["asset_type"] == "custom_background"
+    assert calls[0]["export_result"][0]["ui_anchor"] == f"custom-background-{page.id}"
+
+
+@pytest.mark.django_db
+def test_published_background_upload_unpublishes_when_visual_scan_requires_review(monkeypatch, tmp_path):
+    _enable_visual(monkeypatch, cover=False, slides=True)
+    project = _make_project("auto_visual_background_unpublish")
+    project.status = "ready"
+    project.moderation_status = "approved"
+    project.is_published = True
+    project.save(update_fields=["status", "moderation_status", "is_published"])
+    Job.objects.create(project=project, job_type="video_export", status="done", result_url=f"{project.id}/lesson.mp4")
+    page = project.transcript_pages.create(
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text="Display",
+        narration_text="Narration",
+        editor_document={"version": 1},
+    )
+
+    def fake_scan(project_id, export_result, job_id=None):
+        locked = Project.objects.get(pk=project_id)
+        locked.moderation_status = "needs_admin_review"
+        locked.moderation_summary = {"visual_asset_scan": {"final_decision": "needs_admin_review"}}
+        locked.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
+        return {"enabled": True, "status": "done", "final_decision": "needs_admin_review", "finding_count": 1}
+
+    monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", fake_scan)
+    request = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/",
+        {"background_file": _image_upload("unsafe-background.png")},
+        format="multipart",
+    )
+    force_authenticate(request, user=project.user)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.TranscriptPageBackgroundUploadView.as_view()(request, project_id=project.id, page_id=page.id)
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert project.moderation_status == "needs_admin_review"
+    assert project.is_published is False

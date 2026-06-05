@@ -108,6 +108,7 @@ def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
     assert response.status_code == 202
     assert response.data["status"] == "queued"
     assert response.data["job_id"]
+    assert response.data["avatar_setup_status"]["state"] == "preparing"
     assert sent["name"] == "worker.tasks.render_avatar_preview"
     profile.refresh_from_db()
     assert profile.avatar_last_preview_status == "queued"
@@ -142,7 +143,40 @@ def test_avatar_preview_regenerate_rejects_missing_voice_profile():
 
     assert response.status_code == 400
     assert response.data.get("error_code") == "setup_not_prepared"
+    assert response.data["avatar_setup_status"]["state"] == "missing_voice"
+    assert response.data["action_required"] == "upload_voice"
     assert "missing_voice_profile" in (response.data.get("missing_requirements") or [])
+
+
+def test_avatar_preview_regenerate_blocks_without_consent():
+    if not _table_has_column("core_userprofile", "avatar_image_original"):
+        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+
+    suffix = uuid.uuid4().hex[:8]
+    os.environ.setdefault("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
+    os.environ.setdefault("AVATAR_MUSETALK_CMD", "echo musetalk")
+    user = User.objects.create_user(username=f"teacher_no_consent_{suffix}", password="pass")
+    profile = UserProfile.objects.create(
+        user=user,
+        role="teacher",
+        avatar_image_processed="avatars/1/hash/processed.png",
+        avatar_image_original="avatars/1/hash/original.png",
+        avatar_consent_confirmed=False,
+        avatar_enabled=False,
+    )
+    processed_abs = Path(getattr(settings, "STORAGE_ROOT", "storage_local")) / profile.avatar_image_processed
+    processed_abs.parent.mkdir(parents=True, exist_ok=True)
+    processed_abs.write_bytes(b"test")
+    VoiceProfile.objects.create(user=user, provider="xtts_v2", voice_id=f"voice_no_consent_{suffix}")
+
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/users/{user.id}/avatar/preview/")
+    force_authenticate(request, user=user)
+    response = views.AvatarPreviewRegenerateView.as_view()(request, user_id=user.id)
+
+    assert response.status_code == 400
+    assert response.data["avatar_setup_status"]["state"] == "missing_consent"
+    assert response.data["action_required"] == "confirm_consent"
 
 
 def test_avatar_preview_status_polling_returns_job_state():
@@ -173,6 +207,8 @@ def test_avatar_preview_status_polling_returns_job_state():
     assert response.data["status"] == "done"
     assert response.data["preview_rel_path"] == "avatars/2/preview/preview.mp4"
     assert "preview_readiness" in response.data
+    assert "avatar_setup_status" in response.data
+    assert response.data["action_required"] == response.data["avatar_setup_status"]["action_required"]
     assert response.data["normalized_engine"] == "liveportrait+musetalk"
     assert response.data["avatar_engine_selected"] == "liveportrait+musetalk"
 

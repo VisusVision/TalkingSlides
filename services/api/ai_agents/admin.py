@@ -5,6 +5,8 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.html import format_html
 
+from ai_agents.policies import enforce_unpublished_for_unresolved_moderation
+
 from .models import (
     AdminReviewRequest,
     AgentDefinition,
@@ -39,7 +41,10 @@ def _update_project_moderation_status(project, status, review):
     )
     project.moderation_status = status
     project.moderation_summary = summary
-    project.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
+    update_fields = ["moderation_status", "moderation_summary", "updated_at"]
+    if status != "admin_approved" and enforce_unpublished_for_unresolved_moderation(project, save=False):
+        update_fields.append("is_published")
+    project.save(update_fields=update_fields)
 
 
 @admin.register(AgentDefinition)

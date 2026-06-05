@@ -5,6 +5,8 @@
 // both bare origin (http://localhost:8000) and versioned styles
 // (http://localhost:8000/api/v1).
 
+import { avatarSetupErrorMessage } from "./utils/avatarSetupStatus.js";
+
 const DEFAULT_API_BASE_URL = "http://localhost:8000/api/v1";
 
 /**
@@ -173,7 +175,10 @@ export async function fetchAuthenticatedAssetBlobUrl(url) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to fetch asset (${res.status})`);
+    const error = new Error(data.error || `Failed to fetch asset (${res.status})`);
+    error.status = res.status;
+    error.url = absolute;
+    throw error;
   }
   const blob = await res.blob();
   return URL.createObjectURL(blob);
@@ -388,8 +393,14 @@ export async function fetchUser(userId) {
 // Projects
 // ---------------------------------------------------------------------------
 
-export async function fetchProjects() {
-  const res = await fetch(`${API_BASE_URL}/projects/`, { headers: authHeaders() });
+export async function fetchProjects(options = {}) {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined && options.limit !== null) params.set("limit", String(options.limit));
+  if (options.offset !== undefined && options.offset !== null) params.set("offset", String(options.offset));
+  const query = String(options.q ?? options.search ?? "").trim();
+  if (query) params.set("q", query);
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const res = await fetch(`${API_BASE_URL}/projects/${suffix}`, { headers: authHeaders() });
   if (!res.ok) throw new Error("Failed to fetch projects");
   return res.json();
 }
@@ -435,8 +446,9 @@ export async function rerenderProject(projectId, options = {}) {
     headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error("Failed to rerender project");
-  return res.json();
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, "Failed to rerender project");
+  return data;
 }
 
 export async function rerenderProjectAvatar(projectId, options = {}) {
@@ -574,7 +586,9 @@ export async function requestProjectAdminReview(projectId, message = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to request admin review"));
+    const error = apiError(data, "Failed to request admin review");
+    error.status = res.status;
+    throw error;
   }
   return data;
 }
@@ -605,6 +619,19 @@ export async function listModerationReports(status = "open") {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(apiErrorMessage(data, "Failed to fetch moderation reports"));
+  }
+  return data;
+}
+
+export async function runModerationReportAction(reportId, action, reason = "") {
+  const res = await fetch(`${API_BASE_URL}/admin/moderation/reports/${reportId}/action/`, {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ action, reason }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, "Failed to update moderation report"));
   }
   return data;
 }
@@ -809,7 +836,10 @@ export async function uploadVoiceSample(userId, file) {
     headers: authHeaders(),
     body: formData,
   });
-  if (!res.ok) throw new Error("Failed to upload voice sample");
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(avatarSetupErrorMessage(data, "Failed to upload voice sample"));
+  }
   return res.json();
 }
 
@@ -819,7 +849,7 @@ export async function fetchAvatarProfile(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to fetch avatar profile");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to fetch avatar profile"));
   }
   return res.json();
 }
@@ -842,7 +872,7 @@ export async function uploadAvatarImage(userId, file, settings = {}) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to upload avatar image");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to upload avatar image"));
   }
   return res.json();
 }
@@ -865,7 +895,7 @@ export async function uploadAvatarVideo(userId, file, settings = {}) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to upload avatar video");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to upload avatar video"));
   }
   return res.json();
 }
@@ -878,7 +908,7 @@ export async function updateAvatarProfile(userId, payload) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to update avatar settings");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to update avatar settings"));
   }
   return res.json();
 }
@@ -890,10 +920,11 @@ export async function regenerateAvatarPreview(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    const err = new Error(data.error || "Failed to regenerate avatar preview");
+    const err = new Error(avatarSetupErrorMessage(data, "Failed to regenerate avatar preview"));
     err.code = data.error_code || "";
     err.missingRequirements = Array.isArray(data.missing_requirements) ? data.missing_requirements : [];
     err.readiness = data.readiness || null;
+    err.avatarSetupStatus = data.avatar_setup_status || data.readiness?.avatar_setup_status || null;
     throw err;
   }
   return res.json();
@@ -907,10 +938,11 @@ export async function prepareAvatarProfile(userId, payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(data.error || "Failed to prepare avatar");
+    const err = new Error(avatarSetupErrorMessage(data, "Failed to prepare avatar"));
     err.code = data.error_code || "setup_not_prepared";
     err.missingRequirements = Array.isArray(data.missing_requirements) ? data.missing_requirements : [];
     err.readiness = data.readiness || null;
+    err.avatarSetupStatus = data.avatar_setup_status || data.readiness?.avatar_setup_status || null;
     throw err;
   }
   return data;
@@ -922,7 +954,7 @@ export async function fetchAvatarPreviewStatus(userId, jobId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to fetch avatar preview status");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to fetch avatar preview status"));
   }
   return res.json();
 }
@@ -934,7 +966,7 @@ export async function deleteAvatarPreview(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Failed to delete avatar preview");
+    throw new Error(avatarSetupErrorMessage(data, "Failed to delete avatar preview"));
   }
   return res.json();
 }
@@ -1322,7 +1354,7 @@ export async function updateProjectTranscript(projectId, pages, options = {}) {
   });
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
-    throw new Error(payload.error || 'Failed to save transcript edits');
+    throw new Error(apiErrorMessage(payload, 'Failed to save transcript edits'));
   }
   return res.json();
 }
@@ -1336,6 +1368,19 @@ export async function discardProjectDraft(projectId) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(data.error || data.detail || 'Failed to discard draft');
+  }
+  return data;
+}
+
+export async function promoteProjectDraft(projectId) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/draft/promote/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw apiError(data, 'Failed to save draft changes');
   }
   return data;
 }
@@ -1400,7 +1445,7 @@ export async function applyProjectBackgroundToAll(projectId, payload = {}) {
 export async function uploadProjectCover(projectId, file, options = {}) {
   const formData = new FormData();
   formData.append('cover_file', file);
-  formData.append('draft_only', String(options.draftOnly ?? false));
+  formData.append('draft_only', String(options.draftOnly ?? true));
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/cover/`, {
     method: 'POST',
     headers: authHeaders(),

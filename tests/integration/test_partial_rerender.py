@@ -97,6 +97,9 @@ def test_cover_only_update_does_not_create_full_render_job(tmp_path):
 
     assert response.status_code == 200
     assert response.data["render_required"] is False
+    project.refresh_from_db()
+    assert project.draft_data["metadata"]["cover_dirty"] is True
+    assert project.draft_data["project"]["cover_image_original"].startswith(f"uploads/{project.id}/cover_")
     assert Job.objects.filter(project=project, job_type="video_export").count() == before
 
 

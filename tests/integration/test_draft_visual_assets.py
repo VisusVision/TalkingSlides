@@ -26,7 +26,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile  # noqa: E402
 from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
-from core.drafts import ensure_project_draft_data, promote_project_draft, save_project_draft_data  # noqa: E402
+from core.drafts import ensure_project_draft_data, mark_draft_moderation_failed, promote_project_draft, save_project_draft_data  # noqa: E402
 from core.models import Job, Project, TranscriptPage, UserProfile  # noqa: E402
 from worker import tasks as worker_tasks  # noqa: E402
 
@@ -127,8 +127,10 @@ def test_studio_cover_upload_creates_draft_without_changing_active_cover(tmp_pat
     assert project.draft_data["metadata"]["dirty"] is True
     assert project.draft_data["metadata"]["cover_dirty"] is True
     assert project.draft_data["project"]["cover_image_original"].startswith(f"uploads/{project.id}/cover_")
-    assert response.data["cover_url"].endswith(f"/api/v1/projects/{project.id}/cover/")
-    assert response.data["draft_cover_url"].endswith(f"/api/v1/projects/{project.id}/cover/?draft=1")
+    assert f"/api/v1/projects/{project.id}/cover/" in response.data["cover_url"]
+    assert "cover_v=" in response.data["cover_url"]
+    assert f"/api/v1/projects/{project.id}/cover/?draft=1" in response.data["draft_cover_url"]
+    assert "cover_v=" in response.data["draft_cover_url"]
 
 
 @pytest.mark.django_db
@@ -147,6 +149,59 @@ def test_public_cover_serving_keeps_active_cover_before_promotion(tmp_path):
     assert draft_response.status_code == 200
     assert _body(public_response) == old_bytes
     assert _body(draft_response) != old_bytes
+
+
+@pytest.mark.django_db
+def test_safe_cover_upload_without_draft_flag_waits_for_intentional_promotion(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", False, raising=False)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    def allow_scan(project_id, export_result, **kwargs):
+        assert kwargs.get("use_draft") is True
+        return {
+            "enabled": True,
+            "status": "done",
+            "project_id": int(project_id),
+            "final_decision": "allow",
+            "finding_count": 0,
+            "findings": [],
+            "block_render": False,
+            "message": "Visual moderation passed.",
+        }
+
+    monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", allow_scan)
+    owner = _make_user("draft_cover_default_safe_owner")
+    project = _make_project(owner, tmp_path)
+    old_cover = project.cover_image_original
+    old_bytes = (tmp_path / old_cover).read_bytes()
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        upload_response = client.post(
+            f"/api/v1/projects/{project.id}/cover/",
+            {"cover_file": _upload("safe-cover.png", (60, 160, 70))},
+            format="multipart",
+        )
+        project.refresh_from_db()
+        cover_after_upload = project.cover_image_original
+        draft_cover = project.draft_data["project"]["cover_image_original"]
+        public_before = _client().get(f"/api/v1/projects/{project.id}/cover/")
+        promote_response = client.post(f"/api/v1/projects/{project.id}/draft/promote/")
+
+    project.refresh_from_db()
+    assert upload_response.status_code == 200
+    assert "draft=1" in upload_response.data["draft_cover_url"]
+    assert "cover_v=" in upload_response.data["draft_cover_url"]
+    assert cover_after_upload == old_cover
+    assert project.cover_image_original == draft_cover
+    assert project.cover_image_original != old_cover
+    assert _body(public_before) == old_bytes
+    assert promote_response.status_code == 200
+    assert f"/api/v1/projects/{project.id}/cover/" in promote_response.data["cover_url"]
+    assert "cover_v=" in promote_response.data["cover_url"]
 
 
 @pytest.mark.django_db
@@ -252,6 +307,201 @@ def test_safe_draft_promotion_updates_cover_and_background_and_clears_draft(tmp_
 
 
 @pytest.mark.django_db
+def test_cover_only_save_changes_promotes_safe_cover_without_rerender(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", False, raising=False)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    def allow_scan(project_id, export_result, **kwargs):
+        assert kwargs.get("use_draft") is True
+        return {
+            "enabled": True,
+            "status": "completed",
+            "final_decision": "allow",
+            "finding_count": 0,
+            "findings": [],
+        }
+
+    monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", allow_scan)
+    owner = _make_user("draft_cover_save_owner")
+    project = _make_project(owner, tmp_path)
+    old_cover = project.cover_image_original
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        assert _upload_draft_cover(client, project, color=(60, 160, 70)).status_code == 200
+        project.refresh_from_db()
+        draft_cover = project.draft_data["project"]["cover_image_original"]
+        response = client.post(f"/api/v1/projects/{project.id}/draft/promote/")
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert response.data["rerender_strategy"] == "none"
+    assert response.data["render_required"] is False
+    assert "rerender" in response.data["message"].lower()
+    assert project.cover_image_original == draft_cover
+    assert project.cover_image_original != old_cover
+    assert project.draft_data == {}
+    assert project.moderation_status == "approved"
+
+
+@pytest.mark.django_db
+def test_replacing_blocked_cover_clears_stale_draft_visual_block(tmp_path):
+    owner = _make_user("draft_cover_replace_block_owner")
+    project = _make_project(owner, tmp_path)
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        assert _upload_draft_cover(client, project, color=(220, 20, 20)).status_code == 200
+        project.refresh_from_db()
+        mark_draft_moderation_failed(
+            project,
+            {
+                "enabled": True,
+                "final_decision": "needs_admin_review",
+                "message": "Draft visual moderation requires admin review.",
+                "finding_count": 1,
+            },
+        )
+        response = _upload_draft_cover(client, project, color=(60, 160, 70))
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert "moderation_status" not in project.draft_data["metadata"]
+    assert "moderation" not in project.draft_data["metadata"]
+    assert "draft_moderation" not in project.moderation_summary
+    assert project.moderation_status == "approved"
+    assert response.data["draft_metadata"].get("cover_dirty") is True
+    assert "moderation_status" not in response.data["draft_metadata"]
+
+
+@pytest.mark.django_db
+def test_blocked_cover_upload_response_reports_review_not_passed(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", False, raising=False)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    def review_scan(project_id, export_result, **kwargs):
+        assert kwargs.get("use_draft") is True
+        return {
+            "enabled": True,
+            "status": "done",
+            "project_id": int(project_id),
+            "phase": "visual_asset_scan",
+            "run_id": 456,
+            "final_decision": "needs_admin_review",
+            "finding_count": 1,
+            "findings": [],
+            "block_render": True,
+            "message": "Visual moderation requires review.",
+        }
+
+    monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", review_scan)
+    owner = _make_user("draft_cover_review_message_owner")
+    project = _make_project(owner, tmp_path)
+    old_cover = project.cover_image_original
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = _upload_draft_cover(_client(owner), project, color=(220, 20, 20))
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert "passed" not in response.data["message"].lower()
+    assert "review" in response.data["message"].lower()
+    assert response.data["draft_metadata"]["moderation_status"] == "needs_admin_review"
+    assert project.cover_image_original == old_cover
+
+
+@pytest.mark.django_db
+def test_safe_cover_replacement_reruns_visual_moderation_and_marks_draft_safe(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", False, raising=False)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+
+    def allow_scan(project_id, export_result, **kwargs):
+        assert kwargs.get("use_draft") is True
+        assert kwargs.get("scan_cover") is True
+        return {
+            "enabled": True,
+            "status": "done",
+            "project_id": int(project_id),
+            "phase": "visual_asset_scan",
+            "run_id": 123,
+            "final_decision": "allow",
+            "finding_count": 0,
+            "findings": [],
+            "block_render": False,
+            "message": "Visual moderation passed.",
+        }
+
+    monkeypatch.setattr(worker_tasks, "_run_auto_visual_asset_moderation_after_export", allow_scan)
+    owner = _make_user("draft_cover_safe_recovery_owner")
+    project = _make_project(owner, tmp_path)
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        assert _upload_draft_cover(client, project, color=(220, 20, 20)).status_code == 200
+        project.refresh_from_db()
+        mark_draft_moderation_failed(
+            project,
+            {
+                "enabled": True,
+                "phase": "visual_asset_scan",
+                "final_decision": "needs_admin_review",
+                "message": "Draft visual moderation requires admin review.",
+                "finding_count": 1,
+            },
+        )
+        response = _upload_draft_cover(client, project, color=(60, 160, 70))
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert response.data["draft_metadata"]["moderation_status"] == "approved"
+    assert response.data["draft_metadata"]["moderation"]["finding_count"] == 0
+    assert "draft_moderation" not in project.moderation_summary
+    assert "visual_asset_scan" not in project.moderation_summary
+    assert project.draft_data["metadata"]["moderation_status"] == "approved"
+
+
+@pytest.mark.django_db
+def test_discard_blocked_cover_draft_clears_visual_warning_state(tmp_path):
+    owner = _make_user("draft_cover_discard_block_owner")
+    project = _make_project(owner, tmp_path)
+    old_cover = project.cover_image_original
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        assert _upload_draft_cover(client, project, color=(220, 20, 20)).status_code == 200
+        project.refresh_from_db()
+        mark_draft_moderation_failed(
+            project,
+            {
+                "enabled": True,
+                "final_decision": "needs_admin_review",
+                "message": "Draft visual moderation requires admin review.",
+                "finding_count": 1,
+            },
+        )
+        response = client.post(f"/api/v1/projects/{project.id}/draft/discard/")
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert project.cover_image_original == old_cover
+    assert project.draft_data == {}
+    assert "draft_moderation" not in project.moderation_summary
+    assert "draft_visual_asset_scan" not in project.moderation_summary
+    assert "visual_asset_scan" not in project.moderation_summary
+    assert project.moderation_status not in {"revision_required", "needs_admin_review", "admin_rejected", "block", "blocked"}
+    assert response.data["project"]["draft_cover_url"] == ""
+
+
+@pytest.mark.django_db
 def test_unsafe_visual_draft_blocks_promotion_and_keeps_draft_visible(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
@@ -281,17 +531,87 @@ def test_unsafe_visual_draft_blocks_promotion_and_keeps_draft_visible(monkeypatc
         worker_tasks._mark_draft_render_blocked(project.id, result)
         studio_project = _client(owner).get(f"/api/v1/projects/{project.id}/")
         public_cover = _client().get(f"/api/v1/projects/{project.id}/cover/")
+        public_catalog = _client().get(f"/api/v1/catalog/{project.id}/")
+        playback = _client().get(f"/api/v1/projects/{project.id}/playback-token/")
 
     project.refresh_from_db()
     page.refresh_from_db()
     assert result["block_render"] is True
     assert project.cover_image_original == old_cover
     assert page.editor_document["scene"] == old_scene
+    assert project.is_published is True
     assert project.draft_data["metadata"]["dirty"] is True
     assert project.draft_data["metadata"]["moderation_status"] == "needs_admin_review"
     assert studio_project.status_code == 200
-    assert studio_project.data["draft_cover_url"].endswith("?draft=1")
+    assert "draft=1" in studio_project.data["draft_cover_url"]
+    assert "cover_v=" in studio_project.data["draft_cover_url"]
     assert public_cover.status_code == 200
+    assert public_catalog.status_code == 200
+    assert playback.status_code == 200
+
+
+@pytest.mark.django_db
+def test_cover_only_draft_requires_visual_scan_before_promotion(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", False, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True, raising=False)
+    monkeypatch.setattr(settings, "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", False, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_PROVIDER", "none", raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False, raising=False)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    owner = _make_user("draft_cover_scan_owner")
+    project = _make_project(owner, tmp_path)
+    old_cover = project.cover_image_original
+    lesson_file = tmp_path / "uploads" / str(project.id) / "lesson.pptx"
+    lesson_file.parent.mkdir(parents=True, exist_ok=True)
+    lesson_file.write_bytes(b"placeholder")
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        assert _upload_draft_cover(_client(owner), project, color=(200, 40, 60)).status_code == 200
+        response = _client(owner).post(f"/api/v1/projects/{project.id}/rerender/")
+
+    project.refresh_from_db()
+    assert response.status_code == 400
+    assert response.data["rerender_strategy"] == "blocked_by_visual_moderation"
+    assert project.cover_image_original == old_cover
+    assert project.draft_data["metadata"]["dirty"] is True
+    assert project.draft_data["metadata"]["moderation_status"] == "needs_admin_review"
+    assert project.moderation_summary["draft_moderation"]["final_decision"] == "needs_admin_review"
+
+
+@pytest.mark.django_db
+def test_cover_only_save_and_rerender_uses_draft_visual_gate(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_COVER", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", False, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True, raising=False)
+    monkeypatch.setattr(settings, "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", False, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_PROVIDER", "none", raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False, raising=False)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    owner = _make_user("draft_cover_transcript_rerender_owner")
+    project = _make_project(owner, tmp_path)
+    old_cover = project.cover_image_original
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        assert _upload_draft_cover(client, project, color=(200, 40, 60)).status_code == 200
+        response = client.patch(
+            f"/api/v1/projects/{project.id}/transcript/",
+            {"pages": [], "trigger_rerender": True, "draft_only": True},
+            format="json",
+        )
+
+    project.refresh_from_db()
+    assert response.status_code == 400
+    assert response.data["rerender_strategy"] == "blocked_by_visual_moderation"
+    assert "review" in response.data["message"].lower()
+    assert project.cover_image_original == old_cover
+    assert project.draft_data["metadata"]["dirty"] is True
+    assert project.draft_data["metadata"]["moderation_status"] == "needs_admin_review"
 
 
 @pytest.mark.django_db

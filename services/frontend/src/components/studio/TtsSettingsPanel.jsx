@@ -260,6 +260,7 @@ const TtsSettingsPanel = forwardRef(function TtsSettingsPanel({
   showLocalActions = true,
   onProjectUpdated,
   onRerender,
+  onDirtyChange,
 }, ref) {
   const replacementInputRefs = useRef({});
   const [draftSettings, setDraftSettings] = useState(() => normalizeSettings(project?.tts_settings));
@@ -329,6 +330,10 @@ const TtsSettingsPanel = forwardRef(function TtsSettingsPanel({
     () => settingsKey(cleanedDraftSettings) !== settingsKey(savedSettings),
     [cleanedDraftSettings, savedSettings],
   );
+
+  useEffect(() => {
+    onDirtyChange?.(hasUnsavedChanges);
+  }, [hasUnsavedChanges, onDirtyChange]);
 
   const previewChunks = useMemo(() => {
     if (!Array.isArray(previewResult?.chunks)) return [];

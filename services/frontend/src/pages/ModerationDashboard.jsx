@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ExternalLink,
+  Filter,
   RefreshCcw,
   ShieldCheck,
   XCircle,
@@ -14,11 +15,12 @@ import {
   adminBlockLesson,
   adminRequestLessonChanges,
   approveModerationReviewRequest,
+  fetchAuthenticatedAssetBlobUrl,
   getModerationReviewRequest,
-  listModerationReports,
   listModerationReviewRequests,
   rejectModerationReviewRequest,
   runAdminProjectModerationAction,
+  runModerationReportAction,
 } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
@@ -50,16 +52,38 @@ function isOpenReview(review) {
   return String(review?.status || '').trim().toLowerCase() === 'open';
 }
 
-const REVIEW_STATUS_TABS = [
-  { key: 'reports', label: 'Reports / User reports', countLabel: 'reports' },
-  { key: 'needs_review', label: 'Needs review', countLabel: 'items' },
-  { key: 'auto_rejected', label: 'Automatically rejected', countLabel: 'items' },
-  { key: 'rejected_blocked', label: 'Rejected / blocked', countLabel: 'items' },
-  { key: 'request_changes', label: 'Request changes', countLabel: 'items' },
-  { key: 'approved_resolved', label: 'Approved / resolved', countLabel: 'items' },
+const REVIEW_TABS = [
+  { key: 'open', label: 'Open', countLabel: 'items' },
+  { key: 'history', label: 'History', countLabel: 'items' },
+];
+
+const OPEN_FILTERS = [
+  { key: 'all', label: 'All open' },
+  { key: 'review_requested', label: 'Review requested' },
+  { key: 'auto_blocked', label: 'Auto blocked' },
+  { key: 'manually_blocked', label: 'Manually blocked' },
+  { key: 'visual', label: 'Visual' },
+  { key: 'text_ocr', label: 'Text / OCR' },
+  { key: 'reports', label: 'Reports' },
+  { key: 'request_changes', label: 'Request changes' },
+  { key: 'provider_unavailable', label: 'Provider unavailable' },
+  { key: 'copyright', label: 'Copyright' },
+  { key: 'other', label: 'Other' },
+];
+
+const HISTORY_FILTERS = [
+  { key: 'all', label: 'All history' },
+  { key: 'approved', label: 'Approved' },
+  { key: 'rejected_blocked', label: 'Rejected / blocked' },
+  { key: 'requested_changes', label: 'Requested changes' },
+  { key: 'auto_blocked', label: 'Automatically blocked' },
+  { key: 'reports_resolved', label: 'Reports resolved' },
+  { key: 'copyright', label: 'Copyright' },
+  { key: 'other', label: 'Other' },
 ];
 
 function findingLocationLabel(finding) {
+  if (finding?.asset_label) return finding.asset_label;
   if (finding?.location_label) return finding.location_label;
   if (finding?.slide_order !== undefined && finding?.slide_order !== null) {
     const slideNumber = Number(finding.slide_order) + 1;
@@ -71,7 +95,23 @@ function findingLocationLabel(finding) {
 }
 
 function findingKey(finding, index) {
-  return `${finding?.category || 'finding'}-${finding?.object_id || finding?.page_key || index}`;
+  return `${finding?.finding_id || finding?.id || finding?.category || 'finding'}-${finding?.object_id || finding?.page_key || index}`;
+}
+
+function findingIdentity(finding, index = 0) {
+  return String(
+    finding?.finding_id
+      || finding?.id
+      || [
+        finding?.category || 'finding',
+        finding?.asset_kind || '',
+        finding?.object_id || '',
+        finding?.page_key || '',
+        finding?.slide_index ?? '',
+        finding?.slide_number ?? '',
+        index,
+      ].join(':'),
+  );
 }
 
 function severityTone(severity) {
@@ -104,6 +144,247 @@ function draftAdminResponse(responsesById, review, detail) {
   return savedAdminResponse(review, detail);
 }
 
+function findingReasonTitle(finding) {
+  return String(finding?.reason_title || finding?.category || 'Moderation finding').replace(/_/g, ' ');
+}
+
+function findingAdminMessage(finding) {
+  return String(
+    finding?.admin_reason_message
+      || finding?.reason_message
+      || finding?.admin_message
+      || finding?.user_message
+      || 'This content needs staff attention.',
+  );
+}
+
+function findingTechnicalLabel(finding) {
+  const category = String(finding?.category || '').replace(/_/g, ' ');
+  const severity = String(finding?.severity || '');
+  return [category, severity].filter(Boolean).join(' / ');
+}
+
+const VISUAL_ASSET_KINDS = new Set([
+  'cover',
+  'custom_background',
+  'slide_image',
+  'draft_visual_asset',
+  'video_frame',
+  'profile_image',
+  'channel_logo',
+  'channel_banner',
+]);
+
+const TEXT_CONTENT_TYPES = new Set(['text', 'ocr', 'transcript', 'subtitle', 'language']);
+
+function issueAssetKind(issue) {
+  return String(issue?.asset_kind || '').trim().toLowerCase();
+}
+
+function isTextIssue(issue) {
+  const contentType = String(issue?.content_type || '').trim().toLowerCase();
+  const provider = String(issue?.provider || '').trim().toLowerCase();
+  const objectType = String(issue?.object_type || '').trim().toLowerCase();
+  const category = String(issue?.category || '').trim().toLowerCase();
+  return TEXT_CONTENT_TYPES.has(contentType)
+    || provider.includes('ocr')
+    || provider.includes('text')
+    || objectType.includes('ocr')
+    || [
+      'abusive_language',
+      'copyright_text',
+      'dangerous_instruction',
+      'hate_or_harassment',
+      'inappropriate_language',
+      'language',
+      'profanity',
+      'self_harm_instruction',
+      'sexual_text',
+      'text_moderation',
+      'violence_text',
+    ].includes(category);
+}
+
+function isVisualIssue(issue) {
+  if (!issue || isTextIssue(issue)) return false;
+  const kind = issueAssetKind(issue);
+  const contentType = String(issue?.content_type || '').trim().toLowerCase();
+  const provider = String(issue?.provider || '').trim().toLowerCase();
+  const category = String(issue?.category || '').trim().toLowerCase();
+  return VISUAL_ASSET_KINDS.has(kind)
+    || ['image', 'video_frame'].includes(contentType)
+    || provider.includes('visual')
+    || ['sexual', 'violence', 'graphic_content', 'self_harm', 'provider_unavailable'].includes(category);
+}
+
+function issueStatusLabel(issue) {
+  const decision = String(issue?.decision || '').trim().toLowerCase();
+  if (['block', 'blocked', 'rejected', 'revision_required'].includes(decision)) return 'Blocked';
+  if (decision === 'approved' || decision === 'allow') return 'Approved';
+  if (decision === 'needs_admin_review') return 'Needs admin review';
+  return 'Needs review';
+}
+
+function reviewVisualIssues(review, detail) {
+  const detailIssues = Array.isArray(detail?.visual_issues) ? detail.visual_issues : [];
+  if (detailIssues.length > 0) return detailIssues.filter(isVisualIssue);
+  const reviewIssues = Array.isArray(review?.visual_issues) ? review.visual_issues : [];
+  if (reviewIssues.length > 0) return reviewIssues.filter(isVisualIssue);
+  return reviewSummaryFindings(review, detail).filter(isVisualIssue);
+}
+
+function mergeFindingsWithVisualIssues(findings = [], visualIssues = []) {
+  const merged = Array.isArray(findings) ? [...findings] : [];
+  const seen = new Set(merged.map((finding, index) => findingIdentity(finding, index)));
+  (Array.isArray(visualIssues) ? visualIssues : []).forEach((issue, index) => {
+    const key = findingIdentity(issue, index);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(issue);
+  });
+  return merged;
+}
+
+function primaryVisualIssue(review, detail) {
+  const issues = reviewVisualIssues(review, detail);
+  if (issues.length > 0) return issues[0];
+  if (review?.primary_reason_title || review?.primary_asset_label) {
+    return {
+      reason_title: review.primary_reason_title,
+      reason_message: review.primary_reason_message,
+      admin_reason_message: review.primary_reason_message,
+      asset_label: review.primary_asset_label,
+      category: review.highest_category,
+      severity: review.highest_severity,
+    };
+  }
+  return null;
+}
+
+function primaryModerationIssue(review, detail) {
+  const visualIssue = primaryVisualIssue(review, detail);
+  if (visualIssue) return visualIssue;
+  const findings = reviewSummaryFindings(review, detail);
+  if (findings.length > 0) return findings[0];
+  if (review?.primary_reason_title || review?.primary_asset_label) {
+    return {
+      reason_title: review.primary_reason_title,
+      reason_message: review.primary_reason_message,
+      admin_reason_message: review.primary_reason_message,
+      asset_label: review.primary_asset_label,
+      category: review.highest_category,
+      severity: review.highest_severity,
+    };
+  }
+  return null;
+}
+
+function requestChangesMessageForIssue(review, detail) {
+  const issue = primaryModerationIssue(review, detail);
+  const kind = issueAssetKind(issue);
+  if (kind === 'cover') return 'Please replace the lesson cover image.';
+  if (kind === 'custom_background') return 'Please replace the custom background image.';
+  if (kind === 'slide_image' || kind === 'draft_visual_asset') {
+    const slideNumber = Number(issue?.slide_number || (Number(issue?.slide_order) + 1));
+    if (Number.isFinite(slideNumber) && slideNumber > 0) return `Please replace Slide ${slideNumber} image.`;
+    return 'Please replace the flagged slide image.';
+  }
+  if (isTextIssue(issue)) return 'Please remove or rewrite the highlighted transcript text.';
+  const label = String(issue?.asset_label || '').trim();
+  if (label && isVisualIssue(issue)) return `Please replace the ${label.toLowerCase()}.`;
+  return '';
+}
+
+function reviewAllowed(review, action) {
+  const actions = Array.isArray(review?.allowed_actions) ? review.allowed_actions : [];
+  if (actions.length === 0) return true;
+  return actions.includes(action);
+}
+
+function sourceLabel(review) {
+  const source = String(review?.source || review?.source_type || '').replace(/_/g, ' ');
+  return source ? source.replace(/\b\w/g, (letter) => letter.toUpperCase()) : 'Moderation';
+}
+
+function itemTimestamp(review) {
+  return review?.item_time || review?.updated_at || review?.reviewed_at || review?.created_at;
+}
+
+function ModerationPreview({ issue }) {
+  const sourceUrl = String(issue?.preview_url || issue?.asset_url || '').trim();
+  const [blobUrl, setBlobUrl] = useState('');
+  const [loading, setLoading] = useState(Boolean(sourceUrl));
+  const [failed, setFailed] = useState(!sourceUrl);
+  const [statusCode, setStatusCode] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = '';
+    setBlobUrl('');
+    setStatusCode('');
+    setFailed(!sourceUrl);
+    setLoading(Boolean(sourceUrl));
+    if (!sourceUrl) return undefined;
+    fetchAuthenticatedAssetBlobUrl(sourceUrl)
+      .then((url) => {
+        if (cancelled) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        objectUrl = url;
+        setBlobUrl(url);
+        setFailed(!url);
+        setLoading(false);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setStatusCode(error?.status ? String(error.status) : 'error');
+          setFailed(true);
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [sourceUrl]);
+
+  if (loading) {
+    return (
+      <div
+        className="flex min-h-20 w-full items-center rounded-lg bg-[color:var(--surface-container-high)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] sm:w-40"
+        data-preview-url-present={sourceUrl ? 'true' : 'false'}
+        data-preview-fetch-status="loading"
+      >
+        Loading preview...
+      </div>
+    );
+  }
+
+  if (failed || !blobUrl) {
+    return (
+      <div
+        className="flex min-h-20 w-full items-center rounded-lg bg-[color:var(--surface-container-high)] px-3 py-2 text-xs font-medium text-[var(--text-secondary)] sm:w-40"
+        data-preview-url-present={sourceUrl ? 'true' : 'false'}
+        data-preview-fetch-status={statusCode || (sourceUrl ? 'failed' : 'missing')}
+      >
+        Preview unavailable. Open read-only Studio to inspect this lesson.
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={blobUrl}
+      alt={findingLocationLabel(issue)}
+      className="h-24 w-full rounded-lg object-cover sm:w-40"
+      data-preview-url-present="true"
+      data-preview-fetch-status="200"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 export default function ModerationDashboard({ searchQuery = '' }) {
   const { capabilities } = useCapabilities();
   const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
@@ -116,13 +397,21 @@ export default function ModerationDashboard({ searchQuery = '' }) {
   const [actionBusy, setActionBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [activeStatus, setActiveStatus] = useState('reports');
+  const [activeTabKey, setActiveTabKey] = useState('open');
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [pendingDecision, setPendingDecision] = useState(null);
+  const [requestChangesDialog, setRequestChangesDialog] = useState(null);
+  const filterPanelRef = useRef(null);
 
   const activeTab = useMemo(
-    () => REVIEW_STATUS_TABS.find((tab) => tab.key === activeStatus) || REVIEW_STATUS_TABS[0],
-    [activeStatus],
+    () => REVIEW_TABS.find((tab) => tab.key === activeTabKey) || REVIEW_TABS[0],
+    [activeTabKey],
   );
+  const activeFilters = activeTabKey === 'history' ? HISTORY_FILTERS : OPEN_FILTERS;
+  const activeFilterOption = activeFilters.find((filter) => filter.key === activeFilter) || activeFilters[0];
+  const activeFilterCount = activeFilter === 'all' ? 0 : 1;
+  const activeFilterLabel = activeFilterCount ? activeFilterOption.label : 'No filters';
   
   const filteredReviewRequests = useMemo(() => {
     if (!searchQuery) return reviewRequests;
@@ -150,24 +439,38 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     setLoading(true);
     setError('');
     try {
-      if (activeStatus === 'reports') {
-        const payload = await listModerationReports('open');
-        setReviewRequests(normalizeReports(payload));
-      } else {
-        const payload = await listModerationReviewRequests({ queue: activeStatus });
-        setReviewRequests(normalizeReviewRequests(payload));
-      }
+      const payload = await listModerationReviewRequests({ tab: activeTabKey, filter: activeFilter });
+      setReviewRequests(normalizeReviewRequests(payload));
     } catch (reviewError) {
       setReviewRequests([]);
       setError(reviewError.message || 'Could not load moderation review requests.');
     } finally {
       setLoading(false);
     }
-  }, [activeStatus]);
+  }, [activeFilter, activeTabKey]);
 
   useEffect(() => {
     loadReviewRequests();
   }, [loadReviewRequests]);
+
+  useEffect(() => {
+    if (!filterPanelOpen) return undefined;
+    const handlePointerDown = (event) => {
+      if (filterPanelRef.current?.contains(event.target)) return;
+      setFilterPanelOpen(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setFilterPanelOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [filterPanelOpen]);
 
   const handleToggleDetail = async (review) => {
     if (!review?.id) return;
@@ -233,22 +536,56 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     }
   };
 
-  const handleRequestChanges = async (review, detail = null) => {
+  const openRequestChangesDialog = (review, detail = null) => {
+    const response = draftAdminResponse(responsesById, review, detail).trim();
+    setRequestChangesDialog({
+      review,
+      message: response || requestChangesMessageForIssue(review, detail),
+      unpublish: true,
+    });
+    setError('');
+  };
+
+  const handleRequestChanges = async () => {
+    const review = requestChangesDialog?.review;
+    const message = String(requestChangesDialog?.message || '').trim();
     if (!review?.project_id) return;
+    if (!message) {
+      setError('A message is required when requesting changes.');
+      return;
+    }
     const key = `request_changes-${review.id}`;
     setActionBusy(key);
     setError('');
     setNotice('');
     try {
-      const response = draftAdminResponse(responsesById, review, detail);
       const payload = await adminRequestLessonChanges(review.project_id, {
-        reason: response,
-        unpublish: true,
+        reason: message,
+        unpublish: Boolean(requestChangesDialog?.unpublish),
       });
+      setRequestChangesDialog(null);
       setNotice(payload?.message || 'Moderation action saved.');
       await loadReviewRequests();
     } catch (actionError) {
       setError(actionError.message || 'Could not update moderation state.');
+    } finally {
+      setActionBusy('');
+    }
+  };
+
+  const handleDismissReport = async (review) => {
+    const reportId = review?.report_id || String(review?.id || '').replace(/^report-/, '');
+    if (!reportId) return;
+    const key = `dismiss-${review.id}`;
+    setActionBusy(key);
+    setError('');
+    setNotice('');
+    try {
+      await runModerationReportAction(reportId, 'dismiss');
+      setNotice('Report dismissed.');
+      await loadReviewRequests();
+    } catch (actionError) {
+      setError(actionError.message || 'Could not dismiss report.');
     } finally {
       setActionBusy('');
     }
@@ -335,18 +672,21 @@ export default function ModerationDashboard({ searchQuery = '' }) {
         </div>
 
         <div className="flex flex-wrap gap-2">
-          {REVIEW_STATUS_TABS.map((tab) => (
+          {REVIEW_TABS.map((tab) => (
             <button
               key={tab.key}
               type="button"
               onClick={() => {
-                setActiveStatus(tab.key);
+                setActiveTabKey(tab.key);
+                setActiveFilter('all');
                 setExpandedId(null);
                 setNotice('');
                 setPendingDecision(null);
+                setRequestChangesDialog(null);
+                setFilterPanelOpen(false);
               }}
               className={`focus-ring rounded-full px-3 py-1.5 text-sm font-semibold transition ${
-                activeStatus === tab.key
+                activeTabKey === tab.key
                   ? 'bg-[var(--accent-primary)] text-[var(--accent-inverse)] shadow-sm'
                   : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface-strong)]'
               }`}
@@ -354,6 +694,55 @@ export default function ModerationDashboard({ searchQuery = '' }) {
               {tab.label}
             </button>
           ))}
+        </div>
+
+        <div className="relative" ref={filterPanelRef}>
+          <button
+            type="button"
+            onClick={() => setFilterPanelOpen((open) => !open)}
+            className={`focus-ring inline-flex w-full items-center justify-center gap-2 rounded-full px-3 py-2 text-sm font-semibold transition sm:w-auto ${
+              activeFilterCount
+                ? 'bg-[var(--accent-primary)] text-[var(--accent-inverse)] shadow-sm'
+                : 'bg-[color:var(--surface-muted)] text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)]'
+            }`}
+            aria-expanded={filterPanelOpen}
+          >
+            <Filter size={15} />
+            <span>{activeFilterCount ? activeFilterLabel : 'Filters'}</span>
+            {activeFilterCount > 0 && (
+              <span className="rounded-full bg-[color:rgba(255,255,255,0.22)] px-2 py-0.5 text-[0.68rem] font-bold text-current">
+                {activeFilterCount}
+              </span>
+            )}
+            <ChevronDown size={14} className={filterPanelOpen ? 'rotate-180 transition' : 'transition'} />
+          </button>
+
+          {filterPanelOpen && (
+            <div className="absolute left-0 z-20 mt-2 w-[min(64rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 shadow-xl">
+              <div className="flex flex-wrap gap-2">
+                {activeFilters.map((filter) => (
+                  <button
+                    key={filter.key}
+                    type="button"
+                    onClick={() => {
+                      setActiveFilter(filter.key);
+                      setExpandedId(null);
+                      setNotice('');
+                      setPendingDecision(null);
+                      setFilterPanelOpen(false);
+                    }}
+                    className={`focus-ring min-w-0 rounded-full px-3 py-2 text-left text-xs font-semibold transition ${
+                      activeFilter === filter.key
+                        ? 'bg-[color:var(--surface-container-highest)] text-[var(--text-primary)] ring-1 ring-[var(--accent-primary)]'
+                        : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface-strong)]'
+                    }`}
+                  >
+                    {filter.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         {loading ? (
@@ -377,7 +766,6 @@ export default function ModerationDashboard({ searchQuery = '' }) {
             {filteredReviewRequests.map((review) => {
               const detail = detailsById[review.id] || null;
               const expanded = expandedId === review.id;
-              const findings = reviewSummaryFindings(review, detail);
               const response = draftAdminResponse(responsesById, review, detail);
               const savedResponse = savedAdminResponse(review, detail);
               const responseChanged = response !== savedResponse;
@@ -385,10 +773,22 @@ export default function ModerationDashboard({ searchQuery = '' }) {
               const rejectBusy = actionBusy === `reject-${review.id}`;
               const requestChangesBusy = actionBusy === `request_changes-${review.id}`;
               const rescanBusy = actionBusy === `rescan-${review.id}`;
-              const canReview = activeStatus !== 'approved_resolved' && (isOpenReview(review) || review.source_type !== 'review_request');
-              const rescanRelevant = ['auto_rejected', 'request_changes'].includes(activeStatus);
-              const rejectLabel = activeStatus === 'auto_rejected' ? 'Keep blocked' : 'Reject / Block';
-              const approveLabel = activeStatus === 'rejected_blocked' ? 'Unreject / Approve' : activeStatus === 'auto_rejected' ? 'Approve override' : 'Approve';
+              const canReview = reviewAllowed(review, 'approve') || reviewAllowed(review, 'reject_block') || reviewAllowed(review, 'request_changes');
+              const rescanRelevant = reviewAllowed(review, 'rescan');
+              const canDismissReport = reviewAllowed(review, 'dismiss_report');
+              const rejectLabel = reviewAllowed(review, 'keep_blocked') ? 'Keep blocked' : 'Reject / Block';
+              const approveLabel = reviewAllowed(review, 'reopen_unreject') ? 'Reopen / Unreject' : review.queue === 'auto_rejected' ? 'Approve override' : 'Approve';
+              const timeValue = itemTimestamp(review);
+              const visualIssues = reviewVisualIssues(review, detail);
+              const findings = mergeFindingsWithVisualIssues(reviewSummaryFindings(review, detail), visualIssues);
+              const primaryIssue = primaryModerationIssue(review, detail);
+              const primaryTitle = primaryIssue ? findingReasonTitle(primaryIssue) : (review.reason_label || review.reason_category || 'Moderation review');
+              const primaryMessage = primaryIssue ? findingAdminMessage(primaryIssue) : (review.latest_message || review.publisher_message || 'No message provided.');
+              const primaryGuidance = isVisualIssue(primaryIssue)
+                ? 'Open details to inspect the visual preview before deciding.'
+                : isTextIssue(primaryIssue)
+                  ? 'Review the transcript text and request a rewrite if needed.'
+                  : 'Review the attached moderation details before deciding.';
 
               return (
                 <article key={review.id} className="rounded-2xl token-surface p-4">
@@ -405,33 +805,72 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                       <p className="mt-1 text-xs text-[var(--text-secondary)]">
                         Project #{review.project_id} - publisher {review.publisher_username || 'unknown'} - {review.moderation_status || 'moderation pending'}
                       </p>
-                      {!canReview && (
+                      <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                        Source: {sourceLabel(review)}
+                        {primaryTitle ? ` - Reason: ${primaryTitle}` : ''}
+                        {timeValue ? ` - ${new Date(timeValue).toLocaleString()}` : ''}
+                      </p>
+                      {!canReview && review.reviewed_at && (
                         <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                          Reviewed by {review.reviewed_by_username || 'staff'}{review.reviewed_at ? ` on ${new Date(review.reviewed_at).toLocaleString()}` : ''}.
+                          Reviewed by {review.reviewed_by_username || 'staff'} on {new Date(review.reviewed_at).toLocaleString()}.
                         </p>
                       )}
                     </div>
                     <div className="flex flex-wrap gap-2 text-xs font-semibold">
                       <span className={`rounded-full px-2.5 py-1 ${severityTone(review.highest_severity)}`}>
-                        {review.highest_category || 'review'} / {review.highest_severity || 'unknown'}
+                        {primaryTitle}
                       </span>
+                      {review.highest_category || review.highest_severity ? (
+                        <span className="rounded-full bg-[color:var(--surface-container-high)] px-2.5 py-1 text-[var(--text-secondary)]">
+                          {review.highest_category || 'review'} / {review.highest_severity || 'unknown'}
+                        </span>
+                      ) : null}
                       <span className="rounded-full bg-[color:var(--status-warning-bg)] px-2.5 py-1 text-[color:var(--status-warning-fg)]">
                         {review.status || 'open'}
                       </span>
+                      {visualIssues.length > 0 && (
+                        <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1 text-[var(--text-secondary)]">
+                          {visualIssues.length} visual {visualIssues.length === 1 ? 'issue' : 'issues'}
+                        </span>
+                      )}
+                      {(review.finding_badges || []).slice(0, 3).map((badge) => (
+                        <span key={badge} className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1 text-[var(--text-secondary)]">
+                          {String(badge).replace(/_/g, ' ')}
+                        </span>
+                      ))}
                     </div>
                   </div>
 
                   <p className="mt-3 text-sm text-[var(--text-secondary)]">
-                    {review.publisher_message || 'No publisher message provided.'}
+                    {primaryMessage}
                   </p>
+                  {primaryIssue && (
+                    <div className="mt-3 rounded-xl border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] p-3">
+                      <div className="grid gap-2 text-sm sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-[var(--text-primary)]">{primaryTitle}</p>
+                          <p className="mt-1 text-[var(--text-secondary)]">{findingLocationLabel(primaryIssue)}</p>
+                          <p className="mt-1 text-[var(--text-secondary)]">{primaryGuidance}</p>
+                        </div>
+                        <span className="rounded-full bg-[color:var(--surface-container-high)] px-2.5 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                          {issueStatusLabel(primaryIssue)}
+                        </span>
+                      </div>
+                      {findingTechnicalLabel(primaryIssue) && (
+                        <p className="mt-2 text-xs text-[var(--text-secondary)]">
+                          Technical: {findingTechnicalLabel(primaryIssue)}
+                        </p>
+                      )}
+                    </div>
+                  )}
 
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Link
-                      to={`/studio?lesson=${review.project_id}&review=1`}
+                      to={`/studio?view=editor&lesson=${review.project_id}&review=1`}
                       className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
                     >
                       <ExternalLink size={14} />
-                      <span>Open read-only review</span>
+                      <span>Open in read-only Studio</span>
                     </Link>
                     <Button size="sm" variant="secondary" onClick={() => handleToggleDetail(review)} disabled={detailLoadingId === review.id}>
                       <ChevronDown size={14} className={expanded ? 'rotate-180 transition' : 'transition'} />
@@ -459,28 +898,36 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                             ) : (
                               findings.map((finding, index) => (
                                 <div key={findingKey(finding, index)} className="rounded-xl bg-[color:var(--surface-muted)] p-3">
-                                  <div className="flex flex-wrap gap-1.5 text-[0.68rem] font-semibold">
-                                    <span className="rounded-full bg-[var(--surface-container-highest)] px-2 py-0.5 text-[var(--text-primary)]">
-                                      {finding.category || 'unknown'}
-                                    </span>
-                                    <span className={`rounded-full px-2 py-0.5 ${severityTone(finding.severity)}`}>
-                                      {finding.severity || 'low'}
-                                    </span>
-                                    {finding.decision && (
-                                      <span className="rounded-full bg-[color:var(--surface-container-high)] px-2 py-0.5 text-[var(--text-secondary)]">
-                                        {finding.decision}
-                                      </span>
-                                    )}
+                                  <div className="flex flex-col gap-3 sm:flex-row">
+                                    {isVisualIssue(finding) && <ModerationPreview issue={finding} />}
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex flex-wrap gap-1.5 text-[0.68rem] font-semibold">
+                                        <span className="rounded-full bg-[var(--surface-container-highest)] px-2 py-0.5 text-[var(--text-primary)]">
+                                          {findingReasonTitle(finding)}
+                                        </span>
+                                        <span className={`rounded-full px-2 py-0.5 ${severityTone(finding.severity)}`}>
+                                          {findingTechnicalLabel(finding) || 'review'}
+                                        </span>
+                                        {finding.decision && (
+                                          <span className="rounded-full bg-[color:var(--surface-container-high)] px-2 py-0.5 text-[var(--text-secondary)]">
+                                            {String(finding.decision).replace(/_/g, ' ')}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="mt-2 text-sm text-[var(--text-primary)]">
+                                        {findingAdminMessage(finding)}
+                                      </p>
+                                      <p className="mt-1 text-xs font-semibold text-[var(--text-secondary)]">{findingLocationLabel(finding)}</p>
+                                      {finding.evidence_excerpt || finding.technical_reason ? (
+                                        <details className="mt-1 text-xs text-[var(--text-secondary)]">
+                                          <summary className="cursor-pointer font-semibold text-[var(--accent-primary)]">Technical details</summary>
+                                          <p className="mt-1 break-words">
+                                            {finding.evidence_excerpt || finding.technical_reason}
+                                          </p>
+                                        </details>
+                                      ) : null}
+                                    </div>
                                   </div>
-                                  <p className="mt-2 text-sm text-[var(--text-primary)]">
-                                    {finding.admin_message || finding.user_message || 'This content needs staff attention.'}
-                                  </p>
-                                  <p className="mt-1 text-xs text-[var(--text-secondary)]">{findingLocationLabel(finding)}</p>
-                                  {finding.evidence_excerpt && (
-                                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                                      Evidence: {finding.evidence_excerpt}
-                                    </p>
-                                  )}
                                 </div>
                               ))
                             )}
@@ -515,12 +962,23 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                           <Button
                             size="sm"
                             variant="secondary"
-                            onClick={() => handleRequestChanges(review, detail)}
+                            onClick={() => openRequestChangesDialog(review, detail)}
                             disabled={Boolean(actionBusy)}
                           >
                             <XCircle size={14} />
                             <span>{requestChangesBusy ? 'Requesting...' : 'Request changes'}</span>
                           </Button>
+                          {canDismissReport && (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => handleDismissReport(review)}
+                              disabled={Boolean(actionBusy)}
+                            >
+                              <XCircle size={14} />
+                              <span>{actionBusy === `dismiss-${review.id}` ? 'Dismissing...' : 'Dismiss report'}</span>
+                            </Button>
+                          )}
                           <Button
                             size="sm"
                             variant="secondary"
@@ -592,6 +1050,55 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                 {pendingDecision.decision === 'approve'
                   ? 'Confirm approve with response'
                   : 'Confirm reject with response'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {requestChangesDialog && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-4">
+          <div role="dialog" aria-modal="true" className="w-full max-w-lg rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container)] p-5 shadow-2xl">
+            <p className="label-sm">Request changes</p>
+            <h2 className="title-lg mt-2 text-[var(--text-primary)]">
+              Send a required message to the publisher
+            </h2>
+            <label className="mt-4 block text-sm text-[var(--text-secondary)]">
+              Message
+              <textarea
+                value={requestChangesDialog.message}
+                onChange={(event) => setRequestChangesDialog((previous) => ({
+                  ...previous,
+                  message: event.target.value,
+                }))}
+                maxLength={4000}
+                className="focus-ring mt-2 min-h-[120px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]"
+                placeholder="Explain what needs to change before this lesson can be approved."
+              />
+            </label>
+            <label className="mt-3 flex items-start gap-2 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={Boolean(requestChangesDialog.unpublish)}
+                onChange={(event) => setRequestChangesDialog((previous) => ({
+                  ...previous,
+                  unpublish: event.target.checked,
+                }))}
+                className="mt-1"
+              />
+              <span>Block public access until the publisher updates and requests review.</span>
+            </label>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <Button size="sm" variant="ghost" onClick={() => setRequestChangesDialog(null)} disabled={Boolean(actionBusy)}>
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={handleRequestChanges}
+                disabled={Boolean(actionBusy) || !String(requestChangesDialog.message || '').trim()}
+              >
+                {actionBusy ? 'Sending...' : 'Send request changes'}
               </Button>
             </div>
           </div>

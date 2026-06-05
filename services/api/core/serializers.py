@@ -4,6 +4,7 @@ DRF serializers for AI_ACADEMY core models.
 
 from collections.abc import Mapping
 from copy import deepcopy
+import hashlib
 import ipaddress
 import math
 from pathlib import Path
@@ -72,10 +73,12 @@ def _project_cover_rel_path(project: Project) -> str:
 
 
 def _project_cover_url(project: Project, context: dict | None) -> str:
-    if not _project_cover_rel_path(project):
+    rel_path = _project_cover_rel_path(project)
+    if not rel_path:
         return ""
 
-    url_path = f"/api/v1/projects/{project.id}/cover/"
+    cover_version = hashlib.sha256(rel_path.encode("utf-8")).hexdigest()[:12]
+    url_path = f"/api/v1/projects/{project.id}/cover/?cover_v={cover_version}"
     request = (context or {}).get("request")
     if request is not None:
         try:
@@ -366,10 +369,12 @@ def _project_draft_cover_rel_path(project: Project, context: dict | None) -> str
 
 
 def _project_draft_cover_url(project: Project, context: dict | None) -> str:
-    if not _project_draft_cover_rel_path(project, context):
+    draft_rel_path = _project_draft_cover_rel_path(project, context)
+    if not draft_rel_path:
         return ""
 
-    url_path = f"/api/v1/projects/{project.id}/cover/?draft=1"
+    cover_version = hashlib.sha256(draft_rel_path.encode("utf-8")).hexdigest()[:12]
+    url_path = f"/api/v1/projects/{project.id}/cover/?draft=1&cover_v={cover_version}"
     request = (context or {}).get("request")
     if request is not None:
         try:
@@ -803,6 +808,10 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "is_public_profile",
             "banner_url",
             "logo_url",
+            "banner_image_moderation_status",
+            "banner_image_moderation_summary",
+            "logo_image_moderation_status",
+            "logo_image_moderation_summary",
             "avatar_image_original",
             "avatar_image_processed",
             "avatar_video_original",
@@ -928,6 +937,10 @@ class CurrentUserProfileSerializer(serializers.Serializer):
                 if profile.logo_image_processed
                 else ""
             ),
+            "banner_moderation_status": profile.banner_image_moderation_status,
+            "banner_moderation_summary": profile.banner_image_moderation_summary if isinstance(profile.banner_image_moderation_summary, dict) else {},
+            "logo_moderation_status": profile.logo_image_moderation_status,
+            "logo_moderation_summary": profile.logo_image_moderation_summary if isinstance(profile.logo_image_moderation_summary, dict) else {},
             "role": profile.role,
         }
 
@@ -1055,6 +1068,7 @@ class ProjectSerializer(serializers.ModelSerializer):
     tts_settings = serializers.SerializerMethodField()
     has_draft = serializers.SerializerMethodField()
     draft_metadata = serializers.SerializerMethodField()
+    visual_issues = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -1064,6 +1078,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "status", "moderation_status", "moderation_summary", "last_moderation_run_id",
             "manual_moderation_status", "manual_moderation_reason", "manual_moderation_at",
             "moderation_blocked_until_review", "latest_publisher_change_at", "latest_review_requested_at",
+            "visual_issues",
             "is_published", "avatar_enabled_override", "avatar_active", "avatar_processing_status",
             "avatar_processing_message", "avatar_visible", "avatar_available", "avatar_last_job_id",
             "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
@@ -1076,6 +1091,7 @@ class ProjectSerializer(serializers.ModelSerializer):
             "moderation_status", "moderation_summary", "last_moderation_run_id",
             "manual_moderation_status", "manual_moderation_reason", "manual_moderation_at",
             "moderation_blocked_until_review", "latest_publisher_change_at", "latest_review_requested_at",
+            "visual_issues",
             "avatar_processing_status", "avatar_processing_message", "avatar_available",
             "avatar_last_job_id", "avatar_updated_at", "avatar_engine_selected", "final_avatar_engine_chain", "avatar_placement",
             "avatar_runtime_settings", "avatar_runtime_status",
@@ -1179,6 +1195,19 @@ class ProjectSerializer(serializers.ModelSerializer):
     def get_draft_metadata(self, obj):
         metadata = getattr(obj, "draft_data", {}).get("metadata") if isinstance(getattr(obj, "draft_data", None), Mapping) else {}
         return dict(metadata) if isinstance(metadata, Mapping) and metadata.get("dirty") else {}
+
+    def get_visual_issues(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request is not None else None
+        include_admin_fields = bool(getattr(user, "is_staff", False) or getattr(user, "is_superuser", False))
+        try:
+            from ai_agents.serializers import moderation_summary_payload
+
+            payload = moderation_summary_payload(obj, include_admin_fields=include_admin_fields)
+        except Exception:
+            return []
+        issues = payload.get("visual_issues") if isinstance(payload, Mapping) else []
+        return issues if isinstance(issues, list) else []
 
     def get_cover_url(self, obj):
         return _project_cover_url(obj, self.context)

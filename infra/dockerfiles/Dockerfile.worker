@@ -24,6 +24,8 @@ FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 ARG LIVEPORTRAIT_REPO=https://github.com/KwaiVGI/LivePortrait.git
 ARG LIVEPORTRAIT_REF=49784e879821538ecda5c8e4ca0472f4cb6236cf
 ARG INSTALL_TEST_DEPS=0
+ARG DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1
+ARG INSTALL_OPENMMLAB_DEPS=1
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -79,18 +81,28 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
      pip install --upgrade pip setuptools wheel \
      && pip install --index-url https://download.pytorch.org/whl/cu118 torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
-     && pip install openmim==0.3.9 \
-     && mim install "mmcv==2.0.1" \
-     && pip install "numpy<2" scipy==1.11.4 \
-     && pip install mmengine==0.10.4 mmdet==3.1.0 \
-     && pip install --no-build-isolation mmpose==1.1.0 \
+     && if [ "$INSTALL_OPENMMLAB_DEPS" = "1" ]; then \
+          pip install openmim==0.3.9 \
+          && mim install "mmcv==2.0.1" \
+          && pip install "numpy<2" scipy==1.11.4 \
+          && pip install mmengine==0.10.4 mmdet==3.1.0 \
+          && pip install --no-build-isolation mmpose==1.1.0; \
+        else \
+          echo "Skipping OpenMMLab/mmcv dependencies for smoke build."; \
+          pip install "numpy<2" scipy==1.11.4; \
+        fi \
      && pip install librosa==0.10.2.post1 numba==0.59.1 tqdm==4.66.4 face-alignment==1.4.1 soundfile==0.12.1 opencv-python-headless==4.9.0.80 ffmpeg-python==0.2.0 omegaconf==2.3.0 diffusers==0.30.2 accelerate==0.28.0 transformers==4.39.2 huggingface_hub==0.30.2 einops==0.8.1 moviepy==1.0.3 imageio[ffmpeg]==2.34.1 \
      && git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git /opt/musetalk \
      && git clone ${LIVEPORTRAIT_REPO} /opt/liveportrait \
      && cd /opt/liveportrait \
      && git checkout ${LIVEPORTRAIT_REF} \
      && pip install onnx==1.16.1 onnxruntime-gpu==1.18.0 lmdb==1.4.1 scikit-image==0.24.0 albumentations==1.4.10 rich==13.7.1 tyro==0.8.5 pykalman==0.9.7 imageio-ffmpeg==0.5.1 \
-     && python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='KlingTeam/LivePortrait', revision='main', local_dir='/opt/liveportrait/pretrained_weights', local_dir_use_symlinks=False, ignore_patterns=['*.git*','README.md','docs/*'])" \
+     && if [ "$DOWNLOAD_LIVEPORTRAIT_WEIGHTS" = "1" ]; then \
+          python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='KlingTeam/LivePortrait', revision='main', local_dir='/opt/liveportrait/pretrained_weights', local_dir_use_symlinks=False, ignore_patterns=['*.git*','README.md','docs/*'])"; \
+        else \
+          echo "Skipping LivePortrait pretrained weights download for smoke build."; \
+          mkdir -p /opt/liveportrait/pretrained_weights; \
+        fi \
      && mkdir -p /app/storage_local/models/musetalk
 
 # Normalize site-packages path and register CUDA/torch runtime libs in the

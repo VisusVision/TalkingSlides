@@ -19,6 +19,28 @@ x-python-common: &python-common
   networks:
     - academy_net
 
+x-visual-moderation-env: &visual-moderation-env
+  VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION: "${VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION:-true}"
+  VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION: "${VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION:-true}"
+  VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER: "${VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER:-true}"
+  ALLOW_WEAK_LOCAL_VISUAL_APPROVAL: "${ALLOW_WEAK_LOCAL_VISUAL_APPROVAL:-false}"
+  VISUAL_SAFETY_PROVIDER: "${VISUAL_SAFETY_PROVIDER:-none}"
+  VISUAL_SAFETY_CLASSIFIER_ENABLED: "${VISUAL_SAFETY_CLASSIFIER_ENABLED:-false}"
+  VISUAL_SAFETY_TIMEOUT_SECONDS: "${VISUAL_SAFETY_TIMEOUT_SECONDS:-20}"
+  VISUAL_SAFETY_MAX_IMAGE_BYTES: "${VISUAL_SAFETY_MAX_IMAGE_BYTES:-10485760}"
+  AZURE_CONTENT_SAFETY_ENABLED: "${AZURE_CONTENT_SAFETY_ENABLED:-false}"
+  AZURE_CONTENT_SAFETY_ENDPOINT: "${AZURE_CONTENT_SAFETY_ENDPOINT:-}"
+  AZURE_CONTENT_SAFETY_KEY: "${AZURE_CONTENT_SAFETY_KEY:-}"
+  AZURE_CONTENT_SAFETY_API_VERSION: "${AZURE_CONTENT_SAFETY_API_VERSION:-2024-09-01}"
+  AZURE_CONTENT_SAFETY_CATEGORIES: "${AZURE_CONTENT_SAFETY_CATEGORIES:-sexual,violence,self_harm,hate}"
+  AZURE_CONTENT_SAFETY_BLOCK_SEVERITY: "${AZURE_CONTENT_SAFETY_BLOCK_SEVERITY:-4}"
+  TEXT_SAFETY_PROVIDER: "${TEXT_SAFETY_PROVIDER:-}"
+  TEXT_SAFETY_CLASSIFIER_ENABLED: "${TEXT_SAFETY_CLASSIFIER_ENABLED:-}"
+  TEXT_SAFETY_TIMEOUT_SECONDS: "${TEXT_SAFETY_TIMEOUT_SECONDS:-20}"
+  TEXT_SAFETY_CATEGORIES: "${TEXT_SAFETY_CATEGORIES:-sexual,violence,self_harm,hate}"
+  TEXT_SAFETY_BLOCK_SEVERITY: "${TEXT_SAFETY_BLOCK_SEVERITY:-4}"
+  TEXT_SAFETY_FALLBACK_PROVIDER: "${TEXT_SAFETY_FALLBACK_PROVIDER:-local_rules}"
+
 services:
 
   # ----------------------------------------------------------
@@ -57,6 +79,7 @@ services:
       minio:
         condition: service_started
     environment:
+      <<: *visual-moderation-env
       DJANGO_SETTINGS_MODULE: config.settings
       PYTHONPATH: /app:/app/worker:/app/scripts:/app/tts_preprocess:/app/services
       DJANGO_DISABLE_STATIC_COMPRESSION: "true"
@@ -166,6 +189,7 @@ services:
         # Let the worker boot while XTTS warms up; the task layer already polls /ready.
         condition: service_started
     environment:
+      <<: *visual-moderation-env
       DJANGO_SETTINGS_MODULE: config.settings
       PYTHONPATH: /app/api:/app:/app/services/scripts:/app/services/tts_service:/app/services
       SQLITE_TEST_DATABASE_PATH: /tmp/ai_academy_worker_test.sqlite3
@@ -240,6 +264,7 @@ services:
         # Let the worker boot while XTTS warms up; the task layer already polls /ready.
         condition: service_started
     environment:
+      <<: *visual-moderation-env
       DJANGO_SETTINGS_MODULE: config.settings
       PYTHONPATH: /app/api:/app:/app/services/scripts:/app/services/tts_service:/app/services
       SQLITE_TEST_DATABASE_PATH: /tmp/ai_academy_worker_test.sqlite3

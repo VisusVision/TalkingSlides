@@ -6,12 +6,14 @@ from .views import (
     AdminModerationReviewRequestListView,
     AdminModerationReviewRequestRejectView,
     AdminModerationReviewRequestResponseView,
+    AdminModerationReportActionView,
     AdminModerationReportListView,
     AdminProjectModerationActionView,
     AdminProjectModerationApproveView,
     AdminProjectModerationBlockView,
     AdminProjectModerationRequestChangesView,
     ProjectModerationAdminReviewRequestView,
+    ProjectModerationPreviewView,
     ProjectModerationReportView,
     ProjectModerationRescanView,
     ProjectModerationSummaryView,
@@ -54,6 +56,11 @@ urlpatterns = [
         name="moderation-report-list",
     ),
     path(
+        "admin/moderation/reports/<int:report_id>/action/",
+        AdminModerationReportActionView.as_view(),
+        name="admin-moderation-report-action",
+    ),
+    path(
         "moderation/projects/<int:project_id>/block/",
         AdminProjectModerationBlockView.as_view(),
         name="moderation-project-block",
@@ -72,6 +79,11 @@ urlpatterns = [
         "projects/<int:project_id>/moderation/",
         ProjectModerationSummaryView.as_view(),
         name="project-moderation-summary",
+    ),
+    path(
+        "projects/<int:project_id>/moderation-preview/<int:finding_id>/",
+        ProjectModerationPreviewView.as_view(),
+        name="project-moderation-preview",
     ),
     path(
         "projects/<int:project_id>/report/",

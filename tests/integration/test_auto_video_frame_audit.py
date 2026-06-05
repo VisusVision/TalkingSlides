@@ -23,7 +23,7 @@ django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
 
-from ai_agents.models import AgentFinding, AgentRun  # noqa: E402
+from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun  # noqa: E402
 from ai_agents.policies import project_can_publish  # noqa: E402
 from core.models import Job, Project, UserProfile  # noqa: E402
 from worker import tasks as worker_tasks  # noqa: E402
@@ -47,7 +47,7 @@ def _make_project(username: str, *, status: str = "ready", moderation_status: st
     )
 
 
-def _enable_audit(monkeypatch, *, visual: bool = True, ocr: bool = False) -> None:
+def _enable_audit(monkeypatch, *, visual: bool = True, ocr: bool = False, allow_weak: bool = True) -> None:
     monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_AUTO_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_PHASE", "video_frame_audit", raising=False)
@@ -57,6 +57,10 @@ def _enable_audit(monkeypatch, *, visual: bool = True, ocr: bool = False) -> Non
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_RUN_OCR", ocr, raising=False)
     monkeypatch.setattr(settings, "VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION", False, raising=False)
     monkeypatch.setattr(settings, "OCR_MODERATION_PROVIDER", "noop", raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True, raising=False)
+    monkeypatch.setattr(settings, "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", allow_weak, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_PROVIDER", "none", raising=False)
+    monkeypatch.setattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False, raising=False)
 
 
 def _save_image(path: Path, *, size: tuple[int, int] = (24, 24)) -> Path:
@@ -158,6 +162,25 @@ def test_auto_video_frame_audit_mocked_frames_create_run_and_summary(monkeypatch
 
 
 @pytest.mark.django_db
+def test_video_frame_audit_requires_semantic_provider_by_default(monkeypatch, tmp_path):
+    _enable_audit(monkeypatch, allow_weak=False)
+    project = _make_project("provider_required")
+    frame_path = _save_image(tmp_path / "frame.jpg")
+    _patch_sampling(monkeypatch, _sampling_success(frame_path))
+
+    result = worker_tasks._run_auto_video_frame_audit_after_render(project.id, 111, tmp_path / "final.mp4")
+
+    finding = AgentFinding.objects.get(run__project=project, run__phase="video_frame_audit", category="provider_unavailable")
+    assert result["status"] == "done"
+    assert result["final_decision"] == "needs_admin_review"
+    assert finding.decision == "needs_admin_review"
+    assert finding.location["asset_type"] == "video_frame"
+    assert finding.location["timestamp_seconds"] == 0.0
+    assert finding.location["frame_path"] == str(frame_path)
+    assert finding.user_message.startswith("We could not complete the visual safety scan")
+
+
+@pytest.mark.django_db
 def test_auto_video_frame_audit_local_image_finding_is_persisted(monkeypatch, tmp_path):
     _enable_audit(monkeypatch)
     project = _make_project("corrupt_frame")
@@ -229,11 +252,11 @@ def test_auto_video_frame_audit_ocr_enabled_records_text_finding(monkeypatch, tm
     assert finding.location["frame_path"] == str(frame_path)
     assert finding.provider == "video_frame_ocr:local_rules"
     assert finding.provider_raw["ocr_provider"] == "fake_frame_ocr"
-    assert project.moderation_status == "approved"
+    assert project.moderation_status == "revision_required"
 
 
 @pytest.mark.django_db
-def test_auto_video_frame_audit_project_moderation_status_unchanged(monkeypatch, tmp_path):
+def test_auto_video_frame_audit_moves_project_to_review(monkeypatch, tmp_path):
     _enable_audit(monkeypatch)
     project = _make_project("status_unchanged", moderation_status="approved")
     frame_path = tmp_path / "bad.jpg"
@@ -243,7 +266,8 @@ def test_auto_video_frame_audit_project_moderation_status_unchanged(monkeypatch,
     worker_tasks._run_auto_video_frame_audit_after_render(project.id, 15, tmp_path / "final.mp4")
 
     project.refresh_from_db()
-    assert project.moderation_status == "approved"
+    assert project.moderation_status == "needs_admin_review"
+    assert AdminReviewRequest.objects.filter(project=project, status="open").exists()
 
 
 def _patch_lightweight_finalizer(monkeypatch, tmp_path: Path) -> None:
@@ -327,7 +351,7 @@ def test_render_job_success_not_converted_to_failure_by_audit_exception(monkeypa
 
 
 @pytest.mark.django_db
-def test_default_publish_behavior_unchanged_by_video_frame_audit_findings(settings):
+def test_video_frame_audit_findings_block_publish_even_when_legacy_gate_flag_is_off(settings):
     settings.VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION = False
     project = _make_project("publish_unchanged", status="ready", moderation_status="approved")
     run = AgentRun.objects.create(
@@ -354,4 +378,4 @@ def test_default_publish_behavior_unchanged_by_video_frame_audit_findings(settin
         provider="local_image_rules",
     )
 
-    assert project_can_publish(project) is True
+    assert project_can_publish(project) is False

@@ -100,21 +100,30 @@ Environment flags:
 SOURCE_MODERATION_AUTO_ENABLED=false
 SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION=true
 SOURCE_MODERATION_PHASE=source_scan
+TEXT_SAFETY_PROVIDER=azure_content_safety
+TEXT_SAFETY_CLASSIFIER_ENABLED=true
+TEXT_SAFETY_TIMEOUT_SECONDS=20
+TEXT_SAFETY_CATEGORIES=sexual,violence,self_harm,hate
+TEXT_SAFETY_BLOCK_SEVERITY=4
+TEXT_SAFETY_FALLBACK_PROVIDER=local_rules
 ```
 
 Behavior when enabled:
 
-- Runs the existing text/source moderation orchestrator synchronously in the worker after transcript sync.
+- Runs the text/source moderation orchestrator synchronously in the worker after transcript sync.
+- Uses Azure Content Safety text moderation first when `TEXT_SAFETY_PROVIDER=azure_content_safety`, `TEXT_SAFETY_CLASSIFIER_ENABLED=true`, and the shared `AZURE_CONTENT_SAFETY_ENDPOINT` / `AZURE_CONTENT_SAFETY_KEY` are configured.
+- Falls back to `LocalRulesProvider` when Azure text moderation is disabled, missing credentials, unavailable, timed out, or returns an invalid response.
 - Updates `Project.moderation_status`, `Project.moderation_summary`, `AgentRun`, and `AgentFinding` through the same path as `run_moderation_scan`.
 - If moderation returns `revision_required` or `needs_admin_review` and `SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION=true`, the worker stops before dispatching TTS/render/avatar tasks and marks the current job failed with a moderation message.
 - If moderation returns `approved` or the content is already `admin_approved`, the render pipeline continues.
+- Azure safe text responses approve text without admin review. Azure unsafe text responses create text findings only and do not create visual warnings.
 
 What it does not do yet:
 
 - It does not run visual image moderation automatically.
 - It does not run OCR as part of visual asset validation.
 - It does not sample video frames automatically.
-- It does not call external APIs or require Ollama.
+- It does not require Ollama. Ollama remains optional/advisory and is skipped when Azure text safety returns a clear safe or unsafe result.
 - It does not block user accounts. It blocks/reviews content only.
 
 Docker test example:
@@ -131,24 +140,26 @@ docker compose exec worker sh -lc "cd /app/api && python manage.py run_moderatio
 
 ## Automatic Visual Asset Moderation
 
-Automatic cover/slide image validation can be enabled after PPTX export creates local slide image files. It is disabled by default and uses only the existing local image metadata rules.
+Automatic cover/slide image validation can be enabled after PPTX export creates local slide image files. It is disabled by default. For production use, configure the semantic visual safety provider; local image metadata rules alone do not automatically approve visuals unless `ALLOW_WEAK_LOCAL_VISUAL_APPROVAL=true`.
 
 Environment flags:
 
 ```sh
-VISUAL_MODERATION_AUTO_ENABLED=false
-VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION=false
-VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION=false
+VISUAL_MODERATION_AUTO_ENABLED=true
+VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION=true
+VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION=true
 VISUAL_MODERATION_PHASE=visual_asset_scan
 VISUAL_MODERATION_SCAN_COVER=true
 VISUAL_MODERATION_SCAN_SLIDES=true
-VISUAL_SAFETY_PROVIDER=none
-VISUAL_SAFETY_CLASSIFIER_ENABLED=false
+VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER=true
+ALLOW_WEAK_LOCAL_VISUAL_APPROVAL=false
+VISUAL_SAFETY_PROVIDER=azure_content_safety
+VISUAL_SAFETY_CLASSIFIER_ENABLED=true
 VISUAL_SAFETY_TIMEOUT_SECONDS=20
 VISUAL_SAFETY_MAX_IMAGE_BYTES=10485760
-AZURE_CONTENT_SAFETY_ENABLED=false
-AZURE_CONTENT_SAFETY_ENDPOINT=
-AZURE_CONTENT_SAFETY_KEY=
+AZURE_CONTENT_SAFETY_ENABLED=true
+AZURE_CONTENT_SAFETY_ENDPOINT=https://replace-with-content-safety-resource.cognitiveservices.azure.com
+AZURE_CONTENT_SAFETY_KEY=replace-with-azure-content-safety-key
 AZURE_CONTENT_SAFETY_API_VERSION=2024-09-01
 AZURE_CONTENT_SAFETY_CATEGORIES=sexual,violence,self_harm,hate
 AZURE_CONTENT_SAFETY_BLOCK_SEVERITY=4
@@ -163,29 +174,31 @@ Behavior when enabled:
 - Scans the project cover image when configured and available.
 - Scans exported slide images with `LocalImageRulesProvider`.
 - Studio cover uploads and custom background uploads mark visual moderation stale and can trigger the same auto visual scan when `VISUAL_MODERATION_AUTO_ENABLED=true`.
-- If `VISUAL_SAFETY_PROVIDER=azure_content_safety` and both visual safety flags are enabled, also sends configured cover/slide images to Azure Content Safety as an advisory classifier pass.
+- If `VISUAL_SAFETY_PROVIDER=azure_content_safety` and both visual safety flags are enabled, sends configured cover/slide images to Azure Content Safety for the semantic visual safety decision.
 - Persists an `AgentRun` and any `AgentFinding` rows for visual asset validation.
 - Writes a frontend-safe `moderation_summary.visual_asset_scan` summary.
 - Does not overwrite text moderation status or text moderation summary fields.
-- Continues rendering by default, even if an image needs review.
-- If `VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION=true`, review/block decisions can stop before downstream render dispatch and mark the current job failed with a visual validation message.
-- If `VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION=true`, publish is blocked when the latest visual asset scan has unresolved serious findings.
+- Safe semantic provider results are `allow` / `scan_passed` and do not require admin review.
+- Unsafe semantic provider results are blocked/rejected and require replacing the visual before rerender.
+- Provider unavailable, missing config, timeout, invalid response, or low-confidence/uncertain results become `needs_admin_review`; they are not labeled unsafe.
+- If `VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION=true`, review/block decisions stop before downstream render dispatch and mark the current job failed with a visual validation message.
+- If `VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION=true`, publish is blocked when the latest visual asset scan has unresolved serious findings or needs admin review.
 
 Optional visual safety classifier:
 
 - `VISUAL_SAFETY_PROVIDER=none` is the default and makes no external calls.
 - `VISUAL_SAFETY_PROVIDER=azure_content_safety` selects the Azure Content Safety provider.
 - The provider only calls Azure when `VISUAL_SAFETY_CLASSIFIER_ENABLED=true`, `AZURE_CONTENT_SAFETY_ENABLED=true`, and endpoint/key are configured.
-- If disabled, missing credentials, oversized images, timeouts, API errors, or invalid responses occur, the provider fails open and records skip/error metadata without crashing the scan.
-- Azure findings are advisory unless `VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION=true` or `VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION=true` is explicitly enabled.
+- If disabled, missing credentials, oversized images, timeouts, API errors, or invalid responses occur, the scan returns `needs_admin_review` with `Visual safety scan unavailable` wording instead of approving or labeling the visual unsafe.
+- Azure safe responses approve the visual without admin review. Azure block-threshold findings reject the visual. Azure below-threshold findings require admin review.
 - Cost warning: Azure Content Safety calls may incur Azure charges.
 - Privacy warning: when enabled, cover/slide images are sent to Azure for visual safety classification.
 
 Recommended visual safety pilot:
 
-1. Start with `VISUAL_SAFETY_PROVIDER=none`.
-2. Enable Azure Content Safety only in staging and review findings/false positives.
-3. Enable visual publish gates only after the team is comfortable with classifier behavior.
+1. Start with Azure Content Safety in staging using placeholder-free secret env values.
+2. Verify safe educational images pass without admin review.
+3. Keep render and publish gates enabled before production rollout so unsafe or unreviewed visuals cannot become public.
 
 What it does not do by default:
 
