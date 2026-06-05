@@ -70,7 +70,7 @@ Columns:
 
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `STORAGE_BACKEND` | API/worker/TTS | Optional | Planned | `local` | Documents intended storage backend. Active code uses filesystem paths. |
+| `STORAGE_BACKEND` | API/worker/TTS | Optional | Planned | `filesystem` | Selects storage adapter. Valid values are `filesystem`, `s3`, and legacy alias `local` for filesystem. |
 | `STORAGE_ROOT` | API/worker/TTS | Yes | Yes | `/app/storage_local` | Shared media root. Must be durable in production. With `DEBUG=False`, it must be explicitly set to an existing absolute readable/writable directory. |
 | `MEDIA_TOKEN_SECRET` | API | Yes | Yes | placeholder | HMAC secret for media tokens. Strong secret required in production. |
 | `MEDIA_TOKEN_TTL_SECONDS` | API | Optional | Recommended | `14400` | Default media token TTL. |

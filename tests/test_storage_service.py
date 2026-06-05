@@ -260,6 +260,14 @@ def test_get_storage_adapter_defaults_to_filesystem_even_with_legacy_minio_env(m
     assert adapter.backend == "filesystem"
 
 
+def test_get_storage_adapter_accepts_local_as_filesystem_alias(tmp_path):
+    with override_settings(STORAGE_BACKEND="local"):
+        adapter = get_storage_adapter(tmp_path)
+
+    assert isinstance(adapter, FilesystemStorageAdapter)
+    assert adapter.backend == "filesystem"
+
+
 def test_get_storage_adapter_unknown_backend_fails_closed():
     with override_settings(STORAGE_BACKEND="mystery"):
         with pytest.raises(StorageConfigurationError, match="Unknown STORAGE_BACKEND"):
