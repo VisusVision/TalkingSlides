@@ -106,6 +106,7 @@ cd ..\..
 Storage evidence required before v1.0.0:
 
 - Production storage backend decision recorded: S3-compatible object storage target, or a time-boxed durable shared filesystem exception.
+- If the release mentions S3/MinIO, confirm it is described as designed but not implemented unless the release includes a reviewed feature-flagged adapter implementation, MinIO integration tests, media delivery tests, rollback plan, and restore evidence.
 - `python manage.py storage_smoke_check` passes against the production-like storage target.
 - `python manage.py storage_retention_check --dry-run --older-than-days 30 --json` is archived from staging.
 - Storage metrics snapshot freshness is monitored or checked by an assigned operator.
