@@ -8,7 +8,17 @@ from pydantic import BaseModel, ConfigDict, Field
 Decision = Literal["allow", "warn", "block", "needs_admin_review"]
 Severity = Literal["low", "medium", "high", "critical"]
 Modality = Literal["text", "image", "video_frame", "ocr"]
-VisualAssetType = Literal["cover", "slide_image", "video_frame", "ocr_text", "avatar_image"]
+VisualAssetType = Literal[
+    "cover",
+    "custom_background",
+    "slide_image",
+    "draft_visual_asset",
+    "video_frame",
+    "ocr_text",
+    "avatar_image",
+    "profile_banner",
+    "profile_logo",
+]
 ModerationCategory = Literal[
     "profanity",
     "sexual",
@@ -20,6 +30,7 @@ ModerationCategory = Literal[
     "dangerous_instruction",
     "graphic_content",
     "privacy_or_personal_data",
+    "provider_unavailable",
     "unknown",
 ]
 

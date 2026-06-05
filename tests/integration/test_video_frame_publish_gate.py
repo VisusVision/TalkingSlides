@@ -16,7 +16,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
-from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate  # noqa: E402
 
 from ai_agents.models import AgentFinding, AgentRun  # noqa: E402
 from ai_agents.policies import (  # noqa: E402
@@ -52,6 +52,12 @@ def _publish(project: Project, user: User):
     )
     force_authenticate(request, user=user)
     return views.ProjectDetailView.as_view()(request, project_id=project.id)
+
+
+def _client(user: User) -> APIClient:
+    client = APIClient()
+    client.force_authenticate(user=user)
+    return client
 
 
 def _video_frame_run(project: Project, *, final_decision: str = "allow", status: str = "done") -> AgentRun:
@@ -130,7 +136,7 @@ def _visual_finding(run: AgentRun) -> AgentFinding:
 
 
 @pytest.mark.django_db
-def test_video_frame_publish_gate_disabled_keeps_existing_publish_behavior(settings):
+def test_video_frame_publish_gate_blocks_latest_unsafe_run_even_when_legacy_flag_is_off(settings):
     settings.VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION = False
     project = _make_ready_project("disabled")
     run = _video_frame_run(project, final_decision="needs_admin_review")
@@ -138,9 +144,11 @@ def test_video_frame_publish_gate_disabled_keeps_existing_publish_behavior(setti
 
     response = _publish(project, project.user)
 
-    assert response.status_code == 200
+    assert response.status_code == 400
+    assert response.data["reason"] == "video_frame_audit_rejected"
+    assert response.data["latest_run_id"] == run.id
     project.refresh_from_db()
-    assert project.is_published is True
+    assert project.is_published is False
 
 
 @pytest.mark.django_db
@@ -253,6 +261,26 @@ def test_video_frame_publish_gate_does_not_mutate_project_moderation_status(sett
     assert response.status_code == 400
     project.refresh_from_db()
     assert project.moderation_status == "approved"
+
+
+@pytest.mark.django_db
+def test_video_frame_block_summary_identifies_frame_location(settings):
+    settings.VIDEO_FRAME_AUDIT_BLOCK_PUBLISH_ON_REJECTION = False
+    project = _make_ready_project("summary_frame", moderation_status="approved")
+    run = _video_frame_run(project, final_decision="needs_admin_review")
+    _video_finding(run, decision="needs_admin_review", severity="medium", category="provider_unavailable")
+
+    response = _client(project.user).get(f"/api/v1/projects/{project.id}/moderation/")
+
+    issue = response.data["visual_issues"][0]
+    assert response.status_code == 200
+    assert response.data["moderation_status"] == "needs_admin_review"
+    assert response.data["can_publish"] is False
+    assert response.data["publish_block_reason"] == "video_frame_audit_rejected"
+    assert issue["asset_kind"] == "video_frame"
+    assert issue["asset_label"] == "Video frame at 00:00:00"
+    assert issue["timestamp_seconds"] == 0.0
+    assert issue["reason_title"] == "Visual safety scan unavailable"
 
 
 @pytest.mark.django_db

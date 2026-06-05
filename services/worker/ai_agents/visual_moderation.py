@@ -17,8 +17,10 @@ from .schemas import AgentFindingSchema, AgentResultSchema, FindingLocation
 class SlideImageAsset:
     image_path: str = ""
     slide_order: int | None = None
+    transcript_page_id: int | None = None
     page_key: str | None = None
     ui_anchor: str | None = None
+    asset_type: str = "slide_image"
 
 
 class VisualModerationAgent:
@@ -59,8 +61,10 @@ class VisualModerationAgent:
                         project_id=int(project.id),
                         image_path=slide_asset.image_path,
                         slide_order=slide_asset.slide_order,
+                        transcript_page_id=slide_asset.transcript_page_id,
                         page_key=slide_asset.page_key,
                         ui_anchor=slide_asset.ui_anchor,
+                        asset_type=slide_asset.asset_type,
                     )
                 )
             return self._aggregate_results(results, scanned_asset_type="slide_images")
@@ -92,14 +96,17 @@ class VisualModerationAgent:
         project_id: int,
         image_path: str | None = "",
         slide_order: int | None = None,
+        transcript_page_id: int | None = None,
         page_key: str | None = None,
         ui_anchor: str | None = None,
+        asset_type: str = "slide_image",
     ) -> AgentResultSchema:
         location = FindingLocation(
             project_id=int(project_id),
+            transcript_page_id=transcript_page_id,
             page_key=page_key or None,
             slide_order=slide_order,
-            asset_type="slide_image",
+            asset_type=_visual_asset_type(asset_type),
             image_path=str(image_path or ""),
             ui_anchor=ui_anchor or None,
         )
@@ -171,6 +178,15 @@ def _slide_asset(asset: SlideImageAsset | dict) -> SlideImageAsset:
     return SlideImageAsset(
         image_path=_first_path(asset.get("image_path"), asset.get("path")),
         slide_order=_safe_int(asset.get("slide_order")),
+        transcript_page_id=_safe_int(asset.get("transcript_page_id")),
         page_key=asset.get("page_key"),
         ui_anchor=asset.get("ui_anchor"),
+        asset_type=_visual_asset_type(asset.get("asset_type") or "slide_image"),
     )
+
+
+def _visual_asset_type(value: str | None) -> str:
+    raw = str(value or "slide_image").strip().lower()
+    if raw in {"cover", "custom_background", "slide_image", "draft_visual_asset", "video_frame"}:
+        return raw
+    return "slide_image"

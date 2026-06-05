@@ -285,17 +285,29 @@ Many moderation flags are defined in Django settings and documented in [MODERATI
 | `SOURCE_MODERATION_PHASE` | worker/API | Optional | Optional | `source_scan` | Moderation phase label. |
 | `ENABLE_VISUAL_MODERATION` | API/frontend/worker | Optional | Optional | `0` | Master deployment flag for visual asset, OCR, and video frame visual checks. Text/source moderation can still run while this is disabled. Disabled visual scans are recorded as skipped/disabled instead of approved. Existing visual/OCR/provider env vars still imply enabled when this is unset. |
 | `VISUAL_MODERATION_AUTO_ENABLED` | worker/API | Optional | Optional | `false` | Enables visual asset moderation automation. |
-| `VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION` | worker/API | Optional | Policy-dependent | `false` | Blocks render on visual rejection. |
-| `VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION` | API | Optional | Policy-dependent | `false` | Blocks publishing when visual findings reject content. |
+| `VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION` | worker/API | Optional | Recommended with real visual provider | `false`; set `true` for provider-backed moderation | Blocks render/rerender when visual moderation rejects or requires review. |
+| `VISUAL_MODERATION_BLOCK_PUBLISH_ON_REJECTION` | API | Optional | Recommended with real visual provider | `false`; set `true` for provider-backed moderation | Blocks publishing when visual findings reject content or require review. |
 | `VISUAL_MODERATION_PHASE` | API | Optional | Optional | `visual_asset_scan` | Visual moderation phase label. |
 | `VISUAL_MODERATION_SCAN_COVER` | worker/API | Optional | Optional | `true` | Includes cover images. |
 | `VISUAL_MODERATION_SCAN_SLIDES` | worker/API | Optional | Optional | `true` | Includes slide images. |
+| `VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER` | API/worker | Optional | Recommended | `true` | Requires a real semantic provider before visual assets can be automatically approved. |
+| `ALLOW_WEAK_LOCAL_VISUAL_APPROVAL` | API/worker | Optional | No | `false` | Allows local metadata rules to approve visuals without a semantic provider. Keep false for production safety. |
+| `VISUAL_SAFETY_PROVIDER` | API/worker | Optional | Required for real visual moderation | `none`; use `azure_content_safety` | Semantic visual safety provider selector. |
+| `VISUAL_SAFETY_CLASSIFIER_ENABLED` | API/worker | Optional | Required for real visual moderation | `false`; set `true` with Azure provider | Enables semantic visual safety calls. |
+| `VISUAL_SAFETY_TIMEOUT_SECONDS` | API/worker | Optional | Optional | `20` | Timeout for semantic visual provider calls. |
+| `VISUAL_SAFETY_MAX_IMAGE_BYTES` | API/worker | Optional | Optional | `10485760` | Maximum image size sent to the semantic visual provider. |
 | `AZURE_CONTENT_SAFETY_ENABLED` | API/worker | Optional | If Azure used | `false` | Enables Azure Content Safety provider. |
-| `AZURE_CONTENT_SAFETY_ENDPOINT` | API/worker | Optional | If Azure used | empty | Azure endpoint. |
-| `AZURE_CONTENT_SAFETY_KEY` | API/worker | No | If Azure used | empty | Azure key. Secret. |
+| `AZURE_CONTENT_SAFETY_ENDPOINT` | API/worker | Optional | If Azure used | `https://replace-with-content-safety-resource.cognitiveservices.azure.com` | Azure Content Safety endpoint. |
+| `AZURE_CONTENT_SAFETY_KEY` | API/worker | No | If Azure used | `replace-with-azure-content-safety-key` | Azure Content Safety key. Secret; never commit a real value. |
 | `AZURE_CONTENT_SAFETY_API_VERSION` | API/worker | Optional | If Azure used | `2024-09-01` | Azure API version. |
 | `AZURE_CONTENT_SAFETY_CATEGORIES` | API/worker | Optional | If Azure used | `sexual,violence,self_harm,hate` | Categories to request. |
 | `AZURE_CONTENT_SAFETY_BLOCK_SEVERITY` | API/worker | Optional | If Azure used | `4` | Severity threshold. |
+| `TEXT_SAFETY_PROVIDER` | API/worker | Optional | Recommended with Azure text safety | `local_rules`; use `azure_content_safety` | Source/text moderation provider selector. When unset and Azure Content Safety is enabled/configured, Azure text safety becomes the primary provider. |
+| `TEXT_SAFETY_CLASSIFIER_ENABLED` | API/worker | Optional | Recommended with Azure text safety | `false`; set `true` with Azure provider | Enables Azure Content Safety text calls. |
+| `TEXT_SAFETY_TIMEOUT_SECONDS` | API/worker | Optional | Optional | `20` | Timeout for text safety provider calls. |
+| `TEXT_SAFETY_CATEGORIES` | API/worker | Optional | Optional | `sexual,violence,self_harm,hate` | Text safety categories requested from Azure. |
+| `TEXT_SAFETY_BLOCK_SEVERITY` | API/worker | Optional | Optional | `4` | Azure text severity threshold that becomes a blocking finding. |
+| `TEXT_SAFETY_FALLBACK_PROVIDER` | API/worker | Optional | Recommended | `local_rules` | Provider used when Azure text safety is unavailable, misconfigured, times out, or returns an invalid response. |
 | `AVATAR_IMAGE_MODERATION_AUTO_ENABLED` | API/worker | Optional | Recommended for avatar production | `false` | Enables avatar source image moderation. |
 | `AVATAR_IMAGE_MODERATION_BLOCK_ON_REJECTION` | API/worker | Optional | Recommended | `true` | Blocks rejected avatar sources. |
 | `AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL` | API/worker | Optional | Policy-dependent | `false` | Requires explicit approval before avatar generation. |

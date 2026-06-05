@@ -55,7 +55,7 @@ from typing import Any
 from celery import Celery
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Avg, Count, Exists, Max, OuterRef, Prefetch
+from django.db.models import Avg, Count, Exists, Max, OuterRef, Prefetch, Q
 from django.core.cache import cache
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
@@ -143,6 +143,9 @@ from core.drafts import (
     has_dirty_draft,
     has_project_draft,
     mark_draft_dirty,
+    mark_draft_moderation_failed,
+    mark_draft_moderation_passed,
+    mark_project_moderation_approved_after_draft_promotion,
     promote_project_draft,
     save_project_draft_data,
 )
@@ -172,7 +175,7 @@ from core.intelligence_progressive import (
     safe_enhancement_error,
 )
 from core.tts_llm_suggestions import pronunciation_suggestion_response
-from core.avatar_readiness import avatar_preview_readiness, normalize_avatar_engine
+from core.avatar_readiness import avatar_preview_readiness, avatar_setup_status, normalize_avatar_engine
 from core.avatar_placement import (
     apply_avatar_placement_to_preference,
     normalize_avatar_placement,
@@ -195,6 +198,7 @@ from core.render_followup_intents import merge_render_followup_intent
 from core.storage_adapter import get_storage_adapter
 from ai_agents.policies import (
     APPROVED_MODERATION_STATUSES,
+    enforce_unpublished_for_unresolved_moderation,
     manual_moderation_prevents_auto_override,
     moderation_is_approved_for_catalog,
     publication_block_payload,
@@ -2610,15 +2614,16 @@ def _process_profile_asset_image(source_path: Path, destination_path: Path, kind
         raise ValueError("Uploaded file is not a valid image.") from exc
 
 
-def _save_profile_asset(profile: UserProfile, image_file, kind: str) -> None:
+def _save_profile_asset(profile: UserProfile, image_file, kind: str, *, pending: bool = False) -> dict[str, str]:
     if kind not in _PROFILE_ASSET_KINDS:
         raise ValueError("Unsupported profile asset kind.")
     image_ext = _validate_profile_asset_upload(image_file)
     storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local")).resolve()
     asset_dir = storage_root / "profiles" / str(profile.user_id)
     asset_dir.mkdir(parents=True, exist_ok=True)
-    original_path = asset_dir / f"{kind}_original{image_ext}"
-    processed_path = asset_dir / f"{kind}_processed.jpg"
+    suffix = f"_pending_{uuid.uuid4().hex[:10]}" if pending else ""
+    original_path = asset_dir / f"{kind}{suffix}_original{image_ext}"
+    processed_path = asset_dir / f"{kind}{suffix}_processed.jpg"
     _write_uploaded_file(image_file, original_path)
     try:
         _process_profile_asset_image(original_path, processed_path, kind)
@@ -2629,8 +2634,253 @@ def _save_profile_asset(profile: UserProfile, image_file, kind: str) -> None:
             pass
         raise
 
-    setattr(profile, f"{kind}_image_original", str(original_path.relative_to(storage_root)).replace("\\", "/"))
-    setattr(profile, f"{kind}_image_processed", str(processed_path.relative_to(storage_root)).replace("\\", "/"))
+    original_rel = str(original_path.relative_to(storage_root)).replace("\\", "/")
+    processed_rel = str(processed_path.relative_to(storage_root)).replace("\\", "/")
+    return {
+        "original": original_rel,
+        "processed": processed_rel,
+        "original_abs": str(original_path),
+        "processed_abs": str(processed_path),
+    }
+
+
+def _profile_asset_scan_enabled(kind: str) -> bool:
+    if not visual_moderation_enabled():
+        return False
+    if not bool(getattr(settings, "VISUAL_MODERATION_SCAN_PROFILE_IMAGES", True)):
+        return False
+    if kind in _PROFILE_ASSET_KINDS and not bool(getattr(settings, "VISUAL_MODERATION_SCAN_CHANNEL_IMAGES", True)):
+        return False
+    return True
+
+
+def _moderate_profile_asset(profile: UserProfile, *, kind: str, image_path: str) -> dict[str, Any]:
+    if not _profile_asset_scan_enabled(kind):
+        return {
+            "status": "approved",
+            "final_decision": "skipped",
+            "reason": "profile_visual_moderation_disabled",
+            "message": "Profile image moderation is disabled.",
+            "scanned_at": timezone.now().isoformat(),
+        }
+    try:
+        services_root = Path(__file__).resolve().parents[2]
+        if str(services_root) not in sys.path:
+            sys.path.insert(0, str(services_root))
+        from worker.ai_agents.policy_engine import PolicyEngine
+        from worker.ai_agents.providers.local_image_rules_provider import LocalImageRulesProvider
+        from worker.ai_agents.providers.visual_safety_provider import (
+            build_visual_safety_provider,
+            visual_safety_classifier_should_run,
+        )
+        from worker.ai_agents.schemas import FindingLocation
+    except Exception as exc:  # noqa: BLE001
+        return _profile_asset_moderation_summary(
+            kind=kind,
+            status="needs_admin_review",
+            final_decision="needs_admin_review",
+            providers=[],
+            findings=[],
+            reason="profile_visual_moderation_unavailable",
+            provider_errors=[_short_error(exc)],
+        )
+
+    location = FindingLocation(
+        project_id=None,
+        asset_type="profile_banner" if kind == "banner" else "profile_logo",
+        image_path=str(image_path or ""),
+        ui_anchor=f"user-{profile.user_id}-{kind}-image",
+    )
+    providers = [LocalImageRulesProvider()]
+    classifier_requested = bool(visual_safety_classifier_should_run())
+    if classifier_requested:
+        providers.append(build_visual_safety_provider())
+
+    results = []
+    for provider in providers:
+        try:
+            results.append(provider.review_image(str(image_path or ""), location))
+        except Exception as exc:  # noqa: BLE001
+            results.append(_profile_provider_error_result(provider, location, exc))
+
+    final_decision = PolicyEngine().combine_results(results)
+    findings = [finding for result in results for finding in result.findings]
+    safety_results = [result for result in results if str(result.provider or "") != "local_image_rules"]
+    safety_completed = any(not bool((result.metadata or {}).get("skipped")) for result in safety_results)
+    semantic_missing = (
+        bool(getattr(settings, "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True))
+        and not bool(getattr(settings, "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", False))
+        and not safety_completed
+    )
+    if semantic_missing and final_decision != "block":
+        final_decision = "needs_admin_review"
+    if final_decision == "block":
+        status_value = "rejected"
+    elif final_decision == "needs_admin_review" or semantic_missing:
+        status_value = "needs_admin_review"
+    else:
+        status_value = "approved"
+    provider_errors = [
+        str((result.metadata or {}).get("reason") or (result.metadata or {}).get("provider_error") or "")
+        for result in results
+        if bool((result.metadata or {}).get("provider_error")) or bool((result.metadata or {}).get("skipped"))
+    ]
+    return _profile_asset_moderation_summary(
+        kind=kind,
+        status=status_value,
+        final_decision=final_decision,
+        providers=[str(result.provider or "") for result in results if str(result.provider or "")],
+        findings=findings,
+        reason="semantic_visual_provider_unavailable" if semantic_missing else "",
+        provider_errors=[reason for reason in provider_errors if reason],
+        classifier_requested=classifier_requested,
+        safety_completed=safety_completed,
+    )
+
+
+def _profile_provider_error_result(provider, location, exc):
+    from worker.ai_agents.schemas import AgentResultSchema
+
+    return AgentResultSchema(
+        agent_slug=str(getattr(provider, "agent_slug", "profile_visual_provider")),
+        agent_version=str(getattr(provider, "agent_version", "v1")),
+        modality="image",
+        provider=str(getattr(provider, "provider_name", "visual_provider")),
+        decision="allow",
+        confidence=0.0,
+        findings=[],
+        metadata={
+            "skipped": True,
+            "provider_error": True,
+            "reason": "profile_visual_provider_error",
+            "error": _short_error(exc),
+            "location": location.model_dump(exclude_none=True),
+        },
+    )
+
+
+def _profile_asset_moderation_summary(
+    *,
+    kind: str,
+    status: str,
+    final_decision: str,
+    providers: list[str],
+    findings: list,
+    reason: str = "",
+    provider_errors: list[str] | None = None,
+    classifier_requested: bool = False,
+    safety_completed: bool = False,
+) -> dict[str, Any]:
+    asset_kind = "channel_banner" if kind == "banner" else "channel_logo"
+    asset_label = "Channel banner" if kind == "banner" else "Channel logo"
+    provider_unavailable = reason == "semantic_visual_provider_unavailable"
+    reason_title = "Visual safety scan unavailable" if provider_unavailable else (
+        "Unsafe visual detected" if status == "rejected" else "Visual needs admin review" if status == "needs_admin_review" else "Visual approved"
+    )
+    reason_message = (
+        "The semantic visual safety provider did not return a completed result. "
+        "This visual cannot be automatically approved and requires manual admin review before publishing."
+        if provider_unavailable
+        else _profile_asset_moderation_message(status)
+    )
+    return {
+        "status": status,
+        "final_decision": final_decision,
+        "reason": reason,
+        "asset_kind": asset_kind,
+        "asset_label": asset_label,
+        "decision": "blocked" if status == "rejected" else status,
+        "reason_title": reason_title,
+        "reason_message": reason_message,
+        "publisher_reason_message": (
+            "We could not complete the visual safety scan for this channel image. "
+            "An admin must review it before it can become public."
+            if provider_unavailable
+            else _profile_asset_moderation_message(status)
+        ),
+        "admin_reason_message": reason_message,
+        "technical_reason": reason,
+        "finding_count": len(findings),
+        "categories": _count_profile_finding_values(findings, "category"),
+        "severities": _count_profile_finding_values(findings, "severity"),
+        "providers": providers,
+        "provider_errors": provider_errors or [],
+        "classifier_requested": classifier_requested,
+        "safety_completed": safety_completed,
+        "message": _profile_asset_moderation_message(status),
+        "findings": [
+            {
+                "category": str(getattr(finding, "category", "") or ""),
+                "severity": str(getattr(finding, "severity", "") or ""),
+                "decision": str(getattr(finding, "decision", "") or ""),
+                "asset_kind": asset_kind,
+                "asset_label": asset_label,
+                "reason_title": reason_title,
+                "reason_message": reason_message,
+                "user_message": str(getattr(finding, "user_message", "") or ""),
+                "admin_message": str(getattr(finding, "admin_message", "") or ""),
+            }
+            for finding in findings[:10]
+        ],
+        "scanned_at": timezone.now().isoformat(),
+    }
+
+
+def _count_profile_finding_values(findings: list, attr_name: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for finding in findings:
+        key = str(getattr(finding, attr_name, "") or "").strip()
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _profile_asset_moderation_message(status_value: str) -> str:
+    if status_value == "approved":
+        return "Image passed configured visual moderation."
+    if status_value == "rejected":
+        return "Image blocked by moderation."
+    if status_value == "needs_admin_review":
+        return "Image needs manual admin review before it can become public."
+    return "Image moderation status updated."
+
+
+def _short_error(exc: BaseException, limit: int = 240) -> str:
+    return f"{exc.__class__.__name__}: {exc}"[:limit]
+
+
+def _handle_profile_asset_upload(profile: UserProfile, image_file, kind: str) -> list[str]:
+    should_scan = _profile_asset_scan_enabled(kind)
+    paths = _save_profile_asset(profile, image_file, kind, pending=should_scan)
+    summary = _moderate_profile_asset(profile, kind=kind, image_path=paths["processed_abs"]) if should_scan else {
+        "status": "approved",
+        "final_decision": "skipped",
+        "reason": "profile_visual_moderation_disabled",
+        "message": "Profile image moderation is disabled.",
+        "scanned_at": timezone.now().isoformat(),
+    }
+    status_value = str(summary.get("status") or "needs_admin_review").strip().lower()
+    fields = [f"{kind}_image_moderation_status", f"{kind}_image_moderation_summary"]
+    setattr(profile, f"{kind}_image_moderation_status", status_value)
+    setattr(profile, f"{kind}_image_moderation_summary", summary)
+    if status_value == "approved":
+        setattr(profile, f"{kind}_image_original", paths["original"])
+        setattr(profile, f"{kind}_image_processed", paths["processed"])
+        setattr(profile, f"{kind}_image_pending_original", "")
+        setattr(profile, f"{kind}_image_pending_processed", "")
+        fields.extend(
+            [
+                f"{kind}_image_original",
+                f"{kind}_image_processed",
+                f"{kind}_image_pending_original",
+                f"{kind}_image_pending_processed",
+            ]
+        )
+    else:
+        setattr(profile, f"{kind}_image_pending_original", paths["original"])
+        setattr(profile, f"{kind}_image_pending_processed", paths["processed"])
+        fields.extend([f"{kind}_image_pending_original", f"{kind}_image_pending_processed"])
+    return fields
 
 
 class CurrentUserProfileAssetsView(APIView):
@@ -2652,16 +2902,14 @@ class CurrentUserProfileAssetsView(APIView):
         update_fields: list[str] = []
         try:
             if banner_file is not None:
-                _save_profile_asset(profile, banner_file, "banner")
-                update_fields.extend(["banner_image_original", "banner_image_processed"])
+                update_fields.extend(_handle_profile_asset_upload(profile, banner_file, "banner"))
             if logo_file is not None:
-                _save_profile_asset(profile, logo_file, "logo")
-                update_fields.extend(["logo_image_original", "logo_image_processed"])
+                update_fields.extend(_handle_profile_asset_upload(profile, logo_file, "logo"))
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
         if update_fields:
-            profile.save(update_fields=[*update_fields, "updated_at"])
+            profile.save(update_fields=[*dict.fromkeys([*update_fields, "updated_at"])])
         request.user.refresh_from_db()
         return Response(CurrentUserProfileSerializer(request.user, context={"request": request}).data)
 
@@ -2806,42 +3054,44 @@ class ProjectCoverImageView(APIView):
         _write_uploaded_file(cover_file, saved_cover_path)
         cover_rel_path = str(saved_cover_path.relative_to(storage_root)).replace("\\", "/")
 
-        if _truthy_request_value(request.data.get("draft_only") or request.query_params.get("draft_only")):
-            draft_data = ensure_project_draft_data(project)
-            project_fields = draft_data.setdefault("project", {})
-            project_fields["cover_image_original"] = cover_rel_path
-            project_fields["cover_image_processed"] = cover_rel_path
-            mark_draft_dirty(
-                draft_data,
-                metadata_dirty=True,
-                cover_dirty=True,
-                render_required=False,
-            )
-            save_project_draft_data(project, draft_data, dirty=True)
-            project.refresh_from_db()
-            data = ProjectSerializer(project, context={"request": request}).data
-            data["render_required"] = False
-            data["message"] = "Cover updated. Video rerender not required."
-            return Response(data, status=status.HTTP_200_OK)
-
-        project.cover_image_original = cover_rel_path
-        project.cover_image_processed = cover_rel_path
-        project.save(update_fields=["cover_image_original", "cover_image_processed", "updated_at"])
+        draft_data = ensure_project_draft_data(project)
+        project_fields = draft_data.setdefault("project", {})
+        project_fields["cover_image_original"] = cover_rel_path
+        project_fields["cover_image_processed"] = cover_rel_path
+        mark_draft_dirty(
+            draft_data,
+            metadata_dirty=True,
+            cover_dirty=True,
+            visual_assets_dirty=True,
+            render_required=False,
+        )
+        draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
+        save_project_draft_data(project, draft_data, dirty=True)
         _mark_project_visual_moderation_stale(
             project,
             reason="studio_cover_changed",
             asset_type="cover",
             asset_path=cover_rel_path,
         )
-        _run_auto_visual_moderation_for_changed_asset(
+        moderation_result = _run_auto_visual_moderation_for_changed_asset(
             project,
             asset_type="cover",
             asset_path=cover_rel_path,
+            use_draft=True,
         )
-        project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+        _apply_draft_moderation_result(project, moderation_result, scope="visual")
+        project.refresh_from_db()
+        enforce_unpublished_for_unresolved_moderation(project)
         data = ProjectSerializer(project, context={"request": request}).data
-        data["message"] = "Cover updated. Video rerender not required."
         data["render_required"] = False
+        data["moderation"] = moderation_result
+        data["message"] = (
+            "Draft cover passed visual moderation."
+            if _draft_moderation_result_passes(moderation_result)
+            else "Visual moderation requires admin review before this cover can be used."
+            if _draft_moderation_result_blocks(moderation_result)
+            else "Visual scan pending."
+        )
         return Response(data, status=status.HTTP_200_OK)
 
 
@@ -4389,10 +4639,30 @@ def _avatar_preview_readiness(profile: UserProfile, voice_profile: VoiceProfile 
     return avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
 
 
-def _avatar_moderation_block_response(profile: UserProfile, gate: dict, *, status_label: str = "avatar_not_prepared"):
+def _avatar_setup_status(
+    profile: UserProfile,
+    voice_profile: VoiceProfile | None,
+    *,
+    storage_root: Path,
+    readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
+
+
+def _avatar_moderation_block_response(
+    profile: UserProfile,
+    gate: dict,
+    *,
+    status_label: str = "avatar_not_prepared",
+    voice_profile: VoiceProfile | None = None,
+    storage_root: Path | None = None,
+):
     profile.avatar_image_status = "rejected"
     profile.avatar_preview_error = str(gate.get("message") or "Avatar source image needs moderation review.")
     profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+    setup_status = None
+    if storage_root is not None:
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root)
     return Response(
         {
             "status": status_label,
@@ -4401,6 +4671,7 @@ def _avatar_moderation_block_response(profile: UserProfile, gate: dict, *, statu
             "avatar_moderation_status": gate.get("status") or profile.avatar_moderation_status,
             "avatar_moderation_summary": gate.get("summary") or profile.avatar_moderation_summary,
             "missing_requirements": [gate.get("error_code") or "avatar_image_moderation_blocked"],
+            **({"avatar_setup_status": setup_status, "action_required": setup_status.get("action_required")} if setup_status else {}),
         },
         status=status.HTTP_400_BAD_REQUEST,
     )
@@ -4929,6 +5200,47 @@ class ProjectUploadView(APIView):
         if not _is_verified_teacher(request.user):
             return Response({"error": "Only verified teacher accounts can access projects."}, status=status.HTTP_403_FORBIDDEN)
         projects = Project.objects.filter(user=request.user).order_by("-created_at")
+        search_query = (
+            request.query_params.get("q")
+            or request.query_params.get("search")
+            or ""
+        ).strip()
+        if search_query:
+            projects = projects.filter(
+                Q(title__icontains=search_query)
+                | Q(description__icontains=search_query)
+                | Q(category__name__icontains=search_query)
+                | Q(status__icontains=search_query)
+                | Q(moderation_status__icontains=search_query)
+            )
+        pagination_requested = (
+            request.query_params.get("limit") is not None
+            or request.query_params.get("offset") is not None
+            or bool(search_query)
+        )
+        if pagination_requested:
+            try:
+                limit = int(request.query_params.get("limit") or 12)
+            except (TypeError, ValueError):
+                limit = 12
+            try:
+                offset = int(request.query_params.get("offset") or 0)
+            except (TypeError, ValueError):
+                offset = 0
+            limit = max(1, min(limit, 50))
+            offset = max(0, offset)
+            total_count = projects.count()
+            page = list(projects[offset:offset + limit])
+            next_offset = offset + len(page)
+            has_next = next_offset < total_count
+            return Response({
+                "results": ProjectSerializer(page, many=True, context={"request": request}).data,
+                "count": total_count,
+                "limit": limit,
+                "offset": offset,
+                "next_offset": next_offset if has_next else None,
+                "has_next": has_next,
+            })
         return Response(ProjectSerializer(projects, many=True, context={"request": request}).data)
 
     def post(self, request):
@@ -5206,6 +5518,7 @@ class ProjectDetailView(APIView):
             if has_avatar_runtime_settings:
                 save_project_avatar_runtime_settings(project, request.data.get("avatar_runtime_settings"))
                 project.refresh_from_db()
+        enforce_unpublished_for_unresolved_moderation(project)
         if has_is_published and not was_published and bool(getattr(project, "is_published", False)):
             try:
                 from core.notifications import notify_publisher_posted_lesson
@@ -5464,6 +5777,7 @@ def _mark_project_visual_moderation_stale(
     asset_path: str = "",
 ) -> None:
     summary = dict(project.moderation_summary or {})
+    changed_at_dt = timezone.now()
     if not visual_moderation_enabled():
         summary["visual_asset_scan"] = {
             "status": "disabled",
@@ -5472,10 +5786,11 @@ def _mark_project_visual_moderation_stale(
             "reason": "visual_moderation_disabled",
             "asset_type": asset_type,
             "message": "Visual scan disabled for this deployment.",
-            "changed_at": timezone.now().isoformat(),
+            "changed_at": changed_at_dt.isoformat(),
         }
+        project.latest_publisher_change_at = changed_at_dt
         project.moderation_summary = summary
-        project.save(update_fields=["moderation_summary", "updated_at"])
+        project.save(update_fields=["moderation_summary", "latest_publisher_change_at", "updated_at"])
         return
     previous_scan = summary.get("visual_asset_scan")
     if not isinstance(previous_scan, dict):
@@ -5488,7 +5803,7 @@ def _mark_project_visual_moderation_stale(
         "reason": reason,
         "asset_type": asset_type,
         "message": "Visual asset changed in Studio. Visual moderation needs to run again.",
-        "changed_at": timezone.now().isoformat(),
+        "changed_at": changed_at_dt.isoformat(),
     }
     if asset_path:
         stale_payload["asset_path"] = asset_path
@@ -5509,8 +5824,9 @@ def _mark_project_visual_moderation_stale(
             }
         )
     summary["visual_asset_scan"] = stale_payload
+    project.latest_publisher_change_at = changed_at_dt
     project.moderation_summary = summary
-    project.save(update_fields=["moderation_summary", "updated_at"])
+    project.save(update_fields=["moderation_summary", "latest_publisher_change_at", "updated_at"])
 
 
 def _run_auto_visual_moderation_for_changed_asset(
@@ -5519,6 +5835,7 @@ def _run_auto_visual_moderation_for_changed_asset(
     asset_type: str,
     asset_path: str,
     page: TranscriptPage | None = None,
+    use_draft: bool = False,
 ) -> dict | None:
     if not visual_moderation_enabled() or not bool(getattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", False)):
         return None
@@ -5536,11 +5853,37 @@ def _run_auto_visual_moderation_for_changed_asset(
                 {
                     "index": int(page.order or 0) if page is not None else 0,
                     "source_slide_index": int(page.source_slide_index or page.order or 0) if page is not None else 0,
+                    "transcript_page_id": int(page.id) if page is not None else None,
                     "page_key": str(page.page_key or "") if page is not None else "",
                     "image_path": str(resolved_path or asset_path),
+                    "asset_type": str(asset_type or "slide_image"),
+                    "ui_anchor": (
+                        f"custom-background-{page.id if page is not None else project.id}"
+                        if str(asset_type or "") == "custom_background"
+                        else f"visual-asset-{page.id if page is not None else project.id}"
+                    ),
                 }
             )
-        result = worker_tasks._run_auto_visual_asset_moderation_after_export(project.id, export_result)
+        scan_kwargs = {
+            "scan_cover": str(asset_type or "") == "cover",
+            "scan_slides": str(asset_type or "") != "cover",
+            "use_draft": bool(use_draft),
+        }
+        scan_func = worker_tasks._run_auto_visual_asset_moderation_after_export
+        try:
+            import inspect
+
+            parameters = inspect.signature(scan_func).parameters
+            accepts_scan_kwargs = all(
+                key in parameters or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+                for key in scan_kwargs
+            )
+        except (TypeError, ValueError):
+            accepts_scan_kwargs = False
+        if accepts_scan_kwargs:
+            result = scan_func(project.id, export_result, **scan_kwargs)
+        else:
+            result = scan_func(project.id, export_result)
         return result if isinstance(result, dict) else None
     except Exception:
         logger.warning(
@@ -5550,6 +5893,288 @@ def _run_auto_visual_moderation_for_changed_asset(
             exc_info=True,
         )
         return None
+
+
+def _run_draft_visual_moderation_before_promotion(project: Project) -> dict | None:
+    if not visual_moderation_enabled() or not bool(getattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", False)):
+        return None
+    try:
+        services_root = Path(__file__).resolve().parents[2]
+        if str(services_root) not in sys.path:
+            sys.path.insert(0, str(services_root))
+        from worker import tasks as worker_tasks
+
+        result = worker_tasks._run_auto_visual_asset_moderation_after_export(project.id, [], use_draft=True)
+        return result if isinstance(result, dict) else None
+    except Exception:
+        logger.warning("Draft visual moderation scan before promotion failed project=%s", project.id, exc_info=True)
+        return {
+            "enabled": True,
+            "status": "failed",
+            "project_id": int(project.id),
+            "final_decision": "needs_admin_review",
+            "message": "Draft visual moderation could not complete; admin review is required.",
+            "finding_count": 0,
+        }
+
+
+def _draft_moderation_result_blocks(result: dict | None) -> bool:
+    if not isinstance(result, dict) or not result.get("enabled"):
+        return False
+    status_value = str(result.get("moderation_status") or result.get("status") or "").strip().lower()
+    decision = str(result.get("final_decision") or "").strip().lower()
+    return bool(
+        result.get("block_render")
+        or status_value in _DRAFT_BLOCKED_MODERATION_STATUSES
+        or decision in {"block", "blocked", "rejected", "revision_required", "needs_admin_review"}
+    )
+
+
+def _draft_moderation_result_passes(result: dict | None) -> bool:
+    if not isinstance(result, dict) or not result.get("enabled"):
+        return False
+    status_value = str(result.get("moderation_status") or result.get("status") or "").strip().lower()
+    decision = str(result.get("final_decision") or "").strip().lower()
+    return status_value in {"approved", "admin_approved"} or decision in {"allow", "approved", "admin_approved"}
+
+
+def _apply_draft_moderation_result(project: Project, result: dict | None, *, scope: str) -> None:
+    if not isinstance(result, dict) or not result.get("enabled"):
+        return
+    if _draft_moderation_result_blocks(result):
+        mark_draft_moderation_failed(project, result)
+        return
+    if str(result.get("status") or "").strip().lower() == "failed":
+        blocked_result = {
+            **result,
+            "moderation_status": "failed",
+            "message": str(result.get("message") or "Draft moderation scan failed. Please try again or request admin review."),
+        }
+        mark_draft_moderation_failed(project, blocked_result)
+        return
+    if _draft_moderation_result_passes(result):
+        draft_data = get_project_draft_data(project)
+        metadata = draft_data.get("metadata") if isinstance(draft_data, dict) else {}
+        current_status = str((metadata or {}).get("moderation_status") or "").strip().lower()
+        current_scope = _draft_moderation_scope((metadata or {}).get("moderation") if isinstance(metadata, dict) else {})
+        if (
+            current_scope
+            and current_scope != str(scope or "").strip().lower()
+            and current_status in _DRAFT_BLOCKED_MODERATION_STATUSES
+        ):
+            return
+        mark_draft_moderation_passed(project, result, scope=scope)
+        project.refresh_from_db(fields=["moderation_summary"])
+        summary = dict(project.moderation_summary or {})
+        if scope == "text":
+            summary.pop("editor_text_changed", None)
+        if scope == "visual":
+            summary.pop("visual_asset_scan", None)
+            summary.pop("draft_visual_asset_scan", None)
+        project.moderation_summary = summary
+        project.save(update_fields=["moderation_summary", "updated_at"])
+
+
+def _run_draft_source_moderation_after_save(project: Project, request) -> dict | None:
+    if not _source_moderation_auto_enabled():
+        return None
+    try:
+        services_root = Path(__file__).resolve().parents[2]
+        if str(services_root) not in sys.path:
+            sys.path.insert(0, str(services_root))
+        from worker import tasks as worker_tasks
+
+        result = worker_tasks._run_auto_source_moderation_for_draft(
+            project.id,
+            triggered_by_user_id=request.user.id if request.user and request.user.is_authenticated else None,
+        )
+        if isinstance(result, dict):
+            _apply_draft_moderation_result(project, result, scope="text")
+            return result
+    except Exception:
+        logger.warning("Draft source moderation after save failed project=%s", project.id, exc_info=True)
+    return None
+
+
+def _draft_visual_moderation_blocks_promotion(result: dict | None) -> bool:
+    return _draft_moderation_result_blocks(result)
+
+
+_DRAFT_BLOCKED_MODERATION_STATUSES = {"revision_required", "needs_admin_review", "admin_rejected", "failed", "block", "blocked", "rejected"}
+_DRAFT_VISUAL_STALE_REASONS = {
+    "studio_cover_changed",
+    "studio_custom_background_changed",
+    "studio_custom_background_applied",
+    "studio_scene_background_changed",
+}
+
+
+def _draft_moderation_scope(moderation: dict | None) -> str:
+    if not isinstance(moderation, dict):
+        return ""
+    phase = str(moderation.get("phase") or "").strip().lower()
+    keys = " ".join(str(key).lower() for key in moderation.keys())
+    if "visual" in phase or "visual" in keys or "scanned_asset_count" in moderation:
+        return "visual"
+    if "source" in phase or "text" in phase or "input_hash" in moderation or "text" in keys:
+        return "text"
+    return ""
+
+
+def _clear_stale_draft_moderation_block(
+    project: Project,
+    draft_data: dict | None = None,
+    *,
+    scope: str = "",
+) -> dict:
+    """Clear moderation failure metadata after the user changes that draft source."""
+    working_draft = draft_data if isinstance(draft_data, dict) else get_project_draft_data(project)
+    metadata = working_draft.setdefault("metadata", {})
+    current_summary = dict(metadata.get("moderation") or {})
+    current_scope = _draft_moderation_scope(current_summary)
+    requested_scope = str(scope or "").strip().lower()
+    if requested_scope and current_scope and current_scope != requested_scope:
+        return working_draft
+    had_draft_block = False
+    for key in ("moderation_status", "moderation_failed_at", "moderation", "moderation_checks"):
+        if metadata.pop(key, None) is not None:
+            had_draft_block = True
+
+    summary = dict(project.moderation_summary or {})
+    summary_draft = summary.get("draft_moderation") if isinstance(summary.get("draft_moderation"), dict) else {}
+    summary_scope = _draft_moderation_scope(summary_draft)
+    if "draft_moderation" in summary and not (requested_scope and summary_scope and summary_scope != requested_scope):
+        summary.pop("draft_moderation", None)
+        had_draft_block = True
+
+    update_fields: list[str] = []
+    if had_draft_block:
+        working_draft["metadata"] = metadata
+        project.draft_data = working_draft
+        update_fields.append("draft_data")
+        project.moderation_summary = summary
+        update_fields.append("moderation_summary")
+        current_status = str(getattr(project, "moderation_status", "") or "").strip().lower()
+        if current_status in _DRAFT_BLOCKED_MODERATION_STATUSES and not manual_moderation_prevents_auto_override(project):
+            project.moderation_status = "not_scanned"
+            summary["moderation_status"] = "not_scanned"
+            summary["message"] = "Draft visual changed. Visual moderation needs to run again."
+            project.moderation_summary = summary
+            update_fields.append("moderation_status")
+    if update_fields:
+        project.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
+    return working_draft
+
+
+def _discard_stale_draft_visual_state(project: Project, summary: dict) -> tuple[dict, bool]:
+    changed = False
+    for key in ("draft_moderation", "draft_visual_asset_scan"):
+        if key in summary:
+            summary.pop(key, None)
+            changed = True
+    visual_scan = summary.get("visual_asset_scan")
+    if isinstance(visual_scan, dict):
+        reason = str(visual_scan.get("reason") or "").strip()
+        status_value = str(visual_scan.get("status") or "").strip().lower()
+        asset_type = str(visual_scan.get("asset_type") or "").strip().lower()
+        if (
+            ((visual_scan.get("stale") or visual_scan.get("needs_rescan")) and reason in _DRAFT_VISUAL_STALE_REASONS)
+            or (status_value == "disabled" and asset_type in {"cover", "custom_background"})
+        ):
+            summary.pop("visual_asset_scan", None)
+            changed = True
+    return summary, changed
+
+
+def _latest_non_draft_project_moderation_status(project: Project) -> str:
+    try:
+        from ai_agents.models import AgentRun
+    except Exception:
+        return "not_scanned"
+    run = (
+        AgentRun.objects.filter(project=project, purpose="moderation")
+        .exclude(phase__iendswith="_draft")
+        .order_by("-created_at", "-id")
+        .first()
+    )
+    if run is None:
+        return "approved" if getattr(project, "is_published", False) else "not_scanned"
+    decision = str(getattr(run, "final_decision", "") or "").strip().lower()
+    if decision in {"allow", "approved", "admin_approved"}:
+        return "approved"
+    if decision in {"block", "blocked", "rejected", "revision_required"}:
+        return "revision_required"
+    if decision == "needs_admin_review":
+        return "needs_admin_review"
+    return "not_scanned"
+
+
+def _blocked_draft_response_payload(project: Project, request, moderation_result: dict | None, *, message: str = "") -> dict:
+    blocked_result = dict(moderation_result or {})
+    blocked_result.setdefault(
+        "moderation_status",
+        str(blocked_result.get("final_decision") or "needs_admin_review"),
+    )
+    blocked_result.setdefault("moderation_summary", dict(blocked_result))
+    mark_draft_moderation_failed(project, blocked_result)
+    project.refresh_from_db()
+    enforce_unpublished_for_unresolved_moderation(project)
+    data = ProjectSerializer(project, context={"request": request}).data
+    data["rerender_job"] = None
+    data["rerender_strategy"] = "blocked_by_visual_moderation"
+    data["moderation"] = blocked_result
+    data["message"] = str(
+        message
+        or blocked_result.get("message")
+        or "Draft visual moderation requires admin review before promotion."
+    )
+    return data
+
+
+def _mark_successful_draft_promotion_moderation(project: Project, moderation_result: dict | None) -> None:
+    final_decision = str((moderation_result or {}).get("final_decision") or "").strip().lower()
+    if final_decision != "allow" or manual_moderation_prevents_auto_override(project):
+        return
+    mark_project_moderation_approved_after_draft_promotion(
+        project,
+        message="Draft visual scan passed.",
+        resolve_publication_blocks=False,
+    )
+
+
+def _promote_non_render_draft(project: Project, request) -> tuple[dict, int]:
+    if not has_dirty_draft(project):
+        data = ProjectSerializer(project, context={"request": request}).data
+        data["message"] = "No draft changes to save."
+        data["rerender_strategy"] = "none"
+        return data, status.HTTP_200_OK
+    if draft_requires_render(project):
+        data = ProjectSerializer(project, context={"request": request}).data
+        data["message"] = "These draft changes affect the video. Use Save & Rerender."
+        data["rerender_strategy"] = "draft_full_required"
+        return data, status.HTTP_400_BAD_REQUEST
+
+    moderation_result = _run_draft_visual_moderation_before_promotion(project)
+    if _draft_visual_moderation_blocks_promotion(moderation_result):
+        data = _blocked_draft_response_payload(
+            project,
+            request,
+            moderation_result,
+            message="This cover image needs review or replacement before it can become public.",
+        )
+        data["render_required"] = False
+        return data, status.HTTP_400_BAD_REQUEST
+
+    promote_project_draft(project)
+    project.refresh_from_db()
+    _mark_successful_draft_promotion_moderation(project, moderation_result)
+    project.refresh_from_db()
+    data = ProjectSerializer(project, context={"request": request}).data
+    data["rerender_job"] = None
+    data["rerender_strategy"] = "none"
+    data["render_required"] = False
+    data["message"] = "Cover saved. Video rerender is not required."
+    return data, status.HTTP_200_OK
 
 
 def _project_moderation_state_payload(project: Project) -> dict:
@@ -5570,8 +6195,48 @@ def _studio_draft_metadata(project: Project) -> dict:
     draft_data = get_project_draft_data(project)
     metadata = draft_data.get("metadata")
     if isinstance(metadata, dict) and metadata.get("dirty"):
-        return dict(metadata)
+        payload = dict(metadata)
+        if _manual_approval_covers_draft_metadata(project, payload):
+            payload.pop("moderation", None)
+            payload.pop("moderation_status", None)
+            payload.pop("moderation_failed_at", None)
+        return payload
     return {}
+
+
+def _manual_approval_covers_draft_metadata(project: Project, metadata: dict) -> bool:
+    manual_status = str(getattr(project, "manual_moderation_status", "") or "").strip().lower()
+    moderation_status = str(getattr(project, "moderation_status", "") or "").strip().lower()
+    if manual_status != "approved" and moderation_status != "admin_approved":
+        return False
+    manual_at = _studio_metadata_datetime(getattr(project, "manual_moderation_at", None))
+    if manual_at is None:
+        return False
+    moderation = metadata.get("moderation") if isinstance(metadata.get("moderation"), dict) else {}
+    draft_times = [
+        _studio_metadata_datetime(metadata.get("moderation_failed_at")),
+        _studio_metadata_datetime(metadata.get("updated_at")),
+        _studio_metadata_datetime(metadata.get("created_at")),
+        _studio_metadata_datetime(moderation.get("changed_at")),
+        _studio_metadata_datetime(moderation.get("completed_at")),
+    ]
+    draft_times = [value for value in draft_times if value is not None]
+    return bool(draft_times) and all(value <= manual_at for value in draft_times)
+
+
+def _studio_metadata_datetime(value: Any):
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        candidate = value
+    else:
+        try:
+            candidate = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if timezone.is_naive(candidate):
+        return timezone.make_aware(candidate, timezone.get_current_timezone())
+    return candidate
 
 
 def _studio_transcript_pages(project: Project, request) -> list[dict]:
@@ -5644,6 +6309,11 @@ def _discard_project_draft(project: Project) -> Project:
         locked_project = Project.objects.select_for_update().get(pk=project.pk)
         draft_data = get_project_draft_data(locked_project)
         draft_run_id = _draft_moderation_run_id(locked_project)
+        draft_metadata = draft_data.get("metadata") if isinstance(draft_data.get("metadata"), dict) else {}
+        had_blocked_draft = bool(
+            str(draft_metadata.get("moderation_status") or "").strip().lower() in _DRAFT_BLOCKED_MODERATION_STATUSES
+            or "draft_moderation" in dict(locked_project.moderation_summary or {})
+        )
         summary = dict(locked_project.moderation_summary or {})
         update_fields: list[str] = []
 
@@ -5651,14 +6321,22 @@ def _discard_project_draft(project: Project) -> Project:
             locked_project.draft_data = {}
             update_fields.append("draft_data")
 
-        if "draft_moderation" in summary:
-            summary.pop("draft_moderation", None)
+        summary, summary_changed = _discard_stale_draft_visual_state(locked_project, summary)
+        if summary_changed:
             locked_project.moderation_summary = summary
             update_fields.append("moderation_summary")
 
         if _last_moderation_run_is_draft(locked_project, draft_run_id):
             locked_project.last_moderation_run_id = _latest_non_draft_moderation_run_id(locked_project)
             update_fields.append("last_moderation_run_id")
+
+        current_status = str(getattr(locked_project, "moderation_status", "") or "").strip().lower()
+        if had_blocked_draft and current_status in _DRAFT_BLOCKED_MODERATION_STATUSES and not manual_moderation_prevents_auto_override(locked_project):
+            locked_project.moderation_status = _latest_non_draft_project_moderation_status(locked_project)
+            summary["moderation_status"] = locked_project.moderation_status
+            summary["message"] = "Draft discarded. Active lesson content restored."
+            locked_project.moderation_summary = summary
+            update_fields.extend(["moderation_status", "moderation_summary"])
 
         if update_fields:
             locked_project.save(update_fields=[*dict.fromkeys(update_fields), "updated_at"])
@@ -6189,8 +6867,27 @@ class ProjectTranscriptView(APIView):
             draft_data, changed_page_keys = _apply_transcript_draft_updates(project, updates)
             if changed_page_keys:
                 mark_draft_dirty(draft_data, transcript_dirty=True, render_required=True)
+                draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="text")
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
+            source_moderation_result = None
+            if changed_page_keys:
+                source_moderation_result = _run_draft_source_moderation_after_save(project, request)
+                project.refresh_from_db()
+            if draft_rerender and _draft_moderation_result_blocks(source_moderation_result):
+                payload = {
+                    **_studio_transcript_response_payload(project, request),
+                    **_project_moderation_state_payload(project),
+                    "changed_page_keys": sorted(changed_page_keys),
+                    "rerender_job": None,
+                    "rerender_strategy": "blocked_by_source_moderation",
+                    "moderation": source_moderation_result,
+                    "message": str(
+                        (source_moderation_result or {}).get("message")
+                        or "Draft text moderation must pass before rerender."
+                    ),
+                }
+                return Response(payload, status=status.HTTP_400_BAD_REQUEST)
             rerender_job = None
             followup_payload = {}
             if draft_rerender:
@@ -6205,6 +6902,35 @@ class ProjectTranscriptView(APIView):
                         use_draft=True,
                         followup_reason="transcript_text_edit",
                     )
+                else:
+                    moderation_result = _run_draft_visual_moderation_before_promotion(project)
+                    if _draft_visual_moderation_blocks_promotion(moderation_result):
+                        blocked_result = dict(moderation_result or {})
+                        blocked_result.setdefault(
+                            "moderation_status",
+                            str(blocked_result.get("final_decision") or "needs_admin_review"),
+                        )
+                        blocked_result.setdefault("moderation_summary", dict(blocked_result))
+                        mark_draft_moderation_failed(project, blocked_result)
+                        project.refresh_from_db()
+                        enforce_unpublished_for_unresolved_moderation(project)
+                        payload = {
+                            **_studio_transcript_response_payload(project, request),
+                            **_project_moderation_state_payload(project),
+                            "changed_page_keys": sorted(changed_page_keys),
+                            "rerender_job": None,
+                            "rerender_strategy": "blocked_by_visual_moderation",
+                            "moderation": blocked_result,
+                            "message": str(
+                                blocked_result.get("message")
+                                or "Draft visual moderation requires admin review before promotion."
+                            ),
+                        }
+                        return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+                    promote_project_draft(project)
+                    project.refresh_from_db()
+                    _mark_successful_draft_promotion_moderation(project, moderation_result)
+                    project.refresh_from_db()
             payload = {
                 **_studio_transcript_response_payload(project, request),
                 **_project_moderation_state_payload(project),
@@ -6221,6 +6947,8 @@ class ProjectTranscriptView(APIView):
                 payload["rerender_job"] = None
                 payload["rerender_strategy"] = "none"
                 payload["message"] = "Video rerender not required."
+            if source_moderation_result:
+                payload["moderation"] = source_moderation_result
             if changed_page_keys:
                 payload["intelligence_auto_scheduled"] = _queue_lesson_intelligence_schedule(
                     project.id,
@@ -7250,7 +7978,7 @@ class ProjectLessonIntelligenceView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_run_lesson_intelligence(request.user, project):
+        if not _can_review_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         latest = _recover_stale_lesson_enhancement(
@@ -7440,6 +8168,23 @@ class ProjectDraftDiscardView(APIView):
             "discarded": had_draft,
         }
         return Response(payload, status=status.HTTP_200_OK)
+
+
+class ProjectDraftPromoteView(APIView):
+    """POST /api/v1/projects/<project_id>/draft/promote/"""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        data, response_status = _promote_non_render_draft(project, request)
+        return Response(data, status=response_status)
 
 
 class ProjectTranscriptActionView(APIView):
@@ -7704,7 +8449,25 @@ class TranscriptPageSceneView(APIView):
                 visual_assets_dirty=True,
                 render_required=True,
             )
+            draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
             save_project_draft_data(project, draft_data, dirty=True)
+            _mark_project_visual_moderation_stale(
+                project,
+                reason="studio_scene_background_changed",
+                asset_type="custom_background",
+                page=page,
+                asset_path=str(scene.get("custom_background_path") or ""),
+            )
+            moderation_result = None
+            if str(scene.get("custom_background_path") or "").strip():
+                moderation_result = _run_auto_visual_moderation_for_changed_asset(
+                    project,
+                    asset_type="custom_background",
+                    asset_path=str(scene.get("custom_background_path") or ""),
+                    page=page,
+                    use_draft=True,
+                )
+                _apply_draft_moderation_result(project, moderation_result, scope="visual")
             project.refresh_from_db()
             return Response(
                 {
@@ -7712,6 +8475,7 @@ class TranscriptPageSceneView(APIView):
                     "page": _draft_page_response(project, draft_page, request),
                     "has_draft": has_project_draft(project),
                     "draft_metadata": _studio_draft_metadata(project),
+                    "moderation": moderation_result,
                 }
             )
 
@@ -7975,7 +8739,7 @@ class TranscriptPageHighlightPreviewImageView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             raise Http404
-        if not _can_manage_project(request.user, project):
+        if not _can_review_project(request.user, project):
             raise Http404
 
         page_token = page_ref if page_ref is not None else page_id
@@ -8064,7 +8828,23 @@ class TranscriptPageBackgroundUploadView(APIView):
                 visual_assets_dirty=True,
                 render_required=True,
             )
+            draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
             save_project_draft_data(project, draft_data, dirty=True)
+            _mark_project_visual_moderation_stale(
+                project,
+                reason="studio_custom_background_changed",
+                asset_type="custom_background",
+                page=page,
+                asset_path=scene["custom_background_path"],
+            )
+            moderation_result = _run_auto_visual_moderation_for_changed_asset(
+                project,
+                asset_type="custom_background",
+                asset_path=scene["custom_background_path"],
+                page=page,
+                use_draft=True,
+            )
+            _apply_draft_moderation_result(project, moderation_result, scope="visual")
             project.refresh_from_db()
             return Response(
                 {
@@ -8072,6 +8852,7 @@ class TranscriptPageBackgroundUploadView(APIView):
                     "page": _draft_page_response(project, draft_page, request),
                     "has_draft": has_project_draft(project),
                     "draft_metadata": _studio_draft_metadata(project),
+                    "moderation": moderation_result,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -8097,7 +8878,8 @@ class TranscriptPageBackgroundUploadView(APIView):
             asset_path=scene["custom_background_path"],
             page=page,
         )
-        project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+        project.refresh_from_db()
+        enforce_unpublished_for_unresolved_moderation(project)
         return Response(
             {
                 "project_id": project.id,
@@ -8204,7 +8986,25 @@ class ProjectBackgroundApplyAllView(APIView):
                 visual_assets_dirty=True,
                 render_required=True,
             )
+            draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
             save_project_draft_data(project, draft_data, dirty=True)
+            if custom_path:
+                _mark_project_visual_moderation_stale(
+                    project,
+                    reason="studio_custom_background_applied",
+                    asset_type="custom_background",
+                    asset_path=custom_path,
+                )
+                moderation_result = _run_auto_visual_moderation_for_changed_asset(
+                    project,
+                    asset_type="custom_background",
+                    asset_path=custom_path,
+                    page=pages[0] if pages else None,
+                    use_draft=True,
+                )
+                _apply_draft_moderation_result(project, moderation_result, scope="visual")
+            else:
+                moderation_result = None
             project.refresh_from_db()
             return Response(
                 {
@@ -8212,6 +9012,7 @@ class ProjectBackgroundApplyAllView(APIView):
                     "pages": _studio_transcript_pages(project, request),
                     "has_draft": has_project_draft(project),
                     "draft_metadata": _studio_draft_metadata(project),
+                    "moderation": moderation_result,
                 }
             )
 
@@ -8242,7 +9043,8 @@ class ProjectBackgroundApplyAllView(APIView):
                 asset_path=custom_path,
                 page=pages[0] if pages else None,
             )
-            project.refresh_from_db(fields=["moderation_status", "moderation_summary"])
+            project.refresh_from_db()
+            enforce_unpublished_for_unresolved_moderation(project)
 
         return Response(
             {
@@ -8262,8 +9064,10 @@ class ProjectRerenderView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_manage_project(request.user, project):
+        if not _can_review_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        enforce_unpublished_for_unresolved_moderation(project)
 
         voice_id = _get_voice_id(project.user)
 
@@ -8285,7 +9089,46 @@ class ProjectRerenderView(APIView):
 
             use_draft = has_dirty_draft(project)
             if use_draft and not draft_requires_render(project):
+                moderation_result = _run_draft_visual_moderation_before_promotion(project)
+                if _draft_visual_moderation_blocks_promotion(moderation_result):
+                    blocked_result = dict(moderation_result or {})
+                    blocked_result.setdefault(
+                        "moderation_status",
+                        str(blocked_result.get("final_decision") or "needs_admin_review"),
+                    )
+                    blocked_result.setdefault("moderation_summary", dict(blocked_result))
+                    mark_draft_moderation_failed(project, blocked_result)
+                    project.refresh_from_db()
+                    blocked_status = str(blocked_result.get("moderation_status") or "needs_admin_review").strip()
+                    if blocked_status in {"block", "blocked"}:
+                        blocked_status = "revision_required"
+                    if blocked_status in {"revision_required", "needs_admin_review", "admin_rejected", "failed"}:
+                        summary = dict(project.moderation_summary or {})
+                        summary["moderation_status"] = blocked_status
+                        summary.setdefault(
+                            "message",
+                            str(
+                                blocked_result.get("message")
+                                or "Draft visual moderation requires admin review before promotion."
+                            ),
+                        )
+                        project.moderation_status = blocked_status
+                        project.moderation_summary = summary
+                        project.save(update_fields=["moderation_status", "moderation_summary", "updated_at"])
+                        project.refresh_from_db()
+                        enforce_unpublished_for_unresolved_moderation(project)
+                    data = ProjectSerializer(project, context={"request": request}).data
+                    data["rerender_job"] = None
+                    data["rerender_strategy"] = "blocked_by_visual_moderation"
+                    data["moderation"] = blocked_result
+                    data["message"] = str(
+                        blocked_result.get("message")
+                        or "Draft visual moderation requires admin review before promotion."
+                    )
+                    return Response(data, status=status.HTTP_400_BAD_REQUEST)
                 promote_project_draft(project)
+                project.refresh_from_db()
+                _mark_successful_draft_promotion_moderation(project, moderation_result)
                 project.refresh_from_db()
                 data = ProjectSerializer(project, context={"request": request}).data
                 data["rerender_job"] = None
@@ -8584,7 +9427,22 @@ class VoiceUploadView(APIView):
         profile.provider = "xtts_v2"
         profile.save(update_fields=["voice_id", "provider"])
 
-        return Response({"voice_id": new_voice_id, "status": "ready", "provider": "xtts_v2"})
+        user_profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        setup_status = _avatar_setup_status(
+            user_profile,
+            profile,
+            storage_root=Path(storage_root),
+        )
+
+        return Response(
+            {
+                "voice_id": new_voice_id,
+                "status": "ready",
+                "provider": "xtts_v2",
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
+            }
+        )
 
 
 class AvatarProfileView(APIView):
@@ -8624,10 +9482,18 @@ class AvatarProfileView(APIView):
             VoiceProfile.objects.filter(user=user).first(),
             storage_root=storage_root,
         )
+        setup_status = _avatar_setup_status(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=storage_root,
+            readiness=readiness,
+        )
 
         payload = {
             "profile": UserSerializer(user).data.get("profile", {}),
             "readiness": readiness,
+            "avatar_setup_status": setup_status,
+            "action_required": setup_status.get("action_required"),
             "avatar_summary": {
                 "status": profile.avatar_image_status,
                 "model_version": profile.avatar_model_version,
@@ -8652,6 +9518,8 @@ class AvatarProfileView(APIView):
                 "avatar_moderation_status": profile.avatar_moderation_status,
                 "avatar_moderation_summary": profile.avatar_moderation_summary if isinstance(profile.avatar_moderation_summary, dict) else {},
                 "avatar_last_moderation_run_id": profile.avatar_last_moderation_run_id,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
                 "missing_requirements": readiness.get("missing_requirements") or [],
                 "readiness_checks": readiness.get("checks") or {},
                 "composite_configured": _composite_engine_configured(),
@@ -8679,10 +9547,20 @@ class AvatarProfileView(APIView):
         if avatar_file is None and avatar_video_file is None:
             return Response({"error": "avatar_video_file (preferred) or avatar_file is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
         consent_value = str(request.data.get("avatar_consent_confirmed", "")).strip().lower()
         if consent_value not in {"1", "true", "yes", "on"}:
+            setup_status = _avatar_setup_status(
+                profile,
+                VoiceProfile.objects.filter(user=user).first(),
+                storage_root=Path(storage_root),
+            )
             return Response(
-                {"error": "Explicit avatar consent is required before generation."},
+                {
+                    "error": "Explicit avatar consent is required before generation.",
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -8690,7 +9568,6 @@ class AvatarProfileView(APIView):
         profile.avatar_preview_error = ""
         profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
 
-        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
         upload_dir = Path(storage_root) / "avatars" / str(user.id) / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         rel_original = ""
@@ -8719,12 +9596,38 @@ class AvatarProfileView(APIView):
                 profile.avatar_image_status = "rejected"
                 profile.avatar_preview_error = str(exc)
                 profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                setup_status = _avatar_setup_status(
+                    profile,
+                    VoiceProfile.objects.filter(user=user).first(),
+                    storage_root=Path(storage_root),
+                )
+                return Response(
+                    {
+                        "error": str(exc),
+                        "avatar_setup_status": setup_status,
+                        "action_required": setup_status.get("action_required"),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             profile.avatar_image_processed = str(v_result.get("processed_rel_path") or "")
             profile.avatar_video_processed = str(v_result.get("video_rel_path") or rel_video_original)
             profile.avatar_version_hash = str(v_result.get("source_hash") or "")
             result_warnings = list(v_result.get("warnings") or [])
+            processed_rel_path = str(v_result.get("processed_rel_path") or "")
+            if processed_rel_path:
+                processed_abs = Path(storage_root) / processed_rel_path
+                profile.save(update_fields=["avatar_image_processed", "updated_at"])
+                run_avatar_image_moderation(profile, processed_abs, persist=True)
+                moderation_gate = avatar_image_moderation_gate(profile)
+                if moderation_gate.get("blocked"):
+                    return _avatar_moderation_block_response(
+                        profile,
+                        moderation_gate,
+                        status_label="avatar_not_prepared",
+                        voice_profile=VoiceProfile.objects.filter(user=user).first(),
+                        storage_root=Path(storage_root),
+                    )
 
         if avatar_file is not None:
             ext = Path(avatar_file.name).suffix.lower() or ".png"
@@ -8739,7 +9642,13 @@ class AvatarProfileView(APIView):
             run_avatar_image_moderation(profile, saved_original, persist=True)
             moderation_gate = avatar_image_moderation_gate(profile)
             if moderation_gate.get("blocked"):
-                return _avatar_moderation_block_response(profile, moderation_gate, status_label="avatar_not_prepared")
+                return _avatar_moderation_block_response(
+                    profile,
+                    moderation_gate,
+                    status_label="avatar_not_prepared",
+                    voice_profile=VoiceProfile.objects.filter(user=user).first(),
+                    storage_root=Path(storage_root),
+                )
 
             try:
                 result = preprocess_teacher_avatar_image(
@@ -8753,7 +9662,19 @@ class AvatarProfileView(APIView):
                 profile.avatar_image_status = "rejected"
                 profile.avatar_preview_error = str(exc)
                 profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
-                return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                setup_status = _avatar_setup_status(
+                    profile,
+                    VoiceProfile.objects.filter(user=user).first(),
+                    storage_root=Path(storage_root),
+                )
+                return Response(
+                    {
+                        "error": str(exc),
+                        "avatar_setup_status": setup_status,
+                        "action_required": setup_status.get("action_required"),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             if avatar_video_file is None:
                 # Image-only mode: use processed image as primary identity source.
@@ -8781,7 +9702,19 @@ class AvatarProfileView(APIView):
                 "liveportrait+musetalk is selected but AVATAR_LIVEPORTRAIT_CMD and/or AVATAR_MUSETALK_CMD is not configured"
             )
             profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
-            return Response({"error": profile.avatar_preview_error}, status=status.HTTP_400_BAD_REQUEST)
+            setup_status = _avatar_setup_status(
+                profile,
+                VoiceProfile.objects.filter(user=user).first(),
+                storage_root=Path(storage_root),
+            )
+            return Response(
+                {
+                    "error": profile.avatar_preview_error,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         profile.avatar_reference_type = reference_type
         validation = refresh_avatar_source_validation(profile, storage_root=Path(storage_root), persist=True)
@@ -8789,12 +9722,19 @@ class AvatarProfileView(APIView):
             profile.avatar_image_status = "rejected"
             profile.avatar_preview_error = str(validation.get("error") or "avatar_source_invalid")
             profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+            setup_status = _avatar_setup_status(
+                profile,
+                VoiceProfile.objects.filter(user=user).first(),
+                storage_root=Path(storage_root),
+            )
             return Response(
                 {
                     "error": profile.avatar_preview_error,
                     "error_code": "avatar_source_invalid",
                     "avatar_source_valid": False,
                     "avatar_source_validation_error": profile.avatar_preview_error,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -8828,11 +9768,25 @@ class AvatarProfileView(APIView):
                 "updated_at",
             ]
         )
+        readiness = _avatar_preview_readiness(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=Path(storage_root),
+        )
+        setup_status = _avatar_setup_status(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=Path(storage_root),
+            readiness=readiness,
+        )
 
         return Response(
             {
                 "status": "ready",
                 "profile": UserSerializer(user).data.get("profile", {}),
+                "readiness": readiness,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
                 "warnings": result_warnings,
             }
         )
@@ -8944,6 +9898,8 @@ class AvatarProfileView(APIView):
                 "yes",
                 "on",
             }
+        if not profile.avatar_consent_confirmed:
+            profile.avatar_enabled = False
 
         profile.save(update_fields=[
             "avatar_enabled",
@@ -8960,7 +9916,19 @@ class AvatarProfileView(APIView):
             "avatar_consent_confirmed",
             "updated_at",
         ])
-        return Response({"status": "updated", "profile": UserSerializer(user).data.get("profile", {})})
+        storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
+        voice_profile = VoiceProfile.objects.filter(user=user).first()
+        readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
+        return Response(
+            {
+                "status": "updated",
+                "profile": UserSerializer(user).data.get("profile", {}),
+                "readiness": readiness,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
+            }
+        )
 
 
 class AvatarPreviewRegenerateView(APIView):
@@ -8994,17 +9962,19 @@ class AvatarPreviewRegenerateView(APIView):
             storage_root=storage_root,
         )
         selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
         if not bool(readiness.get("ready")):
             profile.avatar_last_preview_status = "setup_failed"
-            profile.avatar_image_status = "failed"
-            profile.avatar_preview_error = str(readiness.get("error") or "Avatar is not prepared for preview.")
-            profile.save(update_fields=["avatar_last_preview_status", "avatar_image_status", "avatar_preview_error", "updated_at"])
+            profile.avatar_preview_error = str(setup_status.get("message") or readiness.get("error") or "Avatar is not prepared for preview.")
+            profile.save(update_fields=["avatar_last_preview_status", "avatar_preview_error", "updated_at"])
             return Response(
                 {
-                    "error": readiness.get("error") or "Avatar is not prepared for preview.",
+                    "error": setup_status.get("message") or readiness.get("error") or "Avatar is not prepared for preview.",
                     "error_code": readiness.get("error_code") or "setup_not_prepared",
                     "missing_requirements": readiness.get("missing_requirements") or [],
                     "readiness": readiness,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
                     "normalized_engine": selected_engine,
                     "avatar_engine_selected": selected_engine,
                 },
@@ -9030,6 +10000,15 @@ class AvatarPreviewRegenerateView(APIView):
         profile.avatar_preview_video = ""
         profile.avatar_preview_error = ""
         profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id", "avatar_last_preview_path", "avatar_preview_video", "avatar_preview_error", "updated_at"])
+        queued_setup_status = {
+            **setup_status,
+            "state": "preparing",
+            "action_required": "wait",
+            "primary_action_label": "Preparing avatar",
+            "message": "Avatar preview is being generated.",
+            "can_prepare": False,
+            "can_generate_preview": False,
+        }
 
         return Response(
             {
@@ -9038,6 +10017,8 @@ class AvatarPreviewRegenerateView(APIView):
                 "task_id": async_result.id,
                 "normalized_engine": selected_engine,
                 "avatar_engine_selected": selected_engine,
+                "avatar_setup_status": queued_setup_status,
+                "action_required": queued_setup_status.get("action_required"),
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -9066,13 +10047,6 @@ class AvatarPrepareView(APIView):
         actions: list[str] = []
         warnings: list[str] = []
 
-        if "avatar_enabled" in request.data:
-            profile.avatar_enabled = str(request.data.get("avatar_enabled", "")).strip().lower() in {"1", "true", "yes", "on"}
-            actions.append("avatar_enabled_updated")
-        elif not profile.avatar_enabled:
-            profile.avatar_enabled = True
-            actions.append("avatar_enabled_auto_enabled")
-
         if "avatar_consent_confirmed" in request.data:
             profile.avatar_consent_confirmed = str(request.data.get("avatar_consent_confirmed", "")).strip().lower() in {
                 "1",
@@ -9081,6 +10055,49 @@ class AvatarPrepareView(APIView):
                 "on",
             }
             actions.append("avatar_consent_updated")
+
+        if "avatar_enabled" in request.data:
+            requested_enable = str(request.data.get("avatar_enabled", "")).strip().lower() in {"1", "true", "yes", "on"}
+            profile.avatar_enabled = bool(requested_enable and profile.avatar_consent_confirmed)
+            actions.append("avatar_enabled_updated")
+        elif not profile.avatar_enabled:
+            has_portrait = bool(str(profile.avatar_image_original or "").strip())
+            has_voice = bool(voice_profile and str(voice_profile.voice_id or "").strip())
+            if profile.avatar_consent_confirmed and has_portrait and has_voice:
+                profile.avatar_enabled = True
+                actions.append("avatar_enabled_auto_enabled")
+
+        if not profile.avatar_consent_confirmed:
+            profile.avatar_enabled = False
+
+        profile.save(update_fields=["avatar_enabled", "avatar_consent_confirmed", "updated_at"])
+        initial_readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+        initial_setup_status = _avatar_setup_status(
+            profile,
+            voice_profile,
+            storage_root=storage_root,
+            readiness=initial_readiness,
+        )
+        if initial_setup_status.get("state") in {"missing_consent", "missing_portrait", "missing_voice", "disabled"}:
+            profile.avatar_last_preview_status = "setup_failed"
+            profile.avatar_preview_error = str(initial_setup_status.get("message") or "Avatar setup is incomplete.")
+            profile.save(update_fields=["avatar_last_preview_status", "avatar_preview_error", "updated_at"])
+            return Response(
+                {
+                    "status": "avatar_not_prepared",
+                    "error_code": "setup_not_prepared",
+                    "error": profile.avatar_preview_error,
+                    "missing_requirements": initial_readiness.get("missing_requirements") or [],
+                    "readiness": initial_readiness,
+                    "avatar_setup_status": initial_setup_status,
+                    "action_required": initial_setup_status.get("action_required"),
+                    "normalized_engine": str(initial_readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary)),
+                    "avatar_engine_selected": str(initial_readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary)),
+                    "actions": actions,
+                    "warnings": warnings,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         force_reprocess = str(request.data.get("force_reprocess", "0")).strip().lower() in {"1", "true", "yes", "on"}
         processed_rel = str(profile.avatar_image_processed or "").strip()
@@ -9096,7 +10113,13 @@ class AvatarPrepareView(APIView):
                 run_avatar_image_moderation(profile, original_abs, persist=True)
             moderation_gate = avatar_image_moderation_gate(profile)
             if moderation_gate.get("blocked"):
-                return _avatar_moderation_block_response(profile, moderation_gate, status_label="avatar_not_prepared")
+                return _avatar_moderation_block_response(
+                    profile,
+                    moderation_gate,
+                    status_label="avatar_not_prepared",
+                    voice_profile=voice_profile,
+                    storage_root=storage_root,
+                )
         if should_reprocess:
             if original_abs is None or (not original_abs.exists()) or (not original_abs.is_file()):
                 warnings.append("missing_avatar_image_original")
@@ -9116,12 +10139,17 @@ class AvatarPrepareView(APIView):
                     profile.avatar_image_status = "rejected"
                     profile.avatar_preview_error = str(exc)
                     profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+                    readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+                    setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
                     return Response(
                         {
                             "status": "avatar_not_prepared",
                             "error_code": "crop_too_tight",
-                            "error": str(exc),
+                            "error": setup_status.get("message") or str(exc),
                             "missing_requirements": ["missing_avatar_image_processed", "missing_processed_reference_file"],
+                            "readiness": readiness,
+                            "avatar_setup_status": setup_status,
+                            "action_required": setup_status.get("action_required"),
                             "actions": actions,
                         },
                         status=status.HTTP_400_BAD_REQUEST,
@@ -9133,12 +10161,17 @@ class AvatarPrepareView(APIView):
                 profile.avatar_image_status = "rejected"
                 profile.avatar_preview_error = str(validation.get("error") or "avatar_source_invalid")
                 profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+                readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+                setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
                 return Response(
                     {
                         "status": "avatar_not_prepared",
                         "error_code": "avatar_source_invalid",
-                        "error": profile.avatar_preview_error,
+                        "error": setup_status.get("message") or profile.avatar_preview_error,
                         "missing_requirements": ["avatar_source_invalid"],
+                        "readiness": readiness,
+                        "avatar_setup_status": setup_status,
+                        "action_required": setup_status.get("action_required"),
                         "actions": actions,
                         "warnings": warnings,
                     },
@@ -9147,14 +10180,19 @@ class AvatarPrepareView(APIView):
 
         readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
         selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
+        setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
         if readiness.get("ready"):
             profile.avatar_image_status = "ready"
             profile.avatar_preview_error = ""
             profile.save(update_fields=["avatar_enabled", "avatar_consent_confirmed", "avatar_image_processed", "avatar_version_hash", "avatar_image_status", "avatar_preview_error", "updated_at"])
+            readiness = _avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+            setup_status = _avatar_setup_status(profile, voice_profile, storage_root=storage_root, readiness=readiness)
             return Response(
                 {
                     "status": "avatar_ready",
                     "readiness": readiness,
+                    "avatar_setup_status": setup_status,
+                    "action_required": setup_status.get("action_required"),
                     "normalized_engine": selected_engine,
                     "avatar_engine_selected": selected_engine,
                     "actions": actions,
@@ -9162,16 +10200,22 @@ class AvatarPrepareView(APIView):
                 }
             )
 
-        profile.avatar_image_status = "failed"
-        profile.avatar_preview_error = str(readiness.get("error") or "Avatar is not prepared for preview.")
-        profile.save(update_fields=["avatar_enabled", "avatar_consent_confirmed", "avatar_image_status", "avatar_preview_error", "updated_at"])
+        if setup_status.get("state") == "failed":
+            profile.avatar_image_status = "failed"
+            update_fields = ["avatar_enabled", "avatar_consent_confirmed", "avatar_image_status", "avatar_preview_error", "updated_at"]
+        else:
+            update_fields = ["avatar_enabled", "avatar_consent_confirmed", "avatar_preview_error", "updated_at"]
+        profile.avatar_preview_error = str(setup_status.get("message") or readiness.get("error") or "Avatar is not prepared for preview.")
+        profile.save(update_fields=update_fields)
         return Response(
             {
                 "status": "avatar_not_prepared",
                 "error_code": "setup_not_prepared",
-                "error": readiness.get("error") or "Avatar is not prepared for preview.",
+                "error": profile.avatar_preview_error,
                 "missing_requirements": readiness.get("missing_requirements") or [],
                 "readiness": readiness,
+                "avatar_setup_status": setup_status,
+                "action_required": setup_status.get("action_required"),
                 "normalized_engine": selected_engine,
                 "avatar_engine_selected": selected_engine,
                 "actions": actions,
@@ -9253,6 +10297,24 @@ class AvatarPreviewStatusView(APIView):
             storage_root=Path(getattr(settings, "STORAGE_ROOT", "storage_local")),
         )
         payload["preview_readiness"] = readiness
+        setup_status = _avatar_setup_status(
+            profile,
+            VoiceProfile.objects.filter(user=user).first(),
+            storage_root=Path(getattr(settings, "STORAGE_ROOT", "storage_local")),
+            readiness=readiness,
+        )
+        if payload.get("preview_status") in {"queued", "processing", "rendering"}:
+            setup_status = {
+                **setup_status,
+                "state": "preparing",
+                "action_required": "wait",
+                "primary_action_label": "Preparing avatar",
+                "message": "Avatar preview is being generated.",
+                "can_prepare": False,
+                "can_generate_preview": False,
+            }
+        payload["avatar_setup_status"] = setup_status
+        payload["action_required"] = setup_status.get("action_required")
         selected_engine = str(readiness.get("avatar_engine_selected") or _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary))
         payload["normalized_engine"] = selected_engine
         payload["avatar_engine_selected"] = selected_engine

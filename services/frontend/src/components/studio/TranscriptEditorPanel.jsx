@@ -22,6 +22,8 @@ import ModalShell from '../ui/ModalShell';
 
 const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
+const LOCAL_DRAFT_DB_NAME = 'visus-studio-local-drafts';
+const LOCAL_DRAFT_STORE_NAME = 'drafts';
 
 function textValue(value) {
   return value === null || value === undefined ? '' : String(value);
@@ -148,6 +150,13 @@ function editableSignature(page) {
   });
 }
 
+function editablePagesMatch(leftPages, rightPages) {
+  const left = Array.isArray(leftPages) ? leftPages : [];
+  const right = Array.isArray(rightPages) ? rightPages : [];
+  if (left.length !== right.length) return false;
+  return left.every((page, index) => editableSignature(page) === editableSignature(right[index]));
+}
+
 function hasDoubleBlankLine(value) {
   return /\n\s*\n/.test(textValue(value).replace(/\r\n/g, '\n').replace(/\r/g, '\n'));
 }
@@ -189,6 +198,254 @@ function buildPayloadPage(page) {
   }
 
   return payload;
+}
+
+function localTranscriptDraftKey(scope, projectId) {
+  const safeScope = encodeURIComponent(textValue(scope || 'anonymous').trim() || 'anonymous');
+  return `visus-studio-local-draft-${safeScope}-${projectId || 'none'}-transcript`;
+}
+
+function localTranscriptDraftKeySuffix(projectId) {
+  return `-${projectId || 'none'}-transcript`;
+}
+
+function localDraftStores() {
+  const stores = [];
+  try {
+    if (typeof localStorage !== 'undefined') stores.push(localStorage);
+  } catch {
+    // Ignore blocked storage access.
+  }
+  try {
+    if (typeof sessionStorage !== 'undefined') stores.push(sessionStorage);
+  } catch {
+    // Ignore blocked storage access.
+  }
+  if (typeof window !== 'undefined') {
+    for (const storeName of ['localStorage', 'sessionStorage']) {
+      try {
+        const store = window[storeName];
+        if (store && !stores.includes(store)) stores.push(store);
+      } catch {
+        // Ignore blocked storage access.
+      }
+    }
+  }
+  return stores;
+}
+
+function readHistoryTranscriptDraft(key, projectId) {
+  if (typeof window === 'undefined') return null;
+  try {
+    const drafts = window.history.state?.visusTranscriptDrafts;
+    if (!drafts || typeof drafts !== 'object') return null;
+    const parsed = drafts[key] || Object.entries(drafts).find(([draftKey]) => (
+      draftKey.endsWith(localTranscriptDraftKeySuffix(projectId))
+    ))?.[1] || null;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeHistoryTranscriptDraft(key, draft) {
+  if (typeof window === 'undefined') return;
+  try {
+    const currentState = window.history.state && typeof window.history.state === 'object'
+      ? window.history.state
+      : {};
+    const drafts = currentState.visusTranscriptDrafts && typeof currentState.visusTranscriptDrafts === 'object'
+      ? currentState.visusTranscriptDrafts
+      : {};
+    window.history.replaceState({
+      ...currentState,
+      visusTranscriptDrafts: {
+        ...drafts,
+        [key]: draft,
+      },
+    }, document.title);
+  } catch {
+    // History state is only a same-tab fallback.
+  }
+}
+
+function clearHistoryTranscriptDraft(key) {
+  if (typeof window === 'undefined') return;
+  try {
+    const currentState = window.history.state && typeof window.history.state === 'object'
+      ? window.history.state
+      : {};
+    const drafts = currentState.visusTranscriptDrafts && typeof currentState.visusTranscriptDrafts === 'object'
+      ? { ...currentState.visusTranscriptDrafts }
+      : {};
+    if (!Object.prototype.hasOwnProperty.call(drafts, key)) return;
+    delete drafts[key];
+    window.history.replaceState({
+      ...currentState,
+      visusTranscriptDrafts: drafts,
+    }, document.title);
+  } catch {
+    // History state is only a same-tab fallback.
+  }
+}
+
+function openLocalDraftDb() {
+  if (typeof indexedDB === 'undefined') {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve) => {
+    const request = indexedDB.open(LOCAL_DRAFT_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LOCAL_DRAFT_STORE_NAME)) {
+        db.createObjectStore(LOCAL_DRAFT_STORE_NAME, { keyPath: 'key' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => resolve(null);
+    request.onblocked = () => resolve(null);
+  });
+}
+
+async function readIndexedTranscriptDraft(scope, projectId) {
+  const db = await openLocalDraftDb();
+  if (!db) return null;
+  const key = localTranscriptDraftKey(scope, projectId);
+  const fallbackSuffix = localTranscriptDraftKeySuffix(projectId);
+  return new Promise((resolve) => {
+    const transaction = db.transaction(LOCAL_DRAFT_STORE_NAME, 'readonly');
+    const store = transaction.objectStore(LOCAL_DRAFT_STORE_NAME);
+    const exactRequest = store.get(key);
+    exactRequest.onsuccess = () => {
+      if (exactRequest.result?.draft) {
+        resolve(exactRequest.result.draft);
+        db.close();
+        return;
+      }
+      const cursorRequest = store.openCursor();
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor) {
+          resolve(null);
+          db.close();
+          return;
+        }
+        if (String(cursor.key || '').endsWith(fallbackSuffix) && cursor.value?.draft) {
+          resolve(cursor.value.draft);
+          db.close();
+          return;
+        }
+        cursor.continue();
+      };
+      cursorRequest.onerror = () => {
+        resolve(null);
+        db.close();
+      };
+    };
+    exactRequest.onerror = () => {
+      resolve(null);
+      db.close();
+    };
+  });
+}
+
+async function writeIndexedTranscriptDraft(key, draft) {
+  const db = await openLocalDraftDb();
+  if (!db) return;
+  await new Promise((resolve) => {
+    const transaction = db.transaction(LOCAL_DRAFT_STORE_NAME, 'readwrite');
+    transaction.objectStore(LOCAL_DRAFT_STORE_NAME).put({ key, draft, updatedAt: Date.now() });
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+    transaction.onabort = resolve;
+  });
+  db.close();
+}
+
+async function clearIndexedTranscriptDraft(scope, projectId) {
+  const db = await openLocalDraftDb();
+  if (!db) return;
+  const key = localTranscriptDraftKey(scope, projectId);
+  const fallbackSuffix = localTranscriptDraftKeySuffix(projectId);
+  await new Promise((resolve) => {
+    const transaction = db.transaction(LOCAL_DRAFT_STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(LOCAL_DRAFT_STORE_NAME);
+    store.delete(key);
+    const cursorRequest = store.openCursor();
+    cursorRequest.onsuccess = () => {
+      const cursor = cursorRequest.result;
+      if (!cursor) return;
+      if (String(cursor.key || '').endsWith(fallbackSuffix)) {
+        cursor.delete();
+      }
+      cursor.continue();
+    };
+    transaction.oncomplete = resolve;
+    transaction.onerror = resolve;
+    transaction.onabort = resolve;
+  });
+  db.close();
+}
+
+function readLocalTranscriptDraft(scope, projectId) {
+  if (typeof window === 'undefined' || !projectId) return null;
+  const key = localTranscriptDraftKey(scope, projectId);
+  const fallbackSuffix = localTranscriptDraftKeySuffix(projectId);
+  for (const store of localDraftStores()) {
+    try {
+      const parsed = JSON.parse(store.getItem(key) || 'null');
+      if (parsed && typeof parsed === 'object') return parsed;
+      for (let index = 0; index < store.length; index += 1) {
+        const fallbackKey = store.key(index);
+        if (!fallbackKey || fallbackKey === key || !fallbackKey.endsWith(fallbackSuffix)) continue;
+        const fallbackParsed = JSON.parse(store.getItem(fallbackKey) || 'null');
+        if (fallbackParsed && typeof fallbackParsed === 'object') return fallbackParsed;
+      }
+    } catch {
+      try {
+        store.removeItem(key);
+      } catch {
+        // Ignore storage cleanup failures.
+      }
+    }
+  }
+  return readHistoryTranscriptDraft(key, projectId);
+}
+
+function writeLocalTranscriptDraft(scope, projectId, pages) {
+  if (typeof window === 'undefined' || !projectId) return;
+  const key = localTranscriptDraftKey(scope, projectId);
+  const draft = {
+    version: 1,
+    pages: normalizePages(pages).map(buildPayloadPage),
+    updatedAt: Date.now(),
+  };
+  const payload = JSON.stringify(draft);
+  writeHistoryTranscriptDraft(key, draft);
+  writeIndexedTranscriptDraft(key, draft);
+  localDraftStores().forEach((store) => {
+    try {
+      store.setItem(key, payload);
+    } catch (err) {
+      if (typeof console !== 'undefined') {
+        console.warn('Transcript local draft could not be saved.', err);
+      }
+    }
+  });
+}
+
+function clearLocalTranscriptDraft(scope, projectId) {
+  if (typeof window === 'undefined' || !projectId) return;
+  const key = localTranscriptDraftKey(scope, projectId);
+  clearHistoryTranscriptDraft(key);
+  clearIndexedTranscriptDraft(scope, projectId);
+  localDraftStores().forEach((store) => {
+    try {
+      store.removeItem(key);
+    } catch {
+      // Ignore storage cleanup failures.
+    }
+  });
 }
 
 async function refetchTranscriptPages(projectId) {
@@ -252,18 +509,21 @@ function suggestionDraftNarrationText(suggestion = {}) {
 const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   project,
   pages,
+  localDraftScope = 'anonymous',
   loading = false,
   selectedPageKey = '',
   selectedPageIndex = 0,
   moderationPageWarnings = {},
   focusMode = false,
   showLocalActions = true,
+  readOnly = false,
   onSelectPage,
   onPagesUpdated,
   onProjectRefresh,
   onModerationUpdated,
   onDraftStatusChange,
   onJobStatusChange,
+  onDirtyChange,
 }, ref) {
   const [draftPages, setDraftPages] = useState([]);
   const [saving, setSaving] = useState(false);
@@ -276,10 +536,13 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   const [rerenderAfterAction, setRerenderAfterAction] = useState(false);
   const [deletedPages, setDeletedPages] = useState([]);
   const [pendingConfirmation, setPendingConfirmation] = useState(null);
+  const [pendingLocalDraft, setPendingLocalDraft] = useState(null);
   const [displayEditKeys, setDisplayEditKeys] = useState({});
   const [aiAppliedDraftsByPageKey, setAiAppliedDraftsByPageKey] = useState({});
   const mountedRef = useRef(false);
   const lastProjectIdRef = useRef(null);
+  const draftPagesRef = useRef([]);
+  const previousSourcePagesRef = useRef([]);
   const pageRefs = useRef({});
 
   const sourcePages = useMemo(() => normalizePages(pages), [pages]);
@@ -300,7 +563,22 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   }, []);
 
   useEffect(() => {
-    setDraftPages(normalizePages(pages));
+    draftPagesRef.current = draftPages;
+  }, [draftPages]);
+
+  useEffect(() => {
+    const projectChanged = lastProjectIdRef.current !== project?.id;
+    const currentDraftPages = draftPagesRef.current;
+    const previousSourcePages = previousSourcePagesRef.current;
+    const hasLocalEdits = !editablePagesMatch(currentDraftPages, previousSourcePages);
+    const incomingMatchesLocalDraft = editablePagesMatch(currentDraftPages, sourcePages);
+
+    if (projectChanged || !hasLocalEdits || incomingMatchesLocalDraft) {
+      setDraftPages(sourcePages);
+      draftPagesRef.current = sourcePages;
+    }
+    previousSourcePagesRef.current = sourcePages;
+
     if (lastProjectIdRef.current !== project?.id) {
       lastProjectIdRef.current = project?.id;
       setError('');
@@ -309,10 +587,41 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
       setPollingStartedAt(null);
       setDeletedPages([]);
       setPendingConfirmation(null);
+      setPendingLocalDraft(null);
       setDisplayEditKeys({});
       setAiAppliedDraftsByPageKey({});
     }
-  }, [project?.id, pages]);
+  }, [project?.id, sourcePages]);
+
+  useEffect(() => {
+    if (readOnly || !project?.id) {
+      setPendingLocalDraft(null);
+      return;
+    }
+    let cancelled = false;
+    const applyStoredDraft = (stored) => {
+      if (cancelled) return;
+      const storedPages = normalizePages(stored?.pages);
+      if (!stored || !storedPages.length || editablePagesMatch(storedPages, sourcePages)) {
+        clearLocalTranscriptDraft(localDraftScope, project.id);
+        setPendingLocalDraft(null);
+        return;
+      }
+      setPendingLocalDraft({
+        ...stored,
+        pages: storedPages,
+      });
+    };
+    const stored = readLocalTranscriptDraft(localDraftScope, project.id);
+    if (stored) {
+      applyStoredDraft(stored);
+    } else {
+      readIndexedTranscriptDraft(localDraftScope, project.id).then(applyStoredDraft);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [localDraftScope, project?.id, readOnly, sourcePages]);
 
   const dirtyPageIndexes = useMemo(() => {
     const dirty = new Set();
@@ -326,6 +635,35 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   }, [draftPages, sourcePages]);
 
   const isDirty = dirtyPageIndexes.size > 0 || draftPages.length !== sourcePages.length;
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
+  useEffect(() => {
+    if (readOnly || !project?.id) return;
+    if (isDirty) {
+      writeLocalTranscriptDraft(localDraftScope, project.id, draftPages);
+    } else {
+      clearLocalTranscriptDraft(localDraftScope, project.id);
+    }
+  }, [draftPages, isDirty, localDraftScope, project?.id, readOnly]);
+
+  useEffect(() => {
+    if (readOnly || !project?.id) return undefined;
+    const persistBeforeUnload = () => {
+      const currentPages = draftPagesRef.current;
+      if (!editablePagesMatch(currentPages, sourcePages)) {
+        writeLocalTranscriptDraft(localDraftScope, project.id, currentPages);
+      }
+    };
+    window.addEventListener('pagehide', persistBeforeUnload);
+    window.addEventListener('beforeunload', persistBeforeUnload);
+    return () => {
+      window.removeEventListener('pagehide', persistBeforeUnload);
+      window.removeEventListener('beforeunload', persistBeforeUnload);
+    };
+  }, [localDraftScope, project?.id, readOnly, sourcePages]);
 
   const draftStatusByKey = useMemo(() => {
     return draftPages.reduce((acc, page, index) => {
@@ -357,15 +695,27 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     onJobStatusChange?.(jobStatus);
   }, [jobStatus, onJobStatusChange]);
 
+  const persistLocalTranscriptPages = useCallback((nextPages) => {
+    if (readOnly || !project?.id) return;
+    const normalized = normalizePages(nextPages);
+    if (editablePagesMatch(normalized, sourcePages)) {
+      clearLocalTranscriptDraft(localDraftScope, project.id);
+      return;
+    }
+    writeLocalTranscriptDraft(localDraftScope, project.id, normalized);
+  }, [localDraftScope, project?.id, readOnly, sourcePages]);
+
   const updateDraftPage = useCallback((index, patch) => {
-    setDraftPages((current) =>
-      current.map((page, pageIndex) => (pageIndex === index ? { ...page, ...patch } : page)),
-    );
-  }, []);
+    setDraftPages((current) => {
+      const nextPages = current.map((page, pageIndex) => (pageIndex === index ? { ...page, ...patch } : page));
+      persistLocalTranscriptPages(nextPages);
+      return nextPages;
+    });
+  }, [persistLocalTranscriptPages]);
 
   const updateDisplayText = useCallback((index, nextText) => {
-    setDraftPages((current) =>
-      current.map((page, pageIndex) => {
+    setDraftPages((current) => {
+      const nextPages = current.map((page, pageIndex) => {
         if (pageIndex !== index) return page;
         const previousFlags = editorTextFlags(page);
         const flags = {
@@ -384,9 +734,11 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           nextPage.narration_text = nextText;
         }
         return nextPage;
-      }),
-    );
-  }, []);
+      });
+      persistLocalTranscriptPages(nextPages);
+      return nextPages;
+    });
+  }, [persistLocalTranscriptPages]);
 
   const updateNarrationText = useCallback((index, nextText) => {
     const key = pageKey(draftPages[index], index);
@@ -398,8 +750,8 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         return next;
       });
     }
-    setDraftPages((current) =>
-      current.map((page, pageIndex) => {
+    setDraftPages((current) => {
+      const nextPages = current.map((page, pageIndex) => {
         if (pageIndex !== index) return page;
         const flags = {
           ...editorTextFlags(page),
@@ -413,9 +765,11 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
             text: flags,
           },
         };
-      }),
-    );
-  }, [draftPages]);
+      });
+      persistLocalTranscriptPages(nextPages);
+      return nextPages;
+    });
+  }, [draftPages, persistLocalTranscriptPages]);
 
   const toggleDisplayEdit = useCallback((key) => {
     setDisplayEditKeys((current) => ({
@@ -436,13 +790,31 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
 
   const resetDraft = useCallback(() => {
     setDraftPages(normalizePages(pages));
+    clearLocalTranscriptDraft(localDraftScope, project?.id);
+    setPendingLocalDraft(null);
     setError('');
     setStatusMessage('Discarded unsaved transcript edits.');
     setJobStatus(null);
     setPollingStartedAt(null);
     setDisplayEditKeys({});
     setAiAppliedDraftsByPageKey({});
-  }, [pages]);
+  }, [localDraftScope, pages, project?.id]);
+
+  const restoreLocalTranscriptDraft = useCallback(() => {
+    if (!pendingLocalDraft?.pages?.length) return;
+    const restoredPages = normalizePages(pendingLocalDraft.pages);
+    setDraftPages(restoredPages);
+    draftPagesRef.current = restoredPages;
+    setPendingLocalDraft(null);
+    setError('');
+    setStatusMessage('Unsaved local draft restored.');
+  }, [pendingLocalDraft]);
+
+  const discardLocalTranscriptDraft = useCallback(() => {
+    clearLocalTranscriptDraft(localDraftScope, project?.id);
+    setPendingLocalDraft(null);
+    setStatusMessage('Local transcript draft discarded.');
+  }, [localDraftScope, project?.id]);
 
   const pageDiffLabel = useCallback(
     (page, index) => diffLabelForPage(page, index, dirtyPageIndexes),
@@ -498,7 +870,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
 
   const runPageAction = useCallback(
     async (action, actionPayload, selection = {}) => {
-      if (!project?.id || actioning || saving || rerendering) return;
+      if (readOnly || !project?.id || actioning || saving || rerendering) return;
       const allowDirtyPageIndex =
         typeof selection.allowDirtyPageIndex === 'number' ? selection.allowDirtyPageIndex : null;
       const dirtyIndexes = Array.from(dirtyPageIndexes);
@@ -577,6 +949,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
       onProjectRefresh,
       pollRerenderJob,
       project,
+      readOnly,
       rerenderAfterAction,
       rerendering,
       saving,
@@ -704,13 +1077,13 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     [draftPages.length, runPageAction],
   );
 
-  const controlsDisabled = saving || rerendering || actioning;
+  const controlsDisabled = readOnly || saving || rerendering || actioning;
 
   const applyNarrationDraftToPage = useCallback(
     ({ targetPage, targetIndex, nextText, currentNarrationRaw }) => {
       let updatedPage = null;
-      setDraftPages((current) =>
-        current.map((page, pageIndex) => {
+      setDraftPages((current) => {
+        const nextPages = current.map((page, pageIndex) => {
           if (pageIndex !== targetIndex) return page;
           const flags = {
             ...editorTextFlags(page),
@@ -725,8 +1098,10 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
             },
           };
           return updatedPage;
-        }),
-      );
+        });
+        persistLocalTranscriptPages(nextPages);
+        return nextPages;
+      });
       const targetKey = pageKey(targetPage, targetIndex);
       setAiAppliedDraftsByPageKey((current) => ({
         ...current,
@@ -741,7 +1116,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
       onSelectPage?.(updatedPage || targetPage, targetIndex);
       return { ok: true, pageIndex: targetIndex, pageKey: targetKey };
     },
-    [onSelectPage],
+    [onSelectPage, persistLocalTranscriptPages],
   );
 
   const applyNarrationSuggestion = useCallback((suggestion = {}) => {
@@ -803,8 +1178,8 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     const marker = aiAppliedDraftsByPageKey[key];
     if (!marker) return;
     const previousText = textValue(marker.previousText);
-    setDraftPages((current) =>
-      current.map((candidate, pageIndex) => {
+    setDraftPages((current) => {
+      const nextPages = current.map((candidate, pageIndex) => {
         if (pageIndex !== index) return candidate;
         const flags = {
           ...editorTextFlags(candidate),
@@ -818,8 +1193,10 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
             text: flags,
           },
         };
-      }),
-    );
+      });
+      persistLocalTranscriptPages(nextPages);
+      return nextPages;
+    });
     setAiAppliedDraftsByPageKey((current) => {
       const next = { ...current };
       delete next[key];
@@ -828,10 +1205,11 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     setError('');
     setStatusMessage('AI draft undone.');
     onSelectPage?.({ ...page, narration_text: previousText }, index);
-  }, [aiAppliedDraftsByPageKey, draftPages, onSelectPage]);
+  }, [aiAppliedDraftsByPageKey, draftPages, onSelectPage, persistLocalTranscriptPages]);
 
   const saveTranscript = useCallback(
     async ({ triggerRerender = false } = {}) => {
+      if (readOnly) return project || null;
       if (!project?.id || saving || rerendering) return;
 
       setSaving(true);
@@ -865,8 +1243,10 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           onPagesUpdated?.(updatedPages);
         }
         onModerationUpdated?.(response);
+        clearLocalTranscriptDraft(localDraftScope, project.id);
+        setPendingLocalDraft(null);
         setAiAppliedDraftsByPageKey({});
-        setStatusMessage(triggerRerender ? 'Transcript saved. Rerender queued.' : 'Transcript saved.');
+        setStatusMessage(triggerRerender ? (response?.message || 'Transcript saved. Rerender queued.') : 'Transcript saved.');
 
         if (onProjectRefresh) {
           await onProjectRefresh();
@@ -878,19 +1258,22 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           setJobStatus(job);
           await pollRerenderJob(jobId);
         } else if (triggerRerender) {
-          setStatusMessage('Transcript saved. No rerender job was returned.');
+          setStatusMessage(response?.message || 'Transcript saved. Video rerender not required.');
         }
         return response;
       } catch (err) {
         setError(err.message || 'Failed to save transcript edits.');
         setStatusMessage('');
+        if (!showLocalActions) {
+          throw err;
+        }
       } finally {
         if (mountedRef.current) {
           setSaving(false);
         }
       }
     },
-    [dirtyPageIndexes, draftPages, onModerationUpdated, onPagesUpdated, onProjectRefresh, pollRerenderJob, project, rerendering, saving],
+    [dirtyPageIndexes, draftPages, localDraftScope, onModerationUpdated, onPagesUpdated, onProjectRefresh, pollRerenderJob, project, readOnly, rerendering, saving, showLocalActions],
   );
 
   useImperativeHandle(ref, () => ({
@@ -954,20 +1337,33 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           <p className="title-lg text-[var(--text-primary)]">Transcript</p>
           <p className="text-xs text-[var(--text-secondary)]">
             Edit slide display text and spoken narration separately.
+            {readOnly ? ' Admin review mode is read only.' : ''}
           </p>
         </div>
         <span
           className={`rounded-full px-3 py-1 text-xs font-semibold ${
-            isDirty
+            readOnly
+              ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+              : isDirty
               ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
               : 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
           }`}
         >
-          {isDirty ? `${dirtyPageIndexes.size} unsaved change${dirtyPageIndexes.size === 1 ? '' : 's'}` : 'Saved'}
+          {readOnly ? 'Read only' : isDirty ? `${dirtyPageIndexes.size} unsaved change${dirtyPageIndexes.size === 1 ? '' : 's'}` : 'Saved'}
         </span>
       </div>
 
-      {showLocalActions ? (
+      {pendingLocalDraft && !readOnly && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+          <span>Unsaved local draft found. Restore or discard?</span>
+          <span className="flex gap-2">
+            <Button size="sm" variant="secondary" onClick={restoreLocalTranscriptDraft}>Restore</Button>
+            <Button size="sm" variant="ghost" onClick={discardLocalTranscriptDraft}>Discard</Button>
+          </span>
+        </div>
+      )}
+
+      {!readOnly && showLocalActions ? (
         <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={() => saveTranscript({ triggerRerender: false })} disabled={controlsDisabled || !isDirty}>
             {saving && !rerendering ? <LoaderCircle size={14} className="animate-spin" /> : <Save size={14} />}
@@ -982,7 +1378,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
             <span>Discard Changes</span>
           </Button>
         </div>
-      ) : isDirty ? (
+      ) : !readOnly && isDirty ? (
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="ghost" onClick={resetDraft} disabled={controlsDisabled}>
             <RotateCcw size={14} />
@@ -991,6 +1387,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         </div>
       ) : null}
 
+      {!readOnly && (
       <div className="space-y-3 rounded-2xl token-surface p-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -1118,6 +1515,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           </div>
         )}
       </div>
+      )}
 
       {(statusMessage || error || jobStatus) && (
         <div className="space-y-2 rounded-2xl token-surface p-3 text-sm">
@@ -1234,6 +1632,8 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                     value={displayText}
                     onFocus={() => onSelectPage?.(page, index)}
                     onChange={(event) => updateDisplayText(index, event.target.value)}
+                    readOnly={readOnly}
+                    disabled={readOnly}
                     className={`focus-ring mt-2 min-h-[130px] w-full resize-y rounded-xl border bg-[var(--surface-elevated)] p-3 text-sm leading-6 text-[var(--text-primary)] ${
                       displayWarned ? 'border-[color:var(--status-warning-fg)]' : 'border-[var(--border-subtle)]'
                     }`}
@@ -1282,6 +1682,8 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                   value={narration}
                   onFocus={() => onSelectPage?.(page, index)}
                   onChange={(event) => updateNarrationText(index, event.target.value)}
+                  readOnly={readOnly}
+                  disabled={readOnly}
                   className={`focus-ring mt-1 w-full resize-y rounded-2xl border bg-[var(--surface-elevated)] p-4 text-[var(--text-primary)] ${
                     narrationWarned
                       ? 'border-[color:var(--status-warning-fg)]'
@@ -1315,6 +1717,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                     checked={Boolean(page.whiteboard_mode)}
                     onFocus={() => onSelectPage?.(page, index)}
                     onChange={(event) => updateDraftPage(index, { whiteboard_mode: event.target.checked })}
+                    disabled={readOnly}
                   />
                   <span>Whiteboard mode</span>
                 </label>

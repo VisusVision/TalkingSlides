@@ -14,6 +14,8 @@ AVATAR_BLOCKING_STATUSES = {"rejected", "needs_admin_review"}
 
 
 def avatar_image_moderation_auto_enabled() -> bool:
+    if not bool(getattr(settings, "VISUAL_MODERATION_SCAN_AVATAR_ASSETS", True)):
+        return False
     return bool(getattr(settings, "AVATAR_IMAGE_MODERATION_AUTO_ENABLED", False))
 
 
@@ -23,6 +25,14 @@ def avatar_image_moderation_block_on_rejection() -> bool:
 
 def avatar_image_moderation_require_approval() -> bool:
     return bool(getattr(settings, "AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL", False))
+
+
+def semantic_visual_provider_required() -> bool:
+    return bool(getattr(settings, "VISUAL_MODERATION_REQUIRE_SEMANTIC_PROVIDER", True))
+
+
+def weak_local_visual_approval_allowed() -> bool:
+    return bool(getattr(settings, "ALLOW_WEAK_LOCAL_VISUAL_APPROVAL", False))
 
 
 def run_avatar_image_moderation(
@@ -47,10 +57,20 @@ def run_avatar_image_moderation(
         return _save_summary(
             profile,
             {
-                "status": "skipped",
+                "status": "needs_admin_review",
+                "final_decision": "needs_admin_review",
                 "reason": "avatar_image_moderation_unavailable",
                 "provider_error": _short_error(exc),
-                "message": "Avatar image moderation is unavailable; existing avatar flow is not blocked.",
+                "asset_kind": "profile_image",
+                "asset_label": "Profile image",
+                "decision": "needs_admin_review",
+                "reason_title": "Visual safety scan unavailable",
+                "reason_message": (
+                    "The semantic visual safety provider did not return a completed result. "
+                    "This visual cannot be automatically approved and requires manual admin review before publishing."
+                ),
+                "technical_reason": "avatar_image_moderation_unavailable",
+                "message": "Profile image visual safety scan could not be completed; admin review is required.",
                 "scanned_at": timezone.now().isoformat(),
             },
             persist=persist,
@@ -89,10 +109,19 @@ def run_avatar_image_moderation(
         if bool((result.metadata or {}).get("provider_error"))
     ]
 
+    semantic_missing = (
+        semantic_visual_provider_required()
+        and not weak_local_visual_approval_allowed()
+        and not safety_completed
+    )
+
     if final_decision == "block":
         avatar_status = "rejected"
     elif final_decision == "needs_admin_review":
         avatar_status = "needs_admin_review"
+    elif semantic_missing:
+        avatar_status = "needs_admin_review"
+        final_decision = "needs_admin_review"
     elif not safety_completed and not findings:
         avatar_status = "skipped"
     else:
@@ -101,6 +130,31 @@ def run_avatar_image_moderation(
     summary = {
         "status": avatar_status,
         "final_decision": final_decision,
+        "asset_kind": "profile_image",
+        "asset_label": "Profile image",
+        "decision": "blocked" if avatar_status == "rejected" else avatar_status,
+        "reason_title": "Visual safety scan unavailable" if semantic_missing else (
+            "Unsafe visual detected" if avatar_status == "rejected" else "Visual needs admin review" if avatar_status == "needs_admin_review" else "Visual approved"
+        ),
+        "reason_message": (
+            "The semantic visual safety provider did not return a completed result. "
+            "This visual cannot be automatically approved and requires manual admin review before publishing."
+            if semantic_missing
+            else _status_message(avatar_status)
+        ),
+        "publisher_reason_message": (
+            "We could not complete the visual safety scan for this profile image. "
+            "An admin must review it before it can become public."
+            if semantic_missing
+            else _status_message(avatar_status)
+        ),
+        "admin_reason_message": (
+            "The semantic visual safety provider did not return a completed result. "
+            "This visual cannot be automatically approved and requires manual admin review before publishing."
+            if semantic_missing
+            else _status_message(avatar_status)
+        ),
+        "technical_reason": "semantic_visual_provider_unavailable" if semantic_missing else "",
         "finding_count": len(findings),
         "categories": _count_values(findings, "category"),
         "severities": _count_values(findings, "severity"),
@@ -109,6 +163,9 @@ def run_avatar_image_moderation(
         "safety_completed": safety_completed,
         "skipped_reasons": [reason for reason in skipped_reasons if reason],
         "provider_errors": [reason for reason in provider_errors if reason],
+        "semantic_provider_required": semantic_visual_provider_required(),
+        "weak_local_visual_approval_allowed": weak_local_visual_approval_allowed(),
+        "semantic_provider_missing": semantic_missing,
         "findings": [_finding_summary(finding) for finding in findings[:10]],
         "message": _status_message(avatar_status),
         "scanned_at": timezone.now().isoformat(),
@@ -239,6 +296,8 @@ def _finding_summary(finding) -> dict[str, Any]:
         "category": str(finding.category or ""),
         "severity": str(finding.severity or ""),
         "decision": str(finding.decision or ""),
+        "asset_kind": "profile_image",
+        "asset_label": "Profile image",
         "confidence": float(getattr(finding, "confidence", 0.0) or 0.0),
         "user_message": str(getattr(finding, "user_message", "") or ""),
         "admin_message": str(getattr(finding, "admin_message", "") or ""),
@@ -263,7 +322,7 @@ def _status_message(status: str) -> str:
     if status == "rejected":
         return "Avatar source image was rejected by visual moderation."
     if status == "needs_admin_review":
-        return "Avatar source image needs admin review before avatar generation."
+        return "Avatar source image needs manual admin review before it can be used."
     if status == "skipped":
         return "Avatar image moderation was skipped; existing avatar flow is not blocked."
     return "Avatar image moderation status was updated."

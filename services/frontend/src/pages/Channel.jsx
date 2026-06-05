@@ -117,12 +117,30 @@ function channelEditDraftFrom(user, profile) {
     contact_email: String(profile?.contact_email || ''),
     banner_url: String(profile?.banner_url || ''),
     logo_url: String(profile?.logo_url || ''),
+    banner_moderation_status: String(profile?.banner_moderation_status || ''),
+    banner_moderation_summary: profile?.banner_moderation_summary || {},
+    logo_moderation_status: String(profile?.logo_moderation_status || ''),
+    logo_moderation_summary: profile?.logo_moderation_summary || {},
     social_links: SOCIAL_LINK_FIELDS.reduce((acc, field) => ({
       ...acc,
       [field.key]: socialLinkValue(profile?.social_links, field.key),
     }), {}),
     is_public_profile: Boolean(profile?.is_public_profile),
   };
+}
+
+function profileAssetModerationMessage(payload) {
+  const bannerSummary = payload?.banner_moderation_summary || {};
+  const logoSummary = payload?.logo_moderation_summary || {};
+  if (payload?.banner_moderation_status === 'needs_admin_review') {
+    return bannerSummary.publisher_reason_message || bannerSummary.reason_message || 'Channel banner needs manual admin review before it can become public.';
+  }
+  if (payload?.logo_moderation_status === 'needs_admin_review') {
+    return logoSummary.publisher_reason_message || logoSummary.reason_message || 'Channel logo needs manual admin review before it can become public.';
+  }
+  if (payload?.banner_moderation_status === 'rejected') return bannerSummary.publisher_reason_message || bannerSummary.reason_message || 'Channel banner blocked by moderation.';
+  if (payload?.logo_moderation_status === 'rejected') return logoSummary.publisher_reason_message || logoSummary.reason_message || 'Channel logo blocked by moderation.';
+  return 'Channel profile saved.';
 }
 
 function displayNameFromProfilePayload(payload, fallback = 'Publisher') {
@@ -536,6 +554,10 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
         bio: payload?.bio ?? current.bio,
         banner_url: payload?.banner_url ?? current.banner_url,
         logo_url: payload?.logo_url ?? current.logo_url,
+        banner_moderation_status: payload?.banner_moderation_status ?? current.banner_moderation_status,
+        banner_moderation_summary: payload?.banner_moderation_summary ?? current.banner_moderation_summary,
+        logo_moderation_status: payload?.logo_moderation_status ?? current.logo_moderation_status,
+        logo_moderation_summary: payload?.logo_moderation_summary ?? current.logo_moderation_summary,
         website_url: payload?.website_url ?? current.website_url,
         contact_email: payload?.contact_email ?? current.contact_email,
         social_links: payload?.social_links ?? current.social_links,
@@ -553,7 +575,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
           // The channel view already has the saved profile payload.
         }
       }
-      setEditMessage('Channel profile saved.');
+      setEditMessage(profileAssetModerationMessage(payload));
     } catch (profileUpdateError) {
       const fieldErrors = profileFieldErrorsFromApi(profileUpdateError.details);
       if (Object.keys(fieldErrors).length) {

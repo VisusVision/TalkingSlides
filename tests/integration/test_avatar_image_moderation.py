@@ -204,7 +204,7 @@ def test_safe_avatar_image_is_approved_and_allowed(monkeypatch, tmp_path):
 
 
 @pytest.mark.django_db
-def test_missing_visual_provider_config_skips_fail_open_unless_approval_required(monkeypatch, tmp_path):
+def test_missing_visual_provider_config_requires_admin_review(monkeypatch, tmp_path):
     image_path = _save_image(tmp_path / "avatar.png")
     teacher = _make_teacher("avatar_missing_config_teacher")
     profile = teacher.profile
@@ -219,10 +219,13 @@ def test_missing_visual_provider_config_skips_fail_open_unless_approval_required
     summary = run_avatar_image_moderation(profile, image_path, persist=True)
 
     profile.refresh_from_db()
-    assert summary["status"] == "skipped"
-    assert profile.avatar_moderation_status == "skipped"
-    assert avatar_image_moderation_gate(profile)["blocked"] is False
-    monkeypatch.setattr(settings, "AVATAR_IMAGE_MODERATION_REQUIRE_APPROVAL", True, raising=False)
+    assert summary["status"] == "needs_admin_review"
+    assert summary["semantic_provider_missing"] is True
+    assert summary["asset_kind"] == "profile_image"
+    assert summary["asset_label"] == "Profile image"
+    assert summary["reason_title"] == "Visual safety scan unavailable"
+    assert summary["publisher_reason_message"].startswith("We could not complete the visual safety scan")
+    assert profile.avatar_moderation_status == "needs_admin_review"
     assert avatar_image_moderation_gate(profile)["blocked"] is True
 
 

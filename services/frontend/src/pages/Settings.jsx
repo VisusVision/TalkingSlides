@@ -42,6 +42,10 @@ import {
   socialLinkValue,
   validatePublicProfileDraft,
 } from '../utils/profileSocial';
+import {
+  avatarChecklistItems,
+  normalizeAvatarSetupStatus,
+} from '../utils/avatarSetupStatus';
 
 const REDUCED_MOTION_KEY = 'visus-reduced-motion';
 const NOTIFICATION_PREFS_KEY = 'visus-notification-preferences';
@@ -69,8 +73,8 @@ const THEME_OPTIONS = [
 ];
 
 const DEFAULT_AVATAR_SETTINGS = {
-  avatar_enabled: true,
-  avatar_consent_confirmed: true,
+  avatar_enabled: false,
+  avatar_consent_confirmed: false,
   avatar_motion_preset: 'natural',
   avatar_lipsync_engine: 'liveportrait+musetalk',
   avatar_quality_preset: 'high',
@@ -78,6 +82,17 @@ const DEFAULT_AVATAR_SETTINGS = {
   avatar_overlay_default_position: 'top-right',
   avatar_overlay_size: 'medium',
   composite_fallback_allowed: false,
+};
+
+const AVATAR_STATUS_MESSAGES = {
+  missing_consent: 'Confirm avatar consent before preparing or generating an avatar.',
+  missing_portrait: 'Upload an avatar portrait image.',
+  missing_voice: 'Upload a voice sample.',
+  disabled: 'Enable avatar generation.',
+  needs_prepare: 'Avatar needs to be prepared again.',
+  preparing: 'Avatar preparation or preview generation is in progress.',
+  ready: 'Avatar is prepared and ready for preview generation.',
+  failed: 'Avatar preparation failed. Upload a clear portrait or prepare the avatar again.',
 };
 
 function toAbsoluteMediaUrl(value) {
@@ -117,6 +132,10 @@ function profileDraftFromUser(user) {
     is_public_profile: Boolean(profile.is_public_profile),
     banner_url: String(profile.banner_url || ''),
     logo_url: String(profile.logo_url || ''),
+    banner_moderation_status: String(profile.banner_moderation_status || profile.banner_image_moderation_status || ''),
+    banner_moderation_summary: profile.banner_moderation_summary || profile.banner_image_moderation_summary || {},
+    logo_moderation_status: String(profile.logo_moderation_status || profile.logo_image_moderation_status || ''),
+    logo_moderation_summary: profile.logo_moderation_summary || profile.logo_image_moderation_summary || {},
   };
 }
 
@@ -135,7 +154,31 @@ function profileDraftFromPayload(payload) {
     is_public_profile: Boolean(payload?.is_public_profile),
     banner_url: String(payload?.banner_url || ''),
     logo_url: String(payload?.logo_url || ''),
+    banner_moderation_status: String(payload?.banner_moderation_status || ''),
+    banner_moderation_summary: payload?.banner_moderation_summary || {},
+    logo_moderation_status: String(payload?.logo_moderation_status || ''),
+    logo_moderation_summary: payload?.logo_moderation_summary || {},
   };
+}
+
+function profileAssetModerationMessage(payload) {
+  const statuses = [
+    ['Banner', payload?.banner_moderation_status, payload?.banner_moderation_summary],
+    ['Logo', payload?.logo_moderation_status, payload?.logo_moderation_summary],
+  ];
+  const pending = statuses.find(([, status]) => status === 'needs_admin_review');
+  if (pending) {
+    return pending[2]?.publisher_reason_message
+      || pending[2]?.reason_message
+      || `${pending[0]} image needs manual admin review before it can become public.`;
+  }
+  const blocked = statuses.find(([, status]) => status === 'rejected');
+  if (blocked) {
+    return blocked[2]?.publisher_reason_message
+      || blocked[2]?.reason_message
+      || `${blocked[0]} image blocked by moderation.`;
+  }
+  return 'Public profile saved.';
 }
 
 function displayNameFromDraft(draft, user) {
@@ -172,6 +215,71 @@ function AvatarActionCard({ title, caption, icon: Icon, onClick }) {
         <span className="mt-1 block text-xs leading-5 text-[var(--text-secondary)]">{caption}</span>
       </span>
     </button>
+  );
+}
+
+function AvatarSetupChecklist({ items }) {
+  return (
+    <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+      {items.map((item) => (
+        <li
+          key={item.key}
+          className={`flex min-h-12 items-center justify-between gap-2 rounded-xl border px-3 py-2 text-xs ${
+            item.complete
+              ? 'border-[color:var(--status-success-fg)] bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
+              : 'border-[var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-secondary)]'
+          }`}
+        >
+          <span className="font-medium">{item.label}</span>
+          <span className="shrink-0 text-[0.68rem] uppercase tracking-normal">
+            {item.complete ? 'Done' : 'Pending'}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function AvatarConsentControls({
+  settings,
+  onConsentChange,
+  onEnabledChange,
+  disabled = false,
+}) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+        <input
+          type="checkbox"
+          checked={Boolean(settings.avatar_consent_confirmed)}
+          onChange={(event) => onConsentChange(event.target.checked)}
+          disabled={disabled}
+          className="mt-1"
+        />
+        <span>
+          <span className="block font-semibold text-[var(--text-primary)]">Explicit avatar consent</span>
+          <span className="mt-1 block text-xs leading-5">
+            I confirm I have permission to use this image and voice for avatar generation.
+          </span>
+        </span>
+      </label>
+
+      <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+        <input
+          type="checkbox"
+          checked={Boolean(settings.avatar_enabled && settings.avatar_consent_confirmed)}
+          onChange={(event) => onEnabledChange(event.target.checked)}
+          disabled={disabled || !settings.avatar_consent_confirmed}
+          className="mt-1"
+        />
+        <span>
+          <span className="block font-semibold text-[var(--text-primary)]">Avatar generation enabled</span>
+          <span className="mt-1 block text-xs leading-5">
+            Allow preview generation after consent, portrait, and voice are ready.
+          </span>
+        </span>
+      </label>
+    </div>
   );
 }
 
@@ -391,6 +499,60 @@ export default function Settings({ user, onUserRefresh }) {
     ];
   }, [capabilities]);
 
+  const avatarSetupStatus = useMemo(() => {
+    const normalized = normalizeAvatarSetupStatus(avatarProfilePayload || {});
+    const checklist = {
+      ...normalized.checklist,
+      consent_confirmed: Boolean(avatarSettings.avatar_consent_confirmed),
+      avatar_generation_enabled: Boolean(avatarSettings.avatar_enabled && avatarSettings.avatar_consent_confirmed),
+    };
+    let state = normalized.state;
+    if (!checklist.consent_confirmed) {
+      state = 'missing_consent';
+    } else if (!checklist.portrait_uploaded) {
+      state = 'missing_portrait';
+    } else if (!checklist.voice_uploaded) {
+      state = 'missing_voice';
+    } else if (!checklist.avatar_generation_enabled) {
+      state = 'disabled';
+    } else if (['missing_consent', 'disabled'].includes(state)) {
+      state = checklist.avatar_prepared ? 'ready' : 'needs_prepare';
+    }
+
+    const canPrepare = Boolean(
+      checklist.consent_confirmed
+      && checklist.portrait_uploaded
+      && checklist.voice_uploaded
+      && checklist.avatar_generation_enabled
+      && ['needs_prepare', 'failed'].includes(state)
+    );
+
+    return {
+      ...normalized,
+      state,
+      checklist,
+      message: AVATAR_STATUS_MESSAGES[state] || normalized.message,
+      primary_action_label: state === 'failed'
+        ? 'Re-prepare avatar'
+        : state === 'needs_prepare'
+          ? (normalized.state === 'needs_prepare' ? normalized.primary_action_label : 'Prepare avatar')
+          : normalized.primary_action_label,
+      can_prepare: canPrepare,
+      can_generate_preview: Boolean(
+        state === 'ready'
+        && normalized.can_generate_preview
+        && checklist.consent_confirmed
+        && checklist.avatar_generation_enabled
+      ),
+    };
+  }, [
+    avatarProfilePayload,
+    avatarSettings.avatar_consent_confirmed,
+    avatarSettings.avatar_enabled,
+  ]);
+  const avatarChecklist = useMemo(() => avatarChecklistItems(avatarSetupStatus), [avatarSetupStatus]);
+  const prepareAvatarButtonLabel = avatarSetupStatus.primary_action_label || (avatarSetupStatus.state === 'failed' ? 'Re-prepare avatar' : 'Prepare avatar');
+
   const loadAvatarProfile = useCallback(async () => {
     if (!avatarFeatureEnabled || !teacherMode || !user?.id) {
       setAvatarProfilePayload(null);
@@ -439,6 +601,13 @@ export default function Settings({ user, onUserRefresh }) {
           statusPayload.status || statusPayload.preview_status || statusPayload.job_status || 'processing',
         ).toLowerCase();
         setPreviewStatusLabel(nextStatus);
+        if (statusPayload.avatar_setup_status) {
+          setAvatarProfilePayload((previous) => ({
+            ...(previous || {}),
+            avatar_setup_status: statusPayload.avatar_setup_status,
+            readiness: statusPayload.preview_readiness || previous?.readiness,
+          }));
+        }
 
         const previewPath =
           statusPayload.preview_rel_path ||
@@ -491,6 +660,21 @@ export default function Settings({ user, onUserRefresh }) {
     }
     noteKeys.forEach((key) => window.localStorage.removeItem(key));
     setLocalDataMessage(noteKeys.length ? 'Local notes cleared for this browser.' : 'No local notes were stored in this browser.');
+  };
+
+  const handleAvatarConsentChange = (checked) => {
+    setAvatarSettings((previous) => ({
+      ...previous,
+      avatar_consent_confirmed: checked,
+      avatar_enabled: checked ? true : false,
+    }));
+  };
+
+  const handleAvatarEnabledChange = (checked) => {
+    setAvatarSettings((previous) => ({
+      ...previous,
+      avatar_enabled: Boolean(checked && previous.avatar_consent_confirmed),
+    }));
   };
 
   const runTeacherAction = async (action, successMessage) => {
@@ -583,7 +767,7 @@ export default function Settings({ user, onUserRefresh }) {
       setBannerFile(null);
       setLogoFile(null);
       await refreshSessionUser();
-      setProfileMessage('Public profile saved.');
+      setProfileMessage(profileAssetModerationMessage(payload));
       setProfileEditorOpen(false);
     } catch (error) {
       const fieldErrors = profileFieldErrorsFromApi(error.details);
@@ -606,6 +790,10 @@ export default function Settings({ user, onUserRefresh }) {
 
   const handleUploadVisualSample = async () => {
     if (!avatarFeatureEnabled || !user?.id || (!imageFile && !videoFile)) return;
+    if (!avatarSettings.avatar_consent_confirmed) {
+      setTeacherMessage('Confirm avatar consent before uploading a portrait.');
+      return;
+    }
 
     await runTeacherAction(async () => {
       if (videoFile) {
@@ -625,17 +813,22 @@ export default function Settings({ user, onUserRefresh }) {
       await updateAvatarProfile(user.id, avatarSettings);
       await loadAvatarProfile();
       await refreshSessionUser();
-    }, 'Teacher avatar defaults saved.');
+    }, 'Avatar settings saved.');
   };
 
   const handlePrepareAvatar = async () => {
     if (!avatarFeatureEnabled || !user?.id) return;
+    if (!avatarSetupStatus.can_prepare) {
+      setTeacherMessage(avatarSetupStatus.message || 'Complete avatar setup before preparing.');
+      return;
+    }
 
     await runTeacherAction(async () => {
       await prepareAvatarProfile(user.id, {
         avatar_enabled: avatarSettings.avatar_enabled,
         avatar_consent_confirmed: avatarSettings.avatar_consent_confirmed,
         composite_fallback_allowed: avatarSettings.composite_fallback_allowed,
+        force_reprocess: avatarSetupStatus.needs_prepare || avatarSetupStatus.state === 'failed',
       });
       await loadAvatarProfile();
     }, 'Avatar prep completed.');
@@ -643,6 +836,10 @@ export default function Settings({ user, onUserRefresh }) {
 
   const handleGeneratePreview = async () => {
     if (!avatarFeatureEnabled || !user?.id) return;
+    if (!avatarSetupStatus.can_generate_preview) {
+      setTeacherMessage(avatarSetupStatus.message || 'Prepare avatar before generating a preview.');
+      return;
+    }
 
     await runTeacherAction(async () => {
       const queued = await regenerateAvatarPreview(user.id);
@@ -934,6 +1131,39 @@ export default function Settings({ user, onUserRefresh }) {
               />
             </div>
 
+            <div className="space-y-3 rounded-2xl bg-[var(--surface-container-low)] p-4">
+              <AvatarSetupChecklist items={avatarChecklist} />
+              <AvatarConsentControls
+                settings={avatarSettings}
+                onConsentChange={handleAvatarConsentChange}
+                onEnabledChange={handleAvatarEnabledChange}
+                disabled={teacherBusy}
+              />
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="min-w-0 text-sm text-[var(--text-secondary)]">
+                  {avatarSetupStatus.message}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
+                    <Save size={15} />
+                    <span>Save Avatar Settings</span>
+                  </Button>
+                  {avatarSetupStatus.can_prepare && (
+                    <Button onClick={handlePrepareAvatar} disabled={teacherBusy}>
+                      <Sparkles size={15} />
+                      <span>{prepareAvatarButtonLabel}</span>
+                    </Button>
+                  )}
+                  {avatarSetupStatus.can_generate_preview && (
+                    <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
+                      <Sparkles size={15} />
+                      <span>Generate Preview</span>
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {teacherMessage && (
               <p className="rounded-xl bg-[color:color-mix(in_srgb,var(--surface-muted),transparent_6%)] px-3 py-2 text-sm text-[var(--text-secondary)]">
                 {teacherMessage}
@@ -1048,6 +1278,19 @@ export default function Settings({ user, onUserRefresh }) {
             </label>
           </div>
 
+          <AvatarConsentControls
+            settings={avatarSettings}
+            onConsentChange={handleAvatarConsentChange}
+            onEnabledChange={handleAvatarEnabledChange}
+            disabled={teacherBusy}
+          />
+
+          {!avatarSettings.avatar_consent_confirmed && (
+            <p className="rounded-xl bg-[var(--status-warning-bg)] px-3 py-2 text-sm text-[var(--status-warning-fg)]">
+              Confirm avatar consent before uploading a portrait.
+            </p>
+          )}
+
           {mediaPreviewUrl && mediaPreviewType === 'image' && (
             <img
               src={mediaPreviewUrl}
@@ -1064,7 +1307,7 @@ export default function Settings({ user, onUserRefresh }) {
             />
           )}
 
-          <Button onClick={handleUploadVisualSample} disabled={teacherBusy || (!imageFile && !videoFile)}>
+          <Button onClick={handleUploadVisualSample} disabled={teacherBusy || !avatarSettings.avatar_consent_confirmed || (!imageFile && !videoFile)}>
             <Upload size={15} />
             <span>{teacherBusy ? 'Uploading...' : 'Upload Visual Sample'}</span>
           </Button>
@@ -1089,6 +1332,14 @@ export default function Settings({ user, onUserRefresh }) {
         )}
       >
         <div className="space-y-4">
+          <AvatarSetupChecklist items={avatarChecklist} />
+          <AvatarConsentControls
+            settings={avatarSettings}
+            onConsentChange={handleAvatarConsentChange}
+            onEnabledChange={handleAvatarEnabledChange}
+            disabled={teacherBusy}
+          />
+
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm text-[var(--text-secondary)]">
               Motion preset
@@ -1134,13 +1385,15 @@ export default function Settings({ user, onUserRefresh }) {
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
               <Save size={15} />
-              <span>Save Defaults</span>
+              <span>Save Avatar Settings</span>
             </Button>
-            <Button variant="secondary" onClick={handlePrepareAvatar} disabled={teacherBusy}>
-              <Sparkles size={15} />
-              <span>Prepare Avatar</span>
-            </Button>
-            <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
+            {avatarSetupStatus.state !== 'ready' && (
+              <Button onClick={handlePrepareAvatar} disabled={teacherBusy || !avatarSetupStatus.can_prepare}>
+                <Sparkles size={15} />
+                <span>{prepareAvatarButtonLabel}</span>
+              </Button>
+            )}
+            <Button onClick={handleGeneratePreview} disabled={teacherBusy || !avatarSetupStatus.can_generate_preview}>
               <Sparkles size={15} />
               <span>Generate Preview</span>
             </Button>
@@ -1154,11 +1407,7 @@ export default function Settings({ user, onUserRefresh }) {
             <p>
               Preview status: <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
             </p>
-            {avatarProfilePayload?.readiness?.missing_requirements?.length > 0 && (
-              <p className="mt-1 text-xs">
-                Missing requirements: {avatarProfilePayload.readiness.missing_requirements.join(', ')}
-              </p>
-            )}
+            <p className="mt-1 text-xs">{avatarSetupStatus.message}</p>
           </div>
 
           {previewVideoUrl && (

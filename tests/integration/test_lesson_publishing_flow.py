@@ -17,6 +17,7 @@ Coverage (Part D requirements):
 
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import django
@@ -32,6 +33,7 @@ django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
 from django.test.utils import override_settings  # noqa: E402
+from django.utils import timezone  # noqa: E402
 from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
 
 from core import views  # noqa: E402
@@ -267,6 +269,31 @@ def test_teacher_project_list_includes_own_unpublished_processing_project():
     row = next(item for item in response.data if item["id"] == own_draft.id)
     assert row["is_published"] is False
     assert row["latest_job"]["status"] == "pending"
+
+
+@pytest.mark.django_db
+def test_teacher_project_search_filters_before_pagination():
+    teacher = _make_teacher("studio_search_teacher")
+    old_match = Project.objects.create(title="Long PPTX Legacy Lesson", user=teacher, is_published=False)
+    Project.objects.filter(pk=old_match.pk).update(created_at=timezone.now() - timedelta(days=30))
+    old_match.refresh_from_db()
+    for index in range(13):
+        Project.objects.create(title=f"Recent lesson {index}", user=teacher, is_published=False)
+
+    first_page_request = APIRequestFactory().get("/api/v1/projects/?limit=12&offset=0")
+    force_authenticate(first_page_request, user=teacher)
+    first_page_response = views.ProjectUploadView.as_view()(first_page_request)
+
+    assert first_page_response.status_code == 200
+    assert old_match.id not in {item["id"] for item in first_page_response.data["results"]}
+
+    search_request = APIRequestFactory().get("/api/v1/projects/?limit=12&offset=0&q=Long%20PPTX")
+    force_authenticate(search_request, user=teacher)
+    search_response = views.ProjectUploadView.as_view()(search_request)
+
+    assert search_response.status_code == 200
+    assert search_response.data["count"] == 1
+    assert [item["id"] for item in search_response.data["results"]] == [old_match.id]
 
 
 @pytest.mark.django_db

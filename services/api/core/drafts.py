@@ -340,7 +340,13 @@ def promote_project_draft(
 def mark_draft_moderation_failed(project: Project, moderation_result: dict[str, Any]) -> dict[str, Any]:
     draft_data = ensure_project_draft_data(project)
     metadata = draft_data.setdefault("metadata", {})
-    moderation_status = str(moderation_result.get("moderation_status") or moderation_result.get("final_decision") or "revision_required")
+    raw_status = str(moderation_result.get("moderation_status") or moderation_result.get("final_decision") or "revision_required")
+    if raw_status in {"block", "blocked", "rejected"}:
+        moderation_status = "revision_required"
+    elif raw_status in {"needs_admin_review", "revision_required", "admin_rejected", "failed"}:
+        moderation_status = raw_status
+    else:
+        moderation_status = "needs_admin_review"
     draft_summary = dict(moderation_result.get("moderation_summary") or moderation_result.get("summary") or {})
     if not draft_summary:
         draft_summary = {
@@ -365,5 +371,113 @@ def mark_draft_moderation_failed(project: Project, moderation_result: dict[str, 
     summary["draft_moderation"] = draft_summary
     project.draft_data = draft_data
     project.moderation_summary = summary
+    update_fields = ["draft_data", "moderation_summary", "updated_at"]
+    project.save(update_fields=[*dict.fromkeys(update_fields)])
+    return draft_summary
+
+
+def mark_draft_moderation_passed(
+    project: Project,
+    moderation_result: dict[str, Any],
+    *,
+    scope: str = "moderation",
+) -> dict[str, Any]:
+    draft_data = ensure_project_draft_data(project)
+    metadata = draft_data.setdefault("metadata", {})
+    draft_summary = dict(moderation_result.get("moderation_summary") or moderation_result.get("summary") or {})
+    if not draft_summary:
+        draft_summary = {
+            "moderation_status": "approved",
+            "final_decision": str(moderation_result.get("final_decision") or "allow"),
+            "message": str(moderation_result.get("message") or "Draft moderation passed."),
+            "finding_count": int(moderation_result.get("finding_count") or 0),
+            "findings": list(moderation_result.get("findings") or []),
+            "run_id": moderation_result.get("run_id"),
+        }
+    draft_summary["moderation_status"] = "approved"
+    draft_summary.setdefault("final_decision", "allow")
+    draft_summary.setdefault("message", "Draft moderation passed.")
+    draft_summary.setdefault("finding_count", int(moderation_result.get("finding_count") or 0))
+    draft_summary.setdefault("findings", list(moderation_result.get("findings") or []))
+    if moderation_result.get("run_id") is not None:
+        draft_summary.setdefault("run_id", moderation_result.get("run_id"))
+    if moderation_result.get("input_hash"):
+        draft_summary.setdefault("input_hash", moderation_result.get("input_hash"))
+
+    checks = metadata.get("moderation_checks")
+    if not isinstance(checks, dict):
+        checks = {}
+    checks[str(scope or "moderation")] = {
+        **draft_summary,
+        "status": "approved",
+        "completed_at": _iso_now(),
+    }
+
+    metadata.update(
+        {
+            "dirty": True,
+            "moderation_status": "approved",
+            "moderation_completed_at": _iso_now(),
+            "moderation": draft_summary,
+            "moderation_checks": checks,
+        }
+    )
+    metadata.pop("moderation_failed_at", None)
+    draft_data["metadata"] = metadata
+    project.draft_data = draft_data
+
+    summary = dict(project.moderation_summary or {})
+    summary.pop("draft_moderation", None)
+    project.moderation_summary = summary
     project.save(update_fields=["draft_data", "moderation_summary", "updated_at"])
     return draft_summary
+
+
+def mark_project_moderation_approved_after_draft_promotion(
+    project: Project,
+    *,
+    message: str = "Draft moderation passed.",
+    resolve_publication_blocks: bool = True,
+) -> None:
+    summary = dict(project.moderation_summary or {})
+    for key in ("draft_moderation", "draft_visual_asset_scan", "editor_text_changed"):
+        summary.pop(key, None)
+    visual_scan = summary.get("visual_asset_scan")
+    if isinstance(visual_scan, dict) and (
+        visual_scan.get("stale")
+        or visual_scan.get("needs_rescan")
+        or str(visual_scan.get("status") or "").strip().lower() in {"pending", "pending_scan", "processing", "running", "needs_rescan"}
+    ):
+        summary.pop("visual_asset_scan", None)
+    summary["moderation_status"] = "approved"
+    summary["message"] = message
+
+    project.moderation_status = "approved"
+    project.moderation_summary = summary
+    project.manual_moderation_status = ""
+    project.manual_moderation_reason = ""
+    project.manual_moderation_by = None
+    project.manual_moderation_at = None
+    project.moderation_blocked_until_review = False
+    project.save(
+        update_fields=[
+            "moderation_status",
+            "moderation_summary",
+            "manual_moderation_status",
+            "manual_moderation_reason",
+            "manual_moderation_by",
+            "manual_moderation_at",
+            "moderation_blocked_until_review",
+            "updated_at",
+        ]
+    )
+    if resolve_publication_blocks:
+        try:
+            from ai_agents.models import PublicationBlockEvent
+
+            PublicationBlockEvent.objects.filter(project=project, resolved=False).update(
+                resolved=True,
+                resolved_at=timezone.now(),
+            )
+        except Exception:
+            pass

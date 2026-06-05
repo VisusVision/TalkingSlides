@@ -35,6 +35,7 @@ import {
   getProjectModeration,
   generateSubtitleTrack,
   fetchSubtitleTrackBundle,
+  promoteProjectDraft,
   requestProjectAdminReview,
   rerenderProjectAvatar,
   rerenderProject,
@@ -53,6 +54,7 @@ import {
 } from '../api';
 import { canAccessStudio, isStaffOrAdmin } from '../lib/auth';
 import { avatarRuntimeStatusMessage } from '../utils/avatarRuntimeSettings';
+import { visualModerationRerenderMessage } from '../utils/studioModeration';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
@@ -68,6 +70,11 @@ const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'no
 const SOURCE_TYPES_ACCEPT = '.pptx,.pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,.gif';
 const STUDIO_POLL_INTERVAL_MS = 4000;
 const LESSON_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS = 6000;
+const STUDIO_PROJECT_PAGE_SIZE = 12;
+const STUDIO_PROJECT_CACHE_TTL_MS = 45 * 1000;
+const STUDIO_PROJECT_LIST_CACHE_MAX = 8;
+const STUDIO_PROJECT_DETAIL_CACHE_MAX = 24;
+const STUDIO_PROJECT_CACHE_WINDOW = 5;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
 const STABLE_MODERATION_STATUSES = new Set(['approved', 'admin_approved', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed']);
 
@@ -75,12 +82,121 @@ function normalizeProjectList(payload) {
   return Array.isArray(payload) ? payload : payload.results || [];
 }
 
-function mergeProjectsPreservingLocalModeration(previousProjects, nextProjects) {
+function projectPaginationMeta(payload, fallbackLimit = STUDIO_PROJECT_PAGE_SIZE) {
+  if (Array.isArray(payload)) {
+    return {
+      totalCount: payload.length,
+      limit: fallbackLimit,
+      offset: 0,
+      nextOffset: null,
+      hasNext: false,
+    };
+  }
+  const nextOffset = Number(payload?.next_offset);
+  return {
+    totalCount: Number.isFinite(Number(payload?.count)) ? Number(payload.count) : null,
+    limit: Number.isFinite(Number(payload?.limit)) ? Number(payload.limit) : fallbackLimit,
+    offset: Number.isFinite(Number(payload?.offset)) ? Number(payload.offset) : 0,
+    nextOffset: Number.isFinite(nextOffset) ? nextOffset : null,
+    hasNext: Boolean(payload?.has_next),
+  };
+}
+
+function cloneCacheValue(value) {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+}
+
+function projectListCacheKey({ limit = STUDIO_PROJECT_PAGE_SIZE, offset = 0, q = '' } = {}) {
+  return JSON.stringify({
+    limit: Number(limit) || STUDIO_PROJECT_PAGE_SIZE,
+    offset: Number(offset) || 0,
+    q: String(q || '').trim(),
+  });
+}
+
+function readStudioCacheEntry(cache, key, ttlMs = STUDIO_PROJECT_CACHE_TTL_MS) {
+  if (!cache || !key) return null;
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if ((Date.now() - Number(entry.cachedAt || 0)) > ttlMs) {
+    cache.delete(key);
+    return null;
+  }
+  entry.lastAccessedAt = Date.now();
+  return cloneCacheValue(entry.value);
+}
+
+function writeStudioCacheEntry(cache, key, value, maxEntries) {
+  if (!cache || !key) return;
+  cache.set(key, {
+    value: cloneCacheValue(value),
+    cachedAt: Date.now(),
+    lastAccessedAt: Date.now(),
+  });
+  if (cache.size <= maxEntries) return;
+  const entriesByAge = [...cache.entries()].sort((left, right) => {
+    return Number(left[1]?.lastAccessedAt || 0) - Number(right[1]?.lastAccessedAt || 0);
+  });
+  while (cache.size > maxEntries && entriesByAge.length) {
+    cache.delete(entriesByAge.shift()[0]);
+  }
+}
+
+function readProjectListCache(cache, request) {
+  return readStudioCacheEntry(cache, projectListCacheKey(request));
+}
+
+function writeProjectListCache(cache, request, payload) {
+  writeStudioCacheEntry(cache, projectListCacheKey(request), payload, STUDIO_PROJECT_LIST_CACHE_MAX);
+}
+
+function readProjectDetailCache(cache, projectId) {
+  return readStudioCacheEntry(cache, String(projectId || ''));
+}
+
+function writeProjectDetailCache(cache, project) {
+  if (!project?.id) return;
+  writeStudioCacheEntry(cache, String(project.id), project, STUDIO_PROJECT_DETAIL_CACHE_MAX);
+}
+
+function cacheProjectWindow(cache, projects, selectedId) {
+  if (!Array.isArray(projects) || !projects.length) return;
+  const selectedIndex = selectedId
+    ? projects.findIndex((project) => String(project.id) === String(selectedId))
+    : 0;
+  const center = selectedIndex >= 0 ? selectedIndex : 0;
+  const start = Math.max(0, center - STUDIO_PROJECT_CACHE_WINDOW);
+  const end = Math.min(projects.length, center + STUDIO_PROJECT_CACHE_WINDOW + 1);
+  projects.slice(start, end).forEach((project) => writeProjectDetailCache(cache, project));
+}
+
+function invalidateProjectCaches(listCache, detailCache, projectId) {
+  if (detailCache && projectId) {
+    detailCache.delete(String(projectId));
+  }
+  if (!listCache) return;
+  if (!projectId) {
+    listCache.clear();
+    return;
+  }
+  for (const [key, entry] of listCache.entries()) {
+    const projects = normalizeProjectList(entry?.value);
+    if (projects.some((project) => String(project.id) === String(projectId))) {
+      listCache.delete(key);
+    }
+  }
+}
+
+function mergeProjectsPreservingLocalModeration(previousProjects, nextProjects, { append = false } = {}) {
   if (!Array.isArray(previousProjects) || !previousProjects.length) {
     return nextProjects;
   }
   const previousById = new Map(previousProjects.map((project) => [String(project.id), project]));
-  return nextProjects.map((project) => {
+  const mergedNextProjects = nextProjects.map((project) => {
     const previous = previousById.get(String(project.id));
     if (!previous) return project;
     const previousIsStale = projectHasModerationStaleMarkers(previous);
@@ -107,6 +223,13 @@ function mergeProjectsPreservingLocalModeration(previousProjects, nextProjects) 
     }
     return nextProject;
   });
+  if (!append) return mergedNextProjects;
+  const mergedById = new Map(mergedNextProjects.map((project) => [String(project.id), project]));
+  const appended = mergedNextProjects.filter((project) => !previousById.has(String(project.id)));
+  return [
+    ...previousProjects.map((project) => mergedById.get(String(project.id)) || project),
+    ...appended,
+  ];
 }
 
 function normalizedStatus(value) {
@@ -114,6 +237,30 @@ function normalizedStatus(value) {
     return String(value.status || value.state || '').trim().toLowerCase();
   }
   return String(value || '').trim().toLowerCase();
+}
+
+function timestampMs(value) {
+  const timestamp = Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function currentManualApprovalCoversDraft(project, draftMetadata) {
+  const manualStatus = normalizedStatus(project?.manual_moderation_status);
+  const moderationStatus = normalizedStatus(project?.moderation_status);
+  if (manualStatus !== 'approved' && moderationStatus !== 'admin_approved') return false;
+  const manualAt = timestampMs(project?.manual_moderation_at);
+  if (manualAt === null) return false;
+  const moderation = draftMetadata?.moderation && typeof draftMetadata.moderation === 'object'
+    ? draftMetadata.moderation
+    : {};
+  const draftTimes = [
+    draftMetadata?.moderation_failed_at,
+    draftMetadata?.updated_at,
+    draftMetadata?.created_at,
+    moderation?.changed_at,
+    moderation?.completed_at,
+  ].map(timestampMs).filter((value) => value !== null);
+  return draftTimes.length > 0 && draftTimes.every((value) => value <= manualAt);
 }
 
 function projectLatestJobStatus(project) {
@@ -257,6 +404,12 @@ function moderationRunId(payload) {
 
 function projectModerationStatus(project, moderation = null) {
   const rawStatus = String(moderation?.moderation_status || project?.moderation_status || 'not_scanned').trim().toLowerCase() || 'not_scanned';
+  if ((rawStatus === 'approved' || rawStatus === 'admin_approved') && moderation?.publish_blocked_by_moderation) {
+    const manualStatus = String(moderation?.manual_moderation_status || project?.manual_moderation_status || '').trim().toLowerCase();
+    if (manualStatus === 'request_changes') return 'revision_required';
+    if (manualStatus === 'blocked' || manualStatus === 'rejected') return 'admin_rejected';
+    return 'needs_admin_review';
+  }
   if (rawStatus === 'pending') return 'pending';
   if (MODERATION_BLOCKED_STATUSES.has(rawStatus) || rawStatus === 'needs_admin_review' || rawStatus === 'failed') {
     return rawStatus;
@@ -284,7 +437,7 @@ function moderationStatusTone(status) {
   if (normalized === 'pending' || normalized === 'warn') {
     return 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]';
   }
-  if (normalized === 'revision_required' || normalized === 'admin_rejected' || normalized === 'failed' || normalized === 'block') {
+  if (normalized === 'revision_required' || normalized === 'admin_rejected' || normalized === 'failed' || normalized === 'block' || normalized === 'blocked' || normalized === 'rejected') {
     return 'bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-fg)]';
   }
   return 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]';
@@ -354,6 +507,10 @@ function projectCanPublishFromModeration(project, moderation = null) {
 
 function findingHaystack(finding) {
   return [
+    finding?.asset_kind,
+    finding?.asset_label,
+    finding?.source_kind,
+    finding?.source_label,
     finding?.location_label,
     finding?.ui_anchor,
     finding?.content_type,
@@ -366,15 +523,219 @@ function findingHaystack(finding) {
     .toLowerCase();
 }
 
-function findingAssetKind(finding) {
+const STUDIO_VISUAL_ASSET_KINDS = new Set([
+  'cover',
+  'custom_background',
+  'slide_image',
+  'draft_visual_asset',
+  'video_frame',
+  'profile_image',
+  'channel_logo',
+  'channel_banner',
+]);
+
+const STUDIO_EDITOR_VISUAL_WARNING_KINDS = new Set([
+  'cover',
+  'custom_background',
+  'slide_image',
+  'draft_visual_asset',
+]);
+const STUDIO_EDITOR_SOURCE_KINDS = new Set([
+  'lesson_cover',
+  'scene_background',
+  'slide_image',
+]);
+const STUDIO_SOURCE_KIND_TO_ASSET_KIND = {
+  lesson_cover: 'cover',
+  scene_background: 'custom_background',
+  slide_image: 'slide_image',
+};
+
+const STUDIO_TEXT_CONTENT_TYPES = new Set(['text', 'ocr', 'transcript', 'subtitle', 'language']);
+const STUDIO_TEXT_CATEGORIES = new Set([
+  'abusive_language',
+  'copyright_text',
+  'dangerous_instruction',
+  'hate_or_harassment',
+  'inappropriate_language',
+  'language',
+  'profanity',
+  'self_harm_instruction',
+  'sexual_text',
+  'text_moderation',
+  'violence_text',
+]);
+const STUDIO_VISUAL_CATEGORIES = new Set(['sexual', 'violence', 'graphic_content', 'self_harm', 'provider_unavailable']);
+const STUDIO_RESOLVED_MODERATION_STATES = new Set([
+  'allow',
+  'allowed',
+  'approve',
+  'approved',
+  'admin_approved',
+  'clear',
+  'cleared',
+  'dismissed',
+  'pass',
+  'passed',
+  'resolved',
+  'safe',
+  'scan_passed',
+]);
+const STUDIO_VISUAL_ASSET_KIND_ALIASES = {
+  background: 'custom_background',
+  custom_background: 'custom_background',
+  'custom-background': 'custom_background',
+  cover: 'cover',
+  lesson_cover: 'cover',
+  slide: 'slide_image',
+  slide_image: 'slide_image',
+  draft_visual_asset: 'draft_visual_asset',
+  frame: 'video_frame',
+  video_frame: 'video_frame',
+  avatar_image: 'profile_image',
+  profile_image: 'profile_image',
+  profile_logo: 'channel_logo',
+  channel_logo: 'channel_logo',
+  profile_banner: 'channel_banner',
+  channel_banner: 'channel_banner',
+};
+
+function rawIssueAssetKind(finding) {
+  return textValue(finding?.asset_kind).trim().toLowerCase();
+}
+
+function getExplicitIssueAssetKind(finding) {
+  if (!finding || isTextModerationIssue(finding)) return '';
+  const assetKind = rawIssueAssetKind(finding);
+  if (assetKind) return STUDIO_VISUAL_ASSET_KIND_ALIASES[assetKind] || assetKind;
+  const objectType = textValue(finding?.object_type).trim().toLowerCase();
+  if (objectType) return STUDIO_VISUAL_ASSET_KIND_ALIASES[objectType] || '';
+  return '';
+}
+
+function getEditorVisualIssueAssetKind(issue) {
+  if (!issue || isTextModerationIssue(issue)) return '';
+  const sourceKind = textValue(issue?.source_kind).trim().toLowerCase();
+  if (!STUDIO_EDITOR_SOURCE_KINDS.has(sourceKind)) return '';
+  return STUDIO_SOURCE_KIND_TO_ASSET_KIND[sourceKind] || '';
+}
+
+function isTextModerationIssue(finding) {
+  const sourceKind = textValue(finding?.source_kind).trim().toLowerCase();
+  const contentType = textValue(finding?.content_type).trim().toLowerCase();
+  const provider = textValue(finding?.provider).trim().toLowerCase();
+  const objectType = textValue(finding?.object_type).trim().toLowerCase();
+  const category = textValue(finding?.category).trim().toLowerCase();
+  const issueType = textValue(finding?.issue_type || finding?.finding_type || finding?.type).trim().toLowerCase();
+  const textSignal = issueType === 'text'
+    || sourceKind === 'transcript_text'
+    || STUDIO_TEXT_CONTENT_TYPES.has(contentType)
+    || provider.includes('ocr')
+    || provider.includes('text')
+    || objectType.includes('ocr')
+    || STUDIO_TEXT_CATEGORIES.has(category);
+  if (textSignal) return true;
+  if (sourceKind && sourceKind !== 'unknown') return false;
+  return false;
+}
+
+function getIssueAssetKind(finding) {
+  if (!finding || isTextModerationIssue(finding)) return 'text';
+  const explicit = STUDIO_VISUAL_ASSET_KIND_ALIASES[rawIssueAssetKind(finding)] || '';
+  if (explicit) return explicit;
+  const objectType = textValue(finding?.object_type).trim().toLowerCase();
+  const objectKind = STUDIO_VISUAL_ASSET_KIND_ALIASES[objectType] || '';
+  if (objectKind) return objectKind;
   const haystack = findingHaystack(finding);
   if (haystack.includes('cover')) return 'cover';
-  if (haystack.includes('avatar') || haystack.includes('profile')) return 'avatar';
-  if (haystack.includes('video') || haystack.includes('frame')) return 'video';
-  if (haystack.includes('background') || haystack.includes('custom_background')) return 'background';
+  if (haystack.includes('custom_background') || haystack.includes('custom background') || haystack.includes('background')) return 'custom_background';
+  if (haystack.includes('video') || haystack.includes('frame')) return 'video_frame';
+  if (haystack.includes('avatar') || haystack.includes('profile')) return 'profile_image';
+  if (haystack.includes('logo')) return 'channel_logo';
+  if (haystack.includes('banner')) return 'channel_banner';
+  if (haystack.includes('slide') || finding?.slide_order !== undefined || finding?.slide_index !== undefined || finding?.slide_number !== undefined) return 'slide_image';
+  return '';
+}
+
+function isVisualModerationIssue(finding) {
+  if (!finding || isTextModerationIssue(finding)) return false;
+  const explicit = getIssueAssetKind(finding);
+  const contentType = textValue(finding?.content_type).trim().toLowerCase();
+  const provider = textValue(finding?.provider).trim().toLowerCase();
+  const category = textValue(finding?.category).trim().toLowerCase();
+  return STUDIO_VISUAL_ASSET_KINDS.has(explicit)
+    || ['image', 'video_frame'].includes(contentType)
+    || provider.includes('visual')
+    || STUDIO_VISUAL_CATEGORIES.has(category);
+}
+
+function isUnresolvedModerationIssue(finding) {
+  const states = [
+    finding?.decision,
+    finding?.status,
+    finding?.moderation_status,
+    finding?.final_decision,
+    finding?.manual_moderation_status,
+  ]
+    .map((value) => textValue(value).trim().toLowerCase())
+    .filter(Boolean);
+  return !states.some((state) => STUDIO_RESOLVED_MODERATION_STATES.has(state));
+}
+
+function isRealVisualIssue(finding) {
+  return isUnresolvedVisualIssue(finding);
+}
+
+function isUnresolvedVisualIssue(issue) {
+  return Boolean(
+    issue
+      && !isTextModerationIssue(issue)
+      && isUnresolvedModerationIssue(issue)
+      && getEditorVisualIssueAssetKind(issue),
+  );
+}
+
+function issueModerationState(issue) {
+  return textValue(issue?.moderation_state || issue?.decision || issue?.status || issue?.moderation_status)
+    .trim()
+    .toLowerCase();
+}
+
+function visualIssueWarningState(issue) {
+  const state = issueModerationState(issue);
+  if (['pending_scan', 'pending', 'processing', 'running'].includes(state)) return 'pending';
+  if (['needs_admin_review', 'blocked', 'block', 'rejected', 'reject', 'revision_required', 'admin_rejected'].includes(state)) {
+    return 'flagged';
+  }
+  return '';
+}
+
+function moderationWarningIsFlagged(warning) {
+  return warning?.state === 'flagged';
+}
+
+function moderationWarningIsPending(warning) {
+  return warning?.state === 'pending';
+}
+
+function findingAssetKind(finding) {
+  if (isTextModerationIssue(finding)) return 'transcript';
+  const explicit = getIssueAssetKind(finding);
+  if (explicit === 'cover') return 'cover';
+  if (explicit === 'custom_background') return 'background';
+  if (explicit === 'slide_image' || explicit === 'draft_visual_asset') return 'slide';
+  if (explicit === 'video_frame') return 'video';
+  if (explicit === 'profile_image' || explicit === 'channel_logo' || explicit === 'channel_banner') return 'avatar';
+  const haystack = findingHaystack(finding);
+  if (isVisualModerationIssue(finding)) {
+    if (haystack.includes('cover')) return 'cover';
+    if (haystack.includes('avatar') || haystack.includes('profile')) return 'avatar';
+    if (haystack.includes('video') || haystack.includes('frame')) return 'video';
+    if (haystack.includes('background') || haystack.includes('custom_background')) return 'background';
+    if (haystack.includes('slide') || finding?.slide_order !== undefined || finding?.slide_index !== undefined) return 'slide';
+  }
   if (
     haystack.includes('transcript')
-    || haystack.includes('slide')
     || haystack.includes('page_key')
     || haystack.includes('original')
     || haystack.includes('narration')
@@ -385,6 +746,8 @@ function findingAssetKind(finding) {
 }
 
 function findingFieldKey(finding) {
+  if (findingAssetKind(finding) === 'background') return 'background';
+  if (findingAssetKind(finding) === 'slide') return 'slide_image';
   const haystack = findingHaystack(finding);
   if (haystack.includes('narration')) return 'narration_text';
   if (haystack.includes('original') || haystack.includes('display')) return 'original_text';
@@ -400,6 +763,14 @@ function findingFieldLabel(finding) {
 }
 
 function findingSlideNumber(finding) {
+  if (finding?.slide_number !== undefined && finding?.slide_number !== null) {
+    const slideNumber = Number(finding.slide_number);
+    if (Number.isFinite(slideNumber) && slideNumber > 0) return slideNumber;
+  }
+  if (finding?.slide_index !== undefined && finding?.slide_index !== null) {
+    const slideNumber = Number(finding.slide_index) + 1;
+    if (Number.isFinite(slideNumber) && slideNumber > 0) return slideNumber;
+  }
   if (finding?.slide_order !== undefined && finding?.slide_order !== null) {
     const slideNumber = Number(finding.slide_order) + 1;
     if (Number.isFinite(slideNumber) && slideNumber > 0) return slideNumber;
@@ -412,10 +783,131 @@ function findingSlideNumber(finding) {
   return null;
 }
 
+function issueSlideIndex(issue) {
+  for (const key of ['slide_index', 'slide_order']) {
+    if (issue?.[key] !== undefined && issue?.[key] !== null && issue?.[key] !== '') {
+      const value = Number(issue[key]);
+      if (Number.isFinite(value) && value >= 0) return value;
+    }
+  }
+  if (issue?.slide_number !== undefined && issue?.slide_number !== null && issue?.slide_number !== '') {
+    const value = Number(issue.slide_number);
+    if (Number.isFinite(value) && value > 0) return value - 1;
+  }
+  return null;
+}
+
+function issueHasPageLocator(issue) {
+  return Boolean(
+    textValue(issue?.transcript_page_id).trim()
+      || textValue(issue?.slide_id).trim()
+      || textValue(issue?.page_key).trim()
+      || textValue(issue?.slide_index).trim()
+      || textValue(issue?.slide_order).trim()
+      || textValue(issue?.slide_number).trim(),
+  );
+}
+
+function pageMatchesIssueTarget(issue, page, index) {
+  if (!issue || !page) return false;
+  const slideId = textValue(issue?.slide_id).trim();
+  if (slideId && slideId === textValue(page?.id).trim()) return true;
+  const transcriptPageId = textValue(issue?.transcript_page_id).trim();
+  if (transcriptPageId && transcriptPageId === textValue(page?.id).trim()) return true;
+  const pageKey = textValue(issue?.page_key).trim().toLowerCase();
+  if (pageKey && pageKey === textValue(page?.page_key).trim().toLowerCase()) return true;
+  const objectId = textValue(issue?.object_id).trim();
+  if (objectId && (objectId === textValue(page?.id).trim() || objectId === textValue(page?.page_key).trim())) return true;
+  const slideIndex = issueSlideIndex(issue);
+  if (slideIndex === null) return false;
+  const candidates = [
+    page?.source_slide_index,
+    page?.order,
+    index,
+  ]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  return candidates.includes(slideIndex);
+}
+
+function issueHasClearSlideLocator(issue) {
+  return Boolean(textValue(issue?.slide_id).trim() || textValue(issue?.transcript_page_id).trim())
+    || issueSlideIndex(issue) !== null;
+}
+
+function getIssueEditorTarget(issue, pages = []) {
+  const assetKind = getEditorVisualIssueAssetKind(issue);
+  if (!isRealVisualIssue(issue)) {
+    if (isTextModerationIssue(issue)) return { type: 'transcript' };
+    return { type: 'moderation_panel' };
+  }
+  if (assetKind === 'cover') {
+    return { type: 'cover' };
+  }
+  if (assetKind === 'custom_background' || assetKind === 'slide_image' || assetKind === 'draft_visual_asset') {
+    if ((assetKind === 'slide_image' || assetKind === 'draft_visual_asset') && !issueHasClearSlideLocator(issue)) {
+      return { type: 'moderation_panel' };
+    }
+    if (!issueHasPageLocator(issue)) return { type: 'moderation_panel' };
+    const pageIndex = (Array.isArray(pages) ? pages : []).findIndex((page, index) => (
+      pageMatchesIssueTarget(issue, page, index)
+    ));
+    if (pageIndex < 0) return { type: 'moderation_panel' };
+    const page = pages[pageIndex];
+    return {
+      type: assetKind === 'custom_background' ? 'background' : 'slide',
+      page,
+      pageIndex,
+      key: pageIdentity(page, pageIndex),
+    };
+  }
+  return { type: 'moderation_panel' };
+}
+
+function getIssuesForCover(findings = []) {
+  return getCoverVisualIssues(findings);
+}
+
+function getCoverVisualIssues(findings = []) {
+  return (Array.isArray(findings) ? findings : []).filter((issue) => (
+    isRealVisualIssue(issue) && getEditorVisualIssueAssetKind(issue) === 'cover'
+  ));
+}
+
+function getIssuesForBackground(findings = [], pages = []) {
+  return getBackgroundVisualIssues(findings, pages);
+}
+
+function getBackgroundVisualIssues(findings = [], pages = []) {
+  return (Array.isArray(findings) ? findings : []).filter((issue) => (
+    isRealVisualIssue(issue)
+      && getEditorVisualIssueAssetKind(issue) === 'custom_background'
+      && getIssueEditorTarget(issue, pages).type === 'background'
+  ));
+}
+
+function getSlideVisualIssues(findings = [], pages = []) {
+  return (Array.isArray(findings) ? findings : []).filter((issue) => {
+    const assetKind = getEditorVisualIssueAssetKind(issue);
+    return isRealVisualIssue(issue)
+      && (assetKind === 'slide_image' || assetKind === 'draft_visual_asset')
+      && getIssueEditorTarget(issue, pages).type === 'slide';
+  });
+}
+
+function getIssuesForSlide(findings = [], pages = []) {
+  return getSlideVisualIssues(findings, pages);
+}
+
 function findingLocationLabel(finding) {
+  if (finding?.asset_label) return finding.asset_label;
   const kind = findingAssetKind(finding);
   if (kind === 'cover') return 'Cover image';
   if (kind === 'background') return 'Custom background';
+  if (kind === 'slide') {
+    const slideNumber = findingSlideNumber(finding);
+    return slideNumber ? `Slide ${slideNumber} image` : 'Slide image';
+  }
   if (kind === 'avatar') return 'Avatar image';
   if (kind === 'video') return finding?.timestamp_label || 'Video frame';
   if (kind === 'transcript') {
@@ -425,6 +917,40 @@ function findingLocationLabel(finding) {
   }
   if (finding?.timestamp_label) return finding.timestamp_label;
   return 'Project';
+}
+
+function isProviderUnavailableVisualIssue(issue) {
+  if (!issue || isTextModerationIssue(issue)) return false;
+  const category = textValue(issue?.category).trim().toLowerCase();
+  const title = textValue(issue?.reason_title).trim().toLowerCase();
+  const technicalReason = textValue(issue?.technical_reason || issue?.evidence_excerpt).trim().toLowerCase();
+  const provider = textValue(issue?.provider).trim().toLowerCase();
+  return category === 'provider_unavailable'
+    || title === 'visual safety scan unavailable'
+    || technicalReason.includes('semantic_visual_provider_unavailable')
+    || provider.includes('provider_unavailable');
+}
+
+function visualScanUnavailableMessage(warning) {
+  const issue = (Array.isArray(warning?.findings) ? warning.findings : []).find(isProviderUnavailableVisualIssue);
+  if (!issue) return '';
+  return `${findingReasonTitle(issue) || 'Visual safety scan unavailable'}. ${visualIssueStatusLabel(issue) || 'Needs admin review'}.`;
+}
+
+function sceneModerationWarningMessage(warning) {
+  if (warning?.state === 'pending') {
+    return 'Visual scan pending';
+  }
+  const unavailableMessage = visualScanUnavailableMessage(warning);
+  if (unavailableMessage) return unavailableMessage;
+  const fields = Array.isArray(warning?.fields) ? warning.fields : [];
+  if (fields.includes('background')) {
+    return 'This scene background was blocked by visual moderation. Replace it before publishing.';
+  }
+  if (fields.includes('slide_image')) {
+    return 'This slide image was blocked by visual moderation. Replace it before publishing.';
+  }
+  return 'This slide has a moderation finding.';
 }
 
 function findingMetaLabel(finding) {
@@ -444,12 +970,166 @@ function findingMetaLabel(finding) {
   return parts.join(' · ');
 }
 
+function findingReasonTitle(finding) {
+  return textValue(finding?.reason_title || finding?.category || 'Moderation finding').replace(/_/g, ' ');
+}
+
+function findingPrimaryMessage(finding, { admin = false } = {}) {
+  return textValue(
+    (admin ? finding?.admin_reason_message : finding?.publisher_reason_message)
+      || finding?.reason_message
+      || finding?.user_message
+      || finding?.admin_message
+      || 'This content needs moderation attention.',
+  );
+}
+
+function moderationVisualIssues(moderation, findings = []) {
+  const explicitIssues = Array.isArray(moderation?.visual_issues) ? moderation.visual_issues : [];
+  if (explicitIssues.length > 0) return explicitIssues.filter(isVisualModerationIssue);
+  return (Array.isArray(findings) ? findings : []).filter(isVisualModerationIssue);
+}
+
+function moderationIssueDedupKey(issue, index) {
+  const id = issue?.finding_id || issue?.id;
+  if (id) return `id-${id}`;
+  return [
+    getIssueAssetKind(issue),
+    issue?.source_kind || '',
+    issue?.transcript_page_id || '',
+    issue?.page_key || '',
+    issue?.slide_index ?? issue?.slide_order ?? issue?.slide_number ?? '',
+    issue?.timestamp_seconds || '',
+    issue?.category || '',
+    index,
+  ].join('|');
+}
+
+function mergeModerationIssues(...groups) {
+  const merged = [];
+  const seen = new Set();
+  groups.forEach((group) => {
+    (Array.isArray(group) ? group : []).forEach((issue, index) => {
+      const key = moderationIssueDedupKey(issue, index);
+      if (seen.has(key)) return;
+      seen.add(key);
+      merged.push(issue);
+    });
+  });
+  return merged;
+}
+
+function getStudioVisualIssues(project) {
+  const summary = plainObject(project?.moderation_summary) || {};
+  const moderation = plainObject(project?.moderation) || {};
+  return mergeModerationIssues(
+    project?.visual_issues,
+    moderation?.visual_issues,
+    summary?.visual_issues,
+    summary?.findings,
+    project?.findings,
+  ).filter(isUnresolvedVisualIssue);
+}
+
+function visualIssueStatusLabel(issue) {
+  const decision = String(issue?.decision || '').trim().toLowerCase();
+  if (decision === 'blocked' || decision === 'block' || decision === 'rejected') return 'Blocked';
+  if (decision === 'approved' || decision === 'approve' || decision === 'allow') return 'Approved';
+  return 'Needs admin review';
+}
+
+function publisherMessageForModeration(moderation) {
+  const findings = Array.isArray(moderation?.findings) ? moderation.findings : [];
+  const visualIssue = moderationVisualIssues(moderation, findings)[0] || null;
+  const issue = visualIssue || findings[0] || null;
+  const kind = rawIssueAssetKind(issue);
+  if (kind === 'cover') return 'Please replace the lesson cover image.';
+  if (kind === 'custom_background') return 'Please replace the custom background image.';
+  if (kind === 'slide_image' || kind === 'draft_visual_asset') {
+    const slideNumber = Number(issue?.slide_number || (Number(issue?.slide_order) + 1));
+    if (Number.isFinite(slideNumber) && slideNumber > 0) return `Please replace Slide ${slideNumber} image.`;
+    return 'Please replace the flagged slide image.';
+  }
+  if (isTextModerationIssue(issue)) return 'Please remove or rewrite the highlighted transcript text.';
+  return textValue(issue?.publisher_reason_message || issue?.reason_message || moderation?.message).trim();
+}
+
+function visualIssueKey(issue, index) {
+  return `${issue?.asset_kind || findingAssetKind(issue)}-${issue?.object_id || issue?.page_key || issue?.timestamp_seconds || index}`;
+}
+
+function publishAvailabilityLabel(moderation, canPublish) {
+  if (canPublish) return 'Publish allowed';
+  if (moderation?.publish_blocked_by_moderation) return 'Publish blocked by moderation';
+  const reason = String(moderation?.publish_block_reason || moderation?.publish_block?.reason || '').trim();
+  if (reason === 'render_not_ready') return 'Waiting for render';
+  return 'Publish unavailable';
+}
+
+function publishAvailabilityTone(moderation, canPublish) {
+  if (canPublish) return 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]';
+  if (moderation?.publish_blocked_by_moderation) return 'bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-fg)]';
+  return 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]';
+}
+
+function VisualIssuePreview({ issue }) {
+  const previewUrl = textValue(issue?.preview_url || issue?.asset_url).trim();
+  const [blobUrl, setBlobUrl] = useState('');
+  const [failed, setFailed] = useState(!previewUrl);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = '';
+    setBlobUrl('');
+    setFailed(!previewUrl);
+    if (!previewUrl) return () => {};
+    fetchAuthenticatedAssetBlobUrl(previewUrl)
+      .then((url) => {
+        if (cancelled) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        objectUrl = url;
+        setBlobUrl(url);
+        setFailed(!url);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [previewUrl]);
+
+  if (failed || !blobUrl) {
+    return (
+      <div className="flex h-16 w-24 shrink-0 items-center justify-center rounded-lg bg-[color:var(--surface-container-high)] text-[color:var(--status-warning-fg)]">
+        <AlertTriangle size={18} />
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={blobUrl}
+      alt={findingLocationLabel(issue)}
+      className="h-16 w-24 shrink-0 rounded-lg object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 function findingMatchesTranscriptPage(finding, page, index) {
   if (!finding || !page) return false;
+  if (isVisualModerationIssue(finding)) {
+    return pageMatchesIssueTarget(finding, page, index);
+  }
   const haystack = findingHaystack(finding);
   const pageId = textValue(page?.id);
   const objectId = textValue(finding?.object_id);
-  if (pageId && objectId && pageId === objectId && findingAssetKind(finding) === 'transcript') return true;
+  const kind = findingAssetKind(finding);
+  if (pageId && objectId && pageId === objectId && (kind === 'transcript' || kind === 'slide' || kind === 'background')) return true;
   if (pageId && haystack.includes(`transcript-page-${pageId}`)) return true;
   const pageKey = textValue(page?.page_key).toLowerCase();
   if (pageKey && haystack.includes(pageKey)) return true;
@@ -464,23 +1144,66 @@ function findingMatchesTranscriptPage(finding, page, index) {
 
 function buildModerationWarningMaps(findings, pages) {
   const pageWarnings = {};
+  const slideWarnings = {};
+  const backgroundWarnings = {};
   const assetWarnings = {
-    cover: false,
-    background: false,
-    avatar: false,
-    video: false,
+    cover: null,
+    background: null,
+    avatar: null,
+    video: null,
   };
+  const unidentifiedWarnings = [];
+  const warningEntry = (finding) => ({
+    state: visualIssueWarningState(finding) || 'flagged',
+    findings: [finding],
+  });
 
   (Array.isArray(findings) ? findings : []).forEach((finding) => {
-    const kind = findingAssetKind(finding);
-    if (Object.prototype.hasOwnProperty.call(assetWarnings, kind)) {
-      assetWarnings[kind] = true;
+    if (isRealVisualIssue(finding)) {
+      const target = getIssueEditorTarget(finding, pages);
+      if (target.type === 'cover') {
+        const existing = assetWarnings.cover;
+        if (existing) {
+          existing.findings.push(finding);
+          if (existing.state !== 'flagged' && visualIssueWarningState(finding) === 'flagged') existing.state = 'flagged';
+        } else {
+          assetWarnings.cover = warningEntry(finding);
+        }
+        return;
+      }
+      if (target.type === 'background' && target.key) {
+        const existing = backgroundWarnings[target.key] || { fields: [], findings: [], state: visualIssueWarningState(finding) || 'flagged' };
+        if (!existing.fields.includes('background')) existing.fields.push('background');
+        existing.findings.push(finding);
+        if (existing.state !== 'flagged' && visualIssueWarningState(finding) === 'flagged') existing.state = 'flagged';
+        backgroundWarnings[target.key] = existing;
+        return;
+      }
+      if (target.type === 'slide' && target.key) {
+        const existing = slideWarnings[target.key] || { fields: [], findings: [], state: visualIssueWarningState(finding) || 'flagged' };
+        if (!existing.fields.includes('slide_image')) existing.fields.push('slide_image');
+        existing.findings.push(finding);
+        if (existing.state !== 'flagged' && visualIssueWarningState(finding) === 'flagged') existing.state = 'flagged';
+        slideWarnings[target.key] = existing;
+        return;
+      }
+      unidentifiedWarnings.push(finding);
+      return;
     }
-    if (kind !== 'transcript') return;
+
+    if (!isTextModerationIssue(finding)) {
+      unidentifiedWarnings.push(finding);
+      return;
+    }
+
     const pageIndex = (Array.isArray(pages) ? pages : []).findIndex((page, index) => (
       findingMatchesTranscriptPage(finding, page, index)
     ));
-    if (pageIndex < 0) return;
+
+    if (pageIndex < 0) {
+      unidentifiedWarnings.push(finding);
+      return;
+    }
     const page = pages[pageIndex];
     const key = pageIdentity(page, pageIndex);
     const field = findingFieldKey(finding) || 'page';
@@ -490,7 +1213,7 @@ function buildModerationWarningMaps(findings, pages) {
     pageWarnings[key] = existing;
   });
 
-  return { pageWarnings, assetWarnings };
+  return { pageWarnings, slideWarnings, backgroundWarnings, assetWarnings, unidentifiedWarnings };
 }
 
 function findingDisplayLabel(finding) {
@@ -632,12 +1355,93 @@ function lessonNotesKey(projectId) {
   return `visus-studio-notes-${projectId || 'none'}`;
 }
 
+function localDraftScope(user) {
+  return encodeURIComponent(
+    textValue(user?.id || user?.pk || user?.email || user?.username || 'anonymous').trim() || 'anonymous',
+  );
+}
+
+function lessonNotesDraftKey(userScope, projectId) {
+  return `visus-studio-local-draft-${userScope || 'anonymous'}-${projectId || 'none'}-notes`;
+}
+
+function readLessonNotesDraft(userScope, projectId) {
+  if (typeof window === 'undefined' || !projectId) return null;
+  const key = lessonNotesDraftKey(userScope, projectId);
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(key) || 'null');
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    window.localStorage.removeItem(key);
+    return null;
+  }
+}
+
+function writeLessonNotesDraft(userScope, projectId, value) {
+  if (typeof window === 'undefined' || !projectId) return;
+  const key = lessonNotesDraftKey(userScope, projectId);
+  window.localStorage.setItem(key, JSON.stringify({
+    version: 1,
+    value: textValue(value),
+    updatedAt: Date.now(),
+  }));
+}
+
+function clearLessonNotesDraft(userScope, projectId) {
+  if (typeof window === 'undefined' || !projectId) return;
+  window.localStorage.removeItem(lessonNotesDraftKey(userScope, projectId));
+}
+
 function editorDraftKey(projectId) {
   return `visus-studio-editor-draft-${projectId || 'new'}`;
 }
 
 function textValue(value) {
   return value === null || value === undefined ? '' : String(value);
+}
+
+function studioSessionKey(user) {
+  const userId = textValue(user?.id || user?.pk || user?.email || user?.username).trim();
+  return userId ? `visus-studio-position-${userId}` : '';
+}
+
+function readStudioSession(key) {
+  if (!key || typeof window === 'undefined') return {};
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(key) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    window.sessionStorage.removeItem(key);
+    return {};
+  }
+}
+
+function writeStudioSession(key, patch) {
+  if (!key || typeof window === 'undefined') return;
+  try {
+    const previous = readStudioSession(key);
+    window.sessionStorage.setItem(key, JSON.stringify({
+      ...previous,
+      ...patch,
+      updatedAt: Date.now(),
+    }));
+  } catch {
+    // Ignore storage quota/privacy mode failures; position memory is best-effort.
+  }
+}
+
+function safeCssBackgroundUrl(value) {
+  const rawUrl = textValue(value).trim();
+  if (!rawUrl) return '';
+  const lower = rawUrl.toLowerCase();
+  if (lower.startsWith('javascript:') || lower.startsWith('data:') || lower.startsWith('file:')) return '';
+  try {
+    const parsed = new URL(rawUrl, window.location.origin);
+    if (!['http:', 'https:', 'blob:'].includes(parsed.protocol)) return '';
+    return parsed.href.replace(/"/g, '%22');
+  } catch {
+    return '';
+  }
 }
 
 function cacheBustedMediaUrl(url, token = Date.now()) {
@@ -868,7 +1672,13 @@ function ModerationPanel({
 
   const status = projectModerationStatus(project, moderation);
   const findings = Array.isArray(moderation?.findings) ? moderation.findings : [];
+  const visualIssues = moderationVisualIssues(moderation, findings);
+  const visualBlockWithoutIssue = visualIssues.length === 0
+    && ['visual_moderation_rejected', 'video_frame_audit_rejected'].includes(
+      String(moderation?.publish_block_reason || moderation?.publish_block?.reason || '').trim(),
+    );
   const canRequestAdminReview = Boolean(moderation?.can_request_admin_review);
+  const hasOpenAdminReview = String(moderation?.admin_review?.status || '').trim().toLowerCase() === 'open';
   const canPublish = projectCanPublishFromModeration(project, moderation);
   const visualScan = projectVisualStaleMarker(project, moderation);
   const visualNeedsRescan = visualModerationEnabled && moderationMarkerIsStale(visualScan);
@@ -892,13 +1702,9 @@ function ModerationPanel({
               {moderationStatusLabel(status)}
             </span>
             <span
-              className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                canPublish
-                  ? 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
-                  : 'bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-fg)]'
-              }`}
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${publishAvailabilityTone(moderation, canPublish)}`}
             >
-              {canPublish ? 'Publish allowed' : 'Publish blocked by moderation'}
+              {publishAvailabilityLabel(moderation, canPublish)}
             </span>
             {moderation?.latest_run_id && (
               <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
@@ -941,6 +1747,11 @@ function ModerationPanel({
       <p className="mt-3 text-sm text-[var(--text-secondary)]">
         {loading ? 'Loading moderation status...' : moderationMessage(project, moderation)}
       </p>
+      {hasOpenAdminReview && (
+        <p className="mt-2 rounded-xl bg-[color:var(--status-info-bg)] px-3 py-2 text-sm font-medium text-[color:var(--status-info-fg)]">
+          A review request is already open. Please wait for an admin response.
+        </p>
+      )}
       {adminNote && (
         <div className="mt-3 rounded-xl border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)] p-3">
           <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[color:var(--status-info-fg)]">
@@ -956,6 +1767,46 @@ function ModerationPanel({
         <p className="mt-2 text-sm text-[var(--text-secondary)]">
           {visualScan?.message || 'A Studio image changed after the last visual moderation scan.'}
         </p>
+      )}
+      {(visualIssues.length > 0 || visualBlockWithoutIssue) && (
+        <div className="mt-4 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+            Visual issue
+          </p>
+          {visualIssues.length > 0 ? (
+            visualIssues.map((issue, index) => {
+              const clickable = typeof onSelectFinding === 'function' && findingAssetKind(issue) !== 'project';
+              return (
+                <article
+                  key={visualIssueKey(issue, index)}
+                  className={`flex gap-3 rounded-xl border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] p-3 ${clickable ? 'cursor-pointer transition hover:bg-[color:var(--hover-surface)]' : ''}`}
+                  onClick={() => {
+                    if (clickable) onSelectFinding(issue);
+                  }}
+                >
+                  <VisualIssuePreview issue={issue} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-[var(--text-primary)]">{findingLocationLabel(issue)}</p>
+                      <span className={`rounded-full px-2 py-0.5 text-[0.68rem] font-semibold ${moderationStatusTone(issue?.decision)}`}>
+                        {visualIssueStatusLabel(issue)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm font-medium text-[var(--text-primary)]">{findingReasonTitle(issue)}</p>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">{findingPrimaryMessage(issue)}</p>
+                    {clickable && (
+                      <p className="mt-2 text-xs font-semibold text-[var(--accent-primary)]">View in editor</p>
+                    )}
+                  </div>
+                </article>
+              );
+            })
+          ) : (
+            <div className="rounded-xl border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] p-3 text-sm text-[var(--text-secondary)]">
+              A moderation issue needs review, but the exact editor location could not be identified.
+            </div>
+          )}
+        </div>
       )}
 
       {error && (
@@ -1006,13 +1857,13 @@ function ModerationPanel({
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="flex flex-wrap gap-1.5 text-[0.68rem] font-semibold">
                   <span className="rounded-full bg-[var(--surface-container-highest)] px-2 py-0.5 text-[var(--text-primary)]">
-                    {finding.category || 'unknown'}
+                    {findingReasonTitle(finding)}
                   </span>
                   <span className={`rounded-full px-2 py-0.5 ${moderationStatusTone(finding.decision)}`}>
-                    {finding.decision || 'review'}
+                    {visualIssueStatusLabel(finding)}
                   </span>
                   <span className="rounded-full bg-[color:var(--surface-container-high)] px-2 py-0.5 text-[var(--text-secondary)]">
-                    {finding.severity || 'low'}
+                    {finding.category || 'unknown'} / {finding.severity || 'low'}
                   </span>
                   </div>
                   {clickable && (
@@ -1020,7 +1871,7 @@ function ModerationPanel({
                   )}
                 </div>
                 <p className="mt-2 text-sm text-[var(--text-primary)]">
-                  {finding.user_message || 'This content needs moderation attention.'}
+                  {findingPrimaryMessage(finding)}
                 </p>
                 <p className="mt-1 text-xs font-semibold text-[var(--text-secondary)]">{findingDisplayLabel(finding)}</p>
                 {meta && (
@@ -1688,31 +2539,70 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
   const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const readOnlyReviewRequested = searchParams.get('review') === '1' && isStaffOrAdmin(user);
+  const requestedLessonId = Number(searchParams.get('lesson') || 0) || null;
+  const requestedStudioView = searchParams.get('view');
+  const hasDirectStudioLocation = searchParams.has('view') || searchParams.has('lesson') || searchParams.has('review');
+  const studioPositionStorageKey = useMemo(() => studioSessionKey(user), [user]);
+  const storedStudioPosition = useMemo(
+    () => (hasDirectStudioLocation ? {} : readStudioSession(studioPositionStorageKey)),
+    [hasDirectStudioLocation, studioPositionStorageKey],
+  );
+  const storedSelectedLessonId = Number(storedStudioPosition.selectedLessonId || 0) || null;
   const visibleEditorPanels = useMemo(
-    () => EDITOR_PANELS.filter((panel) => panel !== 'intelligence' || intelligenceFeatureEnabled),
-    [intelligenceFeatureEnabled],
+    () => EDITOR_PANELS
+      .filter((panel) => panel !== 'intelligence' || intelligenceFeatureEnabled)
+      .filter((panel) => !readOnlyReviewRequested || ['transcript', 'slides', 'moderation', 'intelligence'].includes(panel)),
+    [intelligenceFeatureEnabled, readOnlyReviewRequested],
   );
   const previewVideoRef = useRef(null);
   const previewSectionRef = useRef(null);
   const transcriptEditorRef = useRef(null);
   const ttsSettingsRef = useRef(null);
   const selectedLessonIdRef = useRef(null);
-  const [searchParams, setSearchParams] = useSearchParams();
+  const projectListCacheRef = useRef(new Map());
+  const projectDetailCacheRef = useRef(new Map());
+  const lessonNotesHydratedProjectRef = useRef(null);
+  const studioLocalDraftScope = useMemo(() => localDraftScope(user), [user]);
 
   const [projects, setProjects] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loadingProjects, setLoadingProjects] = useState(false);
+  const [loadingMoreProjects, setLoadingMoreProjects] = useState(false);
+  const [projectsError, setProjectsError] = useState('');
+  const [projectPageMeta, setProjectPageMeta] = useState({
+    totalCount: null,
+    limit: STUDIO_PROJECT_PAGE_SIZE,
+    offset: 0,
+    nextOffset: null,
+    hasNext: false,
+  });
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [selectedLessonId, setSelectedLessonId] = useState(null);
-  const [activeTab, setActiveTab] = useState('overview');
-  const [activeEditorPanel, setActiveEditorPanel] = useState('transcript');
+  const [selectedLessonId, setSelectedLessonId] = useState(
+    () => requestedLessonId || storedSelectedLessonId,
+  );
+  const [activeTab, setActiveTab] = useState(
+    () => (LESSON_TABS.includes(storedStudioPosition.activeTab) ? storedStudioPosition.activeTab : 'overview'),
+  );
+  const [activeEditorPanel, setActiveEditorPanel] = useState(
+    () => (
+      visibleEditorPanels.includes(storedStudioPosition.activeEditorPanel)
+        ? storedStudioPosition.activeEditorPanel
+        : 'transcript'
+    ),
+  );
   const [transcriptPages, setTranscriptPages] = useState([]);
   const [selectedLessonDraftMetadata, setSelectedLessonDraftMetadata] = useState({});
-  const [selectedPageKey, setSelectedPageKey] = useState('');
-  const [selectedPageIndex, setSelectedPageIndex] = useState(0);
+  const [selectedPageKey, setSelectedPageKey] = useState(() => textValue(storedStudioPosition.selectedPageKey));
+  const [selectedPageIndex, setSelectedPageIndex] = useState(() => (
+    Number.isFinite(Number(storedStudioPosition.selectedPageIndex))
+      ? Number(storedStudioPosition.selectedPageIndex)
+      : 0
+  ));
   const [sceneDraftStatus, setSceneDraftStatus] = useState({});
   const [activeRerenderStatus, setActiveRerenderStatus] = useState(null);
   const [expandedSlideKeys, setExpandedSlideKeys] = useState({});
@@ -1755,6 +2645,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [globalEditorActionBusy, setGlobalEditorActionBusy] = useState('');
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
+  const [transcriptDirty, setTranscriptDirty] = useState(false);
+  const [ttsDirty, setTtsDirty] = useState(false);
+  const [editorResetNonce, setEditorResetNonce] = useState(0);
   const [avatarVisibilitySaving, setAvatarVisibilitySaving] = useState(false);
   const [avatarRerendering, setAvatarRerendering] = useState(false);
   const [avatarRerenderMessage, setAvatarRerenderMessage] = useState('');
@@ -1765,24 +2658,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   }, [activeEditorPanel, intelligenceFeatureEnabled]);
 
-  const filteredProjects = useMemo(() => {
-    if (!searchQuery) return projects;
-    const q = searchQuery.toLowerCase();
-    return projects.filter((project) => {
-      const title = String(project.title || `Project #${project.id}`).toLowerCase();
-      const desc = String(project.description || '').toLowerCase();
-      const cat = String(project.category_name || '').toLowerCase();
-      const statusLabel = projectStatusLabel(project).toLowerCase();
-      const pubLabel = projectPublicationLabel(project).toLowerCase();
-      return (
-        title.includes(q)
-        || desc.includes(q)
-        || cat.includes(q)
-        || statusLabel.includes(q)
-        || pubLabel.includes(q)
-      );
-    });
-  }, [projects, searchQuery]);
+  useEffect(() => {
+    if (!visibleEditorPanels.includes(activeEditorPanel)) {
+      setActiveEditorPanel(visibleEditorPanels[0] || 'transcript');
+    }
+  }, [activeEditorPanel, visibleEditorPanels]);
+
+  const activeProjectSearchQuery = useMemo(() => String(searchQuery || '').trim(), [searchQuery]);
+  const filteredProjects = projects;
 
   const [sourceFile, setSourceFile] = useState(null);
   const [coverFile, setCoverFile] = useState(null);
@@ -1796,36 +2679,126 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [editorSavedAtLabel, setEditorSavedAtLabel] = useState('');
 
   const [lessonNotes, setLessonNotes] = useState('');
+  const [lessonNotesSavedValue, setLessonNotesSavedValue] = useState('');
   const [lessonNotesSavedAt, setLessonNotesSavedAt] = useState('');
+  const [lessonNotesLocalDraft, setLessonNotesLocalDraft] = useState(null);
 
-  const requestedLessonId = Number(searchParams.get('lesson') || 0) || null;
-  const isReviewMode = searchParams.get('review') === '1' && isStaffOrAdmin(user);
-  const requestedStudioView = searchParams.get('view');
-  const studioView = isReviewMode ? 'lessons' : requestedStudioView === 'editor'
-    ? 'editor'
-    : requestedStudioView === 'playlists'
-      ? 'playlists'
-      : 'lessons';
+  const isReviewMode = readOnlyReviewRequested;
+  const storedStudioView = textValue(storedStudioPosition.studioView);
+  const effectiveStudioView = requestedStudioView || storedStudioView;
+  const studioView = isReviewMode
+    ? (effectiveStudioView === 'editor' ? 'editor' : 'lessons')
+    : effectiveStudioView === 'editor'
+      ? 'editor'
+      : effectiveStudioView === 'playlists'
+        ? 'playlists'
+        : 'lessons';
   const isStudioUser = canAccessStudio(user);
 
-  const refreshProjects = useCallback(async ({ showLoading = true, preserveOnError = false } = {}) => {
+  useEffect(() => {
+    if (hasDirectStudioLocation || !storedStudioPosition.scrollY) return undefined;
+    const restoreId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number(storedStudioPosition.scrollY) || 0, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(restoreId);
+  }, [hasDirectStudioLocation, storedStudioPosition.scrollY]);
+
+  useEffect(() => {
+    if (!studioPositionStorageKey || !isStudioUser) return;
+    writeStudioSession(studioPositionStorageKey, {
+      studioView,
+      selectedLessonId: selectedLessonId || null,
+      activeTab,
+      activeEditorPanel,
+      selectedPageKey,
+      selectedPageIndex,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [
+    activeEditorPanel,
+    activeTab,
+    isStudioUser,
+    selectedLessonId,
+    selectedPageIndex,
+    selectedPageKey,
+    studioPositionStorageKey,
+    studioView,
+  ]);
+
+  useEffect(() => {
+    if (!studioPositionStorageKey || !isStudioUser) return undefined;
+    const persistScrollPosition = () => {
+      writeStudioSession(studioPositionStorageKey, {
+        studioView,
+        selectedLessonId: selectedLessonId || null,
+        activeTab,
+        activeEditorPanel,
+        selectedPageKey,
+        selectedPageIndex,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('pagehide', persistScrollPosition);
+    window.addEventListener('beforeunload', persistScrollPosition);
+    return () => {
+      persistScrollPosition();
+      window.removeEventListener('pagehide', persistScrollPosition);
+      window.removeEventListener('beforeunload', persistScrollPosition);
+    };
+  }, [
+    activeEditorPanel,
+    activeTab,
+    isStudioUser,
+    selectedLessonId,
+    selectedPageIndex,
+    selectedPageKey,
+    studioPositionStorageKey,
+    studioView,
+  ]);
+
+  const refreshProjects = useCallback(async ({
+    showLoading = true,
+    preserveOnError = false,
+    append = false,
+    offset = 0,
+  } = {}) => {
     if (!user || !isStudioUser) return;
 
-    if (showLoading) setLoadingProjects(true);
+    const request = { limit: STUDIO_PROJECT_PAGE_SIZE, offset, q: activeProjectSearchQuery };
+    if (append) {
+      setLoadingMoreProjects(true);
+    } else if (showLoading) {
+      setLoadingProjects(true);
+    }
+    setProjectsError('');
     try {
-      const payload = await fetchProjects();
+      const cachedPayload = readProjectListCache(projectListCacheRef.current, request);
+      const payload = cachedPayload || await fetchProjects(request);
+      if (!cachedPayload) {
+        writeProjectListCache(projectListCacheRef.current, request, payload);
+      }
       let nextProjects = normalizeProjectList(payload);
-      if (isReviewMode && requestedLessonId && !nextProjects.some((project) => project.id === requestedLessonId)) {
-        const reviewProject = await fetchProject(requestedLessonId);
+      const projectIdToPreserve = requestedLessonId || storedSelectedLessonId;
+      if (
+        projectIdToPreserve
+        && !activeProjectSearchQuery
+        && offset === 0
+        && !nextProjects.some((project) => project.id === projectIdToPreserve)
+      ) {
+        const reviewProject = readProjectDetailCache(projectDetailCacheRef.current, projectIdToPreserve)
+          || await fetchProject(projectIdToPreserve);
+        writeProjectDetailCache(projectDetailCacheRef.current, reviewProject);
         nextProjects = [reviewProject, ...nextProjects.filter((project) => project.id !== reviewProject.id)];
       }
-      setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, nextProjects));
+      cacheProjectWindow(projectDetailCacheRef.current, nextProjects, selectedLessonIdRef.current || projectIdToPreserve);
+      setProjectPageMeta(projectPaginationMeta(payload, STUDIO_PROJECT_PAGE_SIZE));
+      setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, nextProjects, { append }));
       return nextProjects;
-    } catch {
+    } catch (projectError) {
       if (isReviewMode && requestedLessonId) {
         try {
           const reviewProject = await fetchProject(requestedLessonId);
-          setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, [reviewProject]));
+          setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, [reviewProject], { append }));
           return [reviewProject];
         } catch {
           // Fall through to the standard error handling below.
@@ -1834,11 +2807,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       if (!preserveOnError) {
         setProjects([]);
       }
+      setProjectsError(projectError.message || 'Could not load lessons.');
       return null;
     } finally {
-      if (showLoading) setLoadingProjects(false);
+      if (append) {
+        setLoadingMoreProjects(false);
+      } else if (showLoading) {
+        setLoadingProjects(false);
+      }
     }
-  }, [isReviewMode, isStudioUser, requestedLessonId, user]);
+  }, [activeProjectSearchQuery, isReviewMode, isStudioUser, requestedLessonId, storedSelectedLessonId, user]);
 
   useEffect(() => {
     if (!user || !isStudioUser) return;
@@ -1849,6 +2827,27 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
     refreshProjects();
   }, [isStudioUser, refreshProjects, user]);
+
+  const loadMoreProjects = useCallback(() => {
+    if (loadingProjects || loadingMoreProjects || !projectPageMeta.hasNext || projectPageMeta.nextOffset === null) {
+      return null;
+    }
+    return refreshProjects({
+      showLoading: false,
+      preserveOnError: true,
+      append: true,
+      offset: projectPageMeta.nextOffset,
+    });
+  }, [loadingMoreProjects, loadingProjects, projectPageMeta.hasNext, projectPageMeta.nextOffset, refreshProjects]);
+
+  const handleMyLessonsScroll = useCallback((event) => {
+    const target = event.currentTarget;
+    if (!target) return;
+    const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+    if (remaining < 180) {
+      loadMoreProjects();
+    }
+  }, [loadMoreProjects]);
 
   useEffect(() => {
     if (!projects.length) {
@@ -1891,13 +2890,24 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const selectedModeration = selectedLesson?.id ? moderationByProject[selectedLesson.id] || null : null;
   const selectedLessonIntelligence = selectedLesson?.id ? lessonIntelligenceByProject[selectedLesson.id] || null : null;
+
+  useEffect(() => {
+    if (!readOnlyReview || adminReviewResponse.trim()) return;
+    const suggested = publisherMessageForModeration(selectedModeration);
+    if (suggested) setAdminReviewResponse(suggested);
+  }, [adminReviewResponse, readOnlyReview, selectedModeration]);
+
   const selectedModerationFindings = useMemo(
-    () => (Array.isArray(selectedModeration?.findings) ? selectedModeration.findings : []),
+    () => mergeModerationIssues(selectedModeration?.findings, selectedModeration?.visual_issues),
     [selectedModeration],
+  );
+  const selectedProjectModerationFindings = useMemo(
+    () => getStudioVisualIssues(selectedLesson),
+    [selectedLesson],
   );
   const selectedDraftModeration = plainObject(selectedLessonDraftMetadata?.moderation) || {};
   const selectedDraftModerationFindings = useMemo(
-    () => (Array.isArray(selectedDraftModeration?.findings) ? selectedDraftModeration.findings : []),
+    () => mergeModerationIssues(selectedDraftModeration?.findings, selectedDraftModeration?.visual_issues),
     [selectedDraftModeration],
   );
   const selectedDraftModerationStatus = normalizedStatus(
@@ -1905,36 +2915,150 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       || selectedDraftModeration?.moderation_status
       || selectedDraftModeration?.final_decision,
   );
-  const selectedDraftBlocked = ['revision_required', 'needs_admin_review', 'admin_rejected', 'block'].includes(selectedDraftModerationStatus);
+  const selectedDraftManualApprovalCurrent = currentManualApprovalCoversDraft(selectedLesson, selectedLessonDraftMetadata);
+  const selectedDraftApproved = !selectedDraftManualApprovalCurrent
+    && ['approved', 'admin_approved', 'allow'].includes(selectedDraftModerationStatus);
+  const selectedDraftBlocked = !selectedDraftManualApprovalCurrent
+    && ['revision_required', 'needs_admin_review', 'admin_rejected', 'failed', 'block', 'blocked', 'rejected'].includes(selectedDraftModerationStatus);
   const draftRerenderInProgress = Boolean(
     selectedLessonDraftMetadata?.dirty
       && ['pending', 'running', 'processing'].includes(normalizedStatus(activeRerenderStatus)),
   );
   const selectedLessonHasDraft = Boolean(selectedLessonDraftMetadata?.dirty);
-  const selectedDraftRenderRequired = Boolean(selectedLessonDraftMetadata?.render_required);
+  const selectedDraftRenderRequired = Boolean(
+    selectedLessonDraftMetadata?.render_required
+      || selectedLessonDraftMetadata?.background_dirty
+      || selectedLessonDraftMetadata?.transcript_dirty
+      || selectedLessonDraftMetadata?.tts_dirty
+      || selectedLessonDraftMetadata?.source_dirty
+  );
   const selectedDraftStatusMessage = selectedDraftBlocked
     ? 'Draft blocked by moderation. Edit the highlighted content or discard draft. Public lesson was not changed.'
     : draftRerenderInProgress
       ? 'Draft rerender in progress.'
       : selectedLessonHasDraft && !selectedDraftRenderRequired
-        ? 'Cover updated. Video rerender not required.'
+        ? (selectedLessonDraftMetadata?.cover_dirty
+          ? (selectedDraftApproved
+            ? 'Draft cover passed visual moderation. Save changes to make it public.'
+            : 'Cover is pending visual review before it becomes public.')
+          : 'Draft changes saved. Video rerender is not required.')
       : 'Draft changes saved. Public version is unchanged until Save & Rerender succeeds.';
   const moderationFindingsForStudio = useMemo(
     () => (selectedDraftBlocked
-      ? [...selectedModerationFindings, ...selectedDraftModerationFindings]
-      : selectedModerationFindings),
-    [selectedDraftBlocked, selectedDraftModerationFindings, selectedModerationFindings],
+      ? [...selectedProjectModerationFindings, ...selectedModerationFindings, ...selectedDraftModerationFindings]
+      : [...selectedProjectModerationFindings, ...selectedModerationFindings]),
+    [selectedDraftBlocked, selectedDraftModerationFindings, selectedModerationFindings, selectedProjectModerationFindings],
   );
-  const { pageWarnings: moderationPageWarnings, assetWarnings: moderationAssetWarnings } = useMemo(
+  const {
+    pageWarnings: moderationPageWarnings,
+    slideWarnings: moderationSlideWarnings,
+    backgroundWarnings: moderationBackgroundWarnings,
+    assetWarnings: moderationAssetWarnings,
+    unidentifiedWarnings: moderationUnidentifiedWarnings,
+  } = useMemo(
     () => buildModerationWarningMaps(moderationFindingsForStudio, transcriptPages),
     [moderationFindingsForStudio, transcriptPages],
   );
   const draftCoverUrl = textValue(selectedLesson?.draft_cover_url || selectedLesson?.draft_thumbnail_url);
   const hasDraftCover = Boolean(draftCoverUrl);
+  const selectedLessonCoverBackgroundUrl = safeCssBackgroundUrl(
+    draftCoverUrl || selectedLesson?.cover_url || selectedLesson?.thumbnail_url,
+  );
   const selectedVisualMarker = projectVisualStaleMarker(selectedLesson, selectedModeration);
   const coverVisualNeedsRecheck = visualModerationEnabled
     && visualMarkerTargetsCover(selectedVisualMarker)
     && moderationMarkerIsStale(selectedVisualMarker);
+  const coverModerationWarningFlagged = moderationWarningIsFlagged(moderationAssetWarnings.cover);
+  const coverModerationWarningPending = moderationWarningIsPending(moderationAssetWarnings.cover);
+  const lessonNotesDirty = Boolean(selectedLesson?.id && lessonNotes !== lessonNotesSavedValue);
+  const selectedLessonDirtyScope = useMemo(() => {
+    if (!selectedLesson?.id) {
+      return {
+        hasChanges: false,
+        requiresRerender: false,
+        canSaveChanges: false,
+        canDiscardChanges: false,
+        canSaveRerender: false,
+        moderationMessage: '',
+        saveDisabledReason: 'No lesson selected.',
+        discardDisabledReason: 'No lesson selected.',
+        rerenderDisabledReason: 'No lesson selected.',
+      };
+    }
+
+    const savedDraftDirty = Boolean(selectedLessonHasDraft);
+    const savedRenderDraftDirty = Boolean(savedDraftDirty && selectedDraftRenderRequired);
+    const savedNonRenderDraftDirty = Boolean(savedDraftDirty && !selectedDraftRenderRequired);
+    const requiresRerender = Boolean(transcriptDirty || ttsDirty || savedRenderDraftDirty);
+    const hasChanges = Boolean(requiresRerender || savedNonRenderDraftDirty || lessonNotesDirty);
+    const moderationStatus = projectModerationStatus(selectedLesson, selectedModeration);
+    const visualModerationMessage = visualModerationRerenderMessage({
+      issues: [
+        ...selectedProjectModerationFindings,
+        ...selectedModerationFindings,
+        ...selectedDraftModerationFindings,
+      ],
+      moderationStatus,
+      draftModerationStatus: selectedDraftModerationStatus,
+      visualMarker: selectedVisualMarker,
+    });
+    const draftModerationUnlocksRerender = Boolean(
+      (savedRenderDraftDirty && selectedDraftApproved && !visualModerationMessage)
+      || (transcriptDirty && !selectedDraftBlocked && !visualModerationMessage)
+    );
+    const rerenderBlockedByModeration = requiresRerender && (
+      Boolean(visualModerationMessage)
+      || selectedDraftBlocked
+      || (!draftModerationUnlocksRerender
+        && ['pending', 'processing', 'running', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed', 'block', 'blocked', 'rejected'].includes(moderationStatus))
+    );
+    const moderationBlockedMessage = selectedDraftBlocked
+      ? (visualModerationMessage || selectedDraftStatusMessage)
+      : visualModerationMessage
+        ? visualModerationMessage
+      : moderationMessage(selectedLesson, selectedModeration);
+    const moderationMessageForRerender = rerenderBlockedByModeration ? moderationBlockedMessage : '';
+    const canSaveChanges = true;
+    const canDiscardChanges = hasChanges;
+    const canSaveRerender = Boolean(requiresRerender && !moderationMessageForRerender);
+
+    return {
+      hasChanges,
+      requiresRerender,
+      canSaveChanges,
+      canDiscardChanges,
+      canSaveRerender,
+      moderationMessage: moderationMessageForRerender,
+      saveDisabledReason: '',
+      discardDisabledReason: hasChanges ? '' : 'No editor changes to discard.',
+      rerenderDisabledReason: !hasChanges
+        ? 'No editor changes to rerender.'
+        : !requiresRerender
+          ? 'Current changes do not affect the video.'
+          : moderationMessageForRerender,
+      notesDirty: lessonNotesDirty,
+      savedNonRenderDraftDirty,
+      savedRenderDraftDirty,
+      transcriptDirty,
+      ttsDirty,
+    };
+  }, [
+    lessonNotesDirty,
+    selectedDraftBlocked,
+    selectedDraftModerationFindings,
+    selectedDraftModerationStatus,
+    selectedDraftRenderRequired,
+    selectedDraftStatusMessage,
+    selectedDraftApproved,
+    selectedLesson,
+    selectedLessonHasDraft,
+    selectedModeration,
+    selectedModerationFindings,
+    selectedProjectModerationFindings,
+    selectedVisualMarker,
+    transcriptDirty,
+    ttsDirty,
+  ]);
   const previewSubtitleSummary = useMemo(
     () => subtitleTrackSummary(previewSubtitleTracks, previewLesson),
     [previewLesson, previewSubtitleTracks],
@@ -2073,18 +3197,42 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   }, []);
 
-  const refreshSelectedLessonState = useCallback(async (projectId, { showLoading = false } = {}) => {
-    if (!projectId) return;
+  const refreshSelectedLessonState = useCallback(async (projectId, { preserveOnError = true, bypassCache = false } = {}) => {
+    if (!projectId) return null;
+    if (!bypassCache) {
+      const cachedProject = readProjectDetailCache(projectDetailCacheRef.current, projectId);
+      if (cachedProject) {
+        setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, [cachedProject], { append: true }));
+      }
+    }
+    const refreshProjectSummary = fetchProject(projectId)
+      .then((updatedProject) => {
+        writeProjectDetailCache(projectDetailCacheRef.current, updatedProject);
+        setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, [updatedProject], { append: true }));
+        return updatedProject;
+      })
+      .catch((projectError) => {
+        if (!preserveOnError) {
+          setProjects((previous) => previous.filter((project) => project.id !== projectId));
+        }
+        setProjectsError(projectError.message || 'Could not refresh the selected lesson.');
+        return null;
+      });
     const refreshes = [
-      refreshProjects({ showLoading, preserveOnError: true }),
+      refreshProjectSummary,
       refreshProjectModeration(projectId, { showLoading: false, preserveError: true }),
       refreshProjectTranscript(projectId, { showLoading: false, preserveOnError: true }),
     ];
     if (intelligenceFeatureEnabled) {
       refreshes.push(refreshLessonIntelligence(projectId, { showLoading: false, preserveError: true }));
     }
-    await Promise.all(refreshes);
-  }, [intelligenceFeatureEnabled, refreshLessonIntelligence, refreshProjectModeration, refreshProjectTranscript, refreshProjects]);
+    const [updatedProject] = await Promise.all(refreshes);
+    return updatedProject || null;
+  }, [intelligenceFeatureEnabled, refreshLessonIntelligence, refreshProjectModeration, refreshProjectTranscript]);
+
+  const invalidateSelectedLessonCache = useCallback((projectId) => {
+    invalidateProjectCaches(projectListCacheRef.current, projectDetailCacheRef.current, projectId || selectedLessonIdRef.current);
+  }, []);
 
   const selectedLessonNeedsPolling = useMemo(() => studioLessonNeedsPolling({
     project: selectedLesson,
@@ -2307,13 +3455,44 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   useEffect(() => {
     if (!selectedLesson?.id) {
       setLessonNotes('');
+      setLessonNotesSavedValue('');
       setLessonNotesSavedAt('');
+      setLessonNotesLocalDraft(null);
+      lessonNotesHydratedProjectRef.current = null;
       return;
     }
 
     const stored = window.localStorage.getItem(lessonNotesKey(selectedLesson.id)) || '';
+    const localDraft = readLessonNotesDraft(studioLocalDraftScope, selectedLesson.id);
+    const localDraftValue = textValue(localDraft?.value);
     setLessonNotes(stored);
+    setLessonNotesSavedValue(stored);
     setLessonNotesSavedAt(stored ? 'Loaded saved lesson notes' : 'No lesson notes yet');
+    lessonNotesHydratedProjectRef.current = selectedLesson.id;
+    if (localDraft && localDraftValue !== stored) {
+      setLessonNotesLocalDraft({
+        ...localDraft,
+        value: localDraftValue,
+      });
+    } else {
+      clearLessonNotesDraft(studioLocalDraftScope, selectedLesson.id);
+      setLessonNotesLocalDraft(null);
+    }
+  }, [selectedLesson?.id, studioLocalDraftScope]);
+
+  useEffect(() => {
+    if (!selectedLesson?.id || lessonNotesHydratedProjectRef.current !== selectedLesson.id) return;
+    if (lessonNotesLocalDraft) return;
+    if (lessonNotes !== lessonNotesSavedValue) {
+      writeLessonNotesDraft(studioLocalDraftScope, selectedLesson.id, lessonNotes);
+    } else {
+      clearLessonNotesDraft(studioLocalDraftScope, selectedLesson.id);
+    }
+  }, [lessonNotes, lessonNotesLocalDraft, lessonNotesSavedValue, selectedLesson?.id, studioLocalDraftScope]);
+
+  useEffect(() => {
+    setTranscriptDirty(false);
+    setTtsDirty(false);
   }, [selectedLesson?.id]);
 
   useEffect(() => {
@@ -2435,7 +3614,24 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const saveLessonNotes = () => {
     if (!selectedLesson?.id) return;
     window.localStorage.setItem(lessonNotesKey(selectedLesson.id), lessonNotes);
+    clearLessonNotesDraft(studioLocalDraftScope, selectedLesson.id);
+    setLessonNotesLocalDraft(null);
+    setLessonNotesSavedValue(lessonNotes);
     setLessonNotesSavedAt(`Saved at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
+  };
+
+  const restoreLessonNotesDraft = () => {
+    if (!selectedLesson?.id || !lessonNotesLocalDraft) return;
+    setLessonNotes(textValue(lessonNotesLocalDraft.value));
+    setLessonNotesLocalDraft(null);
+    setLessonNotesSavedAt('Unsaved local draft restored');
+  };
+
+  const discardLessonNotesDraft = () => {
+    if (!selectedLesson?.id) return;
+    clearLessonNotesDraft(studioLocalDraftScope, selectedLesson.id);
+    setLessonNotesLocalDraft(null);
+    setLessonNotesSavedAt(lessonNotesSavedValue ? 'Loaded saved lesson notes' : 'No lesson notes yet');
   };
 
   const handleDeleteProject = async (project) => {
@@ -2457,7 +3653,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     if (!window.confirm(`Rerender ${project.title || `project #${project.id}`}?${queueNote}`)) return false;
     try {
       await rerenderProject(project.id, hasAvatarOverride ? { avatarEnabled: options.avatarEnabled } : {});
-      await refreshSelectedLessonState(project.id, { showLoading: false });
+      invalidateSelectedLessonCache(project.id);
+      await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
       return true;
     } catch (err) {
       window.alert(err.message || 'Rerender failed.');
@@ -2470,6 +3667,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setAvatarVisibilitySaving(true);
     try {
       const updated = await updateProjectAvatarVisible(project.id, nextVisible);
+      invalidateSelectedLessonCache(project.id);
       handleProjectUpdated(updated);
       if (selectedLesson?.id === project.id) {
         setSelectedLessonId(project.id);
@@ -2501,11 +3699,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, []);
 
   const handleAvatarOnlyRerender = async () => {
-    if (!avatarFeatureEnabled || !selectedLesson?.id || avatarRerendering) return;
+    if (readOnlyReview || !avatarFeatureEnabled || !selectedLesson?.id || avatarRerendering) return;
     setAvatarRerendering(true);
     setAvatarRerenderMessage('');
     try {
       const result = await rerenderProjectAvatar(selectedLesson.id);
+      invalidateSelectedLessonCache(selectedLesson.id);
       handleProjectUpdated({
         ...selectedLesson,
         avatar_processing_status: result.avatar_processing_status || 'queued',
@@ -2514,7 +3713,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         avatar_runtime_settings: result.avatar_runtime_settings || selectedLesson.avatar_runtime_settings,
       });
       setAvatarRerenderMessage(result.message || 'Avatar rerender queued.');
-      refreshSelectedLessonState(selectedLesson.id, { showLoading: false, preserveOnError: true }).catch(() => {});
+      refreshSelectedLessonState(selectedLesson.id, { showLoading: false, preserveOnError: true, bypassCache: true }).catch(() => {});
     } catch (err) {
       setAvatarRerenderMessage(err.message || 'Avatar rerender failed to start.');
     } finally {
@@ -2570,6 +3769,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     if (!payload) return;
     const projectId = Number(payload.project_id || payload.id || payload.project?.id || selectedLesson?.id || 0) || null;
     if (!projectId) return;
+    invalidateSelectedLessonCache(projectId);
 
     const payloadSummary = plainObject(payload.moderation_summary)
       || plainObject(payload.summary)
@@ -2609,9 +3809,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           ...current,
           moderation_status: effectiveStatus || current.moderation_status || fallbackStatus || 'not_scanned',
           moderation_summary: nextSummary,
-          latest_run_id: current.latest_run_id
-            ?? payload.latest_run_id
+          latest_run_id: payload.latest_run_id
             ?? payload.last_moderation_run_id
+            ?? payload.run_id
+            ?? current.latest_run_id
             ?? selectedLesson?.last_moderation_run_id
             ?? null,
           ...(textMarker ? { editor_text_changed: textMarker } : {}),
@@ -2636,10 +3837,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         moderation_summary: nextSummary,
       };
     }));
-  }, [selectedLesson?.id, selectedLesson?.last_moderation_run_id]);
+  }, [invalidateSelectedLessonCache, selectedLesson?.id, selectedLesson?.last_moderation_run_id]);
 
   const handleModerationRescan = async (project) => {
     if (!project?.id) return;
+    if (String(project.id) === String(selectedLesson?.id || '') && transcriptEditorRef.current?.hasUnsavedChanges?.()) {
+      setModerationError('Save transcript changes before rerunning moderation.');
+      return;
+    }
     setModerationActionBusy('rescan');
     setModerationError('');
     try {
@@ -2659,7 +3864,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         };
       });
       updateProjectModerationStatus(project.id, payload?.moderation_status || 'pending');
-      await refreshSelectedLessonState(project.id, { showLoading: false });
+      invalidateSelectedLessonCache(project.id);
+      await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
     } catch (err) {
       setModerationError(err.message || 'Moderation rescan failed.');
     } finally {
@@ -2689,8 +3895,31 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         };
       });
       updateProjectModerationStatus(project.id, 'needs_admin_review');
-      await refreshSelectedLessonState(project.id, { showLoading: false });
+      invalidateSelectedLessonCache(project.id);
+      await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
     } catch (err) {
+      const duplicateOpenRequest = err?.status === 409 || /review request is already open/i.test(err?.message || '');
+      if (duplicateOpenRequest) {
+        setReviewDialogOpen(false);
+        setReviewMessage('');
+        setModerationByProject((previous) => {
+          const current = previous[project.id] || {};
+          return {
+            ...previous,
+            [project.id]: {
+              ...current,
+              moderation_status: 'needs_admin_review',
+              can_request_admin_review: false,
+              can_publish: false,
+              message: err.message || 'A review request is already open. Please wait for an admin response.',
+            },
+          };
+        });
+        updateProjectModerationStatus(project.id, 'needs_admin_review');
+        invalidateSelectedLessonCache(project.id);
+        await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
+        return;
+      }
       setModerationError(err.message || 'Admin review request failed.');
     } finally {
       setModerationActionBusy('');
@@ -2699,7 +3928,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const handleAdminReviewAction = async (action) => {
     if (!selectedLesson?.id || adminReviewActionBusy) return;
-    const reason = adminReviewResponse.trim();
+    const reason = adminReviewResponse.trim() || (action === 'request_changes'
+      ? publisherMessageForModeration(selectedModeration)
+      : '');
     setAdminReviewActionBusy(action);
     setAdminReviewActionMessage('');
     setAdminReviewActionError('');
@@ -2721,7 +3952,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       }
 
       if (nextStatus) updateProjectModerationStatus(selectedLesson.id, nextStatus);
-      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, preserveOnError: true });
+      invalidateSelectedLessonCache(selectedLesson.id);
+      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, preserveOnError: true, bypassCache: true });
       await refreshProjectModeration(selectedLesson.id, { showLoading: false, preserveError: true });
       setAdminReviewActionMessage(payload?.message || 'Moderation action saved.');
     } catch (err) {
@@ -2850,12 +4082,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
     try {
       const updated = await updateProjectPublished(project.id, nextPublished);
+      invalidateSelectedLessonCache(project.id);
       handleProjectUpdated(updated);
-      await refreshSelectedLessonState(project.id, { showLoading: false });
+      await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
     } catch (err) {
       const message = err.message || 'Publication update failed.';
       setModerationError(message);
-      await refreshSelectedLessonState(project.id, { showLoading: false });
+      invalidateSelectedLessonCache(project.id);
+      await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
       window.alert(message);
     }
   };
@@ -2877,6 +4111,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   const openEditorForProject = (project) => {
     if (readOnlyReview) return;
+    writeProjectDetailCache(projectDetailCacheRef.current, project);
+    cacheProjectWindow(projectDetailCacheRef.current, projects, project.id);
     setSelectedLessonId(project.id);
     setStudioLocation('editor', project.id);
   };
@@ -2901,6 +4137,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   };
 
   const selectLesson = (project) => {
+    writeProjectDetailCache(projectDetailCacheRef.current, project);
+    cacheProjectWindow(projectDetailCacheRef.current, projects, project.id);
     setSelectedLessonId(project.id);
     setStudioLocation(studioView, project.id);
   };
@@ -2946,7 +4184,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           highlightDetector: sceneSettings.highlightDetector,
           highlightPreviewUrl: sceneSettings.highlightPreviewUrl,
           draftBackgroundDirty: Boolean(page?.draft_background_dirty || page?.draft_scene_dirty),
-          moderationWarning: moderationPageWarnings[key] || null,
+          moderationWarning: moderationSlideWarnings[key] || null,
           page,
         };
       });
@@ -2989,7 +4227,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       subtitleCount: 0,
       thumbnailUrl: '',
     }));
-  }, [editorCanvas, moderationPageWarnings, sceneDraftStatus, transcriptPages]);
+  }, [editorCanvas, moderationSlideWarnings, sceneDraftStatus, transcriptPages]);
 
   const sceneKeysSignature = useMemo(
     () => sceneItems.map((scene) => scene.key).join('|'),
@@ -3037,6 +4275,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const selectedSceneHighlightStyle = selectedScene?.highlightStyle || 'none';
   const selectedSceneActiveHighlightStyle = selectedSceneHighlightEnabled ? selectedSceneHighlightStyle : 'none';
   const selectedSceneHighlightDetector = selectedScene?.highlightDetector || 'auto';
+  const selectedSceneBackgroundWarning = selectedScene?.key
+    ? moderationBackgroundWarnings[selectedScene.key] || null
+    : null;
+  const selectedSceneBackgroundWarningFlagged = moderationWarningIsFlagged(selectedSceneBackgroundWarning);
+  const selectedSceneBackgroundWarningPending = moderationWarningIsPending(selectedSceneBackgroundWarning);
   const selectedSceneHasRenderDependencyWarning = selectedSceneSourceWarnings.some((warning) => (
     warning === 'slide_render_dependency_missing_libreoffice'
     || warning === 'slide_render_dependency_missing_pdftoppm'
@@ -3138,17 +4381,25 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [handleSelectScene, sceneItems]);
 
   const handleSelectModerationFinding = useCallback((finding) => {
+    if (isRealVisualIssue(finding)) {
+      const target = getIssueEditorTarget(finding, transcriptPages);
+      if ((target.type === 'background' || target.type === 'slide') && target.page) {
+        handleSelectTranscriptPage(target.page, target.pageIndex);
+        setActiveEditorPanel('slides');
+        return;
+      }
+      if (target.type === 'cover') {
+        setActiveEditorPanel('slides');
+      }
+      return;
+    }
+    if (!isTextModerationIssue(finding)) return;
     const pageIndex = transcriptPages.findIndex((page, index) => (
       findingMatchesTranscriptPage(finding, page, index)
     ));
     if (pageIndex >= 0) {
       handleSelectTranscriptPage(transcriptPages[pageIndex], pageIndex);
       setActiveEditorPanel('transcript');
-      return;
-    }
-    const kind = findingAssetKind(finding);
-    if (kind === 'cover' || kind === 'background') {
-      setActiveEditorPanel('slides');
     }
   }, [handleSelectTranscriptPage, transcriptPages]);
 
@@ -3165,12 +4416,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, []);
 
   const handleScenePatch = useCallback(async (patch, message = 'Scene settings updated.') => {
-    if (!selectedLesson?.id || !selectedScene?.page?.id) return;
+    if (readOnlyReview || !selectedLesson?.id || !selectedScene?.page?.id) return;
     setSceneActionBusy('scene');
     setSceneActionError('');
     setSceneActionMessage('');
     try {
       const payload = await updateTranscriptPageScene(selectedLesson.id, selectedScene.page.id, patch);
+      invalidateSelectedLessonCache(selectedLesson.id);
       replaceTranscriptPage(payload?.page);
       if (payload?.has_draft) {
         setSelectedLessonDraftMetadata(payload?.draft_metadata || {});
@@ -3181,7 +4433,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     } finally {
       setSceneActionBusy('');
     }
-  }, [replaceTranscriptPage, selectedLesson?.id, selectedScene?.page]);
+  }, [invalidateSelectedLessonCache, readOnlyReview, replaceTranscriptPage, selectedLesson?.id, selectedScene?.page]);
 
   const handleSceneModeChange = useCallback((event) => {
     const nextMode = event.target.value;
@@ -3204,7 +4456,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [handleScenePatch, selectedSceneHasCustomBackground, selectedSceneOriginalAvailable, selectedSceneSourceBackgroundAvailable, selectedSceneSourceBackgroundMessage]);
 
   const handleHighlightPreview = useCallback(async () => {
-    if (!selectedLesson?.id || !selectedScene?.page?.id || highlightPreviewBusy) return;
+    if (readOnlyReview || !selectedLesson?.id || !selectedScene?.page?.id || highlightPreviewBusy) return;
     setHighlightPreviewBusy(true);
     setHighlightPreviewMessage('');
     setSceneActionError('');
@@ -3254,10 +4506,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     selectedSceneHighlightEnabled,
     selectedSceneHighlightStyle,
     fetchAuthenticatedAssetBlobUrl,
+    readOnlyReview,
   ]);
 
   const handleSceneBackgroundUpload = useCallback(async (file) => {
-    if (!file || !selectedLesson?.id || !selectedScene?.page?.id) return;
+    if (readOnlyReview || !file || !selectedLesson?.id || !selectedScene?.page?.id) return;
     setSceneActionBusy('background');
     setSceneActionError('');
     setSceneActionMessage('');
@@ -3266,21 +4519,22 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         backgroundFit: selectedSceneFit,
         textScale: selectedSceneTextScale,
       });
+      invalidateSelectedLessonCache(selectedLesson.id);
       replaceTranscriptPage(payload?.page);
       if (payload?.has_draft) {
         setSelectedLessonDraftMetadata(payload?.draft_metadata || {});
       }
-      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false });
+      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
       setSceneActionMessage('Draft background saved. Public background is unchanged until Save & Rerender succeeds.');
     } catch (err) {
       setSceneActionError(err.message || 'Could not upload slide background.');
     } finally {
       setSceneActionBusy('');
     }
-  }, [refreshSelectedLessonState, replaceTranscriptPage, selectedLesson?.id, selectedScene?.page, selectedSceneFit, selectedSceneTextScale]);
+  }, [invalidateSelectedLessonCache, readOnlyReview, refreshSelectedLessonState, replaceTranscriptPage, selectedLesson?.id, selectedScene?.page, selectedSceneFit, selectedSceneTextScale]);
 
   const handleApplyBackgroundToAll = useCallback(async () => {
-    if (!selectedLesson?.id || !selectedScene?.page?.id) return;
+    if (readOnlyReview || !selectedLesson?.id || !selectedScene?.page?.id) return;
     if (selectedSceneMode === 'source_background' && !selectedSceneSourceBackgroundAvailable) {
       setSceneActionMessage('');
       setSceneActionError(selectedSceneSourceBackgroundMessage);
@@ -3306,6 +4560,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         background_fit: selectedSceneFit,
         text_scale: selectedSceneTextScale,
       });
+      invalidateSelectedLessonCache(selectedLesson.id);
       const nextPages = Array.isArray(payload?.pages)
         ? payload.pages
         : await refreshProjectTranscript(selectedLesson.id, { showLoading: false, preserveOnError: true });
@@ -3320,22 +4575,23 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         setSelectedPageIndex(selectedIndex);
         setSelectedPageKey(pageIdentity(nextPage, selectedIndex));
       }
-      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false });
+      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
       setSceneActionMessage('Draft background settings applied to all slides.');
     } catch (err) {
       setSceneActionError(err.message || 'Could not apply background settings to all slides.');
     } finally {
       setSceneActionBusy('');
     }
-  }, [handleTranscriptPagesUpdated, refreshProjectTranscript, refreshSelectedLessonState, selectedLesson?.id, selectedPageIndex, selectedScene?.page, selectedSceneFit, selectedSceneHasCustomBackground, selectedSceneMode, selectedSceneOriginalAvailable, selectedSceneSourceBackgroundAvailable, selectedSceneSourceBackgroundMessage, selectedSceneTextScale]);
+  }, [handleTranscriptPagesUpdated, invalidateSelectedLessonCache, readOnlyReview, refreshProjectTranscript, refreshSelectedLessonState, selectedLesson?.id, selectedPageIndex, selectedScene?.page, selectedSceneFit, selectedSceneHasCustomBackground, selectedSceneMode, selectedSceneOriginalAvailable, selectedSceneSourceBackgroundAvailable, selectedSceneSourceBackgroundMessage, selectedSceneTextScale]);
 
   const handleCoverUpload = useCallback(async (file) => {
-    if (!file || !selectedLesson?.id) return;
+    if (readOnlyReview || !file || !selectedLesson?.id) return;
     setSceneActionBusy('cover');
     setSceneActionError('');
     setSceneActionMessage('');
     try {
-      const updatedProject = await uploadProjectCover(selectedLesson.id, file);
+      const updatedProject = await uploadProjectCover(selectedLesson.id, file, { draftOnly: true });
+      invalidateSelectedLessonCache(selectedLesson.id);
       const cacheToken = Date.now();
       const nextProject = {
         ...updatedProject,
@@ -3354,13 +4610,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       }
       handleProjectUpdated(nextProject);
       setSelectedLessonDraftMetadata(updatedProject?.draft_metadata || {});
-      setSceneActionMessage(updatedProject?.message || 'Cover updated. Video rerender not required.');
+      setSceneActionMessage(updatedProject?.message || 'Draft cover saved. Public cover is unchanged until Save changes succeeds.');
     } catch (err) {
       setSceneActionError(err.message || 'Could not update lesson cover.');
     } finally {
       setSceneActionBusy('');
     }
-  }, [handleProjectUpdated, selectedLesson?.id]);
+  }, [handleProjectUpdated, invalidateSelectedLessonCache, readOnlyReview, selectedLesson?.id]);
 
   const handleDraftStatusChange = useCallback((nextStatus) => {
     setSceneDraftStatus((previous) => {
@@ -3371,26 +4627,64 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, []);
 
   const handleGlobalEditorSave = useCallback(async ({ triggerRerender = false } = {}) => {
+    if (readOnlyReview) return;
     if (!selectedLesson?.id) {
       persistEditorDraft();
       return;
     }
 
-    setGlobalEditorActionBusy(triggerRerender ? 'rerender' : 'save');
+    const shouldTriggerRerender = Boolean(triggerRerender && selectedLessonDirtyScope.requiresRerender);
+    if (shouldTriggerRerender && selectedLessonDirtyScope.moderationMessage) {
+      setGlobalEditorMessage('');
+      setGlobalEditorError(selectedLessonDirtyScope.moderationMessage);
+      return;
+    }
+
+    setGlobalEditorActionBusy(shouldTriggerRerender ? 'rerender' : 'save');
     setGlobalEditorMessage('');
     setGlobalEditorError('');
 
     try {
+      if (!selectedLessonDirtyScope.hasChanges) {
+        await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
+        setGlobalEditorMessage('Lesson is already up to date.');
+        return;
+      }
       const hadTranscriptChanges = Boolean(transcriptEditorRef.current?.hasUnsavedChanges?.());
+      const shouldPromoteNonRenderDraft = Boolean(
+        !shouldTriggerRerender
+        && selectedLessonDirtyScope.savedNonRenderDraftDirty
+        && !selectedLessonDirtyScope.requiresRerender
+      );
       const ttsResult = await ttsSettingsRef.current?.save?.();
       if (ttsResult?.id) {
+        invalidateSelectedLessonCache(ttsResult.id);
         handleProjectUpdated(ttsResult);
       }
 
-      const transcriptResult = await transcriptEditorRef.current?.save?.({ triggerRerender });
+      const transcriptResult = await transcriptEditorRef.current?.save?.({ triggerRerender: shouldTriggerRerender });
+      invalidateSelectedLessonCache(selectedLesson.id);
       applyProjectModerationPayload(transcriptResult, 'not_scanned');
+      let promoteResult = null;
+      if (shouldPromoteNonRenderDraft) {
+        promoteResult = await promoteProjectDraft(selectedLesson.id);
+        invalidateSelectedLessonCache(selectedLesson.id);
+        const cacheToken = Date.now();
+        const nextProject = { ...promoteResult };
+        if (promoteResult?.cover_url) {
+          nextProject.cover_url = cacheBustedMediaUrl(promoteResult.cover_url, cacheToken);
+        }
+        if (promoteResult?.thumbnail_url) {
+          nextProject.thumbnail_url = cacheBustedMediaUrl(promoteResult.thumbnail_url, cacheToken);
+        }
+        handleProjectUpdated(nextProject);
+        applyProjectModerationPayload(promoteResult, 'not_scanned');
+        setSelectedLessonDraftMetadata(promoteResult?.draft_metadata || {});
+      }
       saveLessonNotes();
-      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false });
+      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
+      setTranscriptDirty(false);
+      setTtsDirty(false);
       if (hadTranscriptChanges) {
         if (intelligenceFeatureEnabled && activeEditorPanel === 'intelligence') {
           await handleAnalyzeLessonIntelligence(selectedLesson, { auto: true });
@@ -3408,8 +4702,27 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           });
         }
       }
-      setGlobalEditorMessage(triggerRerender ? 'Saved all changes and queued rerender.' : 'Saved all changes.');
+      const transcriptMessage = textValue(transcriptResult?.message);
+      const promoteMessage = textValue(promoteResult?.message);
+      const rerenderStrategy = textValue(transcriptResult?.rerender_strategy);
+      const nextMessage = shouldTriggerRerender
+        ? transcriptMessage || (
+          rerenderStrategy === 'none'
+            ? 'Saved all changes. Video rerender not required.'
+            : 'Saved all changes and queued rerender.'
+        )
+        : promoteMessage || transcriptMessage || 'Saved all changes.';
+      setGlobalEditorMessage(nextMessage);
     } catch (err) {
+      if (err?.details) {
+        applyProjectModerationPayload(err.details, 'needs_admin_review');
+        if (err.details?.id) {
+          handleProjectUpdated(err.details);
+        } else if (err.details?.project?.id) {
+          handleProjectUpdated(err.details.project);
+        }
+        setSelectedLessonDraftMetadata(err.details?.draft_metadata || err.details?.project?.draft_metadata || selectedLessonDraftMetadata || {});
+      }
       setGlobalEditorError(err.message || 'Could not save all editor changes.');
     } finally {
       setGlobalEditorActionBusy('');
@@ -3420,38 +4733,72 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     handleAnalyzeLessonIntelligence,
     handleProjectUpdated,
     intelligenceFeatureEnabled,
+    invalidateSelectedLessonCache,
+    readOnlyReview,
     refreshSelectedLessonState,
     saveLessonNotes,
     selectedLesson,
+    selectedLessonDraftMetadata,
+    selectedLessonDirtyScope,
   ]);
 
-  const handleDiscardDraft = useCallback(async () => {
-    if (!selectedLesson?.id || globalEditorActionBusy) return;
-    if (!window.confirm('Discard all draft changes and return to the current public version?')) return;
+  const handleDiscardChanges = useCallback(async () => {
+    if (readOnlyReview || !selectedLesson?.id || globalEditorActionBusy) return;
+    if (!selectedLessonDirtyScope.hasChanges) {
+      setGlobalEditorError('');
+      setGlobalEditorMessage('No editor changes to discard.');
+      return;
+    }
+    if (!window.confirm('Discard all editor changes and return to the current saved lesson state?')) return;
 
     setGlobalEditorActionBusy('discard');
     setGlobalEditorMessage('');
     setGlobalEditorError('');
 
     try {
-      const payload = await discardProjectDraft(selectedLesson.id);
-      if (payload?.project?.id) {
-        handleProjectUpdated(payload.project);
+      let discardedBackendDraft = false;
+      if (selectedLessonHasDraft) {
+        const payload = await discardProjectDraft(selectedLesson.id);
+        discardedBackendDraft = true;
+        applyProjectModerationPayload(payload, 'not_scanned');
+        if (payload?.project?.id) {
+          handleProjectUpdated(payload.project);
+        }
+        if (Array.isArray(payload?.pages)) {
+          setTranscriptPages(payload.pages);
+        }
+        setSelectedLessonDraftMetadata(payload?.has_draft ? (payload?.draft_metadata || {}) : {});
       }
-      if (Array.isArray(payload?.pages)) {
-        setTranscriptPages(payload.pages);
-      }
-      setSelectedLessonDraftMetadata(payload?.has_draft ? (payload?.draft_metadata || {}) : {});
+      setLessonNotes(lessonNotesSavedValue);
+      setTranscriptDirty(false);
+      setTtsDirty(false);
+      setEditorResetNonce((previous) => previous + 1);
       setSceneDraftStatus({});
       setActiveRerenderStatus(null);
-      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false });
-      setGlobalEditorMessage('Draft discarded. Studio is showing the current public version.');
+      if (discardedBackendDraft) {
+        invalidateSelectedLessonCache(selectedLesson.id);
+        await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
+      }
+      setGlobalEditorMessage(discardedBackendDraft
+        ? 'Draft discarded. Studio is showing the current public version.'
+        : 'Local editor changes discarded.');
     } catch (err) {
-      setGlobalEditorError(err.message || 'Could not discard draft.');
+      setGlobalEditorError(err.message || 'Could not discard editor changes.');
     } finally {
       setGlobalEditorActionBusy('');
     }
-  }, [globalEditorActionBusy, handleProjectUpdated, refreshSelectedLessonState, selectedLesson?.id]);
+  }, [
+    applyProjectModerationPayload,
+    globalEditorActionBusy,
+    handleProjectUpdated,
+    invalidateSelectedLessonCache,
+    lessonNotesSavedValue,
+    readOnlyReview,
+    refreshSelectedLessonState,
+    selectedLesson?.id,
+    selectedLessonDirtyScope.hasChanges,
+    selectedLessonHasDraft,
+  ]);
 
   const toggleSlideExpanded = useCallback((sceneKey) => {
     setExpandedSlideKeys((previous) => ({
@@ -3553,9 +4900,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }
 
   return (
-    <div className="space-y-5">
-      <SurfaceCard className="token-surface-elevated flex flex-wrap items-center justify-between gap-3">
-        <div>
+    <div className="min-w-0 max-w-full space-y-5 overflow-x-hidden">
+      <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden">
+        <div className="min-w-0">
           <p className="label-sm">Studio Workspace</p>
           <h1 className="headline-md mt-1 text-[var(--text-primary)]">
             {readOnlyReview ? 'Read-only Lesson Review' : 'Teacher Publishing Console'}
@@ -3563,7 +4910,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         </div>
 
         {!readOnlyReview && (
-        <div className="inline-flex rounded-full token-surface p-1">
+        <div className="inline-flex max-w-full flex-wrap rounded-full token-surface p-1">
           <button
             type="button"
             className={`focus-ring rounded-full px-4 py-2 text-sm font-medium transition ${
@@ -3601,6 +4948,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         )}
       </SurfaceCard>
 
+      {readOnlyReview && (
+        <SurfaceCard className="border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)] p-4">
+          <p className="text-sm font-semibold text-[color:var(--status-info-fg)]">Admin review mode — read only</p>
+        </SurfaceCard>
+      )}
+
       {submitError && (
         <SurfaceCard className="rounded-2xl bg-[color:var(--feedback-danger-bg)] p-4">
           <p className="text-sm text-[color:var(--feedback-danger-fg)]">{submitError}</p>
@@ -3610,10 +4963,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       {studioView === 'playlists' ? (
         <PlaylistManager projects={projects} />
       ) : studioView === 'lessons' ? (
-        <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_21.5rem]">
-          <div className="space-y-5">
+        <section className="grid min-w-0 max-w-full gap-5 overflow-x-hidden xl:grid-cols-[minmax(0,1fr)_minmax(24rem,29rem)] 2xl:grid-cols-[minmax(0,1fr)_30rem]">
+          <div className="min-w-0 space-y-5">
             <SurfaceCard elevated className="overflow-hidden p-0">
-              <div className="relative min-h-[320px] overflow-hidden rounded-[1.5rem] bg-[var(--hero-fallback)] sm:min-h-[360px]">
+              <div
+                className="relative min-h-[320px] overflow-hidden rounded-[1.5rem] bg-[var(--hero-fallback)] bg-cover bg-center sm:min-h-[360px]"
+                style={selectedLessonCoverBackgroundUrl ? { backgroundImage: `url("${selectedLessonCoverBackgroundUrl}")` } : undefined}
+              >
                 <div className="absolute inset-0 bg-[linear-gradient(125deg,rgba(6,10,16,0.2)_0%,rgba(6,10,16,0.62)_60%,rgba(6,10,16,0.88)_100%)]" />
                 <div className="relative z-10 flex h-full flex-col justify-end gap-4 px-5 py-6 sm:px-7 sm:py-8">
                   <p className="label-sm text-[color:var(--media-text-on-image)]">Selected Lesson</p>
@@ -3960,7 +5316,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         const selected = scene.key === selectedScene?.key;
                         const expanded = Boolean(expandedSlideKeys[scene.key]);
                         const slideText = expanded ? scene.fullText : scene.text;
-                        const hasModerationWarning = Boolean(scene.moderationWarning);
+                        const hasModerationWarning = moderationWarningIsFlagged(scene.moderationWarning);
+                        const hasModerationNotice = Boolean(scene.moderationWarning);
                         return (
                           <button
                             key={scene.key}
@@ -3977,10 +5334,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             <div className="flex items-start justify-between gap-2">
                               <p className="label-sm">{scene.label}</p>
                               <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                                {hasModerationWarning && (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-[color:var(--status-warning-bg)] px-2 py-0.5 text-[0.64rem] font-semibold text-[color:var(--status-warning-fg)]">
+                                {hasModerationNotice && (
+                                  <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.64rem] font-semibold ${
+                                    hasModerationWarning
+                                      ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                                      : 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                                  }`}>
                                     <AlertTriangle size={11} />
-                                    Review
+                                    {hasModerationWarning ? 'Review' : 'Pending'}
                                   </span>
                                 )}
                                 <span className={`rounded-full px-2 py-0.5 text-[0.64rem] font-semibold ${sceneStatusTone(scene.status)}`}>
@@ -3989,6 +5350,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               </div>
                             </div>
                             <p className={`mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)] ${expanded ? '' : 'line-clamp-3'}`}>{slideText}</p>
+                            {hasModerationNotice && (
+                              <p className={`mt-2 text-xs font-semibold ${
+                                hasModerationWarning ? 'text-[color:var(--status-warning-fg)]' : 'text-[color:var(--status-info-fg)]'
+                              }`}>
+                                {sceneModerationWarningMessage(scene.moderationWarning)}
+                              </p>
+                            )}
                             <p className="mt-2 text-[0.68rem] text-[var(--text-secondary)]">{scene.timing}</p>
                             {textValue(scene.fullText).length > textValue(scene.text).length && (
                               <span
@@ -4021,9 +5389,21 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               {activeTab === 'notes' && (
                 <div className="space-y-3">
                   <p className="title-lg text-[var(--text-primary)]">Lesson Notes</p>
+                  {lessonNotesLocalDraft && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+                      <span>Unsaved local draft found. Restore or discard?</span>
+                      <span className="flex gap-2">
+                        <Button size="sm" variant="secondary" onClick={restoreLessonNotesDraft}>Restore</Button>
+                        <Button size="sm" variant="ghost" onClick={discardLessonNotesDraft}>Discard</Button>
+                      </span>
+                    </div>
+                  )}
                   <textarea
                     value={lessonNotes}
-                    onChange={(event) => setLessonNotes(event.target.value)}
+                    onChange={(event) => {
+                      if (lessonNotesLocalDraft) setLessonNotesLocalDraft(null);
+                      setLessonNotes(event.target.value);
+                    }}
                     placeholder="Track publishing notes, quality checks, and post-production comments..."
                     className="focus-ring min-h-[170px] w-full resize-y rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]"
                   />
@@ -4049,100 +5429,149 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             </SurfaceCard>
           </div>
 
-          <aside>
-            <SurfaceCard className="max-h-[72vh] space-y-3 overflow-y-auto p-4">
+          <aside className="min-w-0">
+            <SurfaceCard
+              onScroll={handleMyLessonsScroll}
+              className="max-h-[72vh] min-w-0 space-y-3 overflow-y-auto overflow-x-hidden p-4"
+            >
               <div className="flex items-center justify-between">
                 <p className="label-sm">My Lessons</p>
-                <span className="text-xs text-[var(--text-secondary)]">{filteredProjects.length}</span>
+                <span className="text-xs text-[var(--text-secondary)]">
+                  {filteredProjects.length}
+                  {projectPageMeta.totalCount !== null ? ` / ${projectPageMeta.totalCount}` : ''}
+                </span>
               </div>
 
               {loadingProjects ? (
-                <p className="text-sm text-[var(--text-secondary)]">Loading lessons...</p>
+                <div className="space-y-3" aria-label="Loading lessons">
+                  {Array.from({ length: 4 }, (_, index) => (
+                    <div key={`lesson-skeleton-${index}`} className="rounded-2xl token-surface p-3">
+                      <div className="h-4 w-3/4 rounded-full bg-[color:var(--surface-container-high)]" />
+                      <div className="mt-2 h-3 w-1/3 rounded-full bg-[color:var(--surface-container-high)]" />
+                      <div className="mt-3 flex gap-2">
+                        <div className="h-5 w-16 rounded-full bg-[color:var(--surface-container-high)]" />
+                        <div className="h-5 w-20 rounded-full bg-[color:var(--surface-container-high)]" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : projectsError && filteredProjects.length === 0 ? (
+                <div className="rounded-2xl bg-[color:var(--feedback-danger-bg)] p-3 text-sm font-medium text-[color:var(--feedback-danger-fg)]">
+                  {projectsError}
+                </div>
               ) : (
-                filteredProjects.map((project) => {
-                  const projectModeration = moderationByProject[project.id] || null;
-                  return (
-                  <article
-                    key={project.id}
-                    className={`rounded-2xl p-3 transition ${
-                      project.id === selectedLesson?.id
-                        ? 'border border-[color:rgba(208,188,255,0.3)] bg-[color:rgba(208,188,255,0.1)]'
-                        : 'token-surface'
-                    }`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => selectLesson(project)}
-                      className="focus-ring w-full text-left"
+                <>
+                  {projectsError && (
+                    <div className="rounded-2xl bg-[color:var(--feedback-danger-bg)] p-3 text-xs font-medium text-[color:var(--feedback-danger-fg)]">
+                      {projectsError}
+                    </div>
+                  )}
+                  {filteredProjects.length === 0 ? (
+                    <p className="rounded-2xl token-surface p-3 text-sm text-[var(--text-secondary)]">
+                      No lessons match the current search.
+                    </p>
+                  ) : filteredProjects.map((project) => {
+                    const projectModeration = moderationByProject[project.id] || null;
+                    return (
+                    <article
+                      key={project.id}
+                      className={`max-w-full overflow-hidden rounded-2xl p-3 transition ${
+                        project.id === selectedLesson?.id
+                          ? 'border border-[color:rgba(208,188,255,0.3)] bg-[color:rgba(208,188,255,0.1)]'
+                          : 'token-surface'
+                      }`}
                     >
-                      <p className="title-lg text-[var(--text-primary)]">{project.title || `Project #${project.id}`}</p>
-                      <p className="mt-1 text-xs text-[var(--text-secondary)]">{safeDateLabel(project.created_at)}</p>
-                      <div className="mt-2 flex flex-wrap gap-1.5 text-[0.68rem] font-semibold">
-                        <span className={`rounded-full px-2 py-0.5 ${projectStatusTone(project)}`}>
-                          {projectStatusLabel(project)}
-                        </span>
-                        <span className={`rounded-full px-2 py-0.5 ${projectPublicationTone(project)}`}>
-                          {projectPublicationLabel(project)}
-                        </span>
-                        <span className={`rounded-full px-2 py-0.5 ${moderationStatusTone(projectModerationStatus(project, projectModeration))}`}>
-                          Moderation: {moderationStatusLabel(projectModerationStatus(project, projectModeration))}
-                        </span>
-                        {avatarFeatureEnabled && (projectAvatarEnabled(project) || avatarProcessingStatus(project) !== 'none') && (
-                          <span className="rounded-full bg-[color:var(--surface-muted)] px-2 py-0.5 text-[var(--text-secondary)]">
-                            {avatarStatusLabel(project)}
+                      <button
+                        type="button"
+                        onClick={() => selectLesson(project)}
+                        className="focus-ring min-w-0 max-w-full text-left"
+                      >
+                        <p className="title-lg line-clamp-2 max-w-full break-words text-[var(--text-primary)] [overflow-wrap:anywhere]">
+                          {project.title || `Project #${project.id}`}
+                        </p>
+                        <p className="mt-1 text-xs text-[var(--text-secondary)]">{safeDateLabel(project.created_at)}</p>
+                        <div className="mt-2 flex min-w-0 flex-wrap gap-1.5 text-[0.68rem] font-semibold">
+                          <span className={`max-w-full rounded-full px-2 py-0.5 ${projectStatusTone(project)}`}>
+                            {projectStatusLabel(project)}
                           </span>
+                          <span className={`max-w-full rounded-full px-2 py-0.5 ${projectPublicationTone(project)}`}>
+                            {projectPublicationLabel(project)}
+                          </span>
+                          <span className={`max-w-full break-words rounded-full px-2 py-0.5 [overflow-wrap:anywhere] ${moderationStatusTone(projectModerationStatus(project, projectModeration))}`}>
+                            Moderation: {moderationStatusLabel(projectModerationStatus(project, projectModeration))}
+                          </span>
+                          {avatarFeatureEnabled && (projectAvatarEnabled(project) || avatarProcessingStatus(project) !== 'none') && (
+                            <span className="max-w-full break-words rounded-full bg-[color:var(--surface-muted)] px-2 py-0.5 text-[var(--text-secondary)] [overflow-wrap:anywhere]">
+                              {avatarStatusLabel(project)}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+
+                      <div className="mt-3 flex min-w-0 flex-wrap gap-2">
+                        {!readOnlyReview && (
+                          <Button size="sm" onClick={() => openEditorForProject(project)}>
+                            <BookOpenText size={14} />
+                            <span>Open</span>
+                          </Button>
+                        )}
+                        {(projectRenderReady(project) || readOnlyReview) && (
+                          <Button variant="secondary" size="sm" onClick={() => openPreviewForProject(project)}>
+                            <Eye size={14} />
+                            <span>{readOnlyReview ? 'Review' : project.is_published ? 'Preview' : 'Draft Preview'}</span>
+                          </Button>
+                        )}
+                        {!readOnlyReview && (
+                          <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project)}>
+                            <RefreshCcw size={14} />
+                            <span>Rerender</span>
+                          </Button>
+                        )}
+                        {projectRenderReady(project) && !readOnlyReview && (
+                          <Button
+                            variant={project.is_published ? 'secondary' : 'primary'}
+                            size="sm"
+                            onClick={() => handlePublishToggle(project, !project.is_published)}
+                            disabled={!project.is_published && !projectCanPublishFromModeration(project, projectModeration)}
+                          >
+                            {project.is_published ? <EyeOff size={14} /> : <Eye size={14} />}
+                            <span>{project.is_published ? 'Unpublish' : 'Publish'}</span>
+                          </Button>
+                        )}
+                        {!readOnlyReview && (
+                          <Button variant="ghost" size="sm" onClick={() => handleDeleteProject(project)}>
+                            <Trash2 size={14} />
+                            <span>Delete</span>
+                          </Button>
                         )}
                       </div>
-                    </button>
+                    </article>
+                    );
+                  })}
 
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {!readOnlyReview && (
-                        <Button size="sm" onClick={() => openEditorForProject(project)}>
-                          <BookOpenText size={14} />
-                          <span>Open</span>
-                        </Button>
-                      )}
-                      {(projectRenderReady(project) || readOnlyReview) && (
-                        <Button variant="secondary" size="sm" onClick={() => openPreviewForProject(project)}>
-                          <Eye size={14} />
-                          <span>{readOnlyReview ? 'Review' : project.is_published ? 'Preview' : 'Draft Preview'}</span>
-                        </Button>
-                      )}
-                      {!readOnlyReview && (
-                        <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project)}>
-                          <RefreshCcw size={14} />
-                          <span>Rerender</span>
-                        </Button>
-                      )}
-                      {projectRenderReady(project) && !readOnlyReview && (
-                        <Button
-                          variant={project.is_published ? 'secondary' : 'primary'}
-                          size="sm"
-                          onClick={() => handlePublishToggle(project, !project.is_published)}
-                          disabled={!project.is_published && !projectCanPublishFromModeration(project, projectModeration)}
-                        >
-                          {project.is_published ? <EyeOff size={14} /> : <Eye size={14} />}
-                          <span>{project.is_published ? 'Unpublish' : 'Publish'}</span>
-                        </Button>
-                      )}
-                      {!readOnlyReview && (
-                        <Button variant="ghost" size="sm" onClick={() => handleDeleteProject(project)}>
-                          <Trash2 size={14} />
-                          <span>Delete</span>
-                        </Button>
-                      )}
-                    </div>
-                  </article>
-                  );
-                })
+                  {projectPageMeta.hasNext && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={loadMoreProjects}
+                      disabled={loadingMoreProjects}
+                      className="w-full"
+                    >
+                      <span>{loadingMoreProjects ? 'Loading more...' : 'Load more lessons'}</span>
+                    </Button>
+                  )}
+                  {loadingMoreProjects && (
+                    <p className="text-center text-xs font-medium text-[var(--text-secondary)]">Loading more lessons...</p>
+                  )}
+                </>
               )}
             </SurfaceCard>
           </aside>
         </section>
       ) : (
         <>
-          <section className="grid gap-5 xl:grid-cols-2">
-            <div className="space-y-5">
+          <section className="grid min-w-0 max-w-full gap-5 overflow-x-hidden xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="min-w-0 space-y-5">
               <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block text-sm text-[var(--text-secondary)]">
@@ -4151,6 +5580,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       value={editorTitle}
                       onChange={(event) => setEditorTitle(event.target.value)}
                       type="text"
+                      readOnly={readOnlyReview}
+                      disabled={readOnlyReview}
                       placeholder="The Quantum Physics Masterclass"
                       className="focus-ring mt-1 h-11 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-[var(--text-primary)]"
                     />
@@ -4162,6 +5593,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       value={editorCategory}
                       onChange={(event) => setEditorCategory(event.target.value)}
                       list="studio-editor-categories"
+                      readOnly={readOnlyReview}
+                      disabled={readOnlyReview}
                       placeholder="AI Product, Design, Storytelling"
                       className="focus-ring mt-1 h-11 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-[var(--text-primary)]"
                     />
@@ -4332,7 +5765,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     {sceneItems.map((scene, index) => {
                       const selected = scene.key === selectedScene?.key;
                       const isWhiteboard = scene.backgroundMode === 'whiteboard';
-                      const hasModerationWarning = Boolean(scene.moderationWarning);
+                      const hasModerationWarning = moderationWarningIsFlagged(scene.moderationWarning);
+                      const hasModerationNotice = Boolean(scene.moderationWarning);
                       const modeTone = isWhiteboard
                         ? 'bg-white text-slate-800'
                         : scene.backgroundMode === 'custom' || scene.backgroundMode === 'source_background'
@@ -4380,10 +5814,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               {scene.label}
                             </span>
                             <div className="flex shrink-0 flex-wrap justify-end gap-1">
-                              {hasModerationWarning && (
-                                <span className="inline-flex items-center gap-1 rounded-full bg-[color:var(--status-warning-bg)] px-2 py-0.5 text-[0.6rem] font-semibold text-[color:var(--status-warning-fg)]">
+                              {hasModerationNotice && (
+                                <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.6rem] font-semibold ${
+                                  hasModerationWarning
+                                    ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                                    : 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                                }`}>
                                   <AlertTriangle size={10} />
-                                  Review
+                                  {hasModerationWarning ? 'Review' : 'Pending'}
                                 </span>
                               )}
                               <span className={`rounded-full px-2 py-0.5 text-[0.6rem] font-semibold ${modeTone}`}>
@@ -4391,6 +5829,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               </span>
                             </div>
                           </div>
+                          {hasModerationNotice && (
+                            <p className={`mt-2 text-[0.68rem] font-semibold ${
+                              hasModerationWarning ? 'text-[color:var(--status-warning-fg)]' : 'text-[color:var(--status-info-fg)]'
+                            }`}>
+                              {sceneModerationWarningMessage(scene.moderationWarning)}
+                            </p>
+                          )}
                           <span className="mt-1 block truncate text-[0.68rem] text-[var(--text-secondary)]">{scene.timing}</span>
                         </button>
                       );
@@ -4403,49 +5848,76 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               </SurfaceCard>
             </div>
 
-            <aside>
+            <aside className="min-w-0 max-w-full">
               <SurfaceCard
                 elevated
-                className="flex min-h-[72vh] flex-col gap-4 overflow-hidden xl:max-h-[calc(100vh-9rem)]"
+                className="flex min-h-[72vh] min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:max-h-[calc(100vh-9rem)]"
               >
                 <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <h3 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Editor Workspace</h3>
                     <p className="mt-1 text-xs text-[var(--text-secondary)]">
                       {selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'}
                     </p>
                   </div>
-                  <div className="flex flex-wrap justify-end gap-2">
-                    {selectedLesson ? (
+                  <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                    {readOnlyReview ? (
+                      <span className="rounded-full bg-[color:var(--status-info-bg)] px-3 py-1.5 text-xs font-semibold text-[color:var(--status-info-fg)]">
+                        Read only
+                      </span>
+                    ) : selectedLesson ? (
                       <>
                         <Button
                           size="sm"
-                          variant="secondary"
+                          variant={selectedLessonDirtyScope.canSaveChanges ? 'primary' : 'secondary'}
                           onClick={() => handleGlobalEditorSave({ triggerRerender: false })}
                           disabled={Boolean(globalEditorActionBusy)}
+                          title={selectedLessonDirtyScope.canSaveChanges
+                            ? (selectedLessonDirtyScope.hasChanges
+                              ? 'Save draft changes without rerendering the video.'
+                              : 'Refresh the selected lesson state.')
+                            : selectedLessonDirtyScope.saveDisabledReason}
                         >
                           <Save size={14} />
-                          <span>{globalEditorActionBusy === 'save' ? 'Saving...' : 'Save'}</span>
+                          <span>
+                            {globalEditorActionBusy === 'save'
+                              ? 'Saving...'
+                              : 'Save changes'}
+                          </span>
                         </Button>
                         <Button
                           size="sm"
+                          variant="secondary"
+                          onClick={handleDiscardChanges}
+                          disabled={
+                            Boolean(globalEditorActionBusy)
+                            || !selectedLessonDirtyScope.canDiscardChanges
+                          }
+                          title={selectedLessonDirtyScope.canDiscardChanges
+                            ? 'Discard local and draft editor changes.'
+                            : selectedLessonDirtyScope.discardDisabledReason}
+                          className={selectedLessonDirtyScope.canDiscardChanges
+                            ? 'border border-[color:var(--outline-variant)] shadow-[0_0_0_1px_rgba(107,56,212,0.15)]'
+                            : ''}
+                        >
+                          <Trash2 size={14} />
+                          <span>{globalEditorActionBusy === 'discard' ? 'Discarding...' : 'Discard changes'}</span>
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={selectedLessonDirtyScope.canSaveRerender ? 'primary' : 'secondary'}
                           onClick={() => handleGlobalEditorSave({ triggerRerender: true })}
-                          disabled={Boolean(globalEditorActionBusy) || (selectedLessonHasDraft && !selectedDraftRenderRequired)}
+                          disabled={
+                            Boolean(globalEditorActionBusy)
+                            || !selectedLessonDirtyScope.canSaveRerender
+                          }
+                          title={selectedLessonDirtyScope.canSaveRerender
+                            ? 'Save changes and queue a video rerender.'
+                            : selectedLessonDirtyScope.rerenderDisabledReason}
                         >
                           <RefreshCcw size={14} />
                           <span>{globalEditorActionBusy === 'rerender' ? 'Saving...' : 'Save & Rerender'}</span>
                         </Button>
-                        {selectedLessonHasDraft && (
-                          <Button
-                            size="sm"
-                            variant="secondary"
-                            onClick={handleDiscardDraft}
-                            disabled={Boolean(globalEditorActionBusy)}
-                          >
-                            <Trash2 size={14} />
-                            <span>{globalEditorActionBusy === 'discard' ? 'Discarding...' : 'Discard Draft'}</span>
-                          </Button>
-                        )}
                       </>
                     ) : (
                       <>
@@ -4468,22 +5940,28 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   </p>
                 )}
 
-                {(globalEditorMessage || globalEditorError || (!selectedLesson && editorSavedAtLabel)) && (
+                {(globalEditorMessage || globalEditorError || selectedLessonDirtyScope.moderationMessage || (!selectedLesson && editorSavedAtLabel)) && (
                   <p className={`shrink-0 rounded-xl px-3 py-2 text-xs font-semibold ${
                     globalEditorError
                       ? 'bg-[color:var(--feedback-danger-bg)] text-[color:var(--feedback-danger-fg)]'
+                      : selectedLessonDirtyScope.moderationMessage
+                        ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
                       : 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
                   }`}>
-                    {globalEditorError || globalEditorMessage || editorSavedAtLabel}
+                    {globalEditorError || selectedLessonDirtyScope.moderationMessage || globalEditorMessage || editorSavedAtLabel}
                   </p>
                 )}
 
-                <div className="rail-scroll relative z-10 -mx-1 flex shrink-0 gap-2 overflow-x-auto bg-[var(--bg-elevated)] px-1 py-1">
+                <div className="rail-scroll relative z-10 -mx-1 flex max-w-full shrink-0 gap-2 overflow-x-auto bg-[var(--bg-elevated)] px-1 py-1">
                   {visibleEditorPanels.map((panel) => {
                     const selected = activeEditorPanel === panel;
                     const hasModerationWarning = (
                       (panel === 'transcript' && Object.keys(moderationPageWarnings).length > 0)
-                      || (panel === 'slides' && (moderationAssetWarnings.cover || moderationAssetWarnings.background))
+                      || (panel === 'slides' && (
+                        moderationWarningIsFlagged(moderationAssetWarnings.cover)
+                        || Object.values(moderationBackgroundWarnings).some(moderationWarningIsFlagged)
+                        || Object.values(moderationSlideWarnings).some(moderationWarningIsFlagged)
+                      ))
                     );
                     return (
                       <button
@@ -4506,24 +5984,28 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   })}
                 </div>
 
-                <div className="rail-scroll min-h-0 flex-1 overflow-y-auto px-1">
+                <div className="rail-scroll min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto overflow-x-hidden px-1">
                   <div className={activeEditorPanel === 'transcript' ? 'space-y-3' : 'hidden'}>
                       {selectedLesson ? (
                         <TranscriptEditorPanel
+                          key={`transcript-${selectedLesson.id}-${editorResetNonce}`}
                           ref={transcriptEditorRef}
                           project={selectedLesson}
                           pages={transcriptPages}
+                          localDraftScope={studioLocalDraftScope}
                           loading={loadingTranscript}
                           selectedPageKey={selectedPageKey}
                           selectedPageIndex={selectedPageIndex}
                           moderationPageWarnings={moderationPageWarnings}
                           showLocalActions={false}
+                          readOnly={readOnlyReview}
                           onSelectPage={handleSelectTranscriptPage}
                           onPagesUpdated={handleTranscriptPagesUpdated}
-                          onProjectRefresh={() => selectedLesson && refreshSelectedLessonState(selectedLesson.id, { showLoading: false })}
+                          onProjectRefresh={() => selectedLesson && refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true })}
                           onModerationUpdated={applyProjectModerationPayload}
                           onDraftStatusChange={handleDraftStatusChange}
                           onJobStatusChange={setActiveRerenderStatus}
+                          onDirtyChange={setTranscriptDirty}
                         />
                       ) : (
                         <label className="block text-sm text-[var(--text-secondary)]">
@@ -4540,6 +6022,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         </label>
                       )}
 
+                      {!readOnlyReview && (
                       <div className="space-y-3 rounded-2xl token-surface p-3">
                         <label className="block text-sm text-[var(--text-secondary)]">
                           Pause between slides (sec)
@@ -4573,6 +6056,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           </label>
                         )}
                       </div>
+                      )}
                   </div>
 
                   <div className={activeEditorPanel === 'slides' ? 'space-y-3' : 'hidden'}>
@@ -4582,8 +6066,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       </div>
                       {selectedLesson && (
                         <div className={`space-y-3 rounded-2xl p-3 ${
-                          moderationAssetWarnings.cover
+                          coverModerationWarningFlagged
                             ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)]'
+                            : coverModerationWarningPending
+                              ? 'border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)]'
                             : 'token-surface'
                         }`}>
                           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -4597,13 +6083,22 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               )}
                               {hasDraftCover && !moderationAssetWarnings.cover && (
                                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                                  Cover updated. Video rerender not required.
+                                  Draft cover saved. Public cover is unchanged until Save changes succeeds.
                                 </p>
                               )}
                               {moderationAssetWarnings.cover && (
-                                <p className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+                                <p className={`mt-2 inline-flex items-start gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold ${
+                                  coverModerationWarningPending
+                                    ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                                    : 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                                }`}>
                                   <AlertTriangle size={12} />
-                                  Cover image has a moderation finding. Public cover/background was not changed.
+                                  <span>
+                                    {moderationAssetWarnings.cover?.state === 'pending'
+                                      ? 'Visual scan pending'
+                                      : visualScanUnavailableMessage(moderationAssetWarnings.cover)
+                                        || 'This cover image was blocked by visual moderation. Replace it before publishing.'}
+                                  </span>
                                 </p>
                               )}
                               {!hasDraftCover && !moderationAssetWarnings.cover && coverVisualNeedsRecheck && (
@@ -4635,27 +6130,31 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               )}
                             </div>
                           </div>
-                          <label className="block text-xs font-medium text-[var(--text-secondary)]">
-                            Upload cover image
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={(event) => {
-                                const file = event.target.files?.[0] || null;
-                                event.target.value = '';
-                                if (file) handleCoverUpload(file);
-                              }}
-                              disabled={Boolean(sceneActionBusy)}
-                              className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-2 text-sm text-[var(--text-primary)]"
-                            />
-                          </label>
+                          {!readOnlyReview && (
+                            <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                              Upload cover image
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0] || null;
+                                  event.target.value = '';
+                                  if (file) handleCoverUpload(file);
+                                }}
+                                disabled={Boolean(sceneActionBusy)}
+                                className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-2 text-sm text-[var(--text-primary)]"
+                              />
+                            </label>
+                          )}
                         </div>
                       )}
 
                       {selectedScene?.page && (
                         <div className={`space-y-3 rounded-2xl p-3 ${
-                          selectedScene?.moderationWarning || moderationAssetWarnings.background
+                          selectedSceneBackgroundWarningFlagged
                             ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)]'
+                            : selectedSceneBackgroundWarningPending
+                              ? 'border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)]'
                             : 'token-surface'
                         }`}>
                           <div>
@@ -4668,10 +6167,19 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                                 Draft background
                               </span>
                             )}
-                            {(selectedScene?.moderationWarning || moderationAssetWarnings.background) && (
-                              <p className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+                            {selectedSceneBackgroundWarning && (
+                              <p className={`mt-2 inline-flex items-start gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold ${
+                                selectedSceneBackgroundWarningPending
+                                  ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
+                                  : 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                              }`}>
                                 <AlertTriangle size={12} />
-                                This scene has moderation findings. Public cover/background was not changed.
+                                <span>
+                                  {selectedSceneBackgroundWarning?.state === 'pending'
+                                    ? 'Visual scan pending'
+                                    : visualScanUnavailableMessage(selectedSceneBackgroundWarning)
+                                      || 'This scene background was blocked by visual moderation. Replace it before publishing.'}
+                                </span>
                               </p>
                             )}
                           </div>
@@ -4681,7 +6189,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             <select
                               value={selectedSceneMode}
                               onChange={handleSceneModeChange}
-                              disabled={Boolean(sceneActionBusy)}
+                              disabled={readOnlyReview || Boolean(sceneActionBusy)}
                               className="focus-ring mt-1 h-10 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
                             >
                               <option value="original" disabled={!selectedSceneOriginalAvailable}>Original</option>
@@ -4721,7 +6229,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             <select
                               value={selectedSceneFit}
                               onChange={(event) => handleScenePatch({ background_fit: event.target.value }, 'Background fit updated.')}
-                              disabled={Boolean(sceneActionBusy)}
+                              disabled={readOnlyReview || Boolean(sceneActionBusy)}
                               className="focus-ring mt-1 h-10 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
                             >
                               <option value="contain">Contain</option>
@@ -4739,7 +6247,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               step="0.05"
                               value={selectedSceneTextScale}
                               onChange={(event) => handleScenePatch({ text_scale: Number(event.target.value) }, 'Text size updated.')}
-                              disabled={Boolean(sceneActionBusy)}
+                              disabled={readOnlyReview || Boolean(sceneActionBusy)}
                               className="mt-2 w-full"
                             />
                             <span className="mt-1 block text-[0.68rem]">{selectedSceneTextScale.toFixed(2)}x</span>
@@ -4752,7 +6260,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                                 type="checkbox"
                                 checked={selectedSceneHighlightEnabled}
                                 onChange={(event) => handleScenePatch({ highlight_enabled: event.target.checked }, 'Highlight setting updated.')}
-                                disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                                disabled={readOnlyReview || Boolean(sceneActionBusy) || highlightPreviewBusy}
                               />
                               <span>Enable highlight</span>
                             </label>
@@ -4772,7 +6280,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                                       key={option.value}
                                       type="button"
                                       onClick={() => handleScenePatch({ highlight_style: option.value }, 'Highlight style updated.')}
-                                      disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                                      disabled={readOnlyReview || Boolean(sceneActionBusy) || highlightPreviewBusy}
                                       className={`rounded-lg border px-3 py-1.5 text-xs font-semibold transition ${
                                         active
                                           ? 'border-[var(--border-strong)] bg-[var(--surface-container-high)] text-[var(--text-primary)]'
@@ -4790,7 +6298,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               <select
                                 value={selectedSceneHighlightStyle}
                                 onChange={(event) => handleScenePatch({ highlight_style: event.target.value }, 'Highlight style updated.')}
-                                disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                                disabled={readOnlyReview || Boolean(sceneActionBusy) || highlightPreviewBusy}
                                 className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
                               >
                                 <option value="none">None</option>
@@ -4802,7 +6310,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               size="sm"
                               variant="secondary"
                               onClick={handleHighlightPreview}
-                              disabled={Boolean(sceneActionBusy) || highlightPreviewBusy}
+                              disabled={readOnlyReview || Boolean(sceneActionBusy) || highlightPreviewBusy}
                             >
                               <Sparkles size={14} />
                               <span>{highlightPreviewBusy ? 'Generating preview...' : 'Preview Highlight'}</span>
@@ -4819,21 +6327,24 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             )}
                           </div>
 
-                          <label className="block text-xs font-medium text-[var(--text-secondary)]">
-                            Upload custom background for this slide
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={(event) => {
-                                const file = event.target.files?.[0] || null;
-                                event.target.value = '';
-                                if (file) handleSceneBackgroundUpload(file);
-                              }}
-                              disabled={Boolean(sceneActionBusy)}
-                              className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-2 text-sm text-[var(--text-primary)]"
-                            />
-                          </label>
+                          {!readOnlyReview && (
+                            <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                              Upload custom background for this slide
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(event) => {
+                                  const file = event.target.files?.[0] || null;
+                                  event.target.value = '';
+                                  if (file) handleSceneBackgroundUpload(file);
+                                }}
+                                disabled={Boolean(sceneActionBusy)}
+                                className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-2 text-sm text-[var(--text-primary)]"
+                              />
+                            </label>
+                          )}
 
+                          {!readOnlyReview && (
                           <div className="flex flex-wrap gap-2">
                             <Button
                               size="sm"
@@ -4857,6 +6368,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               <span>Apply to all</span>
                             </Button>
                           </div>
+                          )}
 
                           {sceneActionMessage && (
                             <p className="rounded-xl bg-[color:var(--feedback-success-bg)] px-3 py-2 text-xs text-[color:var(--feedback-success-fg)]">
@@ -4941,9 +6453,21 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         <p className="title-lg text-[var(--text-primary)]">Notes</p>
                         <p className="text-xs text-[var(--text-secondary)]">Local publisher notes for this browser only; backend note persistence is not implemented yet.</p>
                       </div>
+                      {lessonNotesLocalDraft && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+                          <span>Unsaved local draft found. Restore or discard?</span>
+                          <span className="flex gap-2">
+                            <Button size="sm" variant="secondary" onClick={restoreLessonNotesDraft}>Restore</Button>
+                            <Button size="sm" variant="ghost" onClick={discardLessonNotesDraft}>Discard</Button>
+                          </span>
+                        </div>
+                      )}
                       <textarea
                         value={lessonNotes}
-                        onChange={(event) => setLessonNotes(event.target.value)}
+                        onChange={(event) => {
+                          if (lessonNotesLocalDraft) setLessonNotesLocalDraft(null);
+                          setLessonNotes(event.target.value);
+                        }}
                         placeholder="Track publishing notes, quality checks, and post-production comments..."
                         className="focus-ring min-h-[340px] w-full resize-y rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-4 text-base leading-7 text-[var(--text-primary)]"
                       />
@@ -4956,6 +6480,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
                   <div className={activeEditorPanel === 'tts' ? '' : 'hidden'}>
                     <TtsSettingsPanel
+                      key={`tts-${selectedLesson?.id || 'none'}-${editorResetNonce}`}
                       ref={ttsSettingsRef}
                       project={selectedLesson}
                       transcriptPages={transcriptPages}
@@ -4963,6 +6488,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       showLocalActions={false}
                       onProjectUpdated={handleProjectUpdated}
                       onRerender={handleRerenderProject}
+                      onDirtyChange={setTtsDirty}
                     />
                   </div>
                 </div>

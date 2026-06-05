@@ -19,7 +19,7 @@ from django.contrib.auth.models import User  # noqa: E402
 from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
-from ai_agents.models import ModerationAuditEvent  # noqa: E402
+from ai_agents.models import AgentFinding, AgentRun, ModerationAuditEvent  # noqa: E402
 from core.models import Job, Project, UserProfile  # noqa: E402
 
 
@@ -50,6 +50,35 @@ def _make_project(owner: User, *, moderation_status: str = "approved", published
     )
     Job.objects.create(project=project, job_type="video_export", status="done", result_url=f"{project.id}/lesson.mp4")
     return project
+
+
+def _add_visual_finding(project: Project, *, image_path: str) -> AgentFinding:
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=project.user,
+        purpose="moderation",
+        phase="visual_asset_scan",
+        status="done",
+        final_decision="block",
+    )
+    project.last_moderation_run_id = run.id
+    project.save(update_fields=["last_moderation_run_id"])
+    return AgentFinding.objects.create(
+        run=run,
+        agent_slug="visual_moderation",
+        agent_version="local-rules:v1",
+        content_type="image",
+        object_type="cover",
+        object_id=str(project.id),
+        location={"project_id": project.id, "asset_type": "cover", "image_path": image_path},
+        category="graphic_content",
+        severity="high",
+        confidence=0.9,
+        decision="block",
+        user_message="Replace this visual.",
+        admin_message="Unsafe visual.",
+        provider="local_image_rules",
+    )
 
 
 @pytest.mark.django_db
@@ -111,7 +140,7 @@ def test_staff_admin_can_review_block_and_approve_through_moderation_endpoint():
 
     assert blocked.status_code == 200
     assert project.moderation_status == "admin_rejected"
-    assert project.is_published is True
+    assert project.is_published is False
     assert project.manual_moderation_status == "blocked"
     assert ModerationAuditEvent.objects.filter(project=project, action="block", actor=staff).exists()
 
@@ -151,6 +180,65 @@ def test_staff_admin_can_read_project_detail_but_not_patch_non_owner():
     assert read.status_code == 200
     assert read.data["id"] == project.id
     assert edit.status_code == 403
+
+
+@pytest.mark.django_db
+def test_moderation_preview_is_owner_or_staff_only(tmp_path):
+    owner = _make_user("perm_preview_owner", role="publisher")
+    other = _make_user("perm_preview_other", role="publisher")
+    staff = _make_user("perm_preview_staff", role="student", is_staff=True)
+    project = _make_project(owner, moderation_status="needs_admin_review", published=False)
+    image = tmp_path / "uploads" / str(project.id) / "unsafe.png"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"unsafe preview")
+    finding = _add_visual_finding(project, image_path=str(image))
+    url = f"/api/v1/projects/{project.id}/moderation-preview/{finding.id}/"
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        owner_response = _client(owner).get(url)
+        staff_response = _client(staff).get(url)
+        other_response = _client(other).get(url)
+
+    assert owner_response.status_code == 200
+    assert staff_response.status_code == 200
+    assert other_response.status_code == 403
+
+
+@pytest.mark.django_db
+def test_staff_admin_can_read_transcript_for_review_but_not_mutate_it():
+    owner = _make_user("perm_transcript_owner", role="publisher")
+    staff = _make_user("perm_transcript_staff", role="student", is_staff=True)
+    project = _make_project(owner)
+    page = project.transcript_pages.create(
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="slide-1",
+        original_text="Original",
+        narration_text="Narration",
+    )
+
+    read = _client(staff).get(f"/api/v1/projects/{project.id}/transcript/")
+    edit = _client(staff).patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {"pages": [{"id": page.id, "narration_text": "Staff edit"}]},
+        format="json",
+    )
+
+    assert read.status_code == 200
+    assert read.data["pages"][0]["id"] == page.id
+    assert edit.status_code == 403
+
+
+@pytest.mark.django_db
+def test_publisher_cannot_read_other_publishers_project_for_studio_review():
+    owner = _make_user("perm_other_read_owner", role="publisher")
+    other = _make_user("perm_other_read_publisher", role="publisher")
+    project = _make_project(owner)
+
+    response = _client(other).get(f"/api/v1/projects/{project.id}/")
+
+    assert response.status_code == 403
 
 
 @pytest.mark.django_db

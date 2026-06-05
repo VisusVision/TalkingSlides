@@ -8,6 +8,160 @@ from .models import UserProfile, VoiceProfile
 from .avatar_image_moderation import avatar_image_moderation_gate
 from .avatar_source_validation import stored_avatar_source_state
 
+AVATAR_SETUP_STATES = {
+    "missing_consent",
+    "missing_portrait",
+    "missing_voice",
+    "disabled",
+    "needs_prepare",
+    "preparing",
+    "ready",
+    "failed",
+}
+
+
+def _avatar_setup_message(state: str) -> str:
+    messages = {
+        "missing_consent": "Confirm avatar consent before preparing or generating an avatar.",
+        "missing_portrait": "Upload an avatar portrait image.",
+        "missing_voice": "Upload a voice sample.",
+        "disabled": "Enable avatar generation.",
+        "needs_prepare": "Avatar needs to be prepared again.",
+        "preparing": "Avatar preparation or preview generation is in progress.",
+        "ready": "Avatar is prepared and ready for preview generation.",
+        "failed": "Avatar preparation failed. Upload a clear portrait or prepare the avatar again.",
+    }
+    return messages.get(state, "Avatar setup needs attention.")
+
+
+def _avatar_setup_action(state: str) -> str:
+    actions = {
+        "missing_consent": "confirm_consent",
+        "missing_portrait": "upload_portrait",
+        "missing_voice": "upload_voice",
+        "disabled": "enable_avatar",
+        "needs_prepare": "prepare_avatar",
+        "preparing": "wait",
+        "ready": "generate_preview",
+        "failed": "prepare_avatar",
+    }
+    return actions.get(state, "review_avatar_setup")
+
+
+def _avatar_setup_action_label(state: str) -> str:
+    labels = {
+        "missing_consent": "Confirm consent",
+        "missing_portrait": "Upload portrait",
+        "missing_voice": "Upload voice sample",
+        "disabled": "Enable avatar generation",
+        "needs_prepare": "Prepare avatar",
+        "preparing": "Preparing avatar",
+        "ready": "Generate preview",
+        "failed": "Re-prepare avatar",
+    }
+    return labels.get(state, "Review avatar setup")
+
+
+def _setup_status_from_readiness(
+    profile: UserProfile,
+    voice_profile: VoiceProfile | None,
+    readiness: dict[str, Any],
+) -> dict[str, Any]:
+    checks = dict(readiness.get("checks") or {})
+    missing = set(readiness.get("missing_requirements") or [])
+    image_status = str(getattr(profile, "avatar_image_status", "") or "").strip().lower()
+    preview_status = str(getattr(profile, "avatar_last_preview_status", "") or "").strip().lower()
+
+    portrait_uploaded = bool(checks.get("avatar_image_original"))
+    voice_uploaded = bool(checks.get("voice_profile_exists") and checks.get("voice_id_exists"))
+    consent_confirmed = bool(checks.get("avatar_consent_confirmed"))
+    avatar_enabled = bool(checks.get("avatar_enabled"))
+    avatar_prepared = bool(readiness.get("ready"))
+    preview_ready = bool(readiness.get("avatar_ready"))
+    source_problem = bool(
+        "avatar_source_invalid" in missing
+        or "invalid_engine_config" in missing
+        or any(str(item).startswith("avatar_image_moderation_") for item in missing)
+    )
+    needs_prepare = bool(
+        portrait_uploaded
+        and voice_uploaded
+        and consent_confirmed
+        and avatar_enabled
+        and (
+            "missing_avatar_image_processed" in missing
+            or "missing_processed_reference_file" in missing
+            or "avatar_source_validation_stale" in missing
+        )
+    )
+
+    if not consent_confirmed:
+        state = "missing_consent"
+    elif not portrait_uploaded:
+        state = "missing_portrait"
+    elif not voice_uploaded:
+        state = "missing_voice"
+    elif not avatar_enabled:
+        state = "disabled"
+    elif image_status in {"processing"} or preview_status in {"queued", "processing", "rendering"}:
+        state = "preparing"
+    elif source_problem or image_status in {"failed", "rejected"}:
+        state = "failed"
+    elif needs_prepare:
+        state = "needs_prepare"
+    elif avatar_prepared:
+        state = "ready"
+    else:
+        state = "needs_prepare"
+
+    if state not in AVATAR_SETUP_STATES:
+        state = "failed"
+
+    can_prepare = bool(
+        consent_confirmed
+        and portrait_uploaded
+        and voice_uploaded
+        and avatar_enabled
+        and state in {"needs_prepare", "failed"}
+    )
+    can_generate_preview = bool(state == "ready")
+    checklist = {
+        "portrait_uploaded": portrait_uploaded,
+        "voice_uploaded": voice_uploaded,
+        "consent_confirmed": consent_confirmed,
+        "avatar_generation_enabled": avatar_enabled,
+        "avatar_prepared": avatar_prepared,
+    }
+    primary_action_label = _avatar_setup_action_label(state)
+    if state == "needs_prepare" and (
+        "missing_processed_reference_file" in missing
+        or "avatar_source_validation_stale" in missing
+    ):
+        primary_action_label = "Re-prepare avatar"
+
+    return {
+        "state": state,
+        "action_required": _avatar_setup_action(state),
+        "primary_action_label": primary_action_label,
+        "message": _avatar_setup_message(state),
+        "checklist": checklist,
+        "can_prepare": can_prepare,
+        "can_generate_preview": can_generate_preview,
+        "needs_prepare": bool(state == "needs_prepare"),
+        "preview_ready": preview_ready,
+    }
+
+
+def avatar_setup_status(
+    profile: UserProfile,
+    voice_profile: VoiceProfile | None,
+    *,
+    storage_root: Path,
+    readiness: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved = readiness or avatar_preview_readiness(profile, voice_profile, storage_root=storage_root)
+    return _setup_status_from_readiness(profile, voice_profile, resolved)
+
 
 def normalize_avatar_engine(value: str | None) -> str:
     requested = str(value or "").strip().lower()
@@ -66,7 +220,6 @@ def avatar_preview_readiness(
         "avatar_image_original": bool(str(profile.avatar_image_original or "").strip()),
         "avatar_image_processed": bool(processed_rel),
         "processed_reference_exists": processed_exists,
-        "processed_reference_path": str(processed_abs) if processed_abs else "",
         "avatar_source_valid": bool(source_state.get("valid")),
         "avatar_source_validation_current": bool(source_state.get("validation_current")),
         "avatar_source_validation_error": str(source_state.get("error") or ""),
@@ -98,9 +251,9 @@ def avatar_preview_readiness(
         missing.append("avatar_consent_missing")
     if not checks["avatar_image_original"]:
         missing.append("missing_avatar_image_original")
-    if not checks["avatar_image_processed"]:
+    elif not checks["avatar_image_processed"]:
         missing.append("missing_avatar_image_processed")
-    if not checks["processed_reference_exists"]:
+    elif not checks["processed_reference_exists"]:
         missing.append("missing_processed_reference_file")
     if not checks["voice_profile_exists"]:
         missing.append("missing_voice_profile")
@@ -108,10 +261,11 @@ def avatar_preview_readiness(
         missing.append("missing_voice_id")
     if not checks["engine_config_valid"]:
         missing.append("invalid_engine_config")
-    if not checks["avatar_source_validation_current"]:
-        missing.append("avatar_source_validation_stale")
-    elif not checks["avatar_source_valid"]:
-        missing.append("avatar_source_invalid")
+    if checks["avatar_image_original"] and checks["avatar_image_processed"] and checks["processed_reference_exists"]:
+        if not checks["avatar_source_validation_current"]:
+            missing.append("avatar_source_validation_stale")
+        elif not checks["avatar_source_valid"]:
+            missing.append("avatar_source_invalid")
     if checks["avatar_moderation_blocked"]:
         missing.append(checks["avatar_moderation_error_code"] or "avatar_image_moderation_blocked")
 
@@ -124,7 +278,7 @@ def avatar_preview_readiness(
         and str(profile.avatar_last_preview_status or "").strip().lower() in {"ready", "warning", "done"}
     )
     if not unique_missing:
-        return {
+        payload = {
             "ready": True,
             "avatar_ready": preview_ready,
             "normalized_engine": selected_engine,
@@ -135,6 +289,8 @@ def avatar_preview_readiness(
             "missing_requirements": [],
             "checks": checks,
         }
+        payload["avatar_setup_status"] = _setup_status_from_readiness(profile, voice_profile, payload)
+        return payload
 
     missing_guidance = {
         "avatar_disabled": "Enable avatar generation in avatar settings.",
@@ -152,7 +308,7 @@ def avatar_preview_readiness(
         "avatar_image_moderation_pending": checks["avatar_moderation_error"] or "Avatar source image moderation is pending.",
     }
     guidance = [missing_guidance.get(item, item) for item in unique_missing]
-    return {
+    payload = {
         "ready": False,
         "avatar_ready": False,
         "normalized_engine": selected_engine,
@@ -163,3 +319,5 @@ def avatar_preview_readiness(
         "missing_requirements": unique_missing,
         "checks": checks,
     }
+    payload["avatar_setup_status"] = _setup_status_from_readiness(profile, voice_profile, payload)
+    return payload

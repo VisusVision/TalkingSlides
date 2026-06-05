@@ -28,6 +28,7 @@ from ai_agents.models import (  # noqa: E402
     AdminReviewRequest,
     AgentFinding,
     AgentRun,
+    ModerationReport,
     PublicationBlockEvent,
 )
 from ai_agents.policies import project_can_publish  # noqa: E402
@@ -145,6 +146,10 @@ def _list_url() -> str:
     return "/api/v1/admin/moderation/review-requests/"
 
 
+def _tab_url(tab: str, item_filter: str = "all") -> str:
+    return f"/api/v1/admin/moderation/review-requests/?tab={tab}&filter={item_filter}"
+
+
 def _detail_url(review: AdminReviewRequest) -> str:
     return f"/api/v1/admin/moderation/review-requests/{review.id}/"
 
@@ -204,7 +209,169 @@ def test_staff_list_includes_project_request_and_status_fields():
     assert row["admin_response"] == ""
     assert row["highest_severity"] == "critical"
     assert row["highest_category"] == "violence"
+    assert row["primary_asset_label"] == ""
     assert row["latest_findings_summary"][0]["location_label"] == "slide-4 narration text"
+    assert row["visual_issues"] == []
+    assert "asset_kind" not in row["latest_findings_summary"][0]
+    assert row["latest_findings_summary"][0]["reason_title"] == "Violence"
+    assert "visual" not in row["finding_badges"]
+
+
+@pytest.mark.django_db
+def test_staff_list_surfaces_visual_provider_unavailable_reason_and_asset():
+    owner = _make_user("admin_review_visual_owner")
+    staff = _make_user("admin_review_visual_staff", is_staff=True)
+    project = _make_project(owner, moderation_status="needs_admin_review")
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=owner,
+        purpose="moderation",
+        phase="visual_asset_scan",
+        status="done",
+        final_decision="needs_admin_review",
+    )
+    AgentFinding.objects.create(
+        run=run,
+        agent_slug="visual_safety_provider_unavailable",
+        agent_version="provider-required:v1",
+        content_type="image",
+        object_type="custom_background",
+        object_id="custom_background",
+        location={"project_id": project.id, "asset_type": "custom_background", "page_key": "slide-2"},
+        category="provider_unavailable",
+        severity="medium",
+        confidence=0.75,
+        decision="needs_admin_review",
+        user_message="Technical fallback.",
+        admin_message="Technical fallback.",
+        evidence_excerpt="semantic_visual_provider_unavailable",
+        provider="visual_safety_provider_unavailable",
+    )
+    project.last_moderation_run_id = run.id
+    project.save(update_fields=["last_moderation_run_id"])
+    _make_review(project)
+
+    response = _client(staff).get(_list_url())
+
+    row = next(item for item in response.data if item["project_id"] == project.id)
+    issue = row["visual_issues"][0]
+    assert response.status_code == 200
+    assert row["primary_reason_title"] == "Visual safety scan unavailable"
+    assert row["primary_asset_label"] == "Custom background image"
+    assert issue["asset_kind"] == "custom_background"
+    assert issue["asset_label"] == "Custom background image"
+    assert issue["source_kind"] == "scene_background"
+    assert issue["source_label"] == "Scene background"
+    assert issue["admin_reason_message"].startswith("The semantic visual safety provider did not return")
+
+
+@pytest.mark.django_db
+def test_staff_list_serializes_cover_and_slide_visual_targets_without_text_fallbacks():
+    owner = _make_user("admin_review_visual_targets_owner")
+    staff = _make_user("admin_review_visual_targets_staff", is_staff=True)
+    project = _make_project(owner, moderation_status="revision_required")
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=owner,
+        purpose="moderation",
+        phase="visual_asset_scan",
+        status="done",
+        final_decision="block",
+    )
+    AgentFinding.objects.create(
+        run=run,
+        agent_slug="visual_moderation",
+        agent_version="local-rules:v1",
+        content_type="image",
+        object_type="cover",
+        object_id=str(project.id),
+        location={"project_id": project.id, "asset_type": "cover", "ui_anchor": "lesson-cover"},
+        category="graphic_content",
+        severity="high",
+        confidence=0.91,
+        decision="block",
+        user_message="Replace the cover.",
+        admin_message="Unsafe cover image.",
+        provider="local_image_rules",
+    )
+    AgentFinding.objects.create(
+        run=run,
+        agent_slug="visual_moderation",
+        agent_version="local-rules:v1",
+        content_type="image",
+        object_type="slide_image",
+        object_id="2",
+        location={"project_id": project.id, "asset_type": "slide_image", "slide_order": 2, "page_key": "slide-3"},
+        category="violence",
+        severity="high",
+        confidence=0.9,
+        decision="block",
+        user_message="Replace slide image.",
+        admin_message="Unsafe slide image.",
+        provider="local_image_rules",
+    )
+    project.last_moderation_run_id = run.id
+    project.save(update_fields=["last_moderation_run_id"])
+    _make_review(project)
+
+    response = _client(staff).get(_list_url())
+
+    row = next(item for item in response.data if item["project_id"] == project.id)
+    issues = {issue["asset_kind"]: issue for issue in row["visual_issues"]}
+    assert response.status_code == 200
+    assert set(issues) == {"cover", "slide_image"}
+    assert issues["cover"]["asset_label"] == "Lesson cover"
+    assert issues["cover"]["source_kind"] == "lesson_cover"
+    assert issues["slide_image"]["asset_label"] == "Slide 3 image"
+    assert issues["slide_image"]["source_kind"] == "slide_image"
+    assert issues["slide_image"]["source_label"] == "Slide 3 image"
+    assert issues["slide_image"]["slide_number"] == 3
+
+
+@pytest.mark.django_db
+def test_moderation_open_tab_returns_review_auto_block_and_reports():
+    owner = _make_user("admin_review_open_tab_owner")
+    staff = _make_user("admin_review_open_tab_staff", is_staff=True)
+    review_project = _make_project(owner, moderation_status="needs_admin_review")
+    auto_project = _make_project(owner, moderation_status="revision_required")
+    report_project = _make_project(owner, moderation_status="admin_approved")
+    _make_review(review_project)
+    ModerationReport.objects.create(
+        reporter=staff,
+        project=report_project,
+        publisher=owner,
+        category="copyright",
+        message="This may be copied.",
+        status="open",
+    )
+
+    response = _client(staff).get(_tab_url("open"))
+
+    assert response.status_code == 200
+    project_ids = {row["project_id"] for row in response.data}
+    assert {review_project.id, auto_project.id, report_project.id}.issubset(project_ids)
+    assert all("allowed_actions" in row for row in response.data)
+
+
+@pytest.mark.django_db
+def test_moderation_history_tab_and_filters_return_terminal_items():
+    owner = _make_user("admin_review_history_tab_owner")
+    staff = _make_user("admin_review_history_tab_staff", is_staff=True)
+    approved_project = _make_project(owner, moderation_status="admin_approved")
+    rejected_project = _make_project(owner, moderation_status="admin_rejected")
+    approved_review = _make_review(approved_project, status="approved")
+    rejected_review = _make_review(rejected_project, status="rejected")
+
+    history = _client(staff).get(_tab_url("history"))
+    approved = _client(staff).get(_tab_url("history", "approved"))
+    rejected = _client(staff).get(_tab_url("history", "rejected_blocked"))
+
+    assert history.status_code == 200
+    assert {approved_review.id, rejected_review.id}.issubset(
+        {row["id"] for row in history.data if row["source_type"] == "review_request"}
+    )
+    assert any(row["id"] == approved_review.id for row in approved.data)
+    assert any(row["id"] == rejected_review.id for row in rejected.data)
 
 
 @pytest.mark.django_db
@@ -275,6 +442,60 @@ def test_approve_marks_related_publication_block_events_resolved():
     assert block.resolved is True
     assert block.resolved_by == staff
     assert block.resolved_at is not None
+
+
+@pytest.mark.django_db
+def test_admin_approve_visual_review_clears_blocked_api_state():
+    owner = _make_user("admin_review_visual_approve_owner")
+    staff = _make_user("admin_review_visual_approve_staff", is_staff=True)
+    project = _make_project(owner, moderation_status="needs_admin_review")
+    run = AgentRun.objects.create(
+        project=project,
+        triggered_by=owner,
+        purpose="moderation",
+        phase="visual_asset_scan",
+        status="done",
+        final_decision="needs_admin_review",
+    )
+    AgentFinding.objects.create(
+        run=run,
+        agent_slug="visual_safety_provider_unavailable",
+        agent_version="provider-required:v1",
+        content_type="image",
+        object_type="cover",
+        object_id="cover",
+        location={"project_id": project.id, "asset_type": "cover"},
+        category="provider_unavailable",
+        severity="medium",
+        confidence=0.75,
+        decision="needs_admin_review",
+        evidence_excerpt="semantic_visual_provider_unavailable",
+        provider="visual_safety_provider_unavailable",
+    )
+    project.last_moderation_run_id = run.id
+    project.save(update_fields=["last_moderation_run_id"])
+    review = _make_review(project)
+    block = PublicationBlockEvent.objects.create(
+        project=project,
+        run=run,
+        blocked_by="visual_safety_provider_unavailable",
+        reason_category="provider_unavailable",
+        highest_severity="medium",
+        message_to_user="Visual needs review.",
+    )
+
+    approve_response = _client(staff).post(_approve_url(review), {"admin_response": "Reviewed safe."}, format="json")
+    summary_response = _client(owner).get(f"/api/v1/projects/{project.id}/moderation/")
+
+    project.refresh_from_db()
+    block.refresh_from_db()
+    assert approve_response.status_code == 200
+    assert block.resolved is True
+    assert project.moderation_status == "admin_approved"
+    assert project_can_publish(project) is True
+    assert summary_response.data["moderation_status"] == "admin_approved"
+    assert summary_response.data["can_publish"] is True
+    assert summary_response.data["publish_blocked_by_moderation"] is False
 
 
 @pytest.mark.django_db
@@ -359,6 +580,34 @@ def test_admin_approved_project_passes_existing_publish_gate():
 
     project.refresh_from_db()
     assert project.moderation_status == "admin_approved"
+    assert project_can_publish(project) is True
+
+
+@pytest.mark.django_db
+def test_admin_approve_after_recheck_clears_manual_block():
+    owner = _make_user("admin_review_recheck_owner")
+    staff = _make_user("admin_review_recheck_staff", is_staff=True)
+    project = _make_project(owner, moderation_status="needs_admin_review")
+    project.manual_moderation_status = "blocked"
+    project.manual_moderation_reason = "Blocked before recheck."
+    project.moderation_blocked_until_review = True
+    project.save(
+        update_fields=[
+            "manual_moderation_status",
+            "manual_moderation_reason",
+            "moderation_blocked_until_review",
+            "updated_at",
+        ]
+    )
+    review = _make_review(project)
+
+    response = _client(staff).post(_approve_url(review), {"admin_response": "Fixed."}, format="json")
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert project.moderation_status == "admin_approved"
+    assert project.manual_moderation_status == "approved"
+    assert project.moderation_blocked_until_review is False
     assert project_can_publish(project) is True
 
 

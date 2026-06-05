@@ -1,27 +1,17 @@
 from __future__ import annotations
 
-import base64
-from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 import requests
 
-from ..schemas import AgentFindingSchema, AgentResultSchema, FindingLocation, Modality
-from .base import VisualModerationProvider
-from .noop_visual_provider import NoopVisualProvider
+from ..policy_engine import PolicyEngine
+from ..schemas import AgentFindingSchema, AgentResultSchema, FindingLocation
+from .base import TextModerationProvider
 
 
-AZURE_VISUAL_SAFETY_AGENT_SLUG = "visual_safety_azure_content_safety"
-AZURE_VISUAL_SAFETY_AGENT_VERSION = "azure-content-safety:v1"
-VISUAL_PROVIDER_UNAVAILABLE_USER_MESSAGE = (
-    "We could not complete the visual safety scan for one or more images/video frames. "
-    "An admin must review it before the lesson can be published."
-)
-VISUAL_PROVIDER_UNAVAILABLE_ADMIN_MESSAGE = (
-    "The semantic visual safety provider did not return a completed result. "
-    "This visual cannot be automatically approved and requires manual admin review before publishing."
-)
+AZURE_TEXT_SAFETY_AGENT_SLUG = "text_moderation_azure_content_safety"
+AZURE_TEXT_SAFETY_AGENT_VERSION = "azure-content-safety-text:v1"
 
 _AZURE_CATEGORY_NAMES = {
     "sexual": "Sexual",
@@ -40,37 +30,27 @@ _CATEGORY_MAP = {
 }
 
 
-class AzureContentSafetyVisualProvider(VisualModerationProvider):
+class AzureContentSafetyTextProvider(TextModerationProvider):
     provider_name = "azure_content_safety"
-    agent_slug = AZURE_VISUAL_SAFETY_AGENT_SLUG
-    agent_version = AZURE_VISUAL_SAFETY_AGENT_VERSION
+    agent_slug = AZURE_TEXT_SAFETY_AGENT_SLUG
+    agent_version = AZURE_TEXT_SAFETY_AGENT_VERSION
 
-    def review_image(self, image_path: str | None, location: FindingLocation) -> AgentResultSchema:
-        return self._review_asset(modality="image", asset_path=image_path, location=location)
+    def scan_text(self, text: str, location: FindingLocation) -> list[AgentFindingSchema]:
+        return self.review_text(text, location).findings
 
-    def review_frame(self, frame_path: str | None, location: FindingLocation) -> AgentResultSchema:
-        return self._review_asset(modality="video_frame", asset_path=frame_path, location=location)
-
-    def _review_asset(
-        self,
-        *,
-        modality: Modality,
-        asset_path: str | None,
-        location: FindingLocation,
-    ) -> AgentResultSchema:
-        normalized_path = str(asset_path or "").strip()
+    def review_text(self, text: str, location: FindingLocation) -> AgentResultSchema:
+        clean_text = str(text or "").strip()
         metadata = self._base_metadata(location=location)
-
-        if not bool(getattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False)):
+        if not clean_text:
+            return self._allow_result(metadata={**metadata, "skipped": True, "reason": "empty_text"})
+        if not bool(getattr(settings, "TEXT_SAFETY_CLASSIFIER_ENABLED", False)):
             return self._provider_unavailable_result(
-                modality=modality,
                 location=location,
                 metadata={**metadata, "skipped": True},
-                reason="visual_safety_classifier_disabled",
+                reason="text_safety_classifier_disabled",
             )
         if not bool(getattr(settings, "AZURE_CONTENT_SAFETY_ENABLED", False)):
             return self._provider_unavailable_result(
-                modality=modality,
                 location=location,
                 metadata={**metadata, "skipped": True},
                 reason="azure_content_safety_disabled",
@@ -80,52 +60,42 @@ class AzureContentSafetyVisualProvider(VisualModerationProvider):
         key = str(getattr(settings, "AZURE_CONTENT_SAFETY_KEY", "") or "").strip()
         if not endpoint or not key:
             return self._provider_unavailable_result(
-                modality=modality,
                 location=location,
                 metadata={**metadata, "skipped": True},
                 reason="azure_content_safety_missing_config",
             )
 
         try:
-            image_bytes, file_metadata = self._read_image_bytes(normalized_path)
-        except _VisualSafetySkip as exc:
-            return self._provider_unavailable_result(
-                modality=modality,
-                location=location,
-                metadata={**metadata, "skipped": True, **exc.metadata},
-                reason=exc.reason,
-            )
-
-        try:
-            response_json = self._submit_image(endpoint=endpoint, key=key, image_bytes=image_bytes)
-            findings = _findings_from_azure_response(response_json, location=location)
+            response_json = self._submit_text(endpoint=endpoint, key=key, text=clean_text)
+            rows = _category_rows(response_json)
+            if not rows:
+                raise ValueError("Azure Content Safety text response did not include category analysis.")
+            findings = _findings_from_azure_response(rows, text=clean_text, location=location)
             decision = _decision_for_findings(findings)
             confidence = max((finding.confidence for finding in findings), default=0.0)
             return AgentResultSchema(
                 agent_slug=self.agent_slug,
                 agent_version=self.agent_version,
-                modality=modality,
+                modality="text",
                 provider=self.provider_name,
                 decision=decision,
                 confidence=confidence,
                 findings=findings,
                 metadata={
                     **metadata,
-                    **file_metadata,
                     "skipped": False,
-                    "response_category_count": len(_category_rows(response_json)),
+                    "provider_error": False,
+                    "response_category_count": len(rows),
                 },
             )
         except requests.Timeout:
             return self._provider_unavailable_result(
-                modality=modality,
                 location=location,
                 metadata=metadata,
                 reason="azure_content_safety_timeout",
             )
         except requests.RequestException as exc:
             return self._provider_unavailable_result(
-                modality=modality,
                 location=location,
                 metadata=metadata,
                 reason="azure_content_safety_request_error",
@@ -133,72 +103,52 @@ class AzureContentSafetyVisualProvider(VisualModerationProvider):
             )
         except (TypeError, ValueError, KeyError) as exc:
             return self._provider_unavailable_result(
-                modality=modality,
                 location=location,
                 metadata=metadata,
                 reason="azure_content_safety_invalid_response",
                 error=exc,
             )
 
+    def _submit_text(self, *, endpoint: str, key: str, text: str) -> dict[str, Any]:
+        api_version = str(getattr(settings, "AZURE_CONTENT_SAFETY_API_VERSION", "2024-09-01") or "2024-09-01")
+        timeout_seconds = _timeout_seconds()
+        url = f"{endpoint}/contentsafety/text:analyze"
+        response = requests.post(
+            url,
+            params={"api-version": api_version},
+            headers={
+                "Ocp-Apim-Subscription-Key": key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "text": text,
+                "categories": [_AZURE_CATEGORY_NAMES.get(category, category) for category in _configured_categories()],
+                "outputType": "FourSeverityLevels",
+            },
+            timeout=timeout_seconds,
+        )
+        response.raise_for_status()
+        response_json = response.json()
+        if not isinstance(response_json, dict):
+            raise ValueError("Azure Content Safety text response was not an object.")
+        return response_json
+
     def _base_metadata(self, *, location: FindingLocation) -> dict[str, Any]:
         return {
             "provider": self.provider_name,
-            "classifier_enabled": bool(getattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False)),
+            "classifier_enabled": bool(getattr(settings, "TEXT_SAFETY_CLASSIFIER_ENABLED", False)),
             "azure_enabled": bool(getattr(settings, "AZURE_CONTENT_SAFETY_ENABLED", False)),
             "endpoint_configured": bool(str(getattr(settings, "AZURE_CONTENT_SAFETY_ENDPOINT", "") or "").strip()),
             "key_configured": bool(str(getattr(settings, "AZURE_CONTENT_SAFETY_KEY", "") or "").strip()),
             "api_version": str(getattr(settings, "AZURE_CONTENT_SAFETY_API_VERSION", "2024-09-01") or "2024-09-01"),
             "categories": _configured_categories(),
             "block_severity": _block_severity(),
-            "max_image_bytes": _max_image_bytes(),
             "location": location.model_dump(exclude_none=True),
         }
-
-    def _read_image_bytes(self, image_path: str) -> tuple[bytes, dict[str, Any]]:
-        if not image_path:
-            raise _VisualSafetySkip("Image path is empty.", reason="missing_image_path")
-        path = Path(image_path)
-        if not path.is_file():
-            raise _VisualSafetySkip("Image file was not found.", reason="missing_image_file")
-        size = path.stat().st_size
-        if size > _max_image_bytes():
-            raise _VisualSafetySkip(
-                "Image file is larger than the visual safety size limit.",
-                reason="image_too_large",
-                metadata={"file_size_bytes": size},
-            )
-        return path.read_bytes(), {"file_size_bytes": size}
-
-    def _submit_image(self, *, endpoint: str, key: str, image_bytes: bytes) -> dict[str, Any]:
-        api_version = str(getattr(settings, "AZURE_CONTENT_SAFETY_API_VERSION", "2024-09-01") or "2024-09-01")
-        timeout_seconds = float(getattr(settings, "VISUAL_SAFETY_TIMEOUT_SECONDS", 20) or 20)
-        url = f"{endpoint}/contentsafety/image:analyze"
-        headers = {
-            "Ocp-Apim-Subscription-Key": key,
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "image": {"content": base64.b64encode(image_bytes).decode("ascii")},
-            "categories": [_AZURE_CATEGORY_NAMES.get(category, category) for category in _configured_categories()],
-            "outputType": "FourSeverityLevels",
-        }
-        response = requests.post(
-            url,
-            params={"api-version": api_version},
-            headers=headers,
-            json=payload,
-            timeout=timeout_seconds,
-        )
-        response.raise_for_status()
-        response_json = response.json()
-        if not isinstance(response_json, dict):
-            raise ValueError("Azure Content Safety response was not an object.")
-        return response_json
 
     def _provider_unavailable_result(
         self,
         *,
-        modality: Modality,
         location: FindingLocation,
         metadata: dict[str, Any],
         reason: str,
@@ -212,32 +162,22 @@ class AzureContentSafetyVisualProvider(VisualModerationProvider):
         }
         if error is not None:
             error_metadata["error"] = _short_error(error)
-        finding = AgentFindingSchema(
-            category="provider_unavailable",
-            severity="medium",
-            confidence=0.75,
-            decision="needs_admin_review",
-            location=location,
-            user_message=VISUAL_PROVIDER_UNAVAILABLE_USER_MESSAGE,
-            admin_message=VISUAL_PROVIDER_UNAVAILABLE_ADMIN_MESSAGE,
-            evidence_excerpt=reason,
-        )
         return AgentResultSchema(
             agent_slug=self.agent_slug,
             agent_version=self.agent_version,
-            modality=modality,
+            modality="text",
             provider=self.provider_name,
             decision="needs_admin_review",
-            confidence=finding.confidence,
-            findings=[finding],
+            confidence=0.0,
+            findings=[],
             metadata=error_metadata,
         )
 
-    def _allow_result(self, *, modality: Modality, metadata: dict[str, Any]) -> AgentResultSchema:
+    def _allow_result(self, *, metadata: dict[str, Any]) -> AgentResultSchema:
         return AgentResultSchema(
             agent_slug=self.agent_slug,
             agent_version=self.agent_version,
-            modality=modality,
+            modality="text",
             provider=self.provider_name,
             decision="allow",
             confidence=0.0,
@@ -246,31 +186,26 @@ class AzureContentSafetyVisualProvider(VisualModerationProvider):
         )
 
 
-class _VisualSafetySkip(Exception):
-    def __init__(self, message: str, *, reason: str, metadata: dict[str, Any] | None = None) -> None:
-        super().__init__(message)
-        self.reason = reason
-        self.metadata = metadata or {}
+def build_text_safety_provider(provider_name: str | None = None) -> AzureContentSafetyTextProvider | None:
+    provider = str(provider_name or getattr(settings, "TEXT_SAFETY_PROVIDER", "local_rules") or "local_rules")
+    provider = provider.strip().lower()
+    if provider == "azure_content_safety" and bool(getattr(settings, "TEXT_SAFETY_CLASSIFIER_ENABLED", False)):
+        return AzureContentSafetyTextProvider()
+    return None
 
 
-def build_visual_safety_provider(provider_name: str | None = None) -> VisualModerationProvider:
-    provider = str(provider_name or getattr(settings, "VISUAL_SAFETY_PROVIDER", "none") or "none").strip().lower()
-    if provider == "azure_content_safety":
-        return AzureContentSafetyVisualProvider()
-    return NoopVisualProvider()
-
-
-def visual_safety_classifier_should_run() -> bool:
-    provider = str(getattr(settings, "VISUAL_SAFETY_PROVIDER", "none") or "none").strip().lower()
-    return provider != "none" and bool(getattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False))
-
-
-def visual_safety_provider_status() -> dict[str, Any]:
+def text_safety_provider_status() -> dict[str, Any]:
     return {
-        "visual_safety_provider": str(getattr(settings, "VISUAL_SAFETY_PROVIDER", "none") or "none").strip().lower(),
-        "visual_safety_classifier_enabled": bool(getattr(settings, "VISUAL_SAFETY_CLASSIFIER_ENABLED", False)),
-        "visual_safety_timeout_seconds": getattr(settings, "VISUAL_SAFETY_TIMEOUT_SECONDS", None),
-        "visual_safety_max_image_bytes": getattr(settings, "VISUAL_SAFETY_MAX_IMAGE_BYTES", None),
+        "text_safety_provider": str(getattr(settings, "TEXT_SAFETY_PROVIDER", "local_rules") or "local_rules")
+        .strip()
+        .lower(),
+        "text_safety_classifier_enabled": bool(getattr(settings, "TEXT_SAFETY_CLASSIFIER_ENABLED", False)),
+        "text_safety_timeout_seconds": getattr(settings, "TEXT_SAFETY_TIMEOUT_SECONDS", None),
+        "text_safety_categories": _configured_categories(),
+        "text_safety_block_severity": _block_severity(),
+        "text_safety_fallback_provider": str(getattr(settings, "TEXT_SAFETY_FALLBACK_PROVIDER", "local_rules") or "")
+        .strip()
+        .lower(),
         "azure_content_safety_enabled": bool(getattr(settings, "AZURE_CONTENT_SAFETY_ENABLED", False)),
         "azure_content_safety_endpoint_configured": bool(
             str(getattr(settings, "AZURE_CONTENT_SAFETY_ENDPOINT", "") or "").strip()
@@ -281,14 +216,17 @@ def visual_safety_provider_status() -> dict[str, Any]:
         "azure_content_safety_api_version": str(
             getattr(settings, "AZURE_CONTENT_SAFETY_API_VERSION", "2024-09-01") or "2024-09-01"
         ),
-        "azure_content_safety_categories": _configured_categories(),
-        "azure_content_safety_block_severity": _block_severity(),
     }
 
 
-def _findings_from_azure_response(payload: dict[str, Any], *, location: FindingLocation) -> list[AgentFindingSchema]:
+def _findings_from_azure_response(
+    rows: list[dict[str, Any]],
+    *,
+    text: str,
+    location: FindingLocation,
+) -> list[AgentFindingSchema]:
     findings: list[AgentFindingSchema] = []
-    for row in _category_rows(payload):
+    for row in rows:
         raw_category = str(row.get("category") or "").strip()
         category_key = _category_key(raw_category)
         mapped_category = _CATEGORY_MAP.get(category_key, "unknown")
@@ -299,7 +237,7 @@ def _findings_from_azure_response(payload: dict[str, Any], *, location: FindingL
         decision = "block" if severity_value >= _block_severity() else "needs_admin_review"
         confidence = min(1.0, max(0.1, 0.55 + (severity_value / 10.0)))
         if decision == "block":
-            confidence = max(confidence, 0.9)
+            confidence = max(confidence, PolicyEngine.block_confidence_threshold)
         findings.append(
             AgentFindingSchema(
                 category=mapped_category,  # type: ignore[arg-type]
@@ -308,14 +246,12 @@ def _findings_from_azure_response(payload: dict[str, Any], *, location: FindingL
                 decision=decision,
                 location=location,
                 user_message=(
-                    "This image may contain unsafe visual content and should be reviewed."
+                    "This text may need admin review before publishing."
                     if decision == "needs_admin_review"
-                    else "This image contains unsafe visual content. Replace it before rerendering."
+                    else "This text contains unsafe content. Please revise it before rerendering or publishing."
                 ),
-                admin_message=(
-                    f"Azure Content Safety category={raw_category or 'unknown'} severity={severity_value}."
-                ),
-                evidence_excerpt=f"{raw_category or 'unknown'} severity {severity_value}",
+                admin_message=f"Azure Content Safety text category={raw_category or 'unknown'} severity={severity_value}.",
+                evidence_excerpt=_short_excerpt(text),
             )
         )
     return findings
@@ -375,7 +311,7 @@ def _decision_for_findings(findings: list[AgentFindingSchema]):
 
 
 def _configured_categories() -> list[str]:
-    raw = str(getattr(settings, "AZURE_CONTENT_SAFETY_CATEGORIES", "sexual,violence,self_harm,hate") or "")
+    raw = str(getattr(settings, "TEXT_SAFETY_CATEGORIES", "sexual,violence,self_harm,hate") or "")
     categories = [_category_key(item) for item in raw.split(",") if item.strip()]
     return categories or ["sexual", "violence", "self_harm", "hate"]
 
@@ -386,16 +322,20 @@ def _category_key(value: str) -> str:
 
 def _block_severity() -> int:
     try:
-        return max(0, int(getattr(settings, "AZURE_CONTENT_SAFETY_BLOCK_SEVERITY", 4) or 4))
+        return max(0, int(getattr(settings, "TEXT_SAFETY_BLOCK_SEVERITY", 4) or 4))
     except (TypeError, ValueError):
         return 4
 
 
-def _max_image_bytes() -> int:
+def _timeout_seconds() -> float:
     try:
-        return max(1, int(getattr(settings, "VISUAL_SAFETY_MAX_IMAGE_BYTES", 10485760) or 10485760))
+        return max(0.1, float(getattr(settings, "TEXT_SAFETY_TIMEOUT_SECONDS", 20) or 20))
     except (TypeError, ValueError):
-        return 10485760
+        return 20.0
+
+
+def _short_excerpt(text: str, limit: int = 220) -> str:
+    return str(text or "").strip()[:limit]
 
 
 def _short_error(exc: BaseException, limit: int = 240) -> str:
