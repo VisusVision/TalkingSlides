@@ -70,7 +70,7 @@ Columns:
 
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `STORAGE_BACKEND` | API/worker/TTS | Optional | Planned | `filesystem` | Active default adapter. `s3` is for explicit adapter readiness work only; runtime media paths still use filesystem-backed `STORAGE_ROOT` until a reviewed migration lands. |
+| `STORAGE_BACKEND` | API/worker/TTS | Optional | Planned | `filesystem` | Active default adapter. Valid values are `filesystem`, `s3`, and legacy alias `local` for filesystem. `s3` is for explicit adapter readiness work only; runtime media paths still use filesystem-backed `STORAGE_ROOT` until a reviewed migration lands. |
 | `STORAGE_ROOT` | API/worker/TTS | Yes | Yes | `/app/storage_local` | Shared media root. Must be durable in production. With `DEBUG=False`, it must be explicitly set to an existing absolute readable/writable directory. |
 | `MEDIA_TOKEN_SECRET` | API | Yes | Yes | placeholder | HMAC secret for media tokens. Strong secret required in production. |
 | `MEDIA_TOKEN_TTL_SECONDS` | API | Optional | Recommended | `14400` | Default media token TTL. |

@@ -253,10 +253,10 @@ def get_storage_adapter(
     storage_root: str | os.PathLike[str] | None = None,
 ) -> FilesystemStorageAdapter | S3StorageAdapter:
     backend = str(getattr(settings, "STORAGE_BACKEND", "filesystem") or "filesystem").strip().lower()
-    if backend == "filesystem":
+    if backend in {"filesystem", "local"}:
         return FilesystemStorageAdapter(storage_root=storage_root)
     if backend == "s3":
         return S3StorageAdapter()
     raise StorageConfigurationError(
-        f"Unknown STORAGE_BACKEND '{backend}'. Expected one of: filesystem, s3."
+        f"Unknown STORAGE_BACKEND '{backend}'. Expected one of: filesystem, local, s3."
     )
