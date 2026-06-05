@@ -372,6 +372,7 @@ Expected freshness gauges:
 Production storage contract:
 
 - Live multi-user production should target S3-compatible object storage such as managed cloud S3 or production-grade MinIO. The current app still uses filesystem paths, so object storage requires a future storage adapter PR before it is active.
+- The S3/MinIO adapter contract is documented in [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md), but it is design-only. Do not configure production assuming S3/MinIO is active until an implementation PR adds the adapter, tests, rollout checklist, and rollback evidence.
 - A shared filesystem is only a temporary production bridge when it is durable, externally backed up, mounted consistently by every service, monitored for capacity, and restore-tested in staging.
 - Database and media storage must be backed up and restored together. Record the database backup ID and storage snapshot/object marker as one recovery point.
 - Before v1.0.0, run a staging restore drill that proves project detail, playback, subtitles, profile/avatar media if enabled, and one rerender from restored source uploads.

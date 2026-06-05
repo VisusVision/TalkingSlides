@@ -73,6 +73,8 @@ Safe migration order:
 5. Implement the S3/MinIO adapter as Phase E.
 6. Add signed URL or private media delivery as Phase F only if the product/security model needs it.
 
+The S3/MinIO adapter is designed but not implemented. The design keeps current storage-root-relative DB and JSON values as the durable compatibility contract, maps those relative paths to private bucket keys only inside the adapter, requires local materialization for ffmpeg, Pillow, OpenCV, LibreOffice/PyMuPDF, XTTS, LivePortrait, and MuseTalk, and requires adapter-backed range/proxy or signed-URL tests before MP4/HLS/avatar/profile delivery can move to object storage.
+
 For live multi-user production, the target architecture is S3-compatible object storage such as managed cloud S3 or production-grade MinIO. A durable shared filesystem may be used only as a temporary bridge when it is externally backed up, mounted consistently by every service, monitored, capacity-alerted, and restore-tested in staging.
 
 Storage is classified by durability and deletion risk:
@@ -84,7 +86,7 @@ Storage is classified by durability and deletion risk:
 
 Database and media storage must be backed up and restored together. Project deletion currently removes database state but does not guarantee comprehensive media cleanup. Runtime media migration to the adapter, quotas, retention execution, destructive cleanup, orphan reconciliation, and MinIO/S3 delivery remain future implementation work and must not be described as production-ready until implemented.
 
-See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full backup/restore, quota, retention, deletion, runtime adoption map, S3/MinIO implications, and implementation roadmap.
+See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full backup/restore, quota, retention, deletion, runtime adoption map, S3/MinIO adapter design RFC, media delivery contract, rollback plan, test matrix, and implementation roadmap.
 
 ### Render Recovery And Reconciliation
 

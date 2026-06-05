@@ -229,6 +229,287 @@ Manual approval is required before any destructive action involving user uploads
 6. Project-delete media cleanup: add idempotent manifest-based deletion for all project-owned media, with audit logs and evidence holds.
 7. CDN/private media delivery if needed: add private object delivery, signed URLs or tokenized proxy behavior, CDN caching policy, and protected playback integration.
 
+## S3/MinIO Adapter Design RFC
+
+This section is design only. It does not add an S3/MinIO adapter, change runtime behavior, change API response formats, add migrations, add dependencies, enable cleanup, enforce quotas, or move files. The filesystem adapter remains the only active adapter.
+
+### RFC Audit Findings
+
+Current adapter primitives:
+
+- `resolve_path(relative_path)` normalizes a storage-root-relative path and returns a local `Path`.
+- `exists`, `read_bytes`, `write_bytes`, `read_text`, `write_text`, `delete_file`, `make_dirs`, `iter_files`, and `iter_children` operate against local files.
+- Path traversal protection rejects absolute paths, drive-qualified paths, and `..` segments.
+- Current writes are whole-object writes. Phase C sidecar writes still rely on filesystem temp-file plus replace behavior outside the adapter.
+- Iteration currently returns local `Path` objects, which leaks filesystem assumptions into report helpers.
+
+Primitives missing for S3/MinIO:
+
+- An object identity type that can represent `bucket`, `key`, `size`, `etag`, `last_modified`, `content_type`, and optional metadata without requiring a local `Path`.
+- Range reads or streaming reads for MP4/HLS/profile/avatar delivery.
+- Content type and metadata on write.
+- Conditional create/replace behavior, including expected ETag or generation checks where supported.
+- Atomic whole-object publish semantics for sidecars and manifests. S3 has no POSIX rename.
+- Multipart upload support for large MP4 and avatar outputs.
+- Paginated prefix listing with delimiter support and predictable error mapping.
+- Signed URL generation or explicit "not supported" behavior.
+- Local materialization helpers for engines that require pathnames.
+- Checksum/ETag validation hooks for large downloads and upload verification.
+
+Paths needing local materialization before S3 adoption:
+
+- Source extraction inputs for LibreOffice, PyMuPDF, python-docx, python-pptx, Pillow, and poppler-style renderers.
+- ffmpeg inputs and outputs for slide videos, concat, MP4 finalization, HLS packaging, subtitle conversion, moderation frame sampling, and avatar composition.
+- OpenCV/Pillow avatar validation and preprocessing inputs/outputs.
+- XTTS voice reference WAV files and generated audio when the TTS service expects filesystem paths.
+- LivePortrait and MuseTalk source images, source videos, audio inputs, intermediate files, and output MP4s.
+- Provider/OCR/moderation paths that currently receive local frame/image paths.
+- Lock, temp, part, and current-run scratch files.
+
+Paths that can stream directly once adapter support exists:
+
+- Whole-text JSON sidecars such as `playback_assets.json`, `language_detection.json`, subtitle metadata sidecars, and avatar handoff manifests.
+- SRT/VTT subtitle files and translated subtitle tracks.
+- Profile/banner/logo processed images when served through app proxy or signed URL.
+- MP4/HLS segment/avatar media for delivery only, after range/proxy/signed URL behavior is implemented.
+- Report snapshots such as `observability/storage_metrics_snapshot.json` when listing and write semantics are adapter-compatible.
+
+Paths that need signed URLs or app-proxy delivery:
+
+- Published MP4 playback, HLS manifests, HLS segments, HLS encryption keys, subtitles, avatar overlay streams, avatar preview videos, profile assets, and voice/avatar/source uploads.
+- Private or teacher-only assets should default to app-proxy token enforcement until direct signed URLs and CDN policy are reviewed.
+- HLS encryption keys must remain app-proxy/tokenized unless a DRM/key service explicitly owns key delivery.
+
+Paths that must keep relative DB/JSON values:
+
+- `Job.result_url`, `Job.srt_url`, `TranslatedSubtitleTrack.srt_path`, `TranslatedSubtitleTrack.vtt_path`, `Project.avatar_output_path`, avatar/profile fields on `UserProfile`, voice reference conventions, and all `playback_assets.json` relative path fields.
+- Existing sidecars must continue storing storage-root-relative strings such as `<project_id>/playback_assets.json`, `<project_id>/<project_id>.mp4`, `<project_id>/subtitles/en.vtt`, and `avatars/<user_id>/preview/preview.mp4`.
+- API responses that currently expose tokenized URLs or relative-path-derived values must not change in the adapter PR.
+
+Object key naming requirements:
+
+- Treat the current normalized relative path as the canonical object key suffix.
+- Add only an environment-selected deployment prefix before that suffix, for example `prod/`, `staging/`, or `restore/<drill-id>/`.
+- Do not include leading slashes, Windows drive letters, `..`, empty path segments, query strings, fragments, or URL-decoded traversal variants.
+- Preserve case and file extensions because content type, token validation, and sidecar references rely on them.
+- Keep project/user/job IDs in the same path positions for operator traceability and rollback tooling.
+- Use temporary object keys only under a reserved internal prefix such as `.tmp/` and never store them in DB rows or sidecars.
+
+Consistency and atomicity differences:
+
+- Filesystem writes can use parent mkdir plus temp file plus atomic replace on the same volume. S3/MinIO writes are whole-object PUT/COPY operations and cannot atomically rename a temp object into place.
+- S3 now provides strong read-after-write consistency for new and overwritten objects in AWS regions, but the adapter contract should still tolerate retryable stale reads for S3-compatible services and proxies.
+- Listing is paginated and may be slower or more expensive than filesystem traversal. Report helpers must not assume recursive local walks are cheap.
+- Directory existence is virtual. `make_dirs` should be a no-op or marker-object decision, not a required object-storage operation.
+- File locks and partial files do not map to object storage. Job coordination must remain in the database, broker, or local worker scratch space.
+- Atomic sidecar publish should be defined as "a reader sees the old complete object or the new complete object, never partial bytes." Implementation can use direct whole-object PUT for small JSON, conditional PUT where supported, or temp-key plus copy/promote with cleanup, but readers must not follow temp keys.
+
+Rollback constraints:
+
+- Returning `STORAGE_BACKEND` to filesystem is simple only before S3 writes are enabled for user-visible objects.
+- Once S3 receives writes, rollback requires either dual-write evidence, a completed one-way migration with frozen writes, or a reverse copy from bucket prefix back to `STORAGE_ROOT`.
+- Mixed state is the main risk: database rows may continue to store relative paths, so a missing object in either backend looks like missing media even if the other backend has it.
+- Rollback plans must define the source of truth per phase and prohibit writes to two sources without reconciliation reports.
+
+### S3/MinIO Adapter Contract
+
+Interface expectations:
+
+- Keep relative path inputs and stored values unchanged.
+- Reject traversal before building keys.
+- Provide whole-object `exists`, `read_bytes`, `write_bytes`, `read_text`, `write_text`, and `delete_file` behavior compatible with the filesystem adapter.
+- Add future adapter-neutral operations for object metadata, range reads, streaming reads, signed URLs, local materialization, and prefix listing.
+- Map backend-specific errors to stable storage errors: missing object, permission denied, invalid path, transient service failure, timeout, conflict/precondition failed, checksum mismatch, and quota/capacity/exhausted storage where the provider exposes it.
+
+Key mapping:
+
+- `normalize_relative_path("uploads/123/source.pptx")` maps to `<prefix>/uploads/123/source.pptx`.
+- `normalize_relative_path("123/playback_assets.json")` maps to `<prefix>/123/playback_assets.json`.
+- The bucket name is never stored in the database or sidecars.
+- Prefix changes are deployment changes and must be treated like storage migrations.
+
+Bucket and prefix strategy:
+
+- Prefer one private bucket per environment when operations and IAM allow it, for example `visusvision-prod-media` and `visusvision-staging-media`.
+- A single bucket with strict prefixes is acceptable for MinIO or constrained deployments only if IAM/policy can isolate prefixes.
+- Use prefixes for environment, restore drills, and possibly tenant sharding later. Do not introduce tenant path changes until the current relative-path contract has migration tooling.
+- Keep app media separate from backups, database dumps, model caches, and CDN logs.
+
+Content type handling:
+
+- Adapter writes should accept an optional `content_type`.
+- Infer a safe fallback from extension only when the caller does not provide one.
+- Important mappings include `video/mp4`, `application/vnd.apple.mpegurl` or `application/x-mpegURL` for `.m3u8`, `video/mp2t` for `.ts`, `text/vtt`, `application/x-subrip` or `text/plain` for `.srt`, `application/json`, `image/jpeg`, `image/png`, `audio/wav`, and `audio/mpeg`.
+- Never rely on bucket defaults for HLS keys, JSON, subtitles, or media playback.
+
+Metadata handling:
+
+- Allow small immutable metadata such as project ID, job ID, owner user ID, object category, source relative path, content hash/checksum, render ID, and created-by service.
+- Do not store secrets, playback tokens, DRM keys, PII beyond already necessary ownership IDs, or raw moderation findings in object metadata.
+- Metadata must be optional because not every S3-compatible backend preserves or exposes it the same way.
+
+Private object policy:
+
+- Buckets should be private by default. No public-read ACLs.
+- API, worker, TTS, and avatar services get runtime read/write only for the configured media prefix.
+- Direct browser access requires short-lived signed URLs or CDN signed URLs/cookies after token policy review.
+- Existing tokenized app-proxy behavior remains the compatibility layer until direct signed delivery is proven.
+
+Encryption expectations:
+
+- Require TLS to managed S3 or MinIO unless the endpoint is an explicitly isolated local development network.
+- Require server-side encryption at rest for production. Managed S3 can use SSE-S3 or SSE-KMS depending on compliance needs. MinIO must use its production encryption/KMS setup if it is the production object store.
+- Client-side encryption is out of scope for the first adapter unless a separate threat model requires it.
+
+Credential and least-privilege requirements:
+
+- Runtime credentials should allow only `GetObject`, `PutObject`, multipart upload actions, `DeleteObject` only after delete workflows exist, and `ListBucket` restricted to the configured prefix.
+- Separate credentials are required for backup/restore, lifecycle administration, and operator inspection.
+- Root MinIO credentials must not be used by the app outside local development.
+- Rotate credentials through the platform secret manager and verify rollback credentials before rollout.
+
+Versioning and lifecycle recommendation:
+
+- Enable versioning for production buckets or prefixes before first S3 writes when cost and compliance allow it.
+- Define lifecycle rules separately for temp objects, multipart aborts, generated historical renders, moderation samples, audit/report snapshots, and current user-critical media.
+- Configure abort-incomplete-multipart cleanup.
+- Do not enable lifecycle deletion for active project media until DB-aware cleanup and retention manifests exist.
+
+Error handling and retry/backoff:
+
+- Missing object maps to the same behavior callers currently expect from missing files.
+- Permission errors and invalid credentials are deployment incidents, not silent fallback cases.
+- Use bounded retries with jittered exponential backoff for transient network, timeout, throttling, and 5xx errors.
+- Do not retry non-idempotent write promotion unless the operation is explicitly idempotent by key and checksum.
+- Surface checksum mismatch, partial upload failure, and precondition failure as hard errors for the owning job.
+
+### Local Materialization Contract
+
+Object storage is not a replacement for local scratch space. The adapter must provide a reviewed way to materialize objects for local-file-only engines.
+
+Engines requiring local paths:
+
+- ffmpeg requires local input/output paths for concat, transcode, HLS packaging, subtitle muxing/conversion, moderation frame extraction, and avatar composition.
+- Pillow can operate on bytes for simple images, but current profile/avatar code often uses local paths and should be treated as requiring materialization until refactored.
+- OpenCV avatar validation and video inspection require local files.
+- LibreOffice, PyMuPDF, python-docx, python-pptx, and poppler-style source extraction require local source files and local output directories.
+- XTTS currently looks up voice references under `STORAGE_ROOT/voices` and writes audio to local output paths.
+- LivePortrait and MuseTalk require local source image/video/audio paths, model paths, scratch paths, and output paths.
+
+Download-to-temp rules:
+
+- Download to a worker-local temp directory, not into the durable `STORAGE_ROOT` namespace.
+- Use unique per-job/per-operation directories containing project ID, job ID, and a random suffix.
+- Materialize inputs before invoking the engine and upload finished outputs only after validation succeeds.
+- Never store temp local paths in DB rows, sidecars, API responses, or playback tokens.
+
+Cleanup expectation:
+
+- Use context-managed temp directories where possible.
+- Delete temp files after successful upload and after handled failures.
+- On process crash, rely on OS temp cleanup or an operator-reviewed scratch cleanup procedure, not repository cleanup automation.
+- Do not delete durable objects as part of temp cleanup.
+
+Size limits and timeouts:
+
+- Define per-category max materialization sizes before enabling S3 writes: source uploads, final MP4, HLS batch, avatar preview, avatar lesson track, voice reference, profile image, subtitle text, and JSON sidecar.
+- Apply download, upload, and materialization timeouts separately from engine execution timeouts.
+- Large media should use multipart upload/download or streaming copy to disk, not full in-memory reads.
+
+Checksum/ETag validation:
+
+- For small JSON/text sidecars, content length plus read-after-write verification is enough initially.
+- For large media, record and verify provider checksum where available. Do not assume ETag is an MD5 for multipart or encrypted objects.
+- Use application-level SHA-256 only where the cost is acceptable and the hash is needed for correctness, dedupe, moderation evidence, or avatar/source identity.
+
+Failure behavior:
+
+- If materialization fails, fail the owning operation without writing partial DB state.
+- If engine output succeeds locally but upload fails, mark the job failed or retryable according to the existing job contract and keep enough logs to locate local scratch if still present.
+- If upload succeeds but DB finalization fails, the object may be an orphan candidate and must be covered by future reconciliation reports.
+- Do not silently fall back to filesystem storage after an S3 write path is selected for a job.
+
+### Media Delivery Contract
+
+MP4/private playback:
+
+- Preserve current tokenized playback responses while adding adapter-backed serving underneath.
+- App-proxy streaming is the compatibility-first path because it keeps permission checks, heartbeat/session checks, and token validation in Django.
+- Direct signed MP4 URLs may be added later for scale, but only if token TTL, range requests, revocation limits, CDN behavior, and private lesson policy are accepted.
+- Range requests are required before MP4 delivery can move to S3 for real playback.
+
+HLS manifest, segment, and key strategy:
+
+- Package HLS locally, then upload the manifest, segments, and encryption sidecars as a batch after validation.
+- Manifest rewriting must support object-backed manifest bytes and tokenized child references.
+- Segments can be app-proxy streamed or signed directly after URL/token policy review.
+- HLS encryption keys must remain private and tokenized. They should not be public, cacheable without controls, or exposed through long-lived signed URLs.
+- Partial HLS upload must not publish a manifest that references missing segments.
+
+Subtitles:
+
+- SRT/VTT objects remain private by default and are delivered through existing tokenized subtitle URLs or short-lived signed URLs.
+- Generated subtitle track DB values must remain relative paths.
+- Text content type and UTF-8 encoding should be explicit.
+
+Profile and avatar media:
+
+- Profile assets may use signed URLs or proxy delivery depending on public profile policy and CDN cache requirements.
+- Avatar source assets and previews are private teacher-owned media and should default to app-proxy/tokenized access.
+- Avatar overlay streams in lessons follow playback policy and should not bypass session/token checks.
+
+Signed URL vs app-proxy decision points:
+
+- Use app-proxy when authorization is dynamic, playback heartbeat/session state matters, protected HLS keys are involved, range behavior is not fully validated, or object keys must stay hidden.
+- Use signed URLs when the object is safe for short-lived direct delivery, CDN/range performance is required, and revocation limits are acceptable.
+- CDN compatibility requires stable cache keys, content type, cache-control policy, range support, and no leakage of private bucket names or permanent object URLs.
+
+Secure playback compatibility:
+
+- Playback heartbeat, token TTL, watermark policy, visibility lock, MP4 fallback decisions, DRM metadata, HLS encryption requirements, and session binding must be enforced before object delivery.
+- Object storage must not introduce public bypass URLs for media that the secure playback contract expects to gate.
+
+### Migration Plan And Rollback
+
+Phased implementation plan:
+
+1. Add an S3/MinIO adapter behind feature flag/env config while keeping `local`/filesystem as the default and only active production path.
+2. Add fake-S3/MinIO integration tests for key mapping, metadata, list pagination, missing objects, overwrites, multipart behavior, and private-object reads.
+3. Move additional read paths behind the adapter on the filesystem backend first.
+4. Move safe sidecar writes such as JSON/text metadata that do not require range serving or local engines.
+5. Move upload writes only after source extraction materialization is implemented and upload DB finalization is transactional enough to avoid missing-object rows.
+6. Move render outputs by writing locally first, validating output, then uploading final artifacts and sidecars as a publish batch.
+7. Move playback/HLS delivery only after range reads, manifest rewriting, key delivery, CDN/proxy policy, and secure playback compatibility tests pass.
+8. Add backup/restore drill evidence for database plus object storage, including restored playback and one rerender from restored source uploads.
+9. Add a production rollout checklist with credentials, bucket policy, versioning/lifecycle, monitoring, restore drill IDs, and rollback source-of-truth decision.
+
+Rollback strategy:
+
+- Before any S3 writes: set the backend flag back to filesystem and redeploy.
+- During read-only adoption: rollback is code-only because filesystem remains the source of truth.
+- During dual-read experiments: filesystem should remain authoritative unless the release ticket explicitly declares otherwise.
+- During write adoption: choose one of two models before rollout:
+  - Dual-write with reconciliation reports and a clear primary source of truth.
+  - One-way migration with a write freeze, object copy, verification manifest, and cutover marker.
+- Avoid mixed DB/object state by finalizing DB rows only after object writes verify, and by recording failed publish attempts as job failures rather than partial success.
+- A filesystem rollback after S3-only writes requires a reverse sync from the object prefix to `STORAGE_ROOT`, verification against DB/sidecar references, and a freeze or reconciliation window.
+
+### Required Test Matrix
+
+Tests required before implementation is considered safe:
+
+- Unit tests for key mapping, path traversal, slash normalization, URL-decoded traversal, Windows drive paths, reserved temp prefixes, and prefix isolation.
+- Adapter compatibility tests for exists/read/write/delete/text/list/missing-object/error behavior shared by filesystem and S3.
+- MinIO integration tests for bucket creation assumptions, private policy, credentials, prefix isolation, pagination, content type, metadata, overwrite behavior, multipart upload, and provider errors.
+- Upload/download roundtrip tests for source uploads, profile images, avatar source uploads, voice references, and large media.
+- Playback sidecar roundtrip tests for `playback_assets.json`, `language_detection.json`, avatar handoff manifests, and subtitle sidecars.
+- Signed URL and app-proxy tests for authorization, expiry, cache headers, token mismatch, private objects, and no public bucket bypass.
+- Range request tests for MP4 start/end/open-ended ranges, invalid ranges, HEAD behavior if supported, content length, content range, and browser-compatible seeking.
+- HLS tests for manifest rewrite, segment delivery, encrypted key delivery, missing segment failure, partial upload protection, and CDN-safe cache headers.
+- Local materialization tests for ffmpeg, Pillow, OpenCV, LibreOffice/PyMuPDF extraction, XTTS voice reference reads, LivePortrait inputs, and MuseTalk inputs using temp directories.
+- Failure injection tests for timeout, throttling, 5xx, permission denied, missing bucket, bad credentials, checksum mismatch, interrupted multipart upload, stale read, and upload success followed by DB failure.
+- Rollback tests for filesystem fallback before S3 writes, read-only rollback, dual-write mismatch detection, reverse-sync manifest validation, and no mixed DB/object state after failed publish.
+
 ## Current Validation Commands
 
 Run before release and after storage config changes:
