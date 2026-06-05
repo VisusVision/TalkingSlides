@@ -601,6 +601,7 @@ TEXT_CATEGORIES = frozenset(
         "violence_text",
     }
 )
+STORAGE_RELATIVE_ROOTS = frozenset({"uploads", "profiles", "avatars", "moderation"})
 
 PROVIDER_UNAVAILABLE_TITLE = "Visual safety scan unavailable"
 PROVIDER_UNAVAILABLE_ADMIN_MESSAGE = (
@@ -1092,24 +1093,62 @@ def _preview_unavailable_reason(location: dict[str, Any], *, asset_kind: str) ->
     return "preview_unavailable"
 
 
+def _path_has_parent_reference(normalized_path: str) -> bool:
+    return any(part == ".." for part in normalized_path.split("/"))
+
+
+def _looks_like_windows_absolute_path(normalized_path: str) -> bool:
+    return (
+        len(normalized_path) >= 3
+        and normalized_path[0].isalpha()
+        and normalized_path[1] == ":"
+        and normalized_path[2] == "/"
+    ) or normalized_path.startswith("//")
+
+
+def _known_storage_relative_suffix(normalized_path: str) -> str:
+    parts = [part for part in normalized_path.split("/") if part and part != "."]
+    for index, part in enumerate(parts):
+        root = part.lower()
+        if root in STORAGE_RELATIVE_ROOTS:
+            suffix_parts = [root, *parts[index + 1 :]]
+            suffix = "/".join(suffix_parts)
+            if suffix and not _path_has_parent_reference(suffix):
+                return suffix
+    return ""
+
+
 def _safe_storage_relative_path(raw_path: str) -> str:
-    normalized = raw_path.replace("\\", "/").lstrip("/")
-    if not normalized or ".." in normalized.split("/"):
+    raw = str(raw_path or "").strip()
+    if not raw:
+        return ""
+    slash_path = raw.replace("\\", "/")
+    normalized = slash_path.lstrip("/")
+    if not normalized or _path_has_parent_reference(normalized):
         return ""
     storage_root = Path(str(getattr(settings, "STORAGE_ROOT", "storage_local") or "storage_local")).resolve()
     root_name = storage_root.name
-    if normalized == root_name:
+    normalized_lower = normalized.lower()
+    root_prefix = f"{root_name}/".lower()
+    if normalized_lower == root_name.lower():
         return ""
-    if normalized.startswith(f"{root_name}/"):
+    if normalized_lower.startswith(root_prefix):
         normalized = normalized[len(root_name) + 1 :]
-    candidate = Path(raw_path)
+        return _known_storage_relative_suffix(normalized) or normalized
+
+    absolute_hint = slash_path.startswith("/") or _looks_like_windows_absolute_path(slash_path)
+    candidate = Path(raw)
     try:
-        resolved = candidate.resolve() if candidate.is_absolute() else (storage_root / raw_path).resolve()
-        return str(resolved.relative_to(storage_root)).replace("\\", "/")
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+            return str(resolved.relative_to(storage_root)).replace("\\", "/")
     except Exception:
-        if Path(normalized).is_absolute():
-            return ""
+        if absolute_hint:
+            return _known_storage_relative_suffix(normalized)
         return normalized
+    if absolute_hint:
+        return _known_storage_relative_suffix(normalized)
+    return normalized
 
 
 def _location_user_id(location: dict[str, Any]) -> int | None:

@@ -24,8 +24,9 @@ from django.contrib.auth.models import User  # noqa: E402
 from django.utils import timezone  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
-from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun  # noqa: E402
 from ai_agents import views as moderation_views  # noqa: E402
+from ai_agents.models import AdminReviewRequest, AgentFinding, AgentRun  # noqa: E402
+from ai_agents.serializers import _safe_storage_relative_path  # noqa: E402
 from core.models import Project, TranscriptPage, UserProfile  # noqa: E402
 from worker import tasks as worker_tasks  # noqa: E402
 
@@ -155,6 +156,20 @@ def _add_visual_run(project: Project, *, final_decision: str = "needs_admin_revi
     project.last_moderation_run_id = run.id
     project.save(update_fields=["last_moderation_run_id"])
     return run
+
+
+def test_safe_storage_relative_path_extracts_known_storage_suffixes(settings, tmp_path):
+    storage_root = tmp_path / "storage_local"
+    settings.STORAGE_ROOT = str(storage_root)
+    storage_cover = storage_root / "uploads" / "1" / "cover.png"
+
+    assert _safe_storage_relative_path(str(storage_cover)) == "uploads/1/cover.png"
+    assert _safe_storage_relative_path("/tmp/pytest-current/uploads/1/cover.png") == "uploads/1/cover.png"
+    assert _safe_storage_relative_path(r"C:\tmp\pytest-current\uploads\1\cover.png") == "uploads/1/cover.png"
+    assert _safe_storage_relative_path("storage_local/uploads/1/cover.png") == "uploads/1/cover.png"
+    assert _safe_storage_relative_path("profiles/9/banner.png") == "profiles/9/banner.png"
+    assert _safe_storage_relative_path(r"C:\tmp\pytest-current\avatars\9\uploads\avatar.png") == "avatars/9/uploads/avatar.png"
+    assert _safe_storage_relative_path("/tmp/pytest-current/cover.png") == ""
 
 
 @pytest.mark.django_db
