@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, expect, it } from 'vitest';
 
 import {
   editorSaveAvailability,
@@ -22,9 +21,9 @@ describe('studio visual moderation gates', () => {
       moderationMessage: message,
     });
 
-    assert.equal(message, 'Visual scan pending before rerender.');
-    assert.equal(availability.canSaveChanges, true);
-    assert.equal(availability.canSaveRerender, false);
+    expect(message).toBe('Visual scan pending before rerender.');
+    expect(availability.canSaveChanges).toBe(true);
+    expect(availability.canSaveRerender).toBe(false);
   });
 
   it('keeps Save enabled while provider-unavailable visual moderation needs review', () => {
@@ -43,9 +42,9 @@ describe('studio visual moderation gates', () => {
       moderationMessage: message,
     });
 
-    assert.equal(message, 'Visual safety scan needs admin review before rerender.');
-    assert.equal(availability.canSaveChanges, true);
-    assert.equal(availability.canSaveRerender, false);
+    expect(message).toBe('Visual safety scan needs admin review before rerender.');
+    expect(availability.canSaveChanges).toBe(true);
+    expect(availability.canSaveRerender).toBe(false);
   });
 
   it('locks Save and Rerender with unsafe visual wording for blocked visuals', () => {
@@ -58,7 +57,7 @@ describe('studio visual moderation gates', () => {
       }],
     });
 
-    assert.equal(message, 'Replace the blocked visual before rerender.');
+    expect(message).toBe('Replace the blocked visual before rerender.');
   });
 
   it('does not treat text-only moderation findings as visual warnings', () => {
@@ -69,8 +68,8 @@ describe('studio visual moderation gates', () => {
       moderation_state: 'blocked',
     };
 
-    assert.equal(isStudioVisualModerationIssue(issue), false);
-    assert.equal(visualModerationRerenderMessage({ issues: [issue] }), '');
+    expect(isStudioVisualModerationIssue(issue)).toBe(false);
+    expect(visualModerationRerenderMessage({ issues: [issue] })).toBe('');
   });
 
   it('does not treat Azure text safety findings as visual warnings', () => {
@@ -82,8 +81,8 @@ describe('studio visual moderation gates', () => {
       moderation_state: 'blocked',
     };
 
-    assert.equal(isStudioVisualModerationIssue(issue), false);
-    assert.equal(visualModerationRerenderMessage({ issues: [issue] }), '');
+    expect(isStudioVisualModerationIssue(issue)).toBe(false);
+    expect(visualModerationRerenderMessage({ issues: [issue] })).toBe('');
   });
 
   it('unlocks Save and Rerender for safe visual scan state', () => {
@@ -101,8 +100,8 @@ describe('studio visual moderation gates', () => {
       moderationMessage: message,
     });
 
-    assert.equal(message, '');
-    assert.equal(availability.canSaveChanges, true);
-    assert.equal(availability.canSaveRerender, true);
+    expect(message).toBe('');
+    expect(availability.canSaveChanges).toBe(true);
+    expect(availability.canSaveRerender).toBe(true);
   });
 });

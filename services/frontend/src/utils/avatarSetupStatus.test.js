@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, expect, it } from 'vitest';
 
 import {
   avatarChecklistItems,
@@ -25,19 +24,18 @@ describe('avatar setup status helpers', () => {
       },
     });
 
-    assert.equal(status.state, 'ready');
-    assert.equal(status.can_generate_preview, true);
-    assert.equal(status.can_prepare, false);
-    assert.deepEqual(
+    expect(status.state).toBe('ready');
+    expect(status.can_generate_preview).toBe(true);
+    expect(status.can_prepare).toBe(false);
+    expect(
       avatarChecklistItems(status).map((item) => [item.label, item.complete]),
-      [
+    ).toEqual([
         ['Portrait uploaded', true],
         ['Voice uploaded', true],
         ['Consent confirmed', true],
         ['Avatar generation enabled', true],
         ['Avatar prepared', true],
-      ],
-    );
+      ]);
   });
 
   it('maps missing processed-reference legacy requirements to one prepare action', () => {
@@ -59,12 +57,12 @@ describe('avatar setup status helpers', () => {
       },
     });
 
-    assert.equal(status.state, 'needs_prepare');
-    assert.equal(status.action_required, 'prepare_avatar');
-    assert.equal(status.primary_action_label, 'Prepare avatar');
-    assert.equal(status.can_prepare, true);
-    assert.equal(status.can_generate_preview, false);
-    assert.equal(status.message, 'Avatar needs to be prepared again.');
+    expect(status.state).toBe('needs_prepare');
+    expect(status.action_required).toBe('prepare_avatar');
+    expect(status.primary_action_label).toBe('Prepare avatar');
+    expect(status.can_prepare).toBe(true);
+    expect(status.can_generate_preview).toBe(false);
+    expect(status.message).toBe('Avatar needs to be prepared again.');
   });
 
   it('preserves backend re-prepare labels for stale prepared assets', () => {
@@ -85,7 +83,7 @@ describe('avatar setup status helpers', () => {
       },
     });
 
-    assert.equal(status.primary_action_label, 'Re-prepare avatar');
+    expect(status.primary_action_label).toBe('Re-prepare avatar');
   });
 
   it('does not surface raw missing-reference backend text', () => {
@@ -102,6 +100,6 @@ describe('avatar setup status helpers', () => {
       error: 'Processed avatar reference file is missing on disk; re-prepare avatar.',
     });
 
-    assert.equal(message, 'Avatar needs to be prepared again.');
+    expect(message).toBe('Avatar needs to be prepared again.');
   });
 });
