@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone as datetime_timezone
 from pathlib import Path
@@ -13,6 +12,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from core.storage_adapter import get_storage_adapter
+from core.storage_json import write_json_metadata_file
 from core.storage_retention import build_storage_report
 
 
@@ -62,12 +62,13 @@ def write_storage_metrics_snapshot(
     older_than_days: int = 30,
 ) -> dict[str, Any]:
     snapshot = build_storage_metrics_snapshot(storage_root=storage_root, older_than_days=older_than_days)
-    adapter = get_storage_adapter(storage_root)
-    path = adapter.resolve_path(SNAPSHOT_REL_PATH)
-    tmp_rel_path = SNAPSHOT_REL_PATH.with_suffix(f"{SNAPSHOT_REL_PATH.suffix}.tmp")
-    tmp_path = adapter.resolve_path(tmp_rel_path)
-    adapter.write_text(tmp_rel_path, json.dumps(snapshot, ensure_ascii=True, sort_keys=True, indent=2) + "\n")
-    os.replace(tmp_path, path)
+    write_json_metadata_file(
+        storage_root=storage_root,
+        relative_path=SNAPSHOT_REL_PATH,
+        payload=snapshot,
+        sort_keys=True,
+        trailing_newline=True,
+    )
     return snapshot
 
 
