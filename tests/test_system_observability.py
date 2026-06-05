@@ -24,6 +24,7 @@ from django.utils import timezone  # noqa: E402
 
 from core.models import Job, Project, RenderFollowUpIntent, UserProfile  # noqa: E402
 from core import perf_metrics, system_observability  # noqa: E402
+from core import storage_metrics_snapshot as storage_metrics_snapshot_module  # noqa: E402
 from core.system_observability import build_system_observability_report  # noqa: E402
 from core.storage_metrics_snapshot import (  # noqa: E402
     load_storage_metrics_snapshot,
@@ -242,6 +243,32 @@ def test_storage_metrics_snapshot_command_generates_snapshot(tmp_path):
     assert payload["retention_candidate_count"] == 1
     written_files = {path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*") if path.is_file()}
     assert written_files == {"observability/storage_metrics_snapshot.json", "tmp/old.tmp"}
+    snapshot_text = snapshot_path.read_text(encoding="utf-8")
+    assert snapshot_text.endswith("\n")
+    assert snapshot_text == json.dumps(json.loads(snapshot_text), ensure_ascii=True, sort_keys=True, indent=2) + "\n"
+
+
+def test_storage_metrics_snapshot_write_uses_shared_json_helper(tmp_path, monkeypatch):
+    calls = []
+    real_write = storage_metrics_snapshot_module.write_json_metadata_file
+
+    def tracking_write(**kwargs):
+        calls.append(kwargs)
+        return real_write(**kwargs)
+
+    monkeypatch.setattr(storage_metrics_snapshot_module, "write_json_metadata_file", tracking_write)
+
+    snapshot = write_storage_metrics_snapshot(storage_root=tmp_path)
+
+    snapshot_path = storage_metrics_snapshot_path(tmp_path)
+    assert snapshot_path == tmp_path / "observability" / "storage_metrics_snapshot.json"
+    assert snapshot_path.read_text(encoding="utf-8") == json.dumps(snapshot, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
+    assert len(calls) == 1
+    assert calls[0]["storage_root"] == tmp_path
+    assert calls[0]["relative_path"].as_posix() == "observability/storage_metrics_snapshot.json"
+    assert calls[0]["payload"] == snapshot
+    assert calls[0]["sort_keys"] is True
+    assert calls[0]["trailing_newline"] is True
 
 
 def test_storage_metrics_snapshot_loads_existing_snapshot(tmp_path):

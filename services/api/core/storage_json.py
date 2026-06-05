@@ -15,6 +15,8 @@ def write_json_metadata_file(
     storage_root: str | Path | None,
     relative_path: str | Path,
     payload: dict[str, Any],
+    sort_keys: bool = False,
+    trailing_newline: bool = False,
 ) -> str:
     """Write a JSON metadata file while preserving filesystem temp-replace behavior."""
     adapter = get_storage_adapter(storage_root)
@@ -30,6 +32,7 @@ def write_json_metadata_file(
         delete=False,
     ) as handle:
         temp_path = Path(handle.name)
-        handle.write(json.dumps(payload, ensure_ascii=True, indent=2))
+        text = json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=sort_keys)
+        handle.write(f"{text}\n" if trailing_newline else text)
     temp_path.replace(target)
     return str(target)
