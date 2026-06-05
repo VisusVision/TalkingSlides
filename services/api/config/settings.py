@@ -425,7 +425,10 @@ STORAGE_ROOT = os.environ.get(
     "STORAGE_ROOT",
     str(BASE_DIR.parent.parent / "storage_local"),
 )
-STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "filesystem").strip().lower() or "filesystem"
+_RAW_STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "filesystem").strip().lower() or "filesystem"
+# Backward compatibility for existing local Docker env files. The canonical
+# filesystem backend name is "filesystem"; "local" means the same thing.
+STORAGE_BACKEND = "filesystem" if _RAW_STORAGE_BACKEND == "local" else _RAW_STORAGE_BACKEND
 S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "").strip() or None
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "").strip()
 S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID", "").strip()

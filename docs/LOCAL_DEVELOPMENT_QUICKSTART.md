@@ -21,7 +21,7 @@ cp infra/.env.example infra/.env
 
 The default local storage path is repo-root `storage_local/`. Docker mounts that folder into API, worker, and TTS containers as `/app/storage_local`. Do not use `infra/storage_local/` for local runtime media.
 
-Keep `STORAGE_BACKEND=filesystem` for normal coworker setup. Compose MinIO is available for optional S3 adapter readiness checks only; it does not serve runtime media by default.
+Keep `STORAGE_BACKEND=filesystem` for normal coworker setup. Existing local env files that still use `STORAGE_BACKEND=local` remain compatible, but `filesystem` is the canonical value. Compose MinIO is available for optional S3 adapter readiness checks only; it does not serve runtime media by default.
 
 ## 2. Start Docker Services
 
