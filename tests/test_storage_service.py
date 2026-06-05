@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 
 import django
@@ -82,6 +83,25 @@ class FakeS3Session:
     def client(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         return self.client_instance
+
+
+def _env_bool(name, *, default=False):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _s3_integration_env_missing():
+    if not _env_bool("STORAGE_S3_INTEGRATION"):
+        return ["STORAGE_S3_INTEGRATION=1"]
+    required = ("S3_ENDPOINT_URL", "S3_BUCKET_NAME", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY")
+    return [name for name in required if not os.environ.get(name)]
+
+
+class ExplodingS3Client:
+    def __getattr__(self, name):
+        raise AssertionError(f"S3 client should not be called for unsafe path validation: {name}")
 
 
 def test_storage_paths_are_normalized_to_safe_relative_paths():
@@ -369,32 +389,59 @@ def test_s3_storage_adapter_listing_is_not_enabled():
         adapter.iter_children("")
 
 
+@pytest.mark.integration
 @pytest.mark.skipif(
-    not all(
-        os.environ.get(name)
-        for name in ("S3_INTEGRATION_ENDPOINT_URL", "S3_INTEGRATION_BUCKET_NAME", "S3_INTEGRATION_ACCESS_KEY_ID", "S3_INTEGRATION_SECRET_ACCESS_KEY")
-    ),
-    reason="S3/MinIO integration test requires explicit S3_INTEGRATION_* env vars.",
+    _s3_integration_env_missing(),
+    reason="S3/MinIO integration test requires STORAGE_S3_INTEGRATION=1 and S3_* env vars.",
 )
-def test_s3_storage_adapter_optional_integration_roundtrip():
+def test_s3_storage_adapter_optional_minio_integration_harness():
+    pytest.importorskip("boto3", reason="S3/MinIO integration test requires boto3.")
+    configured_prefix = os.environ.get("S3_KEY_PREFIX", "").strip().strip("/")
+    run_prefix = f"pytest-storage-adapter/{uuid.uuid4().hex}"
+    key_prefix = f"{configured_prefix}/{run_prefix}" if configured_prefix else run_prefix
     adapter = S3StorageAdapter(
-        bucket_name=os.environ["S3_INTEGRATION_BUCKET_NAME"],
-        endpoint_url=os.environ["S3_INTEGRATION_ENDPOINT_URL"],
-        access_key_id=os.environ["S3_INTEGRATION_ACCESS_KEY_ID"],
-        secret_access_key=os.environ["S3_INTEGRATION_SECRET_ACCESS_KEY"],
-        region_name=os.environ.get("S3_INTEGRATION_REGION_NAME") or None,
-        key_prefix=os.environ.get("S3_INTEGRATION_KEY_PREFIX", "pytest-storage-adapter"),
-        use_ssl=os.environ.get("S3_INTEGRATION_USE_SSL", "false").lower() in {"1", "true", "yes", "on"},
-        verify_ssl=os.environ.get("S3_INTEGRATION_VERIFY_SSL", "false").lower() in {"1", "true", "yes", "on"},
+        bucket_name=os.environ["S3_BUCKET_NAME"],
+        endpoint_url=os.environ["S3_ENDPOINT_URL"],
+        access_key_id=os.environ["S3_ACCESS_KEY_ID"],
+        secret_access_key=os.environ["S3_SECRET_ACCESS_KEY"],
+        region_name=os.environ.get("S3_REGION_NAME") or None,
+        key_prefix=key_prefix,
+        use_ssl=_env_bool("S3_USE_SSL", default=True),
+        verify_ssl=_env_bool("S3_VERIFY_SSL", default=True),
     )
-    key = "integration/probe.txt"
+    original_client = adapter.client
+    created_keys = []
 
-    adapter.write_text(key, "hello")
     try:
-        assert adapter.exists(key) is True
-        assert adapter.read_text(key) == "hello"
+        assert adapter.backend == "s3"
+        assert adapter.object_key("roundtrip/blob.bin").startswith(f"{key_prefix}/")
+        assert not any(hasattr(adapter, name) for name in ("public_url", "url", "generate_public_url"))
+
+        assert adapter.exists("roundtrip/missing.txt") is False
+
+        blob_key = "roundtrip/blob.bin"
+        info_key = "roundtrip/info.txt"
+        adapter.write_bytes(blob_key, b"payload")
+        created_keys.append(blob_key)
+        adapter.write_text(info_key, "hello")
+        created_keys.append(info_key)
+
+        assert adapter.exists(blob_key) is True
+        assert adapter.read_bytes(blob_key) == b"payload"
+        assert adapter.exists(info_key) is True
+        assert adapter.read_text(info_key) == "hello"
+
+        adapter.delete_file(info_key)
+        assert adapter.exists(info_key) is False
+        created_keys.remove(info_key)
+
+        adapter.client = ExplodingS3Client()
+        with pytest.raises(StoragePathTraversalError):
+            adapter.exists("../outside.txt")
     finally:
-        adapter.delete_file(key, missing_ok=True)
+        adapter.client = original_client
+        for key in created_keys:
+            adapter.delete_file(key, missing_ok=True)
 
 
 def test_filesystem_storage_smoke_writes_reads_and_deletes_probe(tmp_path):
