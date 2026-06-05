@@ -93,7 +93,27 @@ S3 adapter configuration:
 | `S3_USE_SSL` | `true` | Passed to boto3 client construction. |
 | `S3_VERIFY_SSL` | `true` | Passed to boto3 client construction. |
 
-Normal CI uses mocked S3 clients only. Real MinIO/S3 integration tests are optional and skipped unless explicit `S3_INTEGRATION_*` environment variables are present.
+Normal CI uses mocked S3 clients only. Real MinIO/S3 integration tests are optional and skipped unless `STORAGE_S3_INTEGRATION=1` and explicit `S3_*` environment variables are present.
+
+Optional MinIO/S3 adapter integration test:
+
+```powershell
+docker compose -f infra\docker-compose.yml up -d minio
+
+$env:STORAGE_S3_INTEGRATION="1"
+$env:S3_ENDPOINT_URL="http://localhost:9000"
+$env:S3_BUCKET_NAME="academy-media"
+$env:S3_ACCESS_KEY_ID="minioadmin"
+$env:S3_SECRET_ACCESS_KEY="change-me-minio-password"
+$env:S3_REGION_NAME="us-east-1"
+$env:S3_KEY_PREFIX="local-minio-adapter-tests"
+$env:S3_USE_SSL="false"
+$env:S3_VERIFY_SSL="false"
+
+py -m pytest tests/test_storage_service.py -q
+```
+
+The bucket must already exist. Local Compose publishes MinIO at `localhost:9000`; inside Compose networks the existing template uses `MINIO_ENDPOINT=minio:9000`, `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD`, and `MINIO_BUCKET_NAME`. Map those values to the adapter test variables above. The integration harness creates a unique prefix under optional `S3_KEY_PREFIX`, writes only probe objects under that prefix, deletes only the exact probe keys it created, never deletes the bucket, never lists or deletes outside the test prefix, and verifies traversal rejection before an S3 client call. It also asserts that the adapter does not expose public URL generation.
 
 ## Production Storage Decision
 
@@ -540,6 +560,8 @@ python manage.py storage_metrics_snapshot --older-than-days 30
 ```
 
 These commands do not make storage production-ready. They validate settings, schema drift, filesystem access, report-only retention/orphan candidates, and cached storage metrics.
+
+The optional MinIO/S3 adapter integration test is not part of normal CI and must not be enabled by default in shared pipelines. It is a targeted confidence check for `S3StorageAdapter` against a real S3-compatible endpoint only; filesystem remains the default runtime adapter.
 
 ## Remaining Risks
 

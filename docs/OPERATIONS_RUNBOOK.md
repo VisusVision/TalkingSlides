@@ -373,7 +373,7 @@ Production storage contract:
 
 - Live multi-user production should target S3-compatible object storage such as managed cloud S3 or production-grade MinIO. The current app still uses filesystem paths by default; do not assume S3 is serving runtime media.
 - A boto3-backed S3 adapter foundation exists and is selected only with `STORAGE_BACKEND=s3`. It requires `S3_BUCKET_NAME`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`; optional settings are `S3_ENDPOINT_URL`, `S3_REGION_NAME`, `S3_KEY_PREFIX`, `S3_USE_SSL`, and `S3_VERIFY_SSL`. Do not commit credentials.
-- MinIO/S3 integration tests are optional and skipped unless explicit `S3_INTEGRATION_*` environment variables are present. Normal CI uses mocked S3 clients.
+- MinIO/S3 integration tests are optional and skipped unless `STORAGE_S3_INTEGRATION=1` and explicit `S3_*` environment variables are present. Normal CI uses mocked S3 clients.
 - Do not configure production runtime traffic to S3 until a follow-up rollout moves selected safe paths after staging proof and records rollback evidence.
 - A shared filesystem is only a temporary production bridge when it is durable, externally backed up, mounted consistently by every service, monitored for capacity, and restore-tested in staging.
 - Database and media storage must be backed up and restored together. Record the database backup ID and storage snapshot/object marker as one recovery point.
@@ -390,6 +390,26 @@ Initial storage incident thresholds:
 - Investigate orphan or retention candidate bytes above the operator-reviewed threshold.
 
 See [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md) for the full classification, backup/restore, quota, retention, and deletion contract.
+
+Optional local MinIO adapter integration test:
+
+```powershell
+docker compose -f infra\docker-compose.yml up -d minio
+
+$env:STORAGE_S3_INTEGRATION="1"
+$env:S3_ENDPOINT_URL="http://localhost:9000"
+$env:S3_BUCKET_NAME="academy-media"
+$env:S3_ACCESS_KEY_ID="minioadmin"
+$env:S3_SECRET_ACCESS_KEY="change-me-minio-password"
+$env:S3_REGION_NAME="us-east-1"
+$env:S3_KEY_PREFIX="local-minio-adapter-tests"
+$env:S3_USE_SSL="false"
+$env:S3_VERIFY_SSL="false"
+
+py -m pytest tests/test_storage_service.py -q
+```
+
+Create the bucket first through the MinIO console or an operator-approved `mc mb` command if it does not already exist. The test uses a unique prefix per run, deletes only the probe objects it created, never deletes the bucket, never lists outside the prefix, and does not switch runtime traffic away from the filesystem adapter.
 
 ## Docker Worker Build Triage
 
