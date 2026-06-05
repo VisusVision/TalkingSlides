@@ -221,6 +221,8 @@ class S3StorageAdapter:
         raw = str(key_prefix or "").replace("\\", "/").strip().strip("/")
         if raw in {"", "."}:
             return ""
+        if self._has_windows_drive_prefix(raw):
+            raise StoragePathTraversalError(f"S3 key prefix must be relative: {key_prefix}")
         parts = [part for part in raw.split("/") if part not in {"", "."}]
         if any(part == ".." for part in parts):
             raise StoragePathTraversalError(f"S3 key prefix must stay inside bucket namespace: {key_prefix}")
@@ -231,12 +233,15 @@ class S3StorageAdapter:
         if raw in {"", "."}:
             return ""
         candidate = Path(raw)
-        if raw.startswith("/") or candidate.is_absolute() or candidate.drive:
+        if raw.startswith("/") or candidate.is_absolute() or candidate.drive or self._has_windows_drive_prefix(raw):
             raise StoragePathTraversalError(f"storage object key must be relative: {relative_path}")
         parts = [part for part in raw.split("/") if part not in {"", "."}]
         if any(part == ".." for part in parts):
             raise StoragePathTraversalError(f"storage object key must stay inside configured prefix: {relative_path}")
         return "/".join(parts)
+
+    def _has_windows_drive_prefix(self, raw_path: str) -> bool:
+        return len(raw_path) >= 3 and raw_path[0].isalpha() and raw_path[1:3] == ":/"
 
     def _is_not_found(self, exc: Exception) -> bool:
         response = getattr(exc, "response", {}) or {}
