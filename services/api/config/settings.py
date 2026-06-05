@@ -425,6 +425,15 @@ STORAGE_ROOT = os.environ.get(
     "STORAGE_ROOT",
     str(BASE_DIR.parent.parent / "storage_local"),
 )
+STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "filesystem").strip().lower() or "filesystem"
+S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "").strip() or None
+S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "").strip()
+S3_ACCESS_KEY_ID = os.environ.get("S3_ACCESS_KEY_ID", "").strip()
+S3_SECRET_ACCESS_KEY = os.environ.get("S3_SECRET_ACCESS_KEY", "").strip()
+S3_REGION_NAME = os.environ.get("S3_REGION_NAME", "").strip() or None
+S3_KEY_PREFIX = os.environ.get("S3_KEY_PREFIX", "").strip()
+S3_USE_SSL = _env_bool("S3_USE_SSL", default=True)
+S3_VERIFY_SSL = _env_bool("S3_VERIFY_SSL", default=True)
 RENDER_RECOVERY_AUDIT_LOG_PATH = os.environ.get(
     "RENDER_RECOVERY_AUDIT_LOG_PATH",
     str(Path(STORAGE_ROOT) / "audit" / "render_recovery_actions.jsonl"),
