@@ -70,21 +70,25 @@ Columns:
 
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
-| `STORAGE_BACKEND` | API/worker/TTS | Optional | Planned | `local` | Documents intended storage backend. Active code uses filesystem paths. |
+| `STORAGE_BACKEND` | API/worker/TTS | Optional | Planned | `filesystem` | Active default adapter. `s3` is for explicit adapter readiness work only; runtime media paths still use filesystem-backed `STORAGE_ROOT` until a reviewed migration lands. |
 | `STORAGE_ROOT` | API/worker/TTS | Yes | Yes | `/app/storage_local` | Shared media root. Must be durable in production. With `DEBUG=False`, it must be explicitly set to an existing absolute readable/writable directory. |
 | `MEDIA_TOKEN_SECRET` | API | Yes | Yes | placeholder | HMAC secret for media tokens. Strong secret required in production. |
 | `MEDIA_TOKEN_TTL_SECONDS` | API | Optional | Recommended | `14400` | Default media token TTL. |
 | `LOCAL_STORAGE_PERMISSIVE_CHMOD` | containers | Optional | No | `1` | Local Docker bind-mount permission helper. |
 | `LOCAL_STORAGE_DIR_MODE` | containers | Optional | No | `0777` | Local storage directory mode. |
-| `MINIO_ROOT_USER` | MinIO | Optional | Optional | placeholder | Local/future MinIO root user. |
-| `MINIO_ROOT_PASSWORD` | MinIO | Optional | Optional | placeholder | MinIO root password. Secret. |
-| `MINIO_ENDPOINT` | MinIO/S3 clients | Optional | Optional | `minio:9000` | MinIO API endpoint. |
-| `MINIO_BUCKET_NAME` | MinIO/S3 clients | Optional | Optional | `academy-media` | Bucket name. |
-| `MINIO_USE_SSL` | MinIO/S3 clients | Optional | Optional | `False` | MinIO SSL toggle. |
-| `AWS_ACCESS_KEY_ID` | future S3 | Optional | If S3 used | `${MINIO_ROOT_USER}` | S3 access key. Secret in production. |
-| `AWS_SECRET_ACCESS_KEY` | future S3 | Optional | If S3 used | `${MINIO_ROOT_PASSWORD}` | S3 secret key. Secret. |
-| `AWS_STORAGE_BUCKET_NAME` | future S3 | Optional | If S3 used | `${MINIO_BUCKET_NAME}` | S3 bucket. |
-| `AWS_S3_ENDPOINT_URL` | future S3 | Optional | If S3 used | local MinIO URL | S3-compatible endpoint. |
+| `MINIO_ROOT_USER` | MinIO | Optional | Optional | placeholder | Local MinIO root user for optional readiness/testing only. Do not use root credentials for production app access. |
+| `MINIO_ROOT_PASSWORD` | MinIO | Optional | Optional | placeholder | Local MinIO root password. Secret. |
+| `MINIO_ENDPOINT` | MinIO | Optional | Optional | `minio:9000` | Compose MinIO API endpoint. Map to `S3_ENDPOINT_URL` for adapter readiness checks. |
+| `MINIO_BUCKET_NAME` | MinIO | Optional | Optional | `academy-media` | Local MinIO bucket name. Bucket must be created before optional integration checks. |
+| `MINIO_USE_SSL` | MinIO | Optional | Optional | `False` | Local MinIO SSL toggle. |
+| `S3_ENDPOINT_URL` | S3 adapter | Optional | If adapter readiness is tested | local MinIO URL | S3-compatible endpoint. Required for MinIO/R2/Wasabi/Spaces. |
+| `S3_BUCKET_NAME` | S3 adapter | Optional | If `STORAGE_BACKEND=s3` | `${MINIO_BUCKET_NAME}` | S3 bucket. Required by the adapter. |
+| `S3_ACCESS_KEY_ID` | S3 adapter | Optional | If `STORAGE_BACKEND=s3` | `${MINIO_ROOT_USER}` | S3 access key. Secret in production. |
+| `S3_SECRET_ACCESS_KEY` | S3 adapter | Optional | If `STORAGE_BACKEND=s3` | `${MINIO_ROOT_PASSWORD}` | S3 secret key. Secret. |
+| `S3_REGION_NAME` | S3 adapter | Optional | Optional | `us-east-1` | Provider region. |
+| `S3_KEY_PREFIX` | S3 adapter | Optional | Recommended for tests | `local-minio-adapter-tests` | Safe object prefix for adapter readiness tests. |
+| `S3_USE_SSL` | S3 adapter | Optional | Recommended | `False` locally | Passed to boto3 client construction. |
+| `S3_VERIFY_SSL` | S3 adapter | Optional | Recommended | `False` locally | Passed to boto3 client construction. |
 | `GCS_BUCKET_NAME` | future GCS | Optional | If GCS used | placeholder | Google Cloud Storage bucket. |
 | `GCS_PROJECT_ID` | future GCS | Optional | If GCS used | placeholder | GCP project. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | future GCS | Optional | If GCS used | placeholder path | Service account path. Secret material must not be committed. |

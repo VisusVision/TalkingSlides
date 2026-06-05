@@ -30,7 +30,7 @@ The local Docker storage strategy is now repo-root `storage_local/` mounted into
 | `STORAGE_ROOT` | Compose sets `/app/storage_local` for API/TTS/worker. API default is repo-root `storage_local`; worker/TTS defaults are relative `storage_local`. Docker now mounts repo-root `storage_local/` to that container path. | Keep `/app/storage_local` inside containers. Document that repo-root `storage_local/` is canonical for local Docker development. |
 | `LOCAL_STORAGE_PERMISSIVE_CHMOD` / `LOCAL_STORAGE_DIR_MODE` | Local compose uses these to make the top-level `/app/storage_local` bind mount writable by non-root `appuser` containers. Defaults are dev-oriented: enabled with mode `0777`. | Keep scoped to local Docker runtime storage. Do not recursively chmod media. Production deployments should use a volume with deliberate ownership/mode instead. |
 | `XTTS_ENABLED`, `XTTS_PRELOAD_ON_STARTUP`, `XTTS_WARMUP_BLOCKING` | Template includes the Docker defaults and compose applies them to TTS service. | Include lightweight dev notes for `XTTS_ENABLED=0` where needed. |
-| MinIO/S3 | Compose starts MinIO and template defines `MINIO_*` / `AWS_*`, but code inspection found local `STORAGE_ROOT` reads/writes and no active boto3/django-storages adapter. | Mark MinIO/S3 as optional future storage, not active app storage. Do not remove compose service until storage direction is decided. |
+| MinIO/S3 | Compose starts MinIO and template defines `MINIO_*` plus actual `S3_*` adapter settings, but active runtime media still uses local `STORAGE_ROOT`. | Mark MinIO/S3 as optional readiness/testing only, not active app storage. Do not remove compose service until storage direction is decided. |
 | Google OAuth | Template now uses safe placeholders and `GOOGLE_AUTH_ENABLED=0` by default. | Rotate credentials if the previously committed values were real. |
 | `MEDIA_TOKEN_SECRET` / playback protection | Settings have defaults for `MEDIA_TOKEN_SECRET` and `MEDIA_TOKEN_TTL_SECONDS`; template does not clearly include them. | Add placeholders and production warning. Keep protection defaults aligned with `services/api/config/settings.py`. |
 | `DATABASE_URL` | Template constructs `DATABASE_URL` with shell-style interpolation, but settings use individual `POSTGRES_*` vars because Docker env files do not expand references. | Remove or comment as informational only. Prefer `POSTGRES_*` as canonical. |
@@ -172,8 +172,8 @@ MVP:
 
 Later MinIO/S3:
 
-- Treat current MinIO/S3 env variables as configured but inactive.
-- Add a real storage adapter before claiming MinIO/S3 support.
+- Treat current MinIO/S3 env variables as configured for optional adapter readiness only.
+- Keep `STORAGE_BACKEND=filesystem` for runtime media until a reviewed migration enables selected S3 paths.
 - Hide path construction behind a storage service API before migrating worker/API/TTS reads and writes.
 - Decide how TTS reference voices, transient TTS audio, HLS segments, subtitles, and avatar preview files map to object storage.
 - Define lifecycle policies for temporary TTS audio, failed render workspaces, old HLS segments, preview files, and model/cache directories.
@@ -241,7 +241,7 @@ Phase B5: optional MinIO/S3 adapter plan
 ## Remaining Phase B1 Follow-Up
 
 - Add/clarify `MEDIA_TOKEN_SECRET`, `MEDIA_TOKEN_TTL_SECONDS`, `API_PUBLIC_BASE_URL`, and lesson protection token placeholders.
-- Mark MinIO/S3 variables as optional/future because active app storage still uses `STORAGE_ROOT`.
+- Mark MinIO/S3 variables as optional readiness/testing settings because active app storage still uses `STORAGE_ROOT`.
 - Update README wording so `infra/.env.example` is clearly the canonical Docker env template.
 - env values corrected
 - validation result
