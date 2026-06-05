@@ -58,9 +58,9 @@ Important properties:
 
 ## Storage Architecture Contract
 
-The current runtime storage implementation is filesystem-backed. API, render worker, TTS service, avatar worker, and playback endpoints read and write relative paths under `STORAGE_ROOT`. Local Compose mounts repo-root `storage_local/` into containers as `/app/storage_local`. MinIO and S3-style env vars exist, but there is no active object-storage adapter yet.
+The current runtime storage implementation is filesystem-backed. API, render worker, TTS service, avatar worker, and playback endpoints read and write relative paths under `STORAGE_ROOT`. Local Compose mounts repo-root `storage_local/` into containers as `/app/storage_local`. The default adapter remains filesystem. An S3-compatible adapter foundation exists but is selected only by explicit `STORAGE_BACKEND=s3` configuration and is not used by runtime media paths by default.
 
-`core.storage_adapter.FilesystemStorageAdapter` is the first adapter boundary. It is filesystem-only and currently used by low-risk storage smoke, metrics snapshot, and report-only retention helpers. It preserves existing relative path formats and does not change public URLs, database fields, sidecar JSON, render outputs, playback serving, avatar generation, or TTS generation.
+`core.storage_adapter.FilesystemStorageAdapter` is the active default adapter boundary. `core.storage_adapter.S3StorageAdapter` uses `boto3` for S3-compatible storage, maps existing relative paths to private object keys under optional `S3_KEY_PREFIX`, rejects absolute paths and `..` traversal, and does not generate public URLs. Current adoption preserves existing relative path formats and does not change public URLs, database fields, sidecar JSON, render outputs, playback serving, avatar generation, or TTS generation.
 
 The runtime adoption map keeps object storage behind the current relative-path contract. Original uploads, render outputs, playback sidecars, HLS assets, translated subtitles, profile images, avatar source/generated assets, moderation frame samples, TTS audio, storage reports, and temp/lock/part files have different migration risks. Anything opened by LibreOffice, PyMuPDF, OpenCV, Pillow, ffmpeg, LivePortrait, MuseTalk, or XTTS must remain locally materialized until that caller has an explicit temp-file or streaming contract. Playback compatibility also needs an adapter-backed range/read contract before S3/MinIO can serve MP4/HLS/subtitle/avatar/profile media.
 
@@ -70,10 +70,10 @@ Safe migration order:
 2. Move read-only sidecar/report reads behind the adapter as Phase B.
 3. Move write paths that can still write to the filesystem adapter as Phase C.
 4. Prove playback/media serving compatibility as Phase D.
-5. Implement the S3/MinIO adapter as Phase E.
+5. Use the S3 adapter foundation in a staged proof for selected safe paths only after explicit rollout approval.
 6. Add signed URL or private media delivery as Phase F only if the product/security model needs it.
 
-The S3/MinIO adapter is designed but not implemented. The design keeps current storage-root-relative DB and JSON values as the durable compatibility contract, maps those relative paths to private bucket keys only inside the adapter, requires local materialization for ffmpeg, Pillow, OpenCV, LibreOffice/PyMuPDF, XTTS, LivePortrait, and MuseTalk, and requires adapter-backed range/proxy or signed-URL tests before MP4/HLS/avatar/profile delivery can move to object storage.
+The S3/MinIO adapter foundation keeps current storage-root-relative DB and JSON values as the durable compatibility contract, maps those relative paths to private bucket keys only inside the adapter, requires local materialization for ffmpeg, Pillow, OpenCV, LibreOffice/PyMuPDF, XTTS, LivePortrait, and MuseTalk, and requires adapter-backed range/proxy or signed-URL tests before MP4/HLS/avatar/profile delivery can move to object storage. Listing helpers remain intentionally unavailable on S3 until retention and cleanup listing semantics are reviewed.
 
 For live multi-user production, the target architecture is S3-compatible object storage such as managed cloud S3 or production-grade MinIO. A durable shared filesystem may be used only as a temporary bridge when it is externally backed up, mounted consistently by every service, monitored, capacity-alerted, and restore-tested in staging.
 

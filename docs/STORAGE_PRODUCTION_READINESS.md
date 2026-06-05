@@ -1,8 +1,8 @@
 # Storage Production Readiness
 
-VISUS currently stores uploads, generated media, playback sidecars, avatar assets, cache files, and storage observability snapshots through local filesystem paths rooted at `STORAGE_ROOT`. A small filesystem storage adapter exists for low-risk health, retention, and observability helpers. MinIO and S3-style environment variables exist in Docker and env templates, but there is no active S3 adapter and no object-storage read/write path in the application yet.
+VISUS currently stores uploads, generated media, playback sidecars, avatar assets, cache files, and storage observability snapshots through local filesystem paths rooted at `STORAGE_ROOT`. A small storage adapter boundary exists for low-risk health, retention, sidecar, and observability helpers. Filesystem remains the default and active runtime backend. An S3-compatible adapter foundation now exists behind explicit `STORAGE_BACKEND=s3` configuration, but no upload, render, playback, avatar, TTS, streaming/range, cleanup, quota, or public URL path has been migrated to S3.
 
-This document is the production storage contract for live users. It is an operator and architecture decision record plus the current adapter migration status; it does not implement S3/MinIO storage, deletion, cleanup automation, quotas, or migrations.
+This document is the production storage contract for live users. It is an operator and architecture decision record plus the current adapter migration status; it does not switch runtime traffic to S3/MinIO storage, deletion, cleanup automation, quotas, or migrations.
 
 ## Audit Findings
 
@@ -12,8 +12,8 @@ Current filesystem dependencies:
 - Django `MEDIA_ROOT` exists, but lesson media, playback assets, avatars, subtitles, reports, and most generated files use explicit `STORAGE_ROOT` paths.
 - Render and playback code stores relative paths in database rows and sidecar JSON, then resolves them back under `STORAGE_ROOT`.
 - Local Docker Compose mounts repo-root `storage_local/` into API, worker, avatar worker, and TTS containers as `/app/storage_local`.
-- MinIO is started by local Compose and S3 env vars are documented, but active code does not use boto3, django-storages, or an object-storage adapter.
-- `core.storage_adapter.FilesystemStorageAdapter` is the only active adapter. Current adoption is limited to storage smoke checks, storage metrics snapshots, and report-only retention traversal.
+- MinIO is started by local Compose and S3 env vars are documented. The S3-compatible adapter uses `boto3` and can target AWS S3 or compatible providers such as MinIO, Cloudflare R2, Wasabi, and DigitalOcean Spaces.
+- `core.storage_adapter.FilesystemStorageAdapter` is the default adapter. `core.storage_adapter.S3StorageAdapter` is available only through explicit `STORAGE_BACKEND=s3` configuration and is not wired into runtime media delivery.
 - Existing storage commands are visibility checks only: `storage_smoke_check`, `storage_retention_check --dry-run`, and `storage_metrics_snapshot`.
 
 Known paths under `STORAGE_ROOT`:
@@ -68,7 +68,7 @@ Temporary files:
 
 Current gaps:
 
-- No active object-storage adapter.
+- S3 adapter foundation exists, but no runtime media traffic is switched to it.
 - Runtime upload, render, playback, avatar, and TTS media paths still use existing filesystem path handling directly.
 - No global quota enforcement.
 - No cleanup automation for old render outputs.
@@ -78,6 +78,22 @@ Current gaps:
 - No restore drill evidence required by code.
 - No lifecycle policy enforcement.
 - No production object storage credentials or bucket policy contract wired into app code.
+
+S3 adapter configuration:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `STORAGE_BACKEND` | `filesystem` | Must be `s3` to select the S3 adapter. Unknown values fail closed. |
+| `S3_ENDPOINT_URL` | empty | Optional for AWS S3; set for MinIO/R2/Wasabi/Spaces endpoints. |
+| `S3_BUCKET_NAME` | empty | Required when `STORAGE_BACKEND=s3`. |
+| `S3_ACCESS_KEY_ID` | empty | Required when `STORAGE_BACKEND=s3`; do not commit secrets. |
+| `S3_SECRET_ACCESS_KEY` | empty | Required when `STORAGE_BACKEND=s3`; do not commit secrets. |
+| `S3_REGION_NAME` | empty | Optional provider region. |
+| `S3_KEY_PREFIX` | empty | Optional safe prefix; absolute paths and `..` traversal are rejected. |
+| `S3_USE_SSL` | `true` | Passed to boto3 client construction. |
+| `S3_VERIFY_SSL` | `true` | Passed to boto3 client construction. |
+
+Normal CI uses mocked S3 clients only. Real MinIO/S3 integration tests are optional and skipped unless explicit `S3_INTEGRATION_*` environment variables are present.
 
 ## Production Storage Decision
 

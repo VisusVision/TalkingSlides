@@ -371,8 +371,10 @@ Expected freshness gauges:
 
 Production storage contract:
 
-- Live multi-user production should target S3-compatible object storage such as managed cloud S3 or production-grade MinIO. The current app still uses filesystem paths, so object storage requires a future storage adapter PR before it is active.
-- The S3/MinIO adapter contract is documented in [STORAGE_PRODUCTION_READINESS.md](STORAGE_PRODUCTION_READINESS.md), but it is design-only. Do not configure production assuming S3/MinIO is active until an implementation PR adds the adapter, tests, rollout checklist, and rollback evidence.
+- Live multi-user production should target S3-compatible object storage such as managed cloud S3 or production-grade MinIO. The current app still uses filesystem paths by default; do not assume S3 is serving runtime media.
+- A boto3-backed S3 adapter foundation exists and is selected only with `STORAGE_BACKEND=s3`. It requires `S3_BUCKET_NAME`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`; optional settings are `S3_ENDPOINT_URL`, `S3_REGION_NAME`, `S3_KEY_PREFIX`, `S3_USE_SSL`, and `S3_VERIFY_SSL`. Do not commit credentials.
+- MinIO/S3 integration tests are optional and skipped unless explicit `S3_INTEGRATION_*` environment variables are present. Normal CI uses mocked S3 clients.
+- Do not configure production runtime traffic to S3 until a follow-up rollout moves selected safe paths after staging proof and records rollback evidence.
 - A shared filesystem is only a temporary production bridge when it is durable, externally backed up, mounted consistently by every service, monitored for capacity, and restore-tested in staging.
 - Database and media storage must be backed up and restored together. Record the database backup ID and storage snapshot/object marker as one recovery point.
 - Before v1.0.0, run a staging restore drill that proves project detail, playback, subtitles, profile/avatar media if enabled, and one rerender from restored source uploads.
