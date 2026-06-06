@@ -1,4 +1,10 @@
 import { expect, test } from '@playwright/test';
+import {
+  collectBrowserErrors,
+  jsonResponse,
+  mockCommonAppChromeApi,
+  seedAuthenticatedSession,
+} from './support/apiMocks.js';
 
 const AUTH_USER = {
   id: 42,
@@ -19,14 +25,6 @@ const CAPABILITIES_PAYLOAD = {
     visual_moderation: false,
   },
 };
-
-function jsonResponse(payload, status = 200) {
-  return {
-    status,
-    contentType: 'application/json',
-    body: JSON.stringify(payload),
-  };
-}
 
 function projectPayload(overrides = {}) {
   return {
@@ -97,14 +95,14 @@ const SUBTITLE_BUNDLE = {
 async function mockAuthenticatedReleaseGateApi(page) {
   let created = false;
 
-  await page.route('**/api/v1/capabilities/**', (route) => route.fulfill(jsonResponse(CAPABILITIES_PAYLOAD)));
-  await page.route('**/api/v1/auth/me/**', (route) => route.fulfill(jsonResponse(AUTH_USER)));
-  await page.route('**/api/v1/me/notifications/unread-count/**', (route) => route.fulfill(jsonResponse({
-    unread_count: 0,
-  })));
-  await page.route('**/api/v1/categories/**', (route) => route.fulfill(jsonResponse([
-    { id: 1, name: 'Release QA', slug: 'release-qa' },
-  ])));
+  await mockCommonAppChromeApi(page, {
+    user: AUTH_USER,
+    capabilities: CAPABILITIES_PAYLOAD,
+    categories: [
+      { id: 1, name: 'Release QA', slug: 'release-qa' },
+    ],
+    unreadCount: 0,
+  });
 
   await page.route(/\/api\/v1\/projects\/(?:\?.*)?$/, async (route) => {
     if (route.request().method() === 'POST') {
@@ -177,31 +175,15 @@ async function mockAuthenticatedReleaseGateApi(page) {
 }
 
 async function setupAuthenticatedSession(page) {
-  const consoleErrors = [];
-  const pageErrors = [];
-
-  page.on('console', (message) => {
-    if (message.type() === 'error') {
-      consoleErrors.push(message.text());
-    }
-  });
-  page.on('pageerror', (error) => {
-    pageErrors.push(error.message);
-  });
+  const expectNoBrowserErrors = collectBrowserErrors(page);
 
   await mockAuthenticatedReleaseGateApi(page);
+  await seedAuthenticatedSession(page, {
+    token: 'release-gate-token',
+    user: AUTH_USER,
+  });
 
-  await page.addInitScript((user) => {
-    window.localStorage.clear();
-    window.sessionStorage.clear();
-    window.localStorage.setItem('auth_token', 'release-gate-token');
-    window.localStorage.setItem('auth_user', JSON.stringify(user));
-  }, AUTH_USER);
-
-  return () => {
-    expect(consoleErrors, 'browser console errors').toEqual([]);
-    expect(pageErrors, 'page errors').toEqual([]);
-  };
+  return expectNoBrowserErrors;
 }
 
 test('authenticated Studio to Watch release gate surfaces core flow', async ({ page }) => {
