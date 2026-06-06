@@ -1,0 +1,2540 @@
+"""
+services/worker/tasks.py
+=========================
+Celery task definitions for AI_ACADEMY worker.
+
+Parallel pipeline
+-----------------
+process_pptx_to_video   (entry-point, same send_task name as before)
+  └─ export_project      (step 1 — extracts slide images + notes, runs inline)
+  └─ chord(
+       group([synthesize_and_render_slide, ...]),   # step 2 — parallel per-slide
+       concat_and_finalize                           # step 3 — joins parts, updates DB
+     )
+
+Smoke-test tasks: ping, tts_render
+"""
+
+from __future__ import annotations
+
+import json
+import concurrent.futures
+import hashlib
+import logging
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import traceback as tb
+import wave
+import math
+from pathlib import Path
+from typing import Any
+
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except Exception:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+
+# Ensure scripts package is importable both in Docker (/app/scripts) and local dev.
+_SCRIPT_DIRS = [
+    Path(__file__).resolve().parent.parent,              # local services root
+    Path(__file__).resolve().parent.parent / "scripts",  # local dev
+    Path(__file__).resolve().parent.parent / "avatar",   # local dev avatar module
+    Path("/app"),                                        # Docker root
+    Path("/app/scripts"),                                 # Docker image
+    Path("/app/avatar"),                                  # Docker image avatar module
+]
+for _sd in _SCRIPT_DIRS:
+    if _sd.exists() and str(_sd) not in sys.path:
+        sys.path.insert(0, str(_sd))
+
+from celery import chord, group  # noqa: E402
+from celery.exceptions import SoftTimeLimitExceeded  # noqa: E402
+from celery.signals import worker_ready  # noqa: E402
+from .celery_app import app      # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+# Storage root for worker output (under the shared volume)
+STORAGE_ROOT = os.environ.get("STORAGE_ROOT", "storage_local/output")
+
+# Base URL served by Django's MediaServeView at /api/v1/media/<path>.
+# The worker constructs result_url / srt_url from this.
+# Override in Docker via MEDIA_SERVE_BASE_URL env var (e.g. http://api:8000/api/v1/media).
+MEDIA_SERVE_BASE = os.environ.get("MEDIA_SERVE_BASE_URL", "http://localhost:8000/api/v1/media").rstrip("/")
+DRM_STREAMING_ENABLED = os.environ.get("DRM_STREAMING_ENABLED", "1").lower() in {"1", "true", "yes", "on"}
+DRM_HLS_ENCRYPTION_ENABLED = os.environ.get("DRM_HLS_ENCRYPTION_ENABLED", "0").lower() in {"1", "true", "yes", "on"}
+DRM_HLS_KEY_HEX = os.environ.get("DRM_HLS_KEY_HEX", "").strip() or None
+DRM_ASSET_ID_PREFIX = os.environ.get("DRM_ASSET_ID_PREFIX", "lesson-")
+DRM_CONTENT_ID_PREFIX = os.environ.get("DRM_CONTENT_ID_PREFIX", "project-")
+WORKER_TRIM_TRAILING_SILENCE = os.environ.get("WORKER_TRIM_TRAILING_SILENCE", "0").lower() in {"1", "true", "yes", "on"}
+
+_PREVIEW_TASK_SOFT_TIMEOUT_SECONDS = int(float(os.environ.get("AVATAR_PREVIEW_TASK_SOFT_TIMEOUT_SECONDS", "900") or 900))
+_PREVIEW_TASK_HARD_TIMEOUT_SECONDS = int(float(os.environ.get("AVATAR_PREVIEW_TASK_HARD_TIMEOUT_SECONDS", str(_PREVIEW_TASK_SOFT_TIMEOUT_SECONDS + 60)) or (_PREVIEW_TASK_SOFT_TIMEOUT_SECONDS + 60)))
+if _PREVIEW_TASK_HARD_TIMEOUT_SECONDS <= _PREVIEW_TASK_SOFT_TIMEOUT_SECONDS:
+    _PREVIEW_TASK_HARD_TIMEOUT_SECONDS = _PREVIEW_TASK_SOFT_TIMEOUT_SECONDS + 60
+
+
+@worker_ready.connect
+def _log_avatar_engine_startup_status(sender=None, **kwargs):
+    def _fatal_startup(msg: str) -> None:
+        logger.critical(msg)
+        os._exit(70)
+
+    try:
+        backend_versions: dict[str, str] = {}
+        expected_versions = {
+            "python": "3.10",
+            "torch": "2.0.1",
+            "torchvision": "0.15.2",
+            "torchaudio": "2.0.2",
+            "mmcv": "2.0.1",
+            else source_image_processed_abs
+        )
+        source_video_abs = ""
+        if profile.avatar_video_processed or profile.avatar_video_original:
+            source_video_abs = str(Path(storage_root) / (profile.avatar_video_processed or profile.avatar_video_original))
+
+        if not source_image_processed_abs and not source_video_abs:
+            raise RuntimeError("Teacher avatar preview has no usable image or video source.")
+
+        profile_engine = _normalize_avatar_engine(profile.avatar_lipsync_engine or profile.avatar_engine_primary or os.environ.get("AVATAR_ENGINE"))
+        preview_engine = profile_engine
+        liveportrait_requested = bool(preview_engine == "liveportrait+musetalk")
+
+        use_processed_focus_crop = str(os.environ.get("AVATAR_PREVIEW_USE_PROCESSED_FOCUS_CROP", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+        _stage_log(
+            event="stage_started",
+            stage="preflight_selection",
+            input_path=(source_image_original_abs or source_video_abs),
+            output_path=str(preview_reference_path),
+        )
+        current_stage = "preflight_selection"
+        current_stage_input = str(source_image_original_abs or source_video_abs)
+        current_stage_output = str(preview_reference_path)
+        current_stage_started_at = time.monotonic()
+        preflight_started_at = time.monotonic()
+
+        preview_source_candidates: list[dict[str, Any]] = []
+        source_build_warnings: list[str] = []
+        preview_reference_meta: dict[str, Any] = {}
+
+        def _append_candidate(
+            *,
+            source_key: str,
+            source_label: str,
+            source_image_path: str,
+            avatar_reference_type: str,
+            source_video_path: str,
+            reference_meta: dict[str, Any],
+        ) -> None:
+            preview_source_candidates.append(
+                {
+                    "source_key": source_key,
+                    "source_label": source_label,
+                    "source_image_path": source_image_path,
+                    "avatar_reference_type": avatar_reference_type,
+                    "source_video_path": source_video_path,
+                    "reference_meta": reference_meta,
+                    "preflight_score": float(reference_meta.get("preflight_score") or 0.0),
+                }
+            )
+
+        if source_image_original_abs and Path(source_image_original_abs).exists():
+            preview_image_path = preview_dir / "preview_reference_image.png"
+            try:
+                image_meta = build_preview_reference_image(
+                    original_image_path=source_image_original_abs,
+                    output_path=str(preview_image_path),
+                )
+                _append_candidate(
+                    source_key="image_original_preflight",
+                    source_label="image",
+                    source_image_path=str(preview_image_path),
+                    avatar_reference_type="image",
+                    source_video_path="",
+                    reference_meta=image_meta,
+                )
+            except Exception as preview_ref_exc:
+                source_build_warnings.append(str(preview_ref_exc))
+                logger.warning(
+                    "Avatar preview image preflight rejected teacher=%s source=%s reason=%s",
+                    teacher_id,
+                    source_image_original_abs,
+                    preview_ref_exc,
+                )
+
+        if source_video_abs and Path(source_video_abs).exists():
+            preview_video_path = preview_dir / "preview_reference_video.png"
+            try:
+                video_meta = build_preview_video_reference_image(
+                    source_video_path=source_video_abs,
+                    output_path=str(preview_video_path),
+                )
+                _append_candidate(
+                    source_key="video_preflight",
+                    source_label="video",
+                    source_image_path=str(preview_video_path),
+                    avatar_reference_type="video",
+                    source_video_path=source_video_abs,
+                    reference_meta=video_meta,
+                )
+            except Exception as video_ref_exc:
+                source_build_warnings.append(str(video_ref_exc))
+                logger.warning(
+                    "Avatar preview video preflight rejected teacher=%s source=%s reason=%s",
+                    teacher_id,
+                    source_video_abs,
+                    video_ref_exc,
+                )
+
+        if use_processed_focus_crop and source_image_processed_abs and Path(source_image_processed_abs).exists():
+            preview_focus_path = preview_dir / "preview_reference_focus.png"
+            try:
+                focus_meta = build_preview_focus_reference_image(
+                    processed_image_path=source_image_processed_abs,
+                    output_path=str(preview_focus_path),
+                )
+                _append_candidate(
+                    source_key="image_processed_focus",
+                    source_label="image",
+                    source_image_path=str(preview_focus_path),
+                    avatar_reference_type="image",
+                    source_video_path="",
+                    reference_meta=focus_meta,
+                )
+            except Exception as focus_exc:
+                source_build_warnings.append(str(focus_exc))
+                logger.warning(
+                    "Avatar preview processed focus preflight rejected teacher=%s source=%s reason=%s",
+                    teacher_id,
+                    source_image_processed_abs,
+                    focus_exc,
+                )
+
+        if not preview_source_candidates and source_image_processed_abs and Path(source_image_processed_abs).exists():
+            # Conservative fallback from processed identity image with added headroom.
+            preview_fallback_path = preview_dir / "preview_reference_fallback.png"
+            try:
+                fallback_meta = build_preview_processed_safe_reference_image(
+                    processed_image_path=source_image_processed_abs,
+                    output_path=str(preview_fallback_path),
+                    scale=0.90,
+                    vertical_bias=0.58,
+                )
+                _append_candidate(
+                    source_key="image_processed_safe_headroom",
+                    source_label="image",
+                    source_image_path=str(preview_fallback_path),
+                    avatar_reference_type="image",
+                    source_video_path="",
+                    reference_meta=fallback_meta,
+                )
+            except Exception as fallback_exc:
+                source_build_warnings.append(str(fallback_exc))
+
+        if source_image_processed_abs and Path(source_image_processed_abs).exists():
+            # Slightly tighter LP-safe variant to improve landmark stability on some faces.
+            preview_fallback_tight_path = preview_dir / "preview_reference_fallback_tight.png"
+            try:
+                fallback_tight_meta = build_preview_processed_safe_reference_image(
+                    processed_image_path=source_image_processed_abs,
+                    output_path=str(preview_fallback_tight_path),
+                    scale=0.94,
+                    vertical_bias=0.55,
+                )
+                _append_candidate(
+                    source_key="image_processed_safe_balanced",
+                    source_label="image",
+                    source_image_path=str(preview_fallback_tight_path),
+                    avatar_reference_type="image",
+                    source_video_path="",
+                    reference_meta=fallback_tight_meta,
+                )
+            except Exception as fallback_tight_exc:
+                source_build_warnings.append(str(fallback_tight_exc))
+
+        if not preview_source_candidates and source_image_processed_abs and Path(source_image_processed_abs).exists():
+            # Final fallback keeps legacy behavior for compatibility.
+            preview_focus_fallback_path = preview_dir / "preview_reference_focus_fallback.png"
+            try:
+                fallback_focus_meta = build_preview_focus_reference_image(
+                    processed_image_path=source_image_processed_abs,
+                    output_path=str(preview_focus_fallback_path),
+                )
+                _append_candidate(
+                    source_key="image_processed_focus_fallback",
+                    source_label="image",
+                    source_image_path=str(preview_focus_fallback_path),
+                    avatar_reference_type="image",
+                    source_video_path="",
+                    reference_meta=fallback_focus_meta,
+                )
+            except Exception as fallback_focus_exc:
+                source_build_warnings.append(str(fallback_focus_exc))
+
+        if not preview_source_candidates:
+            # Soft precheck behavior for preview: keep readable media in play and let strict final validation decide.
+            if source_image_original_abs and Path(source_image_original_abs).exists() and Path(source_image_original_abs).stat().st_size > 0:
+                _append_candidate(
+                    source_key="image_original_soft_fallback",
+                    source_label="image",
+                    source_image_path=str(source_image_original_abs),
+                    avatar_reference_type="image",
+                    source_video_path="",
+                    reference_meta={
+                        "preflight_score": 0.01,
+                        "soft_precheck_fallback": True,
+                        "fallback_reason": "readable_source_with_precheck_rejection",
+                    },
+                )
+            elif source_image_processed_abs and Path(source_image_processed_abs).exists() and Path(source_image_processed_abs).stat().st_size > 0:
+                _append_candidate(
+                    source_key="image_processed_soft_fallback",
+                    source_label="image",
+                    source_image_path=str(source_image_processed_abs),
+                    avatar_reference_type="image",
+                    source_video_path="",
+                    reference_meta={
+                        "preflight_score": 0.01,
+                        "soft_precheck_fallback": True,
+                        "fallback_reason": "readable_processed_source_with_precheck_rejection",
+                    },
+                )
+            if preview_source_candidates:
+                logger.warning(
+                    "Avatar preview soft precheck fallback teacher=%s selected=%s warnings=%s",
+                    teacher_id,
+                    str(preview_source_candidates[0].get("source_key") or ""),
+                    source_build_warnings,
+                )
+            else:
+                joined = " | ".join(source_build_warnings) if source_build_warnings else "no preflight source available"
+                raise RuntimeError(
+                    "Avatar preview preflight rejected all sources before inference. "
+                    f"details={joined}. Re-upload avatar with full headroom and less torso."
+                )
+
+        preflight_elapsed = time.monotonic() - preflight_started_at
+        _stage_log(
+            event="stage_finished",
+            stage="preflight_selection",
+            input_path=(source_image_original_abs or source_video_abs),
+            output_path=str(preview_reference_path),
+            elapsed_seconds=preflight_elapsed,
+            details="success",
+        )
+        current_stage = ""
+        if preflight_elapsed > stage_preflight_timeout:
+            raise RuntimeError(f"preflight_timeout:exceeded_{int(stage_preflight_timeout)}s")
+
+        def _history_metrics_for_source(source_image_path: str) -> dict[str, Any]:
+            debug_root = preview_dir / "debug_failed"
+            if not debug_root.exists():
+                return {}
+            best_score = float("-inf")
+            best: dict[str, Any] = {}
+            for entry in sorted(debug_root.iterdir(), reverse=True):
+                report_path = entry / "validation_report.json"
+                if not report_path.exists():
+                    continue
+                try:
+                    report = json.loads(report_path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                req = report.get("request") or {}
+                if str(req.get("source_image_path") or "") != source_image_path:
+                    continue
+                metrics = report.get("metrics") or {}
+                quality = metrics.get("quality_checks") or {}
+                lip = float(quality.get("lip_movement_score") or 0.0)
+                mouth = float(quality.get("mouth_openness_change") or 0.0)
+                lip_component = min(lip / 12.0, 1.0)
+                mouth_component = min(mouth / 0.01, 1.0)
+                quality_rank = (lip_component * 6.0) + (mouth_component * 4.0)
+                if quality_rank > best_score:
+                    best_score = quality_rank
+                    best = {
+                        "history_lip_movement_score": lip,
+                        "history_mouth_openness_change": mouth,
+                        "history_quality_rank": round(quality_rank, 6),
+                        "history_debug_path": str(report.get("debug_path") or ""),
+                    }
+            return best
+
+        strict_lp_jitter = float(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_MAX_LANDMARK_JITTER", "0.018") or 0.018)
+        preview_lp_jitter_margin = float(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_PRECHECK_JITTER_MARGIN", "0.004") or 0.004)
+        preview_lp_jitter_max = strict_lp_jitter + max(0.0, preview_lp_jitter_margin)
+        preview_lp_recovery_extra_margin = float(
+            os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_PRECHECK_RECOVERY_EXTRA_MARGIN", "0.003") or 0.003
+        )
+        rejected_lp_candidates: list[dict[str, Any]] = []
+
+        for candidate in preview_source_candidates:
+            source_path = str(candidate.get("source_image_path") or "")
+            source_path_obj = Path(source_path) if source_path else None
+            source_exists = bool(source_path_obj and source_path_obj.exists() and source_path_obj.is_file() and source_path_obj.stat().st_size > 0)
+            history = _history_metrics_for_source(source_path)
+            candidate.update(history)
+            crop_metrics = (candidate.get("reference_meta") or {}).get("crop_metrics") or {}
+            landmark_stability = (candidate.get("reference_meta") or {}).get("landmark_stability") or {}
+            landmark_jitter_estimate = float(landmark_stability.get("landmark_jitter_estimate") or 0.2)
+            landmark_detection_success_ratio = float(landmark_stability.get("landmark_detection_success_ratio") or 0.0)
+            source_face_detectable = landmark_detection_success_ratio > 0.01
+            centering_score = max(
+                0.0,
+                1.0 - min(1.0, float(crop_metrics.get("center_offset_x_ratio") or 0.0) / 0.12),
+            )
+            centering_score *= max(
+                0.0,
+                1.0 - min(1.0, float(crop_metrics.get("center_offset_y_ratio") or 0.0) / 0.15),
+            )
+            headroom_score = max(0.0, min(1.0, float(crop_metrics.get("top_margin_ratio") or 0.0) / 0.70))
+            mouth_pos = float(crop_metrics.get("mouth_position_ratio") or 0.0)
+            mouth_position_score = max(0.0, 1.0 - min(1.0, abs(mouth_pos - 0.64) / 0.24))
+            face_area_ratio = float(crop_metrics.get("face_area_ratio_in_crop") or 0.0)
+            target_face_area = 0.24
+            face_size_score = max(0.0, 1.0 - min(1.0, abs(face_area_ratio - target_face_area) / 0.16))
+            landmark_stability_score = max(0.0, 1.0 - min(1.0, landmark_jitter_estimate / max(strict_lp_jitter, 1e-6)))
+            candidate["face_centering_score"] = round(float(centering_score), 6)
+            candidate["forehead_headroom_score"] = round(float(headroom_score), 6)
+            candidate["mouth_position_score"] = round(float(mouth_position_score), 6)
+            candidate["face_size_score"] = round(float(face_size_score), 6)
+            candidate["landmark_jitter_estimate"] = round(float(landmark_jitter_estimate), 6)
+            candidate["landmark_detection_success_ratio"] = round(float(landmark_detection_success_ratio), 6)
+            candidate["landmark_stability_score"] = round(float(landmark_stability_score), 6)
+            candidate["source_exists"] = bool(source_exists)
+            candidate["source_face_detectable"] = bool(source_face_detectable)
+            # Preview precheck should only hard-reject unreadable inputs.
+            # Face rejection is enforced by canonical detector right before engine handoff.
+            candidate["precheck_hard_invalid"] = bool(not source_exists)
+            if not source_exists:
+                candidate["precheck_hard_invalid_reason"] = "missing_or_unreadable_source"
+            elif not source_face_detectable:
+                candidate["precheck_hard_invalid_reason"] = "face_detection_borderline"
+            else:
+                candidate["precheck_hard_invalid_reason"] = ""
+            preflight_score = float(candidate.get("preflight_score") or 0.0)
+            history_quality = float(candidate.get("history_quality_rank") or float("nan"))
+
+            if liveportrait_requested:
+                history_component = 0.0 if math.isnan(history_quality) else (history_quality * 8.0)
+                ranking_score = (
+                    (landmark_stability_score * 500.0)
+                    + (face_size_score * 120.0)
+                    + (headroom_score * 90.0)
+                    + (float(centering_score) * 80.0)
+                    + (mouth_position_score * 70.0)
+                    + (preflight_score * 20.0)
+                    + history_component
+                )
+                ranking_reason = "landmark_stability_weighted"
+            else:
+                if math.isnan(history_quality):
+                    ranking_score = preflight_score
+                    ranking_reason = "preflight_only"
+                else:
+                    ranking_score = (history_quality * 100.0) + preflight_score
+                    ranking_reason = "history_lip_mouth_plus_preflight"
+
+            if liveportrait_requested and landmark_jitter_estimate > preview_lp_jitter_max:
+                candidate["liveportrait_precheck_passed"] = False
+                candidate["liveportrait_precheck_reason"] = (
+                    f"landmark_jitter_estimate={landmark_jitter_estimate:.6f}>max={preview_lp_jitter_max:.6f}"
+                )
+                rejected_lp_candidates.append(
+                    {
+                        "source_key": candidate.get("source_key"),
+                        "landmark_jitter_estimate": round(float(landmark_jitter_estimate), 6),
+                        "max_allowed": round(float(preview_lp_jitter_max), 6),
+                        "precheck_reason": candidate.get("liveportrait_precheck_reason"),
+                    }
+                )
+            else:
+                candidate["liveportrait_precheck_passed"] = True
+                candidate["liveportrait_precheck_reason"] = ""
+            candidate["liveportrait_precheck_threshold"] = round(float(preview_lp_jitter_max), 6)
+
+            candidate["ranking_score"] = round(ranking_score, 6)
+            candidate["ranking_reason"] = ranking_reason
+
+        preview_source_candidates.sort(key=lambda item: float(item.get("ranking_score") or 0.0), reverse=True)
+        ranked_valid_candidates = [c for c in preview_source_candidates if not bool(c.get("precheck_hard_invalid"))]
+        if not ranked_valid_candidates:
+            invalid_summary = [
+                {
+                    "source_key": c.get("source_key"),
+                    "reason": c.get("precheck_hard_invalid_reason"),
+                }
+                for c in preview_source_candidates
+            ]
+            raise RuntimeError(
+                "liveportrait_precheck_failed:no_usable_source "
+                f"reasons={invalid_summary}"
+            )
+        for idx, item in enumerate(preview_source_candidates, start=1):
+            item["expected_stability_rank"] = int(idx)
+        selected_source = dict(ranked_valid_candidates[0])
+        precheck_recovery_used = False
+        precheck_recovery_details: dict[str, Any] = {}
+        best_effort_preview_warning = ""
+        preview_reference_meta = dict(selected_source.get("reference_meta") or {})
+        preview_reference_meta["source_key"] = str(selected_source.get("source_key") or "")
+        preview_reference_meta["source_label"] = str(selected_source.get("source_label") or "")
+        runner_up = dict(preview_source_candidates[1]) if len(preview_source_candidates) > 1 else None
+
+        if liveportrait_requested:
+            selected_jitter = float(selected_source.get("landmark_jitter_estimate") or 0.2)
+            precheck_decision = "strict_pass"
+            if selected_jitter > strict_lp_jitter and selected_jitter <= preview_lp_jitter_max:
+                precheck_decision = "preview_margin_warn"
+
+            if selected_jitter > preview_lp_jitter_max:
+                overrun = selected_jitter - preview_lp_jitter_max
+                near_miss = overrun <= max(0.0, preview_lp_recovery_extra_margin)
+                recovery_possible = bool(source_image_processed_abs and Path(source_image_processed_abs).exists())
+                if near_miss and recovery_possible:
+                    recovery_output = preview_dir / f"preview_reference_recovery_{str(selected_source.get('source_key') or 'selected')}.png"
+                    selected_crop_candidate = (selected_source.get("reference_meta") or {}).get("crop_candidate") or {}
+                    base_scale = float(selected_crop_candidate.get("scale") or 0.94)
+                    base_vertical_bias = float(selected_crop_candidate.get("vertical_bias") or 0.55)
+                    recovery_scale = max(0.82, min(0.95, base_scale - 0.05))
+                    recovery_vertical_bias = max(0.46, min(0.62, base_vertical_bias - 0.03))
+                    recovery_meta = build_preview_processed_safe_reference_image(
+                        processed_image_path=source_image_processed_abs,
+                        output_path=str(recovery_output),
+                        scale=recovery_scale,
+                        vertical_bias=recovery_vertical_bias,
+                    )
+                    recovery_landmark = (recovery_meta.get("landmark_stability") or {})
+                    recovery_jitter = float(recovery_landmark.get("landmark_jitter_estimate") or 0.2)
+                    precheck_recovery_used = True
+                    precheck_recovery_details = {
+                        "used": True,
+                        "reason": "selected_source_near_miss_jitter",
+                        "before_jitter": round(selected_jitter, 6),
+                        "after_jitter": round(recovery_jitter, 6),
+                        "strict_threshold": round(strict_lp_jitter, 6),
+                        "preview_threshold": round(preview_lp_jitter_max, 6),
+                        "recovery_scale": round(recovery_scale, 6),
+                        "recovery_vertical_bias": round(recovery_vertical_bias, 6),
+                        "output_path": str(recovery_output),
+                    }
+                    selected_source["source_image_path"] = str(recovery_output)
+                    selected_source["source_key"] = f"{str(selected_source.get('source_key') or 'selected')}_recovery"
+                    selected_source["reference_meta"] = dict(recovery_meta)
+                    selected_source["landmark_jitter_estimate"] = round(recovery_jitter, 6)
+                    precheck_decision = "recovery_warn"
+                else:
+                    precheck_decision = "high_jitter_warn"
+                    precheck_recovery_details = {
+                        "used": False,
+                        "reason": "recovery_not_applicable",
+                        "near_miss": bool(near_miss),
+                        "recovery_possible": bool(recovery_possible),
+                        "before_jitter": round(selected_jitter, 6),
+                        "preview_threshold": round(preview_lp_jitter_max, 6),
+                    }
+
+            if precheck_decision != "strict_pass":
+                selected_jitter_after = round(float(selected_source.get("landmark_jitter_estimate") or selected_jitter), 6)
+                best_effort_preview_warning = (
+                    "preview_warning: Using best available avatar source in preview mode; "
+                    f"precheck_decision={precheck_decision}; jitter={selected_jitter_after}; "
+                    f"strict_threshold={round(strict_lp_jitter, 6)}; preview_threshold={round(preview_lp_jitter_max, 6)}"
+                )
+                logger.warning(
+                    "Avatar preview best-effort precheck warning teacher=%s source=%s warning=%s",
+                    teacher_id,
+                    selected_source.get("source_key"),
+                    best_effort_preview_warning,
+                )
+
+            logger.info(
+                "Avatar preview liveportrait precheck decision teacher=%s source=%s jitter=%s strict_threshold=%s preview_threshold=%s recovery_used=%s decision=%s",
+                teacher_id,
+                selected_source.get("source_key"),
+                round(float(selected_source.get("landmark_jitter_estimate") or selected_jitter), 6),
+                round(strict_lp_jitter, 6),
+                round(preview_lp_jitter_max, 6),
+                bool(precheck_recovery_used),
+                precheck_decision,
+            )
+            if precheck_recovery_details:
+                logger.info(
+                    "Avatar preview liveportrait precheck recovery teacher=%s details=%s",
+                    teacher_id,
+                    precheck_recovery_details,
+                )
+
+            preview_reference_meta = dict(selected_source.get("reference_meta") or preview_reference_meta)
+            preview_reference_meta["source_key"] = str(selected_source.get("source_key") or "")
+            preview_reference_meta["source_label"] = str(selected_source.get("source_label") or "")
+
+            # Canonical engine-aware normalization now runs in avatar.pipeline for both preview and lesson.
+            _write_stage_diagnostic(
+                stage="liveportrait_input_normalization",
+                payload={
+                    "enabled": False,
+                    "reason": "delegated_to_canonical_input_pipeline",
+                    "source_key": selected_source.get("source_key"),
+                    "source_label": selected_source.get("source_label"),
+                },
+            )
+
+        winner_reason_tokens = [
+            f"ranking_reason={selected_source.get('ranking_reason')}",
+            f"ranking_score={selected_source.get('ranking_score')}",
+            f"lip_history={selected_source.get('history_lip_movement_score')}",
+            f"mouth_history={selected_source.get('history_mouth_openness_change')}",
+            f"mouth_position_score={selected_source.get('mouth_position_score')}",
+            f"headroom_score={selected_source.get('forehead_headroom_score')}",
+            f"centering_score={selected_source.get('face_centering_score')}",
+            f"face_size_score={selected_source.get('face_size_score')}",
+            f"landmark_jitter_estimate={selected_source.get('landmark_jitter_estimate')}",
+            f"expected_stability_rank={selected_source.get('expected_stability_rank')}",
+        ]
+        if runner_up:
+            winner_reason_tokens.append(
+                f"runner_up={runner_up.get('source_key')}"
+                f"(rank={runner_up.get('ranking_score')},lip={runner_up.get('history_lip_movement_score')},mouth={runner_up.get('history_mouth_openness_change')})"
+            )
+        selected_source_reason = "; ".join(winner_reason_tokens)
+
+        logger.info(
+            "Avatar preview selected source teacher=%s source_key=%s source_label=%s ranking_reason=%s ranking_score=%s preflight_score=%s history_lip=%s history_mouth_open=%s candidates=%s",
+            teacher_id,
+            selected_source.get("source_key"),
+            selected_source.get("source_label"),
+            selected_source.get("ranking_reason"),
+            selected_source.get("ranking_score"),
+            selected_source.get("preflight_score"),
+            selected_source.get("history_lip_movement_score"),
+            selected_source.get("history_mouth_openness_change"),
+            [
+                {
+                    "source_key": item.get("source_key"),
+                    "ranking_score": item.get("ranking_score"),
+                    "preflight_score": item.get("preflight_score"),
+                    "history_quality_rank": item.get("history_quality_rank"),
+                }
+                for item in preview_source_candidates
+            ],
+        )
+        logger.info(
+            "Avatar preview source winner_vs_runner_up teacher=%s reason=%s",
+            teacher_id,
+            selected_source_reason,
+        )
+        logger.info(
+            "Avatar preview liveportrait precheck teacher=%s max_jitter=%s rejected=%s",
+            teacher_id,
+            preview_lp_jitter_max,
+            rejected_lp_candidates,
+        )
+        _write_stage_diagnostic(
+            stage="source_selection",
+            payload={
+                "selected_source": {
+                    "source_key": selected_source.get("source_key"),
+                    "source_label": selected_source.get("source_label"),
+                    "reason": selected_source_reason,
+                    "preflight_score": selected_source.get("preflight_score"),
+                    "ranking_score": selected_source.get("ranking_score"),
+                    "expected_stability_rank": selected_source.get("expected_stability_rank"),
+                    "landmark_jitter_estimate": selected_source.get("landmark_jitter_estimate"),
+                    "liveportrait_precheck_passed": selected_source.get("liveportrait_precheck_passed"),
+                    "crop_metadata": (selected_source.get("reference_meta") or {}).get("crop_metrics") or {},
+                },
+                "runner_up": {
+                    "source_key": (runner_up or {}).get("source_key"),
+                    "ranking_score": (runner_up or {}).get("ranking_score"),
+                },
+                "liveportrait_precheck": {
+                    "enabled": bool(liveportrait_requested),
+                    "strict_landmark_jitter": round(float(strict_lp_jitter), 6),
+                    "max_landmark_jitter": round(float(preview_lp_jitter_max), 6),
+                    "recovery_extra_margin": round(float(preview_lp_recovery_extra_margin), 6),
+                    "recovery_used": bool(precheck_recovery_used),
+                    "recovery": dict(precheck_recovery_details),
+                    "best_effort_warning": str(best_effort_preview_warning or ""),
+                    "rejected_sources": rejected_lp_candidates,
+                },
+                "candidates": preview_source_candidates,
+            },
+        )
+
+        preview_text_hash = hashlib.sha256(preview_script.encode("utf-8")).hexdigest()
+        preview_voice_hash = hashlib.sha256(str(voice_profile.voice_id).encode("utf-8")).hexdigest()[:12]
+        cached_source_tts_path = preview_dir / f"preview_source_{preview_voice_hash}_{preview_text_hash[:16]}.mp3"
+        source_tts_path.unlink(missing_ok=True)
+        audio_path.unlink(missing_ok=True)
+        tts_meta: dict[str, Any] = {}
+        tts_provider = "cache"
+        preview_audio_cache_hit = False
+        _stage_log(
+            event="stage_started",
+            stage="tts_generation",
+            input_path=f"voice:{voice_profile.voice_id}",
+            output_path=str(source_tts_path),
+        )
+        current_stage = "tts_generation"
+        current_stage_input = f"voice:{voice_profile.voice_id}"
+        current_stage_output = str(source_tts_path)
+        current_stage_started_at = time.monotonic()
+        tts_started_at = time.monotonic()
+        if cached_source_tts_path.exists() and cached_source_tts_path.stat().st_size > 0:
+            shutil.copy2(cached_source_tts_path, source_tts_path)
+            try:
+                generated_duration = _verify_preview_audio_or_raise(source_tts_path, tts_duration=None)
+                preview_audio_cache_hit = True
+                tts_meta = {
+                    "provider": "cache",
+                    "duration": generated_duration,
+                }
+            except Exception:
+                source_tts_path.unlink(missing_ok=True)
+                cached_source_tts_path.unlink(missing_ok=True)
+
+        if not preview_audio_cache_hit:
+            tts_meta = _run_tts_with_timeout()
+            tts_provider = str(tts_meta.get("provider") or "").strip().lower()
+            if tts_provider == "fallback":
+                raise RuntimeError("tts_audio_invalid:fallback_audio")
+
+            generated_duration = _verify_preview_audio_or_raise(
+                source_tts_path,
+                tts_duration=(float(tts_meta["duration"]) if tts_meta.get("duration") is not None else None),
+            )
+            _trim_preview_audio_silence(source_tts_path)
+            generated_duration = _verify_preview_audio_or_raise(source_tts_path, tts_duration=None)
+            shutil.copy2(source_tts_path, cached_source_tts_path)
+
+        _stage_log(
+            event="stage_finished",
+            stage="tts_generation",
+            input_path=f"voice:{voice_profile.voice_id}",
+            output_path=str(source_tts_path),
+            elapsed_seconds=(time.monotonic() - tts_started_at),
+            details=("cache_hit" if preview_audio_cache_hit else "generated"),
+        )
+        _write_stage_diagnostic(
+            stage="tts",
+            payload={
+                "provider": tts_provider,
+                "cache_hit": bool(preview_audio_cache_hit),
+                "output_path": str(source_tts_path),
+                "duration_seconds": round(float(generated_duration), 4),
+                "meta": dict(tts_meta or {}),
+            },
+        )
+        current_stage = ""
+
+        if job_id:
+            Job.objects.filter(id=int(job_id)).update(
+                status="running",
+                progress=38,
+                error_message=(best_effort_preview_warning if best_effort_preview_warning else ""),
+            )
+        profile.avatar_last_preview_status = "tts_ready"
+        profile.avatar_image_status = "processing"
+        profile.avatar_preview_error = ""
+        profile.avatar_last_preview_job_id = str(job_id or self.request.id or "")
+        profile.save(update_fields=["avatar_last_preview_status", "avatar_image_status", "avatar_preview_error", "avatar_last_preview_job_id", "updated_at"])
+
+        tts_provider = str(tts_meta.get("provider") or tts_provider or "cache").strip().lower()
+        _stage_log(
+            event="stage_started",
+            stage="audio_contract",
+            input_path=str(source_tts_path),
+            output_path=str(audio_path),
+        )
+        current_stage = "audio_contract"
+        current_stage_input = str(source_tts_path)
+        current_stage_output = str(audio_path)
+        current_stage_started_at = time.monotonic()
+        audio_contract_started_at = time.monotonic()
+        duration_contract = _build_preview_audio_contract(source_tts_path, target=audio_path, fps=preview_fps)
+        if (time.monotonic() - audio_contract_started_at) > stage_audio_contract_timeout:
+            raise RuntimeError(f"stage_stalled:audio_contract>{int(stage_audio_contract_timeout)}s")
+        contract_duration = _verify_preview_audio_or_raise(audio_path, tts_duration=None)
+        _stage_log(
+            event="stage_finished",
+            stage="audio_contract",
+            input_path=str(source_tts_path),
+            output_path=str(audio_path),
+            elapsed_seconds=(time.monotonic() - audio_contract_started_at),
+            details="success",
+        )
+        _write_stage_diagnostic(
+            stage="audio_contract",
+            payload={
+                "input_path": str(source_tts_path),
+                "output_path": str(audio_path),
+                "contract": duration_contract,
+                "duration_seconds": round(float(contract_duration), 4),
+            },
+        )
+        current_stage = ""
+        if not audio_path.exists() or audio_path.stat().st_size <= 0:
+            raise RuntimeError("preview_audio_missing")
+
+        if liveportrait_requested:
+            empirical_enabled = str(os.environ.get("AVATAR_PREVIEW_LIVEPORTRAIT_EMPIRICAL_PRECHECK", "1")).strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if empirical_enabled:
+                ranked_candidates = [dict(selected_source)]
+                empirical_results = [
+                    _run_liveportrait_empirical_precheck(candidate=candidate, audio_file=audio_path)
+                    for candidate in ranked_candidates
+                ]
+                passed_results = [item for item in empirical_results if bool(item.get("passed"))]
+                if not passed_results:
+                    logger.warning(
+                        "Avatar preview empirical precheck warning teacher=%s source=%s results=%s",
+                        teacher_id,
+                        selected_source.get("source_key"),
+                        empirical_results,
+                    )
+                    if not best_effort_preview_warning:
+                        best_effort_preview_warning = (
+                            "preview_warning: Selected source is borderline; running full pipeline and relying on strict final validation."
+                        )
+                    if job_id:
+                        Job.objects.filter(id=int(job_id)).update(error_message=best_effort_preview_warning)
+                    selected_source_reason = (
+                        f"{selected_source_reason}; empirical_lp_precheck_warning={selected_source.get('source_key')}; "
+                        "empirical_landmark_jitter=unavailable"
+                    )
+                else:
+                    selected_source_reason = (
+                        f"{selected_source_reason}; empirical_lp_precheck_passed={selected_source.get('source_key')}; "
+                        f"empirical_landmark_jitter={round(float(passed_results[0].get('landmark_jitter') or 0.0), 6)}"
+                    )
+                _write_stage_diagnostic(
+                    stage="liveportrait_source_precheck",
+                    payload={
+                        "enabled": True,
+                        "candidate_limit": 1,
+                        "source_switching_allowed": False,
+                        "results": empirical_results,
+                        "selected_source_key": selected_source.get("source_key"),
+                        "selected_reason": selected_source_reason,
+                    },
+                )
+
+        if job_id:
+            Job.objects.filter(id=int(job_id)).update(status="running", progress=50)
+        profile.avatar_last_preview_status = "render_pending"
+        profile.avatar_image_status = "processing"
+        profile.avatar_preview_error = ""
+        profile.avatar_last_preview_job_id = str(job_id or self.request.id or "")
+        profile.save(update_fields=["avatar_last_preview_status", "avatar_image_status", "avatar_preview_error", "avatar_last_preview_job_id", "updated_at"])
+
+        info: dict[str, Any] | None = None
+        last_exc: Exception | None = None
+        attempt_logs: list[dict[str, Any]] = []
+        total_attempts = retry_budget
+        total_possible_attempts = max(1, total_attempts)
+        best_attempt: dict[str, Any] | None = None
+        best_raw_score = float("-inf")
+        source_abs = str(selected_source.get("source_image_path") or "")
+        source_video_for_attempt = str(selected_source.get("source_video_path") or "")
+        reference_type = str(selected_source.get("avatar_reference_type") or "image")
+        source_key = str(selected_source.get("source_key") or "selected_source")
+
+        readiness_missing_before_render: list[str] = []
+        if not source_abs or (not Path(source_abs).exists()):
+            readiness_missing_before_render.append("missing_selected_source")
+        if not audio_path.exists() or audio_path.stat().st_size <= 0:
+            readiness_missing_before_render.append("preview_audio_not_ready")
+        if preview_engine == "liveportrait+musetalk":
+            if not str(os.environ.get("AVATAR_LIVEPORTRAIT_CMD", "")).strip():
+                readiness_missing_before_render.append("liveportrait_engine_unhealthy")
+            if not str(os.environ.get("AVATAR_MUSETALK_CMD", "")).strip():
+                readiness_missing_before_render.append("musetalk_engine_unhealthy")
+        elif not str(os.environ.get("AVATAR_MUSETALK_CMD", "")).strip():
+            readiness_missing_before_render.append("musetalk_engine_unhealthy")
+
+        _write_stage_diagnostic(
+            stage="readiness_check",
+            payload={
+                "ready": len(readiness_missing_before_render) == 0,
+                "missing": readiness_missing_before_render,
+                "selected_source_key": source_key,
+                "selected_source_path": source_abs,
+                "audio_path": str(audio_path),
+                "engine": preview_engine,
+            },
+        )
+        if readiness_missing_before_render:
+            raise RuntimeError(
+                "setup_not_prepared:readiness_check_failed:"
+                + ",".join(sorted(set(readiness_missing_before_render)))
+            )
+
+        logger.info(
+            "Avatar preview engine activation teacher_id=%s job_id=%s resolved=%s",
+            teacher_id,
+            job_id,
+            preview_engine,
+        )
+
+        _stage_log(
+            event="stage_started",
+            stage="render_pipeline",
+            input_path=str(source_abs),
+            output_path=str(output_path),
+        )
+        current_stage = "render_pipeline"
+        current_stage_input = str(source_abs)
+        current_stage_output = str(output_path)
+        current_stage_started_at = time.monotonic()
+        render_stage_started_at = time.monotonic()
+        for attempt_idx in range(total_attempts):
+            variant = preview_variants[attempt_idx]
+            if job_id:
+                progress = 55 + min(35, int((attempt_idx / float(total_possible_attempts)) * 35))
+                Job.objects.filter(id=int(job_id)).update(progress=progress)
+
+            audio_hash = sha256_file(str(audio_path)) if audio_path.exists() else ""
+            output_path.unlink(missing_ok=True)
+            output_path.with_suffix(output_path.suffix + ".meta.json").unlink(missing_ok=True)
+            output_path.with_suffix(output_path.suffix + ".musetalk_debug.json").unlink(missing_ok=True)
+
+            try:
+                info = render_avatar_segment_local(
+                    AvatarRenderRequest(
+                        source_image_path=source_abs,
+                        source_image_original_path=source_image_original_abs or source_abs,
+                        source_video_path=source_video_for_attempt,
+                        avatar_reference_type=reference_type,
+                        audio_path=str(audio_path),
+                        output_path=str(output_path),
+                        motion_preset=profile.avatar_motion_preset or "natural",
+                        quality_preset=profile.avatar_quality_preset or "high",
+                        lipsync_engine=preview_engine,
+                        cache_text_hash=preview_text_hash,
+                        enforce_exact_audio_duration=True,
+                        musetalk_params=variant,
+                        target_frame_count=int(duration_contract["target_frame_count"]),
+                        target_duration_seconds=float(duration_contract["target_duration_seconds"]),
+                        preview_teacher_id=int(teacher_id),
+                        preview_job_id=int(job_id or 0),
+                        preview_source_meta=preview_reference_meta,
+                    )
+                )
+                if (time.monotonic() - render_stage_started_at) > stage_render_timeout:
+                    raise RuntimeError(f"render_timeout:exceeded_{int(stage_render_timeout)}s")
+                motion = info.get("motion_validation") or {}
+                quality = motion.get("quality_checks") or {}
+                score_breakdown = motion.get("animation_score_breakdown") or {}
+                stage_traces = info.get("frame_trace") or {}
+                runtime_trace = stage_traces.get("musetalk_runtime") if isinstance(stage_traces, dict) else {}
+                raw_validation = runtime_trace.get("raw_validation") if isinstance(runtime_trace, dict) else {}
+                attempt_logs.append(
+                    {
+                        "attempt": len(attempt_logs) + 1,
+                        "source_key": source_key,
+                        "source_label": selected_source.get("source_label"),
+                        "source_preflight_score": selected_source.get("preflight_score"),
+                        "source_ranking_score": selected_source.get("ranking_score"),
+                        "source_ranking_reason": selected_source.get("ranking_reason"),
+                        "engine": preview_engine,
+                        "pose_backend": "real_mmpose",
+                        "script": preview_script,
+                        **variant,
+                        "tts_provider": tts_provider,
+                        "tts_cache_hit": preview_audio_cache_hit,
+                        "tts_duration_seconds": tts_meta.get("duration"),
+                        "generated_audio_duration_seconds": round(generated_duration, 4),
+                        "contract_audio_duration_seconds": round(contract_duration, 4),
+                        "target_frame_count": duration_contract.get("target_frame_count"),
+                        "target_duration_seconds": duration_contract.get("target_duration_seconds"),
+                        "audio_hash": audio_hash,
+                        "audio_duration_seconds": motion.get("audio_duration_seconds"),
+                        "video_duration_seconds": motion.get("video_duration_seconds"),
+                        "duration_delta_seconds": motion.get("duration_delta_seconds"),
+                        "frame_count": motion.get("frame_count"),
+                        "raw_motion_score": raw_validation.get("animation_score"),
+                        "raw_duration_delta_seconds": raw_validation.get("duration_delta_seconds"),
+                        "raw_failure_reason": raw_validation.get("failure_reason") or "",
+                        "score_breakdown": score_breakdown,
+                        "mouth_openness_change": quality.get("mouth_openness_change"),
+                        "eye_blink_change": quality.get("eye_blink_change"),
+                        "head_motion_score": quality.get("head_motion_score"),
+                        "loop_detected": quality.get("loop_detected"),
+                        "face_artifact_detected": quality.get("face_artifact_detected"),
+                        "motion_real": motion.get("motion_real"),
+                        "animated": motion.get("animated"),
+                        "failure_reason": motion.get("failure_reason") or "",
+                    }
+                )
+                break
+            except Exception as render_exc:
+                err = str(render_exc or "")
+                last_exc = render_exc
+                debug_path, debug_report = _load_debug_report(err)
+                runtime_trace = ((debug_report.get("stage_traces") or {}).get("musetalk_runtime") or {}) if debug_report else {}
+                raw_validation = (runtime_trace.get("raw_validation") or {}) if isinstance(runtime_trace, dict) else {}
+                score_breakdown = (debug_report.get("metrics") or {}).get("animation_score_breakdown") if debug_report else {}
+                raw_score = float(raw_validation.get("animation_score") or (debug_report.get("metrics") or {}).get("animation_score") or 0.0)
+                if raw_score > best_raw_score:
+                    best_raw_score = raw_score
+                    best_attempt = {
+                        "source_key": source_key,
+                        "source_label": selected_source.get("source_label"),
+                        "source_preflight_score": selected_source.get("preflight_score"),
+                        "source_ranking_score": selected_source.get("ranking_score"),
+                        "source_ranking_reason": selected_source.get("ranking_reason"),
+                        "params": dict(variant),
+                        "debug_path": debug_path,
+                        "raw_motion_score": raw_score,
+                        "raw_failure_reason": str(raw_validation.get("failure_reason") or ""),
+                    }
+                attempt_logs.append(
+                    {
+                        "attempt": len(attempt_logs) + 1,
+                        "source_key": source_key,
+                        "source_label": selected_source.get("source_label"),
+                        "source_preflight_score": selected_source.get("preflight_score"),
+                        "source_ranking_score": selected_source.get("ranking_score"),
+                        "source_ranking_reason": selected_source.get("ranking_reason"),
+                        "engine": preview_engine,
+                        "pose_backend": "real_mmpose",
+                        "script": preview_script,
+                        **variant,
+                        "generated_audio_duration_seconds": round(generated_duration, 4),
+                        "tts_cache_hit": preview_audio_cache_hit,
+                        "contract_audio_duration_seconds": round(contract_duration, 4),
+                        "target_frame_count": duration_contract.get("target_frame_count"),
+                        "target_duration_seconds": duration_contract.get("target_duration_seconds"),
+                        "audio_hash": audio_hash,
+                        "raw_motion_score": raw_score,
+                        "raw_duration_delta_seconds": raw_validation.get("duration_delta_seconds"),
+                        "raw_failure_reason": raw_validation.get("failure_reason") or "",
+                        "score_breakdown": score_breakdown or {},
+                        "debug_path": debug_path,
+                        "failure_reason": err,
+                    }
+                )
+                err_l = err.lower()
+                is_validation = (
+                    "strict acceptance gate" in err_l
+                    or "validation failed" in err_l
+                    or "shorter than preview audio" in err_l
+                    or "duration" in err_l
+                    or "duration contract" in err_l
+                )
+                if not is_validation:
+                    raise
+                if attempt_idx < (total_attempts - 1):
+                    logger.warning(
+                        "Avatar preview validation retry teacher=%s source=%s attempt=%s/%s reason=%s",
+                        teacher_id,
+                        source_key,
+                        attempt_idx + 1,
+                        total_attempts,
+                        err,
+                    )
+                    continue
+                logger.warning(
+                    "Avatar preview selected source exhausted teacher=%s source=%s reason=%s fallback_switching=%s",
+                    teacher_id,
+                    source_key,
+                    err,
+                    False,
+                )
+
+        allow_unstable_preview_render = str(os.environ.get("AVATAR_PREVIEW_ALLOW_UNSTABLE_OUTPUT", "1")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        render_stage_status = "success"
+        if info is None:
+            render_stage_status = "strict_rejected_pending_unstable_fallback" if allow_unstable_preview_render else "failed"
+
+        _stage_log(
+            event="stage_finished",
+            stage="render_pipeline",
+            input_path=str(source_abs),
+            output_path=str(output_path),
+            elapsed_seconds=(time.monotonic() - render_stage_started_at),
+            details=render_stage_status,
+        )
+        _write_stage_diagnostic(
+            stage="render_pipeline",
+            payload={
+                "engine": preview_engine,
+                "source_key": source_key,
+                "output_path": str(output_path),
+                "status": render_stage_status,
+                "attempt_logs": attempt_logs,
+            },
+        )
+        current_stage = ""
+
+        if info is None:
+            if best_attempt:
+                raise RuntimeError(
+                    "Avatar preview failed with selected source and controlled MuseTalk parameter sweep. "
+                    f"best_source={best_attempt.get('source_key') or ''} "
+                    f"source_ranking_reason={best_attempt.get('source_ranking_reason') or ''} "
+                    f"source_ranking_score={best_attempt.get('source_ranking_score')} "
+                    f"best_debug_path={best_attempt.get('debug_path') or ''} "
+                    f"best_params={best_attempt.get('params') or {}} "
+                    f"raw_motion_score={best_attempt.get('raw_motion_score')} "
+                    f"raw_failure_reason={best_attempt.get('raw_failure_reason') or ''}. "
+                    "Please re-upload avatar with more headroom and less torso if strict preview keeps failing."
+                )
+            raise RuntimeError(str(last_exc or "Avatar preview failed before producing output"))
+
+        source_abs = str(selected_source.get("source_image_path") or "")
+        source_video_abs = str(selected_source.get("source_video_path") or "")
+        reference_type = str(selected_source.get("avatar_reference_type") or "image")
+        preview_reference_meta = dict(selected_source.get("reference_meta") or preview_reference_meta)
+
+        rel_preview = _safe_rel_path(storage_root, str(output_path))
+        audio_hash = sha256_file(str(audio_path)) if Path(audio_path).exists() else ""
+        video_hash = str(info.get("video_hash") or (sha256_file(str(output_path)) if Path(output_path).exists() else ""))
+        validation = info.get("motion_validation") or {}
+        quality = validation.get("quality_checks") or {}
+        animation_score_breakdown = validation.get("animation_score_breakdown") or {}
+        stage_traces = info.get("frame_trace") or {}
+        stage_paths = (stage_traces.get("paths") or {}) if isinstance(stage_traces, dict) else {}
+        runtime_trace = stage_traces.get("musetalk_runtime") if isinstance(stage_traces, dict) else {}
+        raw_validation = runtime_trace.get("raw_validation") if isinstance(runtime_trace, dict) else {}
+        selected_params = runtime_trace.get("selected_musetalk_params") if isinstance(runtime_trace, dict) else {}
+        engine_trace = stage_traces.get("engine_output") if isinstance(stage_traces, dict) else {}
+        pose_backend = "real_mmpose"
+        if isinstance(runtime_trace, dict):
+            pose_backend = str(runtime_trace.get("pose_backend_type") or pose_backend)
+        logger.info(
+            "Avatar preview pipeline outputs teacher=%s source_key=%s tts_audio_path=%s liveportrait_output_path=%s musetalk_output_path=%s final_output_path=%s",
+            teacher_id,
+            source_key,
+            str(audio_path),
+            str(stage_paths.get("liveportrait_output_path") or ""),
+            str(stage_paths.get("musetalk_output_path") or ""),
+            str(output_path),
+        )
+        logger.info(
+            "Avatar preview rendered teacher=%s engine=%s pose_backend=%s image=%s source_video=%s audio=%s output=%s audio_hash=%s video_hash=%s "
+            "target_duration=%s target_frames=%s audio_duration=%s video_duration=%s duration_delta=%s frame_count=%s raw_score=%s raw_failure=%s "
+            "mouth_open=%s eye_blink=%s head_motion=%s loop=%s artifacts=%s motion_real=%s animated=%s failure_reason=%s params=%s preview_crop=%s attempts=%s",
+            teacher_id,
+            info.get("engine_used"),
+            pose_backend,
+            source_abs,
+            source_video_abs,
+            str(audio_path),
+            rel_preview,
+            audio_hash,
+            video_hash,
+            duration_contract.get("target_duration_seconds"),
+            duration_contract.get("target_frame_count"),
+            validation.get("audio_duration_seconds"),
+            validation.get("video_duration_seconds"),
+            validation.get("duration_delta_seconds"),
+            validation.get("frame_count"),
+            raw_validation.get("animation_score"),
+            raw_validation.get("failure_reason") or "",
+            quality.get("mouth_openness_change"),
+            quality.get("eye_blink_change"),
+            quality.get("head_motion_score"),
+            quality.get("loop_detected"),
+            quality.get("face_artifact_detected"),
+            validation.get("motion_real"),
+            validation.get("animated"),
+            validation.get("failure_reason") or "",
+            selected_params or {},
+            preview_reference_meta.get("crop_metrics") or {},
+            attempt_logs,
+        )
+        logger.info(
+            "Avatar preview animation score breakdown teacher=%s source=%s strict_formula=%s diagnostic=%s misweighting_signal=%s",
+            teacher_id,
+            source_key,
+            (animation_score_breakdown.get("strict_formula") or {}),
+            (animation_score_breakdown.get("diagnostic_formula") or {}),
+            (animation_score_breakdown.get("misweighting_signal") or {}),
+        )
+        preview_debug_accept_unstable = str(os.environ.get("AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        pipeline_preview_warning = str(info.get("preview_warning") or "").strip()
+        unstable_output_accepted = bool(info.get("unstable_output_accepted"))
+        unstable_failure_category = str(info.get("failure_category") or "").strip()
+        if unstable_output_accepted and not unstable_failure_category:
+            unstable_failure_category = "liveportrait_warning"
+        if unstable_output_accepted and not pipeline_preview_warning:
+            pipeline_preview_warning = (
+                "preview_warning: LivePortrait unstable output accepted for preview continuity; "
+                "failure_category=liveportrait_warning"
+            )
+
+        if unstable_output_accepted:
+            logger.warning(
+                "Avatar preview best-effort continuity accepted teacher=%s job=%s source_key=%s failure_category=%s output=%s",
+                teacher_id,
+                job_id,
+                source_key,
+                unstable_failure_category or "liveportrait_warning",
+                rel_preview,
+            )
+            # Successful preview completion should not be returned as a failed category.
+            unstable_failure_category = ""
+        preview_status_value = "warning" if pipeline_preview_warning else "render_ready"
+        profile.avatar_preview_video = rel_preview
+        profile.avatar_last_preview_path = rel_preview
+        profile.avatar_last_preview_status = preview_status_value
+        profile.avatar_image_status = "ready"
+        profile.avatar_preview_error = pipeline_preview_warning if pipeline_preview_warning else ""
+        profile.avatar_last_preview_job_id = str(job_id or self.request.id or "")
+        profile.save(
+            update_fields=[
+                "avatar_preview_video",
+                "avatar_last_preview_path",
+                "avatar_last_preview_status",
+                "avatar_last_preview_job_id",
+                "avatar_image_status",
+                "avatar_preview_error",
+                "updated_at",
+            ]
+        )
+
+        if job_id:
+            Job.objects.filter(id=int(job_id)).update(
+                status="done",
+                progress=100,
+                result_url=rel_preview,
+                error_message=(pipeline_preview_warning if pipeline_preview_warning else ""),
+            )
+
+        source_audio_rel_path = _safe_rel_path(storage_root, str(source_tts_path)) if source_tts_path.exists() else ""
+        contract_audio_rel_path = _safe_rel_path(storage_root, str(audio_path)) if audio_path.exists() else ""
+
+        return {
+            "teacher_id": int(teacher_id),
+            "job_id": int(job_id) if job_id else None,
+            "preview_rel_path": rel_preview,
+            "preview_status": preview_status_value,
+            "engine_used": info.get("engine_used"),
+            "unstable_output_accepted": unstable_output_accepted,
+            "failure_category": unstable_failure_category,
+            "warning": pipeline_preview_warning,
+            "fallback_chain_used": info.get("fallback_chain_used", []),
+            "audio_hash": audio_hash,
+            "video_hash": video_hash,
+            "preview_audio_source_rel_path": source_audio_rel_path,
+            "preview_audio_contract_rel_path": contract_audio_rel_path,
+            "preview_audio_contract_format": "wav",
+            "motion_validation": info.get("motion_validation", {}),
+            "attempts": attempt_logs,
+            "preview_audio_cache_hit": preview_audio_cache_hit,
+            "trim_info": info.get("trim_info", {}),
+            "duration_contract": duration_contract,
+            "animation_score_breakdown": animation_score_breakdown,
+            "preview_reference": preview_reference_meta,
+            "preview_sources_considered": [
+                {
+                    "source_key": item.get("source_key"),
+                    "source_label": item.get("source_label"),
+                    "preflight_score": item.get("preflight_score"),
+                    "face_centering_score": item.get("face_centering_score"),
+                    "forehead_headroom_score": item.get("forehead_headroom_score"),
+                    "mouth_position_score": item.get("mouth_position_score"),
+                    "history_quality_rank": item.get("history_quality_rank"),
+                    "history_lip_movement_score": item.get("history_lip_movement_score"),
+                    "history_mouth_openness_change": item.get("history_mouth_openness_change"),
+                    "ranking_reason": item.get("ranking_reason"),
+                    "ranking_score": item.get("ranking_score"),
+                }
+                for item in preview_source_candidates
+            ],
+            "selected_preview_source": {
+                "source_key": selected_source.get("source_key"),
+                "source_label": selected_source.get("source_label"),
+                "selected_reason": selected_source_reason,
+                "ranking_reason": selected_source.get("ranking_reason"),
+                "ranking_score": selected_source.get("ranking_score"),
+                "preflight_score": selected_source.get("preflight_score"),
+                "face_centering_score": selected_source.get("face_centering_score"),
+                "forehead_headroom_score": selected_source.get("forehead_headroom_score"),
+                "mouth_position_score": selected_source.get("mouth_position_score"),
+                "history_lip_movement_score": selected_source.get("history_lip_movement_score"),
+                "history_mouth_openness_change": selected_source.get("history_mouth_openness_change"),
+            },
+            "selected_vs_runner_up": {
+                "winner": {
+                    "source_key": selected_source.get("source_key"),
+                    "ranking_score": selected_source.get("ranking_score"),
+                    "history_lip_movement_score": selected_source.get("history_lip_movement_score"),
+                    "history_mouth_openness_change": selected_source.get("history_mouth_openness_change"),
+                    "mouth_position_score": selected_source.get("mouth_position_score"),
+                },
+                "runner_up": {
+                    "source_key": (runner_up or {}).get("source_key"),
+                    "ranking_score": (runner_up or {}).get("ranking_score"),
+                    "history_lip_movement_score": (runner_up or {}).get("history_lip_movement_score"),
+                    "history_mouth_openness_change": (runner_up or {}).get("history_mouth_openness_change"),
+                    "mouth_position_score": (runner_up or {}).get("mouth_position_score"),
+                },
+            },
+        }
+    except SoftTimeLimitExceeded as exc:
+        if current_stage:
+            _stage_log(
+                event="stage_finished",
+                stage=current_stage,
+                input_path=current_stage_input,
+                output_path=current_stage_output,
+                elapsed_seconds=(time.monotonic() - current_stage_started_at if current_stage_started_at else 0.0),
+                details="failed:render_timeout",
+            )
+        err_msg = f"render_timeout:task_soft_time_limit_{_PREVIEW_TASK_SOFT_TIMEOUT_SECONDS}s"
+        logger.exception("Avatar preview render soft-timeout teacher=%s job=%s", teacher_id, job_id)
+        profile.avatar_last_preview_status = "render_failed"
+        profile.avatar_image_status = "failed"
+        profile.avatar_preview_error = "Preview render exceeded stage budget and was stopped."
+        profile.avatar_last_preview_job_id = str(job_id or self.request.id or "")
+        profile.avatar_preview_video = ""
+        profile.avatar_last_preview_path = ""
+        profile.save(update_fields=["avatar_last_preview_status", "avatar_image_status", "avatar_last_preview_job_id", "avatar_preview_video", "avatar_last_preview_path", "avatar_preview_error", "updated_at"])
+        if job_id:
+            Job.objects.filter(id=int(job_id)).update(status="failed", progress=100, error_message=err_msg)
+        raise
+    except Exception as exc:
+        if current_stage:
+            _stage_log(
+                event="stage_finished",
+                stage=current_stage,
+                input_path=current_stage_input,
+                output_path=current_stage_output,
+                elapsed_seconds=(time.monotonic() - current_stage_started_at if current_stage_started_at else 0.0),
+                details=f"failed:{str(exc)[:280]}",
+            )
+        err_msg = str(exc or "")
+        err_l = err_msg.lower()
+        bad_tts_failure = any(
+            token in err_l
+            for token in [
+                "tts_audio_invalid",
+                "tts_service_fallback_audio",
+                "tts_timeout",
+                "tts_ready_timeout",
+                "tts_service_failed",
+                "preview_audio_missing",
+            ]
+        )
+        setup_failure = any(
+            token in err_l
+            for token in [
+                "setup_not_prepared",
+                "teacher avatar is not prepared",
+                "voice profile is missing",
+            ]
+        )
+        preflight_failure = any(
+            token in err_l
+            for token in [
+                "avatar preview preflight rejected all sources",
+                "preflight_rejected",
+            ]
+        )
+        liveportrait_failure = any(
+            token in err_l
+            for token in [
+                "liveportrait stage output rejected",
+                "liveportrait_precheck_failed",
+                "liveportrait_landmark_instability",
+                "liveportrait_face_artifact",
+                "liveportrait_stage_failed",
+            ]
+        )
+        musetalk_failure = any(
+            token in err_l
+            for token in [
+                "musetalk stage failed",
+                "musetalk_output_rejected",
+                "musetalk_timeout",
+            ]
+        )
+        timeout_or_stall_failure = any(
+            token in err_l
+            for token in [
+                "render_timeout",
+                "preflight_timeout",
+                "liveportrait_timeout",
+                "musetalk_timeout",
+                "restoration_timeout",
+                "stage_stalled",
+            ]
+        )
+        validation_failure = any(
+            token in err_l
+            for token in [
+                "validation failed",
+                "rejected by strict acceptance gate",
+                "motion_real",
+                "low_lip_motion",
+                "low_eye_motion",
+                "loop_like_motion",
+                "face_roi_artifact",
+                "low_mouth_openness_change",
+                "whole_frame_drift",
+                "glitch_artifact",
+                "duration contract",
+            ]
+        )
+        transient_failure = any(
+            token in err_l
+            for token in [
+                "timeout",
+                "temporarily unavailable",
+                "connection reset",
+                "connection aborted",
+                "resource temporarily unavailable",
+                "network",
+                "econn",
+            ]
+        )
+
+        if transient_failure and not validation_failure and not bad_tts_failure and not timeout_or_stall_failure and int(getattr(self.request, "retries", 0)) < 2:
+            logger.warning(
+                "Avatar preview transient failure teacher=%s job=%s retry=%s error=%s",
+                teacher_id,
+                job_id,
+                int(getattr(self.request, "retries", 0)),
+                err_msg,
+            )
+            if job_id:
+                Job.objects.filter(id=int(job_id)).update(status="running", progress=25, error_message="")
+            profile.avatar_last_preview_status = "render_pending"
+            profile.avatar_image_status = "processing"
+            profile.avatar_preview_error = ""
+            profile.avatar_last_preview_job_id = str(job_id or self.request.id or "")
+            profile.save(update_fields=["avatar_last_preview_status", "avatar_image_status", "avatar_last_preview_job_id", "avatar_preview_error", "updated_at"])
+            raise self.retry(exc=exc, countdown=10)
+
+        if setup_failure:
+            failure_category = "setup_not_prepared"
+        elif bad_tts_failure:
+            failure_category = "tts_failed"
+        elif preflight_failure:
+            failure_category = "preflight_failed"
+        elif liveportrait_failure:
+            failure_category = "liveportrait_failed"
+        elif musetalk_failure:
+            failure_category = "musetalk_failed"
+        elif validation_failure:
+            failure_category = "validation_failed"
+        elif timeout_or_stall_failure:
+            failure_category = "render_timeout_or_stall"
+        else:
+            failure_category = "render_failed"
+
+        allow_unstable_preview = str(os.environ.get("AVATAR_PREVIEW_ALLOW_UNSTABLE_OUTPUT", "1")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        preview_debug_accept_unstable = str(os.environ.get("AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE", "0")).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        non_broken_input_failure = not setup_failure and not bad_tts_failure and not preflight_failure
+        keep_playable_output = bool(non_broken_input_failure and allow_unstable_preview)
+        if keep_playable_output:
+            smoke_candidates = sorted(
+                output_path.parent.glob(f"{output_path.name}.liveportrait.*.smoke.mp4"),
+                key=lambda p: float(p.stat().st_mtime) if p.exists() else 0.0,
+                reverse=True,
+            )
+            candidate_outputs = [
+                output_path,
+                output_path.with_suffix(output_path.suffix + ".musetalk.mp4"),
+                output_path.with_suffix(output_path.suffix + ".liveportrait.mp4"),
+            ]
+            candidate_outputs.extend(smoke_candidates)
+            chosen_output = next(
+                (
+                    path
+                    for path in candidate_outputs
+                    if Path(path).exists()
+                    and Path(path).is_file()
+                    and Path(path).stat().st_size > 0
+                    and float(Path(path).stat().st_mtime) >= (preview_job_started_epoch - 2.0)
+                ),
+                None,
+            )
+            if chosen_output is not None:
+                rel_preview = _safe_rel_path(storage_root, str(chosen_output))
+                chosen_output_text = str(chosen_output)
+                if chosen_output_text.endswith(".musetalk.mp4") or chosen_output_text == str(output_path):
+                    chosen_engine_used = preview_engine
+                else:
+                    chosen_engine_used = "liveportrait"
+                warning_category = failure_category or "warning_only"
+                preview_status_value = "warning"
+                warning_message = (
+                    "preview_warning: Playable preview output preserved for continuity; "
+                    f"failure_category={warning_category}; strict_error={str(err_msg)[:220]}"
+                )
+                logger.warning(
+                    "Avatar preview playable stage preserved teacher=%s job=%s debug_mode=%s failure_category=%s output=%s",
+                    teacher_id,
+                    job_id,
+                    bool(preview_debug_accept_unstable),
+                    warning_category,
+                    str(chosen_output),
+                )
+                profile.avatar_last_preview_status = preview_status_value
+                profile.avatar_image_status = "ready"
+                profile.avatar_preview_error = warning_message
+                profile.avatar_last_preview_job_id = str(job_id or self.request.id or "")
+                profile.avatar_preview_video = rel_preview
+                profile.avatar_last_preview_path = rel_preview
+                profile.save(
+                    update_fields=[
+                        "avatar_last_preview_status",
+                        "avatar_image_status",
+                        "avatar_preview_error",
+                        "avatar_last_preview_job_id",
+                        "avatar_preview_video",
+                        "avatar_last_preview_path",
+                        "updated_at",
+                    ]
+                )
+                if job_id:
+                    Job.objects.filter(id=int(job_id)).update(
+                        status="done",
+                        progress=100,
+                        result_url=rel_preview,
+                        error_message=warning_message,
+                    )
+
+                return {
+                    "teacher_id": int(teacher_id),
+                    "job_id": int(job_id) if job_id else None,
+                    "preview_rel_path": rel_preview,
+                    "preview_status": preview_status_value,
+                    "engine_used": chosen_engine_used,
+                    "unstable_output_accepted": True,
+                    "failure_category": warning_category,
+                    "warning": warning_message,
+                }
+            logger.warning(
+                "Avatar preview fallback skipped stale outputs teacher=%s job=%s job_started_epoch=%s candidates=%s",
+                teacher_id,
+                job_id,
+                preview_job_started_epoch,
+                [str(path) for path in candidate_outputs],
+            )
+
+        logger.exception(
+            "Avatar preview render failed teacher=%s job=%s failure_category=%s",
+            teacher_id,
+            job_id,
+            failure_category,
+        )
+        friendly_error = _friendly_preview_error(err_msg)
+        if setup_failure:
+            profile.avatar_last_preview_status = "setup_failed"
+        elif bad_tts_failure:
+            profile.avatar_last_preview_status = "tts_failed"
+        elif preflight_failure:
+            profile.avatar_last_preview_status = "preflight_failed"
+        elif liveportrait_failure:
+            profile.avatar_last_preview_status = "liveportrait_failed"
+        elif musetalk_failure:
+            profile.avatar_last_preview_status = "musetalk_failed"
+        elif validation_failure:
+            profile.avatar_last_preview_status = "validation_failed"
+        else:
+            profile.avatar_last_preview_status = "render_failed"
+        profile.avatar_image_status = "failed"
+        profile.avatar_preview_error = friendly_error
+        profile.avatar_last_preview_job_id = str(job_id or self.request.id or "")
+        profile.avatar_preview_video = ""
+        profile.avatar_last_preview_path = ""
+        profile.save(update_fields=["avatar_last_preview_status", "avatar_image_status", "avatar_last_preview_job_id", "avatar_preview_video", "avatar_last_preview_path", "avatar_preview_error", "updated_at"])
+        if job_id:
+            Job.objects.filter(id=int(job_id)).update(status="failed", progress=100, error_message=friendly_error)
+        raise
+
+
+@app.task(bind=True, name="worker.tasks.fallback_avatar_render")
+def fallback_avatar_render(self, source_image_path: str, audio_path: str, output_path: str) -> dict[str, Any]:
+    raise RuntimeError(
+        "fallback_avatar_render_disabled: use the canonical current-upload avatar pipeline only"
+    )
+
+
+@app.task(bind=True, name="worker.tasks.render_avatar_lesson")
+def render_avatar_lesson(self, project_id: int, teacher_id: int, segments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Batch render all avatar segments for a lesson (idempotent by deterministic output paths)."""
+    outputs: list[dict[str, Any]] = []
+    avatar_cfg = _get_teacher_avatar_config(int(teacher_id))
+    if not avatar_cfg.get("enabled"):
+        return {"project_id": int(project_id), "teacher_id": int(teacher_id), "segments": [], "status": "skipped"}
+
+    for segment in segments:
+        result = render_avatar_segment.apply(
+            kwargs={
+                "project_id": int(project_id),
+                "teacher_id": int(teacher_id),
+                "slide_index": int(segment.get("slide_index") or 0),
+                "audio_path": str(segment["audio_path"]),
+                "output_path": str(segment["output_path"]),
+                "source_image_rel_path": str(avatar_cfg.get("processed_rel_path")),
+                "source_image_original_rel_path": str(avatar_cfg.get("source_rel_path") or avatar_cfg.get("processed_rel_path") or ""),
+                "source_video_rel_path": str(avatar_cfg.get("video_rel_path") or ""),
+                "avatar_reference_type": str(avatar_cfg.get("reference_type") or "image"),
+                "motion_preset": str(avatar_cfg.get("motion_preset") or "natural"),
+                "quality_preset": str(avatar_cfg.get("quality_preset") or "high"),
+                "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or "musetalk"),
+                "cache_text_hash": str(segment.get("text_hash") or ""),
+            }
+        ).result
+        outputs.append(result)
+    return {"project_id": int(project_id), "teacher_id": int(teacher_id), "segments": outputs, "status": "done"}
+
+
+@app.task(bind=True, name="worker.tasks.avatar_cache_cleanup")
+def avatar_cache_cleanup(self, days: int = 30) -> dict[str, Any]:
+    """Delete stale avatar cache folders older than *days* from local storage."""
+    storage_root = Path(_avatar_storage_root())
+    avatars_root = storage_root / "avatars"
+    if not avatars_root.exists():
+        return {"status": "noop", "removed": 0}
+
+    cutoff_seconds = max(int(days), 1) * 24 * 60 * 60
+    now = int(time.time())
+    removed = 0
+    for path in avatars_root.rglob("*"):
+        if not path.is_dir():
+            continue
+        try:
+            age = now - int(path.stat().st_mtime)
+            if age > cutoff_seconds and any(path.iterdir()):
+                for child in path.rglob("*"):
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+                removed += 1
+        except Exception:
+            logger.warning("avatar_cache_cleanup failed for %s", path, exc_info=True)
+    return {"status": "ok", "removed": removed}
+
+
+@app.task(bind=True, name="worker.tasks.cleanup_avatar_cache")
+def cleanup_avatar_cache(self, days: int = 30) -> dict[str, Any]:
+    """Alias task name for compatibility with requested task contract."""
+    return avatar_cache_cleanup.apply(args=[days]).result
+
+
+# ---------------------------------------------------------------------------
+# Smoke-test tasks
+# ---------------------------------------------------------------------------
+
+@app.task(name="worker.tasks.ping")
+def ping(message: str = "ping") -> str:
+    """Smoke-test task. Send 'ping', get 'pong'."""
+    return "pong" if message == "ping" else f"echo: {message}"
+
+
+@app.task(bind=True, name="worker.tasks.tts_render")
+def tts_render(self, slide_id: int) -> dict:
+    """Placeholder TTS render stub — superseded by the parallel pipeline."""
+    return {"slide_id": slide_id, "status": "not_implemented"}
+
+
+# ---------------------------------------------------------------------------
+# Pipeline step 1: Export
+# ---------------------------------------------------------------------------
+
+@app.task(
+    bind=True,
+    name="worker.tasks.export_project",
+    max_retries=0,
+)
+def export_project(
+    self,
+    project_id: str,
+    pptx_path: str,
+    whiteboard_mode_all: bool = False,
+) -> list[dict[str, Any]]:
+    """
+    Export slide images and speaker notes from *pptx_path*.
+
+    Returns a list of slide descriptor dicts (one per slide)::
+
+        [
+          {
+            "index":      0,                       # 0-based position
+            "slide_num":  1,                       # 1-based display number
+            "image_path": "/…/images/slide-1.png",
+            "notes_text": "narration text",
+            "audio_out":  "/…/audio/slide_001.mp3",
+            "part_out":   "/…/parts/part_001.mp4",
+          },
+          …
+        ]
+
+    Parameters
+    ----------
+    project_id: Unique project identifier (used for workspace layout).
+    pptx_path:  Absolute path to the source .pptx file.
+    """
+    try:
+        from scripts.pptx_extract import export_slide_images, extract_speaker_notes
+        from scripts.text_segmentation import build_slide_page_structure
+    except ImportError as exc:
+        raise RuntimeError(
+            f"pptx_extract not importable — check PYTHONPATH. Original error: {exc}"
+        ) from exc
+
+    logger.info("export_project START project=%s pptx=%s", project_id, pptx_path)
+    self.update_state(state="PROGRESS", meta={"step": "export_start", "progress": 2})
+
+    ws = _workspace(project_id)
+
+    # Export slide images (PNG)
+    image_paths = export_slide_images(pptx_path, str(ws["images"]))
+    n_slides = len(image_paths)
+    if n_slides == 0:
+        raise ValueError(f"No slide images exported from {pptx_path!r}")
+    logger.info("export_project: %d slide images exported", n_slides)
+    self.update_state(state="PROGRESS", meta={"step": "images_done", "progress": 6})
+
+    # Extract speaker notes (one .txt per slide)
+    note_paths = extract_speaker_notes(pptx_path, str(ws["notes"]))
+    logger.info("export_project: %d note files extracted", len(note_paths))
+    self.update_state(state="PROGRESS", meta={"step": "notes_done", "progress": 10})
+
+    # Build render descriptors with reusable long-slide splitting.
+    slides: list[dict[str, Any]] = []
+    display_index = 0
+    for idx in range(n_slides):
+        slide_num = idx + 1
+
+        notes_text = ""
+        if idx < len(note_paths):
+            txt_file = Path(note_paths[idx])
+            if txt_file.exists():
+                notes_text = txt_file.read_text(encoding="utf-8").strip()
+        if not notes_text:
+            notes_text = f"Slide {slide_num}."  # minimal fallback narration
+
+        page_items = build_slide_page_structure(idx, notes_text)
+        for page in page_items:
+            display_index += 1
+            slides.append({
+                "index": display_index - 1,
+                "slide_num": display_index,
+                "source_slide_index": idx,
+                "source_slide_num": slide_num,
+                "split_index": int(page.get("split_index") or 0),
+                "page_key": page.get("page_key") or f"s{slide_num}-p1",
+                "image_path": image_paths[idx],
+                "notes_text": notes_text,
+                "original_text": page.get("original_text") or notes_text,
+                "narration_text": page.get("narration_text") or notes_text,
+                "subtitle_chunks": page.get("subtitle_chunks") or [notes_text],
+                "whiteboard_mode": bool(whiteboard_mode_all),
+                "audio_out": str(ws["audio"] / f"slide_{display_index:03d}.mp3"),
+                "part_out": str(ws["parts"] / f"part_{display_index:03d}.mp4"),
+            })
+
+    logger.info("export_project DONE: %d source slides -> %d render pages", n_slides, len(slides))
+    return slides
+
+
+# ---------------------------------------------------------------------------
+# Pipeline step 2: Per-slide TTS + render (parallel via Celery group)
+# ---------------------------------------------------------------------------
+
+@app.task(
+    bind=True,
+    name="worker.tasks.synthesize_and_render_slide",
+    max_retries=2,
+    default_retry_delay=10,
+)
+def synthesize_and_render_slide(
+    self,
+    slide_meta: dict[str, Any],
+    project_id: str,
+    voice_id: str,
+    pause_sec: float,
+    lang_hint: str,
+    tts_mode: str = "service",
+    avatar_options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Synthesize TTS audio and render one slide to a part MP4.
+
+    Designed to run in parallel with sibling slide tasks via a Celery
+    ``group``.  Idempotent — output files are overwritten on retry.
+
+    Parameters
+    ----------
+    slide_meta: Descriptor dict produced by :func:`export_project`.
+    project_id: Used for logging; DB not updated here (finalizer handles it).
+    voice_id:   TTS voice identifier passed to the TTS service.
+    pause_sec:  Extra seconds appended to the audio duration.
+    lang_hint:  Language hint for TTS (e.g. ``'en'``, ``'auto'``).
+    tts_mode:   ``'service'`` (internal TTS microservice) or ``'eleven'``.
+
+    Returns
+    -------
+    dict with keys: ``index``, ``slide_num``, ``part_path``, ``duration``, ``text``.
+    """
+    try:
+        from scripts.tts_client import normalize_tts_input, synthesize_text
+        from scripts.ffmpeg_helpers import (
+            create_slide_video,
+            get_audio_duration,
+            trim_trailing_silence,
+        )
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Pipeline scripts not importable — check PYTHONPATH. Error: {exc}"
+        ) from exc
+
+    index      = slide_meta["index"]
+    slide_num  = slide_meta["slide_num"]
+    image_path = slide_meta["image_path"]
+    notes_text = slide_meta["notes_text"]
+    narration_text = slide_meta.get("narration_text") or notes_text
+    original_text = slide_meta.get("original_text") or notes_text
+    subtitle_chunks = list(slide_meta.get("subtitle_chunks") or [])
+    whiteboard_mode = bool(slide_meta.get("whiteboard_mode"))
+    rich_text_html = str(slide_meta.get("rich_text_html") or "")
+    editor_document = slide_meta.get("editor_document") or {}
+    if isinstance(editor_document, dict) and not narration_text:
+        para_lines = [str(p.get("text") or "") for p in editor_document.get("paragraphs", []) if isinstance(p, dict)]
+        if para_lines:
+            narration_text = "\n".join(para_lines)
+    if isinstance(editor_document, dict) and not rich_text_html:
+        rich_text_html = str(editor_document.get("html") or "")
+    notes_text_prepared = normalize_tts_input(_prepare_narration_for_tts(narration_text)) or f"Slide {slide_num}."
+    audio_out  = slide_meta["audio_out"]
+    part_out   = slide_meta["part_out"]
+
+    logger.info(
+        "synthesize_and_render_slide START slide=%d project=%s", slide_num, project_id
+    )
+    self.update_state(
+        state="PROGRESS",
+        meta={"step": "tts", "slide": slide_num, "project_id": project_id},
+    )
+
+    try:
+        # TTS synthesis → MP3 audio file
+        synthesize_text(voice_id, notes_text_prepared, audio_out, mode=tts_mode, lang=lang_hint)
+
+        render_image_path = image_path
+        avatar_state = avatar_options or {}
+        avatar_required = bool(avatar_state.get("enabled"))
+
+        if whiteboard_mode:
+            render_image_path = _make_whiteboard_image(
+                narration_text or original_text,
+                str(Path(part_out).with_suffix(".whiteboard.png")),
+            )
+        elif rich_text_html or (str(narration_text or "").strip() and str(narration_text).strip() != str(notes_text).strip()):
+            render_image_path = _render_transcript_overlay_image(
+                image_path,
+                narration_text,
+                rich_text_html,
+                str(Path(part_out).with_suffix(".overlay.png")),
+            )
+
+        if avatar_required:
+            render_image_path = _render_avatar_safe_slide_image(
+                render_image_path,
+                str(Path(part_out).with_suffix(".avatar-safe.png")),
+            )
+
+        if WORKER_TRIM_TRAILING_SILENCE:
+            try:
+                trim_trailing_silence(audio_out)
+            except Exception:
+                logger.warning(
+                    "Slide %d: trailing-silence trim failed, using original audio",
+                    slide_num,
+                    exc_info=True,
+                )
+
+        # Measure audio duration and add a small configurable slide hold.
+        audio_duration = get_audio_duration(audio_out)
+        total_duration = audio_duration + max(float(pause_sec), 0.0)
+        logger.info(
+            "  Slide %d: audio %.2fs + pause %.2fs = total %.2fs",
+            slide_num, audio_duration, pause_sec, total_duration,
+        )
+
+        self.update_state(
+            state="PROGRESS",
+            meta={"step": "render", "slide": slide_num, "project_id": project_id},
+        )
+
+        # Avatar path: render local talking-head clip separately (never burn into slide video).
+        avatar_applied = False
+        avatar_engine_used = "none"
+        avatar_fallback_chain: list[str] = []
+        avatar_rel_path = ""
+        avatar_failure_reason = ""
+        avatar_validation = {}
+
+        try:
+            if avatar_state.get("enabled") and avatar_state.get("teacher_id") and avatar_state.get("source_image_rel_path"):
+                avatar_dir = Path(_avatar_storage_root()) / str(project_id) / "avatar_segments"
+                avatar_dir.mkdir(parents=True, exist_ok=True)
+                avatar_segment_path = avatar_dir / f"avatar_{slide_num:03d}.mp4"
+
+                avatar_result = render_avatar_segment.apply(
+                    kwargs={
+                        "project_id": int(project_id),
+                        "teacher_id": int(avatar_state.get("teacher_id")),
+                        "slide_index": int(index),
+                        "audio_path": audio_out,
+                        "output_path": str(avatar_segment_path),
+                        "source_image_rel_path": str(avatar_state.get("source_image_rel_path")),
+                        "source_image_original_rel_path": str(avatar_state.get("source_image_original_rel_path") or avatar_state.get("source_image_rel_path") or ""),
+                        "source_video_rel_path": str(avatar_state.get("source_video_rel_path") or ""),
+                        "avatar_reference_type": str(avatar_state.get("avatar_reference_type") or "image"),
+                        "motion_preset": str(avatar_state.get("motion_preset") or "natural"),
+                        "quality_preset": str(avatar_state.get("quality_preset") or "high"),
+                        "lipsync_engine": str(avatar_state.get("lipsync_engine") or "musetalk"),
+                        "cache_text_hash": hashlib.sha256(notes_text_prepared.encode("utf-8")).hexdigest(),
+                    }
+                )
+
+                if avatar_result.failed():
+                    raise RuntimeError(f"render_avatar_segment failed: {avatar_result.result}")
+
+                avatar_payload = avatar_result.result
+                if not isinstance(avatar_payload, dict):
+                    raise RuntimeError(f"render_avatar_segment returned unexpected type: {type(avatar_payload).__name__}")
+
+                avatar_engine_used = str(avatar_payload.get("engine_used") or "none")
+                avatar_fallback_chain = list(avatar_payload.get("fallback_chain_used") or [])
+                avatar_validation = dict(avatar_payload.get("motion_validation") or {})
+                avatar_output_path = str(avatar_payload.get("output_path") or "")
+                if avatar_output_path and Path(avatar_output_path).exists():
+                    avatar_applied = True
+                    avatar_rel_path = _safe_rel_path(_avatar_storage_root(), avatar_output_path)
+                else:
+                    avatar_failure_reason = "missing_avatar_output"
+        except Exception:
+            logger.error("Avatar overlay failed for project=%s slide=%s", project_id, slide_num, exc_info=True)
+            avatar_failure_reason = f"render_exception_slide_{slide_num}"
+
+        if avatar_required and not avatar_applied and not avatar_failure_reason:
+            avatar_failure_reason = "validation_rejected_or_no_usable_avatar"
+
+        if avatar_required and not avatar_applied:
+            raise RuntimeError(
+                f"Avatar segment rejected for slide {slide_num}: {avatar_failure_reason or 'validation_rejected_or_no_usable_avatar'}"
+            )
+
+        # Slide and audio are always rendered as their own track; avatar remains separate.
+        create_slide_video(render_image_path, audio_out, part_out, duration_sec=total_duration)
+
+        try:
+            if avatar_state.get("enabled") and avatar_state.get("teacher_id"):
+                from avatar.hashing import sha256_file
+
+                source_rel = str(avatar_state.get("source_image_rel_path") or "")
+                source_abs = str(Path(_avatar_storage_root()) / source_rel) if source_rel else ""
+                _record_avatar_render_job(
+                    lesson_id=int(project_id),
+                    teacher_id=int(avatar_state.get("teacher_id")),
+                    source_image_hash=sha256_file(source_abs) if source_abs and Path(source_abs).exists() else "",
+                    tts_audio_hash=sha256_file(audio_out),
+                    lesson_text_hash=hashlib.sha256(notes_text_prepared.encode("utf-8")).hexdigest(),
+                    slide_hash=sha256_file(Path(render_image_path)) if Path(render_image_path).exists() else "",
+                    engine_used=avatar_engine_used,
+                    render_status="done" if avatar_applied else ("failed" if avatar_required else "skipped"),
+                    render_error=avatar_failure_reason,
+                    output_path=avatar_rel_path,
+                    fallback_chain_used=avatar_fallback_chain,
+                    metadata={
+                        "avatar_version": str(avatar_state.get("model_version") or "musetalk:v1"),
+                        "avatar_reference_type": str(avatar_state.get("avatar_reference_type") or "image"),
+                        "slide_num": int(slide_num),
+                        "page_key": slide_meta.get("page_key") or "",
+                        "motion_validation": avatar_validation,
+                    },
+                )
+        except Exception:
+            logger.warning("Avatar render job telemetry failed for project=%s slide=%s", project_id, slide_num, exc_info=True)
+
+        logger.info("  Slide %d: part video → %s", slide_num, part_out)
+
+        return {
+            "index":     index,
+            "slide_num": slide_num,
+            "page_key":  slide_meta.get("page_key"),
+            "source_slide_index": slide_meta.get("source_slide_index", index),
+            "split_index": slide_meta.get("split_index", 0),
+            "part_path": part_out,
+            "duration":  total_duration,
+            "pause_seconds": max(float(pause_sec), 0.0),
+            "text":      notes_text_prepared,
+            "slide_path": render_image_path,
+            "tts_audio_path": audio_out,
+            "subtitle_chunks": subtitle_chunks or [notes_text_prepared],
+            "whiteboard_mode": whiteboard_mode,
+            "avatar_applied": avatar_applied,
+            "avatar_engine_used": avatar_engine_used,
+            "avatar_fallback_chain": avatar_fallback_chain,
+            "avatar_segment_rel_path": avatar_rel_path,
+            "avatar_failed": bool(avatar_required and not avatar_applied),
+            "avatar_failure_reason": avatar_failure_reason,
+            "avatar_motion_validation": avatar_validation,
+        }
+
+    except Exception:
+        logger.exception(
+            "synthesize_and_render_slide FAILED slide=%d project=%s",
+            slide_num, project_id,
+        )
+        # Re-raise so Celery retry/chord-failure logic kicks in.
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Pipeline step 3: Concatenate + finalise (chord callback)
+# ---------------------------------------------------------------------------
+
+@app.task(
+    name="worker.tasks.concat_and_finalize",
+    max_retries=0,
+    # bind=True is intentionally absent: Celery passes the group results as
+    # the first positional argument to the chord callback, so injecting
+    # `self` would shift every parameter by one position.
+)
+def concat_and_finalize(
+    results: list[dict[str, Any]],
+    project_id: str,
+) -> dict[str, Any]:
+    """
+    Chord callback: concatenate all per-slide part MP4s into the final video
+    and generate an SRT subtitle file.  Updates the Job DB record.
+
+    Called automatically by Celery once every task in the preceding ``group``
+    has returned successfully.  If any slide task raises, Celery
+    (``CELERY_CHORD_PROPAGATES=True`` by default) marks this callback as
+    failed without calling it — no extra guard needed here.
+
+    Parameters
+    ----------
+    results:    List of dicts from :func:`synthesize_and_render_slide`, one
+                per slide.  Sorted defensively by ``index`` before use.
+    project_id: Project identifier used for output paths and DB updates.
+
+    Returns
+    -------
+    dict with keys: ``final_video``, ``srt``, ``parts``, ``durations``,
+    ``n_slides``.
+
+    Job model fields written
+    ------------------------
+    * ``status``    → ``'done'`` on success, ``'failed'`` on error.
+    * ``result_url``→ relative path (e.g., "16/16.mp4") resolved by MediaStreamView in STORAGE_ROOT.
+    * ``progress``  → 95 at concat, 100 at done (if field exists on model).
+    * ``error_message`` → full traceback on failure.
+    """
+    try:
+        from scripts.ffmpeg_helpers import concat_videos, generate_srt_from_cues, package_hls_stream
+        from scripts.text_segmentation import allocate_chunk_timings
+    except ImportError as exc:
+        raise RuntimeError(
+            f"ffmpeg_helpers not importable — check PYTHONPATH. Error: {exc}"
+        ) from exc
+
+    logger.info(
+        "concat_and_finalize START project=%s slides=%d", project_id, len(results)
+    )
+    _update_job(project_id, progress=90)
+
+    try:
+        # Sort by index — Celery preserves group order since v4, but defensive
+        ordered         = sorted(results, key=lambda r: r["index"])
+        part_paths      = [r["part_path"] for r in ordered]
+        slide_durations = [r["duration"]  for r in ordered]
+        _sync_lesson_segments(project_id, ordered)
+
+        ws = _workspace(project_id)
+
+        # Concatenate part MP4s → final video
+        final_video = str(ws["final"] / f"{project_id}.mp4")
+        logger.info("Concatenating %d clips → %s", len(part_paths), final_video)
+        concat_videos(part_paths, final_video)
+        _update_job(project_id, progress=95)
+
+        # Build chunk cue timeline and generate SRT from chunk-level cues.
+        srt_path = str(ws["final"] / f"{project_id}.srt")
+        subtitle_cues: list[dict[str, Any]] = []
+        page_timeline: list[dict[str, Any]] = []
+        cursor = 0.0
+        avatar_segments: list[dict[str, Any]] = []
+        avatar_failures: list[dict[str, Any]] = []
+        for result in ordered:
+            duration = float(result.get("duration") or 0.0)
+            chunk_timeline = allocate_chunk_timings(
+                list(result.get("subtitle_chunks") or []),
+                duration,
+            )
+            absolute_chunks: list[dict[str, Any]] = []
+            for chunk in chunk_timeline:
+                start_abs = cursor + float(chunk.get("start") or 0.0)
+                end_abs = cursor + float(chunk.get("end") or 0.0)
+                cue = {
+                    "start": round(start_abs, 3),
+                    "end": round(end_abs, 3),
+                    "text": chunk.get("text") or "",
+                }
+                subtitle_cues.append(cue)
+                absolute_chunks.append(cue)
+
+            page_timeline.append(
+                {
+                    "order": result.get("index", 0),
+                    "page_key": result.get("page_key"),
+                    "source_slide_index": result.get("source_slide_index", result.get("index", 0)),
+                    "split_index": result.get("split_index", 0),
+                    "start": round(cursor, 3),
+                    "end": round(cursor + duration, 3),
+                    "duration": round(duration, 3),
+                    "subtitle_chunks": [c.get("text") for c in chunk_timeline],
+                    "chunk_timeline": absolute_chunks,
+                }
+            )
+            if result.get("avatar_applied"):
+                avatar_segments.append(
+                    {
+                        "index": int(result.get("index") or 0),
+                        "engine": str(result.get("avatar_engine_used") or "none"),
+                        "fallback_chain": list(result.get("avatar_fallback_chain") or []),
+                        "segment_rel_path": str(result.get("avatar_segment_rel_path") or ""),
+                        "duration": round(duration, 3),
+                    }
+                )
+            elif result.get("avatar_failed"):
+                avatar_failures.append(
+                    {
+                        "index": int(result.get("index") or 0),
+                        "reason": str(result.get("avatar_failure_reason") or "avatar_failed"),
+                        "validation": dict(result.get("avatar_motion_validation") or {}),
+                    }
+                )
+            cursor += duration
+
+        generate_srt_from_cues(subtitle_cues, srt_path)
+        logger.info("SRT written → %s", srt_path)
+        _update_transcript_timeline(project_id, page_timeline)
+
+        playback_assets: dict[str, Any] = {
+            "asset_id": f"{DRM_ASSET_ID_PREFIX}{project_id}",
+            "content_id": f"{DRM_CONTENT_ID_PREFIX}{project_id}",
+            "mp4_rel_path": f"{project_id}/{project_id}.mp4",
+            "protection_mode": _worker_protection_mode(),
+            "timeline": page_timeline,
+            "hls": None,
+            "avatar": None,
+            "slides": [
+                _safe_rel_path(STORAGE_ROOT, str(item.get("slide_path"))) if item.get("slide_path") else ""
+                for item in ordered
+            ],
+            "transcript": [str(item.get("text") or "") for item in ordered],
+            "tts_audio": [
+                _safe_rel_path(STORAGE_ROOT, str(item.get("tts_audio_path"))) if item.get("tts_audio_path") else ""
+                for item in ordered
+            ],
+            "avatar_clips": [str(item.get("avatar_segment_rel_path") or "") for item in ordered],
+            "avatar_failures": avatar_failures,
+            "pause_durations": [float(item.get("pause_seconds") or 0.0) for item in ordered],
+            "final_segments": [],
+        }
+
+        playback_assets["final_segments"] = [
+            {
+                "index": int(item.get("index") or 0),
+                "slide": playback_assets["slides"][idx],
+                "transcript": playback_assets["transcript"][idx],
+                "tts_audio": playback_assets["tts_audio"][idx],
+                "avatar_clip": playback_assets["avatar_clips"][idx],
+                "avatar_failed": bool(item.get("avatar_failed")),
+                "avatar_failure_reason": str(item.get("avatar_failure_reason") or ""),
+                "pause_seconds": playback_assets["pause_durations"][idx],
+                "part_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("part_path"))),
+                "duration": float(item.get("duration") or 0.0),
+            }
+            for idx, item in enumerate(ordered)
+        ]
+
+        if avatar_segments:
+            try:
+                avatar_track_dir = ws["final"] / "avatar"
+                avatar_track_dir.mkdir(parents=True, exist_ok=True)
+                avatar_track_path = avatar_track_dir / "avatar_track.mp4"
+                avatar_segment_paths: list[str] = []
+                for item in sorted(avatar_segments, key=lambda seg: seg.get("index", 0)):
+                    rel = str(item.get("segment_rel_path") or "")
+                    if not rel:
+                        continue
+                    abs_path = Path(STORAGE_ROOT) / rel
+                    if abs_path.exists():
+                        avatar_segment_paths.append(str(abs_path))
+                if avatar_segment_paths:
+                    concat_videos(avatar_segment_paths, str(avatar_track_path))
+                    playback_assets["avatar"] = {
+                        "track_rel_path": f"{project_id}/avatar/avatar_track.mp4",
+                        "default_position": "top-right",
+                        "default_size": "medium",
+                        "segments": avatar_segments,
+                    }
+            except Exception:
+                logger.warning("Avatar track concat failed for project=%s", project_id, exc_info=True)
+
+        if DRM_STREAMING_ENABLED:
+            try:
+                hls_dir = ws["final"] / "drm" / "hls"
+                hls_rel_dir = f"{project_id}/drm/hls"
+                package_result = package_hls_stream(
+                    final_video,
+                    str(hls_dir),
+                    playlist_name="index.m3u8",
+                    segment_pattern="seg_%05d.ts",
+                    segment_time=6,
+                    encrypt=DRM_HLS_ENCRYPTION_ENABLED,
+                    key_hex=DRM_HLS_KEY_HEX,
+                    key_uri="enc.key" if DRM_HLS_ENCRYPTION_ENABLED else None,
+                    key_filename="enc.key",
+                )
+                playback_assets["hls"] = {
+                    "manifest_rel_path": f"{hls_rel_dir}/index.m3u8",
+                    "segment_glob": f"{hls_rel_dir}/seg_*.ts",
+                    "encrypted": bool(package_result.get("encrypted")),
+                    "key_rel_path": f"{hls_rel_dir}/enc.key" if package_result.get("encrypted") else None,
+                    "drm_scheme": "hls-aes-128" if package_result.get("encrypted") else "none",
+                }
+                logger.info("HLS packaging complete for project=%s", project_id)
+            except Exception as hls_exc:
+                logger.warning("HLS packaging skipped for project=%s: %s", project_id, hls_exc)
+
+        _write_playback_sidecar(project_id, playback_assets)
+
+        # Store relative paths (not HTTP URLs) so MediaStreamView can find them in storage_root
+        # result_url = "{project_id}/{project_id}.mp4" (relative path relative to STORAGE_ROOT)
+        result_url_rel = f"{project_id}/{project_id}.mp4"
+        srt_url_rel = f"{project_id}/{project_id}.srt"
+
+        # Mark the Job as done and record relative file paths
+        _update_job(
+            project_id,
+            status="done",
+            progress=100,
+            result_url=result_url_rel,
+            srt_url=srt_url_rel,
+        )
+
+        result = {
+            "final_video": final_video,
+            "result_url":  result_url_rel,
+            "srt":         srt_path,
+            "srt_url":     srt_url_rel,
+            "playback_assets": playback_assets,
+            "parts":       part_paths,
+            "durations":   slide_durations,
+            "timeline":    page_timeline,
+            "avatar_segments": avatar_segments,
+            "n_slides":    len(ordered),
+        }
+
+        if avatar_segments:
+            try:
+                from django.utils import timezone
+                from core.models import Project, UserProfile
+
+                project = Project.objects.select_related("user").get(pk=int(project_id))
+                if project.user_id:
+                    UserProfile.objects.filter(user_id=project.user_id).update(avatar_last_rendered_at=timezone.now())
+            except Exception:
+                logger.warning("Avatar last-render timestamp update failed for project=%s", project_id, exc_info=True)
+
+        logger.info(
+            "=== concat_and_finalize DONE project=%s → %s ===", project_id, final_video
+        )
+        return result
+
+    except Exception:
+        error_trace = tb.format_exc()
+        logger.exception("concat_and_finalize FAILED project=%s", project_id)
+        _update_job(project_id, status="failed", error_message=error_trace)
+        raise
+
+
+@app.task(
+    name="worker.tasks.merge_and_finalize_segments",
+    max_retries=0,
+)
+def merge_and_finalize_segments(
+    changed_results: list[dict[str, Any]],
+    project_id: str,
+    slides: list[dict[str, Any]],
+    rerender_page_keys: list[str] | None = None,
+) -> dict[str, Any]:
+    """Merge rerendered segment outputs with unchanged artifacts, then finalize full lesson."""
+    try:
+        from scripts.ffmpeg_helpers import get_audio_duration
+    except ImportError as exc:
+        raise RuntimeError(f"ffmpeg_helpers not importable — check PYTHONPATH. Error: {exc}") from exc
+
+    changed_by_key = {
+        str(item.get("page_key") or ""): item
+        for item in (changed_results or [])
+        if isinstance(item, dict)
+    }
+    rerender_set = {str(key) for key in (rerender_page_keys or []) if str(key)}
+
+    full_results: list[dict[str, Any]] = []
+    for slide in slides:
+        page_key = str(slide.get("page_key") or "")
+        if page_key and page_key in changed_by_key:
+            full_results.append(changed_by_key[page_key])
+            continue
+
+        part_path = str(slide.get("part_out") or "")
+        audio_path = str(slide.get("audio_out") or "")
+        pause_seconds = float(slide.get("pause_seconds") or 2.2)
+        duration = 0.0
+        if audio_path and Path(audio_path).exists():
+            duration = float(get_audio_duration(audio_path)) + max(pause_seconds, 0.0)
+
+        slide_index = int(slide.get("index") or 0)
+        avatar_segment_abs = Path(_avatar_storage_root()) / str(project_id) / "avatar_segments" / f"avatar_{int(slide.get('slide_num') or 0):03d}.mp4"
+        avatar_rel = _safe_rel_path(_avatar_storage_root(), str(avatar_segment_abs)) if avatar_segment_abs.exists() else ""
+
+        full_results.append(
+            {
+                "index": slide_index,
+                "slide_num": int(slide.get("slide_num") or 0),
+                "page_key": page_key,
+                "source_slide_index": slide.get("source_slide_index", slide_index),
+                "split_index": slide.get("split_index", 0),
+                "part_path": part_path,
+                "duration": duration,
+                "pause_seconds": pause_seconds,
+                "text": str(slide.get("narration_text") or slide.get("notes_text") or ""),
+                "slide_path": str(slide.get("image_path") or ""),
+                "tts_audio_path": audio_path,
+                "subtitle_chunks": list(slide.get("subtitle_chunks") or []),
+                "whiteboard_mode": bool(slide.get("whiteboard_mode")),
+                "avatar_applied": bool(avatar_rel),
+                "avatar_engine_used": "cached",
+                "avatar_fallback_chain": [],
+                "avatar_segment_rel_path": avatar_rel,
+            }
+        )
+
+    # Defensive sort keeps deterministic segment order for concatenation.
+    full_results = sorted(full_results, key=lambda item: int(item.get("index") or 0))
+    return concat_and_finalize.apply(args=[full_results, project_id]).result
+
+
+# ---------------------------------------------------------------------------
+# Entry-point — kept for backward compatibility
+# ---------------------------------------------------------------------------
+
+@app.task(
+    bind=True,
+    name="worker.tasks.process_pptx_to_video",
+    max_retries=0,
+)
+def process_pptx_to_video(
+    self,
+    project_id: str,
+    pptx_path: str,
+    voice_id: str,
+    pause_sec: float = 2.2,
+    lang_hint: str = "auto",
+    tts_mode: str = "service",
+    whiteboard_mode_all: bool = False,
+    avatar_options: dict[str, Any] | None = None,
+    rerender_page_keys: list[str] | None = None,
+) -> dict[str, Any]:
+    """
+    Orchestrate the full PPTX → lesson MP4 pipeline.
+
+    Execution model
+    ---------------
+    1. Runs :func:`export_project` **inline** (same worker process via
+       ``apply()``) to avoid a queue round-trip for a fast I/O step.
+    2. Builds a Celery ``chord``:
+       - **header**: ``group`` of :func:`synthesize_and_render_slide` tasks —
+         one per slide, dispatched simultaneously to available workers.
+       - **callback**: :func:`concat_and_finalize` — runs after all slides
+         succeed; if any slide fails the chord propagates the error (fail-fast).
+    3. Dispatches the chord and **returns immediately** with a lightweight
+       status dict so the API caller is not blocked.
+
+    The ``send_task`` name ``"worker.tasks.process_pptx_to_video"`` is
+    unchanged for backward compatibility with existing API callers.
+
+    Returns
+    -------
+    dict: ``status``, ``chord_id``, ``n_slides``, ``project_id``.
+    Poll ``chord_id`` via the Celery result backend, or watch the Job record
+    (updated by :func:`concat_and_finalize`).
+    """
+    logger.info("=== process_pptx_to_video START project=%s ===", project_id)
+    _update_job(project_id, status="running", progress=0)
+    self.update_state(state="PROGRESS", meta={"step": "start", "progress": 0})
+
+    try:
+        # ------------------------------------------------------------------
+        # Step 1: Export slides inline
+        # ------------------------------------------------------------------
+        logger.info("Step 1: exporting slides for project=%s …", project_id)
+        export_result = export_project.apply(args=[project_id, pptx_path, whiteboard_mode_all])
+        if export_result.failed():
+            raise RuntimeError(f"export_project raised: {export_result.result}")
+
+        slides: list[dict[str, Any]] = export_result.result
+        slides = _sync_transcript_pages_from_export(project_id, slides)
+        n_slides = len(slides)
+        logger.info("Step 1 done: %d slides ready for parallel rendering", n_slides)
+
+        language_detection = _detect_language_from_slides(slides, lang_hint=lang_hint)
+        resolved_lang = language_detection.get("resolved_language") or "tr"
+        _write_language_detection_sidecar(project_id, language_detection)
+        logger.info(
+            "Language resolved for project=%s -> %s (source=%s confidence=%s)",
+            project_id,
+            resolved_lang,
+            language_detection.get("source"),
+            language_detection.get("confidence"),
+        )
+
+        _update_job(project_id, progress=10)
+
+        teacher_id: int | None = None
+        avatar_cfg = avatar_options or {}
+        if not avatar_cfg:
+            try:
+                from core.models import Project
+
+                project_row = Project.objects.filter(pk=int(project_id)).select_related("user").first()
+                teacher_id = int(project_row.user_id) if project_row and project_row.user_id else None
+            except Exception:
+                teacher_id = None
+
+            teacher_avatar_cfg = _get_teacher_avatar_config(teacher_id)
+            avatar_cfg = {
+                "enabled": bool(teacher_avatar_cfg.get("enabled")),
+                "teacher_id": teacher_id,
+                "source_image_rel_path": teacher_avatar_cfg.get("processed_rel_path", ""),
+                "source_image_original_rel_path": teacher_avatar_cfg.get("source_rel_path", ""),
+                "source_video_rel_path": teacher_avatar_cfg.get("video_rel_path", ""),
+                "avatar_reference_type": teacher_avatar_cfg.get("reference_type", "image"),
+                "motion_preset": teacher_avatar_cfg.get("motion_preset", "natural"),
+                "quality_preset": teacher_avatar_cfg.get("quality_preset", "high"),
+                "lipsync_engine": teacher_avatar_cfg.get("lipsync_engine", "musetalk"),
+                "model_version": teacher_avatar_cfg.get("model_version", "musetalk:v1"),
+            }
+        else:
+            teacher_id = int(avatar_cfg.get("teacher_id")) if avatar_cfg.get("teacher_id") else None
+        self.update_state(
+            state="PROGRESS",
+            meta={
+                "step": "export_done",
+                "progress": 10,
+                "n_slides": n_slides,
+                "language_detection": language_detection,
+            },
+        )
+
+        # ------------------------------------------------------------------
+        # Step 2: Build and dispatch parallel chord
+        # ------------------------------------------------------------------
+        rerender_set = {str(key) for key in (rerender_page_keys or []) if str(key)}
+        target_slides = [slide for slide in slides if not rerender_set or str(slide.get("page_key") or "") in rerender_set]
+        if not target_slides:
+            target_slides = slides
+
+        slide_tasks = group(
+            synthesize_and_render_slide.s(
+                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, avatar_cfg
+            )
+            for slide in target_slides
+        )
+        if rerender_set:
+            callback = merge_and_finalize_segments.s(project_id, slides, list(rerender_set))
+        else:
+            callback = concat_and_finalize.s(project_id)
+
+        pipeline     = chord(slide_tasks, callback)
+        async_result = pipeline.apply_async()
+
+        logger.info(
+            "Chord dispatched: chord_id=%s n_slides=%d project=%s",
+            async_result.id, n_slides, project_id,
+        )
+
+        return {
+            "status":     "dispatched",
+            "chord_id":   async_result.id,
+            "n_slides":   len(target_slides),
+            "project_id": project_id,
+            "language_detection": language_detection,
+            "rerender_page_keys": list(rerender_set),
+            "avatar": {
+                "enabled": bool(avatar_cfg.get("enabled")),
+                "teacher_id": teacher_id,
+                "source_image_rel_path": avatar_cfg.get("source_image_rel_path", ""),
+                "source_video_rel_path": avatar_cfg.get("source_video_rel_path", ""),
+                "avatar_reference_type": avatar_cfg.get("avatar_reference_type", "image"),
+            },
+        }
+
+    except Exception as exc:
+        error_trace = tb.format_exc()
+        logger.exception("process_pptx_to_video FAILED for project=%s", project_id)
+        _update_job(project_id, status="failed", error_message=error_trace)
+        self.update_state(
+            state="FAILURE",
+            meta={
+                "exc_type":    type(exc).__name__,
+                "exc_message": str(exc),
+                "project_id":  project_id,
+            },
+        )
+        raise

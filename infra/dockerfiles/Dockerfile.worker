@@ -1,0 +1,183 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================
+# Dockerfile.worker
+# Purpose : Celery async task worker for AI_ACADEMY.
+#           Includes ffmpeg, LibreOffice, and poppler for the
+#           PPTX → MP4 video pipeline.
+# Build context: repo root  (docker-compose: context: ..)
+#
+# Runtime layout inside the image
+# --------------------------------
+#   /app/api/     ← Django project  (config.*, api.core.*)
+#   /app/worker/  ← Celery app & tasks
+#   /app/scripts/ ← shared pipeline scripts
+#   /app/avatar/  ← local avatar inference helpers
+#
+# PYTHONPATH
+# ----------
+#   /app/api  → resolves `config` (Django settings) and `core` directly
+#   /app      → resolves `api`, `worker`, `scripts` packages
+# ============================================================
+
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
+
+ARG LIVEPORTRAIT_REPO=https://github.com/KwaiVGI/LivePortrait.git
+ARG LIVEPORTRAIT_REF=49784e879821538ecda5c8e4ca0472f4cb6236cf
+ARG INSTALL_TEST_DEPS=0
+ARG DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1
+ARG INSTALL_OPENMMLAB_DEPS=1
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+ENV HOME=/home/appuser
+
+# ---------------------------------------------------------------------------
+# System packages
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+     ca-certificates \
+     gnupg \
+     dirmngr \
+     apt-transport-https \
+     build-essential \
+     gcc \
+     git \
+     libpq-dev \
+     ffmpeg \
+     curl \
+     python3.10 \
+     python3-pip \
+     libreoffice \
+     default-jre-headless \
+     poppler-utils \
+     fonts-dejavu-core \
+     fonts-liberation \
+     fontconfig \
+     imagemagick \
+     libgl1 \
+     && rm -rf /var/lib/apt/lists/*
+
+# Ensure `python`/`pip` commands are available as expected by the rest of the Dockerfile.
+RUN ln -s /usr/bin/python3 /usr/bin/python || true && ln -s /usr/bin/pip3 /usr/bin/pip || true
+
+# ---------------------------------------------------------------------------
+# Python dependencies
+# ---------------------------------------------------------------------------
+WORKDIR /app
+ENV PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5
+
+COPY services/worker/requirements.txt /tmp/worker-req.txt
+COPY services/api/requirements.txt    /tmp/api-req.txt
+COPY requirements-test.txt            /tmp/test-req.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+     pip install -r /tmp/worker-req.txt -r /tmp/api-req.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+     if [ "$INSTALL_TEST_DEPS" = "1" ]; then \
+        pip install -r /tmp/test-req.txt; \
+    fi
+
+# MuseTalk primary runtime for real talking-face inference.
+RUN --mount=type=cache,target=/root/.cache/pip \
+     pip install --upgrade pip setuptools wheel \
+     && pip install --index-url https://download.pytorch.org/whl/cu118 torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 \
+     && if [ "$INSTALL_OPENMMLAB_DEPS" = "1" ]; then \
+          pip install openmim==0.3.9 \
+          && mim install "mmcv==2.0.1" \
+          && pip install "numpy<2" scipy==1.11.4 \
+          && pip install mmengine==0.10.4 mmdet==3.1.0 \
+          && pip install --no-build-isolation mmpose==1.1.0; \
+        else \
+          echo "Skipping OpenMMLab/mmcv dependencies for smoke build."; \
+          pip install "numpy<2" scipy==1.11.4; \
+        fi \
+     && pip install librosa==0.10.2.post1 numba==0.59.1 tqdm==4.66.4 face-alignment==1.4.1 soundfile==0.12.1 opencv-python-headless==4.9.0.80 ffmpeg-python==0.2.0 omegaconf==2.3.0 diffusers==0.30.2 accelerate==0.28.0 transformers==4.39.2 huggingface_hub==0.30.2 einops==0.8.1 moviepy==1.0.3 imageio[ffmpeg]==2.34.1 \
+     && git clone --depth 1 https://github.com/TMElyralab/MuseTalk.git /opt/musetalk \
+     && git clone ${LIVEPORTRAIT_REPO} /opt/liveportrait \
+     && cd /opt/liveportrait \
+     && git checkout ${LIVEPORTRAIT_REF} \
+     && pip install onnx==1.16.1 onnxruntime-gpu==1.18.0 lmdb==1.4.1 scikit-image==0.24.0 albumentations==1.4.10 rich==13.7.1 tyro==0.8.5 pykalman==0.9.7 imageio-ffmpeg==0.5.1 \
+     && if [ "$DOWNLOAD_LIVEPORTRAIT_WEIGHTS" = "1" ]; then \
+          python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='KlingTeam/LivePortrait', revision='main', local_dir='/opt/liveportrait/pretrained_weights', local_dir_use_symlinks=False, ignore_patterns=['*.git*','README.md','docs/*'])"; \
+        else \
+          echo "Skipping LivePortrait pretrained weights download for smoke build."; \
+          mkdir -p /opt/liveportrait/pretrained_weights; \
+        fi \
+     && mkdir -p /app/storage_local/models/musetalk
+
+# Normalize site-packages path and register CUDA/torch runtime libs in the
+# dynamic linker cache so ORT CUDA stays available even if LD_LIBRARY_PATH is
+# narrowed by runtime environment overrides.
+RUN if [ ! -e /usr/local/lib/python3.10/site-packages ]; then \
+               ln -s /usr/local/lib/python3.10/dist-packages /usr/local/lib/python3.10/site-packages; \
+          fi \
+          && if [ -e /usr/local/cuda/lib64/libnvrtc.so.11.2 ] && [ ! -e /usr/local/cuda/lib64/libnvrtc.so ]; then \
+               ln -s /usr/local/cuda/lib64/libnvrtc.so.11.2 /usr/local/cuda/lib64/libnvrtc.so; \
+          fi \
+          && if [ -e /usr/local/cuda/lib64/libcurand.so.10 ] && [ ! -e /usr/local/cuda/lib64/libcurand.so ]; then \
+               ln -s /usr/local/cuda/lib64/libcurand.so.10 /usr/local/cuda/lib64/libcurand.so; \
+          fi \
+          && if [ -e /usr/local/lib/python3.10/dist-packages/torch/lib/libnvrtc.so.11.2 ] && [ ! -e /usr/local/lib/python3.10/dist-packages/torch/lib/libnvrtc.so ]; then \
+               ln -s /usr/local/lib/python3.10/dist-packages/torch/lib/libnvrtc.so.11.2 /usr/local/lib/python3.10/dist-packages/torch/lib/libnvrtc.so; \
+          fi \
+          && printf '%s\n' \
+               /usr/local/cuda/lib64 \
+               /usr/local/cuda/targets/x86_64-linux/lib \
+               /usr/local/lib/python3.10/dist-packages/torch/lib \
+               /usr/local/lib/python3.10/site-packages/torch/lib \
+               > /etc/ld.so.conf.d/ai_academy_worker.conf \
+          && ldconfig
+
+# Wav2Lip backup (disabled in active production chain).
+# Keep patch helper in repo for future rollback/debug, but do not wire it into runtime.
+
+# ---------------------------------------------------------------------------
+# Application source
+# ---------------------------------------------------------------------------
+COPY services/worker/  /app/worker/
+COPY services/scripts/ /app/scripts/
+COPY services/tts_service/tts_preprocess/ /app/tts_preprocess/
+COPY services/avatar/  /app/avatar/
+COPY services/api/     /app/api/
+
+# ---------------------------------------------------------------------------
+# Non-root user + writable dirs required by LibreOffice / dconf
+#
+# /home/appuser/.cache/dconf   – dconf needs a writable cache dir
+# /home/appuser/.config        – general XDG config dir
+# /tmp/lo_user                 – LibreOffice per-process UserInstallation dir
+#                                (passed via --env:UserInstallation=file:///tmp/lo_user)
+# ---------------------------------------------------------------------------
+RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser \
+     && mkdir -p \
+     /home/appuser/.cache/dconf \
+     /home/appuser/.config \
+     /tmp/lo_user \
+     && chown -R appuser:appuser \
+     /home/appuser \
+     /app \
+     /opt/musetalk \
+     /opt/liveportrait \
+     /tmp/lo_user \
+     && chmod 700 /tmp/lo_user
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+ENV PYTHONPATH=/app/api:/app
+ENV TORCH_HOME=/app/storage_local/models/torch
+ENV XDG_CACHE_HOME=/app/storage_local/cache
+ENV MUSETALK_USE_FAKE_MMPPOSE=0
+ENV MUSETALK_REQUIRE_REAL_POSE=1
+ENV AI_ACADEMY_LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:/usr/lib/x86_64-linux-gnu:/usr/local/lib/python3.10/dist-packages/torch/lib:/usr/local/lib/python3.10/site-packages/torch/lib
+# Ensure CUDA runtime libs and PyTorch-shipped libs are discoverable by the
+# dynamic loader so onnxruntime-gpu can load the CUDA provider libraries.
+ENV LD_LIBRARY_PATH=${AI_ACADEMY_LD_LIBRARY_PATH}:${LD_LIBRARY_PATH}
+
+# ---------------------------------------------------------------------------
+# Runtime
+# ---------------------------------------------------------------------------
+USER appuser
+
+# Run hard avatar bootstrap checks only for avatar worker profiles.
+CMD ["sh", "-lc", "export LD_LIBRARY_PATH=\"${AI_ACADEMY_LD_LIBRARY_PATH}:${LD_LIBRARY_PATH}\"; if [ \"${AVATAR_BOOTSTRAP_ON_WORKER_STARTUP:-1}\" = \"1\" ]; then python /app/worker/bootstrap_musetalk.py; else echo \"Skipping avatar bootstrap on worker startup\"; fi && exec celery -A worker worker --loglevel=${CELERY_LOG_LEVEL:-info} --concurrency=${CELERY_WORKER_CONCURRENCY:-${CELERY_CONCURRENCY:-1}} --prefetch-multiplier=${CELERY_PREFETCH_MULTIPLIER:-1} -Q ${CELERY_WORKER_QUEUES:-${CELERY_RENDER_QUEUE:-render}}"]

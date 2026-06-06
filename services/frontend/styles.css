@@ -1,0 +1,85 @@
+:root {
+    --bg: #f6f8fb;
+    --card: #ffffff;
+    --accent: #0a66c2;
+    --muted: #6b7280;
+    --error: #c53030;
+}
+
+* {
+    box-sizing: border-box
+}
+
+body {
+    font-family: Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: #111;
+    margin: 0;
+    padding: 24px
+}
+
+.container {
+    max-width: 980px;
+    margin: 0 auto
+}
+
+h1 {
+    margin: 6px 0 18px
+}
+
+.card {
+    background: var(--card);
+    padding: 16px;
+    border-radius: 10px;
+    box-shadow: 0 6px 18px rgba(12, 18, 30, 0.06);
+    margin-bottom: 16px
+}
+
+label {
+    display: block;
+    margin-top: 8px;
+    font-weight: 600;
+    font-size: 14px
+}
+
+input[type="text"],
+input[type="file"],
+textarea {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid #e6e9ef;
+    margin-top: 6px
+}
+
+.actions {
+    margin-top: 12px
+}
+
+button {
+    background: var(--accent);
+    color: white;
+    border: 0;
+    padding: 10px 14px;
+    border-radius: 8px;
+    cursor: pointer
+}
+
+.hidden {
+    display: none
+}
+
+.muted {
+    color: var(--muted);
+    margin-top: 8px
+}
+
+.small {
+    font-size: 13px
+}
+
+.error {
+    color: var(--error);
+    margin-top: 8px;
+    white-space: pre-wrap
+}

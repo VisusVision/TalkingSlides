@@ -1,0 +1,14 @@
+# ignore python caches and local envs
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.local
+venv/
+.venv/
+node_modules/
+.git
+.gitignore
+storage_local/
+*.log
