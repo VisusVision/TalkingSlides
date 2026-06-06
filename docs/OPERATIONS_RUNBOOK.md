@@ -76,6 +76,19 @@ python manage.py storage_metrics_snapshot --storage-root C:\path\to\storage --ol
 
 The snapshot command is the intentional expensive path. It walks storage through the existing retention/orphan/capacity report helper, then writes `STORAGE_ROOT/observability/storage_metrics_snapshot.json`. It does not delete files, enqueue work, perform cleanup, or change render/playback behavior.
 
+The report also includes a `storage_backend` readiness section. Treat it as configuration visibility only:
+
+- `configured_storage_backend` is the raw configured value. `effective_storage_backend` is the canonical value the app will treat as active.
+- `STORAGE_BACKEND=local` is a legacy alias. It should appear as `configured_storage_backend: local`, `effective_storage_backend: filesystem`, and `legacy_local_alias_normalized: true`. New environments should use `filesystem`.
+- For filesystem mode, `filesystem_root`, `filesystem_root_resolved`, `filesystem_root_status`, `filesystem_root_exists`, `filesystem_root_is_dir`, `filesystem_root_readable`, and `filesystem_root_writable` describe whether the configured storage root is locally usable by the reporting process.
+- For S3 mode, the `s3_*_configured` fields report whether required and optional settings are present. They do not prove bucket existence, credentials, permissions, latency, or network reachability.
+- `s3_network_probe_performed: false` means the report intentionally did not call S3 or MinIO. Use the optional S3/MinIO integration test or a reviewed staging smoke workflow for connectivity proof.
+- `storage.available` and `storage_backend.available` can differ. `storage` reads the cached storage metrics snapshot and may degrade when the snapshot, adapter dependency, or configured storage target is unavailable. `storage_backend` only reports backend readiness metadata.
+- `runtime_media_migration_implied: false` means upload, render, playback, avatar, and TTS media paths have not been moved by this report.
+- `excluded_capabilities` intentionally lists work not covered by readiness visibility: `s3_listing`, `range_reads`, `signed_urls`, `public_urls`, `cleanup`, `quota`, and `delete`.
+
+Filesystem remains the default runtime backend. The S3 adapter foundation does not mean upload, render, playback, avatar, or TTS runtime media has migrated to S3.
+
 Recommended cadence:
 
 - Start with an operator-approved refresh every 6 hours in staging and production.
@@ -357,7 +370,7 @@ python manage.py storage_metrics_snapshot --older-than-days 30 --json
 python manage.py system_observability_report --json
 ```
 
-Confirm the report shows `storage.available: true`, a non-empty `snapshot_generated_at`, and a low `snapshot_age_seconds`. Then check Prometheus:
+Confirm the report shows `storage.available: true`, a non-empty `snapshot_generated_at`, a low `snapshot_age_seconds`, and the expected `storage_backend.effective_storage_backend`. For filesystem-backed runtime, also confirm `storage_backend.metrics.filesystem_root_status: ok`. Then check Prometheus:
 
 ```powershell
 curl http://localhost:8000/api/v1/system/metrics/prometheus/ | findstr system_observability_storage_snapshot
