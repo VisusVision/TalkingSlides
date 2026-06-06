@@ -1,0 +1,22 @@
+{
+  "en": {
+    "GitHub": "git hub",
+    "LivePortrait": "live portrait",
+    "MuseTalk": "muse talk",
+    "Coqui": "koh kee"
+  },
+  "tr": {
+    "Claude Code": "Klod Kod",
+    "ChatGPT": "Çet Ci Pi Ti",
+    "OpenAI": "Open ey ay",
+    "VS Code": "Vi Es Kod",
+    "JavaScript": "Cava Skript",
+    "GitHub": "Git Hab",
+    "Python": "Paytın",
+    "Gemini": "Cemini",
+    "Claude": "Klod",
+    "LivePortrait": "Live Portrait",
+    "MuseTalk": "Muse Talk",
+    "Coqui": "Koki"
+  }
+}

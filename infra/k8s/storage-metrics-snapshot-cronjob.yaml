@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: storage-metrics-snapshot
+  namespace: vidlab
+  labels:
+    app: storage-metrics-snapshot
+    environment: staging
+spec:
+  # Staging/operator-owned example. Keep suspended until the API image,
+  # api-env ConfigMap, and storage PVC name are replaced with live staging values.
+  suspend: true
+  schedule: "17 */6 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app: storage-metrics-snapshot
+            environment: staging
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: snapshot
+              image: ai_academy_api:local
+              imagePullPolicy: IfNotPresent
+              workingDir: /app
+              command:
+                - python
+                - manage.py
+                - storage_metrics_snapshot
+                - --older-than-days
+                - "30"
+                - --json
+              envFrom:
+                - configMapRef:
+                    name: api-env
+              env:
+                - name: STORAGE_ROOT
+                  value: /mnt/visus-media
+              volumeMounts:
+                - name: storage-root
+                  mountPath: /mnt/visus-media
+          volumes:
+            - name: storage-root
+              persistentVolumeClaim:
+                # Replace with the same staging PVC mounted by API and workers.
+                claimName: replace-with-staging-storage-root-pvc

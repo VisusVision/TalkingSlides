@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================
+# Dockerfile.api
+# Purpose: Django REST API service for AI_ACADEMY.
+#          Runs migrations then starts gunicorn.
+#          Build context = repo root  (docker-compose: context: ..)
+# ============================================================
+
+FROM python:3.11-slim
+ARG INSTALL_TEST_DEPS=0
+
+# --- system dependencies ---
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  gcc \
+  libpq-dev \
+  ffmpeg \
+  curl \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# --- Python dependencies (cached layer) ---
+COPY services/api/requirements.txt .
+COPY requirements-test.txt /tmp/test-requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+  pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+  if [ "$INSTALL_TEST_DEPS" = "1" ]; then \
+      pip install -r /tmp/test-requirements.txt; \
+    fi
+
+# --- copy application source ---
+COPY services/api/ ./
+COPY services/avatar/ /app/avatar/
+
+# PYTHONPATH ensures `import config` and `import core` resolve from /app
+ENV PYTHONPATH=/app
+ENV HOME=/home/appuser
+
+# --- non-root user ---
+RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser \
+  && chown -R appuser:appuser /app /home/appuser
+USER appuser
+
+EXPOSE 8000
+
+# Run migrations, collect static files, then start gunicorn.
+# In dev the source is bind-mounted so live code changes are picked up.
+CMD ["sh", "-c", "python manage.py migrate --noinput && python manage.py collectstatic --noinput && gunicorn --bind 0.0.0.0:8000 --workers 2 config.wsgi:application"]

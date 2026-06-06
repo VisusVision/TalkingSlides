@@ -1,0 +1,121 @@
+groups:
+  - name: vidlab-render-alerts
+    rules:
+      - alert: VidlabRenderQueueDepthHigh
+        expr: max(vidlab_render_queue_depth{profile="balanced"}) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Render queue depth high"
+          description: "Balanced queue depth has been above 50 for 5 minutes."
+
+      - alert: VidlabRenderP95High
+        expr: vidlab_jobs_latency_p95_seconds > 240
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Render p95 latency high"
+          description: "Render p95 latency has been above 240 seconds for 10 minutes."
+
+      - alert: VidlabJobsFailedSpike
+        expr: increase(vidlab_jobs_status_total{status="failed"}[10m]) > 15
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Failed jobs spike"
+          description: "More than 15 failed jobs in the last 10 minutes."
+
+  - name: vidlab-system-observability-alerts
+    rules:
+      - alert: VidlabSystemRecoveryCandidatesPresent
+        expr: system_observability_recovery_candidate_count > 0
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Render recovery candidates present"
+          description: "Read-only recovery inspection has reported one or more render recovery candidates for 30 minutes. Inspect logs, Job rows, follow-up intents, and broker state before taking manual action."
+
+      - alert: VidlabSystemRecoveryCandidateSpike
+        expr: (max_over_time(system_observability_recovery_candidate_count[15m]) - min_over_time(system_observability_recovery_candidate_count[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Render recovery candidate count increased quickly"
+          description: "Recovery candidate count increased by more than 5 within 15 minutes. Threshold is an initial staging candidate and should be tuned from baseline data."
+
+      - alert: VidlabSystemStaleFollowupIntent
+        expr: system_observability_followup_oldest_age_seconds > 1800
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Stale render follow-up intent"
+          description: "The oldest active render follow-up intent has exceeded 30 minutes for 30 minutes. Confirm whether a legitimate render is still active before intervening."
+
+      - alert: VidlabSystemFailedRenderCountHigh
+        expr: system_observability_render_failed_count > 10
+        for: 10m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Failed render count high"
+          description: "Current failed render count has remained above 10 for 10 minutes. This is a conservative staging-tuned threshold, not a paging policy."
+
+      - alert: VidlabSystemFailedRenderCountSpike
+        expr: (max_over_time(system_observability_render_failed_count[15m]) - min_over_time(system_observability_render_failed_count[15m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Failed render count increased quickly"
+          description: "Failed render count increased by more than 5 within 15 minutes. Investigate API and worker logs before retrying jobs."
+
+      - alert: VidlabSystemOldestActiveRenderTooHigh
+        expr: system_observability_render_oldest_active_age_seconds > 7200
+        for: 15m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Oldest active render age too high"
+          description: "The oldest active render has exceeded 2 hours for 15 minutes. Tune this threshold against accepted source sizes and hardware."
+
+      - alert: VidlabSystemStaleRenderCandidatesPresent
+        expr: system_observability_recovery_stale_render_count > 0
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Stale render candidates present"
+          description: "Recovery inspection has reported stale render candidates for 30 minutes. Treat this as an investigation lead, not automatic remediation."
+
+      - alert: VidlabSystemStorageSnapshotUnavailable
+        expr: system_observability_storage_snapshot_available == 0
+        for: 30m
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Storage metrics snapshot unavailable"
+          description: "Prometheus cannot read a valid cached storage metrics snapshot for 30 minutes. Run storage_metrics_snapshot and inspect STORAGE_ROOT/observability/storage_metrics_snapshot.json."
+
+      - alert: VidlabSystemStorageSnapshotStale
+        expr: system_observability_storage_snapshot_available == 1 and system_observability_storage_snapshot_age_seconds > 86400
+        for: 1h
+        labels:
+          severity: warning
+          tuning: initial-staging
+        annotations:
+          summary: "Storage metrics snapshot stale"
+          description: "The cached storage metrics snapshot is older than 24 hours for 1 hour. This is a conservative staging-tuned warning; refresh it with storage_metrics_snapshot and tune the threshold from deployment cadence."

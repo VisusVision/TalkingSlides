@@ -1,0 +1,4 @@
+﻿Yapay zeka destekli eğitim platformuna hoş geldiniz.
+Bu örnek ders, yükleme ve render hattını doğrulamak için hazırlanmıştır.
+Sistem metni sayfalara bölüp seslendirme üretecek ve video olarak birleştirecektir.
+Bu cümleler test amaçlıdır.

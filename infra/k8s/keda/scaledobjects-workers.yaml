@@ -1,0 +1,179 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-fast-autoscaler
+  namespace: vidlab
+spec:
+  scaleTargetRef:
+    name: worker-fast
+  pollingInterval: 15
+  cooldownPeriod: 120
+  minReplicaCount: 2
+  maxReplicaCount: 24
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Percent
+              value: 25
+              periodSeconds: 60
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_fast_queue_depth
+        threshold: "12"
+        query: max(vidlab_render_queue_depth{profile="fast"})
+      authenticationRef:
+        name: keda-prometheus-trigger-auth
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_fast_p95
+        threshold: "90"
+        query: max(vidlab_jobs_latency_p95_seconds)
+      authenticationRef:
+        name: keda-prometheus-trigger-auth
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-balanced-autoscaler
+  namespace: vidlab
+spec:
+  scaleTargetRef:
+    name: worker
+  pollingInterval: 15
+  cooldownPeriod: 180
+  minReplicaCount: 1
+  maxReplicaCount: 16
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 45
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 45
+        scaleDown:
+          stabilizationWindowSeconds: 360
+          policies:
+            - type: Percent
+              value: 25
+              periodSeconds: 60
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_balanced_queue_depth
+        threshold: "10"
+        query: max(vidlab_render_queue_depth{profile="balanced"})
+      authenticationRef:
+        name: keda-prometheus-trigger-auth
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_balanced_p95
+        threshold: "180"
+        query: max(vidlab_jobs_latency_p95_seconds)
+      authenticationRef:
+        name: keda-prometheus-trigger-auth
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-quality-autoscaler
+  namespace: vidlab
+spec:
+  scaleTargetRef:
+    name: worker-quality
+  pollingInterval: 20
+  cooldownPeriod: 240
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 60
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 420
+          policies:
+            - type: Percent
+              value: 20
+              periodSeconds: 60
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_quality_queue_depth
+        threshold: "6"
+        query: max(vidlab_render_queue_depth{profile="quality"})
+      authenticationRef:
+        name: keda-prometheus-trigger-auth
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_quality_p95
+        threshold: "320"
+        query: max(vidlab_jobs_latency_p95_seconds)
+      authenticationRef:
+        name: keda-prometheus-trigger-auth
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-avatar-autoscaler
+  namespace: vidlab
+spec:
+  scaleTargetRef:
+    name: worker-avatar
+  pollingInterval: 30
+  cooldownPeriod: 300
+  minReplicaCount: 1
+  maxReplicaCount: 8
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 90
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 90
+        scaleDown:
+          stabilizationWindowSeconds: 600
+          policies:
+            - type: Percent
+              value: 20
+              periodSeconds: 120
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_avatar_queue_depth
+        threshold: "4"
+        query: max(vidlab_render_queue_depth{profile="avatar"})
+      authenticationRef:
+        name: keda-prometheus-trigger-auth
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring.svc.cluster.local:9090
+        metricName: vidlab_avatar_p95
+        threshold: "600"
+        query: max(vidlab_jobs_latency_p95_seconds)
+      authenticationRef:
+        name: keda-prometheus-trigger-auth

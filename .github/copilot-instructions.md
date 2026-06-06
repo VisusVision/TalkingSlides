@@ -1,0 +1,5 @@
+- Keep VISUS VidLab avatar flow canonical: TTS -> LivePortrait -> MuseTalk -> optional restoration.
+- Preserve installed engine modules and weights.
+- Do not weaken strict validation.
+- Do not silently switch engines or hide playable outputs.
+- Prefer clear stage logs, explicit paths, and simple control flow.

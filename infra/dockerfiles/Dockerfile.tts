@@ -1,0 +1,68 @@
+# syntax=docker/dockerfile:1.7
+
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Etc/UTC
+ENV HOME=/tmp
+ENV TTS_CACHE_ROOT=/app/storage_local/tts_cache
+ENV NUMBA_CACHE_DIR=/app/storage_local/tts_cache/numba
+ENV MPLCONFIGDIR=/app/storage_local/tts_cache/matplotlib
+ENV HF_HOME=/app/storage_local/tts_cache/hf
+ENV TRANSFORMERS_CACHE=/app/storage_local/tts_cache/hf
+ENV TORCH_HOME=/app/storage_local/tts_cache/torch
+ENV TTS_CACHE_DIR=/app/storage_local/tts_cache/coqui
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libsndfile1 \
+    curl \
+    ffmpeg \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip
+
+ARG TORCH_CHANNEL=cu121
+ARG INSTALL_TEST_DEPS=0
+
+COPY services/tts_service/requirements.txt /app/requirements.txt
+COPY requirements-test.txt /tmp/test-requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --default-timeout=1000 \
+    --index-url https://download.pytorch.org/whl/${TORCH_CHANNEL} \
+    torch==2.5.1 torchaudio==2.5.1 || \
+    pip install --default-timeout=1000 \
+    --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.5.1 torchaudio==2.5.1
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --default-timeout=1000 \
+    -r /app/requirements.txt
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    if [ "$INSTALL_TEST_DEPS" = "1" ]; then \
+        pip install --default-timeout=1000 -r /tmp/test-requirements.txt; \
+    fi
+
+COPY services/tts_service/ /app/
+
+RUN mkdir -p /app/storage_local/tts_cache/numba \
+    /app/storage_local/tts_cache/matplotlib \
+    /app/storage_local/tts_cache/hf \
+    /app/storage_local/tts_cache/torch \
+    /app/storage_local/tts_cache/coqui \
+    && chmod -R 777 /app/storage_local/tts_cache
+
+RUN useradd --create-home --shell /bin/false appuser \
+    && chown -R appuser /app
+
+USER appuser
+
+EXPOSE 8001
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]

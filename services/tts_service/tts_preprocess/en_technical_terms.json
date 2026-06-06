@@ -1,0 +1,13 @@
+{
+  "pipeline": "payp layn",
+  "backend": "bek end",
+  "frontend": "front end",
+  "cache": "keş",
+  "token": "token",
+  "render": "render",
+  "resolver": "resolver",
+  "docker": "dokır",
+  "redis": "redis",
+  "celery": "seleri",
+  "model": "model"
+}

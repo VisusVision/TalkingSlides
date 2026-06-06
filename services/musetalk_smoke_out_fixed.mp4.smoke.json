@@ -1,0 +1,165 @@
+{
+  "result": "PASS",
+  "output_path": "/app/musetalk_smoke_out_fixed.mp4",
+  "source_path": "/app/storage_local/avatars/2/uploads/avatar_original.jpg",
+  "source_is_video": false,
+  "audio_path": "/app/storage_local/avatars/2/preview/preview.wav",
+  "entrypoint_path": "/app/scripts/musetalk_entrypoint.py",
+  "model_root": "/app/storage_local/models",
+  "setup": {
+    "torch_version": "2.0.1+cu118",
+    "cuda_available": true,
+    "cuda_version": "11.8",
+    "device": "cuda:0",
+    "device_name": "NVIDIA GeForce RTX 3050 Laptop GPU",
+    "vram_total_gb": 4.0,
+    "vram_reserved_gb": 0.0,
+    "musetalk_home": "/opt/musetalk",
+    "model_root": "/app/storage_local/models",
+    "missing_models": [],
+    "entrypoint": "/app/scripts/musetalk_entrypoint.py"
+  },
+  "stage_timings": {
+    "import_setup_seconds": 2.78,
+    "input_prep_seconds": 0.27,
+    "model_load_probe_seconds": 44.03,
+    "inference_seconds": 690.55,
+    "entrypoint_total_seconds": 690.6,
+    "output_verify_seconds": 0.39,
+    "total_elapsed_seconds": 738.09
+  },
+  "verify": {
+    "output_size_bytes": 607366,
+    "frame_count": 854,
+    "video_duration_seconds": 34.16,
+    "audio_duration_seconds": 34.1875,
+    "has_video_stream": true,
+    "has_audio_stream": true,
+    "mux_encode_succeeded": true
+  },
+  "entrypoint_debug_path": "/app/musetalk_smoke_out_fixed.mp4.musetalk_debug.json",
+  "entrypoint_stage_timings": {
+    "model_load": 64.8,
+    "face_landmark_extraction": 53.65,
+    "inference_loop": 507.59,
+    "frame_blend": 47.49,
+    "mux_encode": 1.07,
+    "final_save": 3.17
+  },
+  "entrypoint_stage_trace": [
+    {
+      "event": "stage_start",
+      "stage": "model_load",
+      "elapsed_seconds": 0.0,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_end",
+      "stage": "model_load",
+      "elapsed_seconds": 64.8,
+      "duration_seconds": 64.8,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_start",
+      "stage": "face_landmark_extraction",
+      "elapsed_seconds": 64.8,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_end",
+      "stage": "face_landmark_extraction",
+      "elapsed_seconds": 118.45,
+      "duration_seconds": 53.65,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_start",
+      "stage": "inference_loop",
+      "elapsed_seconds": 118.45,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_end",
+      "stage": "inference_loop",
+      "elapsed_seconds": 626.04,
+      "duration_seconds": 507.59,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_start",
+      "stage": "frame_blend",
+      "elapsed_seconds": 626.04,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_end",
+      "stage": "frame_blend",
+      "elapsed_seconds": 673.53,
+      "duration_seconds": 47.49,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_start",
+      "stage": "mux_encode",
+      "elapsed_seconds": 673.53,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_end",
+      "stage": "mux_encode",
+      "elapsed_seconds": 674.6,
+      "duration_seconds": 1.07,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_start",
+      "stage": "final_save",
+      "elapsed_seconds": 674.6,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    },
+    {
+      "event": "stage_end",
+      "stage": "final_save",
+      "elapsed_seconds": 677.77,
+      "duration_seconds": 3.17,
+      "memory_snapshot": {
+        "parent_cuda_allocated_mib": 0.0,
+        "parent_cuda_reserved_mib": 0.0
+      }
+    }
+  ]
+}
