@@ -87,6 +87,75 @@ def _render_result(tmp_path, *, page_key: str = "s1-p1", text: str = "Snapshot c
     }
 
 
+class _FakeExportResult:
+    result = [
+        {
+            "index": 0,
+            "slide_num": 1,
+            "page_key": "s1-p1",
+            "image_path": "slide.png",
+            "notes_text": "Narration",
+            "narration_text": "Narration",
+            "audio_out": "slide.mp3",
+            "part_out": "part.mp4",
+        }
+    ]
+
+    def failed(self) -> bool:
+        return False
+
+
+def _patch_process_pptx_to_video_block(monkeypatch, *, blocked_stage: str) -> None:
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("blocked render must not dispatch slide/chord work")
+
+    monkeypatch.setattr(worker_tasks.export_project, "apply", lambda *_args, **_kwargs: _FakeExportResult())
+    monkeypatch.setattr(worker_tasks, "_sync_transcript_pages_from_export", lambda _project_id, slides: list(slides))
+    monkeypatch.setattr(worker_tasks, "_schedule_lesson_intelligence_after_worker_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_mark_project_source_moderation_blocked", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_mark_project_visual_moderation_blocked", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_mark_project_ocr_moderation_blocked", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "chord", fail_if_called)
+    monkeypatch.setattr(worker_tasks.process_pptx_to_video, "update_state", lambda *_args, **_kwargs: None)
+
+    blocked_payloads = {
+        "source": {
+            "enabled": True,
+            "block_render": True,
+            "status": "blocked",
+            "moderation_status": "revision_required",
+        },
+        "visual": {
+            "enabled": True,
+            "block_render": True,
+            "status": "blocked",
+            "final_decision": "revision_required",
+        },
+        "ocr": {
+            "enabled": True,
+            "block_render": True,
+            "status": "blocked",
+            "final_decision": "revision_required",
+        },
+    }
+
+    monkeypatch.setattr(
+        worker_tasks,
+        "_run_auto_source_moderation_after_transcript_sync",
+        lambda _project_id: blocked_payloads["source"] if blocked_stage == "source" else {"enabled": False, "block_render": False},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_run_auto_visual_asset_moderation_after_export",
+        lambda *_args, **_kwargs: blocked_payloads["visual"] if blocked_stage == "visual" else {"enabled": False, "block_render": False},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_run_auto_ocr_slide_moderation_after_export",
+        lambda *_args, **_kwargs: blocked_payloads["ocr"] if blocked_stage == "ocr" else {"enabled": False, "block_render": False},
+    )
+
+
 @pytest.mark.django_db
 def test_update_job_by_id_updates_only_requested_row():
     project = _make_project("job_scoped_update")
@@ -155,6 +224,42 @@ def test_stale_finalize_guard_marks_stale_job_terminal_without_side_effects(tmp_
     assert current_job.progress == 0
     assert current_job.error_message == ""
     assert not (tmp_path / str(project.id) / "playback_assets.json").exists()
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("blocked_stage", "returned_status", "error_message"),
+    [
+        ("source", "moderation_blocked", "source_moderation_blocked"),
+        ("visual", "visual_moderation_blocked", "visual_moderation_blocked"),
+        ("ocr", "ocr_moderation_blocked", "ocr_moderation_blocked"),
+    ],
+)
+def test_moderation_blocked_render_terminalizes_scoped_job(
+    blocked_stage,
+    returned_status,
+    error_message,
+    tmp_path,
+    monkeypatch,
+):
+    project = _make_project(f"{blocked_stage}_blocked_terminal")
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    _patch_process_pptx_to_video_block(monkeypatch, blocked_stage=blocked_stage)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice-terminal",
+        job_id=job.id,
+    )
+
+    job.refresh_from_db()
+    assert result["status"] == returned_status
+    assert result["project_id"] == str(project.id)
+    assert result["n_slides"] == 1
+    assert job.status == "failed"
+    assert job.progress == 100
+    assert job.error_message == error_message
 
 
 @pytest.mark.django_db

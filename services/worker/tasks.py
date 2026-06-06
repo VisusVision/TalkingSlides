@@ -7825,6 +7825,13 @@ def process_pptx_to_video(
                 _mark_draft_render_blocked(project_id, source_moderation)
             else:
                 _mark_project_source_moderation_blocked(project_id, source_moderation)
+            _update_render_job(
+                project_id,
+                render_job_id,
+                status="failed",
+                progress=100,
+                error_message="source_moderation_blocked",
+            )
             self.update_state(
                 state="PROGRESS",
                 meta={
@@ -7857,6 +7864,13 @@ def process_pptx_to_video(
                 _mark_draft_render_blocked(project_id, visual_moderation)
             else:
                 _mark_project_visual_moderation_blocked(project_id, visual_moderation)
+            _update_render_job(
+                project_id,
+                render_job_id,
+                status="failed",
+                progress=100,
+                error_message="visual_moderation_blocked",
+            )
             self.update_state(
                 state="PROGRESS",
                 meta={
@@ -7889,6 +7903,13 @@ def process_pptx_to_video(
                 _mark_draft_render_blocked(project_id, ocr_moderation)
             else:
                 _mark_project_ocr_moderation_blocked(project_id, ocr_moderation)
+            _update_render_job(
+                project_id,
+                render_job_id,
+                status="failed",
+                progress=100,
+                error_message="ocr_moderation_blocked",
+            )
             self.update_state(
                 state="PROGRESS",
                 meta={
