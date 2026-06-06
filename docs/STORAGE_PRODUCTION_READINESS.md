@@ -89,6 +89,7 @@ The cached metrics snapshot can be stale unless staging has an assigned owner an
 
 Required evidence before any runtime migration PR:
 
+- Complete the [Storage Migration Evidence Packet](STORAGE_MIGRATION_EVIDENCE_PACKET.md) with fresh staging artifacts; this document lists requirements but is not collected evidence.
 - Fresh `storage_metrics_snapshot --older-than-days 30 --json` output from staging, with `snapshot_generated_at`, `snapshot_path`, and storage root/bucket target archived.
 - Fresh `storage_retention_check --dry-run --older-than-days 30 --json` report from the same staging storage target, archived with the migration ticket.
 - Backup/restore evidence proving database state and media storage are restored together into isolated staging, including project detail, playback-token issuance, final MP4 or HLS playback, subtitle access, profile/avatar media if enabled, and one rerender from restored source uploads.
