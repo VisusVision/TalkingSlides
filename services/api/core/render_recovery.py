@@ -231,6 +231,20 @@ def _detect_orphan_candidates(Job, RenderFollowUpIntent, *, cutoff, now) -> list
         updated_at__lte=cutoff,
     )
     for job in missing_task_jobs.order_by("updated_at", "id"):
+        status = str(job.status or "")
+        if status == "pending":
+            action = (
+                "Inspect API enqueue logs, request logs, and Celery broker health; "
+                "this pending job has no recorded Celery task id and may be an API dispatch crash window. "
+                "Do not retry, fail, or recreate until confirming no task was enqueued."
+            )
+            detail = (
+                "pending_without_task_id dispatch_window_candidate: pending video_export job has no celery_task_id; "
+                "likely API dispatch crash window after Job creation before Celery enqueue or task-id persistence"
+            )
+        else:
+            action = "Verify no matching Celery task exists; this is a DB commit vs task dispatch recovery candidate."
+            detail = f"{status} video_export job has no celery_task_id"
         findings.append(
             RenderRecoveryFinding(
                 category="orphan_recovery_candidate",
@@ -238,8 +252,8 @@ def _detect_orphan_candidates(Job, RenderFollowUpIntent, *, cutoff, now) -> list
                 object_id=int(job.id),
                 project_id=job.project_id,
                 age_seconds=_object_age(now, job),
-                recommended_action="Verify no matching Celery task exists; this is a DB commit vs task dispatch recovery candidate.",
-                detail=f"{job.status} video_export job has no celery_task_id",
+                recommended_action=action,
+                detail=detail,
             )
         )
 

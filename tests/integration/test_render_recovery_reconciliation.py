@@ -97,6 +97,41 @@ def test_detects_orphan_render_job_missing_task_id():
     )
 
 
+def test_pending_video_export_without_task_id_reports_dispatch_window_detail():
+    project = _make_project("pending_no_task_detail")
+    orphan = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id=""))
+
+    before = {
+        "status": orphan.status,
+        "progress": orphan.progress,
+        "celery_task_id": orphan.celery_task_id,
+        "error_message": orphan.error_message,
+    }
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.category == "orphan_recovery_candidate"
+        and finding.object_type == "Job"
+        and finding.object_id == orphan.id
+    ]
+    assert matches
+    finding = matches[0]
+    assert "pending_without_task_id" in finding.detail
+    assert "dispatch_window_candidate" in finding.detail
+    assert "API dispatch crash window" in finding.detail
+    assert "no recorded Celery task id" in finding.recommended_action
+
+    orphan.refresh_from_db()
+    assert {
+        "status": orphan.status,
+        "progress": orphan.progress,
+        "celery_task_id": orphan.celery_task_id,
+        "error_message": orphan.error_message,
+    } == before
+
+
 def test_detects_orphan_intent_disconnected_from_active_render_flow():
     project = _make_project("orphan_intent")
     completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
