@@ -99,6 +99,9 @@ async function mockAuthenticatedReleaseGateApi(page) {
 
   await page.route('**/api/v1/capabilities/**', (route) => route.fulfill(jsonResponse(CAPABILITIES_PAYLOAD)));
   await page.route('**/api/v1/auth/me/**', (route) => route.fulfill(jsonResponse(AUTH_USER)));
+  await page.route('**/api/v1/me/notifications/unread-count/**', (route) => route.fulfill(jsonResponse({
+    unread_count: 0,
+  })));
   await page.route('**/api/v1/categories/**', (route) => route.fulfill(jsonResponse([
     { id: 1, name: 'Release QA', slug: 'release-qa' },
   ])));
