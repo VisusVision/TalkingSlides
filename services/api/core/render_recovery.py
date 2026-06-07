@@ -109,6 +109,7 @@ class RenderRecoveryReport:
             "warnings": list(self.warnings),
             "findings": findings,
             "object_summaries": _object_summaries_from_findings(findings),
+            "manual_command_summary": _manual_command_summary_from_findings(findings),
         }
 
 
@@ -379,6 +380,39 @@ def _object_summaries_from_findings(findings: list[dict[str, Any]]) -> list[dict
             }
         )
     return sorted(summaries, key=_object_summary_sort_key)
+
+
+def _manual_command_summary_from_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for finding in findings:
+        command = str(finding.get("suggested_manual_command") or "")
+        if command:
+            grouped.setdefault(command, []).append(finding)
+
+    summaries: list[dict[str, Any]] = []
+    for command, grouped_findings in grouped.items():
+        affected_objects = {
+            (finding.get("object_type"), finding.get("object_id"))
+            for finding in grouped_findings
+        }
+        summaries.append(
+            {
+                "command": command,
+                "object_count": len(affected_objects),
+                "candidate_actions": _sorted_unique(finding.get("candidate_action") for finding in grouped_findings),
+                "highest_risk_level": _highest_risk_level(grouped_findings),
+                "requires_operator_checks": any(
+                    bool(finding.get("requires_operator_checks")) for finding in grouped_findings
+                ),
+                "apply_eligible": all(bool(finding.get("apply_eligible")) for finding in grouped_findings),
+                "apply_blockers": _sorted_unique(
+                    blocker
+                    for finding in grouped_findings
+                    for blocker in (finding.get("apply_blockers") or [])
+                ),
+            }
+        )
+    return sorted(summaries, key=lambda summary: str(summary.get("command") or ""))
 
 
 def _highest_risk_level(findings: list[dict[str, Any]]) -> str:

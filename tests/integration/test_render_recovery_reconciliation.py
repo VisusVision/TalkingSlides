@@ -106,6 +106,11 @@ def _object_summary(payload: dict, *, object_type: str, object_id: int) -> dict:
     )
 
 
+def _manual_command_summary(payload: dict, *, object_type: str, object_id: int) -> dict:
+    command = f"python manage.py render_recovery_action --action inspect --type {object_type} --id {object_id}"
+    return next(summary for summary in payload["manual_command_summary"] if summary["command"] == command)
+
+
 def test_detects_stuck_render_jobs():
     project = _make_project("stuck_render")
     stale_pending = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
@@ -307,6 +312,7 @@ def test_empty_recovery_report_includes_empty_object_summaries():
 
     assert payload["findings"] == []
     assert payload["object_summaries"] == []
+    assert payload["manual_command_summary"] == []
 
 
 def test_job_duplicate_findings_produce_one_grouped_object_summary():
@@ -337,6 +343,58 @@ def test_job_duplicate_findings_produce_one_grouped_object_summary():
         {blocker for finding in matches for blocker in finding["apply_blockers"]}
     )
     assert summary["precondition_tokens"] == sorted({finding["precondition_token"] for finding in matches})
+
+
+def test_multiple_findings_sharing_command_produce_one_manual_command_summary():
+    project = _make_project("job_command_summary")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id=""))
+
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+    expected_findings = [finding.as_dict() for finding in report.findings]
+    expected_object_summaries = render_recovery._object_summaries_from_findings(expected_findings)
+    payload = report.as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "Job" and finding["object_id"] == job.id
+    ]
+    summary = _manual_command_summary(payload, object_type="job", object_id=job.id)
+
+    assert payload["findings"] == expected_findings
+    assert payload["object_summaries"] == expected_object_summaries
+    assert len(matches) == 2
+    assert summary["object_count"] == 1
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
+    assert summary["highest_risk_level"] == "high"
+    assert summary["requires_operator_checks"] is True
+    assert summary["apply_eligible"] is False
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+
+
+def test_different_commands_produce_separate_manual_command_summaries():
+    project = _make_project("separate_command_summary")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="running", celery_task_id="task-running"))
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    job_summary = _manual_command_summary(payload, object_type="job", object_id=job.id)
+    intent_summary = _manual_command_summary(payload, object_type="intent", object_id=intent.id)
+
+    assert job_summary["command"] != intent_summary["command"]
+    assert job_summary["object_count"] == 1
+    assert intent_summary["object_count"] == 1
+    assert [summary["command"] for summary in payload["manual_command_summary"]] == sorted(
+        summary["command"] for summary in payload["manual_command_summary"]
+    )
 
 
 def test_intent_duplicate_findings_produce_one_grouped_object_summary_with_highest_risk():
@@ -371,6 +429,34 @@ def test_intent_duplicate_findings_produce_one_grouped_object_summary_with_highe
         {blocker for finding in matches for blocker in finding["apply_blockers"]}
     )
     assert summary["precondition_tokens"] == sorted({finding["precondition_token"] for finding in matches})
+
+
+def test_manual_command_summary_aggregates_intent_risk_and_blockers():
+    project = _make_project("intent_command_summary")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_CLAIMED,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent" and finding["object_id"] == intent.id
+    ]
+    summary = _manual_command_summary(payload, object_type="intent", object_id=intent.id)
+
+    assert len(matches) == 2
+    assert {finding["risk_level"] for finding in matches} == {"high", "medium"}
+    assert summary["highest_risk_level"] == "high"
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
 
 
 def test_render_recovery_check_command_text_output():
