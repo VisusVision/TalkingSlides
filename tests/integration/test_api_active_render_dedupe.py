@@ -120,6 +120,16 @@ def _post_rerender(teacher, project):
     return views.ProjectRerenderView.as_view()(request, project_id=project.id)
 
 
+def _patch_transcript_page(teacher, project, page, text: str):
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {"trigger_rerender": True, "pages": [{"id": page.id, "narration_text": text}]},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+    return views.ProjectTranscriptView.as_view()(request, project_id=project.id)
+
+
 def _age_job(job: Job, *, hours: int = 4) -> Job:
     old = timezone.now() - timedelta(hours=hours)
     Job.objects.filter(pk=job.pk).update(created_at=old, updated_at=old)
@@ -445,6 +455,125 @@ def test_transcript_triggered_rerender_creates_new_job_when_no_active_job_exists
     assert RenderFollowUpIntent.objects.filter(project=project).count() == 0
     assert Job.objects.filter(project=project, job_type="video_export").count() == 1
     assert len(captured.sent) == 1
+
+
+@pytest.mark.django_db
+def test_repeated_transcript_triggered_rerender_reuses_pending_job_and_records_followup(tmp_path, monkeypatch):
+    _ensure_transcript_table()
+    teacher, project = _make_project("transcript_repeated_pending")
+    page = TranscriptPage.objects.create(
+        project=project,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text="Original",
+        narration_text="Original",
+    )
+    _prepare_lesson_upload(tmp_path, project)
+    captured = _capture_dispatch(monkeypatch)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        first = _patch_transcript_page(teacher, project, page, "First edit")
+        second = _patch_transcript_page(teacher, project, page, "Second edit")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.data["rerender_job"]["status"] == "pending"
+    assert second.data["rerender_job"] is None
+    assert second.data["rerender_strategy"] == "follow_up"
+    assert second.data["deduped"] is True
+    assert Job.objects.filter(project=project, job_type="video_export").count() == 1
+    assert len(captured.sent) == 1
+
+    intent = RenderFollowUpIntent.objects.get(project=project)
+    assert intent.status == RenderFollowUpIntent.STATUS_PENDING
+    assert intent.mode == RenderFollowUpIntent.MODE_TARGETED
+    assert intent.page_keys == ["s1-p1"]
+    assert intent.metadata["active_job_id"] == first.data["rerender_job"]["id"]
+
+
+@pytest.mark.django_db
+def test_transcript_pending_video_export_without_task_id_records_followup_not_duplicate(tmp_path, monkeypatch):
+    _ensure_transcript_table()
+    teacher, project = _make_project("transcript_pending_no_task_active")
+    page = TranscriptPage.objects.create(
+        project=project,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text="Original",
+        narration_text="Original",
+    )
+    _prepare_lesson_upload(tmp_path, project)
+    existing = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="pending",
+        progress=0,
+        celery_task_id="",
+    )
+    captured = _capture_dispatch(monkeypatch)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = _patch_transcript_page(teacher, project, page, "Edited")
+
+    existing.refresh_from_db()
+    assert response.status_code == 200
+    assert response.data["rerender_job"] is None
+    assert response.data["rerender_strategy"] == "follow_up"
+    assert response.data["deduped"] is True
+    assert existing.celery_task_id == ""
+    assert Job.objects.filter(project=project, job_type="video_export").count() == 1
+    assert captured.sent == []
+
+    intent = RenderFollowUpIntent.objects.get(project=project)
+    assert intent.status == RenderFollowUpIntent.STATUS_PENDING
+    assert intent.metadata["active_job_id"] == existing.id
+
+
+@pytest.mark.django_db
+def test_transcript_triggered_rerender_merges_single_followup_with_existing_active_job(tmp_path, monkeypatch):
+    _ensure_transcript_table()
+    teacher, project = _make_project("transcript_existing_active_merge_once")
+    first = TranscriptPage.objects.create(
+        project=project,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text="First",
+        narration_text="First",
+    )
+    second = TranscriptPage.objects.create(
+        project=project,
+        order=1,
+        source_slide_index=1,
+        split_index=0,
+        page_key="s2-p1",
+        original_text="Second",
+        narration_text="Second",
+    )
+    _prepare_lesson_upload(tmp_path, project)
+    existing = Job.objects.create(project=project, job_type="video_export", status="running", progress=40)
+    captured = _capture_dispatch(monkeypatch)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        first_response = _patch_transcript_page(teacher, project, first, "First edit")
+        second_response = _patch_transcript_page(teacher, project, second, "Second edit")
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.data["render_follow_up_intent_id"] == second_response.data["render_follow_up_intent_id"]
+    assert Job.objects.filter(project=project, job_type="video_export").count() == 1
+    assert Job.objects.get(project=project, job_type="video_export").id == existing.id
+    assert captured.sent == []
+
+    intent = RenderFollowUpIntent.objects.get(project=project)
+    assert intent.mode == RenderFollowUpIntent.MODE_TARGETED
+    assert intent.page_keys == ["s1-p1", "s2-p1"]
+    assert intent.metadata["active_job_id"] == existing.id
 
 
 @pytest.mark.django_db
