@@ -10015,6 +10015,36 @@ class AvatarPreviewRegenerateView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
+    def _queued_response(
+        self,
+        *,
+        job: Job,
+        task_id: str,
+        selected_engine: str,
+        setup_status: dict,
+    ) -> Response:
+        queued_setup_status = {
+            **setup_status,
+            "state": "preparing",
+            "action_required": "wait",
+            "primary_action_label": "Preparing avatar",
+            "message": "Avatar preview is being generated.",
+            "can_prepare": False,
+            "can_generate_preview": False,
+        }
+        return Response(
+            {
+                "status": "queued",
+                "job_id": job.id,
+                "task_id": task_id,
+                "normalized_engine": selected_engine,
+                "avatar_engine_selected": selected_engine,
+                "avatar_setup_status": queued_setup_status,
+                "action_required": queued_setup_status.get("action_required"),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
     def post(self, request, user_id):
         if not avatar_enabled():
             return _feature_disabled_response("Avatar")
@@ -10060,7 +10090,38 @@ class AvatarPreviewRegenerateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        job = Job.objects.create(job_type="avatar_render", status="pending")
+        with transaction.atomic():
+            profile = UserProfile.objects.select_for_update().get(pk=profile.pk)
+            active_preview_status = _normalize_preview_stage(profile.avatar_last_preview_status)
+            active_job = None
+            raw_active_job_id = str(profile.avatar_last_preview_job_id or "").strip()
+            if active_preview_status in {"queued", "processing", "rendering"} and raw_active_job_id.isdigit():
+                active_job = (
+                    Job.objects.filter(
+                        pk=int(raw_active_job_id),
+                        job_type="avatar_render",
+                        status__in=("pending", "running"),
+                    )
+                    .order_by("-created_at", "-id")
+                    .first()
+                )
+            if active_job is not None:
+                return self._queued_response(
+                    job=active_job,
+                    task_id=str(active_job.celery_task_id or ""),
+                    selected_engine=selected_engine,
+                    setup_status=setup_status,
+                )
+
+            job = Job.objects.create(job_type="avatar_render", status="pending")
+            profile.avatar_image_status = "processing"
+            profile.avatar_last_preview_status = "queued"
+            profile.avatar_last_preview_job_id = str(job.id)
+            profile.avatar_last_preview_path = ""
+            profile.avatar_preview_video = ""
+            profile.avatar_preview_error = ""
+            profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id", "avatar_last_preview_path", "avatar_preview_video", "avatar_preview_error", "updated_at"])
+
         async_result = _dispatch_celery_task(
             _AVATAR_PREVIEW_TASK,
             kwargs={
@@ -10072,34 +10133,11 @@ class AvatarPreviewRegenerateView(APIView):
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
 
-        profile.avatar_image_status = "processing"
-        profile.avatar_last_preview_status = "queued"
-        profile.avatar_last_preview_job_id = str(job.id)
-        profile.avatar_last_preview_path = ""
-        profile.avatar_preview_video = ""
-        profile.avatar_preview_error = ""
-        profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id", "avatar_last_preview_path", "avatar_preview_video", "avatar_preview_error", "updated_at"])
-        queued_setup_status = {
-            **setup_status,
-            "state": "preparing",
-            "action_required": "wait",
-            "primary_action_label": "Preparing avatar",
-            "message": "Avatar preview is being generated.",
-            "can_prepare": False,
-            "can_generate_preview": False,
-        }
-
-        return Response(
-            {
-                "status": "queued",
-                "job_id": job.id,
-                "task_id": async_result.id,
-                "normalized_engine": selected_engine,
-                "avatar_engine_selected": selected_engine,
-                "avatar_setup_status": queued_setup_status,
-                "action_required": queued_setup_status.get("action_required"),
-            },
-            status=status.HTTP_202_ACCEPTED,
+        return self._queued_response(
+            job=job,
+            task_id=str(async_result.id or ""),
+            selected_engine=selected_engine,
+            setup_status=setup_status,
         )
 
 

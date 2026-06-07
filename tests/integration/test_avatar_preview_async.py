@@ -32,6 +32,62 @@ def _table_has_column(table_name, column_name):
     return any(row[1] == column_name for row in rows)
 
 
+def _make_preview_ready_user(monkeypatch, username_prefix="teacher_preview_dedupe"):
+    if not _table_has_column("core_userprofile", "avatar_image_original"):
+        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+
+    suffix = uuid.uuid4().hex[:8]
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
+    monkeypatch.setenv("AVATAR_MUSETALK_CMD", "echo musetalk")
+    user = User.objects.create_user(username=f"{username_prefix}_{suffix}", password="pass")
+    profile = UserProfile.objects.create(
+        user=user,
+        role="teacher",
+        avatar_image_processed=f"avatars/{suffix}/processed.png",
+        avatar_image_original=f"avatars/{suffix}/original.png",
+        avatar_consent_confirmed=True,
+        avatar_enabled=True,
+        avatar_source_valid=True,
+        avatar_source_validation_error="",
+        avatar_source_hash="source-hash",
+        avatar_preview_stale=False,
+        avatar_moderation_status="approved",
+    )
+    processed_abs = Path(getattr(settings, "STORAGE_ROOT", "storage_local")) / profile.avatar_image_processed
+    processed_abs.parent.mkdir(parents=True, exist_ok=True)
+    processed_abs.write_bytes(b"test")
+    VoiceProfile.objects.create(user=user, provider="xtts_v2", voice_id=f"voice_{suffix}")
+
+    monkeypatch.setattr(
+        views,
+        "refresh_avatar_source_validation",
+        lambda profile_arg, **_kwargs: {
+            "valid": True,
+            "validation_current": True,
+            "source_hash": "source-hash",
+            "preview_stale": False,
+            "error": "",
+        },
+    )
+    monkeypatch.setattr(
+        views,
+        "_avatar_preview_readiness",
+        lambda profile_arg, voice_profile, *, storage_root: {
+            "ready": True,
+            "missing_requirements": [],
+            "checks": {"avatar_source_valid": True},
+        },
+    )
+    return user, profile
+
+
+def _post_preview_regenerate(user):
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/users/{user.id}/avatar/preview/")
+    force_authenticate(request, user=user)
+    return views.AvatarPreviewRegenerateView.as_view()(request, user_id=user.id)
+
+
 def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
     if not _table_has_column("core_userprofile", "avatar_image_original"):
         pytest.skip("Local DB schema is stale; run migrations to execute this test.")
@@ -114,6 +170,79 @@ def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
     assert profile.avatar_last_preview_status == "queued"
     assert profile.avatar_last_preview_path == ""
     assert profile.avatar_preview_video == ""
+
+
+def test_avatar_preview_regenerate_reuses_pending_preview_job(monkeypatch):
+    user, profile = _make_preview_ready_user(monkeypatch, "teacher_preview_pending_dedupe")
+    sent = []
+
+    def fake_send_task(name, kwargs=None, args=None):
+        sent.append({"name": name, "kwargs": kwargs or {}})
+        return SimpleNamespace(id=f"celery-preview-{len(sent)}")
+
+    monkeypatch.setattr(views, "_celery_app", SimpleNamespace(send_task=fake_send_task))
+
+    first = _post_preview_regenerate(user)
+    second = _post_preview_regenerate(user)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.data["status"] == "queued"
+    assert second.data["status"] == "queued"
+    assert second.data["job_id"] == first.data["job_id"]
+    assert second.data["task_id"] == "celery-preview-1"
+    assert len(sent) == 1
+    assert Job.objects.filter(job_type="avatar_render", status="pending").count() == 1
+    profile.refresh_from_db()
+    assert profile.avatar_last_preview_job_id == str(first.data["job_id"])
+
+
+def test_avatar_preview_regenerate_reuses_running_preview_job(monkeypatch):
+    user, profile = _make_preview_ready_user(monkeypatch, "teacher_preview_running_dedupe")
+    job = Job.objects.create(job_type="avatar_render", status="running", progress=40, celery_task_id="celery-running")
+    profile.avatar_image_status = "processing"
+    profile.avatar_last_preview_status = "rendering"
+    profile.avatar_last_preview_job_id = str(job.id)
+    profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id"])
+    monkeypatch.setattr(
+        views,
+        "_dispatch_celery_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate preview task should not be queued")),
+    )
+
+    response = _post_preview_regenerate(user)
+
+    assert response.status_code == 202
+    assert response.data["status"] == "queued"
+    assert response.data["job_id"] == job.id
+    assert response.data["task_id"] == "celery-running"
+    assert Job.objects.filter(job_type="avatar_render", status__in=["pending", "running"]).count() == 1
+
+
+def test_avatar_preview_regenerate_creates_new_job_after_terminal_preview(monkeypatch):
+    user, profile = _make_preview_ready_user(monkeypatch, "teacher_preview_terminal_new")
+    old_job = Job.objects.create(job_type="avatar_render", status="done", progress=100, celery_task_id="celery-done")
+    profile.avatar_last_preview_status = "done"
+    profile.avatar_last_preview_job_id = str(old_job.id)
+    profile.save(update_fields=["avatar_last_preview_status", "avatar_last_preview_job_id"])
+    sent = []
+
+    def fake_send_task(name, kwargs=None, args=None):
+        sent.append({"name": name, "kwargs": kwargs or {}})
+        return SimpleNamespace(id="celery-preview-new")
+
+    monkeypatch.setattr(views, "_celery_app", SimpleNamespace(send_task=fake_send_task))
+
+    response = _post_preview_regenerate(user)
+
+    assert response.status_code == 202
+    assert response.data["status"] == "queued"
+    assert response.data["job_id"] != old_job.id
+    assert len(sent) == 1
+    assert Job.objects.filter(job_type="avatar_render").count() == 2
+    assert Job.objects.filter(job_type="avatar_render", status__in=["pending", "running"]).count() == 1
+    profile.refresh_from_db()
+    assert profile.avatar_last_preview_job_id == str(response.data["job_id"])
 
 
 def test_avatar_preview_regenerate_rejects_missing_voice_profile():
