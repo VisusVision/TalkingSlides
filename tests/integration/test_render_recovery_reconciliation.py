@@ -62,6 +62,19 @@ def _assert_remediation_plan_fields(finding: dict) -> None:
     assert finding["suggested_manual_command"]
 
 
+def _assert_promoted_remediation_plan_matches_finding(plan: dict, finding: dict) -> None:
+    for field_name in (
+        "candidate_action",
+        "action_mode",
+        "risk_level",
+        "requires_operator_checks",
+        "mutation_if_applied",
+        "dedupe_impact",
+        "suggested_manual_command",
+    ):
+        assert plan[field_name] == finding[field_name]
+
+
 def test_detects_stuck_render_jobs():
     project = _make_project("stuck_render")
     stale_pending = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
@@ -323,6 +336,12 @@ def test_render_recovery_action_inspect_outputs_state_and_recommendation(tmp_pat
     audit_path = tmp_path / "recovery-audit.jsonl"
     project = _make_project("action_inspect")
     job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+    before = {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    }
 
     stdout = io.StringIO()
     with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
@@ -340,12 +359,32 @@ def test_render_recovery_action_inspect_outputs_state_and_recommendation(tmp_pat
     output = stdout.getvalue()
     assert "Render recovery action: inspect" in output
     assert f"Object: job#{job.id}" in output
+    assert "Before state" in output
+    assert "Remediation plan" in output
     assert "pending video_export job exceeded" in output
     records = _read_audit_records(audit_path)
+    assert len(records) == 1
     assert records[-1]["action"] == "inspect"
     assert records[-1]["dry_run"] is True
     assert records[-1]["executed"] is False
     assert records[-1]["audit_written"] is True
+    assert records[-1]["target"] == {
+        "object_type": "job",
+        "object_id": job.id,
+        "model_object_type": "Job",
+    }
+    assert records[-1]["before_state"]["status"] == "pending"
+    assert records[-1]["before_state"]["job_type"] == "video_export"
+    assert records[-1]["related_ids"]["job_id"] == job.id
+    assert "object_state" not in records[-1]
+
+    job.refresh_from_db()
+    assert {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    } == before
 
 
 def test_render_recovery_action_resolve_is_audit_only_with_confirm(tmp_path):
@@ -460,6 +499,12 @@ def test_render_recovery_action_json_output(tmp_path):
     audit_path = tmp_path / "recovery-audit.jsonl"
     project = _make_project("action_json")
     job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+    before = {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    }
 
     stdout = io.StringIO()
     with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
@@ -477,9 +522,134 @@ def test_render_recovery_action_json_output(tmp_path):
 
     payload = json.loads(stdout.getvalue())
     assert payload["action"] == "inspect"
+    assert payload["dry_run"] is True
+    assert payload["executed"] is False
+    assert payload["target"] == {
+        "object_type": "job",
+        "object_id": job.id,
+        "model_object_type": "Job",
+    }
+    assert payload["before_state"]["status"] == "pending"
+    assert payload["before_state"]["progress"] == 0
+    assert payload["before_state"]["celery_task_id"] == ""
+    assert payload["before_state"]["error_message"] == ""
+    assert payload["before_state"]["job_type"] == "video_export"
+    assert payload["before_state"]["project_id"] == project.id
+    assert payload["before_state"]["created_at"]
+    assert payload["before_state"]["updated_at"]
+    assert payload["before_state"]["age_seconds"] >= 2 * 3600
+    assert payload["before_state"]["age_hours"] >= 2
+    assert payload["related_ids"] == {"project_id": project.id, "job_id": job.id}
+    assert payload["current_candidate"] is True
+    assert payload["matched_findings_count"] == len(payload["recommendation"]["findings"])
     assert payload["object_state"]["id"] == job.id
     assert payload["recommendation"]["findings"]
+    _assert_remediation_plan_fields(payload["remediation_plan"])
+    _assert_promoted_remediation_plan_matches_finding(
+        payload["remediation_plan"],
+        payload["recommendation"]["findings"][0],
+    )
     assert payload["audit_record"]["object_id"] == job.id
+    assert payload["audit_record"]["before_state"] == payload["before_state"]
+    assert payload["audit_record"]["remediation_plan"] == payload["remediation_plan"]
+
+    records = _read_audit_records(audit_path)
+    assert len(records) == 1
+    assert records[0]["action"] == "inspect"
+    assert records[0]["dry_run"] is True
+    assert records[0]["executed"] is False
+
+    job.refresh_from_db()
+    assert {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    } == before
+
+
+def test_render_recovery_action_intent_json_includes_before_state_and_related_ids(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_intent_json")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={
+                "active_job_id": completed_job.id,
+                "dispatched_job_id": 987654,
+                "celery_task_id": "task-intent",
+            },
+        )
+    )
+    before = {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    }
+
+    stdout = io.StringIO()
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "inspect",
+            "--type",
+            "intent",
+            "--id",
+            str(intent.id),
+            "--json",
+            stdout=stdout,
+        )
+
+    payload = json.loads(stdout.getvalue())
+    assert payload["action"] == "inspect"
+    assert payload["dry_run"] is True
+    assert payload["executed"] is False
+    assert payload["target"] == {
+        "object_type": "intent",
+        "object_id": intent.id,
+        "model_object_type": "RenderFollowUpIntent",
+    }
+    assert payload["before_state"]["status"] == RenderFollowUpIntent.STATUS_PENDING
+    assert payload["before_state"]["mode"] == RenderFollowUpIntent.MODE_TARGETED
+    assert payload["before_state"]["metadata"] == before["metadata"]
+    assert payload["before_state"]["claimed_at"] is None
+    assert payload["before_state"]["project_id"] == project.id
+    assert payload["before_state"]["requested_by_id"] is None
+    assert payload["before_state"]["created_at"]
+    assert payload["before_state"]["updated_at"]
+    assert payload["before_state"]["age_seconds"] >= 2 * 3600
+    assert payload["before_state"]["age_hours"] >= 2
+    assert payload["related_ids"] == {
+        "project_id": project.id,
+        "intent_id": intent.id,
+        "active_job_id": completed_job.id,
+        "dispatched_job_id": 987654,
+        "celery_task_id": "task-intent",
+    }
+    assert payload["current_candidate"] is True
+    assert payload["matched_findings_count"] == len(payload["recommendation"]["findings"])
+    assert payload["matched_findings_count"] >= 2
+    _assert_remediation_plan_fields(payload["remediation_plan"])
+    _assert_promoted_remediation_plan_matches_finding(
+        payload["remediation_plan"],
+        payload["recommendation"]["findings"][0],
+    )
+
+    records = _read_audit_records(audit_path)
+    assert len(records) == 1
+    assert records[0]["action"] == "inspect"
+    assert records[0]["before_state"] == payload["before_state"]
+    assert "object_state" not in records[0]
+
+    intent.refresh_from_db()
+    assert {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    } == before
 
 
 def test_render_recovery_action_generates_audit_for_dry_run_and_execute(tmp_path):
