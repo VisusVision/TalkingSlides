@@ -16,7 +16,7 @@ from django.conf import settings
 from django.forms.models import model_to_dict
 from django.utils import timezone
 
-from core.render_recovery import DEFAULT_MAX_AGE_HOURS, build_render_recovery_report
+from core.render_recovery import DEFAULT_MAX_AGE_HOURS, build_render_recovery_report, finding_priority_sort_key
 
 
 logger = logging.getLogger(__name__)
@@ -244,6 +244,13 @@ def _primary_remediation_plan(findings: list[dict[str, Any]]) -> dict[str, Any] 
         "mutation_if_applied": finding.get("mutation_if_applied"),
         "dedupe_impact": finding.get("dedupe_impact"),
         "suggested_manual_command": finding.get("suggested_manual_command"),
+        "apply_eligible": finding.get("apply_eligible"),
+        "apply_blockers": finding.get("apply_blockers"),
+        "finding_priority": finding.get("finding_priority"),
+        "precondition_token": finding.get("precondition_token"),
+        "metadata_hash": finding.get("metadata_hash"),
+        "proposed_conditional_update": finding.get("proposed_conditional_update"),
+        "required_confirm_token": finding.get("required_confirm_token"),
     }
 
 
@@ -268,7 +275,7 @@ def _find_recommendation(*, object_type: str, object_id: int, max_age_hours: flo
     ]
     if not matches:
         return None
-    return {"findings": matches}
+    return {"findings": sorted(matches, key=finding_priority_sort_key)}
 
 
 def _write_audit_record(record: dict[str, Any]) -> None:
