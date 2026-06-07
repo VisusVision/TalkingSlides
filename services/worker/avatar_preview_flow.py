@@ -496,6 +496,75 @@ def _clear_preview_run_artifacts(*, preview_dir: Path, output_mp4: Path, source_
     return removed
 
 
+def _set_current_avatar_preview_profile_state(
+    *,
+    profile_id: int,
+    job_id: int | str | None,
+    fallback_job_id: int | str | None = None,
+    status: str,
+    error: str = "",
+    preview_rel_path: str | None = None,
+    image_status: str,
+    clear_preview: bool = False,
+    preview_source_hash: str | None = None,
+) -> bool:
+    """Update preview profile fields only when this job is still current."""
+
+    from django.db import transaction
+    from core.models import UserProfile  # type: ignore
+
+    explicit_job_id = str(job_id or "").strip()
+    current_job_id = str(job_id or fallback_job_id or "").strip()
+    with transaction.atomic():
+        locked_profile = UserProfile.objects.select_for_update().filter(pk=int(profile_id)).first()
+        if locked_profile is None:
+            return False
+        if explicit_job_id and str(locked_profile.avatar_last_preview_job_id or "").strip() != explicit_job_id:
+            logger.info(
+                "Avatar preview profile finalization skipped for stale job profile_id=%s job_id=%s current_job_id=%s status=%s",
+                int(profile_id),
+                explicit_job_id,
+                str(locked_profile.avatar_last_preview_job_id or ""),
+                str(status or ""),
+            )
+            return False
+
+        update_fields = [
+            "avatar_last_preview_status",
+            "avatar_preview_error",
+            "avatar_last_preview_job_id",
+            "avatar_image_status",
+            "updated_at",
+        ]
+        locked_profile.avatar_last_preview_status = status
+        locked_profile.avatar_preview_error = error
+        locked_profile.avatar_last_preview_job_id = current_job_id
+        locked_profile.avatar_image_status = image_status
+        if clear_preview:
+            locked_profile.avatar_preview_video = ""
+            locked_profile.avatar_last_preview_path = ""
+            locked_profile.avatar_preview_source_hash = ""
+            locked_profile.avatar_preview_stale = False
+            update_fields.extend(
+                [
+                    "avatar_preview_video",
+                    "avatar_last_preview_path",
+                    "avatar_preview_source_hash",
+                    "avatar_preview_stale",
+                ]
+            )
+        if preview_rel_path is not None:
+            locked_profile.avatar_preview_video = preview_rel_path
+            locked_profile.avatar_last_preview_path = preview_rel_path
+            update_fields.extend(["avatar_preview_video", "avatar_last_preview_path"])
+        if preview_source_hash is not None:
+            locked_profile.avatar_preview_source_hash = str(preview_source_hash or "")
+            locked_profile.avatar_preview_stale = False
+            update_fields.extend(["avatar_preview_source_hash", "avatar_preview_stale"])
+        locked_profile.save(update_fields=update_fields)
+        return True
+
+
 def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int | None = None) -> dict[str, Any]:
     from avatar.canonical_adapters import normalize_avatar_engine
     from avatar.hashing import sha256_file
@@ -519,26 +588,17 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
         clear_preview: bool = False,
         preview_source_hash: str | None = None,
     ) -> None:
-        update_fields = ["avatar_last_preview_status", "avatar_preview_error", "avatar_last_preview_job_id", "avatar_image_status", "updated_at"]
-        profile.avatar_last_preview_status = status
-        profile.avatar_preview_error = error
-        profile.avatar_last_preview_job_id = str(job_id or getattr(getattr(task, "request", None), "id", "") or "")
-        profile.avatar_image_status = image_status
-        if clear_preview:
-            profile.avatar_preview_video = ""
-            profile.avatar_last_preview_path = ""
-            profile.avatar_preview_source_hash = ""
-            profile.avatar_preview_stale = False
-            update_fields.extend(["avatar_preview_video", "avatar_last_preview_path", "avatar_preview_source_hash", "avatar_preview_stale"])
-        if preview_rel_path is not None:
-            profile.avatar_preview_video = preview_rel_path
-            profile.avatar_last_preview_path = preview_rel_path
-            update_fields.extend(["avatar_preview_video", "avatar_last_preview_path"])
-        if preview_source_hash is not None:
-            profile.avatar_preview_source_hash = str(preview_source_hash or "")
-            profile.avatar_preview_stale = False
-            update_fields.extend(["avatar_preview_source_hash", "avatar_preview_stale"])
-        profile.save(update_fields=update_fields)
+        _set_current_avatar_preview_profile_state(
+            profile_id=int(profile.id),
+            job_id=job_id,
+            fallback_job_id=getattr(getattr(task, "request", None), "id", "") or "",
+            status=status,
+            error=error,
+            preview_rel_path=preview_rel_path,
+            image_status=image_status,
+            clear_preview=clear_preview,
+            preview_source_hash=preview_source_hash,
+        )
 
     def _set_job(*, status: str, progress: int, result_url: str = "", error_message: str = "") -> None:
         if not job_id:
