@@ -98,6 +98,14 @@ def _assert_promoted_remediation_plan_matches_finding(plan: dict, finding: dict)
         assert plan[field_name] == finding[field_name]
 
 
+def _object_summary(payload: dict, *, object_type: str, object_id: int) -> dict:
+    return next(
+        summary
+        for summary in payload["object_summaries"]
+        if summary["object_type"] == object_type and summary["object_id"] == object_id
+    )
+
+
 def test_detects_stuck_render_jobs():
     project = _make_project("stuck_render")
     stale_pending = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
@@ -292,6 +300,77 @@ def test_report_generation_summary_counts():
     assert payload["findings"]
     for finding in payload["findings"]:
         _assert_remediation_plan_fields(finding)
+
+
+def test_empty_recovery_report_includes_empty_object_summaries():
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+
+    assert payload["findings"] == []
+    assert payload["object_summaries"] == []
+
+
+def test_job_duplicate_findings_produce_one_grouped_object_summary():
+    project = _make_project("job_grouped_summary")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id=""))
+
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+    expected_findings = [finding.as_dict() for finding in report.findings]
+    payload = report.as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "Job" and finding["object_id"] == job.id
+    ]
+    summary = _object_summary(payload, object_type="Job", object_id=job.id)
+
+    assert payload["findings"] == expected_findings
+    assert len(matches) == 2
+    assert summary["finding_count"] == 2
+    assert summary["primary_finding"] == sorted(matches, key=render_recovery.finding_priority_sort_key)[0][
+        "candidate_action"
+    ]
+    assert summary["primary_finding"] == "inspect_pending_video_export_without_task_id"
+    assert summary["highest_risk_level"] == "high"
+    assert summary["apply_eligible"] is False
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+    assert summary["precondition_tokens"] == sorted({finding["precondition_token"] for finding in matches})
+
+
+def test_intent_duplicate_findings_produce_one_grouped_object_summary_with_highest_risk():
+    project = _make_project("intent_grouped_summary")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_CLAIMED,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent" and finding["object_id"] == intent.id
+    ]
+    summary = _object_summary(payload, object_type="RenderFollowUpIntent", object_id=intent.id)
+
+    assert len(matches) == 2
+    assert {finding["risk_level"] for finding in matches} == {"high", "medium"}
+    assert summary["finding_count"] == 2
+    assert summary["primary_finding"] == sorted(matches, key=render_recovery.finding_priority_sort_key)[0][
+        "candidate_action"
+    ]
+    assert summary["highest_risk_level"] == "high"
+    assert summary["apply_eligible"] is False
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+    assert summary["precondition_tokens"] == sorted({finding["precondition_token"] for finding in matches})
 
 
 def test_render_recovery_check_command_text_output():

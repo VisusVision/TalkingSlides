@@ -100,13 +100,15 @@ class RenderRecoveryReport:
         }
 
     def as_dict(self) -> dict[str, Any]:
+        findings = [finding.as_dict() for finding in self.findings]
         return {
             "dry_run": self.dry_run,
             "max_age_hours": self.max_age_hours,
             "generated_at": self.generated_at,
             "summary": self.summary(),
             "warnings": list(self.warnings),
-            "findings": [finding.as_dict() for finding in self.findings],
+            "findings": findings,
+            "object_summaries": _object_summaries_from_findings(findings),
         }
 
 
@@ -347,6 +349,55 @@ def finding_priority_sort_key(finding: dict[str, Any]) -> tuple[str, str, str]:
         finding_priority(finding),
         str(finding.get("category") or ""),
         str(finding.get("object_id") or ""),
+    )
+
+
+def _object_summaries_from_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for finding in findings:
+        key = (finding.get("object_type"), finding.get("object_id"))
+        grouped.setdefault(key, []).append(finding)
+
+    summaries: list[dict[str, Any]] = []
+    for grouped_findings in grouped.values():
+        primary = sorted(grouped_findings, key=finding_priority_sort_key)[0]
+        summaries.append(
+            {
+                "object_type": primary.get("object_type"),
+                "object_id": primary.get("object_id"),
+                "finding_count": len(grouped_findings),
+                "primary_finding": primary.get("candidate_action"),
+                "highest_risk_level": _highest_risk_level(grouped_findings),
+                "candidate_actions": _sorted_unique(finding.get("candidate_action") for finding in grouped_findings),
+                "apply_eligible": all(bool(finding.get("apply_eligible")) for finding in grouped_findings),
+                "apply_blockers": _sorted_unique(
+                    blocker
+                    for finding in grouped_findings
+                    for blocker in (finding.get("apply_blockers") or [])
+                ),
+                "precondition_tokens": _sorted_unique(finding.get("precondition_token") for finding in grouped_findings),
+            }
+        )
+    return sorted(summaries, key=_object_summary_sort_key)
+
+
+def _highest_risk_level(findings: list[dict[str, Any]]) -> str:
+    risk_order = {"low": 1, "medium": 2, "high": 3}
+    return max(
+        (str(finding.get("risk_level") or "low").lower() for finding in findings),
+        key=lambda risk_level: risk_order.get(risk_level, 0),
+        default="low",
+    )
+
+
+def _sorted_unique(values) -> list[Any]:
+    return sorted({value for value in values if value not in (None, "")}, key=str)
+
+
+def _object_summary_sort_key(summary: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(summary.get("object_type") or ""),
+        str(summary.get("object_id") or ""),
     )
 
 
