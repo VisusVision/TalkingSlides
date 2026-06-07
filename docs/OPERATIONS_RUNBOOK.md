@@ -384,6 +384,49 @@ Current safety boundaries:
 - No intent cancellation.
 - No artifact deletion.
 
+### Future Apply Mode Guardrails
+
+This section is design-only. It does not authorize an apply mode, mutation behavior, retries, requeues, terminalization, intent cancellation, artifact deletion, or automatic recovery. Any future state-changing Render Recovery work must be reviewed and implemented in a separate PR with tests and an explicit rollout plan.
+
+Minimum gates for any future apply mode:
+
+- Explicit operator confirmation for the exact object, action, and expected state.
+- `required_confirm_token` matching the current report output.
+- `precondition_token` matching the current report output.
+- `metadata_hash` validation for intent metadata and current-state validation for every target object.
+- Transaction boundaries around every read-check-write sequence.
+- Idempotency strategy for repeated operator submissions, command retries, and partially observed results.
+- Audit log or event emission before and after any accepted mutation attempt.
+- Dry-run parity that prints the same target, precondition, and planned mutation evidence without writing state.
+- Rollback or compensating-action plan for every allowed mutation.
+- Per-action allowlist; unknown actions must remain rejected.
+- Blocked-by-default behavior unless every gate passes.
+- No artifact deletion unless separately designed and approved.
+- No broad automatic recovery loop.
+- No retry or requeue behavior without separate design approval.
+- No terminalization behavior without separate design approval.
+- No intent cancellation behavior without separate design approval.
+
+Recommended rollout phases:
+
+- Phase 0: report-only and dry-run only. This is the current state.
+- Phase 1: single-object inspect-confirm flow with no mutation.
+- Phase 2: one low-risk single-object action behind an explicit operator token.
+- Phase 3: narrow allowlisted actions only after audit evidence, transaction tests, idempotency tests, and rollback/compensation tests.
+- Phase 4: broader recovery only if separately approved with incident ownership, monitoring, and rollback criteria.
+
+Hard stop conditions:
+
+- Stale `metadata_hash`.
+- Mismatched `precondition_token`.
+- Mismatched `required_confirm_token`.
+- Object state changed since the report or inspect output was generated.
+- Missing audit evidence.
+- Unknown action.
+- High-risk action without separate approval.
+- CI or test failure in the apply-mode PR.
+- Storage or source-of-truth uncertainty.
+
 Operator workflow:
 
 1. Run `render_recovery_check --dry-run` and capture the summary counts.
