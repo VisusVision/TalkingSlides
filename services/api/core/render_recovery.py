@@ -27,6 +27,7 @@ class RenderRecoveryFinding:
         return round(self.age_seconds / 3600, 2)
 
     def as_dict(self) -> dict[str, Any]:
+        remediation_plan = _remediation_plan_for_finding(self)
         return {
             "category": self.category,
             "object_type": self.object_type,
@@ -36,6 +37,13 @@ class RenderRecoveryFinding:
             "age_hours": self.age_hours,
             "recommended_action": self.recommended_action,
             "detail": self.detail,
+            "candidate_action": remediation_plan["candidate_action"],
+            "action_mode": remediation_plan["action_mode"],
+            "risk_level": remediation_plan["risk_level"],
+            "requires_operator_checks": remediation_plan["requires_operator_checks"],
+            "mutation_if_applied": remediation_plan["mutation_if_applied"],
+            "dedupe_impact": remediation_plan["dedupe_impact"],
+            "suggested_manual_command": remediation_plan["suggested_manual_command"],
         }
 
 
@@ -137,6 +145,110 @@ def _age_seconds(now, changed_at) -> int:
 def _object_age(now, obj) -> int:
     changed_at = getattr(obj, "updated_at", None) or getattr(obj, "created_at", None)
     return _age_seconds(now, changed_at)
+
+
+def _remediation_plan_for_finding(finding: RenderRecoveryFinding) -> dict[str, Any]:
+    detail = str(finding.detail or "")
+    object_kind = "job" if finding.object_type == "Job" else "intent"
+    suggested_manual_command = (
+        "python manage.py render_recovery_action "
+        f"--action inspect --type {object_kind} --id {finding.object_id}"
+    )
+    plan: dict[str, Any] = {
+        "candidate_action": "operator_inspect_recovery_candidate",
+        "action_mode": "report_only",
+        "risk_level": "medium",
+        "requires_operator_checks": [
+            "confirm the object is still a current recovery candidate",
+            "inspect API, worker, and Celery logs for the object age window",
+            "verify no live worker still owns the render before planning any manual state change",
+        ],
+        "mutation_if_applied": "No mutation is performed by this report. A future explicit operator action would need to reconcile state manually.",
+        "dedupe_impact": "none",
+        "suggested_manual_command": suggested_manual_command,
+    }
+
+    if finding.object_type == "Job":
+        plan["requires_operator_checks"] = [
+            "inspect the Job row status, progress, celery_task_id, error_message, timestamps, project_id, and job_type",
+            "check API enqueue logs and request logs around Job creation",
+            "check Celery broker/result state and worker logs for the recorded or suspected task",
+            "inspect generated output files without deleting artifacts",
+        ]
+        plan["dedupe_impact"] = "would_unblock_render_dedupe_if_failed_or_cancelled"
+
+    if finding.category == "stuck_render_job":
+        plan["candidate_action"] = "inspect_stale_active_video_export"
+        plan["mutation_if_applied"] = (
+            "A future explicit operator action might mark the active video_export job failed after external ownership checks."
+        )
+        if "progress=" in detail and "100" in detail:
+            plan["candidate_action"] = "inspect_active_job_progress_terminal_mismatch"
+            plan["risk_level"] = "medium"
+            plan["requires_operator_checks"] = [
+                "confirm the active Job still has progress at or above 100",
+                "inspect worker finalize logs for successful completion, failure, or stale-finalize skip",
+                "verify playback sidecar and output assets exist before deciding whether the status is mismatched",
+                "verify no live worker still owns the render before planning any manual state change",
+            ]
+        elif "pending" in detail:
+            plan["risk_level"] = "high"
+            plan["requires_operator_checks"].append("confirm whether a pending job was actually dispatched despite stale updated_at")
+        elif "running" in detail:
+            plan["risk_level"] = "high"
+            plan["requires_operator_checks"].append("confirm the render is not a legitimate long-running job for the source size and hardware")
+
+    if finding.category == "stuck_followup_intent":
+        plan.update(
+            {
+                "candidate_action": "inspect_stale_followup_intent",
+                "risk_level": "medium",
+                "requires_operator_checks": [
+                    "inspect RenderFollowUpIntent status, mode, page_keys, metadata, claimed_at, and timestamps",
+                    "inspect metadata.active_job_id, metadata.dispatched_job_id, and metadata.celery_task_id",
+                    "check the active and terminal video_export history for the same project",
+                    "verify no active render or follow-up dispatch still owns the intent before planning cancellation",
+                ],
+                "mutation_if_applied": (
+                    "A future explicit operator action might cancel the stale follow-up intent after confirming it cannot be drained safely."
+                ),
+                "dedupe_impact": "would_unblock_followup_intent_uniqueness_if_cancelled",
+            }
+        )
+        if "no recorded Celery task id" in detail:
+            plan["candidate_action"] = "inspect_claimed_followup_missing_task_id"
+            plan["risk_level"] = "high"
+
+    if finding.category == "orphan_recovery_candidate":
+        if finding.object_type == "Job":
+            plan["candidate_action"] = "inspect_video_export_missing_task_id"
+            plan["risk_level"] = "high"
+            plan["requires_operator_checks"] = [
+                "confirm celery_task_id is still blank on the Job row",
+                "inspect API enqueue logs and request logs for a dispatch crash window",
+                "check Celery broker/result state for a task that may have been enqueued without being recorded",
+                "verify no live worker still owns the render before planning any manual fail or recreate action",
+            ]
+            plan["mutation_if_applied"] = (
+                "A future explicit operator action might mark the active video_export job failed after confirming no task was enqueued."
+            )
+            if "pending_without_task_id" in detail:
+                plan["candidate_action"] = "inspect_pending_video_export_without_task_id"
+        else:
+            plan["candidate_action"] = "inspect_orphan_followup_intent_reference"
+            plan["risk_level"] = "medium"
+            plan["requires_operator_checks"] = [
+                "inspect RenderFollowUpIntent metadata.active_job_id and metadata.dispatched_job_id",
+                "check whether referenced render jobs completed, failed, were superseded, or never existed",
+                "inspect project render history before deciding whether the follow-up intent should be cancelled or recreated",
+                "verify no active render or follow-up dispatch still owns the intent before planning cancellation",
+            ]
+            plan["mutation_if_applied"] = (
+                "A future explicit operator action might cancel the orphaned follow-up intent after reference checks."
+            )
+            plan["dedupe_impact"] = "would_unblock_followup_intent_uniqueness_if_cancelled"
+
+    return plan
 
 
 def _detect_stuck_render_jobs(Job, *, cutoff, now) -> list[RenderRecoveryFinding]:
