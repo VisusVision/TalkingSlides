@@ -232,6 +232,158 @@ python manage.py render_recovery_check --dry-run --json
 
 The command is intentionally non-mutating. It never enqueues Celery tasks, updates job rows, clears follow-up intents, or deletes files. The `--dry-run` flag is required as an operator safety acknowledgement.
 
+### Render Recovery Report Contract
+
+The render recovery report is an operator visibility contract for stale or disconnected render state. Its purpose is to show investigation candidates and the manual inspection command an operator can run next. It is not a recovery executor.
+
+`render_recovery_check` is report-only and requires `--dry-run`. `--json` changes only the output format; it does not enable apply behavior. The command reads durable `Job` and `RenderFollowUpIntent` state and emits a point-in-time report with:
+
+- `summary`: aggregate counts and oldest stuck age.
+- `warnings`: inspection warnings when a read path degrades.
+- `findings`: one entry per detected recovery candidate.
+- `object_summaries`: findings grouped by affected object.
+- `manual_command_summary`: findings grouped by suggested manual command.
+
+Each `findings` entry includes object identity, age, detail, a recommended investigation action, and remediation-plan fields. Current remediation-plan fields are:
+
+- `candidate_action`
+- `action_mode`
+- `risk_level`
+- `requires_operator_checks`
+- `mutation_if_applied`
+- `dedupe_impact`
+- `suggested_manual_command`
+- `apply_eligible`
+- `apply_blockers`
+- `finding_priority`
+- `precondition_token`
+- `metadata_hash`
+- `proposed_conditional_update`
+- `required_confirm_token`
+
+The `remediation_plan` object appears as a promoted top-level field in `render_recovery_action --json` output for the selected current candidate. It uses the same field names as the remediation-plan fields embedded in a reconciliation finding. In the current contract, `action_mode` is `report_only` and `apply_eligible` is `false`.
+
+`object_summaries` is derived entirely from `findings`. Each summary groups findings for one affected object and includes:
+
+- `object_type`
+- `object_id`
+- `finding_count`
+- `primary_finding`
+- `highest_risk_level`
+- `candidate_actions`
+- `apply_eligible`
+- `apply_blockers`
+- `precondition_tokens`
+
+`manual_command_summary` is also derived entirely from `findings`. Each summary groups findings by `suggested_manual_command` and includes:
+
+- `command`
+- `object_count`
+- `candidate_actions`
+- `highest_risk_level`
+- `requires_operator_checks`
+- `apply_eligible`
+- `apply_blockers`
+
+Example `findings` snippet:
+
+```json
+[
+  {
+    "category": "orphan_recovery_candidate",
+    "object_type": "Job",
+    "object_id": 123,
+    "project_id": 45,
+    "age_seconds": 14400,
+    "age_hours": 4.0,
+    "recommended_action": "Inspect job dispatch evidence before planning any manual state change.",
+    "detail": "pending_without_task_id dispatch_window_candidate",
+    "candidate_action": "inspect_pending_video_export_without_task_id",
+    "action_mode": "report_only",
+    "risk_level": "high",
+    "requires_operator_checks": [
+      "confirm celery_task_id is still blank on the Job row"
+    ],
+    "mutation_if_applied": "No mutation is performed by this report.",
+    "dedupe_impact": "would_unblock_render_dedupe_if_failed_or_cancelled",
+    "suggested_manual_command": "python manage.py render_recovery_action --action inspect --type job --id 123",
+    "apply_eligible": false,
+    "apply_blockers": [
+      "apply mode is intentionally not implemented; this report is evidence-only"
+    ],
+    "finding_priority": "01_pending_without_task_id_dispatch_window",
+    "precondition_token": "<sha256>",
+    "metadata_hash": null,
+    "proposed_conditional_update": "SELECT ... WHERE id = 123 ...",
+    "required_confirm_token": "future-apply:job:123:inspect_pending_video_export_without_task_id:<sha256>"
+  }
+]
+```
+
+Example `object_summaries` snippet:
+
+```json
+[
+  {
+    "object_type": "Job",
+    "object_id": 123,
+    "finding_count": 2,
+    "primary_finding": "inspect_pending_video_export_without_task_id",
+    "highest_risk_level": "high",
+    "candidate_actions": [
+      "inspect_pending_video_export_without_task_id",
+      "inspect_stale_active_video_export"
+    ],
+    "apply_eligible": false,
+    "apply_blockers": [
+      "apply mode is intentionally not implemented; this report is evidence-only"
+    ],
+    "precondition_tokens": [
+      "<sha256-a>",
+      "<sha256-b>"
+    ]
+  }
+]
+```
+
+Example `manual_command_summary` snippet:
+
+```json
+[
+  {
+    "command": "python manage.py render_recovery_action --action inspect --type job --id 123",
+    "object_count": 1,
+    "candidate_actions": [
+      "inspect_pending_video_export_without_task_id",
+      "inspect_stale_active_video_export"
+    ],
+    "highest_risk_level": "high",
+    "requires_operator_checks": true,
+    "apply_eligible": false,
+    "apply_blockers": [
+      "apply mode is intentionally not implemented; this report is evidence-only"
+    ]
+  }
+]
+```
+
+Compatibility expectations:
+
+- Existing documented fields should remain stable for report consumers.
+- Additive fields may be added at the top level, inside findings, or inside derived summaries.
+- Consumers should ignore unknown top-level fields and unknown nested fields.
+- Consumers should not treat `suggested_manual_command`, `proposed_conditional_update`, or `required_confirm_token` as permission to mutate state.
+
+Current safety boundaries:
+
+- No apply mode.
+- No retry.
+- No requeue.
+- No state mutation.
+- No terminalization.
+- No intent cancellation.
+- No artifact deletion.
+
 Operator workflow:
 
 1. Run `render_recovery_check --dry-run` and capture the summary counts.
