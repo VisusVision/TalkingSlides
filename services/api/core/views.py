@@ -5559,6 +5559,36 @@ def _queue_transcript_rerender(
     full_rerender: bool = False,
     use_draft: bool = False,
 ) -> dict | None:
+    with transaction.atomic():
+        project = Project.objects.select_for_update().get(pk=project.pk)
+        active_job = _active_video_export_job(project)
+        if active_job:
+            avatar_options = _resolve_avatar_options_for_project(project, request)
+            return _active_render_job_response(active_job, avatar_options)
+        reservation = _reserve_transcript_rerender_job(
+            project=project,
+            request=request,
+            changed_page_keys=changed_page_keys,
+            pause_sec=pause_sec,
+            lang_hint=lang_hint,
+            full_rerender=full_rerender,
+            use_draft=use_draft,
+        )
+    if reservation is None:
+        return None
+    return _dispatch_reserved_transcript_rerender(reservation)
+
+
+def _reserve_transcript_rerender_job(
+    *,
+    project: Project,
+    request,
+    changed_page_keys: list[str] | set[str],
+    pause_sec: float,
+    lang_hint: str,
+    full_rerender: bool = False,
+    use_draft: bool = False,
+) -> tuple[Job, dict, list, dict, str] | None:
     voice_id = _get_voice_id(project.user)
     storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
     upload_dir = Path(storage_root) / "uploads" / str(project.id)
@@ -5584,11 +5614,17 @@ def _queue_transcript_rerender(
         _project_render_tts_settings(project, use_draft=use_draft),
     ]
     task_kwargs = {"use_draft": True} if use_draft else {}
+    render_queue = _queue_for_avatar_options(avatar_options)
+    return job, avatar_options, task_args, task_kwargs, render_queue
+
+
+def _dispatch_reserved_transcript_rerender(reservation: tuple[Job, dict, list, dict, str]) -> dict:
+    job, avatar_options, task_args, task_kwargs, render_queue = reservation
     _dispatch_render_job(
         job_id=job.id,
         task_args=task_args,
         task_kwargs=task_kwargs,
-        queue=_queue_for_avatar_options(avatar_options),
+        queue=render_queue,
     )
     job.refresh_from_db(fields=["celery_task_id"])
     data = JobSerializer(job).data
@@ -5606,32 +5642,33 @@ def _queue_or_record_transcript_rerender(
     use_draft: bool = False,
     followup_reason: str,
 ) -> tuple[dict | None, dict]:
-    active_job = _active_video_export_job(project)
-    if active_job:
-        mode = RenderFollowUpIntent.MODE_FULL if full_rerender else RenderFollowUpIntent.MODE_TARGETED
-        intent = merge_render_followup_intent(
-            project=project,
-            mode=mode,
-            page_keys=[] if mode == RenderFollowUpIntent.MODE_FULL else changed_page_keys,
-            reason=followup_reason,
-            requested_by=request.user if request.user and request.user.is_authenticated else None,
-            metadata={
-                "source": "transcript",
-                "active_job_id": active_job.id,
-                "use_draft": bool(use_draft),
-                "pause_sec": float(pause_sec),
-                "lang_hint": str(lang_hint or "auto"),
-            },
-        )
-        return None, {
-            "follow_up_render_intent": True,
-            "queued_follow_up": True,
-            "deduped": True,
-            "render_follow_up_intent_id": intent.id,
-        }
+    with transaction.atomic():
+        project = Project.objects.select_for_update().get(pk=project.pk)
+        active_job = _active_video_export_job(project)
+        if active_job:
+            mode = RenderFollowUpIntent.MODE_FULL if full_rerender else RenderFollowUpIntent.MODE_TARGETED
+            intent = merge_render_followup_intent(
+                project=project,
+                mode=mode,
+                page_keys=[] if mode == RenderFollowUpIntent.MODE_FULL else changed_page_keys,
+                reason=followup_reason,
+                requested_by=request.user if request.user and request.user.is_authenticated else None,
+                metadata={
+                    "source": "transcript",
+                    "active_job_id": active_job.id,
+                    "use_draft": bool(use_draft),
+                    "pause_sec": float(pause_sec),
+                    "lang_hint": str(lang_hint or "auto"),
+                },
+            )
+            return None, {
+                "follow_up_render_intent": True,
+                "queued_follow_up": True,
+                "deduped": True,
+                "render_follow_up_intent_id": intent.id,
+            }
 
-    return (
-        _queue_transcript_rerender(
+        reservation = _reserve_transcript_rerender_job(
             project=project,
             request=request,
             changed_page_keys=changed_page_keys,
@@ -5639,9 +5676,11 @@ def _queue_or_record_transcript_rerender(
             lang_hint=lang_hint,
             full_rerender=full_rerender,
             use_draft=use_draft,
-        ),
-        {},
-    )
+        )
+
+    if reservation is None:
+        return None, {}
+    return _dispatch_reserved_transcript_rerender(reservation), {}
 
 
 def _source_moderation_auto_enabled() -> bool:
