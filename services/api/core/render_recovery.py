@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
@@ -21,6 +23,10 @@ class RenderRecoveryFinding:
     recommended_action: str
     detail: str = ""
     project_id: int | None = None
+    current_status: str | None = None
+    updated_at: str | None = None
+    celery_task_id: str | None = None
+    metadata: dict[str, Any] | None = None
 
     @property
     def age_hours(self) -> float:
@@ -44,6 +50,13 @@ class RenderRecoveryFinding:
             "mutation_if_applied": remediation_plan["mutation_if_applied"],
             "dedupe_impact": remediation_plan["dedupe_impact"],
             "suggested_manual_command": remediation_plan["suggested_manual_command"],
+            "apply_eligible": remediation_plan["apply_eligible"],
+            "apply_blockers": remediation_plan["apply_blockers"],
+            "finding_priority": remediation_plan["finding_priority"],
+            "precondition_token": remediation_plan["precondition_token"],
+            "metadata_hash": remediation_plan["metadata_hash"],
+            "proposed_conditional_update": remediation_plan["proposed_conditional_update"],
+            "required_confirm_token": remediation_plan["required_confirm_token"],
         }
 
 
@@ -125,7 +138,7 @@ def build_render_recovery_report(*, dry_run: bool = True, max_age_hours: float =
         dry_run=bool(dry_run),
         max_age_hours=float(max_age_hours),
         generated_at=now.isoformat(),
-        findings=sorted(findings, key=lambda finding: (-finding.age_seconds, finding.category, str(finding.object_id))),
+        findings=sorted(findings, key=_finding_report_sort_key),
         warnings=warnings,
     )
 
@@ -134,6 +147,16 @@ def _load_models():
     from core.models import Job, RenderFollowUpIntent
 
     return Job, RenderFollowUpIntent
+
+
+def _finding_report_sort_key(finding: RenderRecoveryFinding) -> tuple[int, str, str, str]:
+    payload = finding.as_dict()
+    return (
+        -finding.age_seconds,
+        str(payload.get("finding_priority") or ""),
+        finding.category,
+        str(finding.object_id),
+    )
 
 
 def _age_seconds(now, changed_at) -> int:
@@ -145,6 +168,20 @@ def _age_seconds(now, changed_at) -> int:
 def _object_age(now, obj) -> int:
     changed_at = getattr(obj, "updated_at", None) or getattr(obj, "created_at", None)
     return _age_seconds(now, changed_at)
+
+
+def _isoformat(value) -> str | None:
+    return value.isoformat() if value else None
+
+
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
 
 
 def _remediation_plan_for_finding(finding: RenderRecoveryFinding) -> dict[str, Any]:
@@ -248,7 +285,159 @@ def _remediation_plan_for_finding(finding: RenderRecoveryFinding) -> dict[str, A
             )
             plan["dedupe_impact"] = "would_unblock_followup_intent_uniqueness_if_cancelled"
 
+    plan.update(_apply_precondition_contract(finding, plan))
     return plan
+
+
+def _apply_precondition_contract(finding: RenderRecoveryFinding, plan: dict[str, Any]) -> dict[str, Any]:
+    candidate_action = str(plan.get("candidate_action") or finding.category)
+    metadata_hash = _metadata_hash(finding.metadata)
+    precondition_token = _precondition_token(
+        object_type=finding.object_type,
+        object_id=finding.object_id,
+        status=finding.current_status,
+        updated_at=finding.updated_at,
+        celery_task_id=finding.celery_task_id,
+        finding_kind=candidate_action,
+        metadata_hash=metadata_hash,
+    )
+    object_kind = "job" if finding.object_type == "Job" else "intent"
+    return {
+        "apply_eligible": False,
+        "apply_blockers": [
+            "apply mode is intentionally not implemented; this report is evidence-only",
+            "operator must inspect API, worker, and Celery evidence outside this command before any future state change",
+            "future apply would require transaction-time compare-and-swap preconditions and a reviewed rollback path",
+        ],
+        "finding_priority": finding_priority(
+            {
+                "candidate_action": candidate_action,
+                "detail": finding.detail,
+                "category": finding.category,
+                "object_id": finding.object_id,
+            }
+        ),
+        "precondition_token": precondition_token,
+        "metadata_hash": metadata_hash,
+        "proposed_conditional_update": _proposed_conditional_update(finding),
+        "required_confirm_token": f"future-apply:{object_kind}:{finding.object_id}:{candidate_action}:{precondition_token}",
+    }
+
+
+def finding_priority(finding: dict[str, Any]) -> str:
+    candidate_action = str(finding.get("candidate_action") or "")
+    detail = str(finding.get("detail") or "")
+    if candidate_action == "inspect_pending_video_export_without_task_id" or "pending_without_task_id" in detail:
+        return "01_pending_without_task_id_dispatch_window"
+    if candidate_action == "inspect_video_export_missing_task_id":
+        return "02_video_export_missing_task_id"
+    if candidate_action == "inspect_active_job_progress_terminal_mismatch":
+        return "03_impossible_active_progress"
+    if candidate_action == "inspect_stale_active_video_export":
+        return "04_stale_active_video_export"
+    if candidate_action in {"inspect_stale_followup_intent", "inspect_claimed_followup_missing_task_id"}:
+        return "05_stale_followup_intent"
+    if candidate_action == "inspect_orphan_followup_intent_reference":
+        return "06_orphan_followup_reference"
+    return "99_operator_inspect_recovery_candidate"
+
+
+def finding_priority_sort_key(finding: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        finding_priority(finding),
+        str(finding.get("category") or ""),
+        str(finding.get("object_id") or ""),
+    )
+
+
+def _metadata_hash(metadata: dict[str, Any] | None) -> str | None:
+    if metadata is None:
+        return None
+    encoded = json.dumps(_json_safe(metadata), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _precondition_token(
+    *,
+    object_type: str,
+    object_id: int | str,
+    status: str | None,
+    updated_at: str | None,
+    celery_task_id: str | None,
+    finding_kind: str,
+    metadata_hash: str | None,
+) -> str:
+    payload = {
+        "object_type": object_type,
+        "object_id": object_id,
+        "status": status,
+        "updated_at": updated_at,
+        "celery_task_id": celery_task_id or "",
+        "finding_kind": finding_kind,
+        "metadata_hash": metadata_hash,
+    }
+    encoded = json.dumps(_json_safe(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _proposed_conditional_update(finding: RenderRecoveryFinding) -> str:
+    if finding.object_type == "Job":
+        return (
+            "WHERE id = {id} AND job_type = 'video_export' AND status = {status} "
+            "AND updated_at = {updated_at} AND celery_task_id = {celery_task_id}"
+        ).format(
+            id=finding.object_id,
+            status=_sql_literal(finding.current_status),
+            updated_at=_sql_literal(finding.updated_at),
+            celery_task_id=_sql_literal(finding.celery_task_id or ""),
+        )
+    return (
+        "WHERE id = {id} AND status = {status} AND updated_at = {updated_at} "
+        "AND metadata_hash = {metadata_hash}"
+    ).format(
+        id=finding.object_id,
+        status=_sql_literal(finding.current_status),
+        updated_at=_sql_literal(finding.updated_at),
+        metadata_hash=_sql_literal(_metadata_hash(finding.metadata)),
+    )
+
+
+def _sql_literal(value: Any) -> str:
+    if value is None:
+        return "NULL"
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _finding_for_job(job, *, category: str, now, recommended_action: str, detail: str) -> RenderRecoveryFinding:
+    return RenderRecoveryFinding(
+        category=category,
+        object_type="Job",
+        object_id=int(job.id),
+        project_id=job.project_id,
+        age_seconds=_object_age(now, job),
+        recommended_action=recommended_action,
+        detail=detail,
+        current_status=str(job.status or ""),
+        updated_at=_isoformat(getattr(job, "updated_at", None)),
+        celery_task_id=str(getattr(job, "celery_task_id", "") or ""),
+    )
+
+
+def _finding_for_intent(intent, *, category: str, now, recommended_action: str, detail: str) -> RenderRecoveryFinding:
+    metadata = dict(getattr(intent, "metadata", None) or {})
+    return RenderRecoveryFinding(
+        category=category,
+        object_type="RenderFollowUpIntent",
+        object_id=int(intent.id),
+        project_id=intent.project_id,
+        age_seconds=_object_age(now, intent),
+        recommended_action=recommended_action,
+        detail=detail,
+        current_status=str(intent.status or ""),
+        updated_at=_isoformat(getattr(intent, "updated_at", None)),
+        celery_task_id=str(metadata.get("celery_task_id") or ""),
+        metadata=metadata,
+    )
 
 
 def _detect_stuck_render_jobs(Job, *, cutoff, now) -> list[RenderRecoveryFinding]:
@@ -262,17 +451,7 @@ def _detect_stuck_render_jobs(Job, *, cutoff, now) -> list[RenderRecoveryFinding
         else:
             action = "Inspect worker logs, Celery task state, and output files; manually fail or retry only after confirming no worker still owns it."
             detail = "running video_export job exceeded the operator age threshold"
-        findings.append(
-            RenderRecoveryFinding(
-                category="stuck_render_job",
-                object_type="Job",
-                object_id=int(job.id),
-                project_id=job.project_id,
-                age_seconds=_object_age(now, job),
-                recommended_action=action,
-                detail=detail,
-            )
-        )
+        findings.append(_finding_for_job(job, category="stuck_render_job", now=now, recommended_action=action, detail=detail))
     return findings
 
 
@@ -283,12 +462,10 @@ def _detect_impossible_render_states(Job, *, now) -> list[RenderRecoveryFinding]
     )
     for job in impossible_jobs.order_by("updated_at", "id"):
         findings.append(
-            RenderRecoveryFinding(
+            _finding_for_job(
+                job,
                 category="stuck_render_job",
-                object_type="Job",
-                object_id=int(job.id),
-                project_id=job.project_id,
-                age_seconds=_object_age(now, job),
+                now=now,
                 recommended_action="Inspect worker logs and playback assets; reconcile status manually because active jobs should not be at 100% progress.",
                 detail=f"video_export job is {job.status} with progress={job.progress}",
             )
@@ -321,12 +498,10 @@ def _detect_stuck_followup_intents(RenderFollowUpIntent, *, cutoff, now) -> list
         if status == RenderFollowUpIntent.STATUS_CLAIMED and not metadata.get("celery_task_id"):
             detail = "claimed follow-up intent has no recorded Celery task id"
         findings.append(
-            RenderRecoveryFinding(
+            _finding_for_intent(
+                intent,
                 category="stuck_followup_intent",
-                object_type="RenderFollowUpIntent",
-                object_id=int(intent.id),
-                project_id=intent.project_id,
-                age_seconds=_object_age(now, intent),
+                now=now,
                 recommended_action=action,
                 detail=detail,
             )
@@ -357,17 +532,7 @@ def _detect_orphan_candidates(Job, RenderFollowUpIntent, *, cutoff, now) -> list
         else:
             action = "Verify no matching Celery task exists; this is a DB commit vs task dispatch recovery candidate."
             detail = f"{status} video_export job has no celery_task_id"
-        findings.append(
-            RenderRecoveryFinding(
-                category="orphan_recovery_candidate",
-                object_type="Job",
-                object_id=int(job.id),
-                project_id=job.project_id,
-                age_seconds=_object_age(now, job),
-                recommended_action=action,
-                detail=detail,
-            )
-        )
+        findings.append(_finding_for_job(job, category="orphan_recovery_candidate", now=now, recommended_action=action, detail=detail))
 
     active_statuses = (
         RenderFollowUpIntent.STATUS_PENDING,
@@ -380,24 +545,20 @@ def _detect_orphan_candidates(Job, RenderFollowUpIntent, *, cutoff, now) -> list
         dispatched_job_id = metadata.get("dispatched_job_id")
         if active_job_id and not Job.objects.filter(pk=active_job_id, job_type="video_export", status__in=("pending", "running")).exists():
             findings.append(
-                RenderRecoveryFinding(
+                _finding_for_intent(
+                    intent,
                     category="orphan_recovery_candidate",
-                    object_type="RenderFollowUpIntent",
-                    object_id=int(intent.id),
-                    project_id=intent.project_id,
-                    age_seconds=_object_age(now, intent),
+                    now=now,
                     recommended_action="Review whether the referenced base render completed, failed, or was superseded before manually cancelling or recreating the follow-up.",
                     detail=f"metadata.active_job_id={active_job_id} is not an active render job",
                 )
             )
         if dispatched_job_id and not Job.objects.filter(pk=dispatched_job_id, job_type="video_export").exists():
             findings.append(
-                RenderRecoveryFinding(
+                _finding_for_intent(
+                    intent,
                     category="orphan_recovery_candidate",
-                    object_type="RenderFollowUpIntent",
-                    object_id=int(intent.id),
-                    project_id=intent.project_id,
-                    age_seconds=_object_age(now, intent),
+                    now=now,
                     recommended_action="Inspect audit history and worker logs; the intent points at a missing reserved follow-up render job.",
                     detail=f"metadata.dispatched_job_id={dispatched_job_id} does not exist",
                 )

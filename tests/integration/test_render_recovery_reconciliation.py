@@ -60,6 +60,22 @@ def _assert_remediation_plan_fields(finding: dict) -> None:
     assert finding["mutation_if_applied"]
     assert finding["dedupe_impact"]
     assert finding["suggested_manual_command"]
+    _assert_apply_precondition_fields(finding)
+
+
+def _assert_apply_precondition_fields(finding: dict) -> None:
+    assert finding["apply_eligible"] is False
+    assert isinstance(finding["apply_blockers"], list)
+    assert finding["apply_blockers"]
+    assert any("not implemented" in blocker for blocker in finding["apply_blockers"])
+    assert finding["finding_priority"]
+    assert isinstance(finding["precondition_token"], str)
+    assert len(finding["precondition_token"]) == 64
+    assert all(char in "0123456789abcdef" for char in finding["precondition_token"])
+    assert "WHERE id =" in finding["proposed_conditional_update"]
+    assert "UPDATE " not in finding["proposed_conditional_update"].upper()
+    assert "future-apply:" in finding["required_confirm_token"]
+    assert finding["precondition_token"] in finding["required_confirm_token"]
 
 
 def _assert_promoted_remediation_plan_matches_finding(plan: dict, finding: dict) -> None:
@@ -71,6 +87,13 @@ def _assert_promoted_remediation_plan_matches_finding(plan: dict, finding: dict)
         "mutation_if_applied",
         "dedupe_impact",
         "suggested_manual_command",
+        "apply_eligible",
+        "apply_blockers",
+        "finding_priority",
+        "precondition_token",
+        "metadata_hash",
+        "proposed_conditional_update",
+        "required_confirm_token",
     ):
         assert plan[field_name] == finding[field_name]
 
@@ -153,6 +176,8 @@ def test_pending_video_export_without_task_id_reports_dispatch_window_detail():
     assert payload["risk_level"] == "high"
     assert payload["dedupe_impact"] == "would_unblock_render_dedupe_if_failed_or_cancelled"
     assert "no task was enqueued" in payload["mutation_if_applied"]
+    assert payload["metadata_hash"] is None
+    assert "celery_task_id = ''" in payload["proposed_conditional_update"]
 
     orphan.refresh_from_db()
     assert {
@@ -161,6 +186,42 @@ def test_pending_video_export_without_task_id_reports_dispatch_window_detail():
         "celery_task_id": orphan.celery_task_id,
         "error_message": orphan.error_message,
     } == before
+
+
+def test_recovery_precondition_token_is_stable_and_state_sensitive():
+    project = _make_project("precondition_token")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id="task-original"))
+
+    first_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    first = next(
+        finding
+        for finding in first_payload["findings"]
+        if finding["object_type"] == "Job"
+        and finding["object_id"] == job.id
+        and finding["category"] == "stuck_render_job"
+    )
+    second_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    second = next(
+        finding
+        for finding in second_payload["findings"]
+        if finding["object_type"] == "Job"
+        and finding["object_id"] == job.id
+        and finding["category"] == "stuck_render_job"
+    )
+
+    assert second["precondition_token"] == first["precondition_token"]
+
+    Job.objects.filter(pk=job.pk).update(celery_task_id="task-updated")
+    changed_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    changed = next(
+        finding
+        for finding in changed_payload["findings"]
+        if finding["object_type"] == "Job"
+        and finding["object_id"] == job.id
+        and finding["category"] == "stuck_render_job"
+    )
+
+    assert changed["precondition_token"] != first["precondition_token"]
 
 
 def test_detects_orphan_intent_disconnected_from_active_render_flow():
@@ -185,6 +246,40 @@ def test_detects_orphan_intent_disconnected_from_active_render_flow():
     )
 
 
+def test_intent_metadata_hash_is_present_and_stable_for_same_metadata():
+    project = _make_project("intent_metadata_hash")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"reason": "transcript_edit", "active_job_id": completed_job.id},
+        )
+    )
+
+    first_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    first = next(
+        finding
+        for finding in first_payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent"
+        and finding["object_id"] == intent.id
+        and finding["category"] == "orphan_recovery_candidate"
+    )
+    second_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    second = next(
+        finding
+        for finding in second_payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent"
+        and finding["object_id"] == intent.id
+        and finding["category"] == "orphan_recovery_candidate"
+    )
+
+    assert first["metadata_hash"]
+    assert len(first["metadata_hash"]) == 64
+    assert second["metadata_hash"] == first["metadata_hash"]
+    assert "metadata_hash" in first["proposed_conditional_update"]
+
+
 def test_report_generation_summary_counts():
     project = _make_project("summary")
     _age_job(Job.objects.create(project=project, job_type="video_export", status="running", celery_task_id="task-running"))
@@ -195,7 +290,8 @@ def test_report_generation_summary_counts():
     assert payload["summary"]["stuck_render_count"] >= 1
     assert "oldest_stuck_age_hours" in payload["summary"]
     assert payload["findings"]
-    _assert_remediation_plan_fields(payload["findings"][0])
+    for finding in payload["findings"]:
+        _assert_remediation_plan_fields(finding)
 
 
 def test_render_recovery_check_command_text_output():
@@ -212,6 +308,8 @@ def test_render_recovery_check_command_text_output():
     assert "recommended action:" in output
     assert "candidate action:" in output
     assert "action mode: report_only" in output
+    assert "apply eligible: False" in output
+    assert "proposed conditional update:" in output
 
 
 def test_render_recovery_check_command_json_output():
