@@ -10,8 +10,11 @@ from django.db import connection
 from django.conf import settings
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
+SERVICES_ROOT = REPO_ROOT / "services"
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICES_ROOT))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
@@ -21,6 +24,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
 from core.models import Job, UserProfile, VoiceProfile  # noqa: E402
+from worker import avatar_preview_flow  # noqa: E402
 
 pytestmark = pytest.mark.django_db
 
@@ -243,6 +247,164 @@ def test_avatar_preview_regenerate_creates_new_job_after_terminal_preview(monkey
     assert Job.objects.filter(job_type="avatar_render", status__in=["pending", "running"]).count() == 1
     profile.refresh_from_db()
     assert profile.avatar_last_preview_job_id == str(response.data["job_id"])
+
+
+def test_stale_avatar_preview_success_does_not_overwrite_current_profile(monkeypatch):
+    user, profile = _make_preview_ready_user(monkeypatch, "teacher_preview_stale_success")
+    stale_job = Job.objects.create(job_type="avatar_render", status="running", progress=80)
+    current_job = Job.objects.create(job_type="avatar_render", status="running", progress=20)
+    profile.avatar_last_preview_status = "rendering"
+    profile.avatar_last_preview_job_id = str(current_job.id)
+    profile.avatar_last_preview_path = "avatars/current/preview.mp4"
+    profile.avatar_preview_video = "avatars/current/preview.mp4"
+    profile.avatar_preview_error = ""
+    profile.avatar_image_status = "processing"
+    profile.save(
+        update_fields=[
+            "avatar_last_preview_status",
+            "avatar_last_preview_job_id",
+            "avatar_last_preview_path",
+            "avatar_preview_video",
+            "avatar_preview_error",
+            "avatar_image_status",
+        ]
+    )
+
+    updated = avatar_preview_flow._set_current_avatar_preview_profile_state(
+        profile_id=profile.id,
+        job_id=stale_job.id,
+        status="ready",
+        error="",
+        preview_rel_path="avatars/stale/preview.mp4",
+        image_status="ready",
+        preview_source_hash="stale-source-hash",
+    )
+
+    assert updated is False
+    profile.refresh_from_db()
+    assert profile.avatar_last_preview_job_id == str(current_job.id)
+    assert profile.avatar_last_preview_status == "rendering"
+    assert profile.avatar_last_preview_path == "avatars/current/preview.mp4"
+    assert profile.avatar_preview_video == "avatars/current/preview.mp4"
+    assert profile.avatar_preview_source_hash == ""
+
+
+def test_current_avatar_preview_success_updates_profile(monkeypatch):
+    user, profile = _make_preview_ready_user(monkeypatch, "teacher_preview_current_success")
+    current_job = Job.objects.create(job_type="avatar_render", status="running", progress=80)
+    profile.avatar_last_preview_status = "rendering"
+    profile.avatar_last_preview_job_id = str(current_job.id)
+    profile.avatar_last_preview_path = ""
+    profile.avatar_preview_video = ""
+    profile.avatar_preview_error = ""
+    profile.avatar_image_status = "processing"
+    profile.save(
+        update_fields=[
+            "avatar_last_preview_status",
+            "avatar_last_preview_job_id",
+            "avatar_last_preview_path",
+            "avatar_preview_video",
+            "avatar_preview_error",
+            "avatar_image_status",
+        ]
+    )
+
+    updated = avatar_preview_flow._set_current_avatar_preview_profile_state(
+        profile_id=profile.id,
+        job_id=current_job.id,
+        status="ready",
+        error="",
+        preview_rel_path="avatars/current/preview.mp4",
+        image_status="ready",
+        preview_source_hash="current-source-hash",
+    )
+
+    assert updated is True
+    profile.refresh_from_db()
+    assert profile.avatar_last_preview_job_id == str(current_job.id)
+    assert profile.avatar_last_preview_status == "ready"
+    assert profile.avatar_last_preview_path == "avatars/current/preview.mp4"
+    assert profile.avatar_preview_video == "avatars/current/preview.mp4"
+    assert profile.avatar_preview_source_hash == "current-source-hash"
+    assert profile.avatar_image_status == "ready"
+
+
+def test_stale_avatar_preview_failure_does_not_overwrite_current_profile(monkeypatch):
+    user, profile = _make_preview_ready_user(monkeypatch, "teacher_preview_stale_failure")
+    stale_job = Job.objects.create(job_type="avatar_render", status="running", progress=80)
+    current_job = Job.objects.create(job_type="avatar_render", status="running", progress=20)
+    profile.avatar_last_preview_status = "rendering"
+    profile.avatar_last_preview_job_id = str(current_job.id)
+    profile.avatar_last_preview_path = "avatars/current/preview.mp4"
+    profile.avatar_preview_video = "avatars/current/preview.mp4"
+    profile.avatar_preview_error = ""
+    profile.avatar_image_status = "processing"
+    profile.save(
+        update_fields=[
+            "avatar_last_preview_status",
+            "avatar_last_preview_job_id",
+            "avatar_last_preview_path",
+            "avatar_preview_video",
+            "avatar_preview_error",
+            "avatar_image_status",
+        ]
+    )
+
+    updated = avatar_preview_flow._set_current_avatar_preview_profile_state(
+        profile_id=profile.id,
+        job_id=stale_job.id,
+        status="failed",
+        error="stale failure",
+        image_status="ready",
+        clear_preview=True,
+    )
+
+    assert updated is False
+    profile.refresh_from_db()
+    assert profile.avatar_last_preview_job_id == str(current_job.id)
+    assert profile.avatar_last_preview_status == "rendering"
+    assert profile.avatar_preview_error == ""
+    assert profile.avatar_last_preview_path == "avatars/current/preview.mp4"
+    assert profile.avatar_preview_video == "avatars/current/preview.mp4"
+
+
+def test_current_avatar_preview_failure_updates_profile(monkeypatch):
+    user, profile = _make_preview_ready_user(monkeypatch, "teacher_preview_current_failure")
+    current_job = Job.objects.create(job_type="avatar_render", status="running", progress=80)
+    profile.avatar_last_preview_status = "rendering"
+    profile.avatar_last_preview_job_id = str(current_job.id)
+    profile.avatar_last_preview_path = "avatars/current/preview.mp4"
+    profile.avatar_preview_video = "avatars/current/preview.mp4"
+    profile.avatar_preview_error = ""
+    profile.avatar_image_status = "processing"
+    profile.save(
+        update_fields=[
+            "avatar_last_preview_status",
+            "avatar_last_preview_job_id",
+            "avatar_last_preview_path",
+            "avatar_preview_video",
+            "avatar_preview_error",
+            "avatar_image_status",
+        ]
+    )
+
+    updated = avatar_preview_flow._set_current_avatar_preview_profile_state(
+        profile_id=profile.id,
+        job_id=current_job.id,
+        status="failed",
+        error="current failure",
+        image_status="ready",
+        clear_preview=True,
+    )
+
+    assert updated is True
+    profile.refresh_from_db()
+    assert profile.avatar_last_preview_job_id == str(current_job.id)
+    assert profile.avatar_last_preview_status == "failed"
+    assert profile.avatar_preview_error == "current failure"
+    assert profile.avatar_last_preview_path == ""
+    assert profile.avatar_preview_video == ""
+    assert profile.avatar_image_status == "ready"
 
 
 def test_avatar_preview_regenerate_rejects_missing_voice_profile():
