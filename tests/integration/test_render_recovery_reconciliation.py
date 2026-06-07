@@ -51,6 +51,17 @@ def _age_intent(intent: RenderFollowUpIntent, *, hours: int = 4) -> RenderFollow
     return intent
 
 
+def _assert_remediation_plan_fields(finding: dict) -> None:
+    assert finding["candidate_action"]
+    assert finding["action_mode"] == "report_only"
+    assert finding["risk_level"] in {"low", "medium", "high"}
+    assert isinstance(finding["requires_operator_checks"], list)
+    assert finding["requires_operator_checks"]
+    assert finding["mutation_if_applied"]
+    assert finding["dedupe_impact"]
+    assert finding["suggested_manual_command"]
+
+
 def test_detects_stuck_render_jobs():
     project = _make_project("stuck_render")
     stale_pending = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
@@ -122,6 +133,13 @@ def test_pending_video_export_without_task_id_reports_dispatch_window_detail():
     assert "dispatch_window_candidate" in finding.detail
     assert "API dispatch crash window" in finding.detail
     assert "no recorded Celery task id" in finding.recommended_action
+    payload = finding.as_dict()
+    _assert_remediation_plan_fields(payload)
+    assert payload["candidate_action"] == "inspect_pending_video_export_without_task_id"
+    assert payload["action_mode"] == "report_only"
+    assert payload["risk_level"] == "high"
+    assert payload["dedupe_impact"] == "would_unblock_render_dedupe_if_failed_or_cancelled"
+    assert "no task was enqueued" in payload["mutation_if_applied"]
 
     orphan.refresh_from_db()
     assert {
@@ -164,6 +182,7 @@ def test_report_generation_summary_counts():
     assert payload["summary"]["stuck_render_count"] >= 1
     assert "oldest_stuck_age_hours" in payload["summary"]
     assert payload["findings"]
+    _assert_remediation_plan_fields(payload["findings"][0])
 
 
 def test_render_recovery_check_command_text_output():
@@ -178,6 +197,8 @@ def test_render_recovery_check_command_text_output():
     assert "Stuck render jobs:" in output
     assert "Orphan recovery candidates:" in output
     assert "recommended action:" in output
+    assert "candidate action:" in output
+    assert "action mode: report_only" in output
 
 
 def test_render_recovery_check_command_json_output():
@@ -191,6 +212,74 @@ def test_render_recovery_check_command_json_output():
     assert payload["dry_run"] is True
     assert payload["summary"]["total_findings"] >= 1
     assert payload["findings"][0]["category"] in {"stuck_render_job", "orphan_recovery_candidate"}
+    _assert_remediation_plan_fields(payload["findings"][0])
+
+
+def test_stale_followup_intent_reports_plan_without_mutating_state():
+    project = _make_project("stale_intent_plan")
+    active_job = Job.objects.create(project=project, job_type="video_export", status="running", celery_task_id="task-active")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"active_job_id": active_job.id, "reason": "transcript_edit"},
+        )
+    )
+    before = {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    }
+
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+    matches = [
+        finding.as_dict()
+        for finding in report.findings
+        if finding.category == "stuck_followup_intent"
+        and finding.object_type == "RenderFollowUpIntent"
+        and finding.object_id == intent.id
+    ]
+
+    assert matches
+    _assert_remediation_plan_fields(matches[0])
+    assert matches[0]["candidate_action"] == "inspect_stale_followup_intent"
+    assert matches[0]["action_mode"] == "report_only"
+    assert matches[0]["dedupe_impact"] == "would_unblock_followup_intent_uniqueness_if_cancelled"
+    intent.refresh_from_db()
+    assert {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    } == before
+
+
+def test_orphan_followup_intent_reference_reports_plan_without_mutating_state():
+    project = _make_project("orphan_intent_plan")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+    before = {"status": intent.status, "metadata": dict(intent.metadata or {})}
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["category"] == "orphan_recovery_candidate"
+        and finding["object_type"] == "RenderFollowUpIntent"
+        and finding["object_id"] == intent.id
+    ]
+
+    assert matches
+    _assert_remediation_plan_fields(matches[0])
+    assert matches[0]["candidate_action"] == "inspect_orphan_followup_intent_reference"
+    assert matches[0]["action_mode"] == "report_only"
+    intent.refresh_from_db()
+    assert {"status": intent.status, "metadata": dict(intent.metadata or {})} == before
 
 
 def test_render_recovery_check_requires_dry_run():

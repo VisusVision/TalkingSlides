@@ -65,3 +65,14 @@ class Command(BaseCommand):
             )
             self.stdout.write(f"    detail: {finding['detail']}")
             self.stdout.write(f"    recommended action: {finding['recommended_action']}")
+            self.stdout.write(f"    candidate action: {finding['candidate_action']}")
+            self.stdout.write(f"    action mode: {finding['action_mode']}")
+            self.stdout.write(f"    risk level: {finding['risk_level']}")
+            self.stdout.write(f"    mutation if applied: {finding['mutation_if_applied']}")
+            self.stdout.write(f"    dedupe impact: {finding['dedupe_impact']}")
+            if finding["suggested_manual_command"]:
+                self.stdout.write(f"    suggested manual command: {finding['suggested_manual_command']}")
+            if finding["requires_operator_checks"]:
+                self.stdout.write("    requires operator checks:")
+                for check in finding["requires_operator_checks"]:
+                    self.stdout.write(f"      - {check}")
