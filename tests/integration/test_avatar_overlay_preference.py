@@ -1043,6 +1043,13 @@ def _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch, runtime_settings=N
     return teacher, lesson, base_job
 
 
+def _post_avatar_rerender(teacher, lesson):
+    factory = APIRequestFactory()
+    request = factory.post(f"/api/v1/projects/{lesson.id}/avatar/rerender/", {}, format="json")
+    force_authenticate(request, user=teacher)
+    return views.ProjectAvatarRerenderView.as_view()(request, project_id=lesson.id)
+
+
 def test_avatar_only_rerender_enqueues_avatar_task_without_base_rerender(tmp_path, monkeypatch):
     runtime_settings = {
         "motion_preset": "subtle_gaze",
@@ -1104,6 +1111,76 @@ def test_avatar_only_rerender_enqueues_avatar_task_without_base_rerender(tmp_pat
     pref.refresh_from_db()
     assert pref.anchor == "bottom-left"
     assert float(pref.width_percent) == 30.0
+
+
+def test_repeated_avatar_only_rerender_reuses_active_reservation(tmp_path, monkeypatch):
+    teacher, lesson, _base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    dispatched = []
+
+    def fake_dispatch(task_name, *, args=None, kwargs=None, queue=None):
+        dispatched.append({"task_name": task_name, "kwargs": kwargs, "queue": queue})
+        return type("AsyncResult", (), {"id": f"avatar-only-task-{len(dispatched)}"})()
+
+    monkeypatch.setattr(views, "_dispatch_celery_task", fake_dispatch)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path), CELERY_AVATAR_QUEUE="avatar"):
+        first = _post_avatar_rerender(teacher, lesson)
+        second = _post_avatar_rerender(teacher, lesson)
+
+    assert first.status_code == 202
+    assert first.data["avatar_processing_status"] == "queued"
+    assert second.status_code == 200
+    assert second.data["avatar_processing_status"] == "queued"
+    assert second.data["avatar_job_id"] == str(first.data["avatar_job_id"])
+    assert second.data["message"] == "Avatar rerender is already queued or processing."
+    assert Job.objects.filter(project=lesson, job_type="avatar_render", status="pending").count() == 1
+    assert len(dispatched) == 1
+
+
+def test_avatar_only_rerender_treats_pending_avatar_job_as_active(tmp_path, monkeypatch):
+    teacher, lesson, _base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    pending_job = Job.objects.create(project=lesson, job_type="avatar_render", status="pending", progress=0)
+    lesson.avatar_processing_status = "none"
+    lesson.avatar_last_job_id = ""
+    lesson.save(update_fields=["avatar_processing_status", "avatar_last_job_id"])
+    monkeypatch.setattr(
+        views,
+        "_dispatch_celery_task",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate avatar task should not be queued")),
+    )
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = _post_avatar_rerender(teacher, lesson)
+
+    assert response.status_code == 200
+    assert response.data["avatar_processing_status"] == "queued"
+    assert response.data["avatar_job_id"] == str(pending_job.id)
+    assert response.data["message"] == "Avatar rerender is already queued or processing."
+    assert Job.objects.filter(project=lesson, job_type="avatar_render").count() == 1
+
+
+def test_avatar_only_rerender_dispatch_sees_reserved_job_state(tmp_path, monkeypatch):
+    teacher, lesson, _base_job = _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch)
+    observed = {}
+
+    def fake_dispatch(task_name, *, args=None, kwargs=None, queue=None):
+        avatar_job_id = kwargs["avatar_job_id"]
+        job = Job.objects.get(pk=avatar_job_id)
+        lesson.refresh_from_db()
+        observed["job_status"] = job.status
+        observed["project_status"] = lesson.avatar_processing_status
+        observed["project_job_id"] = lesson.avatar_last_job_id
+        return type("AsyncResult", (), {"id": "avatar-only-task-reserved"})()
+
+    monkeypatch.setattr(views, "_dispatch_celery_task", fake_dispatch)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path), CELERY_AVATAR_QUEUE="avatar"):
+        response = _post_avatar_rerender(teacher, lesson)
+
+    assert response.status_code == 202
+    assert observed["job_status"] == "pending"
+    assert observed["project_status"] == "queued"
+    assert observed["project_job_id"] == str(response.data["avatar_job_id"])
 
 
 def test_avatar_only_rerender_rejects_missing_playback_assets(tmp_path, monkeypatch):

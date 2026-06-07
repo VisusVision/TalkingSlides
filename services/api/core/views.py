@@ -4168,6 +4168,17 @@ def _active_video_export_job(project: Project) -> Job | None:
     )
 
 
+_ACTIVE_AVATAR_RENDER_STATUSES = ("pending", "running")
+
+
+def _active_avatar_render_job(project: Project) -> Job | None:
+    return (
+        project.jobs.filter(job_type="avatar_render", status__in=_ACTIVE_AVATAR_RENDER_STATUSES)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+
 def _render_job_response_avatar_fields(data: dict, avatar_options: dict | None) -> dict:
     avatar_options = avatar_options or {}
     data["avatar_processing_status"] = "queued" if avatar_options.get("enabled") else "none"
@@ -9318,39 +9329,59 @@ class ProjectAvatarRerenderView(APIView):
 
         avatar_cfg = {**avatar_options, "base_job_id": int(base_job.id)}
         output_rel_prefix = _avatar_rerender_output_prefix(project.id, base_job, sidecar)
-        avatar_job = Job.objects.create(project=project, job_type="avatar_render", status="pending", progress=0)
-        handoff_manifest_path = _write_avatar_rerender_handoff_manifest(
-            storage_root=storage_root,
-            project_id=project.id,
-            base_job_id=int(base_job.id),
-            payload={
-                "schema_version": 1,
-                "project_id": int(project.id),
-                "base_job_id": int(base_job.id),
-                "avatar_job_id": int(avatar_job.id),
-                "created_at": timezone.now().isoformat(),
-                "ordered_results": ordered_results,
-                "avatar_settings": avatar_cfg,
-                "source_hashes": {
-                    "avatar_source_hash": str(avatar_cfg.get("avatar_source_hash") or ""),
-                    "avatar_preview_source_hash": str(avatar_cfg.get("avatar_preview_source_hash") or ""),
+        with transaction.atomic():
+            project = Project.objects.select_for_update().get(pk=project.pk)
+            locked_avatar_status = str(getattr(project, "avatar_processing_status", "") or "none").strip().lower()
+            active_avatar_job = _active_avatar_render_job(project)
+            if locked_avatar_status in {"queued", "processing"} or active_avatar_job is not None:
+                response_avatar_status = locked_avatar_status
+                if response_avatar_status not in {"queued", "processing"} and active_avatar_job is not None:
+                    response_avatar_status = "queued" if active_avatar_job.status == "pending" else "processing"
+                return Response(
+                    {
+                        "avatar_processing_status": response_avatar_status,
+                        "avatar_job_id": str(
+                            getattr(project, "avatar_last_job_id", "") or getattr(active_avatar_job, "id", "") or ""
+                        ),
+                        "avatar_runtime_settings": project_avatar_runtime_settings(project),
+                        "message": "Avatar rerender is already queued or processing.",
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            avatar_job = Job.objects.create(project=project, job_type="avatar_render", status="pending", progress=0)
+            handoff_manifest_path = _write_avatar_rerender_handoff_manifest(
+                storage_root=storage_root,
+                project_id=project.id,
+                base_job_id=int(base_job.id),
+                payload={
+                    "schema_version": 1,
+                    "project_id": int(project.id),
+                    "base_job_id": int(base_job.id),
+                    "avatar_job_id": int(avatar_job.id),
+                    "created_at": timezone.now().isoformat(),
+                    "ordered_results": ordered_results,
+                    "avatar_settings": avatar_cfg,
+                    "source_hashes": {
+                        "avatar_source_hash": str(avatar_cfg.get("avatar_source_hash") or ""),
+                        "avatar_preview_source_hash": str(avatar_cfg.get("avatar_preview_source_hash") or ""),
+                    },
+                    "render_metadata": {
+                        "output_rel_prefix": output_rel_prefix,
+                        "slide_count": len(ordered_results),
+                        "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or ""),
+                        "model_version": str(avatar_cfg.get("model_version") or ""),
+                        "avatar_only_rerender": True,
+                    },
+                    "status": "created",
                 },
-                "render_metadata": {
-                    "output_rel_prefix": output_rel_prefix,
-                    "slide_count": len(ordered_results),
-                    "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or ""),
-                    "model_version": str(avatar_cfg.get("model_version") or ""),
-                    "avatar_only_rerender": True,
-                },
-                "status": "created",
-            },
-        )
-        _update_project_avatar_api_state(
-            project,
-            avatar_status="queued",
-            message="Avatar is still processing and will be added when ready.",
-            job_id=avatar_job.id,
-        )
+            )
+            _update_project_avatar_api_state(
+                project,
+                avatar_status="queued",
+                message="Avatar is still processing and will be added when ready.",
+                job_id=avatar_job.id,
+            )
         try:
             async_result = _dispatch_celery_task(
                 _AVATAR_OVERLAY_TASK,
