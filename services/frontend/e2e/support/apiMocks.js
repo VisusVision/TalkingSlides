@@ -8,13 +8,16 @@ export function jsonResponse(payload, status = 200) {
   };
 }
 
-export function collectBrowserErrors(page) {
+export function collectBrowserErrors(page, { allowConsoleError = () => false } = {}) {
   const consoleErrors = [];
   const pageErrors = [];
 
   page.on('console', (message) => {
     if (message.type() === 'error') {
-      consoleErrors.push(message.text());
+      const text = message.text();
+      if (!allowConsoleError(text)) {
+        consoleErrors.push(text);
+      }
     }
   });
   page.on('pageerror', (error) => {
