@@ -2,11 +2,11 @@
 
 ## Executive Summary
 
-This audit was created on branch `chore/repo-cleanup-audit` after confirming Phase 4 Studio TTS work is present. The current TTS milestone is complete enough to close: preview, persisted project settings, worker/rerender wiring, and Studio save/preview/rerender UI are all present.
+This audit was originally created on branch `chore/repo-cleanup-audit` after confirming Phase 4 Studio TTS work was present. It has since been refreshed after the recovery, reliability, storage, frontend E2E, security, and test-hygiene cleanup work.
 
-The lowest-risk cleanup targets are duplicate or unused repo artifacts: the old `services/tts_service/preprocess/` package, the prototype-only root `frontend/` folder, `scripts/tmp_import_check.py`, and tracked generated artifacts such as `infra/out.log`. Environment and storage cleanup should be handled in separate phases because current Docker and local defaults disagree in several places.
+The earlier low-risk cleanup targets have been removed: the old `services/tts_service/preprocess/` package, prototype-only root `frontend/` folder, `scripts/tmp_import_check.py`, and tracked generated `infra/out.log`. `services/api/db.sqlite3` is no longer source-controlled. Active TTS preprocessing remains under `services/tts_service/tts_preprocess/`, and active frontend work remains under `services/frontend/`.
 
-Subtitle generation is partially implemented for original-language SRT/VTT playback assets, but the frontend player does not yet render subtitle tracks or expose a CC selector. Multilingual subtitle translation is not started beyond placeholder language detection. Dictionary-first TTS intelligence and optional LLM pronunciation suggestions remain future work.
+Subtitle generation now includes original and translated SRT/VTT track metadata, tokenized VTT exposure, async public request guardrails, and partial Watch/Studio controls. HLS, subtitle tracks, watermark overlays, and avatar overlays are partially wired into the frontend player, but browser coverage is not complete and staging media/provider validation remains open. Recovery reporting/manual guardrails are report/annotation-only; there is still no recovery apply mode.
 
 ## Phase 4 Presence Check
 
@@ -29,13 +29,13 @@ Subtitle generation is partially implemented for original-language SRT/VTT playb
 | TTS glossary env | `infra/.env.example` now contains `TTS_GLOSSARY_PATH=/app/tts_preprocess/glossary.json`. | `services/tts_service/README.md` documents `/app/tts_preprocess/glossary.json`. Docker worker copies `tts_preprocess/`. | Low. | Keep this path aligned with TTS README and container copy paths. |
 | Django settings env | `infra/.env.example` now uses `DJANGO_SETTINGS_MODULE=config.settings`. | Active API files live under `services/api/config/settings.py`; compose runs Django/Celery from the service layout. | Low. | Keep README examples aligned. |
 | Frontend API env | `infra/.env.example` now contains `VITE_API_BASE_URL`, and `services/frontend/src/api.js` reads it with the same local fallback. | Active app is `services/frontend/`; no Next.js app is present. | Low. | Keep deployment docs aligned with Vite. |
-| MinIO/S3 env | `infra/.env.example` includes MinIO/AWS variables, but active storage code primarily uses local `STORAGE_ROOT`. | Searches show local storage services and no active S3 provider integration. | Keeping unused object-storage env can imply a supported storage mode that is not actually wired. | Phase B: mark MinIO/S3 as future/optional or remove from template after storage design is decided. |
-| Root frontend prototype | Root `frontend/` contains static HTML prototype files and a small package lock. Active React app is `services/frontend/`. | Root `frontend/` has files such as `studio.html`, `analytics.html`, and zero-byte prototype pages. `services/frontend/` has `package.json`, Vite config, and React `src/`. README identifies `services/frontend` as active. | Low app-runtime risk, but deleting prototypes may remove design reference material. | Phase A: delete root `frontend/` after one final reference search, or archive screenshots first if the prototypes still have design value. |
-| Root package lock | No root `package-lock.json` exists. The only prototype lock found is `frontend/package-lock.json`. | `Test-Path package-lock.json` was false; active lockfile is `services/frontend/package-lock.json`. | None for root lock. The prototype lock should go with root `frontend/` if that directory is deleted. | No root cleanup needed. Remove `frontend/package-lock.json` only as part of deleting prototype `frontend/`. |
-| Root temp script | `scripts/tmp_import_check.py` is a temporary import probe and is not referenced by docs, Docker, CI, or app code. | Active script directory is `services/scripts/`; Docker worker copies `services/scripts/`. Search found no active references to `scripts/tmp_import_check.py`. | Very low. | Phase A: delete `scripts/tmp_import_check.py` after final reference check. |
+| MinIO/S3 env | `infra/.env.example` includes MinIO/AWS variables, and the code has an opt-in boto3-backed adapter behind `STORAGE_BACKEND=s3`. Filesystem remains the default runtime backend. | `services/api/core/storage_adapter.py` defines filesystem and S3 adapters; docs keep runtime media migration behind explicit staging proof. | Overstating S3 readiness could imply runtime media migration is complete. | Keep S3/MinIO described as an approved adapter foundation, not the default runtime storage path. |
+| Root frontend prototype | The old root prototype folder has been removed. Active React app code is under `services/frontend/`. | `services/frontend/` has `package.json`, Vite config, React `src/`, Vitest tests, and Playwright E2E specs. No root `frontend/` folder exists in the current tree. | Low. | Keep new frontend work in `services/frontend/` unless a separate prototype area is explicitly approved. |
+| Root package lock | No root `package-lock.json` exists, and the removed prototype lock is gone with the old prototype folder. | Active lockfile is `services/frontend/package-lock.json`. | Low. | No root cleanup needed. |
+| Root temp script | `scripts/tmp_import_check.py` has been removed. Active shared scripts remain under `services/scripts/`. | Current source search finds no tracked temp import probe. | Low. | Avoid adding one-off probe scripts to source control. |
 | Misplaced infra | `services/infra/` does not exist. Root `infra/` is the active Docker/compose area. | `Test-Path services/infra` returned false; compose and Dockerfiles are under root `infra/`. | None for `services/infra`. | No deletion needed for `services/infra`. Keep root `infra/`. |
-| Tracked generated log | `infra/out.log` is tracked and appears to be generated runtime output. | `git ls-files` includes `infra/out.log`. | Low app risk, but deleting tracked logs may surprise someone using it as debugging evidence. | Phase A: delete `infra/out.log` and ensure logs are ignored. |
-| Tracked local database | `services/api/db.sqlite3` is tracked. | `git ls-files` includes `services/api/db.sqlite3`. | Higher than log cleanup because some tests or local demos may accidentally rely on seeded data. | Phase C: inspect contents and test assumptions before removal. Prefer migrations/fixtures over tracked DB. |
+| Generated log artifact | `infra/out.log` has been removed from source control. | Current tracked-file search finds no `infra/out.log`. | Low. | Keep generated logs ignored. |
+| Local database artifact | `services/api/db.sqlite3` has been removed from source control. | Current tracked-file search finds no `services/api/db.sqlite3`. | Low. Local DB files can still exist as developer runtime state. | Prefer migrations and explicit fixtures for durable test/demo data. |
 | Storage directories | Multiple `storage_local` directories exist and are ignored: root, `infra/storage_local`, `services/api/storage_local`, and `services/tts_service/storage_local`. | Directory search found multiple `storage_local` locations. Ignored status shows `infra/storage_local/` and root `storage_local/`. Compose mounts `./storage_local:/app/storage_local` from inside `infra/`. | Runtime files can scatter across paths; changing mounts can break local Docker users. | Phase C: choose one canonical local dev path. Prefer root `storage_local/` mounted into Docker as `/app/storage_local` or a future `/app/storage` path. Do not put canonical runtime storage under `infra/` long-term. |
 | Docker storage layout | Docker now uses repo-root `storage_local` mounted at `/app/storage_local`. | `infra/docker-compose.yml` bind mount paths use `../storage_local:/app/storage_local`. | Lower; leftover old local files may still exist under `infra/storage_local` for some developers. | Keep migration notes for anyone with old local runtime files. |
 
@@ -46,13 +46,13 @@ Subtitle generation is partially implemented for original-language SRT/VTT playb
 | Original SRT generation | Implemented | `services/scripts/ffmpeg_helpers.py` defines `generate_srt` and `generate_srt_from_cues`. `services/worker/tasks.py` writes `final/{project_id}.srt` and updates `Job.srt_url`. | Keep regression tests around transcript rerender and original-text captions. |
 | Subtitle chunk metadata | Implemented | `services/api/core/models.py` has `TranscriptPage.subtitle_chunks` and `chunk_timeline`. Worker stores subtitle/page timeline metadata. Serializers expose these fields. | Confirm long presentations keep timing stable after targeted rerenders. |
 | API subtitle exposure | Implemented | `Job.srt_url` is serialized. Playback payload includes `srt_url` / `has_srt`. `MediaStreamView` can serve subtitle content as WebVTT using `_srt_text_to_vtt`. | Add explicit API docs for subtitle URL/token behavior. |
-| Frontend subtitle playback | Partial | `services/frontend/src/pages/Watch.jsx` reads `playbackData.srt_url`, but `services/frontend/src/components/player/VideoStage.jsx` renders a plain video element without a `<track>` or CC selector. | Add subtitle track rendering and a CC toggle/language selector. |
+| Frontend subtitle playback | Partial | `services/frontend/src/pages/Watch.jsx` manages subtitle track selection/request state, and `VideoStage.jsx`/`HlsPlayer.jsx` render ready VTT tracks with an in-player caption layer. | Add broader browser coverage for original/translated tracks, failure states, and regenerated subtitles after rerender. |
 | Caption source text | Implemented correctly | Worker subtitle chunks are based on original narration/transcript text. TTS metadata may contain normalized/spoken text, but tests verify SRT uses original text. | Keep this invariant when adding multilingual or pronunciation features. |
 | Transcript rerender subtitle refresh | Implemented for original subtitles | Transcript pipeline tests cover subtitle chunk updates and rerender paths. Worker rebuilds timeline/subtitle metadata during rerender/finalization. | Add end-to-end playback verification for regenerated SRT after transcript edits. |
 | Language detection | Partial placeholder | Worker/API create `language_detection.json` sidecars with `detector: placeholder_v1` / heuristic metadata. Tests assert placeholder behavior. | Replace placeholder with a real detector or explicit user-selected source language. |
-| Multilingual subtitle translation | Not started | No translation provider, model/service, DB track model, translated subtitle files, or frontend CC language selector was found. | Design translation jobs, provider config, subtitle track storage, API exposure, and frontend selector. |
-| Translated subtitle assets | Not started | No `subtitle_tracks`, `target_language`, `captions_tr/en/ar`, or translation output assets exist. | Generate translated SRT/VTT files and persist metadata per language. |
-| Translation provider/model | Not started | Searches found no real translation service integration. | Choose provider/model, queuing strategy, error handling, and cost controls. |
+| Multilingual subtitle translation | Partially implemented | Backend has `TranslatedSubtitleTrack`, provider selection/fallback, async worker generation, public request guardrails, and tokenized ready-track listing. Watch/Studio expose partial request/select flows. | Validate production providers in staging; add durable quota/cost/admin controls before broad rollout. |
+| Translated subtitle assets | Partially implemented | Ready translated tracks can store SRT/VTT paths and expose tokenized VTT URLs. Rerender does not automatically regenerate translations. | Define stale-translation handling after transcript changes. |
+| Translation provider/model | Partially implemented | Auto provider chain can use configured API, Ollama, LibreTranslate, Argos, or mock fallback when allowed. | Keep production mock fallback disabled and validate configured providers before production use. |
 
 ## TTS Intelligence Future Work
 
@@ -61,43 +61,43 @@ Subtitle generation is partially implemented for original-language SRT/VTT playb
 | Turkish normalization | Implemented baseline | `services/tts_service/tts_preprocess/tr_normalizer.py`, `normalizer.py`, `glossary.py`, `glossary.json` | Current system supports Turkish normalization and request-local/project overrides. |
 | Project pronunciation overrides | Implemented | `services/api/core/models.py`, `serializers.py`, `views.py`, `services/tts_service/main.py`, `services/frontend/src/components/studio/TtsSettingsPanel.jsx` | Overrides are persisted per project and applied to preview/generation without mutating global glossary files. |
 | Override protection from re-normalization | Implemented | `services/tts_service/main.py`, `services/tts_service/tts_preprocess/`, `tests/integration/test_tts_preview_protection.py` | Keep this behavior when adding dictionary-first resolver logic. |
-| Dictionary-first Turkish resolver | Planned, not implemented | `services/tts_service/tts_preprocess/` plus new tests in `tests/integration/test_tts_text_normalization.py` / `test_tts_preview.py` | Do not mix this with cleanup. Design dictionary precedence and ambiguity handling first. |
-| English/technical dictionary fallback | Planned, not implemented | `services/tts_service/tts_preprocess/`, optional data files under that package | Should layer after Turkish-first lookup and before generic normalization. |
-| Acronym resolver | Partial | Current glossary/normalizer code handles some abbreviation/acronym cases. Future owner remains `services/tts_service/tts_preprocess/`. | A full acronym resolver should define language-aware spelling rules and tests. |
-| Optional Llama/LLM pronunciation suggestions | Planned, not implemented | Future service boundary plus Django endpoints only after resolver is stable | Keep optional and offline-safe. Suggestions should not silently change generation without user confirmation. |
+| Dictionary-first Turkish resolver | Partially implemented | `services/tts_service/tts_preprocess/deterministic_resolver.py` plus tests in `tests/integration/test_tts_text_normalization.py` / `test_tts_preview.py` | Expand curated dictionaries from observed project needs only. |
+| English/technical dictionary fallback | Partially implemented | Curated English technical fallback lives under `services/tts_service/tts_preprocess/`. | Keep precedence conservative; manual/project overrides still win. |
+| Acronym resolver | Partially implemented | Acronym ownership moved into deterministic resolver data under `services/tts_service/tts_preprocess/`. | Continue adding language-aware cases with tests. |
+| Optional Llama/LLM pronunciation suggestions | Implemented as optional assistance | Django endpoint and Studio UI can request disabled-by-default suggestions for unknown/ambiguous terms; accepted suggestions become normal draft override rows and do not add render-path intelligence. | Keep optional and offline-safe. Suggestions should not silently change generation without user confirmation. |
 | Global/shared glossary CRUD | Planned, not implemented | Django `core` models/serializers/views/urls, Studio component under `services/frontend/src/components/studio/` | Do not replace project overrides. Shared glossary needs ownership, permission, and audit rules. |
 
 ## Safe Cleanup Phases
 
 Phase A: safe deletions only  
-Delete only artifacts confirmed unused by final reference checks: old TTS `preprocess/`, root static `frontend/`, `scripts/tmp_import_check.py`, and tracked generated logs. Run import isolation and frontend build after deletion.
+Completed. The old TTS `preprocess/`, root static prototype folder, `scripts/tmp_import_check.py`, and generated `infra/out.log` were removed after reference checks.
 
 Phase A completion note: the confirmed-unused duplicate TTS `preprocess/` package, root static `frontend/` prototype, `scripts/tmp_import_check.py`, and tracked generated `infra/out.log` were removed after reference checks. Active TTS preprocessing remains `services/tts_service/tts_preprocess/`, and the active frontend remains `services/frontend/`.
 
 Phase B: env unification  
-Treat `infra/.env.example` as canonical, then update stale Django settings, TTS glossary path, frontend API URL naming, XTTS flags, and MinIO/S3 comments. Align README and service docs at the same time.
+Mostly completed for Django settings, TTS glossary path, frontend API URL naming, XTTS flags, and Google OAuth placeholders. Continue auditing optional MinIO/S3 and media-token docs.
 
 Phase C: storage layout rationalization  
 Choose one local dev storage root. Prefer repo-root `storage_local/` for host development and a single Docker mount into `/app/storage_local` or a future `/app/storage`. Do not keep runtime storage under `infra/` as the long-term canonical path unless the team explicitly chooses that layout.
 
 Phase D: subtitle/multilingual implementation plan  
-Add frontend subtitle track rendering first, then design multilingual subtitle generation as a separate worker/API feature with track metadata, translated SRT/VTT assets, and a CC language selector.
+Partially implemented. Frontend subtitle rendering, track metadata, async translated SRT/VTT generation, and request/select controls exist, but provider validation, quota/cost controls, and stale-translation handling remain open.
 
 Phase E: dictionary-first TTS resolver plan  
-Plan dictionary-first Turkish/English pronunciation resolution inside `tts_preprocess/` before adding LLM suggestions or global glossary CRUD.
+Partially implemented. Deterministic acronym and curated technical fallback handling live inside `tts_preprocess/`; optional LLM suggestions are Studio assistance only and do not run during rendering.
 
 ## Exact Future Commands
 
-Run these checks before any deletion:
+Historical checks used before deletion:
 
 ```powershell
 git branch --show-current
 git status --short
 rg "from preprocess|import preprocess|services.tts_service.preprocess|tts_preprocess|preprocess/" .
-rg "frontend/|scripts/tmp_import_check.py|infra/out.log|services/api/db.sqlite3" README.md docs infra services tests scripts
+rg "scripts/tmp_import_check.py|infra/out.log|services/api/db.sqlite3" README.md docs infra services tests scripts
 ```
 
-Phase A cleanup commands, to run only after the checks above show no active references:
+Historical Phase A cleanup commands, already completed:
 
 ```powershell
 git rm -r -- services/tts_service/preprocess
