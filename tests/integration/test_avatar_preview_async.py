@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import django
 import pytest
-from django.db import connection
 from django.conf import settings
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
@@ -24,21 +23,14 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
 from core.models import Job, UserProfile, VoiceProfile  # noqa: E402
+from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 from worker import avatar_preview_flow  # noqa: E402
 
 pytestmark = pytest.mark.django_db
 
 
-def _table_has_column(table_name, column_name):
-    with connection.cursor() as cursor:
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        rows = cursor.fetchall()
-    return any(row[1] == column_name for row in rows)
-
-
 def _make_preview_ready_user(monkeypatch, username_prefix="teacher_preview_dedupe"):
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     suffix = uuid.uuid4().hex[:8]
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -93,8 +85,7 @@ def _post_preview_regenerate(user):
 
 
 def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     suffix = uuid.uuid4().hex[:8]
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -408,8 +399,7 @@ def test_current_avatar_preview_failure_updates_profile(monkeypatch):
 
 
 def test_avatar_preview_regenerate_rejects_missing_voice_profile():
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     suffix = uuid.uuid4().hex[:8]
     os.environ.setdefault("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -440,8 +430,7 @@ def test_avatar_preview_regenerate_rejects_missing_voice_profile():
 
 
 def test_avatar_preview_regenerate_blocks_without_consent():
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     suffix = uuid.uuid4().hex[:8]
     os.environ.setdefault("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -471,8 +460,7 @@ def test_avatar_preview_regenerate_blocks_without_consent():
 
 
 def test_avatar_preview_status_polling_returns_job_state():
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     suffix = uuid.uuid4().hex[:8]
     os.environ.setdefault("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -505,8 +493,7 @@ def test_avatar_preview_status_polling_returns_job_state():
 
 
 def test_avatar_preview_status_hides_preview_path_for_non_current_job():
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     suffix = uuid.uuid4().hex[:8]
     os.environ.setdefault("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")

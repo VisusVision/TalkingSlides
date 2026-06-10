@@ -19,25 +19,17 @@ django.setup()
 from django.conf import settings
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connection
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
 from core.models import UserProfile, VoiceProfile  # noqa: E402
+from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 
 pytestmark = pytest.mark.django_db
 
 
-def _table_has_column(table_name, column_name):
-    with connection.cursor() as cursor:
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        rows = cursor.fetchall()
-    return any(row[1] == column_name for row in rows)
-
-
 def test_avatar_prepare_returns_setup_not_prepared_when_requirements_missing(monkeypatch):
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
     monkeypatch.setenv("AVATAR_MUSETALK_CMD", "echo musetalk")
@@ -59,10 +51,8 @@ def test_avatar_prepare_returns_setup_not_prepared_when_requirements_missing(mon
 
 
 def test_avatar_prepare_marks_ready_when_assets_exist(monkeypatch):
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
-    if not _table_has_column("core_userprofile", "avatar_source_valid"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
+    skip_if_column_missing("core_userprofile", "avatar_source_valid")
 
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
     monkeypatch.setenv("AVATAR_MUSETALK_CMD", "echo musetalk")
@@ -125,8 +115,7 @@ def test_avatar_prepare_marks_ready_when_assets_exist(monkeypatch):
 
 
 def test_avatar_missing_processed_file_maps_to_needs_prepare(monkeypatch, tmp_path):
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -160,8 +149,7 @@ def test_avatar_missing_processed_file_maps_to_needs_prepare(monkeypatch, tmp_pa
 
 
 def test_avatar_prepare_regenerates_missing_processed_reference(monkeypatch, tmp_path):
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -232,8 +220,7 @@ def test_avatar_prepare_regenerates_missing_processed_reference(monkeypatch, tmp
 
 
 def test_avatar_source_hash_mismatch_requires_reprepare(monkeypatch, tmp_path):
-    if not _table_has_column("core_userprofile", "avatar_source_hash"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_source_hash")
 
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
@@ -263,8 +250,7 @@ def test_avatar_source_hash_mismatch_requires_reprepare(monkeypatch, tmp_path):
 
 
 def test_avatar_portrait_upload_with_consent_returns_setup_status(monkeypatch, tmp_path):
-    if not _table_has_column("core_userprofile", "avatar_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_image_original")
 
     monkeypatch.setattr(settings, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
