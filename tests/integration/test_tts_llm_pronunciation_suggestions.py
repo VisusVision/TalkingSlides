@@ -22,24 +22,16 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
-from django.db import connection  # noqa: E402
 from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
 
 from core import tts_llm_suggestions, views  # noqa: E402
 from core.models import Project, TranscriptPage, UserProfile, default_project_tts_settings  # noqa: E402
-
-
-def _table_has_column(table_name: str, column_name: str) -> bool:
-    with connection.cursor() as cursor:
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        rows = cursor.fetchall()
-    return any(row[1] == column_name for row in rows)
+from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 
 
 def _skip_if_tts_settings_missing() -> None:
-    if not _table_has_column("core_project", "tts_settings"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "tts_settings")
 
 
 def _make_user(prefix: str = "tts_l1_user") -> User:

@@ -16,22 +16,14 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
-from django.db import connection  # noqa: E402
 from core import views  # noqa: E402
 from core.models import Project, UserProfile  # noqa: E402
-
-
-def _table_has_column(table_name, column_name):
-    with connection.cursor() as cursor:
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        rows = cursor.fetchall()
-    return any(row[1] == column_name for row in rows)
+from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 
 
 @pytest.mark.django_db
 def test_resolve_avatar_options_includes_composite_fallback_allowed_boolean(monkeypatch):
-    if not _table_has_column("core_userprofile", "avatar_lipsync_engine"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_lipsync_engine")
 
     suffix = uuid.uuid4().hex[:8]
     user = User.objects.create_user(username=f"teacher_opts_{suffix}", password="pass")
