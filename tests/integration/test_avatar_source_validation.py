@@ -23,7 +23,6 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
-from django.db import connection  # noqa: E402
 
 from core.avatar_readiness import avatar_preview_readiness  # noqa: E402
 from core.avatar_source_validation import (  # noqa: E402
@@ -32,18 +31,11 @@ from core.avatar_source_validation import (  # noqa: E402
     validate_active_avatar_source,
 )
 from core.models import UserProfile, VoiceProfile  # noqa: E402
-
-
-def _table_has_column(table_name, column_name):
-    with connection.cursor() as cursor:
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        rows = cursor.fetchall()
-    return any(row[1] == column_name for row in rows)
+from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 
 
 def _require_avatar_source_columns():
-    if not _table_has_column("core_userprofile", "avatar_source_valid"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_userprofile", "avatar_source_valid")
 
 
 @pytest.mark.django_db
