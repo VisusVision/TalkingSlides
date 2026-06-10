@@ -6,7 +6,6 @@ from pathlib import Path
 
 import django
 import pytest
-from django.db import connection
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
 if str(API_ROOT) not in sys.path:
@@ -23,6 +22,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 from core import views  # noqa: E402
 from core.avatar_runtime_settings import default_avatar_runtime_settings, normalize_safe_avatar_motion_preset  # noqa: E402
 from core.models import AvatarOverlayPreference, AvatarRenderJob, Job, Project, UserProfile  # noqa: E402
+from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 
 pytestmark = pytest.mark.django_db
 
@@ -37,13 +37,6 @@ def _with_session(request):
     middleware.process_request(request)
     request.session.save()
     return request
-
-
-def _table_has_column(table_name, column_name):
-    with connection.cursor() as cursor:
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        rows = cursor.fetchall()
-    return any(row[1] == column_name for row in rows)
 
 
 def _frontend_source(*parts):
@@ -350,8 +343,7 @@ def test_frontend_no_avatar_lesson_does_not_render_overlay_layer():
 
 
 def test_avatar_overlay_preference_persists_per_user_and_lesson():
-    if not _table_has_column("core_project", "avatar_enabled_override"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "avatar_enabled_override")
 
     suffix = uuid.uuid4().hex[:8]
     teacher = User.objects.create_user(username=f"owner_{suffix}", password="pass")
@@ -825,8 +817,7 @@ def test_avatar_runtime_status_reports_static_fallback_warning():
 
 
 def test_avatar_visibility_hides_ready_artifact_without_deleting_it(tmp_path):
-    if not _table_has_column("core_project", "avatar_visible"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "avatar_visible")
 
     suffix = uuid.uuid4().hex[:8]
     teacher = User.objects.create_user(username=f"avatar_owner_{suffix}", password="pass")
@@ -897,8 +888,7 @@ def test_avatar_visibility_hides_ready_artifact_without_deleting_it(tmp_path):
 
 
 def test_watch_payload_exposes_avatar_only_when_visible_and_ready(tmp_path):
-    if not _table_has_column("core_project", "avatar_processing_status"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "avatar_processing_status")
 
     suffix = uuid.uuid4().hex[:8]
     teacher = User.objects.create_user(username=f"watch_avatar_{suffix}", password="pass")
