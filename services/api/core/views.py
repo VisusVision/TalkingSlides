@@ -4026,8 +4026,8 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
         if _is_staff_user(self.request.user):
-            return qs
-        return qs.filter(pk=self.request.user.pk)
+            return qs.order_by("id")
+        return qs.filter(pk=self.request.user.pk).order_by("id")
 
 
 class SlideViewSet(viewsets.ReadOnlyModelViewSet):
