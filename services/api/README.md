@@ -1,6 +1,6 @@
 # AI_ACADEMY – Django API Service
 
-A minimal Django REST Framework backend for the AI Academy edu-voice platform.
+The Django API service owns authenticated platform routes, teacher pipeline endpoints, catalog/playback metadata, and the storage-facing media contracts used by the frontend and worker.
 
 ## Project structure
 
@@ -142,16 +142,9 @@ If `AVATAR_PREVIEW_USE_RESTORATION=1`, `AVATAR_PREVIEW_RESTORE_CMD` is also requ
 
 ## API endpoints (v1)
 
-| Resource   | Endpoint              | Methods                |
-|------------|-----------------------|------------------------|
-| Teachers   | `/api/v1/teachers/`   | GET, POST, PUT, DELETE |
-| Projects   | `/api/v1/projects/`   | GET, POST, PUT, DELETE |
-| Slides     | `/api/v1/slides/`     | GET, POST, PUT, DELETE |
-| Jobs       | `/api/v1/jobs/`       | GET, POST, PUT, DELETE |
+The authoritative route registration is `services/api/core/urls.py`, mounted at `/api/v1/` by `services/api/config/urls.py`. Keep that file as the source of truth when adding or auditing endpoints.
 
-Query-param filters:
-- `/api/v1/projects/?teacher=<id>`
-- `/api/v1/slides/?project=<id>`
+Current route groups include auth/profile, catalog and playlists, teacher project pipeline, playback/media access, TTS preview, avatar setup/preview, analytics, and AI-agent routes. Router-backed resources include `/api/v1/users/`, `/api/v1/slides/`, and `/api/v1/jobs/`; project upload/detail/job-status routes are registered explicitly.
 
 ## DRM integration contract
 
@@ -220,7 +213,7 @@ The payload does not include raw storage paths, encryption keys, private signing
 
 ### Frontend usage
 
-The secure player reads the DRM block from the playback response, selects the preferred key system, sets up EME when available, and only sends the browser the license URL, certificate URL, asset ID, content ID, and playback session ID needed for player initialization. `drm_protected` lessons refuse silent MP4 downgrade and show a clear error when DRM cannot be initialized.
+The backend exposes the DRM/playback metadata contract consumed by the secure player: license URL, certificate URL, key-system metadata, asset ID, content ID, playback session ID, protection mode, and fallback policy. Full frontend DRM initialization through EME/Shaka remains gated for a future integration path, so this README should not be read as claiming complete browser DRM playback support.
 
 ### What remains external
 
