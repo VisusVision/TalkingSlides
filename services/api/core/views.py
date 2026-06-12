@@ -9123,7 +9123,7 @@ class ProjectRerenderView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_review_project(request.user, project):
+        if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         enforce_unpublished_for_unresolved_moderation(project)
