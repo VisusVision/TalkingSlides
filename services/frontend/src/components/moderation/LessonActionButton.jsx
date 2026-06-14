@@ -8,6 +8,7 @@ import {
   reportLesson,
 } from '../../api';
 import { isStaffOrAdmin } from '../../lib/auth';
+import { safeInternalReturnTo } from '../../utils/routeSession';
 import Button from '../ui/Button';
 import ModalShell from '../ui/ModalShell';
 
@@ -27,6 +28,24 @@ function lessonIdFrom(lesson) {
   return lesson?.id || lesson?.project_id || lesson?.projectId || '';
 }
 
+function lessonReviewUrl(lesson, projectId) {
+  const params = new URLSearchParams();
+  params.set('mode', 'review');
+  params.set('view', 'editor');
+  params.set('lesson', String(projectId));
+  params.set('source', 'lesson-actions');
+  params.set('sourcePage', typeof window !== 'undefined' ? window.location.pathname || '/' : '/');
+  const reviewId = lesson?.admin_review_request_id || lesson?.review_id || lesson?.reviewRequestId;
+  const reportId = lesson?.moderation_report_id || lesson?.report_id || lesson?.reportId;
+  if (reviewId) params.set('review', String(reviewId));
+  if (reportId) params.set('report', String(reportId));
+  if (typeof window !== 'undefined') {
+    const returnTo = `${window.location.pathname || '/'}${window.location.search || ''}`;
+    params.set('returnTo', safeInternalReturnTo(returnTo, '/moderation'));
+  }
+  return `/studio?${params.toString()}`;
+}
+
 export default function LessonActionButton({
   lesson,
   user,
@@ -39,6 +58,7 @@ export default function LessonActionButton({
   const projectId = lessonIdFrom(lesson);
   const staff = isStaffOrAdmin(user);
   const lessonTitle = String(lesson?.title || `Lesson #${projectId || ''}`).trim();
+  const reviewUrl = useMemo(() => lessonReviewUrl(lesson, projectId), [lesson, projectId]);
   const [open, setOpen] = useState(false);
   const [category, setCategory] = useState(REPORT_CATEGORIES[0].value);
   const [message, setMessage] = useState('');
@@ -217,7 +237,7 @@ export default function LessonActionButton({
             </div>
 
             <Link
-              to="/moderation"
+              to={reviewUrl}
               className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-3 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
               onClick={closeModal}
             >
