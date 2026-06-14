@@ -65,6 +65,8 @@ def project_can_publish(project) -> bool:
     moderation = str(getattr(project, "moderation_status", "") or "")
     if not render_ready:
         return False
+    if project_has_render_required_draft(project):
+        return False
     if moderation not in APPROVED_MODERATION_STATUSES:
         return False
     if manual_moderation_blocks_publish(project):
@@ -74,6 +76,15 @@ def project_can_publish(project) -> bool:
     if moderation == "admin_approved":
         return True
     return not visual_moderation_blocks_publish(project) and not video_frame_audit_blocks_publish(project)
+
+
+def project_has_render_required_draft(project) -> bool:
+    try:
+        from core.drafts import draft_requires_render
+
+        return bool(draft_requires_render(project))
+    except Exception:
+        return False
 
 
 def manual_moderation_blocks_publish(project) -> bool:
@@ -236,6 +247,17 @@ def publication_block_payload(project) -> dict:
         return {
             "detail": "This lesson cannot be published until rendering is complete.",
             "reason": "render_not_ready",
+            "moderation_status": moderation,
+            "render_status": render_status,
+        }
+
+    if project_has_render_required_draft(project):
+        return {
+            "detail": (
+                "Saved Studio changes affect the rendered video or audio. "
+                "Run Save & Rerender before publishing this draft."
+            ),
+            "reason": "draft_render_required",
             "moderation_status": moderation,
             "render_status": render_status,
         }

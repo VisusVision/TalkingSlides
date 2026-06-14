@@ -676,7 +676,7 @@ def _publish_blocked_by_moderation(can_publish: bool, publish_block: dict[str, A
     if can_publish or not publish_block:
         return False
     reason = str(publish_block.get("reason") or "").strip()
-    return bool(reason and reason != "render_not_ready")
+    return bool(reason and reason not in {"render_not_ready", "draft_render_required"})
 
 
 def _visual_issue_fields(

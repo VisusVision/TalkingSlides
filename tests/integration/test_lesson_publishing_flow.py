@@ -22,6 +22,7 @@ from pathlib import Path
 
 import django
 import pytest
+from django.core.files.uploadedfile import SimpleUploadedFile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
@@ -36,8 +37,9 @@ from django.test.utils import override_settings  # noqa: E402
 from django.utils import timezone  # noqa: E402
 from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
 
+from ai_agents.serializers import moderation_summary_payload  # noqa: E402
 from core import views  # noqa: E402
-from core.models import Job, Project, UserProfile  # noqa: E402
+from core.models import Job, Project, TranscriptPage, UserProfile  # noqa: E402
 
 
 def _make_studio_user(username: str, role: str = "teacher"):
@@ -61,6 +63,74 @@ class _DummySession(dict):
 
     def save(self):
         self.session_key = self.session_key or "test-session"
+
+
+def _png_upload(name: str = "cover.png") -> SimpleUploadedFile:
+    return SimpleUploadedFile(
+        name,
+        (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+            b"\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
+            b"\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04"
+            b"\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82"
+        ),
+        content_type="image/png",
+    )
+
+
+def _make_publishable_project(owner, title: str = "Publish gate lesson") -> Project:
+    project = Project.objects.create(
+        title=title,
+        user=owner,
+        status="ready",
+        moderation_status="approved",
+        is_published=False,
+    )
+    Job.objects.create(project=project, job_type="video_export", status="done", result_url=f"{project.id}/lesson.mp4")
+    return project
+
+
+def _make_transcript_page(project: Project, text: str = "Safe public text") -> TranscriptPage:
+    return TranscriptPage.objects.create(
+        project=project,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text=text,
+        narration_text=text,
+        rich_text_html=text,
+        subtitle_chunks=[text],
+        editor_document={
+            "version": 1,
+            "html": text,
+            "paragraphs": [{"index": 0, "text": text}],
+            "text": {"narration_customized": False, "display_text_customized": False},
+        },
+    )
+
+
+def _patch_project_publish(project: Project, user, value: bool):
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/",
+        {"is_published": value},
+        format="json",
+    )
+    force_authenticate(request, user=user)
+    return views.ProjectDetailView.as_view()(request, project_id=project.id)
+
+
+def _save_transcript_draft(project: Project, page: TranscriptPage, text: str):
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {
+            "draft_only": True,
+            "pages": [{"id": page.id, "original_text": text, "narration_text": text}],
+        },
+        format="json",
+    )
+    force_authenticate(request, user=project.user)
+    return views.ProjectTranscriptView.as_view()(request, project_id=project.id)
 
 
 def _enable_avatar_for_teacher(user):
@@ -150,6 +220,166 @@ def test_owner_can_publish_and_unpublish_own_project():
     assert response.status_code == 200
     assert response.data["is_published"] is False
     project.refresh_from_db()
+    assert project.is_published is False
+
+
+@pytest.mark.django_db
+@override_settings(SOURCE_MODERATION_AUTO_ENABLED=True, SOURCE_MODERATION_BLOCK_RENDER_ON_REJECTION=True)
+def test_transcript_save_clears_moderation_but_publish_waits_for_rerender():
+    teacher = _make_teacher("publish_transcript_rerender_teacher")
+    project = _make_publishable_project(teacher, title="Transcript rerender gate")
+    page = _make_transcript_page(project, text="Safe active public text")
+
+    unsafe_response = _save_transcript_draft(project, page, "I will kill you tomorrow.")
+    safe_response = _save_transcript_draft(project, page, "This replacement narration is safe and educational.")
+    publish_response = _patch_project_publish(project, teacher, True)
+
+    project.refresh_from_db()
+    assert unsafe_response.status_code == 200
+    assert safe_response.status_code == 200
+    assert project.draft_data["metadata"]["dirty"] is True
+    assert project.draft_data["metadata"]["render_required"] is True
+    assert project.draft_data["metadata"]["moderation_status"] == "approved"
+    assert publish_response.status_code == 400
+    assert publish_response.data["reason"] == "draft_render_required"
+    moderation_payload = moderation_summary_payload(project)
+    assert moderation_payload["publish_block_reason"] == "draft_render_required"
+    assert moderation_payload["publish_blocked_by_moderation"] is False
+    assert project.is_published is False
+
+
+@pytest.mark.django_db
+def test_background_change_save_blocks_publish_until_rerender(tmp_path, monkeypatch):
+    teacher = _make_teacher("publish_background_rerender_teacher")
+    project = _make_publishable_project(teacher, title="Background rerender gate")
+    page = _make_transcript_page(project, text="Safe active background text")
+    monkeypatch.setattr(
+        views,
+        "_run_auto_visual_moderation_for_changed_asset",
+        lambda *args, **kwargs: {"enabled": True, "status": "done", "final_decision": "allow", "finding_count": 0},
+    )
+
+    request = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/",
+        {"background_file": _png_upload("background.png"), "draft_only": True},
+        format="multipart",
+    )
+    force_authenticate(request, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        save_response = views.TranscriptPageBackgroundUploadView.as_view()(request, project_id=project.id, page_id=page.id)
+    publish_response = _patch_project_publish(project, teacher, True)
+
+    project.refresh_from_db()
+    assert save_response.status_code == 200
+    assert project.draft_data["metadata"]["background_dirty"] is True
+    assert project.draft_data["metadata"]["render_required"] is True
+    assert publish_response.status_code == 400
+    assert publish_response.data["reason"] == "draft_render_required"
+    assert project.is_published is False
+
+
+@pytest.mark.django_db
+def test_cover_only_safe_change_can_promote_and_publish_without_rerender(tmp_path, monkeypatch):
+    teacher = _make_teacher("publish_cover_only_teacher")
+    project = _make_publishable_project(teacher, title="Cover only gate")
+    monkeypatch.setattr(
+        views,
+        "_run_auto_visual_moderation_for_changed_asset",
+        lambda *args, **kwargs: {"enabled": True, "status": "done", "final_decision": "allow", "finding_count": 0},
+    )
+    monkeypatch.setattr(
+        views,
+        "_run_draft_visual_moderation_before_promotion",
+        lambda *args, **kwargs: {"enabled": True, "status": "done", "final_decision": "allow", "finding_count": 0},
+    )
+
+    upload_request = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/cover/",
+        {"cover_file": _png_upload("cover.png")},
+        format="multipart",
+    )
+    force_authenticate(upload_request, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        upload_response = views.ProjectCoverImageView.as_view()(upload_request, project_id=project.id)
+    promote_request = APIRequestFactory().post(f"/api/v1/projects/{project.id}/draft/promote/", {}, format="json")
+    force_authenticate(promote_request, user=teacher)
+    promote_response = views.ProjectDraftPromoteView.as_view()(promote_request, project_id=project.id)
+    publish_response = _patch_project_publish(project, teacher, True)
+
+    project.refresh_from_db()
+    assert upload_response.status_code == 200
+    assert upload_response.data["render_required"] is False
+    assert promote_response.status_code == 200
+    assert promote_response.data["render_required"] is False
+    assert project.draft_data == {}
+    assert project.cover_image_original.startswith(f"uploads/{project.id}/cover_")
+    assert publish_response.status_code == 200
+    assert project.is_published is True
+
+
+@pytest.mark.django_db
+def test_notes_only_metadata_draft_does_not_block_publish():
+    teacher = _make_teacher("publish_notes_only_teacher")
+    project = _make_publishable_project(teacher, title="Notes only gate")
+    project.draft_data = {
+        "metadata": {
+            "dirty": True,
+            "metadata_dirty": True,
+            "cover_dirty": False,
+            "transcript_dirty": False,
+            "source_dirty": False,
+            "tts_dirty": False,
+            "background_dirty": False,
+            "visual_assets_dirty": False,
+            "render_required": False,
+        }
+    }
+    project.save(update_fields=["draft_data", "updated_at"])
+
+    response = _patch_project_publish(project, teacher, True)
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert project.is_published is True
+
+
+@pytest.mark.django_db
+def test_safe_replacement_visual_clears_draft_warning_but_publish_waits_for_rerender(tmp_path, monkeypatch):
+    teacher = _make_teacher("publish_visual_replace_teacher")
+    project = _make_publishable_project(teacher, title="Visual replacement gate")
+    page = _make_transcript_page(project, text="Safe active visual text")
+    decisions = iter(
+        [
+            {"enabled": True, "status": "done", "final_decision": "needs_admin_review", "finding_count": 1},
+            {"enabled": True, "status": "done", "final_decision": "allow", "finding_count": 0},
+        ]
+    )
+    monkeypatch.setattr(views, "_run_auto_visual_moderation_for_changed_asset", lambda *args, **kwargs: next(decisions))
+
+    first_request = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/",
+        {"background_file": _png_upload("unsafe-background.png"), "draft_only": True},
+        format="multipart",
+    )
+    force_authenticate(first_request, user=teacher)
+    second_request = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/",
+        {"background_file": _png_upload("safe-background.png"), "draft_only": True},
+        format="multipart",
+    )
+    force_authenticate(second_request, user=teacher)
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        first_response = views.TranscriptPageBackgroundUploadView.as_view()(first_request, project_id=project.id, page_id=page.id)
+        second_response = views.TranscriptPageBackgroundUploadView.as_view()(second_request, project_id=project.id, page_id=page.id)
+    publish_response = _patch_project_publish(project, teacher, True)
+
+    project.refresh_from_db()
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert project.draft_data["metadata"]["moderation_status"] == "approved"
+    assert project.draft_data["metadata"]["render_required"] is True
+    assert publish_response.status_code == 400
+    assert publish_response.data["reason"] == "draft_render_required"
     assert project.is_published is False
 
 

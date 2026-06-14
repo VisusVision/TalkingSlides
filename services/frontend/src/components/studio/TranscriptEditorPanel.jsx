@@ -506,6 +506,14 @@ function suggestionDraftNarrationText(suggestion = {}) {
   return textValue(suggestion.draft_narration || suggestion.copy_text).trim();
 }
 
+function suggestionDraftLabel(suggestion = {}) {
+  const provider = textValue(suggestion.generated_by || suggestion.provider).trim().toLowerCase();
+  if (provider === 'heuristic' || provider === 'local_heuristic' || suggestion.ai_generated === false) {
+    return 'Heuristic suggestion';
+  }
+  return 'AI draft';
+}
+
 const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   project,
   pages,
@@ -1080,7 +1088,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   const controlsDisabled = readOnly || saving || rerendering || actioning;
 
   const applyNarrationDraftToPage = useCallback(
-    ({ targetPage, targetIndex, nextText, currentNarrationRaw }) => {
+    ({ targetPage, targetIndex, nextText, currentNarrationRaw, draftLabel = 'AI draft' }) => {
       let updatedPage = null;
       setDraftPages((current) => {
         const nextPages = current.map((page, pageIndex) => {
@@ -1108,11 +1116,12 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         [targetKey]: {
           previousText: currentNarrationRaw,
           appliedText: nextText,
+          draftLabel,
           appliedAt: Date.now(),
         },
       }));
       setError('');
-      setStatusMessage('AI draft applied. Review it, then save changes when ready.');
+      setStatusMessage(`${draftLabel} applied. Review it, then save changes when ready.`);
       onSelectPage?.(updatedPage || targetPage, targetIndex);
       return { ok: true, pageIndex: targetIndex, pageKey: targetKey };
     },
@@ -1125,9 +1134,9 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     }
     const nextText = suggestionDraftNarrationText(suggestion);
     if (!nextText) {
-      setError('This suggestion does not include an AI draft narration to apply.');
+      setError('This suggestion does not include draft narration to apply.');
       setStatusMessage('');
-      return { ok: false, message: 'This suggestion does not include an AI draft narration to apply.' };
+      return { ok: false, message: 'This suggestion does not include draft narration to apply.' };
     }
 
     const requestedKey = textValue(suggestion.pageKey || suggestion.page_key).trim();
@@ -1150,23 +1159,28 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
     const targetPage = draftPages[targetIndex];
     const currentNarrationRaw = textValue(targetPage?.narration_text);
     const currentNarration = currentNarrationRaw.trim();
+    const draftLabel = suggestionDraftLabel(suggestion);
+    const draftLabelLower = draftLabel.toLowerCase();
     setError('');
     setStatusMessage('');
     setPendingConfirmation({
       kind: 'ai_draft',
-      title: 'Apply AI draft to this page?',
+      eyebrow: draftLabel,
+      title: `Apply ${draftLabelLower} to this page?`,
       pageLabel: pageDescriptor(targetPage, targetIndex),
       currentPreview: previewText(currentNarration),
       draftPreview: previewText(nextText),
+      draftPreviewLabel: `${draftLabel} preview`,
       message: currentNarration && currentNarration !== nextText
         ? 'This will replace the current draft narration for this page.'
         : 'This page does not have custom narration yet.',
-      confirmLabel: 'Apply AI draft',
+      confirmLabel: `Apply ${draftLabelLower}`,
       onConfirm: () => applyNarrationDraftToPage({
         targetPage,
         targetIndex,
         nextText,
         currentNarrationRaw,
+        draftLabel,
       }),
     });
     return { ok: false, cancelled: true, pendingConfirmation: true, message: 'Review the apply confirmation.' };
@@ -1203,12 +1217,13 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
       return next;
     });
     setError('');
-    setStatusMessage('AI draft undone.');
+    setStatusMessage(`${marker.draftLabel || 'AI draft'} undone.`);
     onSelectPage?.({ ...page, narration_text: previousText }, index);
   }, [aiAppliedDraftsByPageKey, draftPages, onSelectPage, persistLocalTranscriptPages]);
 
   const saveTranscript = useCallback(
-    async ({ triggerRerender = false } = {}) => {
+    async (options = {}) => {
+      const { triggerRerender = false, renderWithAvatar, avatarEnabled } = options;
       if (readOnly) return project || null;
       if (!project?.id || saving || rerendering) return;
 
@@ -1227,11 +1242,19 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
           return;
         }
 
-        const response = await updateProjectTranscript(project.id, payloadPages, {
+        const transcriptOptions = {
           triggerRerender,
           pauseSec: project?.tts_settings?.pause_seconds ?? undefined,
           langHint: 'auto',
-        });
+        };
+        const hasAvatarOption =
+          Object.prototype.hasOwnProperty.call(options, 'renderWithAvatar') ||
+          Object.prototype.hasOwnProperty.call(options, 'avatarEnabled');
+        if (triggerRerender && hasAvatarOption) {
+          transcriptOptions.renderWithAvatar = Boolean(renderWithAvatar ?? avatarEnabled);
+        }
+
+        const response = await updateProjectTranscript(project.id, payloadPages, transcriptOptions);
 
         let updatedPages = null;
         try {
@@ -1446,7 +1469,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         <ModalShell
           open={Boolean(pendingConfirmation)}
           titleId="transcript-confirmation-title"
-          eyebrow={pendingConfirmation?.kind === 'ai_draft' ? 'AI draft' : 'Transcript action'}
+          eyebrow={pendingConfirmation?.kind === 'ai_draft' ? pendingConfirmation?.eyebrow || 'AI draft' : 'Transcript action'}
           title={pendingConfirmation?.title || 'Confirm action'}
           onClose={() => setPendingConfirmation(null)}
           maxWidthClass="max-w-2xl"
@@ -1485,9 +1508,9 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                   </p>
                 </div>
                 <div className="rounded-xl border border-[color:rgba(208,188,255,0.32)] bg-[color:rgba(208,188,255,0.08)] p-3">
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">AI draft preview</p>
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">{pendingConfirmation.draftPreviewLabel || 'AI draft preview'}</p>
                   <p className="mt-2 min-h-[4rem] whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-primary)]">
-                    {pendingConfirmation.draftPreview || 'No AI draft text.'}
+                    {pendingConfirmation.draftPreview || 'No draft text.'}
                   </p>
                 </div>
               </div>
@@ -1659,7 +1682,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                     <span className="inline-flex flex-wrap items-center gap-2">
                       <span className="inline-flex items-center gap-1 rounded-full bg-[color:rgba(208,188,255,0.18)] px-2.5 py-1 text-xs font-semibold text-[var(--accent-primary)]">
                         <Sparkles size={12} />
-                        <span>AI draft</span>
+                        <span>{aiDraftMarker.draftLabel || 'AI draft'}</span>
                       </span>
                       <Button
                         size="sm"

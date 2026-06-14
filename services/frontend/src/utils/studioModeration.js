@@ -157,3 +157,20 @@ export function editorSaveAvailability({
     canSaveRerender: Boolean(requiresRerender && !moderationMessage),
   };
 }
+
+export function adminReviewBackLabel({
+  reportId = null,
+  source = '',
+  sourceItem = '',
+  returnTo = '',
+} = {}) {
+  const normalizedSource = normalized(source);
+  const normalizedSourceItem = normalized(sourceItem);
+  const normalizedReturnTo = normalized(returnTo);
+  const hasReportContext = Boolean(Number(reportId || 0))
+    || normalizedSource === 'report'
+    || normalizedSourceItem.startsWith('report:')
+    || normalizedReturnTo.includes('/moderation/reports')
+    || normalizedReturnTo.includes('report=');
+  return hasReportContext ? 'Back to report' : 'Back to moderation';
+}

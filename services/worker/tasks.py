@@ -2986,25 +2986,26 @@ def _run_auto_visual_asset_moderation_after_export(
                     )
                 except Exception:
                     logger.warning("Could not load draft cover path for project=%s", project.id, exc_info=True)
-            cover_path = _visual_asset_path(cover_rel_path)
-            results.append(agent.scan_cover_image(project, image_path=cover_path))
-            if safety_agent is not None:
-                results.append(safety_agent.scan_cover_image(project, image_path=cover_path))
+            if str(cover_rel_path or "").strip():
+                cover_path = _visual_asset_path(cover_rel_path)
+                cover_result = agent.scan_cover_image(project, image_path=cover_path)
+                results.append(cover_result)
+                if safety_agent is not None and _visual_result_semantic_scan_eligible(cover_result):
+                    results.append(safety_agent.scan_cover_image(project, image_path=cover_path))
 
         if scan_slides_enabled:
             for asset in _visual_slide_assets_from_export(export_result or []):
-                results.append(
-                    agent.scan_slide_image(
-                        project_id=int(project.id),
-                        image_path=asset["image_path"],
-                        slide_order=asset["slide_order"],
-                        transcript_page_id=asset.get("transcript_page_id"),
-                        page_key=asset["page_key"],
-                        ui_anchor=asset["ui_anchor"],
-                        asset_type=asset["asset_type"],
-                    )
+                slide_result = agent.scan_slide_image(
+                    project_id=int(project.id),
+                    image_path=asset["image_path"],
+                    slide_order=asset["slide_order"],
+                    transcript_page_id=asset.get("transcript_page_id"),
+                    page_key=asset["page_key"],
+                    ui_anchor=asset["ui_anchor"],
+                    asset_type=asset["asset_type"],
                 )
-                if safety_agent is not None:
+                results.append(slide_result)
+                if safety_agent is not None and _visual_result_semantic_scan_eligible(slide_result):
                     results.append(
                         safety_agent.scan_slide_image(
                             project_id=int(project.id),
@@ -3085,10 +3086,11 @@ def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[
         if not isinstance(slide, dict):
             continue
         image_path = _visual_asset_path(slide.get("image_path") or slide.get("slide_path") or "")
-        if image_path and image_path in seen_paths:
+        if not image_path:
             continue
-        if image_path:
-            seen_paths.add(image_path)
+        if image_path in seen_paths:
+            continue
+        seen_paths.add(image_path)
         slide_order = _safe_int_value(slide.get("source_slide_index"), fallback=_safe_int_value(slide.get("index"), fallback=order))
         asset_type = _normalise_visual_asset_type(slide.get("asset_type") or slide.get("visual_asset_type") or "slide_image")
         page_key = str(slide.get("page_key") or "")
@@ -3123,10 +3125,35 @@ def _visual_asset_path(value: Any) -> str:
         return str(direct)
     if ".." in raw.replace("\\", "/").split("/"):
         return raw
-    storage_path = Path(STORAGE_ROOT) / raw.lstrip("/\\")
+    storage_path = Path(_visual_storage_root()) / raw.lstrip("/\\")
     if storage_path.is_file():
         return str(storage_path)
     return raw
+
+
+def _visual_storage_root() -> str:
+    try:
+        from django.conf import settings
+
+        return str(getattr(settings, "STORAGE_ROOT", STORAGE_ROOT) or STORAGE_ROOT)
+    except Exception:
+        return str(os.environ.get("STORAGE_ROOT", STORAGE_ROOT) or STORAGE_ROOT)
+
+
+def _visual_result_semantic_scan_eligible(result) -> bool:
+    metadata = dict(getattr(result, "metadata", {}) or {})
+    if metadata.get("missing") or metadata.get("asset_missing") or metadata.get("error"):
+        return False
+    if getattr(result, "findings", []) or str(getattr(result, "decision", "") or "") != "allow":
+        return False
+    location = _visual_result_location_payload(result)
+    image_path = str(location.get("image_path") or location.get("frame_path") or "").strip()
+    if not image_path:
+        return False
+    try:
+        return Path(image_path).is_file()
+    except OSError:
+        return False
 
 
 def _safe_int_value(value: Any, *, fallback: int = 0) -> int:
@@ -3217,6 +3244,11 @@ def _persist_auto_visual_moderation_results(
             ]
         )
         existing_summary = dict(project.moderation_summary or {})
+        previous_visual_scan = (
+            dict(existing_summary.get("visual_asset_scan"))
+            if isinstance(existing_summary.get("visual_asset_scan"), dict)
+            else {}
+        )
         summary_key = "draft_visual_asset_scan" if use_draft else "visual_asset_scan"
         existing_summary[summary_key] = {
             **summary,
@@ -3241,6 +3273,32 @@ def _persist_auto_visual_moderation_results(
                 existing_summary["message"] = "Visual moderation requires admin review before publication."
             update_fields.append("moderation_status")
             _enforce_project_unpublished_for_moderation(project, update_fields)
+        elif (
+            not use_draft
+            and final_decision == "allow"
+            and not manual_moderation_prevents_auto_override(project)
+        ):
+            _resolve_stale_visual_publication_blocks(project, run)
+            if _visual_allow_clears_project_block(project, previous_visual_scan):
+                project.moderation_status = "approved"
+                project.manual_moderation_status = ""
+                project.manual_moderation_reason = ""
+                project.manual_moderation_by = None
+                project.manual_moderation_at = None
+                project.moderation_blocked_until_review = False
+                existing_summary["moderation_status"] = "approved"
+                existing_summary["message"] = "Visual moderation approved current lesson assets."
+                update_fields.extend(
+                    [
+                        "moderation_status",
+                        "manual_moderation_status",
+                        "manual_moderation_reason",
+                        "manual_moderation_by",
+                        "manual_moderation_at",
+                        "moderation_blocked_until_review",
+                    ]
+                )
+                _close_stale_visual_review_requests(project)
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
         if should_update_project_status:
@@ -3253,6 +3311,126 @@ def _persist_auto_visual_moderation_results(
         logger.warning("Visual moderation summary update failed for project=%s", project.id, exc_info=True)
 
     return run
+
+
+VISUAL_PUBLICATION_BLOCK_CATEGORIES = frozenset(
+    {
+        "provider_unavailable",
+        "graphic_content",
+        "sexual",
+        "violence",
+        "self_harm",
+        "hate_or_harassment",
+    }
+)
+VISUAL_BLOCKING_PROJECT_STATUSES = frozenset({"revision_required", "needs_admin_review", "admin_rejected", "failed"})
+VISUAL_BLOCKING_RUN_DECISIONS = frozenset({"block", "blocked", "revision_required", "needs_admin_review"})
+
+
+def _resolve_stale_visual_publication_blocks(project, run) -> None:
+    try:
+        from ai_agents.models import PublicationBlockEvent
+        from django.db.models import Q
+        from django.utils import timezone
+
+        PublicationBlockEvent.objects.filter(project=project, resolved=False).filter(
+            Q(blocked_by__icontains="visual")
+            | Q(reason_category__in=VISUAL_PUBLICATION_BLOCK_CATEGORIES)
+        ).update(resolved=True, resolved_at=timezone.now(), run=run)
+    except Exception:
+        logger.warning("Visual publication block reconciliation failed project=%s", getattr(project, "id", None), exc_info=True)
+
+
+def _close_stale_visual_review_requests(project) -> None:
+    try:
+        from ai_agents.models import AdminReviewRequest
+        from django.utils import timezone
+
+        AdminReviewRequest.objects.filter(
+            project=project,
+            status="open",
+            requested_by__isnull=True,
+            publisher_message__icontains="Visual moderation",
+        ).update(
+            status="closed",
+            admin_response="Closed automatically after current visual assets passed moderation.",
+            reviewed_at=timezone.now(),
+        )
+    except Exception:
+        logger.warning("Visual review request reconciliation failed project=%s", getattr(project, "id", None), exc_info=True)
+
+
+def _visual_allow_clears_project_block(project, previous_visual_scan: dict[str, Any]) -> bool:
+    current_status = str(getattr(project, "moderation_status", "") or "").strip().lower()
+    if current_status not in VISUAL_BLOCKING_PROJECT_STATUSES:
+        return False
+    if _has_blocking_non_visual_moderation(project):
+        return False
+    previous_decision = str(previous_visual_scan.get("final_decision") or previous_visual_scan.get("status") or "").strip().lower()
+    previous_message = str((project.moderation_summary or {}).get("message") or "").strip().lower()
+    return bool(
+        previous_decision in VISUAL_BLOCKING_RUN_DECISIONS
+        or previous_visual_scan.get("provider_errors")
+        or previous_visual_scan.get("stale")
+        or previous_visual_scan.get("needs_rescan")
+        or "visual moderation" in previous_message
+    )
+
+
+def _has_blocking_non_visual_moderation(project) -> bool:
+    try:
+        from ai_agents.policies import project_has_unresolved_publication_block
+
+        manual_status = str(getattr(project, "manual_moderation_status", "") or "").strip().lower()
+        if manual_status in {"blocked", "rejected", "request_changes", "needs_review"}:
+            return True
+        if project_has_unresolved_publication_block(project):
+            return True
+    except Exception:
+        manual_status = str(getattr(project, "manual_moderation_status", "") or "").strip().lower()
+        if manual_status in {"blocked", "rejected", "request_changes", "needs_review"}:
+            return True
+        if bool(getattr(project, "moderation_blocked_until_review", False)):
+            return True
+
+    for phase in (_source_moderation_phase(), _ocr_moderation_phase(), _video_frame_audit_phase()):
+        if _latest_moderation_phase_blocks(project, phase):
+            return True
+    return False
+
+
+def _latest_moderation_phase_blocks(project, phase: str) -> bool:
+    try:
+        from ai_agents.models import AgentFinding, AgentRun
+        from django.db.models import Q
+
+        run = (
+            AgentRun.objects.filter(
+                project_id=getattr(project, "id", None),
+                purpose="moderation",
+                phase=str(phase or ""),
+                status__in=["done", "completed"],
+            )
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if run is None:
+            return False
+        decision = str(getattr(run, "final_decision", "") or "").strip().lower()
+        if decision in VISUAL_BLOCKING_RUN_DECISIONS:
+            return True
+        return AgentFinding.objects.filter(run=run).filter(
+            Q(decision__in=VISUAL_BLOCKING_RUN_DECISIONS)
+            | Q(severity__in=["high", "critical"])
+        ).exists()
+    except Exception:
+        logger.warning(
+            "Moderation phase reconciliation failed project=%s phase=%s",
+            getattr(project, "id", None),
+            phase,
+            exc_info=True,
+        )
+        return True
 
 
 def _visual_moderation_summary(*, final_decision: str, results: list, finding_count: int, job_id: str | int | None) -> dict[str, Any]:
@@ -3342,6 +3520,8 @@ def _visual_provider_unavailable_results_for_locations(
     location_payloads: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for result in results or []:
+        if not _visual_result_semantic_scan_eligible(result):
+            continue
         location_payload = _visual_result_location_payload(result)
         if not location_payload:
             continue
@@ -3363,13 +3543,7 @@ def _visual_provider_unavailable_results_for_locations(
         location_payloads.append(location_payload)
 
     if not location_payloads:
-        location_payloads.append(
-            {
-                "project_id": fallback_project_id,
-                "asset_type": _normalise_visual_asset_type(fallback_asset_type),
-                "ui_anchor": f"project-{fallback_project_id or 'unknown'}-visual-provider",
-            }
-        )
+        return []
 
     return [
         _visual_provider_unavailable_result(
@@ -3476,6 +3650,9 @@ def _visual_semantic_provider_missing(results: list, *, classifier_requested: bo
     if not _visual_semantic_provider_required() or _weak_local_visual_approval_allowed():
         return False
     if not results:
+        return False
+    eligible_results = [result for result in results if _visual_result_semantic_scan_eligible(result)]
+    if not eligible_results:
         return False
     semantic_results = [
         result

@@ -262,6 +262,180 @@ def test_background_upload_creates_draft_scene_without_changing_active_page(tmp_
 
 
 @pytest.mark.django_db
+def test_cover_remove_creates_draft_removal_without_changing_active_cover(tmp_path):
+    owner = _make_user("draft_cover_remove_owner")
+    project = _make_project(owner, tmp_path)
+    active_cover = project.cover_image_original
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = client.delete(f"/api/v1/projects/{project.id}/cover/", {"draft_only": True}, format="json")
+
+    project.refresh_from_db()
+    assert response.status_code == 200
+    assert project.cover_image_original == active_cover
+    assert project.cover_image_processed == active_cover
+    assert project.draft_data["project"]["cover_image_original"] == ""
+    assert project.draft_data["project"]["cover_image_processed"] == ""
+    assert project.draft_data["metadata"]["cover_removed"] is True
+    assert project.draft_data["metadata"]["cover_dirty"] is True
+    assert project.draft_data["metadata"]["render_required"] is False
+    assert response.data["cover_url"]
+    assert response.data["draft_cover_url"] == ""
+    assert response.data["draft_metadata"]["cover_removed"] is True
+
+
+@pytest.mark.django_db
+def test_remove_custom_background_clears_draft_asset_state(tmp_path):
+    owner = _make_user("draft_background_remove_owner")
+    project = _make_project(owner, tmp_path)
+    page = _make_page(project)
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        assert _upload_draft_background(client, project, page).status_code == 200
+        response = client.delete(
+            f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/",
+            {"draft_only": True},
+            format="json",
+        )
+
+    project.refresh_from_db()
+    page.refresh_from_db()
+    assert response.status_code == 200
+    assert "custom_background_path" not in page.editor_document["scene"]
+    draft_scene = project.draft_data["transcript_pages"][0]["editor_document"]["scene"]
+    assert "custom_background_path" not in draft_scene
+    assert draft_scene["background_mode"] != "custom"
+    assert project.draft_data["metadata"]["background_dirty"] is True
+    assert project.draft_data["metadata"]["render_required"] is True
+    response_scene = response.data["page"]["editor_document"]["scene"]
+    assert response_scene["custom_background_url"] == ""
+    assert response_scene["has_custom_background"] is False
+
+
+@pytest.mark.django_db
+def test_unsafe_custom_background_ignored_when_whiteboard_selected_allows_rerender(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_SCAN_SLIDES", True, raising=False)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    owner = _make_user("draft_background_whiteboard_owner")
+    project = _make_project(owner, tmp_path)
+    page = _make_page(project)
+    lesson_file = tmp_path / "uploads" / str(project.id) / "lesson.pptx"
+    lesson_file.parent.mkdir(parents=True, exist_ok=True)
+    lesson_file.write_bytes(b"placeholder")
+    scan_calls = []
+    dispatch_calls = []
+
+    def review_scan(project_arg, *, asset_type, asset_path, page=None, use_draft=False):
+        scan_calls.append(
+            {
+                "asset_type": asset_type,
+                "asset_path": asset_path,
+                "page_id": getattr(page, "id", None),
+                "use_draft": use_draft,
+            }
+        )
+        return {
+            "enabled": True,
+            "status": "done",
+            "phase": "visual_asset_scan",
+            "final_decision": "needs_admin_review",
+            "finding_count": 1,
+            "block_render": True,
+            "message": "Visual moderation requires review.",
+        }
+
+    def capture_dispatch(**kwargs):
+        dispatch_calls.append(kwargs)
+
+    monkeypatch.setattr("core.views._run_auto_visual_moderation_for_changed_asset", review_scan)
+    monkeypatch.setattr("core.views._dispatch_render_job", capture_dispatch)
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        upload_response = _upload_draft_background(client, project, page, color=(220, 20, 20))
+        whiteboard_response = client.patch(
+            f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/scene/",
+            {"draft_only": True, "background_mode": "whiteboard"},
+            format="json",
+        )
+        rerender_response = client.post(f"/api/v1/projects/{project.id}/rerender/")
+
+    project.refresh_from_db()
+    assert upload_response.status_code == 200
+    assert whiteboard_response.status_code == 200
+    assert rerender_response.status_code == 202
+    assert len(scan_calls) == 1
+    assert scan_calls[0]["asset_type"] == "custom_background"
+    assert whiteboard_response.data["moderation"] is None
+    assert "moderation_status" not in project.draft_data["metadata"]
+    assert "draft_moderation" not in project.moderation_summary
+    assert dispatch_calls[0]["task_kwargs"] == {"use_draft": True}
+
+    slides = worker_tasks._build_render_slides_from_draft(
+        project.id,
+        [
+            {
+                "index": 0,
+                "source_slide_index": 0,
+                "image_path": str(tmp_path / "uploads" / str(project.id) / "active-slide.png"),
+                "notes_text": "Public text",
+                "original_text": "Public text",
+                "display_text": "Public text",
+            }
+        ],
+    )
+    assert slides[0]["scene_background_mode"] == "whiteboard"
+    assert slides[0]["image_path"] == ""
+    assert worker_tasks._visual_slide_assets_from_export(slides) == []
+
+
+@pytest.mark.django_db
+def test_unsafe_custom_background_selected_blocks_rerender(monkeypatch, tmp_path):
+    monkeypatch.setattr(settings, "ENABLE_VISUAL_MODERATION", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_AUTO_ENABLED", True, raising=False)
+    monkeypatch.setattr(settings, "VISUAL_MODERATION_BLOCK_RENDER_ON_REJECTION", True, raising=False)
+    owner = _make_user("draft_background_selected_block_owner")
+    project = _make_project(owner, tmp_path)
+    page = _make_page(project)
+    lesson_file = tmp_path / "uploads" / str(project.id) / "lesson.pptx"
+    lesson_file.parent.mkdir(parents=True, exist_ok=True)
+    lesson_file.write_bytes(b"placeholder")
+    dispatch_calls = []
+
+    def review_scan(*args, **kwargs):
+        return {
+            "enabled": True,
+            "status": "done",
+            "phase": "visual_asset_scan",
+            "final_decision": "needs_admin_review",
+            "finding_count": 1,
+            "block_render": True,
+            "message": "Visual moderation requires review.",
+        }
+
+    monkeypatch.setattr("core.views._run_auto_visual_moderation_for_changed_asset", review_scan)
+    monkeypatch.setattr("core.views._dispatch_render_job", lambda **kwargs: dispatch_calls.append(kwargs))
+    client = _client(owner)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        upload_response = _upload_draft_background(client, project, page, color=(220, 20, 20))
+        rerender_response = client.post(f"/api/v1/projects/{project.id}/rerender/")
+
+    project.refresh_from_db()
+    assert upload_response.status_code == 200
+    assert rerender_response.status_code == 400
+    assert rerender_response.data["rerender_strategy"] == "blocked_by_visual_moderation"
+    assert "review" in rerender_response.data["message"].lower()
+    assert project.draft_data["metadata"]["moderation_status"] == "needs_admin_review"
+    assert dispatch_calls == []
+
+
+@pytest.mark.django_db
 def test_discard_draft_returns_studio_to_active_background(tmp_path):
     owner = _make_user("draft_background_discard_owner")
     project = _make_project(owner, tmp_path)
