@@ -5304,10 +5304,13 @@ def render_lesson_avatar_overlay(
             "message": message,
         }
 
-    if not _avatar_job_is_current(project_id_int, job_id):
+    def _stale_result() -> dict[str, Any]:
         message = "Stale avatar job ignored."
         _set_job(status="failed", progress=100, error_message=message)
         return {"status": "stale", "project_id": project_id_int, "teacher_id": teacher_id_int, "message": message}
+
+    if not _avatar_job_is_current(project_id_int, job_id):
+        return _stale_result()
 
     if handoff_manifest_path:
         try:
@@ -5616,9 +5619,7 @@ def render_lesson_avatar_overlay(
             logger.warning("Could not create compatibility avatar_track.mp4 for project=%s", project_id_int, exc_info=True)
 
     if not _avatar_job_is_current(project_id_int, job_id):
-        message = "Stale avatar job ignored."
-        _set_job(status="failed", progress=100, error_message=message)
-        return {"status": "stale", "project_id": project_id_int, "teacher_id": teacher_id_int, "message": message}
+        return _stale_result()
 
     avatar_fast_track_rel = _safe_rel_path(_avatar_storage_root(), avatar_fast_track_path)
     avatar_track_rel = avatar_fast_track_rel
@@ -5801,6 +5802,9 @@ def render_lesson_avatar_overlay(
                 temp_restored_track_path.unlink(missing_ok=True)
                 restoration_failures.append({"status": "avatar_restored_concat_failed", "reason": _concise_error_text(exc, fallback="avatar_restored_concat_failed")})
 
+        if not _avatar_job_is_current(project_id_int, job_id):
+            return _stale_result()
+
         if restoration_failures:
             _publish_avatar_sidecar(
                 preferred_track_rel=avatar_fast_track_rel,
@@ -5838,6 +5842,9 @@ def render_lesson_avatar_overlay(
             avatar_track_rel = avatar_restored_track_rel
     else:
         _set_job(status="done", progress=100, result_url=avatar_track_rel, error_message="")
+
+    if not _avatar_job_is_current(project_id_int, job_id):
+        return _stale_result()
 
     logger.info("Lesson avatar overlay DONE project=%s track=%s progressive_restoration=%s", project_id_int, avatar_track_rel, bool(progressive_restoration_enabled))
     _notify_avatar_completed(project_id_int, job_id)
@@ -8136,6 +8143,13 @@ def process_pptx_to_video(
                 _mark_draft_render_blocked(project_id, source_moderation)
             else:
                 _mark_project_source_moderation_blocked(project_id, source_moderation)
+            _update_render_job(
+                project_id,
+                render_job_id,
+                status="failed",
+                progress=100,
+                error_message="source_moderation_blocked",
+            )
             self.update_state(
                 state="PROGRESS",
                 meta={
@@ -8168,6 +8182,13 @@ def process_pptx_to_video(
                 _mark_draft_render_blocked(project_id, visual_moderation)
             else:
                 _mark_project_visual_moderation_blocked(project_id, visual_moderation)
+            _update_render_job(
+                project_id,
+                render_job_id,
+                status="failed",
+                progress=100,
+                error_message="visual_moderation_blocked",
+            )
             self.update_state(
                 state="PROGRESS",
                 meta={
@@ -8200,6 +8221,13 @@ def process_pptx_to_video(
                 _mark_draft_render_blocked(project_id, ocr_moderation)
             else:
                 _mark_project_ocr_moderation_blocked(project_id, ocr_moderation)
+            _update_render_job(
+                project_id,
+                render_job_id,
+                status="failed",
+                progress=100,
+                error_message="ocr_moderation_blocked",
+            )
             self.update_state(
                 state="PROGRESS",
                 meta={

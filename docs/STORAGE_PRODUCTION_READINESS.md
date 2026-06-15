@@ -79,6 +79,34 @@ Current gaps:
 - No lifecycle policy enforcement.
 - No production object storage credentials or bucket policy contract wired into app code.
 
+## Runtime Migration Gate
+
+Runtime storage migration is blocked for now. Filesystem-backed `STORAGE_ROOT` remains the source of truth for uploads, render outputs, playback sidecars, avatar assets, TTS inputs/outputs, profile media, subtitles, recovery audit logs, and operator reports until a separate migration PR records the required evidence below.
+
+The current storage readiness report is observability-only. `system_observability_report` and the Prometheus storage gauges expose configuration, cached snapshot freshness, capacity estimates, retention candidates, and recovery signals; they do not prove S3/MinIO connectivity, bucket policy, object durability, range-read compatibility, signed URL safety, cleanup safety, quota behavior, or rollback readiness. A report showing `runtime_media_migration_implied: false` is expected and must be treated as a migration stop sign, not a partial runtime rollout.
+
+The cached metrics snapshot can be stale unless staging has an assigned owner and cadence for `storage_metrics_snapshot`. Before using snapshot values as migration evidence, an operator must prove that the staging CronJob or equivalent scheduler is pointed at the same durable `STORAGE_ROOT` mounted by API and workers, runs on an approved cadence, and has freshness alert ownership.
+
+Required evidence before any runtime migration PR:
+
+- Complete the [Storage Migration Evidence Packet](STORAGE_MIGRATION_EVIDENCE_PACKET.md) with fresh staging artifacts; this document lists requirements but is not collected evidence.
+- Fresh `storage_metrics_snapshot --older-than-days 30 --json` output from staging, with `snapshot_generated_at`, `snapshot_path`, and storage root/bucket target archived.
+- Fresh `storage_retention_check --dry-run --older-than-days 30 --json` report from the same staging storage target, archived with the migration ticket.
+- Backup/restore evidence proving database state and media storage are restored together into isolated staging, including project detail, playback-token issuance, final MP4 or HLS playback, subtitle access, profile/avatar media if enabled, and one rerender from restored source uploads.
+- Rollback plan that names the source of truth for the phase, the data freeze or reconciliation window, reverse-sync expectations if S3 receives writes, and checks that prevent mixed database/object state.
+- Named owner and cadence for the storage metrics snapshot CronJob, plus documented response steps for stale or missing snapshots.
+- Range-read and media serving strategy for MP4 byte ranges, HLS manifest/segment/key delivery, subtitle conversion/serving, profile images, avatar previews/overlays, cache headers, authorization, and browser seeking behavior.
+- Cleanup, quota, and delete strategy with dry-run manifests, manual approval, backup checks, evidence holds, and explicit non-goals for automatic deletion until confirmed tooling exists.
+- Render recovery JSONL append design. The current audit log uses local append semantics; object storage needs a reviewed append-compatible design such as database-backed audit records, per-event immutable objects, or whole-object concurrency controls before migration.
+
+Unsafe work while this gate is closed:
+
+- Upload, render, playback, avatar, or TTS media migration.
+- Signed URL or public URL delivery.
+- Range-read implementation.
+- Cleanup, quota, or delete implementation.
+- Backend switch to S3 for runtime traffic.
+
 S3 adapter configuration:
 
 | Setting | Default | Notes |

@@ -542,6 +542,7 @@ def _patch_avatar_overlay_task_lightweight(tmp_path, monkeypatch):
 
     monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
     monkeypatch.setenv("AVATAR_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "_avatar_feature_enabled", lambda: True)
     monkeypatch.setattr(worker_tasks.render_lesson_avatar_overlay, "update_state", lambda *args, **kwargs: None)
     monkeypatch.setattr(worker_tasks, "_avatar_job_is_current", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(worker_tasks, "_record_avatar_render_job", lambda **_kwargs: None)
@@ -627,6 +628,7 @@ def test_avatar_overlay_queue_writes_manifest_and_sends_path_only(tmp_path, monk
         return FakeAsyncResult()
 
     monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "_avatar_feature_enabled", lambda: True)
     monkeypatch.setattr(worker_tasks, "_mark_project_avatar_state", lambda *_args, **kwargs: state_updates.append(kwargs))
     monkeypatch.setattr(core_models, "Job", SimpleNamespace(objects=FakeJobObjects()))
     monkeypatch.setattr(core_models, "Project", SimpleNamespace(objects=FakeProjectObjects()))
@@ -744,6 +746,170 @@ def test_render_lesson_avatar_overlay_reads_handoff_manifest_path(tmp_path, monk
     assert sidecar_payload["avatar"]["quality"] == "fast"
     assert sidecar_payload["avatar"]["enhanced_pending"] is False
     assert sidecar_payload["final_segments"][0]["avatar_clip"] == "129/avatar_segments/avatar_001.mp4"
+
+
+def _run_progressive_avatar_overlay(tmp_path, monkeypatch, *, freshness_checks):
+    _patch_avatar_overlay_task_lightweight(tmp_path, monkeypatch)
+    canonical_adapters = importlib.import_module("avatar.canonical_adapters")
+    avatar_pipeline = importlib.import_module("avatar.pipeline")
+
+    audio = tmp_path / "129" / "audio" / "slide_001.mp3"
+    slide = tmp_path / "129" / "images" / "slide_001.png"
+    source = tmp_path / "avatars" / "teacher.png"
+    for path in [audio, slide, source]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+    (tmp_path / "129").mkdir(parents=True, exist_ok=True)
+    sidecar_path = tmp_path / "129" / "playback_assets.json"
+    sidecar_path.write_text(
+        json.dumps({"mp4_rel_path": "129/129.mp4", "final_segments": [{"index": 0}]}),
+        encoding="utf-8",
+    )
+
+    class SuccessfulAvatarResult:
+        result = {
+            "output_path": str(tmp_path / "129" / "avatar_segments" / "avatar_001.mp4"),
+            "engine_used": "liveportrait+musetalk",
+            "fallback_chain_used": ["liveportrait", "musetalk"],
+            "motion_validation": {"motion_real": True},
+        }
+
+        def failed(self):
+            return False
+
+    def fake_apply(**kwargs):
+        output_path = Path(kwargs["kwargs"]["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"avatar-segment")
+        return SuccessfulAvatarResult()
+
+    project_state_updates = []
+    current_project_avatar_state = {}
+    completion_notifications = []
+
+    def fake_mark_project_avatar_state(_project_id, **kwargs):
+        project_state_updates.append(kwargs)
+        current_project_avatar_state.update(kwargs)
+
+    def fake_run_restoration(*, output_path, **_kwargs):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"restored-segment")
+        if len(freshness_checks) >= 3 and not freshness_checks[2]:
+            current_project_avatar_state.update(
+                {
+                    "status": "queued",
+                    "message": "Newer avatar job queued.",
+                    "job_id": 88,
+                    "output_path": "129/avatar/newer-avatar-track.mp4",
+                }
+            )
+        return SimpleNamespace(success=True, error="")
+
+    checks = iter(freshness_checks)
+
+    def fake_is_current(*_args, **_kwargs):
+        try:
+            return bool(next(checks))
+        except StopIteration:
+            return bool(freshness_checks[-1])
+
+    monkeypatch.setenv("AVATAR_PROGRESSIVE_RESTORATION_ENABLED", "1")
+    monkeypatch.setattr(worker_tasks, "_avatar_job_is_current", fake_is_current)
+    monkeypatch.setattr(worker_tasks, "_mark_project_avatar_state", fake_mark_project_avatar_state)
+    monkeypatch.setattr(worker_tasks, "_notify_avatar_completed", lambda *args, **kwargs: completion_notifications.append((args, kwargs)))
+    monkeypatch.setattr(worker_tasks, "render_avatar_segment", SimpleNamespace(apply=fake_apply))
+    monkeypatch.setattr(canonical_adapters, "run_restoration", fake_run_restoration)
+    monkeypatch.setattr(avatar_pipeline, "_assert_video_contract", lambda *_args, **_kwargs: None)
+
+    manifest_path = worker_tasks._write_avatar_handoff_manifest(
+        "129",
+        "55",
+        {
+            "schema_version": 1,
+            "project_id": 129,
+            "base_job_id": 55,
+            "avatar_job_id": 77,
+            "created_at": "2026-05-10T00:00:00+00:00",
+            "ordered_results": [
+                {
+                    "index": 0,
+                    "slide_num": 1,
+                    "page_key": "p1",
+                    "text": "Slide",
+                    "tts_audio_path": str(audio),
+                    "slide_path": str(slide),
+                    "duration": 1.0,
+                }
+            ],
+            "avatar_settings": {
+                "teacher_id": 2,
+                "source_image_rel_path": "avatars/teacher.png",
+                "avatar_source_valid": True,
+                "avatar_preview_stale": False,
+                "lipsync_engine": "liveportrait+musetalk",
+                "restoration_enabled": True,
+                "avatar_runtime_settings": {
+                    "motion_preset": "natural",
+                    "restoration_enabled": True,
+                    "liveportrait_enabled": True,
+                },
+            },
+            "render_metadata": {"output_rel_prefix": "129"},
+            "status": "created",
+        },
+    )
+
+    result = worker_tasks.render_lesson_avatar_overlay.run(
+        project_id=129,
+        teacher_id=2,
+        handoff_manifest_path=manifest_path,
+        output_rel_prefix="129",
+        avatar_job_id=77,
+        base_job_id=55,
+    )
+
+    sidecar_payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    return result, sidecar_payload, project_state_updates, current_project_avatar_state, completion_notifications
+
+
+def test_stale_lesson_avatar_restoration_does_not_publish_final_state(tmp_path, monkeypatch):
+    result, sidecar_payload, project_state_updates, current_project_avatar_state, completion_notifications = _run_progressive_avatar_overlay(
+        tmp_path,
+        monkeypatch,
+        freshness_checks=[True, True, False],
+    )
+
+    assert result["status"] == "stale"
+    assert sidecar_payload["avatar"]["track_rel_path"] == "129/avatar/avatar_track_fast.mp4"
+    assert sidecar_payload["avatar"]["quality"] == "fast"
+    assert sidecar_payload["avatar"]["enhanced_pending"] is True
+    assert sidecar_payload["avatar"].get("track_restored_rel_path", "") == ""
+    assert sidecar_payload["avatar_restoration_status"] == "restoring"
+    assert [update["message"] for update in project_state_updates] == [
+        "Avatar is still processing and will be added when ready.",
+        "Avatar ready. Enhanced avatar restoration is still processing.",
+    ]
+    assert current_project_avatar_state["job_id"] == 88
+    assert current_project_avatar_state["output_path"] == "129/avatar/newer-avatar-track.mp4"
+    assert completion_notifications == []
+
+
+def test_current_lesson_avatar_restoration_publishes_final_state(tmp_path, monkeypatch):
+    result, sidecar_payload, project_state_updates, _current_project_avatar_state, completion_notifications = _run_progressive_avatar_overlay(
+        tmp_path,
+        monkeypatch,
+        freshness_checks=[True, True, True, True],
+    )
+
+    assert result["status"] == "ready"
+    assert result["avatar_track_rel_path"] == "129/avatar/avatar_track_restored.mp4"
+    assert sidecar_payload["avatar"]["track_rel_path"] == "129/avatar/avatar_track_restored.mp4"
+    assert sidecar_payload["avatar"]["quality"] == "restored"
+    assert sidecar_payload["avatar"]["enhanced_available"] is True
+    assert sidecar_payload["avatar"]["enhanced_pending"] is False
+    assert sidecar_payload["avatar_restoration_status"] == "restored"
+    assert project_state_updates[-1]["message"] == "Enhanced avatar ready."
+    assert completion_notifications
 
 
 def test_render_lesson_avatar_overlay_accepts_legacy_ordered_results(tmp_path, monkeypatch):

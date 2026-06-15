@@ -20,6 +20,7 @@ django.setup()
 from django.contrib.auth.models import User  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.db.utils import OperationalError  # noqa: E402
+from django.test import override_settings  # noqa: E402
 from django.utils import timezone  # noqa: E402
 
 from core.models import Job, Project, RenderFollowUpIntent, UserProfile  # noqa: E402
@@ -79,6 +80,8 @@ def test_observability_metrics_generation_counts_render_intent_storage_and_recov
     assert report["follow_up_intents"]["metrics"]["oldest_intent_age_seconds"] > 0
     assert report["storage"]["metrics"]["retention_candidate_count"] == 1
     assert report["storage"]["metrics"]["reclaimable_bytes_estimate"] >= len(b"old")
+    assert report["storage_backend"]["metrics"]["effective_storage_backend"] == "filesystem"
+    assert report["storage_backend"]["metrics"]["adapter_class"] == "FilesystemStorageAdapter"
     assert report["recovery"]["metrics"]["recovery_candidate_count"] >= 1
     assert report["recovery"]["metrics"]["stale_render_count"] >= 1
     assert report["recovery"]["metrics"]["stale_intent_count"] >= 1
@@ -93,6 +96,8 @@ def test_system_observability_report_json_output(tmp_path):
     payload = json.loads(stdout.getvalue())
     assert payload["render"]["metrics"]["active_render_count"] == 0
     assert payload["storage"]["metrics"]["total_storage_size_bytes"] == 0
+    assert payload["storage_backend"]["metrics"]["effective_storage_backend"] == "filesystem"
+    assert payload["storage_backend"]["metrics"]["runtime_media_migration_implied"] is False
     assert payload["mode"] == "read-only/report-only"
 
 
@@ -107,8 +112,86 @@ def test_system_observability_report_pretty_output(tmp_path):
     assert "Render" in output
     assert "Follow-up intents" in output
     assert "Storage" in output
+    assert "Storage backend readiness" in output
+    assert "runtime_media_migration_implied: False" in output
     assert "Recovery" in output
     assert "read-only/report-only" in output
+
+
+def test_system_observability_storage_backend_reports_local_alias_as_filesystem(tmp_path):
+    with override_settings(_RAW_STORAGE_BACKEND="local", STORAGE_BACKEND="filesystem"):
+        report = build_system_observability_report(storage_root=tmp_path)
+
+    metrics = report["storage_backend"]["metrics"]
+    assert metrics["configured_storage_backend"] == "local"
+    assert metrics["effective_storage_backend"] == "filesystem"
+    assert metrics["adapter_class"] == "FilesystemStorageAdapter"
+    assert metrics["legacy_local_alias_normalized"] is True
+    assert metrics["filesystem_root_status"] == "ok"
+
+
+def test_system_observability_storage_backend_reports_s3_metadata_without_network(tmp_path):
+    with override_settings(
+        _RAW_STORAGE_BACKEND="s3",
+        STORAGE_BACKEND="s3",
+        S3_ENDPOINT_URL="http://minio.local:9000",
+        S3_BUCKET_NAME="visus",
+        S3_ACCESS_KEY_ID="access",
+        S3_SECRET_ACCESS_KEY="secret",
+        S3_REGION_NAME="us-east-1",
+        S3_KEY_PREFIX="readiness",
+        S3_USE_SSL=False,
+        S3_VERIFY_SSL=False,
+    ):
+        report = build_system_observability_report(storage_root=tmp_path)
+
+    metrics = report["storage_backend"]["metrics"]
+    assert report["storage_backend"]["available"] is True
+    assert metrics["configured_storage_backend"] == "s3"
+    assert metrics["effective_storage_backend"] == "s3"
+    assert metrics["adapter_class"] == "S3StorageAdapter"
+    assert metrics["s3_endpoint_url_configured"] is True
+    assert metrics["s3_bucket_name_configured"] is True
+    assert metrics["s3_access_key_id_configured"] is True
+    assert metrics["s3_secret_access_key_configured"] is True
+    assert metrics["s3_key_prefix_configured"] is True
+    assert metrics["s3_network_probe_performed"] is False
+    assert metrics["s3_listing_enabled"] is False
+    assert metrics["s3_range_reads_enabled"] is False
+    assert metrics["s3_signed_urls_enabled"] is False
+    assert metrics["s3_public_urls_enabled"] is False
+
+
+def test_system_observability_storage_backend_reports_missing_s3_config(tmp_path):
+    with override_settings(
+        _RAW_STORAGE_BACKEND="s3",
+        STORAGE_BACKEND="s3",
+        S3_ENDPOINT_URL=None,
+        S3_BUCKET_NAME="",
+        S3_ACCESS_KEY_ID="",
+        S3_SECRET_ACCESS_KEY="",
+        S3_REGION_NAME=None,
+        S3_KEY_PREFIX="",
+    ):
+        report = build_system_observability_report(storage_root=tmp_path)
+
+    assert report["storage_backend"]["available"] is False
+    assert (
+        "s3_backend_missing_required_config:S3_BUCKET_NAME,S3_ACCESS_KEY_ID,S3_SECRET_ACCESS_KEY"
+        in report["storage_backend"]["warnings"]
+    )
+
+
+def test_system_observability_storage_backend_readiness_does_not_mutate_storage(tmp_path):
+    existing = tmp_path / "existing.txt"
+    existing.write_text("keep", encoding="utf-8")
+    before = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+
+    build_system_observability_report(storage_root=tmp_path)
+
+    after = sorted(path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*"))
+    assert after == before
+    assert existing.read_text(encoding="utf-8") == "keep"
 
 
 def test_observability_report_degrades_when_database_is_unavailable(tmp_path, monkeypatch):

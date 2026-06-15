@@ -51,6 +51,66 @@ def _age_intent(intent: RenderFollowUpIntent, *, hours: int = 4) -> RenderFollow
     return intent
 
 
+def _assert_remediation_plan_fields(finding: dict) -> None:
+    assert finding["candidate_action"]
+    assert finding["action_mode"] == "report_only"
+    assert finding["risk_level"] in {"low", "medium", "high"}
+    assert isinstance(finding["requires_operator_checks"], list)
+    assert finding["requires_operator_checks"]
+    assert finding["mutation_if_applied"]
+    assert finding["dedupe_impact"]
+    assert finding["suggested_manual_command"]
+    _assert_apply_precondition_fields(finding)
+
+
+def _assert_apply_precondition_fields(finding: dict) -> None:
+    assert finding["apply_eligible"] is False
+    assert isinstance(finding["apply_blockers"], list)
+    assert finding["apply_blockers"]
+    assert any("not implemented" in blocker for blocker in finding["apply_blockers"])
+    assert finding["finding_priority"]
+    assert isinstance(finding["precondition_token"], str)
+    assert len(finding["precondition_token"]) == 64
+    assert all(char in "0123456789abcdef" for char in finding["precondition_token"])
+    assert "WHERE id =" in finding["proposed_conditional_update"]
+    assert "UPDATE " not in finding["proposed_conditional_update"].upper()
+    assert "future-apply:" in finding["required_confirm_token"]
+    assert finding["precondition_token"] in finding["required_confirm_token"]
+
+
+def _assert_promoted_remediation_plan_matches_finding(plan: dict, finding: dict) -> None:
+    for field_name in (
+        "candidate_action",
+        "action_mode",
+        "risk_level",
+        "requires_operator_checks",
+        "mutation_if_applied",
+        "dedupe_impact",
+        "suggested_manual_command",
+        "apply_eligible",
+        "apply_blockers",
+        "finding_priority",
+        "precondition_token",
+        "metadata_hash",
+        "proposed_conditional_update",
+        "required_confirm_token",
+    ):
+        assert plan[field_name] == finding[field_name]
+
+
+def _object_summary(payload: dict, *, object_type: str, object_id: int) -> dict:
+    return next(
+        summary
+        for summary in payload["object_summaries"]
+        if summary["object_type"] == object_type and summary["object_id"] == object_id
+    )
+
+
+def _manual_command_summary(payload: dict, *, object_type: str, object_id: int) -> dict:
+    command = f"python manage.py render_recovery_action --action inspect --type {object_type} --id {object_id}"
+    return next(summary for summary in payload["manual_command_summary"] if summary["command"] == command)
+
+
 def test_detects_stuck_render_jobs():
     project = _make_project("stuck_render")
     stale_pending = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
@@ -97,6 +157,86 @@ def test_detects_orphan_render_job_missing_task_id():
     )
 
 
+def test_pending_video_export_without_task_id_reports_dispatch_window_detail():
+    project = _make_project("pending_no_task_detail")
+    orphan = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id=""))
+
+    before = {
+        "status": orphan.status,
+        "progress": orphan.progress,
+        "celery_task_id": orphan.celery_task_id,
+        "error_message": orphan.error_message,
+    }
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+
+    matches = [
+        finding
+        for finding in report.findings
+        if finding.category == "orphan_recovery_candidate"
+        and finding.object_type == "Job"
+        and finding.object_id == orphan.id
+    ]
+    assert matches
+    finding = matches[0]
+    assert "pending_without_task_id" in finding.detail
+    assert "dispatch_window_candidate" in finding.detail
+    assert "API dispatch crash window" in finding.detail
+    assert "no recorded Celery task id" in finding.recommended_action
+    payload = finding.as_dict()
+    _assert_remediation_plan_fields(payload)
+    assert payload["candidate_action"] == "inspect_pending_video_export_without_task_id"
+    assert payload["action_mode"] == "report_only"
+    assert payload["risk_level"] == "high"
+    assert payload["dedupe_impact"] == "would_unblock_render_dedupe_if_failed_or_cancelled"
+    assert "no task was enqueued" in payload["mutation_if_applied"]
+    assert payload["metadata_hash"] is None
+    assert "celery_task_id = ''" in payload["proposed_conditional_update"]
+
+    orphan.refresh_from_db()
+    assert {
+        "status": orphan.status,
+        "progress": orphan.progress,
+        "celery_task_id": orphan.celery_task_id,
+        "error_message": orphan.error_message,
+    } == before
+
+
+def test_recovery_precondition_token_is_stable_and_state_sensitive():
+    project = _make_project("precondition_token")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id="task-original"))
+
+    first_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    first = next(
+        finding
+        for finding in first_payload["findings"]
+        if finding["object_type"] == "Job"
+        and finding["object_id"] == job.id
+        and finding["category"] == "stuck_render_job"
+    )
+    second_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    second = next(
+        finding
+        for finding in second_payload["findings"]
+        if finding["object_type"] == "Job"
+        and finding["object_id"] == job.id
+        and finding["category"] == "stuck_render_job"
+    )
+
+    assert second["precondition_token"] == first["precondition_token"]
+
+    Job.objects.filter(pk=job.pk).update(celery_task_id="task-updated")
+    changed_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    changed = next(
+        finding
+        for finding in changed_payload["findings"]
+        if finding["object_type"] == "Job"
+        and finding["object_id"] == job.id
+        and finding["category"] == "stuck_render_job"
+    )
+
+    assert changed["precondition_token"] != first["precondition_token"]
+
+
 def test_detects_orphan_intent_disconnected_from_active_render_flow():
     project = _make_project("orphan_intent")
     completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
@@ -119,6 +259,40 @@ def test_detects_orphan_intent_disconnected_from_active_render_flow():
     )
 
 
+def test_intent_metadata_hash_is_present_and_stable_for_same_metadata():
+    project = _make_project("intent_metadata_hash")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"reason": "transcript_edit", "active_job_id": completed_job.id},
+        )
+    )
+
+    first_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    first = next(
+        finding
+        for finding in first_payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent"
+        and finding["object_id"] == intent.id
+        and finding["category"] == "orphan_recovery_candidate"
+    )
+    second_payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    second = next(
+        finding
+        for finding in second_payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent"
+        and finding["object_id"] == intent.id
+        and finding["category"] == "orphan_recovery_candidate"
+    )
+
+    assert first["metadata_hash"]
+    assert len(first["metadata_hash"]) == 64
+    assert second["metadata_hash"] == first["metadata_hash"]
+    assert "metadata_hash" in first["proposed_conditional_update"]
+
+
 def test_report_generation_summary_counts():
     project = _make_project("summary")
     _age_job(Job.objects.create(project=project, job_type="video_export", status="running", celery_task_id="task-running"))
@@ -129,6 +303,160 @@ def test_report_generation_summary_counts():
     assert payload["summary"]["stuck_render_count"] >= 1
     assert "oldest_stuck_age_hours" in payload["summary"]
     assert payload["findings"]
+    for finding in payload["findings"]:
+        _assert_remediation_plan_fields(finding)
+
+
+def test_empty_recovery_report_includes_empty_object_summaries():
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+
+    assert payload["findings"] == []
+    assert payload["object_summaries"] == []
+    assert payload["manual_command_summary"] == []
+
+
+def test_job_duplicate_findings_produce_one_grouped_object_summary():
+    project = _make_project("job_grouped_summary")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id=""))
+
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+    expected_findings = [finding.as_dict() for finding in report.findings]
+    payload = report.as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "Job" and finding["object_id"] == job.id
+    ]
+    summary = _object_summary(payload, object_type="Job", object_id=job.id)
+
+    assert payload["findings"] == expected_findings
+    assert len(matches) == 2
+    assert summary["finding_count"] == 2
+    assert summary["primary_finding"] == sorted(matches, key=render_recovery.finding_priority_sort_key)[0][
+        "candidate_action"
+    ]
+    assert summary["primary_finding"] == "inspect_pending_video_export_without_task_id"
+    assert summary["highest_risk_level"] == "high"
+    assert summary["apply_eligible"] is False
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+    assert summary["precondition_tokens"] == sorted({finding["precondition_token"] for finding in matches})
+
+
+def test_multiple_findings_sharing_command_produce_one_manual_command_summary():
+    project = _make_project("job_command_summary")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending", celery_task_id=""))
+
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+    expected_findings = [finding.as_dict() for finding in report.findings]
+    expected_object_summaries = render_recovery._object_summaries_from_findings(expected_findings)
+    payload = report.as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "Job" and finding["object_id"] == job.id
+    ]
+    summary = _manual_command_summary(payload, object_type="job", object_id=job.id)
+
+    assert payload["findings"] == expected_findings
+    assert payload["object_summaries"] == expected_object_summaries
+    assert len(matches) == 2
+    assert summary["object_count"] == 1
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
+    assert summary["highest_risk_level"] == "high"
+    assert summary["requires_operator_checks"] is True
+    assert summary["apply_eligible"] is False
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+
+
+def test_different_commands_produce_separate_manual_command_summaries():
+    project = _make_project("separate_command_summary")
+    job = _age_job(Job.objects.create(project=project, job_type="video_export", status="running", celery_task_id="task-running"))
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    job_summary = _manual_command_summary(payload, object_type="job", object_id=job.id)
+    intent_summary = _manual_command_summary(payload, object_type="intent", object_id=intent.id)
+
+    assert job_summary["command"] != intent_summary["command"]
+    assert job_summary["object_count"] == 1
+    assert intent_summary["object_count"] == 1
+    assert [summary["command"] for summary in payload["manual_command_summary"]] == sorted(
+        summary["command"] for summary in payload["manual_command_summary"]
+    )
+
+
+def test_intent_duplicate_findings_produce_one_grouped_object_summary_with_highest_risk():
+    project = _make_project("intent_grouped_summary")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_CLAIMED,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent" and finding["object_id"] == intent.id
+    ]
+    summary = _object_summary(payload, object_type="RenderFollowUpIntent", object_id=intent.id)
+
+    assert len(matches) == 2
+    assert {finding["risk_level"] for finding in matches} == {"high", "medium"}
+    assert summary["finding_count"] == 2
+    assert summary["primary_finding"] == sorted(matches, key=render_recovery.finding_priority_sort_key)[0][
+        "candidate_action"
+    ]
+    assert summary["highest_risk_level"] == "high"
+    assert summary["apply_eligible"] is False
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+    assert summary["precondition_tokens"] == sorted({finding["precondition_token"] for finding in matches})
+
+
+def test_manual_command_summary_aggregates_intent_risk_and_blockers():
+    project = _make_project("intent_command_summary")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_CLAIMED,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["object_type"] == "RenderFollowUpIntent" and finding["object_id"] == intent.id
+    ]
+    summary = _manual_command_summary(payload, object_type="intent", object_id=intent.id)
+
+    assert len(matches) == 2
+    assert {finding["risk_level"] for finding in matches} == {"high", "medium"}
+    assert summary["highest_risk_level"] == "high"
+    assert summary["apply_blockers"] == sorted(
+        {blocker for finding in matches for blocker in finding["apply_blockers"]}
+    )
+    assert summary["candidate_actions"] == sorted({finding["candidate_action"] for finding in matches})
 
 
 def test_render_recovery_check_command_text_output():
@@ -143,6 +471,10 @@ def test_render_recovery_check_command_text_output():
     assert "Stuck render jobs:" in output
     assert "Orphan recovery candidates:" in output
     assert "recommended action:" in output
+    assert "candidate action:" in output
+    assert "action mode: report_only" in output
+    assert "apply eligible: False" in output
+    assert "proposed conditional update:" in output
 
 
 def test_render_recovery_check_command_json_output():
@@ -156,6 +488,74 @@ def test_render_recovery_check_command_json_output():
     assert payload["dry_run"] is True
     assert payload["summary"]["total_findings"] >= 1
     assert payload["findings"][0]["category"] in {"stuck_render_job", "orphan_recovery_candidate"}
+    _assert_remediation_plan_fields(payload["findings"][0])
+
+
+def test_stale_followup_intent_reports_plan_without_mutating_state():
+    project = _make_project("stale_intent_plan")
+    active_job = Job.objects.create(project=project, job_type="video_export", status="running", celery_task_id="task-active")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"active_job_id": active_job.id, "reason": "transcript_edit"},
+        )
+    )
+    before = {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    }
+
+    report = build_render_recovery_report(dry_run=True, max_age_hours=2)
+    matches = [
+        finding.as_dict()
+        for finding in report.findings
+        if finding.category == "stuck_followup_intent"
+        and finding.object_type == "RenderFollowUpIntent"
+        and finding.object_id == intent.id
+    ]
+
+    assert matches
+    _assert_remediation_plan_fields(matches[0])
+    assert matches[0]["candidate_action"] == "inspect_stale_followup_intent"
+    assert matches[0]["action_mode"] == "report_only"
+    assert matches[0]["dedupe_impact"] == "would_unblock_followup_intent_uniqueness_if_cancelled"
+    intent.refresh_from_db()
+    assert {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    } == before
+
+
+def test_orphan_followup_intent_reference_reports_plan_without_mutating_state():
+    project = _make_project("orphan_intent_plan")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={"active_job_id": completed_job.id},
+        )
+    )
+    before = {"status": intent.status, "metadata": dict(intent.metadata or {})}
+
+    payload = build_render_recovery_report(dry_run=True, max_age_hours=2).as_dict()
+    matches = [
+        finding
+        for finding in payload["findings"]
+        if finding["category"] == "orphan_recovery_candidate"
+        and finding["object_type"] == "RenderFollowUpIntent"
+        and finding["object_id"] == intent.id
+    ]
+
+    assert matches
+    _assert_remediation_plan_fields(matches[0])
+    assert matches[0]["candidate_action"] == "inspect_orphan_followup_intent_reference"
+    assert matches[0]["action_mode"] == "report_only"
+    intent.refresh_from_db()
+    assert {"status": intent.status, "metadata": dict(intent.metadata or {})} == before
 
 
 def test_render_recovery_check_requires_dry_run():
@@ -199,6 +599,12 @@ def test_render_recovery_action_inspect_outputs_state_and_recommendation(tmp_pat
     audit_path = tmp_path / "recovery-audit.jsonl"
     project = _make_project("action_inspect")
     job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+    before = {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    }
 
     stdout = io.StringIO()
     with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
@@ -216,12 +622,32 @@ def test_render_recovery_action_inspect_outputs_state_and_recommendation(tmp_pat
     output = stdout.getvalue()
     assert "Render recovery action: inspect" in output
     assert f"Object: job#{job.id}" in output
+    assert "Before state" in output
+    assert "Remediation plan" in output
     assert "pending video_export job exceeded" in output
     records = _read_audit_records(audit_path)
+    assert len(records) == 1
     assert records[-1]["action"] == "inspect"
     assert records[-1]["dry_run"] is True
     assert records[-1]["executed"] is False
     assert records[-1]["audit_written"] is True
+    assert records[-1]["target"] == {
+        "object_type": "job",
+        "object_id": job.id,
+        "model_object_type": "Job",
+    }
+    assert records[-1]["before_state"]["status"] == "pending"
+    assert records[-1]["before_state"]["job_type"] == "video_export"
+    assert records[-1]["related_ids"]["job_id"] == job.id
+    assert "object_state" not in records[-1]
+
+    job.refresh_from_db()
+    assert {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    } == before
 
 
 def test_render_recovery_action_resolve_is_audit_only_with_confirm(tmp_path):
@@ -336,6 +762,12 @@ def test_render_recovery_action_json_output(tmp_path):
     audit_path = tmp_path / "recovery-audit.jsonl"
     project = _make_project("action_json")
     job = _age_job(Job.objects.create(project=project, job_type="video_export", status="pending"))
+    before = {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    }
 
     stdout = io.StringIO()
     with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
@@ -353,9 +785,134 @@ def test_render_recovery_action_json_output(tmp_path):
 
     payload = json.loads(stdout.getvalue())
     assert payload["action"] == "inspect"
+    assert payload["dry_run"] is True
+    assert payload["executed"] is False
+    assert payload["target"] == {
+        "object_type": "job",
+        "object_id": job.id,
+        "model_object_type": "Job",
+    }
+    assert payload["before_state"]["status"] == "pending"
+    assert payload["before_state"]["progress"] == 0
+    assert payload["before_state"]["celery_task_id"] == ""
+    assert payload["before_state"]["error_message"] == ""
+    assert payload["before_state"]["job_type"] == "video_export"
+    assert payload["before_state"]["project_id"] == project.id
+    assert payload["before_state"]["created_at"]
+    assert payload["before_state"]["updated_at"]
+    assert payload["before_state"]["age_seconds"] >= 2 * 3600
+    assert payload["before_state"]["age_hours"] >= 2
+    assert payload["related_ids"] == {"project_id": project.id, "job_id": job.id}
+    assert payload["current_candidate"] is True
+    assert payload["matched_findings_count"] == len(payload["recommendation"]["findings"])
     assert payload["object_state"]["id"] == job.id
     assert payload["recommendation"]["findings"]
+    _assert_remediation_plan_fields(payload["remediation_plan"])
+    _assert_promoted_remediation_plan_matches_finding(
+        payload["remediation_plan"],
+        payload["recommendation"]["findings"][0],
+    )
     assert payload["audit_record"]["object_id"] == job.id
+    assert payload["audit_record"]["before_state"] == payload["before_state"]
+    assert payload["audit_record"]["remediation_plan"] == payload["remediation_plan"]
+
+    records = _read_audit_records(audit_path)
+    assert len(records) == 1
+    assert records[0]["action"] == "inspect"
+    assert records[0]["dry_run"] is True
+    assert records[0]["executed"] is False
+
+    job.refresh_from_db()
+    assert {
+        "status": job.status,
+        "progress": job.progress,
+        "celery_task_id": job.celery_task_id,
+        "error_message": job.error_message,
+    } == before
+
+
+def test_render_recovery_action_intent_json_includes_before_state_and_related_ids(tmp_path):
+    audit_path = tmp_path / "recovery-audit.jsonl"
+    project = _make_project("action_intent_json")
+    completed_job = Job.objects.create(project=project, job_type="video_export", status="done", celery_task_id="task-done")
+    intent = _age_intent(
+        RenderFollowUpIntent.objects.create(
+            project=project,
+            status=RenderFollowUpIntent.STATUS_PENDING,
+            metadata={
+                "active_job_id": completed_job.id,
+                "dispatched_job_id": 987654,
+                "celery_task_id": "task-intent",
+            },
+        )
+    )
+    before = {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    }
+
+    stdout = io.StringIO()
+    with override_settings(RENDER_RECOVERY_AUDIT_LOG_PATH=str(audit_path)):
+        call_command(
+            "render_recovery_action",
+            "--action",
+            "inspect",
+            "--type",
+            "intent",
+            "--id",
+            str(intent.id),
+            "--json",
+            stdout=stdout,
+        )
+
+    payload = json.loads(stdout.getvalue())
+    assert payload["action"] == "inspect"
+    assert payload["dry_run"] is True
+    assert payload["executed"] is False
+    assert payload["target"] == {
+        "object_type": "intent",
+        "object_id": intent.id,
+        "model_object_type": "RenderFollowUpIntent",
+    }
+    assert payload["before_state"]["status"] == RenderFollowUpIntent.STATUS_PENDING
+    assert payload["before_state"]["mode"] == RenderFollowUpIntent.MODE_TARGETED
+    assert payload["before_state"]["metadata"] == before["metadata"]
+    assert payload["before_state"]["claimed_at"] is None
+    assert payload["before_state"]["project_id"] == project.id
+    assert payload["before_state"]["requested_by_id"] is None
+    assert payload["before_state"]["created_at"]
+    assert payload["before_state"]["updated_at"]
+    assert payload["before_state"]["age_seconds"] >= 2 * 3600
+    assert payload["before_state"]["age_hours"] >= 2
+    assert payload["related_ids"] == {
+        "project_id": project.id,
+        "intent_id": intent.id,
+        "active_job_id": completed_job.id,
+        "dispatched_job_id": 987654,
+        "celery_task_id": "task-intent",
+    }
+    assert payload["current_candidate"] is True
+    assert payload["matched_findings_count"] == len(payload["recommendation"]["findings"])
+    assert payload["matched_findings_count"] >= 2
+    _assert_remediation_plan_fields(payload["remediation_plan"])
+    _assert_promoted_remediation_plan_matches_finding(
+        payload["remediation_plan"],
+        payload["recommendation"]["findings"][0],
+    )
+
+    records = _read_audit_records(audit_path)
+    assert len(records) == 1
+    assert records[0]["action"] == "inspect"
+    assert records[0]["before_state"] == payload["before_state"]
+    assert "object_state" not in records[0]
+
+    intent.refresh_from_db()
+    assert {
+        "status": intent.status,
+        "metadata": dict(intent.metadata or {}),
+        "claimed_at": intent.claimed_at,
+    } == before
 
 
 def test_render_recovery_action_generates_audit_for_dry_run_and_execute(tmp_path):

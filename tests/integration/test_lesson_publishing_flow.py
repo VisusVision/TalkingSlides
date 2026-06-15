@@ -19,6 +19,7 @@ import os
 import sys
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import django
 import pytest
@@ -56,6 +57,46 @@ def _make_staff(username: str):
     user = User.objects.create_user(username=username, password="pass", is_staff=True)
     UserProfile.objects.create(user=user, role="teacher")
     return user
+
+
+def _prepare_lesson_upload(tmp_path, project: Project) -> None:
+    upload_dir = tmp_path / "uploads" / str(project.id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    (upload_dir / "lesson.txt").write_text("lesson", encoding="utf-8")
+
+
+class _CapturedCelery:
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+
+    def signature(self, name, args=None, kwargs=None):
+        captured = self
+
+        class _Signature:
+            def apply_async(self, **options):
+                captured.sent.append(
+                    {
+                        "name": name,
+                        "args": list(args or []),
+                        "kwargs": dict(kwargs or {}),
+                        "options": dict(options),
+                    }
+                )
+                return SimpleNamespace(id=f"task-project-permission-{len(captured.sent)}")
+
+        return _Signature()
+
+
+def _capture_rerender_dispatch(monkeypatch) -> _CapturedCelery:
+    captured = _CapturedCelery()
+    monkeypatch.setattr(views, "_celery_app", captured)
+    monkeypatch.setattr(views, "_get_voice_id", lambda *_args, **_kwargs: "voice-project-permission")
+    monkeypatch.setattr(
+        views,
+        "_resolve_avatar_options_for_project",
+        lambda project, request: {"enabled": False, "teacher_id": int(project.user_id or 0)},
+    )
+    return captured
 
 
 class _DummySession(dict):
@@ -886,7 +927,44 @@ def test_anonymous_cannot_see_drafts():
 
 
 @pytest.mark.django_db
-def test_staff_review_access_is_read_only_and_not_in_studio_list():
+def test_project_owner_can_rerender(tmp_path, monkeypatch):
+    teacher = _make_teacher("rerender_owner_teacher")
+    project = Project.objects.create(title="Owner Rerender", user=teacher)
+    _prepare_lesson_upload(tmp_path, project)
+    captured = _capture_rerender_dispatch(monkeypatch)
+
+    request = APIRequestFactory().post(f"/api/v1/projects/{project.id}/rerender/", {}, format="json")
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = views.ProjectRerenderView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 202
+    assert response.data["status"] == "pending"
+    assert Job.objects.filter(project=project, job_type="video_export").count() == 1
+    assert captured.sent[0]["name"] == "worker.tasks.process_pptx_to_video"
+    assert captured.sent[0]["kwargs"]["job_id"] == response.data["id"]
+
+
+@pytest.mark.django_db
+def test_non_owner_cannot_rerender_or_enqueue_job(monkeypatch):
+    owner = _make_teacher("rerender_forbidden_owner")
+    other = _make_teacher("rerender_forbidden_other")
+    project = Project.objects.create(title="Forbidden Rerender", user=owner)
+    captured = _capture_rerender_dispatch(monkeypatch)
+    before_jobs = Job.objects.count()
+
+    request = APIRequestFactory().post(f"/api/v1/projects/{project.id}/rerender/", {}, format="json")
+    force_authenticate(request, user=other)
+    response = views.ProjectRerenderView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 403
+    assert Job.objects.count() == before_jobs
+    assert captured.sent == []
+
+
+@pytest.mark.django_db
+def test_staff_review_access_is_read_only_and_not_in_studio_list(monkeypatch):
     """Staff users can review another user's project read-only without seeing it in Studio ownership lists."""
     teacher = _make_teacher("staff_proj_teacher")
     staff = _make_staff("staff_proj_staff")
@@ -921,6 +999,17 @@ def test_staff_review_access_is_read_only_and_not_in_studio_list():
     patch_response = views.ProjectDetailView.as_view()(patch_request, project_id=project.id)
 
     assert patch_response.status_code == 403
+
+    captured = _capture_rerender_dispatch(monkeypatch)
+    before_jobs = Job.objects.count()
+
+    rerender_request = APIRequestFactory().post(f"/api/v1/projects/{project.id}/rerender/", {}, format="json")
+    force_authenticate(rerender_request, user=staff)
+    rerender_response = views.ProjectRerenderView.as_view()(rerender_request, project_id=project.id)
+
+    assert rerender_response.status_code == 403
+    assert Job.objects.count() == before_jobs
+    assert captured.sent == []
 
 
 @pytest.mark.django_db

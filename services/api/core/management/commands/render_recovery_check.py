@@ -65,3 +65,24 @@ class Command(BaseCommand):
             )
             self.stdout.write(f"    detail: {finding['detail']}")
             self.stdout.write(f"    recommended action: {finding['recommended_action']}")
+            self.stdout.write(f"    candidate action: {finding['candidate_action']}")
+            self.stdout.write(f"    action mode: {finding['action_mode']}")
+            self.stdout.write(f"    risk level: {finding['risk_level']}")
+            self.stdout.write(f"    mutation if applied: {finding['mutation_if_applied']}")
+            self.stdout.write(f"    dedupe impact: {finding['dedupe_impact']}")
+            self.stdout.write(f"    apply eligible: {finding['apply_eligible']}")
+            self.stdout.write(f"    finding priority: {finding['finding_priority']}")
+            self.stdout.write(f"    precondition token: {finding['precondition_token']}")
+            self.stdout.write(f"    metadata hash: {finding['metadata_hash']}")
+            self.stdout.write(f"    proposed conditional update: {finding['proposed_conditional_update']}")
+            self.stdout.write(f"    required confirm token: {finding['required_confirm_token']}")
+            if finding["suggested_manual_command"]:
+                self.stdout.write(f"    suggested manual command: {finding['suggested_manual_command']}")
+            if finding["apply_blockers"]:
+                self.stdout.write("    apply blockers:")
+                for blocker in finding["apply_blockers"]:
+                    self.stdout.write(f"      - {blocker}")
+            if finding["requires_operator_checks"]:
+                self.stdout.write("    requires operator checks:")
+                for check in finding["requires_operator_checks"]:
+                    self.stdout.write(f"      - {check}")

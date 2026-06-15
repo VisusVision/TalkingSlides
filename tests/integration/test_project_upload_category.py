@@ -19,17 +19,10 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
-from django.db import connection  # noqa: E402
 from core import views  # noqa: E402
 from core.models import Category, Job, Project, UserProfile  # noqa: E402
 from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
-
-
-def _table_has_column(table_name, column_name):
-    with connection.cursor() as cursor:
-        cursor.execute(f"PRAGMA table_info({table_name})")
-        rows = cursor.fetchall()
-    return any(row[1] == column_name for row in rows)
+from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 
 
 def _make_teacher(username_prefix="teacher"):
@@ -41,8 +34,7 @@ def _make_teacher(username_prefix="teacher"):
 
 @pytest.mark.django_db
 def test_project_upload_creates_new_category_and_attaches_to_project(tmp_path, monkeypatch):
-    if not _table_has_column("core_project", "cover_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "cover_image_original")
 
     factory = APIRequestFactory()
     teacher = _make_teacher("upload_category")
@@ -86,8 +78,7 @@ def test_project_upload_creates_new_category_and_attaches_to_project(tmp_path, m
 
 @pytest.mark.django_db
 def test_project_upload_reuses_existing_category_case_insensitive(tmp_path, monkeypatch):
-    if not _table_has_column("core_project", "cover_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "cover_image_original")
 
     factory = APIRequestFactory()
     teacher = _make_teacher("upload_existing_category")
@@ -133,11 +124,8 @@ def test_project_upload_reuses_existing_category_case_insensitive(tmp_path, monk
 
 @pytest.mark.django_db
 def test_project_upload_dispatches_avatar_options_with_composite_fallback_flag(tmp_path, monkeypatch):
-    if not _table_has_column("core_project", "cover_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
-
-    if not _table_has_column("core_userprofile", "avatar_lipsync_engine"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "cover_image_original")
+    skip_if_column_missing("core_userprofile", "avatar_lipsync_engine")
 
     factory = APIRequestFactory()
     suffix = uuid.uuid4().hex[:8]
@@ -213,8 +201,7 @@ def test_project_upload_dispatches_avatar_options_with_composite_fallback_flag(t
 
 @pytest.mark.django_db
 def test_project_upload_persists_cover_image_paths(tmp_path, monkeypatch):
-    if not _table_has_column("core_project", "cover_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "cover_image_original")
 
     factory = APIRequestFactory()
     teacher = _make_teacher("upload_cover")
@@ -266,8 +253,7 @@ def test_project_upload_persists_cover_image_paths(tmp_path, monkeypatch):
 
 @pytest.mark.django_db
 def test_catalog_exposes_cover_url_and_project_cover_endpoint_streams_file(tmp_path):
-    if not _table_has_column("core_project", "cover_image_original"):
-        pytest.skip("Local DB schema is stale; run migrations to execute this test.")
+    skip_if_column_missing("core_project", "cover_image_original")
 
     factory = APIRequestFactory()
     cover_rel_path = f"uploads/cover-test-{uuid.uuid4().hex[:6]}/cover.png"

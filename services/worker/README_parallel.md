@@ -56,9 +56,9 @@ Transient TTS/ffmpeg failures are retried before the chord failure path fires.
 | SRT written | 95 | — |
 | Final video ready | 100 | `SUCCESS` |
 
-`Job.progress` requires a `progress = IntegerField(default=0)` column — add it
-to `services/api/core/models.py` and run `makemigrations`.  The worker guards
-with `hasattr(job, "progress")` so it runs safely without the migration.
+`Job.progress` already exists on the API `Job` model. The worker writes progress
+updates during orchestration and finalization; no extra model change or migration
+is required for this pipeline.
 
 ---
 
@@ -103,7 +103,7 @@ with `hasattr(job, "progress")` so it runs safely without the migration.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `STORAGE_ROOT` | `storage_local/output` | Root dir for per-project workspace |
+| `STORAGE_ROOT` | `storage_local` locally, `/app/storage_local` in Docker Compose | Shared filesystem root used by API and worker for runtime media. `infra/.env.example` and `services/api/config/settings.py` are the filesystem source-of-truth references. |
 | `TTS_SERVICE_URL` | `http://tts_service:8001` | Internal TTS microservice base URL |
 | `ELEVEN_API_KEY` | *(none)* | ElevenLabs API key (`tts_mode="eleven"`) |
 | `LO_USER_INSTALLATION` | `/tmp/lo_user` | LibreOffice per-process profile dir |
@@ -164,16 +164,19 @@ configuration.
 ### Start workers (Docker Compose)
 
 ```bash
-docker compose up worker
+docker compose -f infra/docker-compose.yml up worker
+docker compose -f infra/docker-compose.yml up worker-avatar
 ```
 
 ### Start a worker manually (local dev)
 
 ```bash
 # from repo root
-celery -A services.worker worker --loglevel=info --concurrency=4 -Q celery
+celery -A services.worker worker --loglevel=info --concurrency=4 -Q render
+celery -A services.worker worker --loglevel=info --concurrency=1 -n worker-avatar@%h -Q avatar
 # or from services/worker/
-celery -A worker worker --loglevel=info --concurrency=4
+celery -A worker worker --loglevel=info --concurrency=4 -Q render
+celery -A worker worker --loglevel=info --concurrency=1 -n worker-avatar@%h -Q avatar
 ```
 
 ### Submit a job from Python

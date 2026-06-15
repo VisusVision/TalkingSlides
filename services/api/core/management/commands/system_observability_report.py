@@ -37,6 +37,7 @@ class Command(BaseCommand):
         self._write_section("Render", report["render"])
         self._write_section("Follow-up intents", report["follow_up_intents"])
         self._write_section("Storage", report["storage"], human_bytes=True)
+        self._write_section("Storage backend readiness", report["storage_backend"])
         self._write_section("Recovery", report["recovery"])
         warnings = report.get("warnings") or []
         self.stdout.write("")

@@ -4073,8 +4073,8 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         qs = super().get_queryset()
         if _is_staff_user(self.request.user):
-            return qs
-        return qs.filter(pk=self.request.user.pk)
+            return qs.order_by("id")
+        return qs.filter(pk=self.request.user.pk).order_by("id")
 
 
 class SlideViewSet(viewsets.ReadOnlyModelViewSet):
@@ -4210,6 +4210,17 @@ _ACTIVE_VIDEO_EXPORT_STATUSES = ("pending", "running")
 def _active_video_export_job(project: Project) -> Job | None:
     return (
         project.jobs.filter(job_type="video_export", status__in=_ACTIVE_VIDEO_EXPORT_STATUSES)
+        .order_by("-created_at", "-id")
+        .first()
+    )
+
+
+_ACTIVE_AVATAR_RENDER_STATUSES = ("pending", "running")
+
+
+def _active_avatar_render_job(project: Project) -> Job | None:
+    return (
+        project.jobs.filter(job_type="avatar_render", status__in=_ACTIVE_AVATAR_RENDER_STATUSES)
         .order_by("-created_at", "-id")
         .first()
     )
@@ -5606,6 +5617,36 @@ def _queue_transcript_rerender(
     full_rerender: bool = False,
     use_draft: bool = False,
 ) -> dict | None:
+    with transaction.atomic():
+        project = Project.objects.select_for_update().get(pk=project.pk)
+        active_job = _active_video_export_job(project)
+        if active_job:
+            avatar_options = _resolve_avatar_options_for_project(project, request)
+            return _active_render_job_response(active_job, avatar_options)
+        reservation = _reserve_transcript_rerender_job(
+            project=project,
+            request=request,
+            changed_page_keys=changed_page_keys,
+            pause_sec=pause_sec,
+            lang_hint=lang_hint,
+            full_rerender=full_rerender,
+            use_draft=use_draft,
+        )
+    if reservation is None:
+        return None
+    return _dispatch_reserved_transcript_rerender(reservation)
+
+
+def _reserve_transcript_rerender_job(
+    *,
+    project: Project,
+    request,
+    changed_page_keys: list[str] | set[str],
+    pause_sec: float,
+    lang_hint: str,
+    full_rerender: bool = False,
+    use_draft: bool = False,
+) -> tuple[Job, dict, list, dict, str] | None:
     voice_id = _get_voice_id(project.user)
     storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
     upload_dir = Path(storage_root) / "uploads" / str(project.id)
@@ -5631,11 +5672,17 @@ def _queue_transcript_rerender(
         _project_render_tts_settings(project, use_draft=use_draft),
     ]
     task_kwargs = {"use_draft": True} if use_draft else {}
+    render_queue = _queue_for_avatar_options(avatar_options)
+    return job, avatar_options, task_args, task_kwargs, render_queue
+
+
+def _dispatch_reserved_transcript_rerender(reservation: tuple[Job, dict, list, dict, str]) -> dict:
+    job, avatar_options, task_args, task_kwargs, render_queue = reservation
     _dispatch_render_job(
         job_id=job.id,
         task_args=task_args,
         task_kwargs=task_kwargs,
-        queue=_queue_for_avatar_options(avatar_options),
+        queue=render_queue,
     )
     job.refresh_from_db(fields=["celery_task_id"])
     data = JobSerializer(job).data
@@ -5653,32 +5700,33 @@ def _queue_or_record_transcript_rerender(
     use_draft: bool = False,
     followup_reason: str,
 ) -> tuple[dict | None, dict]:
-    active_job = _active_video_export_job(project)
-    if active_job:
-        mode = RenderFollowUpIntent.MODE_FULL if full_rerender else RenderFollowUpIntent.MODE_TARGETED
-        intent = merge_render_followup_intent(
-            project=project,
-            mode=mode,
-            page_keys=[] if mode == RenderFollowUpIntent.MODE_FULL else changed_page_keys,
-            reason=followup_reason,
-            requested_by=request.user if request.user and request.user.is_authenticated else None,
-            metadata={
-                "source": "transcript",
-                "active_job_id": active_job.id,
-                "use_draft": bool(use_draft),
-                "pause_sec": float(pause_sec),
-                "lang_hint": str(lang_hint or "auto"),
-            },
-        )
-        return None, {
-            "follow_up_render_intent": True,
-            "queued_follow_up": True,
-            "deduped": True,
-            "render_follow_up_intent_id": intent.id,
-        }
+    with transaction.atomic():
+        project = Project.objects.select_for_update().get(pk=project.pk)
+        active_job = _active_video_export_job(project)
+        if active_job:
+            mode = RenderFollowUpIntent.MODE_FULL if full_rerender else RenderFollowUpIntent.MODE_TARGETED
+            intent = merge_render_followup_intent(
+                project=project,
+                mode=mode,
+                page_keys=[] if mode == RenderFollowUpIntent.MODE_FULL else changed_page_keys,
+                reason=followup_reason,
+                requested_by=request.user if request.user and request.user.is_authenticated else None,
+                metadata={
+                    "source": "transcript",
+                    "active_job_id": active_job.id,
+                    "use_draft": bool(use_draft),
+                    "pause_sec": float(pause_sec),
+                    "lang_hint": str(lang_hint or "auto"),
+                },
+            )
+            return None, {
+                "follow_up_render_intent": True,
+                "queued_follow_up": True,
+                "deduped": True,
+                "render_follow_up_intent_id": intent.id,
+            }
 
-    return (
-        _queue_transcript_rerender(
+        reservation = _reserve_transcript_rerender_job(
             project=project,
             request=request,
             changed_page_keys=changed_page_keys,
@@ -5686,9 +5734,11 @@ def _queue_or_record_transcript_rerender(
             lang_hint=lang_hint,
             full_rerender=full_rerender,
             use_draft=use_draft,
-        ),
-        {},
-    )
+        )
+
+    if reservation is None:
+        return None, {}
+    return _dispatch_reserved_transcript_rerender(reservation), {}
 
 
 def _source_moderation_auto_enabled() -> bool:
@@ -9438,7 +9488,7 @@ class ProjectRerenderView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_review_project(request.user, project):
+        if not _can_manage_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         enforce_unpublished_for_unresolved_moderation(project)
@@ -9653,39 +9703,59 @@ class ProjectAvatarRerenderView(APIView):
 
         avatar_cfg = {**avatar_options, "base_job_id": int(base_job.id)}
         output_rel_prefix = _avatar_rerender_output_prefix(project.id, base_job, sidecar)
-        avatar_job = Job.objects.create(project=project, job_type="avatar_render", status="pending", progress=0)
-        handoff_manifest_path = _write_avatar_rerender_handoff_manifest(
-            storage_root=storage_root,
-            project_id=project.id,
-            base_job_id=int(base_job.id),
-            payload={
-                "schema_version": 1,
-                "project_id": int(project.id),
-                "base_job_id": int(base_job.id),
-                "avatar_job_id": int(avatar_job.id),
-                "created_at": timezone.now().isoformat(),
-                "ordered_results": ordered_results,
-                "avatar_settings": avatar_cfg,
-                "source_hashes": {
-                    "avatar_source_hash": str(avatar_cfg.get("avatar_source_hash") or ""),
-                    "avatar_preview_source_hash": str(avatar_cfg.get("avatar_preview_source_hash") or ""),
+        with transaction.atomic():
+            project = Project.objects.select_for_update().get(pk=project.pk)
+            locked_avatar_status = str(getattr(project, "avatar_processing_status", "") or "none").strip().lower()
+            active_avatar_job = _active_avatar_render_job(project)
+            if locked_avatar_status in {"queued", "processing"} or active_avatar_job is not None:
+                response_avatar_status = locked_avatar_status
+                if response_avatar_status not in {"queued", "processing"} and active_avatar_job is not None:
+                    response_avatar_status = "queued" if active_avatar_job.status == "pending" else "processing"
+                return Response(
+                    {
+                        "avatar_processing_status": response_avatar_status,
+                        "avatar_job_id": str(
+                            getattr(project, "avatar_last_job_id", "") or getattr(active_avatar_job, "id", "") or ""
+                        ),
+                        "avatar_runtime_settings": project_avatar_runtime_settings(project),
+                        "message": "Avatar rerender is already queued or processing.",
+                    },
+                    status=status.HTTP_200_OK,
+                )
+
+            avatar_job = Job.objects.create(project=project, job_type="avatar_render", status="pending", progress=0)
+            handoff_manifest_path = _write_avatar_rerender_handoff_manifest(
+                storage_root=storage_root,
+                project_id=project.id,
+                base_job_id=int(base_job.id),
+                payload={
+                    "schema_version": 1,
+                    "project_id": int(project.id),
+                    "base_job_id": int(base_job.id),
+                    "avatar_job_id": int(avatar_job.id),
+                    "created_at": timezone.now().isoformat(),
+                    "ordered_results": ordered_results,
+                    "avatar_settings": avatar_cfg,
+                    "source_hashes": {
+                        "avatar_source_hash": str(avatar_cfg.get("avatar_source_hash") or ""),
+                        "avatar_preview_source_hash": str(avatar_cfg.get("avatar_preview_source_hash") or ""),
+                    },
+                    "render_metadata": {
+                        "output_rel_prefix": output_rel_prefix,
+                        "slide_count": len(ordered_results),
+                        "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or ""),
+                        "model_version": str(avatar_cfg.get("model_version") or ""),
+                        "avatar_only_rerender": True,
+                    },
+                    "status": "created",
                 },
-                "render_metadata": {
-                    "output_rel_prefix": output_rel_prefix,
-                    "slide_count": len(ordered_results),
-                    "lipsync_engine": str(avatar_cfg.get("lipsync_engine") or ""),
-                    "model_version": str(avatar_cfg.get("model_version") or ""),
-                    "avatar_only_rerender": True,
-                },
-                "status": "created",
-            },
-        )
-        _update_project_avatar_api_state(
-            project,
-            avatar_status="queued",
-            message="Avatar is still processing and will be added when ready.",
-            job_id=avatar_job.id,
-        )
+            )
+            _update_project_avatar_api_state(
+                project,
+                avatar_status="queued",
+                message="Avatar is still processing and will be added when ready.",
+                job_id=avatar_job.id,
+            )
         try:
             async_result = _dispatch_celery_task(
                 _AVATAR_OVERLAY_TASK,
@@ -10319,6 +10389,36 @@ class AvatarPreviewRegenerateView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
+    def _queued_response(
+        self,
+        *,
+        job: Job,
+        task_id: str,
+        selected_engine: str,
+        setup_status: dict,
+    ) -> Response:
+        queued_setup_status = {
+            **setup_status,
+            "state": "preparing",
+            "action_required": "wait",
+            "primary_action_label": "Preparing avatar",
+            "message": "Avatar preview is being generated.",
+            "can_prepare": False,
+            "can_generate_preview": False,
+        }
+        return Response(
+            {
+                "status": "queued",
+                "job_id": job.id,
+                "task_id": task_id,
+                "normalized_engine": selected_engine,
+                "avatar_engine_selected": selected_engine,
+                "avatar_setup_status": queued_setup_status,
+                "action_required": queued_setup_status.get("action_required"),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
     def post(self, request, user_id):
         if not avatar_enabled():
             return _feature_disabled_response("Avatar")
@@ -10364,7 +10464,38 @@ class AvatarPreviewRegenerateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        job = Job.objects.create(job_type="avatar_render", status="pending")
+        with transaction.atomic():
+            profile = UserProfile.objects.select_for_update().get(pk=profile.pk)
+            active_preview_status = _normalize_preview_stage(profile.avatar_last_preview_status)
+            active_job = None
+            raw_active_job_id = str(profile.avatar_last_preview_job_id or "").strip()
+            if active_preview_status in {"queued", "processing", "rendering"} and raw_active_job_id.isdigit():
+                active_job = (
+                    Job.objects.filter(
+                        pk=int(raw_active_job_id),
+                        job_type="avatar_render",
+                        status__in=("pending", "running"),
+                    )
+                    .order_by("-created_at", "-id")
+                    .first()
+                )
+            if active_job is not None:
+                return self._queued_response(
+                    job=active_job,
+                    task_id=str(active_job.celery_task_id or ""),
+                    selected_engine=selected_engine,
+                    setup_status=setup_status,
+                )
+
+            job = Job.objects.create(job_type="avatar_render", status="pending")
+            profile.avatar_image_status = "processing"
+            profile.avatar_last_preview_status = "queued"
+            profile.avatar_last_preview_job_id = str(job.id)
+            profile.avatar_last_preview_path = ""
+            profile.avatar_preview_video = ""
+            profile.avatar_preview_error = ""
+            profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id", "avatar_last_preview_path", "avatar_preview_video", "avatar_preview_error", "updated_at"])
+
         async_result = _dispatch_celery_task(
             _AVATAR_PREVIEW_TASK,
             kwargs={
@@ -10376,34 +10507,11 @@ class AvatarPreviewRegenerateView(APIView):
         job.celery_task_id = async_result.id
         job.save(update_fields=["celery_task_id"])
 
-        profile.avatar_image_status = "processing"
-        profile.avatar_last_preview_status = "queued"
-        profile.avatar_last_preview_job_id = str(job.id)
-        profile.avatar_last_preview_path = ""
-        profile.avatar_preview_video = ""
-        profile.avatar_preview_error = ""
-        profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id", "avatar_last_preview_path", "avatar_preview_video", "avatar_preview_error", "updated_at"])
-        queued_setup_status = {
-            **setup_status,
-            "state": "preparing",
-            "action_required": "wait",
-            "primary_action_label": "Preparing avatar",
-            "message": "Avatar preview is being generated.",
-            "can_prepare": False,
-            "can_generate_preview": False,
-        }
-
-        return Response(
-            {
-                "status": "queued",
-                "job_id": job.id,
-                "task_id": async_result.id,
-                "normalized_engine": selected_engine,
-                "avatar_engine_selected": selected_engine,
-                "avatar_setup_status": queued_setup_status,
-                "action_required": queued_setup_status.get("action_required"),
-            },
-            status=status.HTTP_202_ACCEPTED,
+        return self._queued_response(
+            job=job,
+            task_id=str(async_result.id or ""),
+            selected_engine=selected_engine,
+            setup_status=setup_status,
         )
 
 
