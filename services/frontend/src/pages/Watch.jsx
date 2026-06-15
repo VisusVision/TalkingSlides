@@ -27,15 +27,17 @@ import RelatedLessonsRow from '../components/player/RelatedLessonsRow';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { usePageLoading } from '../components/ui/PageLoading';
 import { formatDuration, normalizeLesson } from '../lib/content';
 import { buildChapters, buildTranscriptLines } from '../lib/watch';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
+import { isAutoplayNextEnabled } from '../utils/playbackPreferences';
 
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
 const PLAYLIST_COLLAPSED_KEY = 'visus-watch-playlist-collapsed';
-const AUTOPLAY_NEXT_KEY = 'visus-watch-autoplay-next';
+const PUBLISHER_CONTEXT_COLLAPSED_KEY_PREFIX = 'visus-watch-publisher-context-collapsed';
 const AUTOPLAY_COUNTDOWN_SECONDS = 5;
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
@@ -205,48 +207,66 @@ function contextRowsFromPayload(context, currentLessonId) {
     return nextRow?.lesson || rows.find((row) => !row.isCurrent)?.lesson || null;
   }
 
-  function isAutoplayNextEnabled() {
-    return window.localStorage.getItem(AUTOPLAY_NEXT_KEY) !== '0';
+  function publisherContextCollapsedKey(currentLessonId) {
+    return `${PUBLISHER_CONTEXT_COLLAPSED_KEY_PREFIX}:${currentLessonId || 'none'}`;
   }
 
-  function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
-    const [playlistCollapsed, setPlaylistCollapsed] = useState(
-      () => window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true',
-    );
+  export function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+    const isPlaylistMode = context?.mode === 'playlist';
+    const collapsedStorageKey = isPlaylistMode ? PLAYLIST_COLLAPSED_KEY : publisherContextCollapsedKey(currentLessonId);
+    const [contextCollapsed, setContextCollapsed] = useState(() => {
+      if (isPlaylistMode) {
+        return window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true';
+      }
+      return window.sessionStorage.getItem(collapsedStorageKey) !== 'false';
+    });
     const rows = contextRowsFromPayload(context, currentLessonId);
 
-    const isPlaylistMode = context?.mode === 'playlist';
     useEffect(() => {
       if (isPlaylistMode) {
-        window.localStorage.setItem(PLAYLIST_COLLAPSED_KEY, playlistCollapsed ? 'true' : 'false');
+        window.localStorage.setItem(PLAYLIST_COLLAPSED_KEY, contextCollapsed ? 'true' : 'false');
+        return;
       }
-    }, [isPlaylistMode, playlistCollapsed]);
+      window.sessionStorage.setItem(collapsedStorageKey, contextCollapsed ? 'true' : 'false');
+    }, [collapsedStorageKey, contextCollapsed, isPlaylistMode]);
+
+    useEffect(() => {
+      setContextCollapsed(
+        isPlaylistMode
+          ? window.localStorage.getItem(PLAYLIST_COLLAPSED_KEY) === 'true'
+          : window.sessionStorage.getItem(collapsedStorageKey) !== 'false',
+      );
+    }, [collapsedStorageKey, isPlaylistMode]);
 
     if (!rows.length) return null;
 
     const title = isPlaylistMode ? 'More from this playlist' : 'More from this publisher';
     const subtitle = isPlaylistMode ? context?.playlist?.title || '' : rows[0]?.lesson?.teacherName || '';
     const nextLesson = nextLessonFromContext(context, currentLessonId);
+    const collapsedSummary = isPlaylistMode
+      ? `Next: ${nextLesson?.title || 'End of playlist'}`
+      : `${Math.max(0, rows.length - 1)} more lesson${rows.length - 1 === 1 ? '' : 's'}`;
 
-    if (isPlaylistMode && playlistCollapsed) {
+    if (contextCollapsed) {
       return (
-        <SurfaceCard className="p-4">
+        <SurfaceCard data-testid="watch-context-panel" className="p-4">
           <button
             type="button"
-            onClick={() => setPlaylistCollapsed(false)}
+            onClick={() => setContextCollapsed(false)}
             className="focus-ring flex w-full items-center justify-between gap-3 rounded-xl text-left"
             aria-expanded="false"
           >
             <span className="min-w-0">
+              <span className="block text-sm font-semibold text-[var(--text-primary)]">{title}</span>
               <span className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">
-                Next: {nextLesson?.title || 'End of playlist'}
+                {collapsedSummary}
               </span>
               {subtitle ? (
                 <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">{subtitle}</span>
               ) : null}
             </span>
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)]">
-              Expand
+              Show
               <ChevronDown size={14} />
             </span>
           </button>
@@ -255,7 +275,7 @@ function contextRowsFromPayload(context, currentLessonId) {
     }
 
     return (
-      <SurfaceCard className="space-y-3 p-4">
+      <SurfaceCard data-testid="watch-context-panel" className="flex max-h-[28rem] flex-col gap-3 overflow-hidden p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-sm font-semibold text-[var(--text-primary)]">{title}</p>
@@ -263,19 +283,17 @@ function contextRowsFromPayload(context, currentLessonId) {
               <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{subtitle}</p>
             )}
           </div>
-          {isPlaylistMode ? (
-            <button
-              type="button"
-              onClick={() => setPlaylistCollapsed(true)}
-              className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)]"
-              aria-expanded="true"
-            >
-              Hide
-              <ChevronDown size={14} className="rotate-180" />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => setContextCollapsed(true)}
+            className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)]"
+            aria-expanded="true"
+          >
+            Hide
+            <ChevronDown size={14} className="rotate-180" />
+          </button>
         </div>
-        <div className="rail-scroll max-h-[17.5rem] space-y-2 overflow-y-auto pr-1 lg:max-h-[22rem]">
+        <div data-testid="watch-context-list" className="rail-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
           {rows.map((row) => {
             const { lesson: contextLesson, isCurrent } = row;
             return (
@@ -474,6 +492,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
   const activeLessonId = Number(searchParams.get('lesson') || 0) || null;
   const resumeRequested = searchParams.get('resume') === '1';
+  usePageLoading(loadingCatalog || (Boolean(activeLessonId) && loadingLesson), 'watch-page');
 
   useEffect(() => {
     if (!activeLessonId) {
@@ -1187,6 +1206,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
   const handlePlayAutoplayNow = useCallback(() => {
     const nextLessonId = Number(autoplayPrompt?.lesson?.id || 0);
+    setAutoplayPrompt(null);
     if (nextLessonId) {
       openLessonById(nextLessonId);
     }
@@ -1224,6 +1244,9 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           showLessonDetails={false}
           avatarOverlayMode={!avatarFeatureEnabled || focusMode ? 'disabled' : 'floating'}
           watermarkLesson={lesson}
+          continueNextPrompt={autoplayPrompt}
+          onContinueNext={handlePlayAutoplayNow}
+          onCancelContinueNext={handleCancelAutoplay}
         />
       );
     }
@@ -1253,6 +1276,9 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             onSubtitleKeyChange={setSelectedSubtitleKey}
             avatarOverlayMode={!avatarFeatureEnabled || focusMode ? 'disabled' : 'floating'}
             watermarkLesson={lesson}
+            continueNextPrompt={autoplayPrompt}
+            onContinueNext={handlePlayAutoplayNow}
+            onCancelContinueNext={handleCancelAutoplay}
           />
         </Suspense>
       );
@@ -1303,41 +1329,18 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       )}
 
       {activeLessonId && !lessonError && (
-        <section className={focusMode ? 'grid gap-5 xl:grid-cols-[minmax(0,4fr)_minmax(16rem,1fr)]' : 'layout-grid-12'}>
-          <div className={focusMode ? 'space-y-5' : 'lg:col-span-8 space-y-5'}>
+        <section
+          data-testid="watch-learning-layout"
+          className={focusMode ? 'grid gap-5 xl:grid-cols-[minmax(0,4fr)_minmax(16rem,1fr)]' : 'layout-grid-12'}
+        >
+          <div data-testid="watch-video-column" className={focusMode ? 'space-y-5' : 'lg:col-span-8 space-y-5'}>
             {loadingLesson ? (
               <SurfaceCard elevated>
                 <p className="body-md">Loading lesson player...</p>
               </SurfaceCard>
             ) : (
               <>
-                <div className="relative">
-                  {renderPlayerStage()}
-                  {autoplayPrompt?.lesson ? (
-                    <div
-                      data-testid="watch-autoplay-next"
-                      className="absolute inset-0 z-[60] flex items-end justify-center rounded-[1.5rem] bg-[linear-gradient(180deg,rgba(0,0,0,0.18),rgba(0,0,0,0.72))] p-4 sm:items-center"
-                    >
-                      <div className="w-full max-w-lg rounded-2xl border border-white/15 bg-[color:rgba(8,12,20,0.88)] p-4 text-white shadow-2xl backdrop-blur">
-                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/65">Up next</p>
-                        <h2 className="mt-2 line-clamp-2 text-lg font-semibold leading-tight">
-                          Next: {autoplayPrompt.lesson.title}
-                        </h2>
-                        <p className="mt-1 text-sm text-white/75">
-                          Playing in {Math.max(0, Number(autoplayPrompt.secondsRemaining || 0))}...
-                        </p>
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          <Button size="sm" onClick={handlePlayAutoplayNow}>
-                            Play now
-                          </Button>
-                          <Button size="sm" variant="secondary" onClick={handleCancelAutoplay}>
-                            Stay here
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+                {renderPlayerStage()}
 
                 <SurfaceCard className="space-y-3 p-4">
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1587,7 +1590,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             )}
           </div>
 
-          <aside className={focusMode ? 'space-y-5' : 'lg:col-span-4 space-y-5'}>
+          <aside data-testid="watch-notes-column" className={focusMode ? 'space-y-5' : 'lg:col-span-4 space-y-5'}>
             {focusMode ? (
               <WatchStudyPanel
                 lesson={lesson}
@@ -1603,11 +1606,6 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
               />
             ) : (
               <>
-                <WatchContextPanel
-                  context={playlistContext}
-                  currentLessonId={activeLessonId}
-                  onOpenLesson={openLessonById}
-                />
                 <NotesPanel
                   notes={notes}
                   onNotesChange={setNotes}
@@ -1618,6 +1616,11 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                   saveHint={saveHint || (!user ? 'Drafts remain cached locally while you sign in.' : '')}
                   collapsed={notesCollapsed}
                   onToggle={() => setNotesCollapsed((prev) => !prev)}
+                />
+                <WatchContextPanel
+                  context={playlistContext}
+                  currentLessonId={activeLessonId}
+                  onOpenLesson={openLessonById}
                 />
                 <TranscriptPanel
                   lines={transcriptLines}

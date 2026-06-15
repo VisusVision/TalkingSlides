@@ -375,6 +375,106 @@ def test_moderation_history_tab_and_filters_return_terminal_items():
 
 
 @pytest.mark.django_db
+def test_moderation_paginated_tab_returns_limited_results_with_total():
+    owner = _make_user("admin_review_page_owner")
+    staff = _make_user("admin_review_page_staff", is_staff=True)
+    reviews = []
+    for index in range(5):
+        project = _make_project(owner, moderation_status="approved")
+        project.title = f"Paginated moderation item {index}"
+        project.save(update_fields=["title"])
+        _add_run_with_finding(project)
+        reviews.append(_make_review(project))
+
+    response = _client(staff).get(f"{_tab_url('open')}&limit=2&offset=0")
+
+    assert response.status_code == 200
+    assert response.data["count"] == 5
+    assert response.data["total"] == 5
+    assert response.data["limit"] == 2
+    assert response.data["offset"] == 0
+    assert response.data["has_more"] is True
+    assert len(response.data["results"]) == 2
+    assert {row["id"] for row in response.data["results"]}.issubset({review.id for review in reviews})
+
+
+@pytest.mark.django_db
+def test_moderation_search_finds_older_item_not_in_first_page():
+    owner = _make_user("admin_review_search_old_owner")
+    staff = _make_user("admin_review_search_old_staff", is_staff=True)
+    old_project = _make_project(owner, moderation_status="approved")
+    old_project.title = "Ancient Algebra Moderation Needle"
+    old_project.save(update_fields=["title"])
+    _add_run_with_finding(old_project)
+    old_review = _make_review(old_project)
+
+    for index in range(4):
+        project = _make_project(owner, moderation_status="approved")
+        project.title = f"Newer moderation item {index}"
+        project.save(update_fields=["title"])
+        _add_run_with_finding(project)
+        _make_review(project)
+
+    first_page = _client(staff).get(f"{_tab_url('open')}&limit=2&offset=0")
+    search_page = _client(staff).get(f"{_tab_url('open')}&limit=2&offset=0&q=Ancient%20Algebra")
+
+    assert first_page.status_code == 200
+    assert old_review.id not in {row["id"] for row in first_page.data["results"]}
+    assert search_page.status_code == 200
+    assert search_page.data["count"] == 1
+    assert [row["id"] for row in search_page.data["results"]] == [old_review.id]
+
+
+@pytest.mark.django_db
+def test_moderation_paginated_filters_apply_server_side():
+    owner = _make_user("admin_review_filter_server_owner")
+    staff = _make_user("admin_review_filter_server_staff", is_staff=True)
+    violent_project = _make_project(owner, moderation_status="approved")
+    violent_project.title = "Violence category lesson"
+    violent_project.save(update_fields=["title"])
+    _add_run_with_finding(violent_project)
+    violent_review = _make_review(violent_project)
+
+    copyright_project = _make_project(owner, moderation_status="approved")
+    copyright_project.title = "Copyright category lesson"
+    copyright_project.save(update_fields=["title"])
+    copyright_run = AgentRun.objects.create(
+        project=copyright_project,
+        triggered_by=owner,
+        purpose="moderation",
+        phase="source_scan",
+        status="done",
+        final_decision="needs_admin_review",
+    )
+    copyright_project.last_moderation_run_id = copyright_run.id
+    copyright_project.save(update_fields=["last_moderation_run_id"])
+    AgentFinding.objects.create(
+        run=copyright_run,
+        agent_slug="text_moderation_local_rules",
+        agent_version="local-rules:v1",
+        content_type="text",
+        object_type="project",
+        object_id=str(copyright_project.id),
+        location={"project_id": copyright_project.id, "field_name": "title"},
+        category="copyright",
+        severity="medium",
+        confidence=0.88,
+        decision="needs_admin_review",
+        user_message="Possible ownership concern.",
+        admin_message="Possible ownership concern.",
+        provider="local_rules",
+    )
+    copyright_review = _make_review(copyright_project)
+
+    response = _client(staff).get(f"{_tab_url('open')}&limit=10&offset=0&category=violence")
+
+    assert response.status_code == 200
+    result_ids = {row["id"] for row in response.data["results"]}
+    assert violent_review.id in result_ids
+    assert copyright_review.id not in result_ids
+
+
+@pytest.mark.django_db
 def test_staff_can_approve_open_request():
     owner = _make_user("admin_review_approve_owner")
     staff = _make_user("admin_review_approve_staff", is_staff=True)

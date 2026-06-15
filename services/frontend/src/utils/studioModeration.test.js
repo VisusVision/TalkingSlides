@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  adminReviewBackLabel,
   editorSaveAvailability,
   isStudioVisualModerationIssue,
   visualModerationRerenderMessage,
@@ -103,5 +104,18 @@ describe('studio visual moderation gates', () => {
     expect(message).toBe('');
     expect(availability.canSaveChanges).toBe(true);
     expect(availability.canSaveRerender).toBe(true);
+  });
+});
+
+describe('admin review navigation labels', () => {
+  it('uses report copy when the review came from a report context', () => {
+    expect(adminReviewBackLabel({ reportId: 42 })).toBe('Back to report');
+    expect(adminReviewBackLabel({ source: 'report' })).toBe('Back to report');
+    expect(adminReviewBackLabel({ sourceItem: 'report:42' })).toBe('Back to report');
+  });
+
+  it('uses moderation copy for the default moderation queue context', () => {
+    expect(adminReviewBackLabel({})).toBe('Back to moderation');
+    expect(adminReviewBackLabel({ returnTo: '/moderation' })).toBe('Back to moderation');
   });
 });

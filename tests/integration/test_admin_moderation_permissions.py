@@ -231,6 +231,44 @@ def test_staff_admin_can_read_transcript_for_review_but_not_mutate_it():
 
 
 @pytest.mark.django_db
+def test_staff_admin_can_read_scene_background_for_review_but_not_delete(tmp_path):
+    owner = _make_user("perm_background_owner", role="publisher")
+    other = _make_user("perm_background_other", role="publisher")
+    staff = _make_user("perm_background_staff", role="student", is_staff=True)
+    project = _make_project(owner)
+    image = tmp_path / "backgrounds" / "custom.jpg"
+    image.parent.mkdir(parents=True, exist_ok=True)
+    image.write_bytes(b"custom background")
+    page = project.transcript_pages.create(
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="slide-1",
+        original_text="Original",
+        narration_text="Narration",
+        editor_document={
+            "scene": {
+                "background_mode": "custom",
+                "custom_background_path": "backgrounds/custom.jpg",
+            },
+        },
+    )
+    read_url = f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/custom/"
+    delete_url = f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/background/"
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        owner_read = _client(owner).get(read_url)
+        staff_read = _client(staff).get(read_url)
+        other_read = _client(other).get(read_url)
+        staff_delete = _client(staff).delete(delete_url)
+
+    assert owner_read.status_code == 200
+    assert staff_read.status_code == 200
+    assert other_read.status_code == 403
+    assert staff_delete.status_code == 403
+
+
+@pytest.mark.django_db
 def test_publisher_cannot_read_other_publishers_project_for_studio_review():
     owner = _make_user("perm_other_read_owner", role="publisher")
     other = _make_user("perm_other_read_publisher", role="publisher")

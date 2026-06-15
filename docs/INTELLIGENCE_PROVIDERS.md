@@ -8,7 +8,7 @@ Lesson Intelligence and Analytics Intelligence use the same production-safety po
 
 ## Progressive Ollama Enhancement
 
-`POST /intelligence/analyze/` returns a heuristic report immediately. When the provider chain contains `ollama`, the API stores the heuristic report with `metadata.progressive_enhancement.status=pending`, queues a Celery enhancement task, and the frontend polls `GET /intelligence/` until the enhancement finishes.
+`POST /intelligence/analyze/` returns a heuristic report immediately. When the provider chain contains both `heuristic` and `ollama`, the API stores the heuristic report with `metadata.progressive_enhancement.status=pending`, queues a Celery enhancement task, and the frontend polls `GET /intelligence/` until the enhancement finishes.
 
 When the background Ollama call succeeds, the same report row is updated to `provider=ollama`, `fallback_used=false`, and `metadata.progressive_enhancement.status=done`. If only part of the local analysis completes, the status is terminal `partial` and heuristic sections remain in place for the failed parts. If Ollama fails fully or a queued task becomes stale, the heuristic report stays visible and the enhancement status becomes `failed` with a sanitized error reason.
 
@@ -51,18 +51,20 @@ Hardware profile defaults are controlled by `INTELLIGENCE_HARDWARE_PROFILE`:
 
 The committed defaults are conservative local values (`qwen2.5:7b` for lesson and `qwen2.5:3b` for analytics). `OLLAMA_LESSON_INTELLIGENCE_MODEL` and `OLLAMA_ANALYTICS_INTELLIGENCE_MODEL` always override profile defaults. If a configured model is missing, the task records a safe Ollama failure reason and keeps the heuristic report.
 
-For local background quality, `qwen2.5:7b` remains a good lesson default:
+For local background quality, keep the heuristic first so a report is stored immediately and Ollama is treated as an enhancement:
 
 ```text
-LESSON_INTELLIGENCE_PROVIDER_CHAIN=ollama,heuristic
-ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN=ollama,heuristic
+LESSON_INTELLIGENCE_PROVIDER_CHAIN=heuristic,ollama
+ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN=heuristic,ollama
 OLLAMA_LESSON_INTELLIGENCE_MODEL=qwen2.5:7b
 OLLAMA_ANALYTICS_INTELLIGENCE_MODEL=qwen2.5:3b
+ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS=180
+INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED=true
 INTELLIGENCE_BACKGROUND_TIMEOUT_MAX_SECONDS=300
 INTELLIGENCE_CELERY_QUEUE=render
 ```
 
-Use smaller/faster models only if you want Ollama to fit inside synchronous limits.
+Use smaller/faster models only if you want Ollama to fit inside synchronous limits. A chain of only `ollama` is an explicit no-fallback setup: if Ollama is unavailable or times out, the analysis can fail instead of silently creating a heuristic report.
 
 Ollama scaling is local hardware bound. `qwen2.5:7b` or `qwen3:8b` are useful for lesson quality when the machine can handle them; for analytics, `qwen2.5:3b` or `qwen3:4b` can be preferable because analytics now receives compact strategic signals instead of transcripts. Cloud or paid providers are not implemented in this branch.
 
@@ -111,18 +113,23 @@ INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=6000
 INTELLIGENCE_OLLAMA_CHUNK_MAX_PAGES=8
 INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=10
 INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY=1
-INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=130
-INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=240
+INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=30
+INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=75
 INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS=600
+INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR=1.15
+INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS=0
+INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED=true
+INTELLIGENCE_OLLAMA_CALIBRATION_TTL_SECONDS=1800
+INTELLIGENCE_OLLAMA_CALIBRATION_TIMEOUT_SECONDS=20
 INTELLIGENCE_RETRY_COOLDOWN_SECONDS=60
 ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS=180
 ```
 
-`INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS` controls how much lesson or analytics content is sent to one local Ollama request. Page/item limits keep individual chunks predictable even when text is short but arrays are large. The per-chunk timeout is bounded by the min/max values, and the whole Celery task stops adding chunks after the total budget. Partial completion produces a terminal `partial` enhancement with `partial_enhancement=true`; full Ollama failure leaves the heuristic report in place and marks enhancement `failed`.
+`INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS` controls how much lesson or analytics content is sent to one local Ollama request. Page/item limits keep individual chunks predictable even when text is short but arrays are large. Background budgeting sends one small calibration prompt per process/model cache window, then combines estimated input/output tokens, chunk count, model size, measured throughput, hardware profile fallback, safety factor/margin, and the absolute cap. If calibration fails, conservative profile throughput is used. Budget metadata stores `model`, `hardware_profile`, `calibration_used`, `calibration_elapsed_seconds`, `measured_chars_per_second`, `measured_tokens_per_second`, `estimated_input_chars`, `estimated_tokens`, `chunk_count`, `calculated_budget_seconds`, `timeout_budget_seconds`, `actual_elapsed_seconds`, `chunks_attempted`, `chunks_completed`, and `degraded_reason` when applicable. Partial completion produces a terminal `partial` enhancement with `partial_enhancement=true` and `partial_ollama_used=true`; full Ollama failure leaves the heuristic report in place and marks enhancement `degraded` when a heuristic fallback exists.
 
 Ollama JSON requests use JSON mode plus bounded generation (`OLLAMA_LESSON_INTELLIGENCE_NUM_PREDICT`, default `900`; `OLLAMA_ANALYTICS_INTELLIGENCE_NUM_PREDICT`, default `700`). If Ollama returns prose, fenced JSON, or malformed JSON, the provider tries one short repair prompt before marking the chunk failed.
 
-`ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` caps analytics enhancement below the shared lesson/default budget so a large analytics workload terminalizes instead of monopolizing a single local worker.
+`ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` contributes to the analytics soft workload budget. It is not the progress-aware hard stop when chunks are completing; the hard stop is the persisted `absolute_cap_seconds`.
 
 Pending or running enhancement metadata is considered stale after `INTELLIGENCE_ENHANCEMENT_STALE_SECONDS` seconds, default `900`. A stale enhancement is marked failed so the frontend stops polling and a later manual re-analyze can queue a new task. If Ollama fails after the heuristic fallback is shown, manual Retry Ollama can queue a same-source retry after `INTELLIGENCE_RETRY_COOLDOWN_SECONDS`; automatic scheduling does not loop failed Ollama attempts forever.
 

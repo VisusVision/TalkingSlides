@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -29,12 +30,23 @@ from core.analytics_intelligence import (  # noqa: E402
     AnalyticsIntelligenceProviderUnavailable,
     OllamaAnalyticsIntelligenceProvider,
     PaidAnalyticsIntelligenceProvider,
+    _synthesize_analytics_chunk_results,
+    _analytics_workload_timeout_budget_details,
+    _analytics_workload_timeout_budget_seconds,
     adaptive_analytics_intelligence_timeout,
+    analyze_analytics_ollama_background,
     analyze_analytics_with_provider_chain,
     analytics_ollama_run_identity,
     build_analytics_intelligence_input,
 )
-from core.intelligence_progressive import ollama_chunk_timeout_seconds  # noqa: E402
+from core.intelligence_progressive import (  # noqa: E402
+    PROGRESSIVE_ENHANCEMENT_KEY,
+    clear_ollama_calibration_cache,
+    ollama_chunk_timeout_seconds,
+    ollama_finalization_timeout_budget_details,
+    ollama_model_calibration_details,
+    ollama_workload_timeout_budget_details,
+)
 from core.models import (  # noqa: E402
     AnalyticsIntelligenceReport,
     Category,
@@ -56,6 +68,31 @@ def _client(user: User | None = None) -> APIClient:
     if user is not None:
         client.force_authenticate(user=user)
     return client
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS=75,
+    INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS=600,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=20,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=60,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=4,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR=1.15,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS=0,
+)
+def test_analytics_ollama_total_budget_scales_with_workload():
+    small_details = _analytics_workload_timeout_budget_details({"input_chars": 1000}, chunk_count=1)
+    large_details = _analytics_workload_timeout_budget_details({"input_chars": 60000}, chunk_count=8)
+    small_budget = _analytics_workload_timeout_budget_seconds({"input_chars": 1000}, chunk_count=1)
+    large_budget = _analytics_workload_timeout_budget_seconds({"input_chars": 60000}, chunk_count=8)
+
+    assert small_details["calculated_budget_seconds"] == 75
+    assert small_budget == small_details["timeout_budget_seconds"] == 86.25
+    assert small_details["safety_margin_seconds"] == 11.25
+    assert small_budget < 90
+    assert large_details["calculated_budget_seconds"] > 75
+    assert large_budget == large_details["timeout_budget_seconds"]
+    assert large_budget > large_details["calculated_budget_seconds"]
+    assert large_budget <= 600
 
 
 def _make_user(username: str, *, role: str = "publisher", is_staff: bool = False) -> User:
@@ -100,6 +137,10 @@ def _analytics_url(query: str = "range=30") -> str:
 
 def _text(payload) -> str:
     return json.dumps(payload, sort_keys=True)
+
+
+def _sentence_count(text: str) -> int:
+    return len([part for part in re.split(r"(?<=[.!?])\s+", str(text or "").strip()) if part])
 
 
 class _FakeOllamaResponse:
@@ -414,6 +455,103 @@ def test_get_without_report_exposes_current_hash_and_stale():
     assert latest.data["report_source_hash"] == ""
     assert latest.data["current_source_hash"]
     assert latest.data["is_stale"] is True
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_get_keeps_completed_insight_visible_while_current_refresh_is_pending():
+    publisher = _make_user("ai_pending_display_owner")
+    viewer = _make_user("ai_pending_display_viewer", role="student")
+    category = Category.objects.create(name="Pending Display Category", slug="pending-display")
+    lesson = _make_project(publisher, "Original analytics insight lesson", category=category)
+    _progress(viewer, lesson, 82)
+    first = _client(publisher).post(_analyze_url("range=30"), {}, format="json")
+    old_report = AnalyticsIntelligenceReport.objects.get(pk=first.data["id"])
+
+    changed_lesson = _make_project(publisher, "New source data lesson", category=category)
+    _progress(viewer, changed_lesson, 45)
+    analytics_payload = _client(publisher).get(_analytics_url("range=30")).data
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    pending_report = AnalyticsIntelligenceReport.objects.create(
+        requested_by=publisher,
+        scope=analytics_input.scope,
+        status="done",
+        provider="heuristic",
+        fallback_used=True,
+        source_hash=analytics_input.source_hash,
+        date_range=analytics_input.date_range,
+        category_filter=analytics_input.category_filter,
+        summary="New pending insight should not replace the old one yet.",
+        metadata={
+            PROGRESSIVE_ENHANCEMENT_KEY: {
+                "provider": "ollama",
+                "status": "pending",
+                "queued_at": timezone.now().isoformat(),
+            }
+        },
+    )
+
+    latest = _client(publisher).get(_latest_url("range=30"))
+
+    assert latest.status_code == 200
+    assert latest.data["id"] == old_report.id
+    assert latest.data["active_report_id"] == old_report.id
+    assert latest.data["pending_report_id"] == pending_report.id
+    assert latest.data["latest_refresh_report_id"] == pending_report.id
+    assert latest.data["current_source_hash"] == analytics_input.source_hash
+    assert latest.data["report_source_hash"] == old_report.source_hash
+    assert latest.data["insight_stale"] is True
+    assert latest.data["enhancement_pending"] is True
+    assert latest.data["refresh_status"] == "pending"
+    assert latest.data["last_analyzed_at"]
+    assert latest.data["summary"] == old_report.summary
+    assert "New pending insight should not replace" not in _text(latest.data)
+
+
+@override_settings(ANALYTICS_INTELLIGENCE_ENABLED=True, ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic")
+def test_get_keeps_completed_insight_visible_when_current_refresh_fails_completely():
+    publisher = _make_user("ai_failed_display_owner")
+    viewer = _make_user("ai_failed_display_viewer", role="student")
+    lesson = _make_project(publisher, "Stable analytics insight lesson")
+    _progress(viewer, lesson, 76)
+    first = _client(publisher).post(_analyze_url("range=30"), {}, format="json")
+    old_report = AnalyticsIntelligenceReport.objects.get(pk=first.data["id"])
+
+    changed_lesson = _make_project(publisher, "Failed refresh source lesson")
+    _progress(viewer, changed_lesson, 38)
+    analytics_payload = _client(publisher).get(_analytics_url("range=30")).data
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    failed_report = AnalyticsIntelligenceReport.objects.create(
+        requested_by=publisher,
+        scope=analytics_input.scope,
+        status="failed",
+        provider="heuristic",
+        source_hash=analytics_input.source_hash,
+        date_range=analytics_input.date_range,
+        category_filter=analytics_input.category_filter,
+        summary="",
+        error_message="provider unavailable",
+        metadata={
+            PROGRESSIVE_ENHANCEMENT_KEY: {
+                "provider": "ollama",
+                "status": "failed",
+                "failed_at": timezone.now().isoformat(),
+                "error": "provider unavailable",
+            }
+        },
+    )
+
+    latest = _client(publisher).get(_latest_url("range=30"))
+
+    assert latest.status_code == 200
+    assert latest.data["id"] == old_report.id
+    assert latest.data["latest_refresh_report_id"] == failed_report.id
+    assert latest.data["pending_report_id"] is None
+    assert latest.data["latest_refresh_failed"] is True
+    assert latest.data["enhancement_pending"] is False
+    assert latest.data["refresh_status"] == "failed"
+    assert latest.data["insight_stale"] is True
+    assert latest.data["summary"] == old_report.summary
+    assert "provider unavailable" not in _text(latest.data)
 
 
 @override_settings(
@@ -857,6 +995,86 @@ def test_analytics_ollama_timeout_uses_sync_cap_and_falls_back(monkeypatch):
 
 @override_settings(
     ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://secret-analytics-ollama.local:11434",
+    ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=120,
+    INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS=20,
+    ANALYTICS_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS=20,
+)
+def test_analytics_ollama_only_timeout_fails_without_heuristic_fallback(monkeypatch):
+    publisher = _make_user("ai_ollama_only_owner")
+    viewer = _make_user("ai_ollama_only_viewer", role="student")
+    lesson = _make_project(publisher, "Ollama only analytics lesson")
+    _progress(viewer, lesson, 72)
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        raise URLError("timed out")
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    analytics_payload = _client(publisher).get(_analytics_url()).data
+    analytics_input = build_analytics_intelligence_input(publisher, analytics_payload)
+    with pytest.raises(AnalyticsIntelligenceProviderUnavailable, match="No analytics intelligence provider completed"):
+        analyze_analytics_with_provider_chain(analytics_input, chain=["ollama"])
+
+    assert captured["timeout"] == 20
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic,ollama",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=8,
+    INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS=60,
+)
+def test_analytics_heuristic_ollama_timeout_keeps_heuristic_report_degraded(monkeypatch):
+    publisher = _make_user("ai_heuristic_ollama_timeout_owner")
+    viewer = _make_user("ai_heuristic_ollama_timeout_viewer", role="student")
+    lesson = _make_project(publisher, "Heuristic then Ollama analytics lesson")
+    _progress(viewer, lesson, 72)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    def fake_urlopen(request, timeout):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    heuristic_summary = response.data["summary"]
+
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(publisher).get(_latest_url())
+
+    assert response.status_code == 200
+    assert response.data["provider"] == "heuristic"
+    assert response.data["fallback_used"] is False
+    assert response.data["enhancement_pending"] is True
+    assert task_result["status"] == "degraded"
+    assert task_result["report_status"] == "done"
+    assert task_result["fallback_used"] is True
+    assert latest.data["status"] == "done"
+    assert latest.data["provider"] == "heuristic"
+    assert latest.data["fallback_used"] is True
+    assert latest.data["summary"] == heuristic_summary
+    assert latest.data["enhancement_status"] == "degraded"
+    assert latest.data["metadata"]["degraded"] is True
+    assert latest.data["metadata"]["fallback_used"] is True
+    enhancement = latest.data["metadata"]["progressive_enhancement"]
+    assert enhancement["degraded"] is True
+    assert enhancement["fallback_used"] is True
+    assert enhancement["degraded_reason"] == "chunk_timeout"
+    ollama_attempt = next(item for item in latest.data["provider_chain_attempts"] if item["provider"] == "ollama")
+    assert ollama_attempt["status"] == "degraded"
+    assert len(dispatch_calls) == 1
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
     OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
     ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS=8,
@@ -900,12 +1118,15 @@ def test_background_success_updates_analytics_report_to_ollama(monkeypatch):
     assert response.data["provider"] == "heuristic"
     assert response.data["enhancement_pending"] is True
     assert task_result["status"] == "done"
-    assert 45 <= captured["timeout"] <= 180
+    assert 30 <= captured["timeout"] <= 180
     assert latest.data["provider"] == "ollama"
     assert latest.data["fallback_used"] is False
-    assert latest.data["summary"].startswith("Ollama analytics summary.")
+    assert latest.data["summary"].startswith("During ")
+    assert "1 published lesson out of 1 total lesson" in latest.data["summary"]
+    assert "Ollama analytics summary" not in latest.data["summary"]
     assert latest.data["health_score"] == 76
     assert latest.data["enhancement_status"] == "done"
+    assert "Ollama found solid engagement" in json.dumps(latest.data)
     report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
     enhancement = report.metadata["progressive_enhancement"]
     assert enhancement["started_at"]
@@ -966,13 +1187,474 @@ def test_large_analytics_ollama_background_uses_chunks(monkeypatch):
     assert "ai_chunk_viewer" not in json.dumps(captured)
     report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
     enhancement = report.metadata["progressive_enhancement"]
-    assert enhancement["phase"] == "done"
+    assert enhancement["phase"] == "persistence"
     assert enhancement["chunk_count"] == len(captured)
     assert enhancement["completed_chunks"] == len(captured)
     assert enhancement["failed_chunks"] == 0
+    assert enhancement["chunks_attempted"] == len(captured)
+    assert enhancement["chunks_completed"] == len(captured)
+    assert enhancement["fallback_used"] is False
+    assert enhancement["estimated_workload"]["chunk_count"] == len(captured)
+    assert enhancement["estimated_workload"]["model_profile"] == "local_mid"
+    assert enhancement["calculated_budget_seconds"] > 0
+    assert enhancement["safety_factor"] >= 1.0
+    assert enhancement["safety_margin_seconds"] >= 0
+    assert enhancement["timeout_budget_seconds"] >= max(item["timeout"] for item in captured)
+    assert enhancement["absolute_cap_seconds"] >= enhancement["timeout_budget_seconds"]
+    assert enhancement["no_progress_timeout_seconds"] >= min(item["timeout"] for item in captured)
+    assert enhancement["finalization_budget_seconds"] > 0
+    assert enhancement["finalization_elapsed_seconds"] >= 0
+    assert enhancement["finalization_timeout"] is False
+    assert enhancement["last_completed_chunk_index"] == len(captured)
+    assert enhancement["partial_ollama_used"] is False
     assert report.metadata["chunked"] is True
     assert report.metadata["prompt_version"] == "analytics-intelligence-v2"
     assert "Learners want more examples" in json.dumps(latest.data)
+
+
+def test_analytics_chunk_summary_is_concise_deduped_and_metric_first():
+    publisher = _make_user("ai_chunk_summary_dedupe_owner")
+    payload = {
+        "summary": {
+            "total_lessons": 83,
+            "published_lessons": 17,
+            "draft_lessons": 66,
+            "video_plays": 0,
+            "total_views": 0,
+            "unique_viewers": 0,
+            "engagement_events": 1,
+            "likes": 1,
+            "comments": 0,
+            "completion_rate": 0,
+            "average_progress": 0,
+        },
+        "tables": {
+            "top_lessons": [],
+            "recent_lessons": [],
+            "top_categories": [
+                {
+                    "category_name": "Data Science",
+                    "lesson_count": 17,
+                    "views": 0,
+                    "engagement_events": 1,
+                    "likes": 1,
+                    "comments": 0,
+                }
+            ],
+        },
+        "charts": {"engagement_trend": [], "category_popularity": []},
+        "recent_activity": [],
+        "qualitative_feedback": {"recent_comments": []},
+        "filters": {"from": "2026-06-03", "to": "2026-06-10", "range": 7, "sort": "views"},
+        "meta": {"contract": "creator_analytics_v1", "scope": "creator"},
+    }
+    analytics_input = build_analytics_intelligence_input(publisher, payload)
+    repeated = (
+        "Ollama returned analytics guidance for the selected period. "
+        "Ollama returned analytics guidance for the selected period. "
+        "During the week of June 3-10, no lessons were published or viewed. "
+        "There were no video plays or unique viewers. "
+        "17 published lessons out of 83 total. "
+        "1 engagement and 1 like."
+    )
+
+    result = _synthesize_analytics_chunk_results(
+        analytics_input,
+        chunk_count=3,
+        completed_chunks=3,
+        failed_chunks=0,
+        chunk_results=[
+            {
+                "analytics_summary": repeated,
+                "health_score": 45,
+                "risk_level": "medium",
+                "insights": [],
+                "recommendations": [{"type": "promotion", "message": "Promote recently published lessons."}],
+                "lesson_actions": [],
+                "category_actions": [],
+                "limitations": [],
+            }
+            for _ in range(3)
+        ],
+        chunk_limitations=[],
+        timeout_seconds=120,
+    )
+
+    summary = result["analytics_summary"]
+    assert "Ollama returned analytics guidance" not in summary
+    assert "Based on aggregate creator analytics" not in summary
+    assert 2 <= _sentence_count(summary) <= 4
+    assert len(summary) <= 600
+    assert summary.count("17 published lessons out of 83 total") == 1
+    assert summary.count("no video plays or unique viewers") == 1
+    assert summary.count("1 event") == 1
+    assert summary.count("1 like") == 1
+    assert "Prioritize" in summary
+    assert "calls to action" in summary
+
+
+@override_settings(
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=5,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=20,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=1,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR=1.0,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS=0,
+)
+def test_ollama_workload_budget_scales_with_workload():
+    small = ollama_workload_timeout_budget_details(input_chars=1000, chunk_count=1, hard_max_seconds=200, kind="analytics")
+    large = ollama_workload_timeout_budget_details(input_chars=40000, chunk_count=8, hard_max_seconds=200, kind="analytics")
+
+    assert small["timeout_budget_seconds"] < large["timeout_budget_seconds"]
+    assert small["no_progress_timeout_seconds"] < large["timeout_budget_seconds"]
+    assert large["estimated_tokens"] == 12560
+    assert large["chunk_count"] == 8
+    assert large["absolute_cap_seconds"] == 200
+    assert large["workload_kind"] == "analytics"
+
+
+@override_settings(
+    INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED=True,
+    INTELLIGENCE_OLLAMA_CALIBRATION_TTL_SECONDS=1800,
+    INTELLIGENCE_OLLAMA_CALIBRATION_TIMEOUT_SECONDS=5,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=5,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=10,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=1,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR=1.0,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS=0,
+)
+def test_ollama_workload_budget_uses_calibration_and_cache(monkeypatch):
+    clear_ollama_calibration_cache()
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        assert timeout == 5
+        return _FakeOllamaResponse(
+            {
+                "response": "Ready for local calibration.",
+                "eval_count": 20,
+                "eval_duration": 1_000_000_000,
+            }
+        )
+
+    monkeypatch.setattr("core.intelligence_progressive.urlopen", fake_urlopen)
+
+    first = ollama_workload_timeout_budget_details(
+        input_chars=4000,
+        chunk_count=2,
+        hard_max_seconds=200,
+        kind="analytics",
+        model="qwen2.5:3b",
+        base_url="http://ollama.test:11434",
+    )
+    second = ollama_model_calibration_details(model="qwen2.5:3b", base_url="http://ollama.test:11434")
+
+    assert calls["count"] == 1
+    assert first["calibration_used"] is True
+    assert first["calibration_cache_hit"] is False
+    assert first["measured_tokens_per_second"] == 20
+    assert first["calibrated_estimate_seconds"] > 0
+    assert first["calculated_budget_seconds"] > 20
+    assert first["estimated_input_chars"] == 4000
+    assert first["hardware_profile"] == "local_mid"
+    assert second["calibration_cache_hit"] is True
+
+
+@override_settings(
+    INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED=True,
+    INTELLIGENCE_OLLAMA_CALIBRATION_TIMEOUT_SECONDS=3,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=5,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=10,
+    INTELLIGENCE_BACKGROUND_TIMEOUT_PER_1000_CHARS=1,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR=1.0,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS=0,
+)
+def test_ollama_workload_budget_falls_back_when_calibration_fails(monkeypatch):
+    clear_ollama_calibration_cache()
+
+    def fake_urlopen(request, timeout):
+        raise URLError("offline")
+
+    monkeypatch.setattr("core.intelligence_progressive.urlopen", fake_urlopen)
+
+    details = ollama_workload_timeout_budget_details(
+        input_chars=4000,
+        chunk_count=2,
+        hard_max_seconds=200,
+        kind="lesson",
+        model="qwen2.5:7b",
+        base_url="http://ollama.test:11434",
+    )
+
+    assert details["calibration_used"] is False
+    assert details["calibration_failed"] is True
+    assert details["fallback_tokens_per_second"] > 0
+    assert details["throughput_tokens_per_second"] == details["fallback_tokens_per_second"]
+    assert details["calibrated_estimate_seconds"] > 0
+
+
+@override_settings(
+    INTELLIGENCE_OLLAMA_FINALIZATION_TIMEOUT_BASE_SECONDS=8,
+    INTELLIGENCE_OLLAMA_FINALIZATION_TIMEOUT_PER_CHUNK_SECONDS=1.5,
+    INTELLIGENCE_OLLAMA_FINALIZATION_TIMEOUT_PER_1000_TOKENS_SECONDS=2,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR=1.0,
+    INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS=0,
+)
+def test_ollama_finalization_budget_scales_and_caps():
+    small = ollama_finalization_timeout_budget_details(
+        input_chars=1000,
+        output_chars=1000,
+        chunk_count=1,
+        hard_max_seconds=40,
+        kind="analytics",
+        model="qwen2.5:7b-instruct",
+    )
+    large = ollama_finalization_timeout_budget_details(
+        input_chars=100000,
+        output_chars=100000,
+        chunk_count=20,
+        hard_max_seconds=40,
+        kind="analytics",
+        model="qwen2.5:7b-instruct",
+    )
+
+    assert small["timeout_budget_seconds"] < large["timeout_budget_seconds"]
+    assert small["calculated_budget_seconds"] > 8
+    assert large["timeout_budget_seconds"] == 40
+    assert large["absolute_cap_seconds"] == 40
+    assert large["estimated_tokens"] == 53600
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=1200,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=1,
+    INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD=1,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=10,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=10,
+)
+def test_analytics_progressing_chunks_continue_past_soft_budget(monkeypatch):
+    publisher = _make_user("ai_progress_budget_owner")
+    viewer = _make_user("ai_progress_budget_viewer", role="student")
+    for index in range(2):
+        lesson = _make_project(publisher, f"Progress budget analytics lesson {index}")
+        _progress(viewer, lesson, 70 + index)
+        LessonComment.objects.create(user=viewer, project=lesson, text=f"Progress budget comment {index}.")
+
+    def fake_budget(_input_payload, *, chunk_count, model=""):
+        return {
+            "input_chars": 2000,
+            "estimated_tokens": 500,
+            "chunk_count": chunk_count,
+            "calculated_budget_seconds": 2.0,
+            "safety_factor": 1.0,
+            "configured_safety_margin_seconds": 0.0,
+            "safety_margin_seconds": 0.0,
+            "timeout_budget_seconds": 2.0,
+            "hard_max_seconds": 20.0,
+            "absolute_cap_seconds": 20.0,
+            "no_progress_timeout_seconds": 10.0,
+            "average_chunk_timeout_seconds": 10.0,
+            "model_profile": "local_mid",
+            "workload_kind": "analytics",
+            "model": model,
+        }
+
+    captured = []
+
+    def fake_urlopen(request, timeout):
+        captured.append(timeout)
+        return _FakeOllamaResponse(
+            {
+                "response": json.dumps(
+                    {
+                        "provider": "ollama",
+                        "analytics_summary": f"Progress chunk {len(captured)}.",
+                        "health_score": 72,
+                        "risk_level": "medium",
+                        "insights": [{"type": "progress", "message": "Chunk completed."}],
+                        "recommendations": [],
+                        "lesson_actions": [],
+                        "category_actions": [],
+                        "limitations": [],
+                    }
+                )
+            }
+        )
+
+    times = iter([0.0, 0.0, 0.0, 3.0, 3.0, 4.0, 4.0, 4.0])
+    monkeypatch.setattr("core.analytics_intelligence._analytics_workload_timeout_budget_details", fake_budget)
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+    monkeypatch.setattr("core.analytics_intelligence.time.monotonic", lambda: next(times, 4.0))
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+
+    assert task_result["status"] == "done"
+    assert len(captured) > 1
+    assert enhancement["completed_chunks"] == enhancement["chunk_count"]
+    assert enhancement["timeout_budget_seconds"] == 2.0
+    assert enhancement["absolute_cap_seconds"] == 20.0
+    assert enhancement["fallback_used"] is False
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="heuristic,ollama",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=1200,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=1,
+    INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD=1,
+)
+def test_analytics_final_aggregation_timeout_keeps_heuristic_report_degraded(monkeypatch):
+    publisher = _make_user("ai_final_timeout_owner")
+    viewer = _make_user("ai_final_timeout_viewer", role="student")
+    for index in range(2):
+        lesson = _make_project(publisher, f"Final timeout analytics lesson {index}")
+        _progress(viewer, lesson, 65 + index)
+        LessonComment.objects.create(user=viewer, project=lesson, text=f"Final timeout comment {index}.")
+    captured = []
+
+    def fake_urlopen(request, timeout):
+        captured.append(timeout)
+        payload = {
+            "provider": "ollama",
+            "analytics_summary": f"Completed chunk {len(captured)}.",
+            "health_score": 70,
+            "risk_level": "medium",
+            "insights": [{"type": "chunk", "message": "Chunk completed."}],
+            "recommendations": [],
+            "lesson_actions": [],
+            "category_actions": [],
+            "limitations": [],
+        }
+        return _FakeOllamaResponse({"response": json.dumps(payload)})
+
+    def tiny_finalization_budget(**_kwargs):
+        return {
+            "calculated_budget_seconds": 1.0,
+            "timeout_budget_seconds": 1.0,
+            "absolute_cap_seconds": 20.0,
+        }
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+    monkeypatch.setattr("core.analytics_intelligence.ollama_finalization_timeout_budget_details", tiny_finalization_budget)
+    monkeypatch.setattr(
+        "core.analytics_intelligence._synthesize_analytics_chunk_results",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("final timed out")),
+    )
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    heuristic_summary = response.data["summary"]
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(publisher).get(_latest_url())
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+
+    assert len(captured) == enhancement["chunk_count"]
+    assert task_result["status"] == "degraded"
+    assert latest.data["status"] == "done"
+    assert latest.data["provider"] == "heuristic"
+    assert latest.data["fallback_used"] is True
+    assert latest.data["summary"] == heuristic_summary
+    assert latest.data["enhancement_status"] == "degraded"
+    assert "final analytics summary" in latest.data["enhancement_last_failure_reason"]
+    assert enhancement["phase"] == "final_synthesis"
+    assert enhancement["chunks_attempted"] == len(captured)
+    assert enhancement["chunks_completed"] == len(captured)
+    assert enhancement["completed_chunks"] == len(captured)
+    assert enhancement["finalization_budget_seconds"] == 1.0
+    assert enhancement["finalization_elapsed_seconds"] >= 0
+    assert enhancement["finalization_timeout"] is True
+    assert enhancement["degraded"] is True
+    assert enhancement["degraded_reason"] == "final_aggregation_timeout"
+    assert enhancement["partial_ollama_used"] is True
+    assert enhancement["fallback_used"] is True
+    assert report.metadata["degraded"] is True
+    ollama_attempt = next(item for item in report.metadata["provider_chain_attempts"] if item["provider"] == "ollama")
+    assert ollama_attempt["status"] == "degraded"
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=1200,
+    INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=1,
+    INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD=1,
+)
+def test_analytics_ollama_only_final_aggregation_timeout_fails(monkeypatch):
+    publisher = _make_user("ai_final_timeout_only_owner")
+    viewer = _make_user("ai_final_timeout_only_viewer", role="student")
+    for index in range(2):
+        lesson = _make_project(publisher, f"Final timeout only analytics lesson {index}")
+        _progress(viewer, lesson, 61 + index)
+        LessonComment.objects.create(user=viewer, project=lesson, text=f"Final timeout only comment {index}.")
+    payload = {
+        "summary": {"total_views": 123, "average_completion": 64},
+        "tables": {
+            "top_lessons": [
+                {"lesson_title": "Final timeout only analytics lesson 0", "views": 80},
+                {"lesson_title": "Final timeout only analytics lesson 1", "views": 60},
+            ],
+            "recent_lessons": [],
+            "top_categories": [],
+        },
+        "charts": {"engagement_trend": [], "category_popularity": []},
+        "recent_activity": [],
+        "qualitative_feedback": {"recent_comments": [{"text": "Can you add examples?"}]},
+        "filters": {"range": 30},
+    }
+    analytics_input = build_analytics_intelligence_input(publisher, payload)
+    captured = []
+
+    def fake_urlopen(request, timeout):
+        captured.append(timeout)
+        return _FakeOllamaResponse(
+            {
+                "response": json.dumps(
+                    {
+                        "provider": "ollama",
+                        "analytics_summary": "Completed chunk.",
+                        "health_score": 70,
+                        "risk_level": "medium",
+                        "insights": [],
+                        "recommendations": [],
+                        "lesson_actions": [],
+                        "category_actions": [],
+                        "limitations": [],
+                    }
+                )
+            }
+        )
+
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        "core.analytics_intelligence.ollama_finalization_timeout_budget_details",
+        lambda **_kwargs: {"calculated_budget_seconds": 1.0, "timeout_budget_seconds": 1.0, "absolute_cap_seconds": 20.0},
+    )
+    monkeypatch.setattr(
+        "core.analytics_intelligence._synthesize_analytics_chunk_results",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("final timed out")),
+    )
+
+    with pytest.raises(AnalyticsIntelligenceProviderUnavailable) as exc_info:
+        analyze_analytics_ollama_background(analytics_input, chain=["ollama"])
+
+    assert "final analytics summary" in str(exc_info.value)
+    assert len(captured) > 1
 
 
 @override_settings(
@@ -1033,13 +1715,87 @@ def test_analytics_chunk_failure_returns_partial_ollama_report(monkeypatch):
     ANALYTICS_INTELLIGENCE_ENABLED=True,
     ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
     OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=10,
+    INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=10,
+)
+def test_analytics_eight_of_nine_chunks_timeout_returns_degraded_not_failed(monkeypatch):
+    publisher = _make_user("ai_eight_nine_owner")
+    viewer = _make_user("ai_eight_nine_viewer", role="student")
+    lesson = _make_project(publisher, "Eight of nine analytics lesson")
+    _progress(viewer, lesson, 78)
+
+    def fake_chunks(input_payload):
+        return [
+            {
+                **dict(input_payload),
+                "input_chars": 1000,
+                "chunk": {"index": index, "count": 9, "section": "top_lessons", "item_count": 1},
+            }
+            for index in range(1, 10)
+        ]
+
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        if calls["count"] == 9:
+            raise TimeoutError("timed out")
+        return _FakeOllamaResponse(
+            {
+                "response": json.dumps(
+                    {
+                        "provider": "ollama",
+                        "analytics_summary": f"Completed analytics chunk {calls['count']}.",
+                        "health_score": 73,
+                        "risk_level": "medium",
+                        "insights": [{"type": "chunk", "message": "Partial progress retained."}],
+                        "recommendations": [],
+                        "lesson_actions": [],
+                        "category_actions": [],
+                        "limitations": [],
+                    }
+                )
+            }
+        )
+
+    monkeypatch.setattr("core.analytics_intelligence._analytics_chunk_payloads", fake_chunks)
+    monkeypatch.setattr("core.analytics_intelligence.urlopen", fake_urlopen)
+    dispatch_calls = []
+    monkeypatch.setattr("core.views._dispatch_celery_task", _fake_dispatch(dispatch_calls))
+
+    response = _client(publisher).post(_analyze_url(), {}, format="json")
+    from worker.tasks import enhance_analytics_intelligence_report  # noqa: E402
+
+    task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
+    latest = _client(publisher).get(_latest_url())
+    report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
+    enhancement = report.metadata["progressive_enhancement"]
+
+    assert task_result["status"] == "degraded"
+    assert latest.data["status"] == "done"
+    assert latest.data["enhancement_status"] == "degraded"
+    assert calls["count"] == 9
+    assert enhancement["chunk_count"] == 9
+    assert enhancement["chunks_attempted"] == 9
+    assert enhancement["completed_chunks"] == 8
+    assert enhancement["failed_chunks"] == 1
+    assert enhancement["last_completed_chunk_index"] == 8
+    assert enhancement["partial_ollama_used"] is True
+    assert enhancement["degraded_reason"] == "ollama_no_progress_timeout"
+    assert "timed out after partial progress" in enhancement["last_failure_reason"]
+
+
+@override_settings(
+    ANALYTICS_INTELLIGENCE_ENABLED=True,
+    ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN="ollama,heuristic",
+    OLLAMA_ANALYTICS_INTELLIGENCE_BASE_URL="http://ollama.test:11434",
     INTELLIGENCE_OLLAMA_CHUNK_MAX_CHARS=1200,
     INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS=1,
     INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS=10,
     INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS=25,
     ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS=2,
 )
-def test_analytics_total_budget_exceeded_returns_terminal_partial(monkeypatch):
+def test_analytics_total_budget_exceeded_returns_terminal_degraded(monkeypatch):
     publisher = _make_user("ai_chunk_budget_owner")
     viewer = _make_user("ai_chunk_budget_viewer", role="student")
     for index in range(4):
@@ -1076,14 +1832,23 @@ def test_analytics_total_budget_exceeded_returns_terminal_partial(monkeypatch):
     task_result = enhance_analytics_intelligence_report.run(response.data["id"], response.data["source_hash"])
     latest = _client(publisher).get(_latest_url())
 
-    assert task_result["status"] == "partial"
+    assert task_result["status"] == "degraded"
     assert latest.data["enhancement_pending"] is False
-    assert latest.data["enhancement_status"] == "partial"
+    assert latest.data["enhancement_status"] == "degraded"
     assert calls["count"] == 1
     report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
     enhancement = report.metadata["progressive_enhancement"]
     assert enhancement["completed_chunks"] == 1
     assert enhancement["failed_chunks"] == enhancement["chunk_count"] - 1
+    assert enhancement["chunks_attempted"] == 1
+    assert enhancement["chunks_completed"] == 1
+    assert enhancement["fallback_used"] is True
+    assert enhancement["degraded_reason"] == "ollama_total_budget_exceeded"
+    assert enhancement["calculated_budget_seconds"] == 2.0
+    assert enhancement["safety_margin_seconds"] == 0
+    assert enhancement["timeout_budget_seconds"] == 2.0
+    assert enhancement["absolute_cap_seconds"] == 2.0
+    assert enhancement["no_progress_timeout_seconds"] == 2.0
     assert any("time budget" in str(item) for item in enhancement["chunk_limitations"])
 
 
@@ -1147,20 +1912,22 @@ def test_invalid_analytics_ollama_json_falls_back_to_heuristic(monkeypatch):
     latest = _client(publisher).get(_latest_url())
 
     assert response.status_code == 200
-    assert task_result["status"] == "failed"
+    assert task_result["status"] == "degraded"
+    assert task_result["report_status"] == "done"
+    assert task_result["fallback_used"] is True
     assert latest.data["provider"] == "heuristic"
     assert latest.data["fallback_used"] is True
     assert latest.data["enhancement_pending"] is False
-    assert latest.data["enhancement_status"] == "failed"
+    assert latest.data["enhancement_status"] == "degraded"
     report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
     enhancement = report.metadata["progressive_enhancement"]
     assert enhancement["started_at"]
     assert enhancement["finished_at"]
-    assert enhancement["failed_at"]
+    assert enhancement["degraded"] is True
     assert "ollama.test" not in json.dumps(latest.data)
     attempts = latest.data["provider_chain_attempts"]
     assert attempts[0]["provider"] == "ollama"
-    assert attempts[0]["status"] == "failed"
+    assert attempts[0]["status"] == "degraded"
 
     second = _client(publisher).post(_analyze_url(), {}, format="json")
     assert second.status_code == 200
@@ -1265,12 +2032,25 @@ def test_analytics_all_chunk_failures_store_safe_diagnostics(monkeypatch):
     report = AnalyticsIntelligenceReport.objects.get(pk=response.data["id"])
     diagnostics = report.metadata["progressive_enhancement"]["chunk_diagnostics"]
 
-    assert task_result["status"] == "failed"
+    assert task_result["status"] == "degraded"
+    assert task_result["report_status"] == "done"
+    assert task_result["fallback_used"] is True
+    assert report.status == "done"
+    assert report.provider == "heuristic"
+    assert report.fallback_used is True
     assert diagnostics
     assert diagnostics[0]["chunk_index"] >= 1
     assert diagnostics[0]["parse_stage"] == "timeout"
     assert diagnostics[0]["safe_reason"] == "Ollama timed out."
-    assert report.metadata["progressive_enhancement"]["last_failure_reason"] == "Ollama timed out."
+    enhancement = report.metadata["progressive_enhancement"]
+    assert enhancement["status"] == "degraded"
+    assert enhancement["degraded"] is True
+    assert enhancement["degraded_reason"] == "chunk_timeout"
+    assert enhancement["phase"] == "chunk_processing"
+    assert enhancement["chunks_attempted"] == enhancement["chunk_count"]
+    assert enhancement["chunks_completed"] == 0
+    assert enhancement["partial_ollama_used"] is False
+    assert enhancement["last_failure_reason"] == "Ollama timed out."
     assert "ollama.test" not in json.dumps(diagnostics)
 
 

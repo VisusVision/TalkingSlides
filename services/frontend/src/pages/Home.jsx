@@ -12,6 +12,12 @@ import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { fallbackSections, sectionsFromFeed } from '../lib/content';
 import { formatDuration, formatViews } from '../lib/content';
+import {
+  clearRouteSessionState,
+  onRouteReset,
+  readRouteSessionState,
+  writeRouteSessionState,
+} from '../utils/routeSession';
 
 const ALL_TOPICS = 'All Topics';
 
@@ -95,14 +101,55 @@ function railScrollState(node) {
 export default function Home({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
   const recommendedRailRef = useRef(null);
+  const storedDashboardState = useMemo(() => readRouteSessionState('dashboard', user), [user]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sections, setSections] = useState([]);
-  const [activeCategory, setActiveCategory] = useState(ALL_TOPICS);
+  const [activeCategory, setActiveCategory] = useState(
+    () => String(storedDashboardState.activeCategory || ALL_TOPICS),
+  );
   const [recommendedRailState, setRecommendedRailState] = useState({
     canScrollLeft: false,
     canScrollRight: false,
   });
+
+  useEffect(() => {
+    writeRouteSessionState('dashboard', user, {
+      activeCategory,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [activeCategory, user]);
+
+  useEffect(() => onRouteReset('dashboard', () => {
+    clearRouteSessionState('dashboard', user);
+    setActiveCategory(ALL_TOPICS);
+    if (recommendedRailRef.current) recommendedRailRef.current.scrollLeft = 0;
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }), [user]);
+
+  useEffect(() => {
+    if (loading || !storedDashboardState.scrollY) return undefined;
+    const restoreId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number(storedDashboardState.scrollY) || 0, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(restoreId);
+  }, [loading, storedDashboardState.scrollY]);
+
+  useEffect(() => {
+    const persistScroll = () => {
+      writeRouteSessionState('dashboard', user, {
+        activeCategory,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('pagehide', persistScroll);
+    window.addEventListener('beforeunload', persistScroll);
+    return () => {
+      persistScroll();
+      window.removeEventListener('pagehide', persistScroll);
+      window.removeEventListener('beforeunload', persistScroll);
+    };
+  }, [activeCategory, user]);
 
   useEffect(() => {
     let active = true;

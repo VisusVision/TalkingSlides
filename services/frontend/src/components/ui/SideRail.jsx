@@ -15,6 +15,7 @@ import {
   canAccessStudio,
   isSignedIn,
 } from '../../lib/auth';
+import { requestRouteReset, routeIdForPath } from '../../utils/routeSession';
 
 const PRIMARY_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -49,9 +50,27 @@ function RailTooltip({ label, rightOffset = true }) {
   );
 }
 
-function RailNavItem({ to, label, icon: Icon, end = false, expanded }) {
+function RailNavItem({ to, label, icon: Icon, end = false, expanded, user }) {
+  const location = useLocation();
+  const routeId = routeIdForPath(to);
+  const activeRouteId = routeIdForPath(location.pathname);
+  const activeForReset = routeId && activeRouteId === routeId && (!end || location.pathname === to);
+
+  const handleClick = () => {
+    if (activeForReset) {
+      requestRouteReset(routeId, user);
+    }
+  };
+
   return (
-    <NavLink to={to} end={end} title={label} aria-label={label} className={({ isActive }) => railItemClass(isActive, expanded)}>
+    <NavLink
+      to={to}
+      end={end}
+      title={label}
+      aria-label={label}
+      onClick={handleClick}
+      className={({ isActive }) => railItemClass(isActive, expanded)}
+    >
       {({ isActive }) => (
         <>
           <span
@@ -70,9 +89,26 @@ function RailNavItem({ to, label, icon: Icon, end = false, expanded }) {
   );
 }
 
-function RailHelpItem({ to, label, icon: Icon, expanded }) {
+function RailHelpItem({ to, label, icon: Icon, expanded, user }) {
+  const location = useLocation();
+  const routeId = routeIdForPath(to);
+  const activeRouteId = routeIdForPath(location.pathname);
+  const activeForReset = routeId && activeRouteId === routeId;
+
+  const handleClick = () => {
+    if (activeForReset) {
+      requestRouteReset(routeId, user);
+    }
+  };
+
   return (
-    <NavLink to={to} title={label} aria-label={label} className={({ isActive }) => railItemClass(isActive, expanded)}>
+    <NavLink
+      to={to}
+      title={label}
+      aria-label={label}
+      onClick={handleClick}
+      className={({ isActive }) => railItemClass(isActive, expanded)}
+    >
       {({ isActive }) => (
         <>
           <span
@@ -158,6 +194,7 @@ export default function SideRail({
                 icon={item.icon}
                 end={item.end}
                 expanded={expanded}
+                user={user}
               />
             ))}
           </div>
@@ -179,8 +216,8 @@ export default function SideRail({
               </button>
             ) : null}
 
-            <RailNavItem to="/settings" label="Settings" icon={Settings} expanded={expanded} />
-            <RailHelpItem to="/help" label="Help" icon={CircleHelp} expanded={expanded} />
+            <RailNavItem to="/settings" label="Settings" icon={Settings} expanded={expanded} user={user} />
+            <RailHelpItem to="/help" label="Help" icon={CircleHelp} expanded={expanded} user={user} />
           </div>
         </nav>
       </div>

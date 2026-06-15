@@ -25,6 +25,7 @@ import LessonActionButton from '../components/moderation/LessonActionButton';
 import PublicProfileEditor from '../components/profile/PublicProfileEditor';
 import SocialIcon from '../components/ui/SocialIcon';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { usePageLoading } from '../components/ui/PageLoading';
 import { formatDuration, normalizeLesson } from '../lib/content';
 import {
   SOCIAL_LINK_FIELDS,
@@ -358,6 +359,8 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
   const [editMessage, setEditMessage] = useState('');
   const [editError, setEditError] = useState('');
   const [editFieldErrors, setEditFieldErrors] = useState({});
+
+  usePageLoading(loading, 'channel-page');
 
   const [sort, order] = sortValue.split(':');
   const viewerId = Number(user?.id || 0);

@@ -26,7 +26,17 @@ vi.mock("../lib/capabilities", () => ({
 }));
 
 vi.mock("../components/ui/AppShell", () => ({
-  default: ({ children }) => <div data-testid="app-shell">{children}</div>,
+  default: ({ children, searchQuery, onSearchQueryChange }) => (
+    <div data-testid="app-shell">
+      <input
+        data-testid="route-search"
+        value={searchQuery}
+        onInput={(event) => onSearchQueryChange(event.currentTarget.value)}
+        onChange={(event) => onSearchQueryChange(event.currentTarget.value)}
+      />
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock("../components/ui/AuthModal", () => ({
@@ -42,10 +52,10 @@ vi.mock("../components/ui/SurfaceCard", () => ({
 }));
 
 vi.mock("./router", () => ({
-  default: () => <main data-testid="router" />,
+  default: ({ searchQuery }) => <main data-testid="router" data-search-query={searchQuery} />,
 }));
 
-import App from "./App";
+import App, { searchScopeForPathname } from "./App";
 
 async function renderApp() {
   const host = document.createElement("div");
@@ -66,7 +76,55 @@ describe("redirect hash auth regressions", () => {
     mocks.fetchCurrentUser.mockResolvedValue(null);
     mocks.logout.mockResolvedValue(undefined);
     mocks.refreshCapabilities.mockResolvedValue(undefined);
+    window.sessionStorage.clear();
     window.history.replaceState({}, "", "/");
+  });
+
+  it("keeps header search state scoped to the current route", async () => {
+    mocks.getStoredAuthUser.mockReturnValue({ id: 1, username: "teacher" });
+    mocks.fetchCurrentUser.mockResolvedValue({ id: 1, username: "teacher" });
+    window.history.replaceState({}, "", "/moderation");
+
+    const { root, host } = await renderApp();
+    const input = host.querySelector('[data-testid="route-search"]');
+    const router = host.querySelector('[data-testid="router"]');
+
+    await act(async () => {
+      input.value = "flagged";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(router.getAttribute("data-search-query")).toBe("flagged");
+
+    await act(async () => {
+      window.history.pushState({}, "", "/studio");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(input.value).toBe("");
+    expect(router.getAttribute("data-search-query")).toBe("");
+
+    await act(async () => {
+      input.value = "lesson";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(router.getAttribute("data-search-query")).toBe("lesson");
+
+    await act(async () => {
+      window.history.pushState({}, "", "/moderation");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    expect(input.value).toBe("flagged");
+    expect(router.getAttribute("data-search-query")).toBe("flagged");
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it("namespaces route search scopes", () => {
+    expect(searchScopeForPathname("/moderation")).toBe("moderation");
+    expect(searchScopeForPathname("/studio")).toBe("studio");
+    expect(searchScopeForPathname("/browse")).toBe("browse");
+    expect(searchScopeForPathname("/watch/42")).toBe("watch");
+    expect(searchScopeForPathname("/channel/42")).toBe("channel:/channel/42");
   });
 
   it("parses auth_token from the redirect hash and removes the hash from history", async () => {

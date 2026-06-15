@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import {
   Bell,
   ChevronDown,
-  CircleHelp,
   MonitorPlay,
   MoonStar,
   Save,
@@ -18,6 +16,7 @@ import PublicProfileEditor from '../components/profile/PublicProfileEditor';
 import ModalShell from '../components/ui/ModalShell';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { useTheme } from '../components/ui/ThemeProvider';
+import { usePageLoading } from '../components/ui/PageLoading';
 import {
   API_BASE_URL,
   deleteAvatarPreview,
@@ -36,6 +35,12 @@ import {
 import { canAccessStudio } from '../lib/auth';
 import { featureEnabled, featureStatusLabel, useCapabilities } from '../lib/capabilities';
 import {
+  clearRouteSessionState,
+  onRouteReset,
+  readRouteSessionState,
+  writeRouteSessionState,
+} from '../utils/routeSession';
+import {
   SOCIAL_LINK_FIELDS,
   normalizedPublicProfilePayload,
   profileFieldErrorsFromApi,
@@ -46,6 +51,10 @@ import {
   avatarChecklistItems,
   normalizeAvatarSetupStatus,
 } from '../utils/avatarSetupStatus';
+import {
+  isAutoplayNextEnabled,
+  setAutoplayNextEnabled,
+} from '../utils/playbackPreferences';
 
 const REDUCED_MOTION_KEY = 'visus-reduced-motion';
 const NOTIFICATION_PREFS_KEY = 'visus-notification-preferences';
@@ -284,26 +293,40 @@ function AvatarConsentControls({
 }
 
 function SettingsSection({
+  sectionId,
   eyebrow,
   title,
   caption,
   icon: Icon,
   defaultOpen = false,
+  openState,
+  onOpenStateChange,
   className = '',
   contentClassName = 'space-y-4',
   children,
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const controlledOpen = sectionId && Object.prototype.hasOwnProperty.call(openState || {}, sectionId)
+    ? Boolean(openState[sectionId])
+    : null;
+  const [open, setOpen] = useState(controlledOpen ?? defaultOpen);
 
   useEffect(() => {
-    setOpen(defaultOpen);
-  }, [defaultOpen]);
+    setOpen(controlledOpen ?? defaultOpen);
+  }, [controlledOpen, defaultOpen]);
+
+  const handleToggle = () => {
+    const nextOpen = !open;
+    setOpen(nextOpen);
+    if (sectionId && typeof onOpenStateChange === 'function') {
+      onOpenStateChange(sectionId, nextOpen);
+    }
+  };
 
   return (
     <SurfaceCard className={`space-y-4 ${className}`}>
       <button
         type="button"
-        onClick={() => setOpen((current) => !current)}
+        onClick={handleToggle}
         className="focus-ring flex w-full items-start justify-between gap-3 rounded-2xl text-left"
         aria-expanded={open}
       >
@@ -328,12 +351,20 @@ function SettingsSection({
 export default function Settings({ user, onUserRefresh }) {
   const { resolvedTheme, setMode } = useTheme();
   const { capabilities } = useCapabilities();
+  const storedSettingsState = useMemo(() => readRouteSessionState('settings', user), [user]);
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const teacherMode = canAccessStudio(user);
+  const [settingsOpenSections, setSettingsOpenSections] = useState(
+    () => (storedSettingsState.openSections && typeof storedSettingsState.openSections === 'object'
+      ? storedSettingsState.openSections
+      : {}),
+  );
+  const [autoplayNextEnabled, setAutoplayNextEnabledState] = useState(isAutoplayNextEnabled);
   const [reducedMotion, setReducedMotion] = useState(
     () => window.localStorage.getItem(REDUCED_MOTION_KEY) === 'true',
   );
   const [profileDraft, setProfileDraft] = useState(() => profileDraftFromUser(user));
+  const [profileLoading, setProfileLoading] = useState(() => Boolean(user?.id));
   const [profileSaving, setProfileSaving] = useState(false);
   const [profileMessage, setProfileMessage] = useState('');
   const [profileError, setProfileError] = useState('');
@@ -362,9 +393,67 @@ export default function Settings({ user, onUserRefresh }) {
   const [avatarModal, setAvatarModal] = useState('');
 
   useEffect(() => {
+    setSettingsOpenSections(
+      storedSettingsState.openSections && typeof storedSettingsState.openSections === 'object'
+        ? storedSettingsState.openSections
+        : {},
+    );
+  }, [storedSettingsState]);
+
+  const updateSettingsSectionOpen = useCallback((sectionId, open) => {
+    setSettingsOpenSections((current) => ({
+      ...current,
+      [sectionId]: Boolean(open),
+    }));
+  }, []);
+
+  useEffect(() => {
+    writeRouteSessionState('settings', user, {
+      openSections: settingsOpenSections,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [settingsOpenSections, user]);
+
+  useEffect(() => onRouteReset('settings', () => {
+    clearRouteSessionState('settings', user);
+    setSettingsOpenSections({});
+    setProfileEditorOpen(false);
+    setAvatarModal('');
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }), [user]);
+
+  useEffect(() => {
+    if (!storedSettingsState.scrollY) return undefined;
+    const restoreId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number(storedSettingsState.scrollY) || 0, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(restoreId);
+  }, [storedSettingsState.scrollY]);
+
+  useEffect(() => {
+    const persistScroll = () => {
+      writeRouteSessionState('settings', user, {
+        openSections: settingsOpenSections,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('pagehide', persistScroll);
+    window.addEventListener('beforeunload', persistScroll);
+    return () => {
+      persistScroll();
+      window.removeEventListener('pagehide', persistScroll);
+      window.removeEventListener('beforeunload', persistScroll);
+    };
+  }, [settingsOpenSections, user]);
+
+  useEffect(() => {
     window.localStorage.setItem(REDUCED_MOTION_KEY, String(reducedMotion));
     document.documentElement.classList.toggle('reduced-motion', reducedMotion);
   }, [reducedMotion]);
+
+  useEffect(() => {
+    setAutoplayNextEnabled(autoplayNextEnabled);
+  }, [autoplayNextEnabled]);
 
   useEffect(() => {
     window.localStorage.setItem(NOTIFICATION_PREFS_KEY, JSON.stringify(notificationPreferences));
@@ -380,8 +469,12 @@ export default function Settings({ user, onUserRefresh }) {
     setBannerFile(null);
     setLogoFile(null);
 
-    if (!user?.id) return undefined;
+    if (!user?.id) {
+      setProfileLoading(false);
+      return undefined;
+    }
     let active = true;
+    setProfileLoading(true);
     fetchMyProfile()
       .then((payload) => {
         if (active) {
@@ -392,6 +485,9 @@ export default function Settings({ user, onUserRefresh }) {
       })
       .catch(() => {
         if (active) setProfileError('Unable to refresh public profile details.');
+      })
+      .finally(() => {
+        if (active) setProfileLoading(false);
       });
     return () => {
       active = false;
@@ -443,13 +539,8 @@ export default function Settings({ user, onUserRefresh }) {
     return () => URL.revokeObjectURL(objectUrl);
   }, [imageFile, videoFile]);
 
-  const toneDescription = useMemo(() => {
-    return resolvedTheme === 'dark'
-      ? 'Dark theme active.'
-      : 'Light theme active.';
-  }, [resolvedTheme]);
-
   const activeTheme = resolvedTheme === 'dark' ? 'dark' : 'light';
+  usePageLoading(profileLoading, 'settings-profile');
   const publicDisplayName = useMemo(
     () => displayNameFromDraft(profileDraft, user),
     [profileDraft, user],
@@ -866,25 +957,20 @@ export default function Settings({ user, onUserRefresh }) {
   return (
     <div className="space-y-5">
       <section className="layout-grid-12">
-        <SurfaceCard elevated className="lg:col-span-8">
+        <SurfaceCard elevated className="lg:col-span-12">
           <p className="label-sm">Settings</p>
           <h1 className="display-lg mt-2 text-[var(--text-primary)]">Workspace preferences</h1>
           <p className="body-md mt-3 max-w-2xl">
             Manage account details, public profile text, playback accessibility, and deployment feature visibility.
           </p>
         </SurfaceCard>
-
-        <SurfaceCard className="lg:col-span-4">
-          <p className="label-sm">Current Theme</p>
-          <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-[var(--surface-container-high)] px-3 py-1.5 text-sm text-[var(--text-primary)]">
-            {resolvedTheme === 'dark' ? <MoonStar size={14} /> : <Sun size={14} />}
-            <span>{toneDescription}</span>
-          </div>
-        </SurfaceCard>
       </section>
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
         <SettingsSection
+          sectionId="theme"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
           eyebrow="Account/Profile"
           title="Theme mode"
           caption="Theme choice is stored locally and applied across the workspace."
@@ -923,6 +1009,9 @@ export default function Settings({ user, onUserRefresh }) {
         </SettingsSection>
 
         <SettingsSection
+          sectionId="public-profile"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
           eyebrow="Publisher/Public Profile"
           title="Public profile"
           caption="Customize the public channel page shown to visitors."
@@ -980,22 +1069,51 @@ export default function Settings({ user, onUserRefresh }) {
         </SettingsSection>
 
         <SettingsSection
+          sectionId="motion"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
           eyebrow="Playback/Accessibility"
-          title="Reduce UI Motion"
-          caption="Reduces interface animations and UI motion. Does not affect generated avatar videos."
+          title="Playback & accessibility"
+          caption="Tune watch playback flow and interface motion for this browser."
           icon={MonitorPlay}
         >
-          <label className="inline-flex items-center gap-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-            <input
-              type="checkbox"
-              checked={reducedMotion}
-              onChange={(event) => setReducedMotion(event.target.checked)}
-            />
-            <span>Reduce UI Motion</span>
-          </label>
+          <div className="space-y-3">
+            <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={autoplayNextEnabled}
+                onChange={(event) => setAutoplayNextEnabledState(event.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-semibold text-[var(--text-primary)]">Continue to next lesson</span>
+                <span className="mt-1 block text-xs leading-5">
+                  Show the countdown prompt and continue when another lesson is available.
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={reducedMotion}
+                onChange={(event) => setReducedMotion(event.target.checked)}
+                className="mt-1"
+              />
+              <span>
+                <span className="block font-semibold text-[var(--text-primary)]">Reduce UI Motion</span>
+                <span className="mt-1 block text-xs leading-5">
+                  Reduces interface animations and UI motion. Does not affect generated avatar videos.
+                </span>
+              </span>
+            </label>
+          </div>
         </SettingsSection>
 
         <SettingsSection
+          sectionId="notifications"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
           eyebrow="In-App Notifications"
           title="Notification preferences"
           caption="Stored in this browser for the notification center."
@@ -1044,6 +1162,9 @@ export default function Settings({ user, onUserRefresh }) {
         </SettingsSection>
 
         <SettingsSection
+          sectionId="local-data"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
           eyebrow="Browser Data"
           title="Local notes"
           caption="This removes saved watch notes from this browser only."
@@ -1060,6 +1181,9 @@ export default function Settings({ user, onUserRefresh }) {
         </SettingsSection>
 
         <SettingsSection
+          sectionId="system-features"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
           eyebrow="Deployment"
           title="System features"
           caption="Read-only capabilities reported by this deployment."
@@ -1084,23 +1208,11 @@ export default function Settings({ user, onUserRefresh }) {
           </div>
         </SettingsSection>
 
-        <SettingsSection
-          eyebrow="Help"
-          title="Support content"
-          caption="Open support guidance and contact details."
-          icon={CircleHelp}
-        >
-          <Link
-            to="/help"
-            className="focus-ring inline-flex h-11 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-5 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
-          >
-            <CircleHelp size={15} />
-            <span>Open Help</span>
-          </Link>
-        </SettingsSection>
-
         {teacherMode && avatarFeatureEnabled && (
           <SettingsSection
+            sectionId="avatar"
+            openState={settingsOpenSections}
+            onOpenStateChange={updateSettingsSectionOpen}
             eyebrow="Avatar Preferences"
             title="Voice and avatar samples"
             caption="Advanced avatar controls are collapsed by default and remain separate from UI motion preferences."

@@ -1,19 +1,81 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Compass, SearchX } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { fetchCatalog, fetchCategories } from '../api';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import Button from '../components/ui/Button';
 import LessonActionButton from '../components/moderation/LessonActionButton';
+import { usePageLoading } from '../components/ui/PageLoading';
 import { normalizeLesson, formatDuration, formatViews } from '../lib/content';
+import {
+  clearRouteSessionState,
+  onRouteReset,
+  readRouteSessionState,
+  writeRouteSessionState,
+} from '../utils/routeSession';
 
 export default function Browse({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
+  const location = useLocation();
+  const directCategory = useMemo(() => {
+    const params = new URLSearchParams(location.search || '');
+    return String(params.get('category') || '').trim();
+  }, [location.search]);
+  const hasDirectBrowseLocation = Boolean(directCategory);
+  const storedBrowseState = useMemo(
+    () => (hasDirectBrowseLocation ? {} : readRouteSessionState('browse', user)),
+    [hasDirectBrowseLocation, user],
+  );
   const [categories, setCategories] = useState([]);
-  const [activeCategory, setActiveCategory] = useState('');
+  const [activeCategory, setActiveCategory] = useState(() => directCategory || String(storedBrowseState.activeCategory || ''));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [lessons, setLessons] = useState([]);
+
+  usePageLoading(loading, 'browse-catalog');
+
+  useEffect(() => {
+    if (directCategory) {
+      setActiveCategory(directCategory);
+    }
+  }, [directCategory]);
+
+  useEffect(() => {
+    writeRouteSessionState('browse', user, {
+      activeCategory,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [activeCategory, user]);
+
+  useEffect(() => onRouteReset('browse', () => {
+    clearRouteSessionState('browse', user);
+    setActiveCategory('');
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }), [user]);
+
+  useEffect(() => {
+    if (loading || hasDirectBrowseLocation || !storedBrowseState.scrollY) return undefined;
+    const restoreId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number(storedBrowseState.scrollY) || 0, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(restoreId);
+  }, [hasDirectBrowseLocation, loading, storedBrowseState.scrollY]);
+
+  useEffect(() => {
+    const persistScroll = () => {
+      writeRouteSessionState('browse', user, {
+        activeCategory,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('pagehide', persistScroll);
+    window.addEventListener('beforeunload', persistScroll);
+    return () => {
+      persistScroll();
+      window.removeEventListener('pagehide', persistScroll);
+      window.removeEventListener('beforeunload', persistScroll);
+    };
+  }, [activeCategory, user]);
 
   useEffect(() => {
     fetchCategories()
