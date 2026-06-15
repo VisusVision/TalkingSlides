@@ -7,6 +7,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_docker_smoke_skips_live_avatar_dependency_downloads() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
+    assert "--set \"worker.args.INSTALL_AVATAR_RUNTIME_DEPS=0\"" in workflow
     assert "--set \"worker.args.INSTALL_OPENMMLAB_DEPS=0\"" in workflow
     assert "--set \"worker.args.DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0\"" in workflow
     assert "docker-smoke-${{ github.ref_name }}" in workflow
@@ -17,6 +18,7 @@ def test_docker_smoke_skips_live_avatar_dependency_downloads() -> None:
 def test_worker_dockerfile_keeps_runtime_avatar_dependencies_opt_in() -> None:
     dockerfile = (REPO_ROOT / "infra" / "dockerfiles" / "Dockerfile.worker").read_text(encoding="utf-8")
 
+    assert "ARG INSTALL_AVATAR_RUNTIME_DEPS=1" in dockerfile
     assert "ARG INSTALL_OPENMMLAB_DEPS=1" in dockerfile
     assert "ARG DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1" in dockerfile
     assert "ARG MMCV_VERSION=2.0.1" in dockerfile
@@ -34,6 +36,9 @@ def test_worker_dockerfile_keeps_runtime_avatar_dependencies_opt_in() -> None:
     assert "pip install --no-build-isolation mmcv" not in dockerfile
     assert "MMCV_FIND_LINKS is not reachable or does not expose a prebuilt wheel index" in dockerfile
     assert "Put a compatible wheel at ${MMCV_LOCAL_WHEEL}" in dockerfile
+    assert 'if [ "$INSTALL_AVATAR_RUNTIME_DEPS" = "1" ]; then' in dockerfile
+    assert "Skipping avatar runtime dependencies for smoke build because INSTALL_AVATAR_RUNTIME_DEPS=${INSTALL_AVATAR_RUNTIME_DEPS}." in dockerfile
+    assert "mkdir -p /opt/musetalk /opt/liveportrait/pretrained_weights /app/storage_local/models/musetalk" in dockerfile
     assert "Skipping OpenMMLab/mmcv dependencies for smoke build because INSTALL_OPENMMLAB_DEPS=${INSTALL_OPENMMLAB_DEPS}." in dockerfile
     assert "Skipping LivePortrait pretrained weights download for smoke build." in dockerfile
     assert dockerfile.index('"/build-context/$MMCV_LOCAL_WHEEL"') < dockerfile.index('"$MMCV_WHEEL_URL"')
@@ -42,6 +47,7 @@ def test_worker_dockerfile_keeps_runtime_avatar_dependencies_opt_in() -> None:
 def test_local_compose_builds_avatar_worker_with_heavy_deps_by_default() -> None:
     compose = (REPO_ROOT / "infra" / "docker-compose.yml").read_text(encoding="utf-8")
 
+    assert compose.count('INSTALL_AVATAR_RUNTIME_DEPS: "${INSTALL_AVATAR_RUNTIME_DEPS:-1}"') >= 2
     assert compose.count('INSTALL_OPENMMLAB_DEPS: "${INSTALL_OPENMMLAB_DEPS:-1}"') >= 2
     assert compose.count('DOWNLOAD_LIVEPORTRAIT_WEIGHTS: "${DOWNLOAD_LIVEPORTRAIT_WEIGHTS:-1}"') >= 2
     assert compose.count('MMCV_VERSION: "${MMCV_VERSION:-2.0.1}"') >= 2

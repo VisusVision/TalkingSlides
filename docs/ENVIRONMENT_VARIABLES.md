@@ -262,7 +262,7 @@ Studio Intelligence is the detailed lesson analyzer. Analytics Intelligence shou
 | --- | --- | --- | --- | --- | --- |
 | `ENABLE_AVATAR` | API/frontend/worker-avatar | Optional | Optional | `0` | Master deployment flag for avatar profile, preview, overlay, and render scheduling. When disabled, avatar endpoints return disabled responses, render jobs ignore avatar options, worker avatar scheduling is skipped, and frontend avatar UI is hidden. Existing avatar engine env vars still imply enabled when this is unset. |
 | `AVATAR_ENGINE` | API/worker-avatar | Optional | If avatar | `liveportrait+musetalk` | Selected avatar engine chain. |
-| `INSTALL_OPENMMLAB_DEPS`, `DOWNLOAD_LIVEPORTRAIT_WEIGHTS` | worker-avatar build | Optional | If avatar | `1`, `1` | Heavy build toggles. CI smoke overrides these to `0`; live avatar images need OpenMMLab dependencies in Docker. |
+| `INSTALL_AVATAR_RUNTIME_DEPS`, `INSTALL_OPENMMLAB_DEPS`, `DOWNLOAD_LIVEPORTRAIT_WEIGHTS` | worker-avatar build | Optional | If avatar | `1`, `1`, `1` | Heavy build toggles. CI smoke may override these to `0`; live avatar images need avatar runtime and OpenMMLab dependencies in Docker. |
 | `MMCV_FIND_LINKS`, `MMCV_WHEEL_URL`, `MMCV_LOCAL_WHEEL` | worker-avatar build | Optional | If avatar | OpenMMLab index, blank, `local_wheels/mmcv.whl` | Prebuilt `mmcv` install sources. A local wheel under `local_wheels/` is used before the remote URL/index and must not be committed. |
 | `AVATAR_BOOTSTRAP_ON_WORKER_STARTUP` | worker-avatar | Optional | Recommended | `0` local template | Controls runtime bootstrap. |
 | `MUSETALK_HOME`, `MUSETALK_MODEL_PATH`, `MUSETALK_ENGINE_VERSION` | worker-avatar | If avatar | If avatar | `/opt/musetalk`, model path | MuseTalk runtime/model config. |
