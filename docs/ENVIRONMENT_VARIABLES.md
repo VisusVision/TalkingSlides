@@ -168,9 +168,9 @@ Columns:
 | `ENABLE_INTELLIGENCE` | API/frontend/worker | Optional | Optional | `0` | Master deployment flag for Lesson Intelligence and Analytics Intelligence. When disabled, API endpoints return a disabled response, automatic scheduling is skipped, and frontend intelligence UI is hidden. Existing `LESSON_INTELLIGENCE_ENABLED=true` or `ANALYTICS_INTELLIGENCE_ENABLED=true` still imply enabled for backward compatibility when `ENABLE_INTELLIGENCE` is unset. |
 | `ENABLE_LOCAL_OLLAMA` | API/worker | Optional | If Ollama | `0` unless intelligence uses Ollama | Enables local Ollama enhancement under the master intelligence flag. If disabled, heuristic intelligence can still run when intelligence is enabled. |
 | `LESSON_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | follows `ENABLE_INTELLIGENCE` | Enables lesson quality analysis under the master intelligence flag. |
-| `LESSON_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `ollama,heuristic`. |
+| `LESSON_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `heuristic,ollama` for local progressive mode. |
 | `ANALYTICS_INTELLIGENCE_ENABLED` | API/frontend | Optional | Optional | follows `ENABLE_INTELLIGENCE` | Enables creator analytics insights under the master intelligence flag. |
-| `ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `ollama,heuristic`. |
+| `ANALYTICS_INTELLIGENCE_PROVIDER_CHAIN` | API | Optional | Optional | `heuristic` | Provider order, for example `heuristic,ollama` for local progressive mode. |
 | `LESSON_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
 | `ANALYTICS_INTELLIGENCE_TIMEOUT_SECONDS` | API | Optional | If Ollama | `30` | Configured provider timeout before sync cap. |
 | `INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS` | API | Optional | Recommended | `20` | Upper bound for synchronous Ollama calls so API workers can return fallback before Gunicorn timeout. |
@@ -187,11 +187,14 @@ Columns:
 | `INTELLIGENCE_OLLAMA_CHUNK_MAX_ITEMS` | worker | Optional | Optional | `10` | Maximum analytics rows grouped into one Ollama analytics chunk. |
 | `INTELLIGENCE_OLLAMA_CHUNK_ROW_THRESHOLD` | worker | Optional | Optional | `40` | Analytics row count that can still use one-shot Ollama when prompt size is small. |
 | `INTELLIGENCE_OLLAMA_CHUNK_CONCURRENCY` | worker | Optional | Optional | profile default | Profile-aware local Ollama chunk concurrency hint. Keep `1` for local CPU/shared hosts; production GPU can use `2-4` if the Ollama host can handle it. |
-| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | profile default | Minimum timeout for one background Ollama chunk request. Local profiles default to `130` so `qwen2.5:7b` has enough time to finish compact JSON chunks on CPU-bound machines. |
-| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | profile default | Maximum timeout for one background Ollama chunk request. Local profiles default to `240`; analytics still has a lower total task budget. |
-| `INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `600` | Maximum total budget for one chunked Ollama enhancement task. |
+| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MIN_SECONDS` | worker | Optional | Recommended | profile default | Minimum timeout for one background Ollama chunk request. Local profiles default to `30`; calibration can raise the effective per-chunk budget when measured throughput requires it. |
+| `INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | profile default | Maximum profile timeout for one background Ollama chunk request before calibration and the absolute cap are considered. Local profiles default to `75`. |
+| `INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS` | worker | Optional | Recommended | `600` | Absolute cap for one chunked Ollama enhancement task. |
+| `INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED` | worker | Optional | Recommended | `true` | Runs a small per-process/per-model Ollama calibration probe and uses measured throughput in timeout budgeting. Test settings disable this. |
+| `INTELLIGENCE_OLLAMA_CALIBRATION_TTL_SECONDS` | worker | Optional | Optional | `1800` | Cache lifetime for a successful or failed Ollama calibration result in the current process. |
+| `INTELLIGENCE_OLLAMA_CALIBRATION_TIMEOUT_SECONDS` | worker | Optional | Optional | `20` | Maximum time allowed for the lightweight calibration prompt. If it fails, profile fallback throughput is used. |
 | `INTELLIGENCE_RETRY_COOLDOWN_SECONDS` | API/frontend | Optional | Recommended | `60` | Cooldown before a manual Retry Ollama click can create a new attempt after an Ollama fallback failure. `force=true` bypasses it for explicit user actions. |
-| `ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` | worker | Optional | Recommended | `180` | Analytics-specific total background budget; defaults lower than lesson/shared budget so large analytics jobs terminalize sooner. |
+| `ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS` | worker | Optional | Recommended | `180` | Analytics-specific soft workload budget; progressing chunks can continue until the absolute Ollama cap. |
 | `ANALYTICS_INTELLIGENCE_AUTO_ENABLED` | API/worker | Optional | Recommended | `true` | Enables event-driven creator analytics intelligence scheduling. |
 | `ANALYTICS_INTELLIGENCE_MIN_AUTO_INTERVAL_SECONDS` | API/worker | Optional | Recommended | `3600` | Minimum interval between automatic analytics intelligence schedules for routine events. |
 | `ANALYTICS_INTELLIGENCE_MIN_PROGRESS_EVENT_DELTA` | API/worker | Optional | Recommended | `5` | Progress-event threshold used with throttling before scheduling analytics intelligence again. |
@@ -259,6 +262,8 @@ Studio Intelligence is the detailed lesson analyzer. Analytics Intelligence shou
 | --- | --- | --- | --- | --- | --- |
 | `ENABLE_AVATAR` | API/frontend/worker-avatar | Optional | Optional | `0` | Master deployment flag for avatar profile, preview, overlay, and render scheduling. When disabled, avatar endpoints return disabled responses, render jobs ignore avatar options, worker avatar scheduling is skipped, and frontend avatar UI is hidden. Existing avatar engine env vars still imply enabled when this is unset. |
 | `AVATAR_ENGINE` | API/worker-avatar | Optional | If avatar | `liveportrait+musetalk` | Selected avatar engine chain. |
+| `INSTALL_OPENMMLAB_DEPS`, `DOWNLOAD_LIVEPORTRAIT_WEIGHTS` | worker-avatar build | Optional | If avatar | `1`, `1` | Heavy build toggles. CI smoke overrides these to `0`; live avatar images need OpenMMLab dependencies in Docker. |
+| `MMCV_FIND_LINKS`, `MMCV_WHEEL_URL`, `MMCV_LOCAL_WHEEL` | worker-avatar build | Optional | If avatar | OpenMMLab index, blank, `local_wheels/mmcv.whl` | Prebuilt `mmcv` install sources. A local wheel under `local_wheels/` is used before the remote URL/index and must not be committed. |
 | `AVATAR_BOOTSTRAP_ON_WORKER_STARTUP` | worker-avatar | Optional | Recommended | `0` local template | Controls runtime bootstrap. |
 | `MUSETALK_HOME`, `MUSETALK_MODEL_PATH`, `MUSETALK_ENGINE_VERSION` | worker-avatar | If avatar | If avatar | `/opt/musetalk`, model path | MuseTalk runtime/model config. |
 | `AVATAR_LIVEPORTRAIT_HOME`, `AVATAR_LIVEPORTRAIT_MODEL_PATH`, `AVATAR_LIVEPORTRAIT_ENTRYPOINT` | worker-avatar | If avatar | If avatar | `/opt/liveportrait` paths | LivePortrait runtime/model config. |

@@ -416,7 +416,7 @@ Create the bucket first through the MinIO console or an operator-approved `mc mb
 The worker image is expected to build much more slowly than the API image because it installs GPU/avatar runtime dependencies during the image build. On a cold cache, long pauses in these steps usually indicate dependency download, wheel unpack, or model snapshot export rather than an application-code failure:
 
 - CUDA PyTorch wheels from `download.pytorch.org`.
-- `openmim` / `mmcv` / `mmpose` installation.
+- OpenMMLab `mmcv` prebuilt wheel, `mmdet`, and `mmpose` installation.
 - `onnxruntime-gpu` and related LivePortrait dependencies.
 - MuseTalk and LivePortrait repository clones.
 - Hugging Face `KlingTeam/LivePortrait` snapshot download into `/opt/liveportrait/pretrained_weights`.
@@ -430,6 +430,44 @@ docker compose -f infra\docker-compose.yml build --progress=plain worker
 The Dockerfiles use BuildKit pip cache mounts so repeated local builds and CI retries can reuse downloaded Python wheels without baking pip caches into the final image. CI also uses a GitHub Actions Buildx cache for the docker-smoke job. A dependency step can still be slow on the first run for a branch, after cache eviction, after requirements or Dockerfile dependency layers change, or when upstream package/model hosts are slow.
 
 Treat the build as a likely real failure when the same package, clone, or snapshot command exits with a non-zero status on repeated attempts. Treat it as likely cache/cold-download slowness when logs continue to show large wheel downloads, extraction, or Hugging Face file transfer without an exit status.
+
+Avatar-capable worker images must install `mmcv`/`mmpose` in Docker, not in the Windows or host Python environment. Installing `mmcv` into `.venv` does not help `worker-avatar`. The worker Dockerfile installs `mmcv` from prebuilt wheels only and never falls back to a source build.
+
+Use the OpenMMLab index when the network can reach it:
+
+```powershell
+docker compose -f infra\docker-compose.yml build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 worker-avatar
+```
+
+Use a local/offline wheel when `download.openmmlab.com` is blocked. Get a compatible `mmcv` wheel on another machine or network, then save it outside git:
+
+```powershell
+New-Item -ItemType Directory -Force local_wheels
+# Put the downloaded wheel here, for example:
+# local_wheels\mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl
+
+docker compose -f infra\docker-compose.yml build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 --build-arg MMCV_LOCAL_WHEEL=local_wheels/mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl worker-avatar
+docker compose -f infra\docker-compose.yml run --rm --no-deps worker-avatar python -c "import mmcv, mmpose; print(mmcv.__version__)"
+```
+
+`local_wheels/` and `*.whl` are ignored by git. Do not put downloaded wheels under a tracked path.
+
+Use `MMCV_WHEEL_URL` when you have an internal artifact URL:
+
+```powershell
+docker compose -f infra\docker-compose.yml build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 --build-arg MMCV_WHEEL_URL=https://example.internal/mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl worker-avatar
+```
+
+Use a prebuilt heavy avatar worker image when local heavy builds are not practical:
+
+```powershell
+docker pull registry.example.internal/ai-academy-worker-avatar:cuda118-mmcv201
+docker tag registry.example.internal/ai-academy-worker-avatar:cuda118-mmcv201 ai_academy_worker:local
+docker compose -f infra\docker-compose.yml up -d --no-build --force-recreate worker-avatar
+docker compose -f infra\docker-compose.yml run --rm --no-deps worker-avatar python -c "import mmcv, mmpose; print(mmcv.__version__)"
+```
+
+If no local wheel exists and `MMCV_WHEEL_URL` is empty, the build checks `MMCV_FIND_LINKS` and installs `mmcv==${MMCV_VERSION}` with `--only-binary=:all:`. An unreachable OpenMMLab wheel index fails fast with instructions instead of attempting a source build.
 
 ## Common Emergency Actions
 
