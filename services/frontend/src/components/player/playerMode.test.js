@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PLAYER_MODES,
+  buildShakaDrmConfig,
   getReadyDrmSystems,
   resolvePlayerMode,
 } from './playerMode.js';
@@ -88,15 +89,41 @@ describe('getReadyDrmSystems', () => {
       },
     });
 
-    expect(systems).toEqual([
+    expect(systems).toEqual([]);
+  });
+});
+
+describe('buildShakaDrmConfig', () => {
+  it('maps DRM systems into Shaka license server config', () => {
+    const config = buildShakaDrmConfig([
       {
-        name: 'widevine',
         keySystem: 'com.widevine.alpha',
+        licenseUrl: 'https://drm.example.test/widevine/license',
+        certificateUrl: 'https://drm.example.test/widevine/cert',
+      },
+      {
+        keySystem: 'com.microsoft.playready',
+        licenseUrl: 'https://drm.example.test/playready/license',
+      },
+      {
+        keySystem: 'com.invalid.empty',
         licenseUrl: '',
-        certificateUrl: 'blob:https://app.example.test/cert',
-        contentType: 'video/mp4',
       },
     ]);
+
+    expect(config).toEqual({
+      drm: {
+        servers: {
+          'com.widevine.alpha': 'https://drm.example.test/widevine/license',
+          'com.microsoft.playready': 'https://drm.example.test/playready/license',
+        },
+        advanced: {
+          'com.widevine.alpha': {
+            serverCertificateUri: 'https://drm.example.test/widevine/cert',
+          },
+        },
+      },
+    });
   });
 });
 
@@ -104,13 +131,26 @@ describe('resolvePlayerMode', () => {
   it('does not silently downgrade DRM-required lessons to clear MP4 fallback', () => {
     const mode = resolvePlayerMode(drmLesson(), {
       emeSupported: true,
-      drmShakaEnabled: false,
+      drmShakaEnabled: true,
       hlsJsSupported: true,
     });
 
     expect(mode.mode).toBe(PLAYER_MODES.DRM_SHAKA);
-    expect(mode.reason).toBe('drm_shaka_phase_1_unavailable');
+    expect(mode.reason).toBe('drm_shaka_ready');
     expect(mode.manifestUrl).toBe('/api/v1/stream/encrypted-hls-token/');
+    expect(mode.fallbackUrl).toBe('');
+    expect(mode.fallbackAllowed).toBe(false);
+  });
+
+  it('keeps DRM unavailable when the Shaka feature flag is disabled', () => {
+    const mode = resolvePlayerMode(drmLesson(), {
+      emeSupported: true,
+      drmShakaEnabled: false,
+      hlsJsSupported: true,
+    });
+
+    expect(mode.mode).toBe(PLAYER_MODES.UNAVAILABLE);
+    expect(mode.reason).toBe('drm_shaka_disabled');
     expect(mode.fallbackUrl).toBe('');
     expect(mode.fallbackAllowed).toBe(false);
   });
@@ -126,6 +166,31 @@ describe('resolvePlayerMode', () => {
     expect(mode.reason).toBe('eme_unavailable');
     expect(mode.fallbackUrl).toBe('');
     expect(mode.fallbackAllowed).toBe(false);
+  });
+
+  it('requires valid absolute license URLs before selecting protected playback', () => {
+    const mode = resolvePlayerMode(drmLesson({
+      drm: {
+        enabled: true,
+        ready: true,
+        manifest_url: '/api/v1/stream/encrypted-hls-token/',
+        systems: {
+          widevine: {
+            enabled: true,
+            ready: true,
+            key_system: 'com.widevine.alpha',
+            license_url: '/relative/license',
+          },
+        },
+      },
+    }), {
+      emeSupported: true,
+      drmShakaEnabled: true,
+    });
+
+    expect(mode.mode).toBe(PLAYER_MODES.UNAVAILABLE);
+    expect(mode.reason).toBe('drm_license_url_missing');
+    expect(mode.fallbackUrl).toBe('');
   });
 
   it('requires DRM metadata readiness before selecting protected playback', () => {
@@ -150,6 +215,19 @@ describe('resolvePlayerMode', () => {
     expect(mode.mode).toBe(PLAYER_MODES.UNAVAILABLE);
     expect(mode.reason).toBe('drm_systems_unavailable');
     expect(mode.fallbackUrl).toBe('');
+  });
+
+  it('reports unsupported key systems without using clear fallback', () => {
+    const mode = resolvePlayerMode(drmLesson(), {
+      emeSupported: true,
+      drmShakaEnabled: true,
+      supportedDrmKeySystems: ['com.microsoft.playready'],
+    });
+
+    expect(mode.mode).toBe(PLAYER_MODES.UNAVAILABLE);
+    expect(mode.reason).toBe('drm_key_system_unsupported');
+    expect(mode.fallbackUrl).toBe('');
+    expect(mode.fallbackAllowed).toBe(false);
   });
 
   it('uses secure HLS when secure stream is required and HLS is supported', () => {

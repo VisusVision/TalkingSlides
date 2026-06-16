@@ -11,6 +11,39 @@ Turns lesson sources into narrated, secure, AI-assisted video lessons with optio
 
 ---
 
+## Windows Format Oncesi Backup / Restore
+
+Bu repo kokunde iki PowerShell scripti vardir:
+
+- `backup-before-format.ps1`
+- `restore-after-format.ps1`
+
+Backup almak icin PowerShell'i bu repo/proje klasorunde acin ve calistirin:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\backup-before-format.ps1
+```
+
+Script `C:\docker-backup` klasorunu olusturur; Docker volume arsivlerini `.tar.gz` olarak, VS Code `User` ayarlarini, `$HOME\.ssh`, Git config dosyalarini ve mevcut klasor altindaki `docker-compose.yml`, `compose.yml`, `.env`, `.env.local`, `.env.production` dosyalarini yedekler. Eksik Docker volume varsa sadece uyari verir ve devam eder.
+
+Format atmadan once `C:\docker-backup` klasorunu mutlaka format atilmayacak harici diske veya buluta kopyalayin. Bu klasor SSH anahtarlari, `.env` dosyalari ve Git credential bilgileri icerebilir; guvenli saklayin.
+
+Format sonrasi once Docker Desktop ve VS Code kurun, `C:\docker-backup` klasorunu yeni sisteme geri kopyalayin, sonra PowerShell'de:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\restore-after-format.ps1
+```
+
+Restore scripti `C:\docker-backup\volumes` altindaki `.tar.gz` yedeklerini bulur, eksik Docker volume'lari olusturur ve icerigi geri yukler. VS Code ayarlari, SSH klasoru ve Git config dosyalari icin onay ister; mevcut dosyalarin ustune yazmadan once ayrica sorar.
+
+Restore bittikten sonra ilgili proje klasorlerinde servisleri baslatmak icin:
+
+```powershell
+docker compose up -d
+```
+
 ## Overview
 
 **VISUS VidLab**, also referenced in the repository as **AI_ACADEMY**, converts uploaded learning material into playable video lessons. Teachers can upload `.pptx`, `.pdf`, `.docx`, `.txt`, or image-based sources; the system extracts lesson content, prepares transcript pages, synthesizes narration, renders video, creates subtitle assets, and publishes lessons through a web learning platform.

@@ -5,6 +5,8 @@ export const PLAYER_MODES = Object.freeze({
   UNAVAILABLE: 'unavailable',
 });
 
+export const PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE = 'This lesson requires protected playback, but DRM playback is not available in this browser or environment.';
+
 function cleanString(value) {
   return String(value || '').trim();
 }
@@ -22,6 +24,16 @@ function playbackUrl(value) {
   if (!url) return '';
   if (/^(https?:|blob:)/i.test(url) || url.startsWith('/')) return url;
   return '';
+}
+
+function absoluteHttpUrl(value) {
+  const url = cleanString(value);
+  if (!/^https?:\/\//i.test(url)) return '';
+  try {
+    return new URL(url).href;
+  } catch {
+    return '';
+  }
 }
 
 function booleanTrue(value) {
@@ -101,10 +113,12 @@ export function getReadyDrmSystems(lesson) {
       if (!system || typeof system !== 'object') return null;
       const keySystem = cleanString(system.key_system || system.keySystem || system.system);
       if (!keySystem || system.enabled === false || system.ready !== true) return null;
+      const licenseUrl = absoluteHttpUrl(system.license_url || system.licenseUrl);
+      if (!licenseUrl) return null;
       return {
         name,
         keySystem,
-        licenseUrl: playbackUrl(system.license_url || system.licenseUrl),
+        licenseUrl,
         certificateUrl: playbackUrl(system.certificate_url || system.certificateUrl),
         contentType: cleanString(system.content_type || system.contentType),
       };
@@ -112,8 +126,62 @@ export function getReadyDrmSystems(lesson) {
     .filter(Boolean);
 }
 
+function getMetadataReadyDrmSystems(lesson) {
+  const systems = lesson?.drm?.systems;
+  if (!systems || typeof systems !== 'object') return [];
+
+  const entries = Array.isArray(systems)
+    ? systems.map((system, index) => [system?.name || system?.key_system || String(index), system])
+    : Object.entries(systems);
+
+  return entries
+    .map(([name, system]) => {
+      if (!system || typeof system !== 'object') return null;
+      const keySystem = cleanString(system.key_system || system.keySystem || system.system);
+      if (!keySystem || system.enabled === false || system.ready !== true) return null;
+      return {
+        name,
+        keySystem,
+        licenseUrl: cleanString(system.license_url || system.licenseUrl),
+      };
+    })
+    .filter(Boolean);
+}
+
+function supportedDrmSystemsForCapabilities(drmSystems, capabilities = {}) {
+  const supported = Array.isArray(capabilities.supportedDrmKeySystems)
+    ? capabilities.supportedDrmKeySystems.map((value) => cleanString(value).toLowerCase()).filter(Boolean)
+    : null;
+  if (!supported) return drmSystems;
+  return drmSystems.filter((system) => supported.includes(system.keySystem.toLowerCase()));
+}
+
 export function buildLicenseRequestHeaders() {
   return {};
+}
+
+export function buildShakaDrmConfig(drmSystems = []) {
+  const servers = {};
+  const advanced = {};
+
+  for (const system of drmSystems) {
+    const keySystem = cleanString(system?.keySystem || system?.key_system);
+    const licenseUrl = absoluteHttpUrl(system?.licenseUrl || system?.license_url);
+    if (!keySystem || !licenseUrl) continue;
+    servers[keySystem] = licenseUrl;
+
+    const certificateUrl = playbackUrl(system?.certificateUrl || system?.certificate_url);
+    if (certificateUrl) {
+      advanced[keySystem] = { serverCertificateUri: certificateUrl };
+    }
+  }
+
+  return {
+    drm: {
+      servers,
+      ...(Object.keys(advanced).length ? { advanced } : {}),
+    },
+  };
 }
 
 export function resolvePlayerMode(lesson, capabilities = {}) {
@@ -129,33 +197,43 @@ export function resolvePlayerMode(lesson, capabilities = {}) {
     const manifestUrl = drmManifestUrlForLesson(lesson);
     const drm = lesson?.drm || {};
     const readyDrmSystems = getReadyDrmSystems(lesson);
+    const metadataReadySystems = getMetadataReadyDrmSystems(lesson);
 
     if (!manifestUrl) {
-      return unavailable('drm_manifest_missing', 'This lesson requires protected playback, but DRM playback is not available in this browser or environment.');
+      return unavailable('drm_manifest_missing', PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE);
     }
     if (drm.enabled !== true) {
-      return unavailable('drm_disabled', 'This lesson requires protected playback, but DRM playback is not available in this browser or environment.');
+      return unavailable('drm_disabled', PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE);
     }
     if (drm.ready !== true) {
-      return unavailable('drm_not_ready', 'This lesson requires protected playback, but DRM playback is not available in this browser or environment.');
+      return unavailable('drm_not_ready', PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE);
     }
     if (!readyDrmSystems.length) {
-      return unavailable('drm_systems_unavailable', 'This lesson requires protected playback, but DRM playback is not available in this browser or environment.');
+      return unavailable(
+        metadataReadySystems.length ? 'drm_license_url_missing' : 'drm_systems_unavailable',
+        PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE,
+      );
     }
     if (!capabilities.emeSupported) {
-      return unavailable('eme_unavailable', 'This lesson requires protected playback, but DRM playback is not available in this browser or environment.');
+      return unavailable('eme_unavailable', PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE);
+    }
+    if (!capabilities.drmShakaEnabled) {
+      return unavailable('drm_shaka_disabled', PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE);
+    }
+
+    const supportedDrmSystems = supportedDrmSystemsForCapabilities(readyDrmSystems, capabilities);
+    if (!supportedDrmSystems.length) {
+      return unavailable('drm_key_system_unsupported', PROTECTED_PLAYBACK_UNAVAILABLE_MESSAGE);
     }
 
     return {
       mode: PLAYER_MODES.DRM_SHAKA,
-      reason: capabilities.drmShakaEnabled
-        ? 'drm_shaka_ready'
-        : 'drm_shaka_phase_1_unavailable',
-      message: 'This lesson requires protected playback, but DRM playback is not available in this browser or environment.',
+      reason: 'drm_shaka_ready',
+      message: '',
       manifestUrl,
       fallbackUrl: '',
       fallbackAllowed: false,
-      drmSystems: readyDrmSystems,
+      drmSystems: supportedDrmSystems,
     };
   }
 

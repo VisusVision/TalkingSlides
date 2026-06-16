@@ -16,7 +16,8 @@
     "lucide-react": "^0.378.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^7.15.0"
+    "react-router-dom": "^7.15.0",
+    "shaka-player": "^5.1.8"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

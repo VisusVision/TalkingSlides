@@ -38,6 +38,7 @@ const PLAYLIST_COLLAPSED_KEY = 'visus-watch-playlist-collapsed';
 const AUTOPLAY_NEXT_KEY = 'visus-watch-autoplay-next';
 const AUTOPLAY_COUNTDOWN_SECONDS = 5;
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
+const DrmShakaPlayer = lazy(() => import('../components/player/DrmShakaPlayer'));
 
 function normalizeCatalogList(payload) {
   const list = Array.isArray(payload) ? payload : payload.results || [];
@@ -796,7 +797,9 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       stream_url: playerMode.fallbackUrl || lesson.stream_url || lesson.video_url || '',
     };
   }, [lesson, playerMode]);
-  const playableMode = playerMode.mode === PLAYER_MODES.PUBLIC_MP4 || playerMode.mode === PLAYER_MODES.SECURE_HLS;
+  const playableMode = playerMode.mode === PLAYER_MODES.PUBLIC_MP4
+    || playerMode.mode === PLAYER_MODES.SECURE_HLS
+    || playerMode.mode === PLAYER_MODES.DRM_SHAKA;
   const playbackSourceKey = useMemo(
     () => [
       activeLessonId || '',
@@ -1243,6 +1246,35 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
             manifestUrl={playerMode.manifestUrl}
             fallbackUrl={playerMode.fallbackUrl}
             fallbackAllowed={playerMode.fallbackAllowed}
+            onPlaybackTimeChange={handlePlaybackTimeChange}
+            onPlaybackStarted={handlePlaybackStarted}
+            onPlaybackStopped={handlePlaybackStopped}
+            onPlaybackEnded={handlePlaybackEnded}
+            subtitleTracks={subtitleTracks}
+            preferredSubtitleLanguage={preferredSubtitleLanguage}
+            selectedSubtitleKey={selectedSubtitleKey}
+            onSubtitleKeyChange={setSelectedSubtitleKey}
+            avatarOverlayMode={!avatarFeatureEnabled || focusMode ? 'disabled' : 'floating'}
+            watermarkLesson={lesson}
+          />
+        </Suspense>
+      );
+    }
+
+    if (playerMode.mode === PLAYER_MODES.DRM_SHAKA) {
+      return (
+        <Suspense
+          fallback={(
+            <SurfaceCard elevated className="p-4 sm:p-5">
+              <p className="body-md">Loading protected player...</p>
+            </SurfaceCard>
+          )}
+        >
+          <DrmShakaPlayer
+            lesson={lesson}
+            videoRef={videoRef}
+            manifestUrl={playerMode.manifestUrl}
+            drmSystems={playerMode.drmSystems}
             onPlaybackTimeChange={handlePlaybackTimeChange}
             onPlaybackStarted={handlePlaybackStarted}
             onPlaybackStopped={handlePlaybackStopped}
