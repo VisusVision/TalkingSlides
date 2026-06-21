@@ -7,7 +7,6 @@ import {
   fetchComments,
   fetchLesson,
   fetchPlaybackToken,
-  fetchProjectTranscript,
   generateSubtitleTrack,
   getPlaylistContext,
   saveProgress,
@@ -535,9 +534,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       setPlaylistContext(null);
 
       try {
-        const [lessonData, transcriptData, playbackData, tracksData] = await Promise.all([
+        const [lessonData, playbackData, tracksData] = await Promise.all([
           fetchLesson(activeLessonId),
-          fetchProjectTranscript(activeLessonId).catch(() => null),
           fetchPlaybackToken(activeLessonId).catch(() => null),
           fetchSubtitleTrackBundle(activeLessonId).catch(() => ({ tracks: [], requestableLanguages: [] })),
         ]);
@@ -547,7 +545,9 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         const integratedLesson = playbackData ? mergePlaybackIntoLesson(lessonData, playbackData) : lessonData;
 
         setLesson(integratedLesson);
-        setTranscriptPayload(transcriptData);
+        setTranscriptPayload({
+          pages: Array.isArray(lessonData?.transcript_pages) ? lessonData.transcript_pages : [],
+        });
         setSubtitleTracks(tracksData?.tracks || []);
         setRequestableSubtitleLanguages(tracksData?.requestableLanguages || []);
         setSubtitleRequestMessage('');
