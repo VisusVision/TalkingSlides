@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import html
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -26,10 +29,12 @@ from core.models import (
     TranscriptPage,
     UserProfile,
 )
+from core.storage_adapter import get_storage_adapter
 
 
 DEMO_NAMESPACE = "visus_vidlab_demo_seed"
 DEMO_PASSWORD = os.environ.get("VISUS_DEMO_PASSWORD", "visus-demo-local")
+DEMO_VIDEO_FILENAME = "demo-seed.mp4"
 
 
 @dataclass(frozen=True)
@@ -960,13 +965,25 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         include_moderation = bool(options["with_moderation_fixtures"] or options["run_moderation"])
         include_analytics = not bool(options["without_analytics_activity"])
+        demo_video_bytes = _generate_demo_video_bytes()
+        if demo_video_bytes is None:
+            self.stdout.write(
+                self.style.WARNING(
+                    "Demo playback fixture unavailable because ffmpeg could not generate it. "
+                    "Demo lessons will remain unpublished and non-playable."
+                )
+            )
 
         if options["reset_demo"]:
             self._reset_demo()
 
         with transaction.atomic():
             users = self._seed_users()
-            projects = self._seed_lessons(users, include_moderation=include_moderation)
+            projects = self._seed_lessons(
+                users,
+                include_moderation=include_moderation,
+                demo_video_bytes=demo_video_bytes,
+            )
             if include_analytics:
                 analytics_counts = self._seed_analytics(users, projects)
             else:
@@ -1030,7 +1047,13 @@ class Command(BaseCommand):
             users[spec.email] = user
         return users
 
-    def _seed_lessons(self, users: dict[str, User], *, include_moderation: bool) -> dict[str, Project]:
+    def _seed_lessons(
+        self,
+        users: dict[str, User],
+        *,
+        include_moderation: bool,
+        demo_video_bytes: bytes | None,
+    ) -> dict[str, Project]:
         specs = list(LESSONS)
         if include_moderation:
             specs.extend(MODERATION_FIXTURES)
@@ -1042,12 +1065,13 @@ class Command(BaseCommand):
             project = _project_for(owner, spec)
             project.category = category
             project.description = spec.description
-            project.status = "ready"
-            project.is_published = bool(spec.published)
             project.moderation_status = spec.moderation_status
             project.moderation_summary = _moderation_summary_for(spec)
             project.avatar_enabled_override = False
             project.avatar_processing_status = "none"
+            playback_ready = _sync_demo_playback(project, demo_video_bytes)
+            project.status = "ready" if playback_ready else "draft"
+            project.is_published = bool(spec.published and playback_ready)
             project.save(
                 update_fields=[
                     "category",
@@ -1062,7 +1086,6 @@ class Command(BaseCommand):
                 ]
             )
             _sync_pages(project, spec)
-            _sync_completed_job(project)
             _set_created_at(project, order_index=index + 1)
             projects[spec.key] = project
         return projects
@@ -1324,9 +1347,19 @@ def _sync_pages(project: Project, spec: DemoLesson) -> None:
     project.transcript_pages.exclude(page_key__in=expected_keys).delete()
 
 
-def _sync_completed_job(project: Project) -> None:
+def _sync_demo_playback(project: Project, video_bytes: bytes | None) -> bool:
     jobs = list(project.jobs.filter(job_type="video_export").order_by("id"))
-    result_url = f"{project.id}/demo-seed-placeholder.mp4"
+    result_url = f"{project.id}/{DEMO_VIDEO_FILENAME}"
+    if video_bytes is None:
+        _mark_demo_playback_unavailable(project, jobs, "Demo playback fixture unavailable.")
+        return False
+
+    try:
+        get_storage_adapter(getattr(settings, "STORAGE_ROOT", "storage_local")).write_bytes(result_url, video_bytes)
+    except Exception:  # noqa: BLE001
+        _mark_demo_playback_unavailable(project, jobs, "Demo playback fixture could not be stored.")
+        return False
+
     if jobs:
         job = jobs[0]
         job.status = "done"
@@ -1345,6 +1378,69 @@ def _sync_completed_job(project: Project) -> None:
             progress=100,
             result_url=result_url,
         )
+    return True
+
+
+def _mark_demo_playback_unavailable(project: Project, jobs: list[Job], message: str) -> None:
+    job = jobs[0] if jobs else Job(project=project, job_type="video_export")
+    job.status = "failed"
+    job.progress = 0
+    job.result_url = ""
+    job.srt_url = ""
+    job.error_message = message
+    job.save()
+    if len(jobs) > 1:
+        Job.objects.filter(pk__in=[extra.pk for extra in jobs[1:]]).delete()
+
+
+def _generate_demo_video_bytes() -> bytes | None:
+    ffmpeg_path = shutil.which("ffmpeg")
+    if not ffmpeg_path:
+        return None
+
+    with tempfile.TemporaryDirectory(prefix="visus-demo-video-") as temp_dir:
+        output_path = Path(temp_dir) / DEMO_VIDEO_FILENAME
+        command = [
+            ffmpeg_path,
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=0x171923:s=320x180:r=24:d=1",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-shortest",
+            "-c:v",
+            "libx264",
+            "-profile:v",
+            "baseline",
+            "-level",
+            "3.0",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "32k",
+            "-movflags",
+            "+faststart",
+            "-metadata",
+            "creation_time=1970-01-01T00:00:00Z",
+            "-y",
+            str(output_path),
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, timeout=30)
+            payload = output_path.read_bytes()
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    if len(payload) < 32 or b"ftyp" not in payload[:32]:
+        return None
+    return payload
 
 
 def _moderation_summary_for(spec: DemoLesson) -> dict[str, Any]:
