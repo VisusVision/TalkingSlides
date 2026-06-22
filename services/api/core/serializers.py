@@ -15,6 +15,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import URLValidator
+from django.db.models import Max
 from rest_framework import serializers
 from django.contrib.auth.models import User
 from core.avatar_readiness import normalize_avatar_engine
@@ -1247,6 +1248,9 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
     has_video = serializers.SerializerMethodField()
     cover_url = serializers.SerializerMethodField()
     thumbnail_url = serializers.SerializerMethodField()
+    duration_seconds = serializers.SerializerMethodField()
+    duration_minutes = serializers.SerializerMethodField()
+    view_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Project
@@ -1258,6 +1262,7 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
             "like_count", "comment_count", "follower_count", "is_following_publisher",
             "has_video",
             "cover_url", "thumbnail_url",
+            "duration_seconds", "duration_minutes", "view_count",
             "created_at",
         ]
         read_only_fields = fields
@@ -1324,6 +1329,28 @@ class CatalogProjectSerializer(serializers.ModelSerializer):
 
     def get_thumbnail_url(self, obj):
         return _project_cover_url(obj, self.context)
+
+    def get_duration_seconds(self, obj):
+        cached = getattr(obj, "_catalog_duration_seconds", None)
+        if cached is not None:
+            return cached
+        annotated = getattr(obj, "transcript_duration_seconds", None)
+        if annotated is None:
+            annotated = obj.transcript_pages.filter(is_active=True).aggregate(
+                duration=Max("end_seconds")
+            )["duration"]
+        duration_seconds = max(1, int(math.ceil(float(annotated or 0))))
+        obj._catalog_duration_seconds = duration_seconds
+        return duration_seconds
+
+    def get_duration_minutes(self, obj):
+        return max(1, int(math.ceil(self.get_duration_seconds(obj) / 60.0)))
+
+    def get_view_count(self, obj):
+        annotated = getattr(obj, "views_count", None)
+        if annotated is not None:
+            return int(annotated)
+        return obj.progress_records.count()
 
 
 class PlaylistItemSerializer(serializers.ModelSerializer):

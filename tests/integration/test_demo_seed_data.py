@@ -33,7 +33,7 @@ FAKE_MP4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2demo-video"
 
 @pytest.fixture(autouse=True)
 def _stub_demo_video_generation(monkeypatch):
-    monkeypatch.setattr(seed_demo_data, "_generate_demo_video_bytes", lambda: FAKE_MP4)
+    monkeypatch.setattr(seed_demo_data, "_generate_demo_video_bytes", lambda _duration: FAKE_MP4)
 
 
 def _seed(*args: str) -> str:

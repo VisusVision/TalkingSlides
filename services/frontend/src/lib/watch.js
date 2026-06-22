@@ -18,6 +18,13 @@ export function formatTimestamp(totalSeconds) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+export function resolveTranscriptSeekTarget(totalSeconds, mediaDuration) {
+  const target = toNumber(totalSeconds, -1);
+  const duration = toNumber(mediaDuration, 0);
+  if (target < 0 || duration <= 0 || target >= duration) return null;
+  return target;
+}
+
 export function buildChapters(transcriptPayload, lesson) {
   const pages = Array.isArray(transcriptPayload?.pages) ? transcriptPayload.pages : [];
   if (!pages.length) {

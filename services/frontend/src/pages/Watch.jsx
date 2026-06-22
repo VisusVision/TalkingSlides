@@ -27,7 +27,7 @@ import LessonActionButton from '../components/moderation/LessonActionButton';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
-import { buildChapters, buildTranscriptLines } from '../lib/watch';
+import { buildChapters, buildTranscriptLines, resolveTranscriptSeekTarget } from '../lib/watch';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 
@@ -1021,11 +1021,13 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   }, [chapters, playbackTime]);
 
   const jumpToTime = (seconds) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = Number(seconds || 0);
-      videoRef.current.play().catch(() => {});
-    }
-    setPlaybackTime(Number(seconds || 0));
+    const video = videoRef.current;
+    if (!video) return;
+    const target = resolveTranscriptSeekTarget(seconds, video.duration);
+    if (target === null) return;
+    video.currentTime = target;
+    video.play().catch(() => {});
+    setPlaybackTime(target);
   };
 
   const handlePlaybackTimeChange = (seconds) => {
