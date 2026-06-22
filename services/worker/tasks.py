@@ -2367,6 +2367,12 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
             payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
             if payload_source_background:
                 scene["source_background_path"] = payload_source_background
+        moderation_image_path = str(
+            slide_payload.get("moderation_image_path")
+            or slide_payload.get("image_path")
+            or slide_payload.get("slide_path")
+            or ""
+        )
         render_image_path = _scene_background_image_for_render(scene, slide_payload.get("image_path") or slide_payload.get("slide_path") or "")
         source_background_warnings = _scene_render_warning_list(slide_payload, scene)
         scene_mode, source_background_warnings, effective_whiteboard_mode = _normalize_scene_mode_for_render(
@@ -2413,6 +2419,7 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
                     scene.get("text_scale"),
                     fallback=1.0,
                 ),
+                "moderation_image_path": moderation_image_path,
                 "image_path": render_image_path,
                 "audio_out": str(ws["audio"] / f"slide_{display_index + 1:03d}.mp3"),
                 "part_out": str(ws["parts"] / f"part_{display_index + 1:03d}.mp4"),
@@ -2489,6 +2496,12 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
             payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
             if payload_source_background:
                 scene["source_background_path"] = payload_source_background
+        moderation_image_path = str(
+            slide_payload.get("moderation_image_path")
+            or slide_payload.get("image_path")
+            or slide_payload.get("slide_path")
+            or ""
+        )
         render_image_path = _scene_background_image_for_render(
             scene,
             slide_payload.get("image_path") or slide_payload.get("slide_path") or "",
@@ -2535,6 +2548,7 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
                 "custom_background_path": scene.get("custom_background_path") or "",
                 "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
                 "scene_text_scale": _scene_text_scale_from_value(scene.get("text_scale"), fallback=1.0),
+                "moderation_image_path": moderation_image_path,
                 "image_path": render_image_path,
                 "audio_out": str(ws["audio"] / f"slide_{display_index + 1:03d}.mp3"),
                 "part_out": str(ws["parts"] / f"part_{display_index + 1:03d}.mp4"),
@@ -2986,13 +3000,34 @@ def _run_auto_visual_asset_moderation_after_export(
                     )
                 except Exception:
                     logger.warning("Could not load draft cover path for project=%s", project.id, exc_info=True)
-            cover_path = _visual_asset_path(cover_rel_path)
-            results.append(agent.scan_cover_image(project, image_path=cover_path))
-            if safety_agent is not None:
-                results.append(safety_agent.scan_cover_image(project, image_path=cover_path))
+            if cover_rel_path:
+                cover_path = _visual_asset_path(cover_rel_path)
+                results.append(agent.scan_cover_image(project, image_path=cover_path))
+                if safety_agent is not None:
+                    results.append(safety_agent.scan_cover_image(project, image_path=cover_path))
 
         if scan_slides_enabled:
             for asset in _visual_slide_assets_from_export(export_result or []):
+                missing_reason = _missing_visual_asset_reason(asset["image_path"])
+                if missing_reason:
+                    results.append(
+                        _visual_provider_unavailable_result(
+                            project_id=int(project.id),
+                            asset_type=asset["asset_type"],
+                            reason=missing_reason,
+                            modality="image",
+                            location_payload={
+                                "project_id": int(project.id),
+                                "transcript_page_id": asset.get("transcript_page_id"),
+                                "page_key": asset["page_key"] or None,
+                                "slide_order": asset["slide_order"],
+                                "asset_type": asset["asset_type"],
+                                "image_path": asset["image_path"],
+                                "ui_anchor": asset["ui_anchor"],
+                            },
+                        )
+                    )
+                    continue
                 results.append(
                     agent.scan_slide_image(
                         project_id=int(project.id),
@@ -3084,7 +3119,12 @@ def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[
     for order, slide in enumerate(slides or []):
         if not isinstance(slide, dict):
             continue
-        image_path = _visual_asset_path(slide.get("image_path") or slide.get("slide_path") or "")
+        image_path = _visual_asset_path(
+            slide.get("moderation_image_path")
+            or slide.get("image_path")
+            or slide.get("slide_path")
+            or ""
+        )
         if image_path and image_path in seen_paths:
             continue
         if image_path:
@@ -3127,6 +3167,14 @@ def _visual_asset_path(value: Any) -> str:
     if storage_path.is_file():
         return str(storage_path)
     return raw
+
+
+def _missing_visual_asset_reason(image_path: str) -> str:
+    if not str(image_path or "").strip():
+        return "missing_image_path"
+    if not Path(image_path).is_file():
+        return "missing_image_file"
+    return ""
 
 
 def _safe_int_value(value: Any, *, fallback: int = 0) -> int:
