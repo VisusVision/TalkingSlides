@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, Maximize2, Minimize2, ShieldCheck } from 'lucide-react';
-import { formatDuration } from '../../lib/content';
+import { formatLessonDuration } from '../../lib/content';
 import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer';
 import WatermarkOverlay from './WatermarkOverlay';
 import SurfaceCard from '../ui/SurfaceCard';
@@ -469,7 +469,7 @@ export default function VideoStage({
           <p className="body-md max-w-3xl">{lesson?.description || 'Choose a lesson from related content to begin playback.'}</p>
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
             <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || 'General'}</span>
-            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatDuration(lesson?.duration_minutes || 8)}</span>
+            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatLessonDuration(lesson)}</span>
             <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.teacher_name || 'VISUS Instructor'}</span>
             <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
               <ShieldCheck size={12} />

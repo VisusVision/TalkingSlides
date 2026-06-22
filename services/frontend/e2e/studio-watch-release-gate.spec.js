@@ -41,6 +41,7 @@ function projectPayload(overrides = {}) {
     teacher: AUTH_USER,
     user: AUTH_USER,
     category_name: 'Release QA',
+    duration_seconds: 161,
     duration_minutes: 3,
     moderation_status: 'approved',
     manual_moderation_status: '',
@@ -145,6 +146,7 @@ async function mockAuthenticatedReleaseGateApi(page) {
   await page.route(`**/api/v1/projects/${CREATED_PROJECT_ID}/studio-preview-token/**`, (route) => {
     route.fulfill(jsonResponse({
       video_url: '',
+      duration_seconds: 161,
       vtt_url: '/media/subtitles/release-gate-original.vtt',
       subtitle_vtt_url: '/media/subtitles/release-gate-original.vtt',
     }));

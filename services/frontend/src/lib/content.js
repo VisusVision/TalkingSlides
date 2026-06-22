@@ -8,6 +8,34 @@ export function formatDuration(minutes) {
   return `${mins}m`;
 }
 
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+export function lessonDurationMinutes(lesson) {
+  const durationSeconds = positiveNumber(lesson?.duration_seconds);
+  if (durationSeconds !== null) {
+    return Math.ceil(durationSeconds / 60);
+  }
+
+  const transcriptPages = Array.isArray(lesson?.transcript_pages) ? lesson.transcript_pages : [];
+  const transcriptDurationSeconds = transcriptPages.reduce((maximum, page) => {
+    const endSeconds = positiveNumber(page?.end_seconds ?? page?.end_sec);
+    return endSeconds === null ? maximum : Math.max(maximum, endSeconds);
+  }, 0);
+  if (transcriptDurationSeconds > 0) {
+    return Math.ceil(transcriptDurationSeconds / 60);
+  }
+
+  return positiveNumber(lesson?.duration_minutes ?? lesson?.durationMinutes);
+}
+
+export function formatLessonDuration(lesson, missingLabel = 'Duration unavailable') {
+  const minutes = lessonDurationMinutes(lesson);
+  return minutes === null ? missingLabel : formatDuration(minutes);
+}
+
 export function formatViews(value) {
   const count = Math.max(0, Number(value || 0));
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M views`;
