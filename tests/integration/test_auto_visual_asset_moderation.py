@@ -163,7 +163,7 @@ def test_weak_local_rules_do_not_semantically_approve_by_default(monkeypatch, tm
 
 
 @pytest.mark.django_db
-def test_auto_visual_missing_image_does_not_crash_or_block(monkeypatch, tmp_path):
+def test_auto_visual_missing_required_slide_fails_closed_without_crash(monkeypatch, tmp_path):
     _enable_visual(monkeypatch, block=True)
     project = _make_project("auto_visual_missing_teacher")
     missing_path = tmp_path / "missing.png"
@@ -171,9 +171,11 @@ def test_auto_visual_missing_image_does_not_crash_or_block(monkeypatch, tmp_path
     result = worker_tasks._run_auto_visual_asset_moderation_after_export(project.id, [_slide(missing_path)])
 
     assert result["status"] == "done"
-    assert result["final_decision"] == "allow"
-    assert result["block_render"] is False
-    assert AgentFinding.objects.filter(run__project=project).count() == 0
+    assert result["final_decision"] == "needs_admin_review"
+    assert result["block_render"] is True
+    finding = AgentFinding.objects.get(run__project=project)
+    assert finding.category == "provider_unavailable"
+    assert finding.evidence_excerpt == "missing_image_file"
 
 
 @pytest.mark.django_db
