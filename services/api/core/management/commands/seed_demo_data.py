@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import math
 import os
 import shutil
 import subprocess
@@ -35,6 +36,7 @@ from core.storage_adapter import get_storage_adapter
 DEMO_NAMESPACE = "visus_vidlab_demo_seed"
 DEMO_PASSWORD = os.environ.get("VISUS_DEMO_PASSWORD", "visus-demo-local")
 DEMO_VIDEO_FILENAME = "demo-seed.mp4"
+DEMO_PAGE_DURATION_SECONDS = 35.0
 
 
 @dataclass(frozen=True)
@@ -965,14 +967,6 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         include_moderation = bool(options["with_moderation_fixtures"] or options["run_moderation"])
         include_analytics = not bool(options["without_analytics_activity"])
-        demo_video_bytes = _generate_demo_video_bytes()
-        if demo_video_bytes is None:
-            self.stdout.write(
-                self.style.WARNING(
-                    "Demo playback fixture unavailable because ffmpeg could not generate it. "
-                    "Demo lessons will remain unpublished and non-playable."
-                )
-            )
 
         if options["reset_demo"]:
             self._reset_demo()
@@ -982,7 +976,6 @@ class Command(BaseCommand):
             projects = self._seed_lessons(
                 users,
                 include_moderation=include_moderation,
-                demo_video_bytes=demo_video_bytes,
             )
             if include_analytics:
                 analytics_counts = self._seed_analytics(users, projects)
@@ -1052,13 +1045,13 @@ class Command(BaseCommand):
         users: dict[str, User],
         *,
         include_moderation: bool,
-        demo_video_bytes: bytes | None,
     ) -> dict[str, Project]:
         specs = list(LESSONS)
         if include_moderation:
             specs.extend(MODERATION_FIXTURES)
 
         projects: dict[str, Project] = {}
+        video_bytes_by_duration: dict[int, bytes | None] = {}
         for index, spec in enumerate(specs):
             owner = users[spec.owner_email]
             category = _category_for(spec)
@@ -1069,6 +1062,12 @@ class Command(BaseCommand):
             project.moderation_summary = _moderation_summary_for(spec)
             project.avatar_enabled_override = False
             project.avatar_processing_status = "none"
+            _sync_pages(project, spec)
+            duration_seconds = _demo_lesson_duration_seconds(spec)
+            duration_key = int(math.ceil(duration_seconds))
+            if duration_key not in video_bytes_by_duration:
+                video_bytes_by_duration[duration_key] = _generate_demo_video_bytes(duration_seconds)
+            demo_video_bytes = video_bytes_by_duration[duration_key]
             playback_ready = _sync_demo_playback(project, demo_video_bytes)
             project.status = "ready" if playback_ready else "draft"
             project.is_published = bool(spec.published and playback_ready)
@@ -1085,9 +1084,15 @@ class Command(BaseCommand):
                     "updated_at",
                 ]
             )
-            _sync_pages(project, spec)
             _set_created_at(project, order_index=index + 1)
             projects[spec.key] = project
+        if projects and not any(project.is_published for project in projects.values()):
+            self.stdout.write(
+                self.style.WARNING(
+                    "Demo playback fixtures unavailable because ffmpeg could not generate them. "
+                    "Demo lessons will remain unpublished and non-playable."
+                )
+            )
         return projects
 
     def _seed_analytics(self, users: dict[str, User], projects: dict[str, Project]) -> dict[str, int]:
@@ -1339,12 +1344,16 @@ def _sync_pages(project: Project, spec: DemoLesson) -> None:
                 "whiteboard_mode": True,
                 "is_active": True,
                 "deleted_at": None,
-                "start_seconds": float(index * 35),
-                "end_seconds": float((index + 1) * 35),
-                "duration_seconds": 35.0,
+                "start_seconds": float(index * DEMO_PAGE_DURATION_SECONDS),
+                "end_seconds": float((index + 1) * DEMO_PAGE_DURATION_SECONDS),
+                "duration_seconds": DEMO_PAGE_DURATION_SECONDS,
             },
         )
     project.transcript_pages.exclude(page_key__in=expected_keys).delete()
+
+
+def _demo_lesson_duration_seconds(spec: DemoLesson) -> float:
+    return max(DEMO_PAGE_DURATION_SECONDS, len(spec.pages) * DEMO_PAGE_DURATION_SECONDS)
 
 
 def _sync_demo_playback(project: Project, video_bytes: bytes | None) -> bool:
@@ -1393,10 +1402,11 @@ def _mark_demo_playback_unavailable(project: Project, jobs: list[Job], message: 
         Job.objects.filter(pk__in=[extra.pk for extra in jobs[1:]]).delete()
 
 
-def _generate_demo_video_bytes() -> bytes | None:
+def _generate_demo_video_bytes(duration_seconds: float) -> bytes | None:
     ffmpeg_path = shutil.which("ffmpeg")
     if not ffmpeg_path:
         return None
+    duration_seconds = max(1.0, float(duration_seconds or 0.0))
 
     with tempfile.TemporaryDirectory(prefix="visus-demo-video-") as temp_dir:
         output_path = Path(temp_dir) / DEMO_VIDEO_FILENAME
@@ -1407,24 +1417,22 @@ def _generate_demo_video_bytes() -> bytes | None:
             "-f",
             "lavfi",
             "-i",
-            "color=c=0x171923:s=320x180:r=24:d=1",
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc=r=48000:cl=stereo",
-            "-shortest",
+            f"color=c=0x171923:s=320x180:r=1:d={duration_seconds:.3f}",
+            "-t",
+            f"{duration_seconds:.3f}",
             "-c:v",
             "libx264",
+            "-preset",
+            "ultrafast",
+            "-crf",
+            "35",
             "-profile:v",
             "baseline",
             "-level",
             "3.0",
             "-pix_fmt",
             "yuv420p",
-            "-c:a",
-            "aac",
-            "-b:a",
-            "32k",
+            "-an",
             "-movflags",
             "+faststart",
             "-metadata",
@@ -1433,7 +1441,7 @@ def _generate_demo_video_bytes() -> bytes | None:
             str(output_path),
         ]
         try:
-            subprocess.run(command, check=True, capture_output=True, timeout=30)
+            subprocess.run(command, check=True, capture_output=True, timeout=60)
             payload = output_path.read_bytes()
         except (OSError, subprocess.SubprocessError):
             return None

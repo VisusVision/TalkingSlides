@@ -10601,6 +10601,11 @@ class CatalogListView(APIView):
                 likes_count=Count("likes", distinct=True),
                 comments_count=Count("comments", distinct=True),
                 followers_count=Count("user__publisher_followers", distinct=True),
+                views_count=Count("progress_records", distinct=True),
+                transcript_duration_seconds=Max(
+                    "transcript_pages__end_seconds",
+                    filter=Q(transcript_pages__is_active=True),
+                ),
                 has_video_export_done=Exists(
                     Job.objects.filter(
                         project_id=OuterRef("pk"),
@@ -10668,8 +10673,6 @@ class CatalogFeedView(APIView):
             {
                 "teacher_id": project.user_id,
                 "teacher_username": project.user.username if project.user else "",
-                "duration_minutes": max(2, (int(getattr(project, "slides_count", 0) or 0) or 1) * 2),
-                "view_count": max(1, int((likes * 14) + (comments * 9) + 32)),
                 "user_progress": progress_pct,
                 "is_saved": progress_pct >= 90,
                 "is_recommended": bool(
@@ -10725,6 +10728,11 @@ class CatalogFeedView(APIView):
                 comments_count=Count("comments", distinct=True),
                 followers_count=Count("user__publisher_followers", distinct=True),
                 slides_count=Count("slides", distinct=True),
+                views_count=Count("progress_records", distinct=True),
+                transcript_duration_seconds=Max(
+                    "transcript_pages__end_seconds",
+                    filter=Q(transcript_pages__is_active=True),
+                ),
                 has_video_export_done=Exists(
                     Job.objects.filter(
                         project_id=OuterRef("pk"),

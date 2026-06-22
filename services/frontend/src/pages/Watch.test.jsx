@@ -58,7 +58,19 @@ vi.mock('../components/player/playerMode', () => ({
 }));
 
 vi.mock('../components/player/VideoStage', () => ({
-  default: ({ lesson }) => <div data-testid="video-stage">{lesson?.title}</div>,
+  default: ({ lesson, videoRef }) => (
+    <div data-testid="video-stage">
+      {lesson?.title}
+      <video
+        ref={(node) => {
+          if (!node || !videoRef) return;
+          Object.defineProperty(node, 'duration', { configurable: true, value: 60 });
+          node.play = vi.fn(() => Promise.resolve());
+          videoRef.current = node;
+        }}
+      />
+    </div>
+  ),
 }));
 
 vi.mock('../components/player/AvatarOverlayLayer', () => ({
@@ -78,9 +90,13 @@ vi.mock('../components/player/ChapterList', () => ({
 }));
 
 vi.mock('../components/player/TranscriptPanel', () => ({
-  default: ({ lines }) => (
+  default: ({ lines, onJump }) => (
     <div data-testid="transcript">
-      {lines.map((line) => <span key={line.id}>{line.text}</span>)}
+      {lines.map((line) => (
+        <button key={line.id} type="button" onClick={() => onJump(line.startSeconds)}>
+          {line.text}
+        </button>
+      ))}
     </div>
   ),
 }));
@@ -106,6 +122,7 @@ vi.mock('../components/ui/SurfaceCard', () => ({
 }));
 
 import Watch from './Watch';
+import { resolveTranscriptSeekTarget } from '../lib/watch';
 
 const catalogLesson = {
   id: 42,
@@ -188,5 +205,39 @@ describe('public Watch transcript data flow', () => {
 
     await act(async () => root.unmount());
     host.remove();
+  });
+
+  it('ignores transcript cues outside the loaded media duration without saving completion', async () => {
+    mocks.fetchLesson.mockResolvedValue({
+      ...catalogLesson,
+      transcript_pages: [
+        {
+          id: 102,
+          narration_text: 'Cue beyond the loaded media duration.',
+          start_seconds: 70,
+          duration_seconds: 8,
+        },
+      ],
+    });
+
+    const { host, root } = await renderWatch({ id: 9 });
+    const cue = Array.from(host.querySelectorAll('[data-testid="transcript"] button'))
+      .find((button) => button.textContent.includes('Cue beyond'));
+
+    await act(async () => cue.click());
+
+    expect(mocks.saveProgress).not.toHaveBeenCalled();
+    expect(host.querySelector('video').currentTime).toBe(0);
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+});
+
+describe('transcript seek bounds', () => {
+  it('accepts cues inside the loaded media and rejects cues at or beyond its duration', () => {
+    expect(resolveTranscriptSeekTarget(35, 175)).toBe(35);
+    expect(resolveTranscriptSeekTarget(60, 60)).toBeNull();
+    expect(resolveTranscriptSeekTarget(70, 60)).toBeNull();
   });
 });
