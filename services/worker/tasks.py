@@ -2962,9 +2962,9 @@ def _run_auto_visual_asset_moderation_after_export(
             "status": "failed",
             "project_id": int(project_id),
             "phase": _visual_moderation_phase(),
-            "final_decision": "allow",
+            "final_decision": "needs_admin_review",
             "error_message": _concise_error_text(exc, fallback="auto_visual_moderation_import_failed"),
-            "block_render": False,
+            "block_render": _visual_moderation_block_render_on_rejection(),
         }
 
     project = Project.objects.filter(pk=int(project_id)).first()
@@ -3107,9 +3107,9 @@ def _run_auto_visual_asset_moderation_after_export(
             "status": "failed",
             "project_id": int(project.id),
             "phase": phase,
-            "final_decision": "allow",
+            "final_decision": "needs_admin_review",
             "error_message": _concise_error_text(exc, fallback="auto_visual_moderation_failed"),
-            "block_render": False,
+            "block_render": _visual_moderation_block_render_on_rejection(),
         }
 
 
@@ -3271,27 +3271,42 @@ def _persist_auto_visual_moderation_results(
             "run_id": run.id,
             "phase": phase,
         }
-        update_fields = ["moderation_summary", "updated_at"]
-        should_update_project_status = (
+        update_fields = ["moderation_summary", "last_moderation_run_id", "updated_at"]
+        project.last_moderation_run_id = run.id
+        manual_override_active = manual_moderation_prevents_auto_override(project)
+        current_status = str(project.moderation_status or "").strip().lower()
+        should_apply_approval = (
+            not use_draft
+            and final_decision in {"allow", "warn"}
+            and current_status in {"", "not_scanned", "pending", "failed", "approved"}
+            and not manual_override_active
+        )
+        should_apply_rejection = (
             not use_draft
             and final_decision in {"block", "needs_admin_review"}
-            and not manual_moderation_prevents_auto_override(project)
+            and not manual_override_active
         )
+        should_update_project_status = should_apply_approval or should_apply_rejection
         if should_update_project_status:
-            if final_decision == "block":
+            if should_apply_approval:
+                project.moderation_status = "approved"
+            elif final_decision == "block":
                 project.moderation_status = "revision_required"
             elif str(project.moderation_status or "") not in {"revision_required", "admin_rejected"}:
                 project.moderation_status = "needs_admin_review"
             existing_summary["moderation_status"] = project.moderation_status
-            if final_decision == "block":
+            if should_apply_approval:
+                existing_summary["message"] = "Visual moderation approved this lesson for publication."
+            elif final_decision == "block":
                 existing_summary["message"] = "Visual moderation blocked this lesson pending revision."
             else:
                 existing_summary["message"] = "Visual moderation requires admin review before publication."
             update_fields.append("moderation_status")
-            _enforce_project_unpublished_for_moderation(project, update_fields)
+            if should_apply_rejection:
+                _enforce_project_unpublished_for_moderation(project, update_fields)
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
-        if should_update_project_status:
+        if should_apply_rejection:
             _ensure_auto_project_review_request(
                 project,
                 run,
