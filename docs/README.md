@@ -20,6 +20,7 @@
 - [Changelog](../CHANGELOG.md)
 - [Secure playback and DRM](SECURE_PLAYBACK_DRM.md)
 - [Avatar pipeline](AVATAR_PIPELINE.md)
+- [Avatar model provisioning](AVATAR_MODEL_PROVISIONING.md)
 
 ## Operations
 
