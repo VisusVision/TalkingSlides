@@ -32,6 +32,12 @@ XTTS v2 expects a reference WAV at:
 {STORAGE_ROOT}/voices/{voice_id}.wav
 ```
 
+The Django voice-upload endpoint accepts common browser audio formats and
+canonicalizes them before activating the voice profile. Stored references are
+PCM 16-bit WAV, mono, 24 kHz, with an accepted duration of 10–60 seconds.
+Unreadable, empty, shorter, or longer samples are rejected without replacing
+the teacher's current valid voice.
+
 If that file is missing, the service logs the XTTS failure and falls back to gTTS.
 
 ## Preprocessing
