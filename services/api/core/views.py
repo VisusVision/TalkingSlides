@@ -54,6 +54,7 @@ from typing import Any
 
 from celery import Celery
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.db.models import Avg, Count, Exists, Max, OuterRef, Prefetch, Q
 from django.core.cache import cache
@@ -197,6 +198,7 @@ from core.avatar_source_validation import (
 from core.render_followup_intents import merge_render_followup_intent
 from core.storage_adapter import get_storage_adapter
 from core.storage_json import write_json_metadata_file
+from core.voice_ingestion import VoiceReferenceIngestionError, ingest_voice_reference
 from ai_agents.policies import (
     APPROVED_MODERATION_STATUSES,
     enforce_unpublished_for_unresolved_moderation,
@@ -4080,10 +4082,27 @@ def _resolve_user(request, user_id_param=None):
 def _get_voice_id(user):
     """Return the stored voice_id for *user*, or empty string."""
     if user is None:
+        logger.info("render_voice_lookup_empty", extra={"voice_lookup_reason": "user_missing"})
         return ""
     try:
-        return user.voice_profile.voice_id or ""
+        voice_id = str(user.voice_profile.voice_id or "").strip()
+        if not voice_id:
+            logger.info(
+                "render_voice_lookup_empty",
+                extra={"voice_lookup_reason": "voice_id_empty", "user_id": getattr(user, "id", None)},
+            )
+        return voice_id
+    except ObjectDoesNotExist:
+        logger.info(
+            "render_voice_lookup_empty",
+            extra={"voice_lookup_reason": "voice_profile_missing", "user_id": getattr(user, "id", None)},
+        )
+        return ""
     except Exception:
+        logger.exception(
+            "render_voice_lookup_failed",
+            extra={"voice_lookup_reason": "unexpected_error", "user_id": getattr(user, "id", None)},
+        )
         return ""
 
 
@@ -9489,22 +9508,42 @@ class VoiceUploadView(APIView):
         if not audio_file:
             return Response({"error": "voice_file is required."}, status=status.HTTP_400_BAD_REQUEST)
 
-        new_voice_id = f"voice_{uuid.uuid4().hex[:12]}"
-
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        voices_dir = Path(storage_root) / "voices"
-        voices_dir.mkdir(parents=True, exist_ok=True)
+        new_voice_id = f"voice_{uuid.uuid4().hex[:12]}"
+        try:
+            voice_metadata = ingest_voice_reference(
+                audio_file,
+                storage_root=Path(storage_root),
+                voice_id=new_voice_id,
+            )
+        except VoiceReferenceIngestionError as exc:
+            logger.info(
+                "voice_reference_upload_rejected",
+                extra={
+                    "user_id": user.id,
+                    "voice_error_code": exc.code,
+                    "voice_upload_name": str(getattr(audio_file, "name", "") or ""),
+                    "voice_upload_size": int(getattr(audio_file, "size", 0) or 0),
+                },
+            )
+            return Response(
+                {"error": exc.message, "error_code": exc.code, "status": "rejected"},
+                status=exc.http_status,
+            )
 
-        # Save as .wav — XTTS service expects {voice_id}.wav
-        voice_path = voices_dir / f"{new_voice_id}.wav"
-        with open(voice_path, "wb") as fh:
-            for chunk in audio_file.chunks():
-                fh.write(chunk)
-
-        profile, _ = VoiceProfile.objects.get_or_create(user=user)
-        profile.voice_id = new_voice_id
-        profile.provider = "xtts_v2"
-        profile.save(update_fields=["voice_id", "provider"])
+        voice_path = voice_metadata.path
+        try:
+            profile, _ = VoiceProfile.objects.get_or_create(user=user)
+            profile.voice_id = new_voice_id
+            profile.provider = "xtts_v2"
+            profile.save(update_fields=["voice_id", "provider"])
+        except Exception:
+            voice_path.unlink(missing_ok=True)
+            logger.exception(
+                "voice_reference_profile_update_failed",
+                extra={"user_id": user.id, "voice_id": new_voice_id},
+            )
+            raise
 
         user_profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
         setup_status = _avatar_setup_status(
@@ -9518,6 +9557,13 @@ class VoiceUploadView(APIView):
                 "voice_id": new_voice_id,
                 "status": "ready",
                 "provider": "xtts_v2",
+                "audio": {
+                    "format": "wav",
+                    "codec": voice_metadata.codec_name,
+                    "sample_rate": voice_metadata.sample_rate,
+                    "channels": voice_metadata.channels,
+                    "duration_seconds": round(voice_metadata.duration_seconds, 3),
+                },
                 "avatar_setup_status": setup_status,
                 "action_required": setup_status.get("action_required"),
             }
