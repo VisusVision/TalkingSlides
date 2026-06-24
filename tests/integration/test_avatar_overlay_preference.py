@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import uuid
@@ -331,7 +332,9 @@ def test_frontend_secure_playback_path_keeps_hls_and_heartbeat():
     assert "<HlsPlayer" in watch_source
     assert "import Hls from 'hls.js'" in hls_source
     assert "hls.loadSource(sourceUrl)" in hls_source
-    assert "new Hls({ enableWorker: true })" in hls_source
+    hls_constructor = re.search(r"new\s+Hls\s*\(\s*\{(?P<options>.*?)\}\s*\)", hls_source, re.DOTALL)
+    assert hls_constructor is not None
+    assert re.search(r"\benableWorker\s*:\s*true\b", hls_constructor.group("options"))
     assert "avatarOverlayMode = 'floating'" in hls_source
     assert "avatarOverlay?.enabled && avatarStreamUrl" in hls_source
 
