@@ -439,6 +439,13 @@ def test_playback_payload_secure_stream_keeps_mp4_fallback():
     assert payload["protection_mode"] == "secure_stream"
     assert payload["video_url"].endswith("/api/v1/stream/videoTok/")
     assert payload["allow_mp4_fallback"] is True
+    assert payload["streaming"]["preferred"] == "mp4"
+    assert payload["streaming"]["hls"]["enabled"] is False
+    assert payload["streaming"]["hls"]["manifest_url"] == ""
+    assert payload["streaming"]["fallback"]["type"] == "mp4"
+    assert payload["streaming"]["fallback"]["url"].endswith("/api/v1/stream/videoTok/")
+    assert payload["playback_debug"]["selected_mode"] == "mp4_fallback"
+    assert payload["playback_status"]["secure_hls_active"] is False
 
 def test_effective_mode_prefers_public_env_over_legacy_sidecar_secure():
     with override_settings(LESSON_PROTECTION_DEFAULT_MODE="public", DEBUG=True):
@@ -745,6 +752,45 @@ def test_playback_grant_rotation_invalidates_previous_grant(monkeypatch):
     ) is True
 
 
+def test_bound_grant_allows_anonymous_media_request_from_same_browser_session(monkeypatch):
+    store = {}
+
+    class _CacheStub:
+        @staticmethod
+        def set(key, value, timeout=None):
+            store[key] = value
+
+        @staticmethod
+        def get(key):
+            return store.get(key)
+
+    monkeypatch.setattr(views, "cache", _CacheStub)
+
+    class _AuthUser:
+        is_authenticated = True
+        id = 78
+        username = "student78"
+
+    issue_req = _DummyRequest()
+    issue_req.user = _AuthUser()
+    lesson_id = 5252
+    mode = "secure_stream"
+    grant_id, _ = views._issue_playback_grant(lesson_id, issue_req, mode, 300)
+    bind_key = views._bind_key_for_request(issue_req)
+
+    media_req = _DummyRequest()
+    media_req.session = issue_req.session
+
+    assert views._check_grant_access(
+        media_req,
+        lesson_id=lesson_id,
+        grant_id=grant_id,
+        bind_key=bind_key,
+        mode=mode,
+        file_type="video",
+    ) is True
+
+
 def test_playback_grant_allows_rewatch_and_seek_within_same_session(monkeypatch):
     store = {}
 
@@ -962,6 +1008,164 @@ def test_multi_device_policy_deny_new_blocks_second_session(monkeypatch):
     assert first_grant
 
     with override_settings(LESSON_PROTECTION_CONCURRENCY_POLICY="deny_new"):
+        allowed, reason = views._enforce_playback_concurrency(lesson_id, req_two, mode)
+
+    assert allowed is False
+    assert reason == "concurrency_active_elsewhere"
+
+
+def test_legacy_unconfirmed_playback_grant_can_be_replaced_for_same_identity(monkeypatch):
+    store = {}
+
+    class _CacheStub:
+        @staticmethod
+        def set(key, value, timeout=None):
+            store[key] = value
+
+        @staticmethod
+        def get(key):
+            return store.get(key)
+
+    monkeypatch.setattr(views, "cache", _CacheStub)
+
+    class _AuthUser:
+        is_authenticated = True
+        id = 90
+        username = "student90"
+
+    req_one = _DummyRequest()
+    req_one.user = _AuthUser()
+    req_two = _DummyRequest()
+    req_two.user = _AuthUser()
+
+    class _SessionTwo:
+        session_key = "session-two"
+
+        def save(self):
+            return None
+
+    req_two.session = _SessionTwo()
+
+    lesson_id = 8079
+    mode = "secure_stream"
+    ttl = 1800
+
+    first_grant, scope_key = views._issue_playback_grant(lesson_id, req_one, mode, ttl)
+    legacy_payload = dict(store[views._grant_key_for(first_grant)])
+    legacy_payload.pop("bind_source", None)
+    store[views._grant_key_for(first_grant)] = legacy_payload
+
+    with override_settings(LESSON_PROTECTION_CONCURRENCY_POLICY="deny_new"):
+        allowed, reason = views._enforce_playback_concurrency(lesson_id, req_two, mode)
+
+    assert allowed is True
+    assert reason is None
+    assert store[scope_key] == first_grant
+    assert (store.get(views._grant_key_for(first_grant)) or {}).get("revoked") is True
+
+
+def test_abandoned_unconfirmed_grant_can_be_replaced_after_grace(monkeypatch):
+    store = {}
+
+    class _CacheStub:
+        @staticmethod
+        def set(key, value, timeout=None):
+            store[key] = value
+
+        @staticmethod
+        def get(key):
+            return store.get(key)
+
+    monkeypatch.setattr(views, "cache", _CacheStub)
+
+    now_ref = {"v": 1_700_000_000}
+    monkeypatch.setattr(views.time, "time", lambda: now_ref["v"])
+
+    class _AuthUser:
+        is_authenticated = True
+        id = 91
+        username = "student91"
+
+    req_one = _DummyRequest()
+    req_one.user = _AuthUser()
+    req_two = _DummyRequest()
+    req_two.user = _AuthUser()
+
+    class _SessionTwo:
+        session_key = "session-two"
+
+        def save(self):
+            return None
+
+    req_two.session = _SessionTwo()
+
+    lesson_id = 8179
+    mode = "secure_stream"
+    ttl = 1800
+
+    first_grant, _scope_key = views._issue_playback_grant(lesson_id, req_one, mode, ttl)
+    now_ref["v"] += 31
+
+    with override_settings(
+        LESSON_PROTECTION_CONCURRENCY_POLICY="deny_new",
+        LESSON_PROTECTION_UNCONFIRMED_GRANT_GRACE_SECONDS=30,
+    ):
+        allowed, reason = views._enforce_playback_concurrency(lesson_id, req_two, mode)
+
+    assert allowed is True
+    assert reason is None
+    assert (store.get(views._grant_key_for(first_grant)) or {}).get("revoked") is True
+
+
+def test_confirmed_grant_still_blocks_second_session_after_unconfirmed_grace(monkeypatch):
+    store = {}
+
+    class _CacheStub:
+        @staticmethod
+        def set(key, value, timeout=None):
+            store[key] = value
+
+        @staticmethod
+        def get(key):
+            return store.get(key)
+
+    monkeypatch.setattr(views, "cache", _CacheStub)
+
+    now_ref = {"v": 1_700_000_000}
+    monkeypatch.setattr(views.time, "time", lambda: now_ref["v"])
+
+    class _AuthUser:
+        is_authenticated = True
+        id = 92
+        username = "student92"
+
+    req_one = _DummyRequest()
+    req_one.user = _AuthUser()
+    req_two = _DummyRequest()
+    req_two.user = _AuthUser()
+
+    class _SessionTwo:
+        session_key = "session-two"
+
+        def save(self):
+            return None
+
+    req_two.session = _SessionTwo()
+
+    lesson_id = 8279
+    mode = "secure_stream"
+    ttl = 1800
+
+    first_grant, _scope_key = views._issue_playback_grant(lesson_id, req_one, mode, ttl)
+    payload = store[views._grant_key_for(first_grant)]
+    payload["confirmed_at"] = now_ref["v"]
+    store[views._grant_key_for(first_grant)] = payload
+    now_ref["v"] += 31
+
+    with override_settings(
+        LESSON_PROTECTION_CONCURRENCY_POLICY="deny_new",
+        LESSON_PROTECTION_UNCONFIRMED_GRANT_GRACE_SECONDS=30,
+    ):
         allowed, reason = views._enforce_playback_concurrency(lesson_id, req_two, mode)
 
     assert allowed is False
@@ -1384,6 +1588,239 @@ def test_catalog_detail_public_lesson_includes_tokenized_subtitle_url(tmp_path):
     assert response.data["subtitle_vtt_url"] == response.data["vtt_url"]
     assert job.srt_url not in response.data["srt_url"]
     assert f"{project.id}/{project.id}.vtt" not in response.data["vtt_url"]
+
+
+@pytest.mark.django_db
+def test_catalog_detail_secure_stream_without_hls_exposes_authorized_mp4_fallback(tmp_path):
+    cache.clear()
+    teacher = _make_teacher("secure_catalog_mp4_teacher")
+    project = Project.objects.create(
+        title="Secure MP4 fallback catalog",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+
+    request = APIRequestFactory().get(f"/api/v1/catalog/{project.id}/")
+    request.session = _DummyRequest._DummySession()
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+        LESSON_PROTECTION_ALLOW_MP4_FALLBACK=True,
+        ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+    ):
+        response = views.CatalogDetailView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 200
+    assert response.data["protection_mode"] == "secure_stream"
+    assert response.data["allow_mp4_fallback"] is True
+    assert response.data["stream_url"].startswith("http://testserver/api/v1/stream/")
+    assert response.data["video_url"] == response.data["stream_url"]
+    assert response.data["streaming"]["preferred"] == "mp4"
+    assert response.data["streaming"]["hls"]["enabled"] is False
+    assert response.data["streaming"]["hls"]["manifest_url"] == ""
+    assert response.data["streaming"]["fallback"]["url"] == response.data["stream_url"]
+    assert response.data["playback_status"]["secure_hls_active"] is False
+    assert response.data["playback_debug"]["selected_mode"] == "mp4_fallback"
+
+
+@pytest.mark.django_db
+def test_catalog_detail_reuses_same_session_grant_for_rapid_duplicate_requests(tmp_path):
+    cache.clear()
+    student = User.objects.create_user(username="same_session_student", password="pw")
+    teacher = _make_teacher("same_session_teacher")
+    project = Project.objects.create(
+        title="Same session grant reuse",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        result_url=f"{project.id}/{project.id}.mp4",
+    )
+
+    class _Session:
+        session_key = f"same-session-{project.id}"
+
+        def save(self):
+            return None
+
+    factory = APIRequestFactory()
+    first_request = factory.get(f"/api/v1/catalog/{project.id}/")
+    force_authenticate(first_request, user=student)
+    first_request.user = student
+    first_request.session = _Session()
+    second_request = factory.get(f"/api/v1/catalog/{project.id}/")
+    force_authenticate(second_request, user=student)
+    second_request.user = student
+    second_request.session = first_request.session
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+        LESSON_PROTECTION_ALLOW_MP4_FALLBACK=True,
+        LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION=True,
+        ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+    ):
+        first_response = views.CatalogDetailView.as_view()(first_request, project_id=project.id)
+        second_response = views.CatalogDetailView.as_view()(second_request, project_id=project.id)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+
+    first_token = _extract_stream_tokens(first_response.data["stream_url"])[0]
+    second_token = _extract_stream_tokens(second_response.data["stream_url"])[0]
+    first_job_id, first_type, _first_rel, first_grant_id, first_bind_key = views.validate_media_token(first_token)
+    second_job_id, second_type, _second_rel, second_grant_id, second_bind_key = views.validate_media_token(second_token)
+
+    assert first_job_id == job.id
+    assert second_job_id == job.id
+    assert first_type == "video"
+    assert second_type == "video"
+    assert first_grant_id
+    assert first_grant_id == second_grant_id
+    assert first_bind_key == second_bind_key
+
+
+@pytest.mark.django_db
+def test_heartbeat_succeeds_after_duplicate_same_session_catalog_requests(tmp_path):
+    cache.clear()
+    student = User.objects.create_user(username="same_session_heartbeat_student", password="pw")
+    teacher = _make_teacher("same_session_heartbeat_teacher")
+    project = Project.objects.create(
+        title="Same session heartbeat",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        result_url=f"{project.id}/{project.id}.mp4",
+    )
+
+    class _Session:
+        session_key = f"same-session-heartbeat-{project.id}"
+
+        def save(self):
+            return None
+
+    factory = APIRequestFactory()
+    shared_session = _Session()
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+        LESSON_PROTECTION_ALLOW_MP4_FALLBACK=True,
+        LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION=True,
+        ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+    ):
+        first_request = factory.get(f"/api/v1/catalog/{project.id}/")
+        force_authenticate(first_request, user=student)
+        first_request.user = student
+        first_request.session = shared_session
+        first_response = views.CatalogDetailView.as_view()(first_request, project_id=project.id)
+
+        second_request = factory.get(f"/api/v1/catalog/{project.id}/")
+        force_authenticate(second_request, user=student)
+        second_request.user = student
+        second_request.session = shared_session
+        second_response = views.CatalogDetailView.as_view()(second_request, project_id=project.id)
+
+        heartbeat_request = factory.post(
+            f"/api/v1/projects/{project.id}/playback-session/heartbeat/",
+            {"visibility": "visible"},
+            format="json",
+        )
+        force_authenticate(heartbeat_request, user=student)
+        heartbeat_request.user = student
+        heartbeat_request.session = shared_session
+        heartbeat_response = views.PlaybackSessionHeartbeatView.as_view()(heartbeat_request, project_id=project.id)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    first_token = _extract_stream_tokens(first_response.data["stream_url"])[0]
+    second_token = _extract_stream_tokens(second_response.data["stream_url"])[0]
+    _first_job_id, _first_type, _first_rel, first_grant_id, _first_bind_key = views.validate_media_token(first_token)
+    _second_job_id, _second_type, _second_rel, second_grant_id, _second_bind_key = views.validate_media_token(second_token)
+
+    assert first_grant_id == second_grant_id
+    assert heartbeat_response.status_code == 200
+    assert heartbeat_response.data["active"] is True
+    assert heartbeat_response.data["grant_id"] == first_grant_id
+
+
+@pytest.mark.django_db
+def test_catalog_detail_blocks_different_session_duplicate_request(tmp_path):
+    cache.clear()
+    student = User.objects.create_user(username="different_session_student", password="pw")
+    teacher = _make_teacher("different_session_teacher")
+    project = Project.objects.create(
+        title="Different session block",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        result_url=f"{project.id}/{project.id}.mp4",
+    )
+
+    class _SessionOne:
+        session_key = f"different-session-one-{project.id}"
+
+        def save(self):
+            return None
+
+    class _SessionTwo:
+        session_key = f"different-session-two-{project.id}"
+
+        def save(self):
+            return None
+
+    factory = APIRequestFactory()
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+        LESSON_PROTECTION_ALLOW_MP4_FALLBACK=True,
+        LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION=True,
+        LESSON_PROTECTION_CONCURRENCY_POLICY="deny_new",
+        ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+    ):
+        first_request = factory.get(f"/api/v1/catalog/{project.id}/")
+        force_authenticate(first_request, user=student)
+        first_request.user = student
+        first_request.session = _SessionOne()
+        first_response = views.CatalogDetailView.as_view()(first_request, project_id=project.id)
+
+        second_request = factory.get(f"/api/v1/catalog/{project.id}/")
+        force_authenticate(second_request, user=student)
+        second_request.user = student
+        second_request.session = _SessionTwo()
+        second_response = views.CatalogDetailView.as_view()(second_request, project_id=project.id)
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert second_response.data["reason"] == "concurrency_active_elsewhere"
 
 
 @pytest.mark.django_db

@@ -470,6 +470,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const progressSavedAtRef = useRef(0);
   const resumeAppliedKeyRef = useRef('');
   const commentsSectionRef = useRef(null);
+  const manualSubtitleSelectionLessonRef = useRef('');
 
   const activeLessonId = Number(searchParams.get('lesson') || 0) || null;
   const resumeRequested = searchParams.get('resume') === '1';
@@ -534,31 +535,32 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       setPlaylistContext(null);
 
       try {
-        const [lessonData, playbackData, tracksData] = await Promise.all([
+        const [lessonData, tracksData] = await Promise.all([
           fetchLesson(activeLessonId),
-          fetchPlaybackToken(activeLessonId).catch(() => null),
           fetchSubtitleTrackBundle(activeLessonId).catch(() => ({ tracks: [], requestableLanguages: [] })),
         ]);
 
         if (!active) return;
 
-        const integratedLesson = playbackData ? mergePlaybackIntoLesson(lessonData, playbackData) : lessonData;
-
-        setLesson(integratedLesson);
+        setLesson(lessonData);
         setTranscriptPayload({
           pages: Array.isArray(lessonData?.transcript_pages) ? lessonData.transcript_pages : [],
         });
         setSubtitleTracks(tracksData?.tracks || []);
         setRequestableSubtitleLanguages(tracksData?.requestableLanguages || []);
+        const hasOriginalSubtitles = normalizeSubtitleOptions(lessonData, tracksData?.tracks || [])
+          .some((option) => option.key === 'original');
+
         setSubtitleRequestMessage('');
         setRequestingSubtitleLanguage(false);
-        setPreferredSubtitleLanguage('');
-        setSelectedSubtitleKey('off');
+        setPreferredSubtitleLanguage(hasOriginalSubtitles ? 'original' : '');
+        setSelectedSubtitleKey(hasOriginalSubtitles ? 'original' : 'off');
         setPendingSubtitleRequest(null);
         setPlaybackTime(0);
         setPlaybackActive(false);
         setAutoplayPrompt(null);
         progressSavedAtRef.current = 0;
+        manualSubtitleSelectionLessonRef.current = '';
         setLikeError('');
         setFollowError('');
       } catch (err) {
@@ -759,6 +761,16 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     [lesson, subtitleTracks],
   );
   const selectedSubtitleOption = subtitleOptions.find((option) => option.key === selectedSubtitleKey) || null;
+
+  useEffect(() => {
+    const lessonKey = String(activeLessonId || lesson?.id || '');
+    if (!lessonKey || manualSubtitleSelectionLessonRef.current === lessonKey) return;
+    if (selectedSubtitleKey !== 'off') return;
+    if (subtitleOptions.some((option) => option.key === 'original')) {
+      setSelectedSubtitleKey('original');
+    }
+  }, [activeLessonId, lesson?.id, selectedSubtitleKey, subtitleOptions]);
+
   const playerCapabilities = useMemo(() => {
     if (typeof document === 'undefined') {
       return {
@@ -1433,7 +1445,11 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         <select
                           id="watch-subtitle-track"
                           value={selectedSubtitleKey}
-                          onChange={(event) => setSelectedSubtitleKey(event.target.value)}
+                          onChange={(event) => {
+                            manualSubtitleSelectionLessonRef.current = String(activeLessonId || lesson?.id || '');
+                            setPreferredSubtitleLanguage('');
+                            setSelectedSubtitleKey(event.target.value);
+                          }}
                           disabled={subtitleOptions.length === 0}
                           className="focus-ring h-10 min-w-[12rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
                         >

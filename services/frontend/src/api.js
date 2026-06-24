@@ -30,7 +30,11 @@ export function normalizeApiBaseUrl(value) {
 export const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/i, "");
 const AUTH_USER_STORAGE_KEY = "auth_user";
+const LESSON_RESPONSE_CACHE_TTL_MS = 1500;
 let capabilitiesPromise = null;
+const lessonRequestPromises = new Map();
+const lessonResponseCache = new Map();
+const playbackTokenRequestPromises = new Map();
 
 function capabilitiesUrl({ cacheBust = false } = {}) {
   const baseUrl = `${API_BASE_URL}/capabilities/`;
@@ -60,6 +64,7 @@ export function setToken(token) {
     localStorage.removeItem("auth_token");
   }
   clearCapabilitiesCache();
+  clearLessonResponseCache();
 }
 
 export function getStoredAuthUser() {
@@ -76,6 +81,7 @@ export function getStoredAuthUser() {
 export function setStoredAuthUser(user) {
   if (!user || typeof user !== "object") {
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
+    clearLessonResponseCache();
     return;
   }
   try {
@@ -83,6 +89,7 @@ export function setStoredAuthUser(user) {
   } catch {
     localStorage.removeItem(AUTH_USER_STORAGE_KEY);
   }
+  clearLessonResponseCache();
 }
 
 export function getGoogleAuthProvider() {
@@ -106,6 +113,20 @@ function clearLocalAuthState() {
 function authHeaders(extra = {}) {
   const token = getToken();
   return token ? { Authorization: `Token ${token}`, ...extra } : { ...extra };
+}
+
+function clearLessonResponseCache() {
+  lessonRequestPromises.clear();
+  lessonResponseCache.clear();
+}
+
+function authCacheIdentity(headers = {}) {
+  const authorization = headers.Authorization || '';
+  if (authorization) return authorization;
+  const user = getStoredAuthUser();
+  const userId = user?.id ?? user?.pk ?? '';
+  if (userId) return `user:${userId}`;
+  return 'anonymous';
 }
 
 function apiErrorMessage(data, fallback) {
@@ -1010,32 +1031,54 @@ export async function fetchCatalog(categorySlug = null) {
 
 export async function fetchLesson(projectId) {
   const headers = authHeaders();
-  const res = await fetch(
-    `${API_BASE_URL}/catalog/${projectId}/`,
-    Object.keys(headers).length ? { headers } : undefined,
-  );
-  if (!res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    const error = new Error(payload.error || 'Failed to fetch lesson');
-    error.status = res.status;
-    error.reason = payload.reason || '';
-    error.payload = payload;
-    throw error;
+  const requestKey = `${projectId}:${authCacheIdentity(headers)}`;
+  const cached = lessonResponseCache.get(requestKey);
+  if (cached && Date.now() - cached.cachedAt < LESSON_RESPONSE_CACHE_TTL_MS) {
+    return cached.data;
   }
-  const data = await res.json();
-  return {
-    ...data,
-    stream_url: toAbsoluteApiUrl(data.stream_url),
-    srt_url: toAbsoluteApiUrl(data.srt_url),
-    vtt_url: toAbsoluteApiUrl(data.vtt_url || data.subtitle_vtt_url),
-    subtitle_vtt_url: toAbsoluteApiUrl(data.subtitle_vtt_url || data.vtt_url),
-    avatar_overlay: data.avatar_overlay
-      ? {
-          ...data.avatar_overlay,
-          stream_url: toAbsoluteApiUrl(data.avatar_overlay.stream_url),
-        }
-      : null,
-  };
+  if (cached) {
+    lessonResponseCache.delete(requestKey);
+  }
+  if (lessonRequestPromises.has(requestKey)) {
+    return lessonRequestPromises.get(requestKey);
+  }
+  const request = (async () => {
+    const res = await fetch(
+      `${API_BASE_URL}/catalog/${projectId}/`,
+      {
+        ...(Object.keys(headers).length ? { headers } : {}),
+        credentials: 'include',
+      },
+    );
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      const error = new Error(payload.error || 'Failed to fetch lesson');
+      error.status = res.status;
+      error.reason = payload.reason || '';
+      error.payload = payload;
+      throw error;
+    }
+    const data = await res.json();
+    const normalized = {
+      ...data,
+      stream_url: toAbsoluteApiUrl(data.stream_url),
+      srt_url: toAbsoluteApiUrl(data.srt_url),
+      vtt_url: toAbsoluteApiUrl(data.vtt_url || data.subtitle_vtt_url),
+      subtitle_vtt_url: toAbsoluteApiUrl(data.subtitle_vtt_url || data.vtt_url),
+      avatar_overlay: data.avatar_overlay
+        ? {
+            ...data.avatar_overlay,
+            stream_url: toAbsoluteApiUrl(data.avatar_overlay.stream_url),
+          }
+        : null,
+    };
+    lessonResponseCache.set(requestKey, { data: normalized, cachedAt: Date.now() });
+    return normalized;
+  })().finally(() => {
+    lessonRequestPromises.delete(requestKey);
+  });
+  lessonRequestPromises.set(requestKey, request);
+  return request;
 }
 
 export async function getPlaylistContext(projectId) {
@@ -1180,72 +1223,85 @@ export async function analyzeMyAnalyticsIntelligence(filters = {}, options = {})
  */
 export async function fetchPlaybackToken(projectId) {
   const headers = authHeaders();
-  const res = await fetch(
-    `${API_BASE_URL}/projects/${projectId}/playback-token/`,
-    Object.keys(headers).length ? { headers } : undefined,
-  );
-  if (!res.ok) {
-    const payload = await res.json().catch(() => ({}));
-    const error = new Error(payload.error || 'Failed to get playback token');
-    error.status = res.status;
-    error.reason = payload.reason || '';
-    error.payload = payload;
-    throw error;
+  const requestKey = `${projectId}:${headers.Authorization || ''}`;
+  if (playbackTokenRequestPromises.has(requestKey)) {
+    return playbackTokenRequestPromises.get(requestKey);
   }
-  const data = await res.json();
-  const drmSystems = data.drm?.systems
-    ? Object.fromEntries(
-        Object.entries(data.drm.systems).map(([name, system]) => [
-          name,
-          {
-            ...system,
-            license_url: toAbsoluteApiUrl(system.license_url),
-            certificate_url: toAbsoluteApiUrl(system.certificate_url),
-          },
-        ])
-      )
-    : null;
-  const streaming = data.streaming
-    ? {
-        ...data.streaming,
-        fallback: data.streaming.fallback
-          ? {
-              ...data.streaming.fallback,
-              url: toAbsoluteApiUrl(data.streaming.fallback.url),
-            }
-          : null,
-        hls: data.streaming.hls
-          ? {
-              ...data.streaming.hls,
-              manifest_url: toAbsoluteApiUrl(data.streaming.hls.manifest_url),
-            }
-          : null,
-      }
-    : null;
+  const request = (async () => {
+    const res = await fetch(
+      `${API_BASE_URL}/projects/${projectId}/playback-token/`,
+      {
+        ...(Object.keys(headers).length ? { headers } : {}),
+        credentials: 'include',
+      },
+    );
+    if (!res.ok) {
+      const payload = await res.json().catch(() => ({}));
+      const error = new Error(payload.error || 'Failed to get playback token');
+      error.status = res.status;
+      error.reason = payload.reason || '';
+      error.payload = payload;
+      throw error;
+    }
+    const data = await res.json();
+    const drmSystems = data.drm?.systems
+      ? Object.fromEntries(
+          Object.entries(data.drm.systems).map(([name, system]) => [
+            name,
+            {
+              ...system,
+              license_url: toAbsoluteApiUrl(system.license_url),
+              certificate_url: toAbsoluteApiUrl(system.certificate_url),
+            },
+          ])
+        )
+      : null;
+    const streaming = data.streaming
+      ? {
+          ...data.streaming,
+          fallback: data.streaming.fallback
+            ? {
+                ...data.streaming.fallback,
+                url: toAbsoluteApiUrl(data.streaming.fallback.url),
+              }
+            : null,
+          hls: data.streaming.hls
+            ? {
+                ...data.streaming.hls,
+                manifest_url: toAbsoluteApiUrl(data.streaming.hls.manifest_url),
+              }
+            : null,
+        }
+      : null;
 
-  return {
-    ...data,
-    video_url: toAbsoluteApiUrl(data.video_url),
-    srt_url: toAbsoluteApiUrl(data.srt_url),
-    vtt_url: toAbsoluteApiUrl(data.vtt_url || data.subtitle_vtt_url),
-    subtitle_vtt_url: toAbsoluteApiUrl(data.subtitle_vtt_url || data.vtt_url),
-    streaming,
-    drm: data.drm
-      ? {
-          ...data.drm,
-          license_url: toAbsoluteApiUrl(data.drm.license_url),
-          certificate_url: toAbsoluteApiUrl(data.drm.certificate_url),
-          manifest_url: toAbsoluteApiUrl(data.drm.manifest_url),
-          systems: drmSystems,
-        }
-      : null,
-    avatar_overlay: data.avatar_overlay
-      ? {
-          ...data.avatar_overlay,
-          stream_url: toAbsoluteApiUrl(data.avatar_overlay.stream_url),
-        }
-      : null,
-  };
+    return {
+      ...data,
+      video_url: toAbsoluteApiUrl(data.video_url),
+      srt_url: toAbsoluteApiUrl(data.srt_url),
+      vtt_url: toAbsoluteApiUrl(data.vtt_url || data.subtitle_vtt_url),
+      subtitle_vtt_url: toAbsoluteApiUrl(data.subtitle_vtt_url || data.vtt_url),
+      streaming,
+      drm: data.drm
+        ? {
+            ...data.drm,
+            license_url: toAbsoluteApiUrl(data.drm.license_url),
+            certificate_url: toAbsoluteApiUrl(data.drm.certificate_url),
+            manifest_url: toAbsoluteApiUrl(data.drm.manifest_url),
+            systems: drmSystems,
+          }
+        : null,
+      avatar_overlay: data.avatar_overlay
+        ? {
+            ...data.avatar_overlay,
+            stream_url: toAbsoluteApiUrl(data.avatar_overlay.stream_url),
+          }
+        : null,
+    };
+  })().finally(() => {
+    playbackTokenRequestPromises.delete(requestKey);
+  });
+  playbackTokenRequestPromises.set(requestKey, request);
+  return request;
 }
 
 /**
@@ -1255,7 +1311,7 @@ export async function fetchPlaybackToken(projectId) {
 export async function fetchStudioPreviewToken(projectId) {
   const res = await fetch(
     `${API_BASE_URL}/projects/${projectId}/studio-preview-token/`,
-    { headers: authHeaders() },
+    { headers: authHeaders(), credentials: 'include' },
   );
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));
@@ -1287,6 +1343,7 @@ export async function heartbeatPlaybackSession(projectId, visibility = 'visible'
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/playback-session/heartbeat/`, {
     method: 'POST',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
+    credentials: 'include',
     body: JSON.stringify({ visibility }),
   });
 

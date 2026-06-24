@@ -70,6 +70,10 @@ def _stream_path(video_url: str) -> str:
     return urlparse(video_url).path
 
 
+def _stream_token(video_url: str) -> str:
+    return _stream_path(video_url).rstrip("/").rsplit("/", 1)[-1]
+
+
 class _Session:
     def __init__(self, session_key: str):
         self.session_key = session_key
@@ -261,6 +265,37 @@ class TestStudioPreviewToken:
 
         assert second_token_response.status_code == status.HTTP_409_CONFLICT
         assert second_token_response.data["reason"] == "concurrency_active_elsewhere"
+
+    def test_public_playback_token_is_idempotent_for_same_client_session(self, tmp_path):
+        owner = _make_user("preview_idempotent_owner")
+        watcher = _make_user("preview_idempotent_watcher")
+        project, _job = _make_ready_video_lesson(
+            tmp_path,
+            owner,
+            title="Public Secure Lesson Same Session",
+            is_published=True,
+        )
+
+        client = _client(watcher)
+        with override_settings(
+            STORAGE_ROOT=str(tmp_path),
+            LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+            LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION=True,
+            LESSON_PROTECTION_CONCURRENCY_POLICY="deny_new",
+        ):
+            first_response = client.get(f"/api/v1/projects/{project.id}/playback-token/")
+            second_response = client.get(f"/api/v1/projects/{project.id}/playback-token/")
+
+        assert first_response.status_code == status.HTTP_200_OK
+        assert second_response.status_code == status.HTTP_200_OK
+        first_token = _stream_token(first_response.data["video_url"])
+        second_token = _stream_token(second_response.data["video_url"])
+        _job_id, _file_type, _rel_path, first_grant_id, first_bind_key = views.validate_media_token(first_token)
+        _job_id, _file_type, _rel_path, second_grant_id, second_bind_key = views.validate_media_token(second_token)
+        assert first_grant_id
+        assert first_grant_id == second_grant_id
+        assert first_bind_key
+        assert first_bind_key == second_bind_key
 
     def test_studio_preview_token_no_ready_video(self):
         owner = _make_user("preview_no_video_owner")

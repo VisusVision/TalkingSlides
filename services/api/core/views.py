@@ -390,8 +390,6 @@ def _playback_identity(request) -> str:
 def _playback_binding_identity(request) -> str:
     if not request.session.session_key:
         request.session.save()
-    if request.user and request.user.is_authenticated:
-        return f"user:{request.user.id}|session:{request.session.session_key}"
     return f"session:{request.session.session_key}"
 
 
@@ -407,6 +405,10 @@ def _playback_inactivity_ttl() -> int:
 
 def _playback_hidden_grace_ttl() -> int:
     return int(getattr(settings, "LESSON_PROTECTION_HIDDEN_GRACE_SECONDS", 300))
+
+
+def _playback_unconfirmed_grace_ttl() -> int:
+    return int(getattr(settings, "LESSON_PROTECTION_UNCONFIRMED_GRANT_GRACE_SECONDS", 30))
 
 
 def _multi_tab_enforcement_enabled() -> bool:
@@ -463,6 +465,64 @@ def _grant_is_stale(grant_payload: dict | None) -> bool:
     return False
 
 
+def _grant_is_abandoned_unconfirmed(grant_payload: dict | None) -> bool:
+    if not grant_payload or grant_payload.get("confirmed_at"):
+        return False
+    issued_at = int(grant_payload.get("issued_at") or 0)
+    if not issued_at:
+        return False
+    return int(time.time()) - issued_at > _playback_unconfirmed_grace_ttl()
+
+
+def _reuse_current_playback_grant(
+    *,
+    lesson_id: int,
+    identity: str,
+    mode: str,
+    bind_key: str | None,
+    scope_key: str,
+    ttl_seconds: int,
+) -> str | None:
+    current_grant_id = cache.get(scope_key)
+    if not current_grant_id:
+        return None
+
+    current_payload = cache.get(_grant_key_for(current_grant_id)) or {}
+    if _grant_is_stale(current_payload):
+        return None
+    if (
+        current_payload.get("lesson_id") != lesson_id
+        or current_payload.get("identity") != identity
+        or current_payload.get("mode") != mode
+        or current_payload.get("bind_key") != bind_key
+    ):
+        return None
+
+    now = int(time.time())
+    current_payload["last_seen_at"] = now
+    current_payload["expires_at"] = now + ttl_seconds
+    cache.set(scope_key, current_grant_id, timeout=ttl_seconds)
+    cache.set(_grant_key_for(current_grant_id), current_payload, timeout=ttl_seconds)
+    logger.info("Playback grant renewed: lesson=%s mode=%s", lesson_id, mode)
+    return current_grant_id
+
+
+def _cache_add_once(key: str, value: str, *, timeout: int) -> bool:
+    add = getattr(cache, "add", None)
+    if callable(add):
+        return bool(add(key, value, timeout=timeout))
+    if cache.get(key):
+        return False
+    cache.set(key, value, timeout=timeout)
+    return True
+
+
+def _cache_delete_if_supported(key: str) -> None:
+    delete = getattr(cache, "delete", None)
+    if callable(delete):
+        delete(key)
+
+
 def _enforce_playback_concurrency(lesson_id: int, request, mode: str) -> tuple[bool, str | None]:
     identity = _playback_identity(request)
     scope_key = _scope_key_for(lesson_id, identity, mode)
@@ -478,6 +538,22 @@ def _enforce_playback_concurrency(lesson_id: int, request, mode: str) -> tuple[b
     current_bind = current_payload.get("bind_key")
     requested_bind = _bind_key_for_request(request) if bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True)) else None
     if current_bind == requested_bind:
+        return True, None
+    if current_payload.get("bind_source") is None and current_payload.get("identity") == identity:
+        logger.warning(
+            "Playback concurrency replacing legacy unconfirmed bind: lesson=%s mode=%s",
+            lesson_id,
+            mode,
+        )
+        _revoke_grant(current_grant_id, reason="legacy_unconfirmed_session_bind", lesson_id=lesson_id, mode=mode)
+        return True, None
+    if current_payload.get("identity") == identity and _grant_is_abandoned_unconfirmed(current_payload):
+        logger.warning(
+            "Playback concurrency replacing abandoned unconfirmed grant: lesson=%s mode=%s",
+            lesson_id,
+            mode,
+        )
+        _revoke_grant(current_grant_id, reason="abandoned_unconfirmed", lesson_id=lesson_id, mode=mode)
         return True, None
 
     policy = _concurrency_policy()
@@ -507,43 +583,85 @@ def _issue_playback_grant(
     scope_key = _scope_key_for(lesson_id, identity, mode)
     now = int(time.time())
 
-    current_grant_id = cache.get(scope_key)
-    if current_grant_id:
-        current_payload = cache.get(_grant_key_for(current_grant_id)) or {}
-        if (
-            current_payload.get("lesson_id") == lesson_id
-            and current_payload.get("identity") == identity
-            and current_payload.get("mode") == mode
-            and current_payload.get("bind_key") == bind_key
-        ):
-            current_payload["last_seen_at"] = now
-            current_payload["expires_at"] = now + ttl_seconds
-            cache.set(scope_key, current_grant_id, timeout=ttl_seconds)
-            cache.set(_grant_key_for(current_grant_id), current_payload, timeout=ttl_seconds)
-            logger.info("Playback grant renewed: lesson=%s mode=%s", lesson_id, mode)
-            return current_grant_id, scope_key
-
-    grant_id = uuid.uuid4().hex
-    grant_key = _grant_key_for(grant_id)
-    grant_payload = {
-        "lesson_id": lesson_id,
-        "identity": identity,
-        "mode": mode,
-        "issued_at": now,
-        "last_seen_at": now,
-        "expires_at": now + ttl_seconds,
-        "bind_key": bind_key,
-        "hidden_since": None,
-    }
-
-    cache.set(scope_key, grant_id, timeout=ttl_seconds)
-    cache.set(
-        grant_key,
-        grant_payload,
-        timeout=ttl_seconds,
+    reusable_grant_id = _reuse_current_playback_grant(
+        lesson_id=lesson_id,
+        identity=identity,
+        mode=mode,
+        bind_key=bind_key,
+        scope_key=scope_key,
+        ttl_seconds=ttl_seconds,
     )
-    logger.info("Playback grant issued: lesson=%s mode=%s", lesson_id, mode)
-    return grant_id, scope_key
+    if reusable_grant_id:
+        return reusable_grant_id, scope_key
+
+    lock_key = f"{scope_key}:issue:{bind_key or 'unbound'}"
+    lock_acquired = _cache_add_once(lock_key, str(now), timeout=3)
+    if not lock_acquired:
+        deadline = time.monotonic() + 0.35
+        while time.monotonic() < deadline:
+            time.sleep(0.025)
+            reusable_grant_id = _reuse_current_playback_grant(
+                lesson_id=lesson_id,
+                identity=identity,
+                mode=mode,
+                bind_key=bind_key,
+                scope_key=scope_key,
+                ttl_seconds=ttl_seconds,
+            )
+            if reusable_grant_id:
+                return reusable_grant_id, scope_key
+
+        lock_acquired = _cache_add_once(lock_key, str(int(time.time())), timeout=3)
+        if not lock_acquired:
+            reusable_grant_id = _reuse_current_playback_grant(
+                lesson_id=lesson_id,
+                identity=identity,
+                mode=mode,
+                bind_key=bind_key,
+                scope_key=scope_key,
+                ttl_seconds=ttl_seconds,
+            )
+            if reusable_grant_id:
+                return reusable_grant_id, scope_key
+
+    try:
+        reusable_grant_id = _reuse_current_playback_grant(
+            lesson_id=lesson_id,
+            identity=identity,
+            mode=mode,
+            bind_key=bind_key,
+            scope_key=scope_key,
+            ttl_seconds=ttl_seconds,
+        )
+        if reusable_grant_id:
+            return reusable_grant_id, scope_key
+
+        grant_id = uuid.uuid4().hex
+        grant_key = _grant_key_for(grant_id)
+        grant_payload = {
+            "lesson_id": lesson_id,
+            "identity": identity,
+            "mode": mode,
+            "issued_at": now,
+            "last_seen_at": now,
+            "confirmed_at": None,
+            "expires_at": now + ttl_seconds,
+            "bind_key": bind_key,
+            "bind_source": "django_session" if bind_key else "unbound",
+            "hidden_since": None,
+        }
+
+        cache.set(scope_key, grant_id, timeout=ttl_seconds)
+        cache.set(
+            grant_key,
+            grant_payload,
+            timeout=ttl_seconds,
+        )
+        logger.info("Playback grant issued: lesson=%s mode=%s", lesson_id, mode)
+        return grant_id, scope_key
+    finally:
+        if lock_acquired:
+            _cache_delete_if_supported(lock_key)
 
 
 def _revoke_grant(grant_id: str, *, reason: str = "policy", lesson_id: int | None = None, mode: str | None = None) -> None:
@@ -750,11 +868,20 @@ def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_k
     identity = _playback_identity(request)
     scope_key = _scope_key_for(lesson_id, identity, mode)
     current_grant_id = cache.get(scope_key)
+    request_bind_key = _bind_key_for_request(request)
     if current_grant_id != grant_id:
-        logger.warning("Playback grant invalidated or mismatched for lesson=%s mode=%s", lesson_id, mode)
-        return False
+        token_bind_matches_request = bool(
+            not current_grant_id
+            and bind_key
+            and grant_payload.get("bind_key")
+            and grant_payload.get("bind_key") == bind_key
+            and bind_key == request_bind_key
+        )
+        if not token_bind_matches_request:
+            logger.warning("Playback grant invalidated or mismatched for lesson=%s mode=%s", lesson_id, mode)
+            return False
 
-    if bind_key and bind_key != _bind_key_for_request(request):
+    if bind_key and bind_key != request_bind_key:
         logger.warning("Playback bind-key mismatch for lesson=%s mode=%s", lesson_id, mode)
         if grant_id:
             mismatch_key = f"playback:risk:bind_mismatch:{grant_id}"
@@ -764,7 +891,7 @@ def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_k
                 _revoke_grant(grant_id, reason="bind_mismatch_repeat", lesson_id=lesson_id, mode=mode)
         return False
 
-    if grant_payload.get("bind_key") and grant_payload.get("bind_key") != _bind_key_for_request(request):
+    if grant_payload.get("bind_key") and grant_payload.get("bind_key") != request_bind_key:
         logger.warning("Playback grant session mismatch for lesson=%s mode=%s", lesson_id, mode)
         mismatch_key = f"playback:risk:bind_mismatch:{grant_id}"
         mismatch_count = int(cache.get(mismatch_key) or 0) + 1
@@ -773,7 +900,8 @@ def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_k
             _revoke_grant(grant_id, reason="session_mismatch_repeat", lesson_id=lesson_id, mode=mode)
         return False
 
-    logout_epoch = cache.get(_logout_epoch_key_for(identity)) or 0
+    issuer_identity = str(grant_payload.get("identity") or identity)
+    logout_epoch = cache.get(_logout_epoch_key_for(issuer_identity)) or 0
     if int(grant_payload.get("issued_at") or 0) <= int(logout_epoch):
         logger.warning("Playback grant denied after logout for lesson=%s mode=%s", lesson_id, mode)
         return False
@@ -791,6 +919,7 @@ def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_k
         _revoke_grant(grant_id, reason="hidden_too_long", lesson_id=lesson_id, mode=mode)
         return False
 
+    grant_payload["confirmed_at"] = grant_payload.get("confirmed_at") or now
     usage_key = f"playback:usage:{grant_id}:{file_type}"
     usage = cache.get(usage_key) or 0
     usage = int(usage) + 1
@@ -3968,6 +4097,14 @@ class PlaybackSessionHeartbeatView(APIView):
             return Response({"active": False, "revoked": True, "reason": "revoked"}, status=status.HTTP_409_CONFLICT)
 
         requested_bind = _bind_key_for_request(request) if bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True)) else None
+        logger.debug(
+            "Playback heartbeat grant check: lesson=%s mode=%s active_grant=%s payload_grant_bind=%s request_bind=%s",
+            project.id,
+            protection_mode,
+            str(grant_id or "")[:12],
+            str(grant_payload.get("bind_key") or "")[:12],
+            str(requested_bind or "")[:12],
+        )
         if grant_payload.get("bind_key") and grant_payload.get("bind_key") != requested_bind:
             return Response({"active": False, "revoked": True, "reason": "superseded"}, status=status.HTTP_409_CONFLICT)
 
@@ -3984,6 +4121,7 @@ class PlaybackSessionHeartbeatView(APIView):
             _revoke_grant(grant_id, reason="hidden_too_long", lesson_id=project.id, mode=protection_mode)
             return Response({"active": False, "revoked": True, "reason": "hidden_too_long"}, status=status.HTTP_409_CONFLICT)
 
+        grant_payload["confirmed_at"] = grant_payload.get("confirmed_at") or now
         hb_score, hb_reasons = _client_risk_signals(
             request,
             grant_id=grant_id,
@@ -12147,6 +12285,14 @@ class CatalogDetailView(APIView):
             grant_id, _scope_key = _issue_playback_grant(project.id, request, protection_mode, ttl_seconds)
             bind_key = _bind_key_for_request(request) if session_binding_active else None
             playback_session_id = _playback_session_id(job.id, grant_id)
+            logger.debug(
+                "Catalog playback grant: lesson=%s mode=%s grant=%s scope_grant=%s bind=%s",
+                project.id,
+                protection_mode,
+                (grant_id or "")[:12],
+                str(cache.get(_scope_key) or "")[:12],
+                (bind_key or "")[:12],
+            )
         else:
             session_binding_active = False
 
@@ -12217,12 +12363,18 @@ class CatalogDetailView(APIView):
             avatar_artifact_state=avatar_artifact_state,
         )
         data["stream_url"] = playback["video_url"]
+        data["video_url"] = playback["video_url"]
         data["srt_url"] = playback["srt_url"]
         data["vtt_url"] = playback.get("vtt_url")
         data["subtitle_vtt_url"] = playback.get("subtitle_vtt_url")
         data["has_srt"] = bool(job.srt_url)
         data["has_vtt"] = bool(playback.get("vtt_url"))
         data["expires_in"] = playback["expires_in"]
+        data["protection_mode"] = playback["protection_mode"]
+        data["allow_mp4_fallback"] = playback["allow_mp4_fallback"]
+        data["session_binding_active"] = playback.get("session_binding_active", False)
+        data["streaming"] = playback.get("streaming")
+        data["playback_debug"] = playback.get("playback_debug")
         data["watermark"] = playback["watermark"]
         data["protection"] = playback["protection"]
         data["drm"] = playback["drm"]

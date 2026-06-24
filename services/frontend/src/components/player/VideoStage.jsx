@@ -356,6 +356,9 @@ export default function VideoStage({
   const videoClassName = fullscreenActive
     ? 'visus-shell-video h-full w-full bg-black object-contain'
     : 'visus-shell-video aspect-video w-full bg-black';
+  const mediaCrossOrigin = lesson?.session_binding_active || lesson?.protection?.session_binding_active
+    ? 'use-credentials'
+    : 'anonymous';
 
   const content = (
     <>
@@ -380,7 +383,7 @@ export default function VideoStage({
               onContextMenu={(event) => event.preventDefault()}
               playsInline
               preload="metadata"
-              crossOrigin="anonymous"
+              crossOrigin={mediaCrossOrigin}
               onLoadedMetadata={handleCaptionTrackReady}
               onPlay={handleVideoPlay}
               onPause={handleVideoPause}

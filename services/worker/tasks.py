@@ -1553,6 +1553,55 @@ def _read_playback_sidecar(project_id: str | int) -> dict[str, Any]:
     return _read_json_sidecar(project_id, "playback_assets.json")
 
 
+def _mark_playback_sidecar_avatar_queued(
+    project_id: str | int,
+    *,
+    avatar_job_id: int | str | None,
+    avatar_cfg: dict[str, Any] | None = None,
+) -> None:
+    sidecar = _read_playback_sidecar(project_id)
+    if not sidecar:
+        return
+
+    cfg = dict(avatar_cfg or {})
+    engine_selected = str(
+        cfg.get("avatar_engine_selected")
+        or cfg.get("normalized_engine")
+        or cfg.get("lipsync_engine")
+        or "liveportrait+musetalk"
+    )
+    sidecar["avatar"] = None
+    sidecar["avatar_status"] = "queued"
+    sidecar["avatar_processing_status"] = "queued"
+    sidecar["avatar_processing_message"] = "Avatar is still processing and will be added when ready."
+    sidecar["avatar_job_id"] = str(avatar_job_id or "")
+    sidecar["avatar_engine_selected"] = engine_selected
+    sidecar["normalized_engine"] = engine_selected
+    sidecar["avatar_runtime_settings"] = dict(cfg.get("avatar_runtime_settings") or {})
+    sidecar["avatar_failures"] = []
+
+    avatar_slide_metadata = sidecar.get("avatar_slide_metadata")
+    if isinstance(avatar_slide_metadata, list):
+        for item in avatar_slide_metadata:
+            if not isinstance(item, dict):
+                continue
+            item["avatar_status"] = "queued"
+            item["avatar_error"] = ""
+            item["avatar_failed"] = False
+
+    final_segments = sidecar.get("final_segments")
+    if isinstance(final_segments, list):
+        for item in final_segments:
+            if not isinstance(item, dict):
+                continue
+            item["avatar_status"] = "queued"
+            item["avatar_error"] = ""
+            item["avatar_failure_reason"] = ""
+            item["avatar_failed"] = False
+
+    _write_playback_sidecar(project_id, sidecar)
+
+
 def _detect_language_from_slides(slides: list[dict[str, Any]], *, lang_hint: str = "auto") -> dict[str, Any]:
     supported_languages = ["en", "tr"]
     hint = str(lang_hint or "auto").strip().lower()
@@ -5844,6 +5893,11 @@ def _queue_lesson_avatar_overlay_after_base_render(
             message="Avatar is still processing and will be added when ready.",
             job_id=job.id,
             clear_output=True,
+        )
+        _mark_playback_sidecar_avatar_queued(
+            project_id,
+            avatar_job_id=job.id,
+            avatar_cfg=avatar_cfg,
         )
         async_result = render_lesson_avatar_overlay.apply_async(
             kwargs={
