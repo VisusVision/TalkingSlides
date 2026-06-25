@@ -81,6 +81,7 @@ from .views import (
     HelpContentView,
     PlaybackSessionHeartbeatView,
     PlaybackTokenView,
+    ProjectShareLinkCreateView,
     PlaylistDetailView,
     PlaylistItemCreateView,
     PlaylistItemDeleteView,
@@ -108,7 +109,9 @@ from .views import (
     TranscriptPageSceneView,
     ProjectTranscriptView,
     ProjectUploadView,
+    ShareLinkDetailView,
     SlideViewSet,
+    SharedLessonPlaybackView,
     TTSPreviewAudioView,
     TTSPreviewView,
     TTSPronunciationSuggestionsView,
@@ -154,9 +157,12 @@ urlpatterns = [
 
     # Secure media streaming (token-gated, public)
     path("stream/<str:token>/", MediaStreamView.as_view(), name="media-stream"),
+    path("share/<str:token>/", SharedLessonPlaybackView.as_view(), name="share-playback"),
+    path("share-links/<int:share_link_id>/", ShareLinkDetailView.as_view(), name="share-link-detail"),
 
 # Playback token issuance - no login required for published lessons
     path("projects/<int:project_id>/playback-token/", PlaybackTokenView.as_view(), name="playback-token"),
+    path("projects/<int:project_id>/share-links/", ProjectShareLinkCreateView.as_view(), name="project-share-links"),
     path("projects/<int:project_id>/studio-preview-token/", StudioPreviewTokenView.as_view(), name="studio-preview-token"),
     path("projects/<int:project_id>/subtitle-tracks/", ProjectSubtitleTrackListView.as_view(), name="project-subtitle-tracks"),
     path("projects/<int:project_id>/cover/", ProjectCoverImageView.as_view(), name="project-cover"),

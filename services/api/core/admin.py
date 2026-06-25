@@ -9,6 +9,7 @@ from .models import (
     LessonIntelligenceReport,
     LessonLike,
     LessonProgress,
+    LessonShareLink,
     Notification,
     Playlist,
     PlaylistItem,
@@ -86,6 +87,15 @@ class ProjectAdmin(admin.ModelAdmin):
     list_filter = ("status",)
     search_fields = ("title", "user__username")
     raw_id_fields = ("user",)
+
+
+@admin.register(LessonShareLink)
+class LessonShareLinkAdmin(admin.ModelAdmin):
+    list_display = ("project", "owner", "created_at", "expires_at", "revoked_at", "access_count")
+    list_filter = ("created_at", "expires_at", "revoked_at")
+    search_fields = ("project__title", "owner__username", "token_hash")
+    raw_id_fields = ("project", "owner")
+    readonly_fields = ("token_hash", "created_at", "last_accessed_at", "access_count")
 
 
 class PlaylistItemInline(admin.TabularInline):

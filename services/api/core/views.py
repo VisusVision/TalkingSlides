@@ -43,6 +43,7 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import sys
 import time
 from urllib.error import HTTPError, URLError
@@ -55,8 +56,8 @@ from typing import Any
 from celery import Celery
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
-from django.db import transaction
-from django.db.models import Avg, Count, Exists, Max, OuterRef, Prefetch, Q
+from django.db import IntegrityError, transaction
+from django.db.models import Avg, Count, Exists, F, Max, OuterRef, Prefetch, Q
 from django.core.cache import cache
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
@@ -80,6 +81,7 @@ from core.models import (
     LessonIntelligenceReport,
     LessonLike,
     LessonProgress,
+    LessonShareLink,
     Notification,
     Playlist,
     PlaylistItem,
@@ -370,6 +372,8 @@ def _protection_mode_default() -> str:
 def _token_ttl_for_mode(mode: str) -> int:
     if mode == "drm_protected":
         return int(getattr(settings, "LESSON_PROTECTION_TOKEN_TTL_DRM_SECONDS", 7200))
+    if mode == "share":
+        return int(getattr(settings, "LESSON_SHARE_MEDIA_GRANT_TTL_SECONDS", 900))
     if mode in {"secure_stream", "studio_preview"}:
         return int(getattr(settings, "LESSON_PROTECTION_TOKEN_TTL_SECURE_SECONDS", _token_ttl()))
     return int(getattr(settings, "LESSON_PROTECTION_TOKEN_TTL_PUBLIC_SECONDS", _token_ttl()))
@@ -377,6 +381,67 @@ def _token_ttl_for_mode(mode: str) -> int:
 
 def _stream_url(request, token: str) -> str:
     return request.build_absolute_uri(f"/api/v1/stream/{token}/")
+
+
+def _share_link_default_ttl_seconds() -> int:
+    return int(getattr(settings, "LESSON_SHARE_LINK_TTL_SECONDS", 24 * 60 * 60))
+
+
+def _share_link_max_ttl_seconds() -> int:
+    return int(getattr(settings, "LESSON_SHARE_LINK_MAX_TTL_SECONDS", 7 * 24 * 60 * 60))
+
+
+def _share_link_token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
+
+
+def _generate_share_link_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def _share_path_for_token(token: str) -> str:
+    return f"/share/{token}"
+
+
+def _share_url_for_token(request, token: str) -> str:
+    frontend_base_url = str(getattr(settings, "FRONTEND_PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
+    if frontend_base_url:
+        return f"{frontend_base_url}{_share_path_for_token(token)}"
+    origin = ""
+    try:
+        origin = str(request.headers.get("Origin") or "").strip().rstrip("/")
+    except Exception:
+        origin = ""
+    if origin:
+        return f"{origin}{_share_path_for_token(token)}"
+    return request.build_absolute_uri(_share_path_for_token(token))
+
+
+def _share_link_payload(request, share_link: LessonShareLink, *, token: str | None = None) -> dict:
+    payload = {
+        "id": share_link.id,
+        "project_id": share_link.project_id,
+        "owner_id": share_link.owner_id,
+        "created_at": share_link.created_at.isoformat() if share_link.created_at else None,
+        "expires_at": share_link.expires_at.isoformat() if share_link.expires_at else None,
+        "revoked_at": share_link.revoked_at.isoformat() if share_link.revoked_at else None,
+        "last_accessed_at": share_link.last_accessed_at.isoformat() if share_link.last_accessed_at else None,
+        "access_count": share_link.access_count,
+    }
+    if token:
+        payload["token"] = token
+        payload["share_path"] = _share_path_for_token(token)
+        payload["share_url"] = _share_url_for_token(request, token)
+    return payload
+
+
+def _lookup_share_link_for_token(token: str) -> LessonShareLink | None:
+    token_hash = _share_link_token_hash(token)
+    return (
+        LessonShareLink.objects.select_related("project", "project__user", "project__category", "owner")
+        .filter(token_hash=token_hash)
+        .first()
+    )
 
 
 def _playback_identity(request) -> str:
@@ -572,6 +637,8 @@ def _issue_playback_grant(
     ttl_seconds: int,
     *,
     bind_to_session: bool | None = None,
+    extra_payload: dict | None = None,
+    reuse_existing: bool = True,
 ) -> tuple[str, str]:
     identity = _playback_identity(request)
     session_binding_active = (
@@ -583,20 +650,21 @@ def _issue_playback_grant(
     scope_key = _scope_key_for(lesson_id, identity, mode)
     now = int(time.time())
 
-    reusable_grant_id = _reuse_current_playback_grant(
-        lesson_id=lesson_id,
-        identity=identity,
-        mode=mode,
-        bind_key=bind_key,
-        scope_key=scope_key,
-        ttl_seconds=ttl_seconds,
-    )
-    if reusable_grant_id:
-        return reusable_grant_id, scope_key
+    if reuse_existing:
+        reusable_grant_id = _reuse_current_playback_grant(
+            lesson_id=lesson_id,
+            identity=identity,
+            mode=mode,
+            bind_key=bind_key,
+            scope_key=scope_key,
+            ttl_seconds=ttl_seconds,
+        )
+        if reusable_grant_id:
+            return reusable_grant_id, scope_key
 
     lock_key = f"{scope_key}:issue:{bind_key or 'unbound'}"
     lock_acquired = _cache_add_once(lock_key, str(now), timeout=3)
-    if not lock_acquired:
+    if reuse_existing and not lock_acquired:
         deadline = time.monotonic() + 0.35
         while time.monotonic() < deadline:
             time.sleep(0.025)
@@ -625,16 +693,17 @@ def _issue_playback_grant(
                 return reusable_grant_id, scope_key
 
     try:
-        reusable_grant_id = _reuse_current_playback_grant(
-            lesson_id=lesson_id,
-            identity=identity,
-            mode=mode,
-            bind_key=bind_key,
-            scope_key=scope_key,
-            ttl_seconds=ttl_seconds,
-        )
-        if reusable_grant_id:
-            return reusable_grant_id, scope_key
+        if reuse_existing:
+            reusable_grant_id = _reuse_current_playback_grant(
+                lesson_id=lesson_id,
+                identity=identity,
+                mode=mode,
+                bind_key=bind_key,
+                scope_key=scope_key,
+                ttl_seconds=ttl_seconds,
+            )
+            if reusable_grant_id:
+                return reusable_grant_id, scope_key
 
         grant_id = uuid.uuid4().hex
         grant_key = _grant_key_for(grant_id)
@@ -650,6 +719,8 @@ def _issue_playback_grant(
             "bind_source": "django_session" if bind_key else "unbound",
             "hidden_since": None,
         }
+        if extra_payload:
+            grant_payload.update(dict(extra_payload))
 
         cache.set(scope_key, grant_id, timeout=ttl_seconds)
         cache.set(
@@ -769,7 +840,7 @@ def _grant_usage_limit(file_type: str, mode: str) -> int:
     if mode == "drm_protected":
         limits = {"hls_manifest": 8, "hls_key": 24, "hls_segment": 800, "video": 0, "avatar": 600, "srt": 80, "vtt": 80}
         return limits.get(file_type, 60)
-    if mode in {"secure_stream", "studio_preview"}:
+    if mode in {"secure_stream", "studio_preview", "share"}:
         limits = {"hls_manifest": 20, "hls_key": 60, "hls_segment": 2000, "video": 200, "avatar": 1200, "srt": 150, "vtt": 150}
         return limits.get(file_type, 120)
     return 10_000
@@ -839,6 +910,38 @@ def _check_studio_preview_grant_access(
     return True
 
 
+def _share_link_grant_is_active(grant_payload: dict, *, lesson_id: int, grant_id: str) -> bool:
+    share_link_id = int(grant_payload.get("share_link_id") or 0)
+    if not share_link_id:
+        logger.warning("Share playback grant missing share id: lesson=%s", lesson_id)
+        return False
+
+    now = timezone.now()
+    try:
+        share_link = LessonShareLink.objects.only(
+            "id",
+            "project_id",
+            "expires_at",
+            "revoked_at",
+        ).get(pk=share_link_id)
+    except LessonShareLink.DoesNotExist:
+        logger.warning("Share playback grant references missing share link: lesson=%s share=%s", lesson_id, share_link_id)
+        return False
+
+    if int(share_link.project_id) != int(lesson_id):
+        logger.warning("Share playback grant lesson mismatch: lesson=%s share=%s", lesson_id, share_link_id)
+        return False
+    if share_link.revoked_at is not None:
+        logger.warning("Share playback grant denied after revocation: lesson=%s share=%s", lesson_id, share_link_id)
+        _revoke_grant(grant_id, reason="share_revoked", lesson_id=lesson_id, mode="share")
+        return False
+    if share_link.expires_at <= now:
+        logger.warning("Share playback grant denied after expiration: lesson=%s share=%s", lesson_id, share_link_id)
+        _revoke_grant(grant_id, reason="share_expired", lesson_id=lesson_id, mode="share")
+        return False
+    return True
+
+
 def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_key: str | None, mode: str, file_type: str) -> bool:
     if not grant_id:
         if mode == "drm_protected":
@@ -864,6 +967,13 @@ def _check_grant_access(request, *, lesson_id: int, grant_id: str | None, bind_k
             bind_key=bind_key,
             file_type=file_type,
         )
+
+    if grant_mode == "share" and not _share_link_grant_is_active(
+        grant_payload,
+        lesson_id=lesson_id,
+        grant_id=grant_id,
+    ):
+        return False
 
     identity = _playback_identity(request)
     scope_key = _scope_key_for(lesson_id, identity, mode)
@@ -3264,10 +3374,18 @@ class MediaStreamView(APIView):
         else:
             protection_mode, mode_debug = _resolve_effective_protection_mode(sidecar)
 
+        access_mode = protection_mode
         if grant_id:
             grant_payload = cache.get(_grant_key_for(grant_id)) or {}
             grant_mode = str(grant_payload.get("mode") or "").strip().lower()
-            if grant_mode in {"public", "secure_stream", "drm_protected", "studio_preview"} and grant_mode != protection_mode:
+            if grant_mode == "share":
+                access_mode = "share"
+                grant_protection_mode = str(grant_payload.get("protection_mode") or "").strip().lower()
+                if grant_protection_mode in {"public", "secure_stream", "drm_protected"}:
+                    protection_mode = grant_protection_mode
+                mode_debug = {**(mode_debug or {}), "source": "share_grant", "share_grant_applied": True}
+            elif grant_mode in {"public", "secure_stream", "drm_protected", "studio_preview"} and grant_mode != protection_mode:
+                access_mode = grant_mode
                 protection_mode = grant_mode
                 mode_debug = {**(mode_debug or {}), "source": "grant_mode", "grant_mode_override_applied": True}
 
@@ -3276,7 +3394,7 @@ class MediaStreamView(APIView):
             lesson_id=(job.project_id or job_id),
             grant_id=grant_id,
             bind_key=bind_key,
-            mode=protection_mode,
+            mode=access_mode,
             file_type=file_type,
         ):
             return _stream_error_response(file_type=file_type, status_code=status.HTTP_403_FORBIDDEN, reason="grant_invalid")
@@ -3568,6 +3686,272 @@ class PlaybackTokenView(APIView):
         )
         payload["transcript_pages"] = _project_transcript_timeline(project, context={"request": request})
         return Response(payload)
+
+
+def _share_link_error_response(share_link: LessonShareLink | None) -> Response:
+    if share_link is None:
+        return Response(
+            {"error": "Share link is invalid.", "reason": "invalid"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+    if share_link.revoked_at is not None:
+        return Response(
+            {"error": "Share link has been revoked.", "reason": "revoked"},
+            status=status.HTTP_410_GONE,
+        )
+    if share_link.expires_at <= timezone.now():
+        return Response(
+            {"error": "Share link has expired.", "reason": "expired"},
+            status=status.HTTP_410_GONE,
+        )
+    return Response(
+        {"error": "Share link is invalid.", "reason": "invalid"},
+        status=status.HTTP_404_NOT_FOUND,
+    )
+
+
+def _shared_lesson_playback_payload(request, share_link: LessonShareLink) -> Response:
+    project = share_link.project
+    job = _latest_completed_video_export_job(project)
+    if not job:
+        return Response({"error": "No ready video for this lesson.", "reason": "video_not_ready"}, status=status.HTTP_404_NOT_FOUND)
+
+    storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+    sidecar = _playback_sidecar_for_job(storage_root, project.id)
+    protection_mode, mode_debug, _lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
+    if protection_mode == "public":
+        protection_mode = "secure_stream"
+        mode_debug = {
+            **(mode_debug or {}),
+            "effective_mode": "secure_stream",
+            "source": "share_secure_stream",
+            "share_forced_secure_stream": True,
+        }
+    else:
+        mode_debug = {
+            **(mode_debug or {}),
+            "source": f"share_{(mode_debug or {}).get('source', 'mode')}",
+            "share_playback": True,
+        }
+
+    allow_mp4_fallback = bool(getattr(settings, "LESSON_PROTECTION_ALLOW_MP4_FALLBACK", True))
+    if protection_mode == "drm_protected":
+        allow_mp4_fallback = False
+
+    ttl_until_share_expiry = max(1, int((share_link.expires_at - timezone.now()).total_seconds()))
+    ttl_seconds = min(_token_ttl_for_mode("share"), ttl_until_share_expiry)
+    grant_id, _scope_key = _issue_playback_grant(
+        project.id,
+        request,
+        mode="share",
+        ttl_seconds=ttl_seconds,
+        extra_payload={
+            "share_link_id": share_link.id,
+            "share_expires_at": int(share_link.expires_at.timestamp()),
+            "protection_mode": protection_mode,
+        },
+        reuse_existing=False,
+    )
+    bind_key = _bind_key_for_request(request)
+    playback_session_id = _playback_session_id(job.id, grant_id)
+
+    hls_payload = sidecar.get("hls") if isinstance(sidecar, dict) else None
+    hls_manifest_token = None
+    if hls_payload and hls_payload.get("manifest_rel_path"):
+        hls_manifest_token = generate_media_token(
+            job.id,
+            "hls_manifest",
+            rel_path=hls_payload["manifest_rel_path"],
+            ttl_seconds=ttl_seconds,
+            grant_id=grant_id,
+            bind_key=bind_key,
+        )
+
+    avatar_artifact_state = _avatar_artifact_state(project, sidecar)
+    avatar_token = None
+    if bool(avatar_artifact_state.get("available")) and avatar_artifact_state.get("rel_path") and _avatar_active_for_project(project):
+        avatar_token = generate_media_token(
+            job.id,
+            "avatar",
+            rel_path=str(avatar_artifact_state.get("rel_path")),
+            ttl_seconds=ttl_seconds,
+            grant_id=grant_id,
+            bind_key=bind_key,
+        )
+
+    video_token = generate_media_token(
+        job.id,
+        "video",
+        ttl_seconds=ttl_seconds,
+        grant_id=grant_id,
+        bind_key=bind_key,
+    ) if allow_mp4_fallback else ""
+    srt_token = generate_media_token(
+        job.id,
+        "srt",
+        ttl_seconds=ttl_seconds,
+        grant_id=grant_id,
+        bind_key=bind_key,
+    ) if job.srt_url else None
+    vtt_token = _generate_vtt_media_token_for_job(
+        job,
+        storage_root=storage_root,
+        ttl_seconds=ttl_seconds,
+        grant_id=grant_id,
+        bind_key=bind_key,
+    ) if job.srt_url else None
+
+    data = CatalogProjectSerializer(project, context={"request": request}).data
+    playback = _playback_payload(
+        request,
+        project,
+        job,
+        video_token,
+        srt_token,
+        vtt_token=vtt_token,
+        hls_manifest_token=hls_manifest_token,
+        hls_encrypted=bool(hls_payload.get("encrypted")) if hls_payload else False,
+        asset_id=(sidecar.get("asset_id") if isinstance(sidecar, dict) else None) or _default_asset_id(project.id),
+        content_id=(sidecar.get("content_id") if isinstance(sidecar, dict) else None) or _default_content_id(project.id),
+        protection_mode=protection_mode,
+        mode_debug=mode_debug,
+        allow_mp4_fallback=allow_mp4_fallback,
+        playback_session_id=playback_session_id,
+        session_binding_active=True,
+        avatar_token=avatar_token,
+        avatar_overlay_defaults=_avatar_overlay_defaults_for_project(project),
+        avatar_artifact_state=avatar_artifact_state,
+    )
+    data.update(
+        {
+            "share": _share_link_payload(request, share_link),
+            "stream_url": playback["video_url"],
+            "video_url": playback["video_url"],
+            "srt_url": playback["srt_url"],
+            "vtt_url": playback.get("vtt_url"),
+            "subtitle_vtt_url": playback.get("subtitle_vtt_url"),
+            "has_srt": bool(job.srt_url),
+            "has_vtt": bool(playback.get("vtt_url")),
+            "expires_in": playback["expires_in"],
+            "protection_mode": playback["protection_mode"],
+            "allow_mp4_fallback": playback["allow_mp4_fallback"],
+            "session_binding_active": playback.get("session_binding_active", False),
+            "streaming": playback.get("streaming"),
+            "playback_debug": playback.get("playback_debug"),
+            "watermark": playback["watermark"],
+            "protection": playback["protection"],
+            "drm": playback["drm"],
+            "avatar_overlay": playback.get("avatar_overlay", {"enabled": False, "stream_url": "", "defaults": {}}),
+            "avatar_placement": playback.get("avatar_overlay", {}).get("placement") or normalize_avatar_placement(),
+            "avatar_active_for_lesson": _avatar_active_for_project(project),
+            "avatar_processing_status": playback.get("avatar_processing_status", "none"),
+            "avatar_processing_message": playback.get("avatar_processing_message", ""),
+            "avatar_visible": playback.get("avatar_visible", True),
+            "avatar_available": playback.get("avatar_available", False),
+            "avatar_updated_at": playback.get("avatar_updated_at"),
+            "avatar_engine_selected": playback.get("avatar_engine_selected", ""),
+            "normalized_engine": playback.get("normalized_engine", playback.get("avatar_engine_selected", "")),
+            "final_avatar_engine_chain": playback.get("final_avatar_engine_chain", []),
+            "avatar_runtime_settings": playback.get("avatar_runtime_settings", project_avatar_runtime_settings(project)),
+            "avatar_runtime_status": playback.get("avatar_runtime_status", _avatar_runtime_status_for_project(project)),
+            "playback_status": playback.get("playback_status"),
+            "mode_debug": playback.get("mode_debug"),
+            "transcript_pages": _project_transcript_timeline(project, context={"request": request}),
+            "publisher_id": project.user_id,
+            "publisher_username": project.user.username if project.user else "",
+            "publisher_display_name": _publisher_public_lesson_display_name(project.user) if project.user else "",
+            "publisher_logo_url": _publisher_public_logo_url(request, project.user),
+            "publisher_avatar_url": _publisher_public_logo_url(request, project.user),
+            "publisher_initials": _publisher_initials(project.user) if project.user else "",
+        }
+    )
+    return Response(data)
+
+
+class ProjectShareLinkCreateView(APIView):
+    """
+    POST /api/v1/projects/<project_id>/share-links/
+
+    Creates a raw share token once for the lesson owner/staff. The database
+    stores only the token hash. Default expiry is 24 hours.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.select_related("user").get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_review_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+        if not _latest_completed_video_export_job(project):
+            return Response({"error": "No ready video for this lesson."}, status=status.HTTP_409_CONFLICT)
+
+        requested_ttl = request.data.get("expires_in_seconds") if hasattr(request, "data") else None
+        try:
+            ttl_seconds = int(requested_ttl) if requested_ttl not in (None, "") else _share_link_default_ttl_seconds()
+        except (TypeError, ValueError):
+            ttl_seconds = _share_link_default_ttl_seconds()
+        ttl_seconds = max(60, min(ttl_seconds, _share_link_max_ttl_seconds()))
+        expires_at = timezone.now() + timedelta(seconds=ttl_seconds)
+
+        for _attempt in range(3):
+            token = _generate_share_link_token()
+            try:
+                share_link = LessonShareLink.objects.create(
+                    project=project,
+                    owner=request.user,
+                    token_hash=_share_link_token_hash(token),
+                    expires_at=expires_at,
+                )
+                return Response(_share_link_payload(request, share_link, token=token), status=status.HTTP_201_CREATED)
+            except IntegrityError:
+                logger.warning("Share link token hash collision for project=%s", project.id)
+        return Response({"error": "Could not create share link."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class SharedLessonPlaybackView(APIView):
+    """
+    GET /api/v1/share/<token>/
+
+    Anonymous metadata and protected media URL issuance for one expiring share
+    link. Expired/revoked links fail here and inside MediaStreamView.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, token):
+        share_link = _lookup_share_link_for_token(token)
+        if not share_link or share_link.revoked_at is not None or share_link.expires_at <= timezone.now():
+            return _share_link_error_response(share_link)
+
+        LessonShareLink.objects.filter(pk=share_link.pk).update(
+            last_accessed_at=timezone.now(),
+            access_count=F("access_count") + 1,
+        )
+        share_link.refresh_from_db(fields=["last_accessed_at", "access_count"])
+        return _shared_lesson_playback_payload(request, share_link)
+
+
+class ShareLinkDetailView(APIView):
+    """
+    DELETE /api/v1/share-links/<id>/
+
+    Revokes a share link. The stream endpoint observes revoked_at on every
+    share-granted media request, so revocation cuts off existing media URLs too.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, share_link_id):
+        try:
+            share_link = LessonShareLink.objects.select_related("project").get(pk=share_link_id)
+        except LessonShareLink.DoesNotExist:
+            return Response({"error": "Share link not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_review_project(request.user, share_link.project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+        if share_link.revoked_at is None:
+            share_link.revoked_at = timezone.now()
+            share_link.save(update_fields=["revoked_at"])
+        return Response(_share_link_payload(request, share_link), status=status.HTTP_200_OK)
 
 
 

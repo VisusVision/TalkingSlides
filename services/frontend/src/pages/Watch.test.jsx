@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   addComment: vi.fn(),
+  createProjectShareLink: vi.fn(),
   fetchCatalog: vi.fn(),
   fetchComments: vi.fn(),
   fetchLesson: vi.fn(),
@@ -21,6 +22,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../api', () => ({
   addComment: mocks.addComment,
+  createProjectShareLink: mocks.createProjectShareLink,
   fetchCatalog: mocks.fetchCatalog,
   fetchComments: mocks.fetchComments,
   fetchLesson: mocks.fetchLesson,
@@ -172,6 +174,11 @@ describe('public Watch transcript data flow', () => {
     mocks.fetchCatalog.mockResolvedValue([catalogLesson]);
     mocks.fetchLesson.mockResolvedValue(catalogLesson);
     mocks.fetchPlaybackToken.mockResolvedValue(null);
+    mocks.createProjectShareLink.mockResolvedValue({
+      id: 9,
+      share_url: 'http://localhost:5173/share/share-token',
+      expires_at: '2026-06-26T12:00:00Z',
+    });
     mocks.fetchSubtitleTrackBundle.mockResolvedValue({ tracks: [], requestableLanguages: [] });
     mocks.fetchComments.mockResolvedValue([
       { id: 5, display_name: 'Viewer', text: 'Public comment' },
@@ -228,6 +235,45 @@ describe('public Watch transcript data flow', () => {
 
     expect(mocks.saveProgress).not.toHaveBeenCalled();
     expect(host.querySelector('video').currentTime).toBe(0);
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it('lets the lesson owner generate and copy a share link', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const { host, root } = await renderWatch({ id: 7 });
+    const shareButton = Array.from(host.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('Share'));
+
+    expect(shareButton).toBeTruthy();
+
+    await act(async () => shareButton.click());
+
+    expect(mocks.createProjectShareLink).toHaveBeenCalledWith(42);
+    expect(host).toHaveTextContent('http://localhost:5173/share/share-token');
+
+    const copyButton = Array.from(host.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('Copy'));
+    await act(async () => copyButton.click());
+
+    expect(writeText).toHaveBeenCalledWith('http://localhost:5173/share/share-token');
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it('does not render Share for a non-owner viewer', async () => {
+    const { host, root } = await renderWatch({ id: 99 });
+
+    const shareButton = Array.from(host.querySelectorAll('button'))
+      .find((button) => button.textContent.includes('Share'));
+    expect(shareButton).toBeFalsy();
 
     await act(async () => root.unmount());
     host.remove();
