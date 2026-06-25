@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   fetchPlaybackToken,
   fetchLesson,
+  fetchSharedLesson,
   fetchStudioPreviewToken,
+  createProjectShareLink,
   heartbeatPlaybackSession,
   setToken,
 } from './api';
@@ -91,6 +93,52 @@ describe('playback session API credentials', () => {
         body: JSON.stringify({ visibility: 'visible' }),
       }),
     );
+  });
+
+  it('creates a project share link with auth and normalizes the frontend share URL', async () => {
+    setToken('token-123');
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        token: 'share-token',
+        share_path: '/share/share-token',
+        expires_at: '2026-06-26T12:00:00Z',
+      }),
+    });
+
+    const payload = await createProjectShareLink(42);
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/projects/42/share-links/'),
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Token token-123',
+          'Content-Type': 'application/json',
+        }),
+      }),
+    );
+    expect(payload.share_url).toBe(`${window.location.origin}/share/share-token`);
+  });
+
+  it('includes browser credentials when resolving a shared lesson token', async () => {
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        id: 42,
+        stream_url: '/api/v1/stream/share-media/',
+        avatar_overlay: { enabled: true, stream_url: '/api/v1/stream/avatar/' },
+      }),
+    });
+
+    const payload = await fetchSharedLesson('share-token');
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/share/share-token/'),
+      expect.objectContaining({ credentials: 'include' }),
+    );
+    expect(payload.stream_url).toContain('/api/v1/stream/share-media/');
+    expect(payload.avatar_overlay.stream_url).toContain('/api/v1/stream/avatar/');
   });
 
   it('deduplicates concurrent lesson fetches for the same authenticated session', async () => {

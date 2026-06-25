@@ -303,6 +303,35 @@ class Project(models.Model):
         return self.title
 
 
+class LessonShareLink(models.Model):
+    """Expiring, revocable share link for one lesson.
+
+    The raw share token is never stored. Only its SHA-256 hash is persisted.
+    Existing media stream tokens issued from the link re-check this row, so
+    revocation and expiration apply to metadata and media access.
+    """
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="share_links")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="lesson_share_links")
+    token_hash = models.CharField(max_length=64, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_accessed_at = models.DateTimeField(null=True, blank=True)
+    access_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["project", "-created_at"], name="c_lsl_project_created_idx"),
+            models.Index(fields=["owner", "-created_at"], name="c_lsl_owner_created_idx"),
+            models.Index(fields=["project", "revoked_at", "expires_at"], name="c_lsl_project_active_idx"),
+        ]
+
+    def __str__(self):
+        return f"LessonShareLink project={self.project_id} owner={self.owner_id}"
+
+
 def _user_can_own_playlist(user) -> bool:
     if not user:
         return False

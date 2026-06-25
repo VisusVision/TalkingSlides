@@ -1,8 +1,9 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Check, ChevronDown, Focus, Heart, MessageSquare, Send, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
+import { Check, ChevronDown, Copy, Focus, Heart, MessageSquare, Send, Share2, ShieldCheck, Sparkles, UserPlus } from 'lucide-react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   addComment,
+  createProjectShareLink,
   fetchCatalog,
   fetchComments,
   fetchLesson,
@@ -132,6 +133,13 @@ function formatCommentDate(value) {
     day: 'numeric',
     year: 'numeric',
   });
+}
+
+function formatShareExpiry(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function compactCount(value, noun) {
@@ -465,6 +473,10 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [likeError, setLikeError] = useState('');
   const [followBusy, setFollowBusy] = useState(false);
   const [followError, setFollowError] = useState('');
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareError, setShareError] = useState('');
+  const [shareLink, setShareLink] = useState(null);
+  const [shareCopied, setShareCopied] = useState(false);
   const [playlistContext, setPlaylistContext] = useState(null);
   const [autoplayPrompt, setAutoplayPrompt] = useState(null);
   const progressSavedAtRef = useRef(0);
@@ -563,6 +575,9 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         manualSubtitleSelectionLessonRef.current = '';
         setLikeError('');
         setFollowError('');
+        setShareError('');
+        setShareLink(null);
+        setShareCopied(false);
       } catch (err) {
         if (!active) return;
         setLessonError(err.message || 'Failed to load lesson.');
@@ -930,9 +945,11 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const publisherFollowerCount = Math.max(0, Number(lesson?.publisher_follower_count ?? lesson?.follower_count ?? 0));
   const isFollowingPublisher = Boolean(lesson?.publisher_is_following ?? lesson?.is_following_publisher);
   const isOwnPublisher = Boolean(user?.id && publisherId && Number(user.id) === Number(publisherId));
+  const canShareLesson = Boolean(user && (isOwnPublisher || user.is_staff || user.is_superuser));
   const visibleComments = commentsExpanded ? comments : comments.slice(0, COMMENT_PREVIEW_LIMIT);
   const hiddenCommentCount = Math.max(0, comments.length - COMMENT_PREVIEW_LIMIT);
   const progressLabel = userProgressPct > 0 ? `${Math.round(userProgressPct)}%` : '';
+  const shareExpiresLabel = formatShareExpiry(shareLink?.expires_at);
 
   useEffect(() => {
     if (!preferredSubtitleLanguage) return;
@@ -1155,6 +1172,33 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       setFollowError(err.message || 'Could not update follow.');
     } finally {
       setFollowBusy(false);
+    }
+  };
+
+  const handleCreateShareLink = async () => {
+    if (!activeLessonId || shareBusy || !canShareLesson) return;
+    setShareBusy(true);
+    setShareError('');
+    setShareCopied(false);
+    try {
+      const payload = await createProjectShareLink(activeLessonId);
+      setShareLink(payload);
+    } catch (err) {
+      setShareError(err.message || 'Could not create share link.');
+    } finally {
+      setShareBusy(false);
+    }
+  };
+
+  const handleCopyShareLink = async () => {
+    const url = String(shareLink?.share_url || '').trim();
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareCopied(true);
+      window.setTimeout(() => setShareCopied(false), 1800);
+    } catch {
+      setShareError('Could not copy link.');
     }
   };
 
@@ -1408,6 +1452,18 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         <span>{commentCount}</span>
                         <span>Comments</span>
                       </Button>
+                      {canShareLesson && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          type="button"
+                          onClick={handleCreateShareLink}
+                          disabled={shareBusy}
+                        >
+                          <Share2 size={14} />
+                          <span>{shareBusy ? 'Creating...' : 'Share'}</span>
+                        </Button>
+                      )}
                       {publisherId && !isOwnPublisher && (
                         <Button
                           size="sm"
@@ -1433,6 +1489,24 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                   )}
                   {followError && (
                     <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{followError}</p>
+                  )}
+                  {shareError && (
+                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{shareError}</p>
+                  )}
+                  {shareLink?.share_url && (
+                    <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-[var(--text-primary)]">Share link</p>
+                        <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{shareLink.share_url}</p>
+                        {shareExpiresLabel && (
+                          <p className="mt-1 text-xs text-[var(--text-secondary)]">Expires {shareExpiresLabel}</p>
+                        )}
+                      </div>
+                      <Button size="sm" variant="secondary" type="button" onClick={handleCopyShareLink}>
+                        <Copy size={14} />
+                        <span>{shareCopied ? 'Copied' : 'Copy'}</span>
+                      </Button>
+                    </div>
                   )}
                 </SurfaceCard>
 

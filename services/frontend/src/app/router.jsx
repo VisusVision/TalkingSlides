@@ -4,6 +4,7 @@ import ProtectedRoute from './ProtectedRoute';
 
 const Home = lazy(() => import('../pages/Home'));
 const Watch = lazy(() => import('../pages/Watch'));
+const SharedWatch = lazy(() => import('../pages/SharedWatch'));
 const Studio = lazy(() => import('../pages/Studio'));
 const Browse = lazy(() => import('../pages/Browse'));
 const Channel = lazy(() => import('../pages/Channel'));
@@ -27,6 +28,7 @@ export default function AppRouter({
       <Routes>
         <Route path="/" element={<Home searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
         <Route path="/watch" element={<Watch searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
+        <Route path="/share/:token" element={<SharedWatch />} />
         <Route
           path="/studio"
           element={(

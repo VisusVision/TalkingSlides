@@ -575,6 +575,43 @@ export async function updateProjectPublished(projectId, isPublished) {
   return res.json();
 }
 
+export async function createProjectShareLink(projectId, options = {}) {
+  const body = {};
+  if (options.expiresInSeconds) {
+    body.expires_in_seconds = Number(options.expiresInSeconds);
+  }
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/share-links/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw apiError(data, 'Failed to create share link');
+  }
+  const sharePath = data.share_path || (data.token ? `/share/${data.token}` : '');
+  const shareUrl = sharePath
+    ? `${window.location.origin}${sharePath}`
+    : (data.share_url || '');
+  return {
+    ...data,
+    share_path: sharePath,
+    share_url: shareUrl,
+  };
+}
+
+export async function revokeShareLink(shareLinkId) {
+  const res = await fetch(`${API_BASE_URL}/share-links/${shareLinkId}/`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw apiError(data, 'Failed to revoke share link');
+  }
+  return data;
+}
+
 export async function getProjectModeration(projectId) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/moderation/`, {
     headers: authHeaders(),
@@ -1079,6 +1116,64 @@ export async function fetchLesson(projectId) {
   });
   lessonRequestPromises.set(requestKey, request);
   return request;
+}
+
+export async function fetchSharedLesson(token) {
+  const safeToken = String(token || '').trim();
+  if (!safeToken) {
+    throw new Error('Share link is invalid.');
+  }
+  const res = await fetch(`${API_BASE_URL}/share/${encodeURIComponent(safeToken)}/`, {
+    credentials: 'include',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(apiErrorMessage(data, 'Share link is invalid or expired.'));
+    error.status = res.status;
+    error.reason = data.reason || '';
+    error.payload = data;
+    throw error;
+  }
+  const streaming = data.streaming
+    ? {
+        ...data.streaming,
+        fallback: data.streaming.fallback
+          ? {
+              ...data.streaming.fallback,
+              url: toAbsoluteApiUrl(data.streaming.fallback.url),
+            }
+          : null,
+        hls: data.streaming.hls
+          ? {
+              ...data.streaming.hls,
+              manifest_url: toAbsoluteApiUrl(data.streaming.hls.manifest_url),
+            }
+          : null,
+      }
+    : null;
+  return {
+    ...data,
+    stream_url: toAbsoluteApiUrl(data.stream_url || data.video_url),
+    video_url: toAbsoluteApiUrl(data.video_url || data.stream_url),
+    srt_url: toAbsoluteApiUrl(data.srt_url),
+    vtt_url: toAbsoluteApiUrl(data.vtt_url || data.subtitle_vtt_url),
+    subtitle_vtt_url: toAbsoluteApiUrl(data.subtitle_vtt_url || data.vtt_url),
+    streaming,
+    drm: data.drm
+      ? {
+          ...data.drm,
+          license_url: toAbsoluteApiUrl(data.drm.license_url),
+          certificate_url: toAbsoluteApiUrl(data.drm.certificate_url),
+          manifest_url: toAbsoluteApiUrl(data.drm.manifest_url),
+        }
+      : null,
+    avatar_overlay: data.avatar_overlay
+      ? {
+          ...data.avatar_overlay,
+          stream_url: toAbsoluteApiUrl(data.avatar_overlay.stream_url),
+        }
+      : null,
+  };
 }
 
 export async function getPlaylistContext(projectId) {
