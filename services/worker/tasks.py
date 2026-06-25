@@ -3168,6 +3168,12 @@ def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[
     for order, slide in enumerate(slides or []):
         if not isinstance(slide, dict):
             continue
+        if (
+            str(slide.get("scene_background_mode") or "").strip().lower() == "whiteboard"
+            and not str(slide.get("image_path") or "").strip()
+            and not str(slide.get("slide_path") or "").strip()
+        ):
+            continue
         image_path = _visual_asset_path(
             slide.get("moderation_image_path")
             or slide.get("image_path")
