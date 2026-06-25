@@ -10,9 +10,12 @@ import {
 import AppRouter from './router';
 import AppShell from '../components/ui/AppShell';
 import AuthModal from '../components/ui/AuthModal';
+import RouteErrorBoundary from '../components/ui/RouteErrorBoundary';
 import { ThemeProvider } from '../components/ui/ThemeProvider';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { PageLoadingProvider } from '../components/ui/PageLoading';
 import { CapabilitiesProvider, useCapabilities } from '../lib/capabilities';
+import { ROUTE_RESET_EVENT, readRouteSessionState, writeRouteSessionState } from '../utils/routeSession';
 
 function getRedirectFromSearch(search) {
   const params = new URLSearchParams(search || '');
@@ -24,16 +27,53 @@ function getRedirectFromSearch(search) {
   return redirect;
 }
 
+export function searchScopeForPathname(pathname) {
+  const path = String(pathname || '/').split('?')[0] || '/';
+  const matches = (prefix) => path === prefix || path.startsWith(`${prefix}/`);
+  if (matches('/moderation')) return 'moderation';
+  if (matches('/studio')) return 'studio';
+  if (matches('/analytics')) return 'analytics';
+  if (matches('/browse')) return 'browse';
+  if (matches('/watch')) return 'watch';
+  if (matches('/library')) return 'library';
+  if (matches('/my-lessons')) return 'my-lessons';
+  if (path.startsWith('/channel/')) return `channel:${path}`;
+  return 'home';
+}
+
+function scopedSearchValue(searchQueries, pathname) {
+  const scope = searchScopeForPathname(pathname);
+  return String(searchQueries?.[scope] || '');
+}
+
+function searchScopeForRouteReset(routeId) {
+  if (routeId === 'dashboard') return 'home';
+  return routeId || '';
+}
+
+function searchSessionUserKey(user) {
+  return String(user?.id || user?.pk || user?.email || user?.username || 'anonymous');
+}
+
 function AppWithRouter() {
   const navigate = useNavigate();
   const location = useLocation();
   const { refreshCapabilities } = useCapabilities();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQueries, setSearchQueries] = useState({});
   const [user, setUser] = useState(() => getStoredAuthUser());
   const [authLoading, setAuthLoading] = useState(() => !getStoredAuthUser());
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [pendingRedirect, setPendingRedirect] = useState('');
+  const searchQuery = scopedSearchValue(searchQueries, location.pathname);
+  const searchUserKey = searchSessionUserKey(user);
+  const handleSearchQueryChange = useCallback((nextQuery) => {
+    const scope = searchScopeForPathname(location.pathname);
+    setSearchQueries((current) => ({
+      ...current,
+      [scope]: nextQuery,
+    }));
+  }, [location.pathname]);
 
   const refreshCurrentUser = useCallback(async () => {
     const currentUser = await fetchCurrentUser();
@@ -74,6 +114,33 @@ function AppWithRouter() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const stored = readRouteSessionState('route-search', user);
+    const storedQueries = stored?.queries && typeof stored.queries === 'object' ? stored.queries : {};
+    setSearchQueries((current) => (
+      Object.keys(current).length > 0 ? { ...storedQueries, ...current } : storedQueries
+    ));
+  }, [searchUserKey]);
+
+  useEffect(() => {
+    writeRouteSessionState('route-search', user, { queries: searchQueries });
+  }, [searchQueries, searchUserKey, user]);
+
+  useEffect(() => {
+    const handleRouteReset = (event) => {
+      const scope = searchScopeForRouteReset(event.detail?.routeId);
+      if (!scope) return;
+      setSearchQueries((current) => {
+        if (!Object.prototype.hasOwnProperty.call(current, scope)) return current;
+        const next = { ...current };
+        delete next[scope];
+        return next;
+      });
+    };
+    window.addEventListener(ROUTE_RESET_EVENT, handleRouteReset);
+    return () => window.removeEventListener(ROUTE_RESET_EVENT, handleRouteReset);
   }, []);
 
   const clearRedirectQuery = useCallback(() => {
@@ -139,7 +206,7 @@ function AppWithRouter() {
     <>
       <AppShell
         searchQuery={searchQuery}
-        onSearchQueryChange={setSearchQuery}
+        onSearchQueryChange={handleSearchQueryChange}
         user={user}
         authLoading={authLoading}
         onLoginRequest={handleLoginRequest}
@@ -151,12 +218,14 @@ function AppWithRouter() {
             <p className="body-md mt-2">Syncing your profile and theme preferences...</p>
           </SurfaceCard>
         ) : (
-          <AppRouter
-            user={user}
-            searchQuery={searchQuery}
-            onLoginRequest={handleLoginRequest}
-            onUserRefresh={refreshCurrentUser}
-          />
+          <RouteErrorBoundary resetKey={`${location.pathname}${location.search}`}>
+            <AppRouter
+              user={user}
+              searchQuery={searchQuery}
+              onLoginRequest={handleLoginRequest}
+              onUserRefresh={refreshCurrentUser}
+            />
+          </RouteErrorBoundary>
         )}
       </AppShell>
 
@@ -174,7 +243,9 @@ export default function App() {
     <ThemeProvider>
       <CapabilitiesProvider>
         <BrowserRouter>
-          <AppWithRouter />
+          <PageLoadingProvider>
+            <AppWithRouter />
+          </PageLoadingProvider>
         </BrowserRouter>
       </CapabilitiesProvider>
     </ThemeProvider>

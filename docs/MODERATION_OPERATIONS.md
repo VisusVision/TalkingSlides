@@ -411,7 +411,7 @@ Behavior:
 LibreTranslate can be started with the optional Docker profile when needed:
 
 ```sh
-docker compose --profile translation up -d libretranslate
+docker compose -f infra/docker-compose.yml --profile translation up -d libretranslate
 ```
 
 Then enable the bridge for a worker smoke test:

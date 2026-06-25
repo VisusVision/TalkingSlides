@@ -173,8 +173,11 @@ def test_frontend_avatar_controls_are_hidden_by_default():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "data-testid=\"avatar-overlay-controls\"" in source
-    assert "data-controls-visible={controlsVisible || dragging ? 'true' : 'false'}" in source
+    assert "data-controls-visible={controlsVisible || dragging || resizing ? 'true' : 'false'}" in source
     assert "visible ? 'pointer-events-auto opacity-100' : 'pointer-events-none opacity-0'" in source
+    assert "'focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full'" in source
+    assert "interactive ? 'pointer-events-auto' : 'pointer-events-none'" in source
+    assert "tabIndex={interactive ? undefined : -1}" in source
     assert "transition-opacity duration-200 ease-out" in source
     assert "theaterOpen || controlsVisible" not in source
 
@@ -215,7 +218,14 @@ def test_frontend_avatar_drag_position_is_clamped():
     assert "export function clampAvatarPlacement" in source
     assert "Math.max(0, 1 - width)" in source
     assert "window.addEventListener('pointermove'" in source
-    assert "data-testid=\"avatar-drag-handle\"" in source
+    assert "function isInteractiveAvatarTarget(target)" in source
+    assert "button" in source
+    assert "'[data-avatar-control=\"true\"]'" in source
+    assert "'[data-avatar-no-drag=\"true\"]'" in source
+    assert "handleFramePointerDown" in source
+    assert "if (isInteractiveAvatarTarget(event.target)) return;" in source
+    assert "handleDragPointerDown(event)" in source
+    assert "data-testid=\"avatar-drag-handle\"" not in source
     assert "writeStoredPlacement(lessonId, clamped)" in source
 
 
@@ -223,7 +233,7 @@ def test_frontend_avatar_reset_restores_default_position():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "Reset avatar position" in source
-    assert "setCurrentPlacement(defaultPlacement)" in source
+    assert "setCurrentPlacement(clampAvatarPlacement(defaultPlacement, bounds))" in source
     assert "clearStoredPlacement(lessonId)" in source
 
 
@@ -231,7 +241,8 @@ def test_frontend_avatar_theater_does_not_persist_and_keeps_caption_contract():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "data-testid=\"avatar-theater-overlay\"" in source
-    assert "pointer-events-none absolute inset-x-3 top-3 bottom-16" in source
+    assert "pointer-events-none absolute inset-x-0 top-0 flex items-center justify-center" in source
+    assert "style={{ bottom: videoControlSafeBottomCss(), zIndex: AVATAR_OVERLAY_Z_INDEX.avatarTheater }}" in source
     assert "data-avatar-theater-frame=\"true\"" in source
     assert "fixed inset-0" not in source
     assert "setTheaterOpen(false)" in source
@@ -245,21 +256,30 @@ def test_frontend_avatar_theater_is_transparent_resizable_overlay():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "const THEATER_SCALE_DEFAULT = 1;" in source
-    assert "const THEATER_SCALE_MIN = 0.72;" in source
+    assert "const THEATER_SCALE_MIN = 0.32;" in source
     assert "const THEATER_SCALE_MAX = 1.35;" in source
-    assert "const THEATER_SCALE_STEP = 0.08;" in source
-    assert "const THEATER_BASE_WIDTH_VW = 82;" in source
-    assert "const THEATER_BASE_WIDTH_PX = 980;" in source
-    assert "const THEATER_MAX_HEIGHT_VH = 82;" in source
+    assert "const MANUAL_WIDTH_MIN = 0.20;" in source
+    assert "const MANUAL_WIDTH_MAX = 0.98;" in source
+    assert "const THEATER_ACTIVE_WIDTH_RATIO = 0.70;" in source
+    assert "const VIDEO_CONTROL_SAFE_BOTTOM = 56;" in source
+    assert "function videoControlSafeBottomCss()" in source
+    assert "export function getSafeContainerRect(containerRect)" in source
+    assert "export function clampAvatarRectToSafeArea(rect, safeRect)" in source
+    assert "export function clampAvatarPlacementToSafeArea(placement, bounds = null)" in source
+    assert "const THEATER_BASE_WIDTH_VW = 98;" in source
+    assert "const THEATER_BASE_WIDTH_PX = 1800;" in source
+    assert "const THEATER_MAX_HEIGHT_VH = 98;" in source
     assert "const THEATER_OBJECT_POSITION = '50% 45%';" in source
     assert "const theaterFrameClass = [" in source
-    assert "'pointer-events-auto relative flex aspect-video items-center justify-center overflow-hidden'" in source
+    assert "'pointer-events-none relative flex aspect-video items-center justify-center overflow-hidden'" in source
     assert "'rounded-xl border border-white/30 bg-white/5 shadow-2xl ring-1 ring-black/30'" in source
     assert "'transition-all duration-200 ease-out'" in source
     assert "const theaterForegroundFrameClass = 'flex h-full w-full items-center justify-center overflow-hidden rounded-xl';" in source
     assert "const theaterForegroundClass = 'h-full w-full bg-transparent object-cover';" in source
     assert "function theaterPlacementStyle(scale)" in source
     assert "aspectRatio: '16 / 9'" in source
+    assert "height: `min(${(THEATER_BASE_WIDTH_VW * clampedScale).toFixed(1)}%" in source
+    assert "maxHeight: '100%'" in source
     assert "storageKey(lessonId, 'theater-scale')" in source
     assert "data-testid=\"avatar-overlay-video\"" in source
     assert "data-avatar-video-mode={theater ? 'theater' : 'pip'}" in source
@@ -269,12 +289,39 @@ def test_frontend_avatar_theater_is_transparent_resizable_overlay():
     assert "style={theaterPlacementStyle(theaterScale)}" in source
     assert "className={theaterFrameClass}" in source
     assert "className={theaterForegroundFrameClass}" in source
-    assert "Make avatar smaller" in source
-    assert "Make avatar larger" in source
+    assert "data-testid=\"avatar-resize-grip\"" in source
+    assert "data-avatar-resize-grip=\"true\"" in source
+    assert "data-avatar-resize-bottom-offset" not in source
+    assert "bottomOffset" not in source
+    assert "MoveDiagonal" in source
+    assert "MoveDiagonal2" not in source
+    assert "data-avatar-resize-icon=\"sw-ne\"" in source
+    assert "data-avatar-resize-direction=\"top-right-bottom-left\"" in source
+    assert "data-avatar-player-control-pass-through=\"true\"" in source
+    assert "data-avatar-video-control-safe-bottom={videoControlSafeBottomCss()}" in source
+    assert "data-avatar-body-surface=\"true\"" in source
+    assert "className=\"absolute inset-0 pointer-events-auto\"" in source
+    assert "data-avatar-player-control-pass-through-bottom" not in source
+    assert "PLAYER_CONTROL_PASS_THROUGH_BOTTOM" not in source
+    assert "theaterButtonActive ? PLAYER_CONTROL_PASS_THROUGH_BOTTOM : '0px'" not in source
+    assert "data-avatar-theater-active={theater ? 'true' : 'false'}" in source
+    assert "aria-pressed={theater ? 'true' : 'false'}" in source
+    assert "isAvatarEffectivelyLarge(currentPlacement, theaterOpen)" in source
+    assert "Resize avatar theater" in source
+    assert "handleResizePointerDown" in source
+    assert "Capture the rendered theater rectangle first; resize gestures then use only manual bounds." in source
+    assert "manualMaxWidthForBounds(bounds) * bounds.width" in source
+    assert "safeRect.height / (rectWidth * HEIGHT_RATIO)" in source
+    assert "setCurrentPlacement((previousPlacement) =>" in source
+    assert "FLOATING_WIDTH_MAX" not in source
+    assert "resizeState.mode === 'theater'" not in source
+    assert "writeStoredTheaterScale(lessonId, nextScale)" not in source
+    assert "clearStoredTheaterScale(lessonId)" in source
+    assert "setTheaterScale(THEATER_SCALE_DEFAULT)" in source
+    assert "Make avatar smaller" not in source
+    assert "Make avatar larger" not in source
     assert "Reset avatar theater" in source
     assert source.count("'Reset avatar theater'") == 1
-    assert "onTheaterSizeDecrease={handleTheaterSizeDecrease}" in source
-    assert "onTheaterSizeIncrease={handleTheaterSizeIncrease}" in source
     assert "onTheaterReset={handleTheaterReset}" in source
     assert "onTheaterSizeReset" not in source
     assert "avatar-theater-background-video" not in source

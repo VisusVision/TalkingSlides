@@ -50,6 +50,46 @@ _celery_app = Celery(broker=_BROKER_URL)
 _RUN_PROJECT_MODERATION_TASK = "worker.tasks.run_project_moderation"
 logger = logging.getLogger(__name__)
 REPORT_DEDUPE_WINDOW = timedelta(hours=24)
+MODERATION_PAGE_SIZE_DEFAULT = 25
+MODERATION_PAGE_SIZE_MAX = 100
+MODERATION_PAGINATION_PARAMS = {
+    "limit",
+    "offset",
+    "page",
+    "page_size",
+    "q",
+    "search",
+    "severity",
+    "category",
+    "asset_kind",
+    "provider_unavailable",
+    "needs_review",
+}
+VISUAL_MODERATION_CATEGORIES = {"sexual", "violence", "graphic_content", "self_harm", "provider_unavailable"}
+TEXT_MODERATION_CATEGORIES = {
+    "abusive_language",
+    "copyright_text",
+    "dangerous_instruction",
+    "hate_or_harassment",
+    "inappropriate_language",
+    "language",
+    "profanity",
+    "self_harm_instruction",
+    "sexual_text",
+    "text_moderation",
+    "violence_text",
+}
+VISUAL_MODERATION_ASSET_KINDS = {
+    "cover",
+    "custom_background",
+    "draft_visual_asset",
+    "profile_image",
+    "channel_logo",
+    "channel_banner",
+    "slide_image",
+    "video_frame",
+}
+TEXT_MODERATION_CONTENT_TYPES = {"text", "ocr", "transcript", "subtitle", "language"}
 
 
 def _moderation_task_queue_name() -> str:
@@ -457,11 +497,11 @@ class AdminModerationReviewRequestListView(APIView):
         requested_tab = str(request.query_params.get("tab", "") or "").strip().lower()
         requested_filter = str(request.query_params.get("filter", "") or "").strip().lower()
         if requested_tab or requested_filter:
-            return _admin_moderation_tab_response(requested_tab or "open", requested_filter or "all")
+            return _admin_moderation_tab_response(requested_tab or "open", requested_filter or "all", request=request)
 
         requested_queue = str(request.query_params.get("queue", "") or "").strip().lower()
         if requested_queue:
-            return _admin_moderation_queue_response(requested_queue)
+            return _admin_moderation_queue_response(requested_queue, request=request)
 
         queryset = (
             AdminReviewRequest.objects.select_related("project", "requested_by", "reviewed_by", "run")
@@ -477,6 +517,13 @@ class AdminModerationReviewRequestListView(APIView):
             )
         if requested_status != "all":
             queryset = queryset.filter(status=requested_status)
+        if _moderation_uses_paginated_response(request):
+            queryset = _apply_moderation_query_params(queryset, "review_request", request)
+            return _paginated_queryset_response(
+                request,
+                queryset=queryset.distinct(),
+                payload_factory=admin_review_list_payload,
+            )
         payload = [admin_review_list_payload(review) for review in queryset]
         return Response(payload, status=status.HTTP_200_OK)
 
@@ -491,7 +538,7 @@ class AdminModerationReviewRequestDetailView(APIView):
         return Response(admin_review_detail_payload(review), status=status.HTTP_200_OK)
 
 
-def _admin_moderation_tab_response(requested_tab: str, requested_filter: str):
+def _admin_moderation_tab_response(requested_tab: str, requested_filter: str, *, request=None):
     tab = requested_tab if requested_tab in {"open", "history"} else "open"
     item_filter = requested_filter or "all"
     if tab == "open":
@@ -513,6 +560,8 @@ def _admin_moderation_tab_response(requested_tab: str, requested_filter: str):
                 {"error": "filter must be one of: all, auto_blocked, copyright, manually_blocked, other, provider_unavailable, reports, request_changes, review_requested, text_ocr, visual."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if request is not None and _moderation_uses_paginated_response(request):
+            return _admin_moderation_tab_paginated_response(request, tab=tab, item_filter=item_filter)
         items = _open_moderation_items()
     else:
         allowed_filters = {
@@ -530,11 +579,525 @@ def _admin_moderation_tab_response(requested_tab: str, requested_filter: str):
                 {"error": "filter must be one of: all, approved, auto_blocked, copyright, other, rejected_blocked, reports_resolved, requested_changes."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        if request is not None and _moderation_uses_paginated_response(request):
+            return _admin_moderation_tab_paginated_response(request, tab=tab, item_filter=item_filter)
         items = _history_moderation_items()
 
     filtered = [_item for _item in items if _moderation_item_matches_filter(_item, item_filter)]
     filtered.sort(key=lambda row: row.get("item_time") or row.get("updated_at") or row.get("created_at") or timezone.now(), reverse=True)
     return Response(filtered[:250], status=status.HTTP_200_OK)
+
+
+def _moderation_uses_paginated_response(request) -> bool:
+    if request is None:
+        return False
+    return any(param in request.query_params for param in MODERATION_PAGINATION_PARAMS)
+
+
+def _moderation_pagination(request) -> tuple[int, int]:
+    page_size = _safe_int(request.query_params.get("page_size"))
+    raw_limit = page_size if page_size is not None else _safe_int(request.query_params.get("limit"))
+    limit = raw_limit if raw_limit is not None and raw_limit > 0 else MODERATION_PAGE_SIZE_DEFAULT
+    limit = min(limit, MODERATION_PAGE_SIZE_MAX)
+
+    page = _safe_int(request.query_params.get("page"))
+    if page is not None and page > 0:
+        return limit, (page - 1) * limit
+
+    raw_offset = _safe_int(request.query_params.get("offset"))
+    offset = raw_offset if raw_offset is not None and raw_offset > 0 else 0
+    return limit, offset
+
+
+def _paginated_response(request, *, results: list[dict], count: int, limit: int, offset: int) -> Response:
+    next_offset = offset + limit if offset + limit < count else None
+    return Response(
+        {
+            "count": count,
+            "total": count,
+            "limit": limit,
+            "offset": offset,
+            "next": next_offset,
+            "next_offset": next_offset,
+            "has_more": next_offset is not None,
+            "results": results,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+def _paginated_queryset_response(request, *, queryset, payload_factory) -> Response:
+    limit, offset = _moderation_pagination(request)
+    count = queryset.count()
+    rows = list(queryset[offset:offset + limit])
+    return _paginated_response(
+        request,
+        results=[payload_factory(row) for row in rows],
+        count=count,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _admin_moderation_tab_paginated_response(request, *, tab: str, item_filter: str) -> Response:
+    limit, offset = _moderation_pagination(request)
+    take = offset + limit
+    specs = _open_moderation_specs() if tab == "open" else _history_moderation_specs()
+    filtered_specs = [
+        {
+            **spec,
+            "queryset": _apply_moderation_query_params(
+                _apply_moderation_item_filter(spec["queryset"], spec["source_type"], item_filter),
+                spec["source_type"],
+                request,
+            ).distinct(),
+        }
+        for spec in specs
+    ]
+    count = sum(spec["queryset"].count() for spec in filtered_specs)
+    items: list[dict] = []
+    for spec in filtered_specs:
+        rows = list(spec["queryset"][:take])
+        for row in rows:
+            items.append(spec["payload_factory"](row))
+    items.sort(key=lambda row: row.get("item_time") or row.get("updated_at") or row.get("created_at") or timezone.now(), reverse=True)
+    return _paginated_response(
+        request,
+        results=items[offset:offset + limit],
+        count=count,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _open_moderation_specs() -> list[dict]:
+    return [
+        {
+            "source_type": "report",
+            "queryset": (
+                ModerationReport.objects.select_related("project", "publisher", "reporter", "reviewed_by", "admin_review_request")
+                .filter(status="open")
+                .order_by("-created_at", "-id")
+            ),
+            "payload_factory": _open_report_payload,
+        },
+        {
+            "source_type": "review_request",
+            "queryset": (
+                AdminReviewRequest.objects.select_related("project", "project__user", "requested_by", "reviewed_by", "run")
+                .filter(status="open")
+                .order_by("-created_at", "-id")
+            ),
+            "payload_factory": _open_review_payload,
+        },
+        {
+            "source_type": "project",
+            "queryset": (
+                Project.objects.select_related("user")
+                .filter(_open_project_q())
+                .order_by("-updated_at", "-id")
+            ),
+            "payload_factory": lambda project: admin_project_queue_payload(project, queue=_project_open_queue(project)),
+        },
+    ]
+
+
+def _history_moderation_specs() -> list[dict]:
+    return [
+        {
+            "source_type": "review_request",
+            "queryset": (
+                AdminReviewRequest.objects.select_related("project", "project__user", "requested_by", "reviewed_by", "run")
+                .exclude(status="open")
+                .order_by("-reviewed_at", "-created_at", "-id")
+            ),
+            "payload_factory": _history_review_payload,
+        },
+        {
+            "source_type": "report",
+            "queryset": (
+                ModerationReport.objects.select_related("project", "publisher", "reporter", "reviewed_by", "admin_review_request")
+                .exclude(status="open")
+                .order_by("-reviewed_at", "-created_at", "-id")
+            ),
+            "payload_factory": _history_report_payload,
+        },
+        {
+            "source_type": "project",
+            "queryset": (
+                Project.objects.select_related("user")
+                .filter(_history_project_q())
+                .order_by("-updated_at", "-id")
+            ),
+            "payload_factory": lambda project: admin_project_queue_payload(project, queue=_project_history_queue(project)),
+        },
+    ]
+
+
+def _open_report_payload(report: ModerationReport) -> dict:
+    payload = moderation_report_payload(report)
+    payload["queue"] = "open"
+    return payload
+
+
+def _open_review_payload(review: AdminReviewRequest) -> dict:
+    payload = admin_review_list_payload(review)
+    payload["queue"] = "open"
+    return payload
+
+
+def _history_report_payload(report: ModerationReport) -> dict:
+    payload = moderation_report_payload(report)
+    payload["queue"] = "history"
+    return payload
+
+
+def _history_review_payload(review: AdminReviewRequest) -> dict:
+    payload = admin_review_list_payload(review)
+    payload["queue"] = "history"
+    return payload
+
+
+def _open_project_q() -> Q:
+    return (
+        Q(moderation_status__in=["revision_required", "needs_admin_review", "failed", "pending", "not_scanned"])
+        | Q(manual_moderation_status__in=["blocked", "rejected", "request_changes", "needs_review"])
+        | Q(moderation_blocked_until_review=True)
+    )
+
+
+def _history_project_q() -> Q:
+    return (
+        Q(moderation_status__in=["admin_approved", "approved", "admin_rejected"])
+        | Q(manual_moderation_status__in=["approved", "blocked", "rejected", "request_changes"])
+    )
+
+
+def _apply_moderation_item_filter(queryset, source_type: str, item_filter: str):
+    normalized = str(item_filter or "all").strip().lower()
+    if normalized == "all":
+        return queryset
+
+    if normalized == "review_requested":
+        return queryset if source_type == "review_request" else queryset.none()
+    if normalized == "reports":
+        return queryset if source_type == "report" else queryset.none()
+    if normalized == "reports_resolved":
+        return queryset.filter(status__in=["reviewed", "resolved", "dismissed"]) if source_type == "report" else queryset.none()
+
+    if normalized == "auto_blocked":
+        if source_type == "report":
+            return queryset.none()
+        if source_type == "review_request":
+            return queryset.filter(project__manual_moderation_status="", project__moderation_status__in=["revision_required", "needs_admin_review"])
+        return queryset.filter(manual_moderation_status="", moderation_status__in=["revision_required", "needs_admin_review"])
+
+    if normalized == "manually_blocked":
+        if source_type == "report":
+            return queryset.none()
+        if source_type == "review_request":
+            return queryset.filter(
+                Q(project__manual_moderation_status__in=["blocked", "rejected", "needs_review"])
+                | Q(project__moderation_status="admin_rejected")
+            )
+        return queryset.filter(Q(manual_moderation_status__in=["blocked", "rejected", "needs_review"]) | Q(moderation_status="admin_rejected"))
+
+    if normalized == "request_changes" or normalized == "requested_changes":
+        if source_type == "report":
+            return queryset.none()
+        if source_type == "review_request":
+            return queryset.filter(project__manual_moderation_status="request_changes")
+        return queryset.filter(manual_moderation_status="request_changes")
+
+    if normalized == "approved":
+        if source_type == "report":
+            return queryset.none()
+        if source_type == "review_request":
+            return queryset.filter(Q(status="approved") | Q(project__moderation_status__in=["approved", "admin_approved"]))
+        return queryset.filter(Q(moderation_status__in=["approved", "admin_approved"]) | Q(manual_moderation_status="approved"))
+
+    if normalized == "rejected_blocked":
+        if source_type == "report":
+            return queryset.none()
+        if source_type == "review_request":
+            return queryset.filter(
+                Q(status="rejected")
+                | Q(project__moderation_status="admin_rejected")
+                | Q(project__manual_moderation_status__in=["blocked", "rejected"])
+            )
+        return queryset.filter(Q(moderation_status="admin_rejected") | Q(manual_moderation_status__in=["blocked", "rejected"]))
+
+    if normalized == "visual":
+        return _filter_by_finding_profile(queryset, source_type, profile="visual")
+    if normalized == "text_ocr":
+        return _filter_by_finding_profile(queryset, source_type, profile="text")
+    if normalized == "provider_unavailable":
+        return _filter_by_provider_unavailable(queryset, source_type)
+    if normalized in {"copyright", "other"}:
+        return _filter_by_category_value(queryset, source_type, normalized)
+    return queryset
+
+
+def _apply_moderation_query_params(queryset, source_type: str, request):
+    search = _moderation_search_term(request)
+    if search:
+        queryset = queryset.filter(_moderation_search_q(source_type, search))
+
+    status_filter = str(request.query_params.get("status", "") or "").strip().lower()
+    if status_filter and status_filter != "all":
+        queryset = _filter_by_status_value(queryset, source_type, status_filter)
+
+    severity = str(request.query_params.get("severity", "") or "").strip().lower()
+    if severity and severity != "all":
+        queryset = _filter_by_severity_value(queryset, source_type, severity)
+
+    category = str(request.query_params.get("category", "") or "").strip().lower()
+    if category and category != "all":
+        queryset = _filter_by_category_value(queryset, source_type, category)
+
+    asset_kind = str(request.query_params.get("asset_kind", "") or "").strip().lower()
+    if asset_kind and asset_kind != "all":
+        queryset = _filter_by_asset_kind_value(queryset, source_type, asset_kind)
+
+    if _truthy_query_param(request, "provider_unavailable"):
+        queryset = _filter_by_provider_unavailable(queryset, source_type)
+
+    if _truthy_query_param(request, "needs_review"):
+        queryset = _filter_by_needs_review(queryset, source_type)
+
+    return queryset
+
+
+def _moderation_search_term(request) -> str:
+    return str(request.query_params.get("q") or request.query_params.get("search") or "").strip()
+
+
+def _truthy_query_param(request, key: str) -> bool:
+    value = str(request.query_params.get(key, "") or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _moderation_search_q(source_type: str, term: str) -> Q:
+    value = str(term or "").strip()
+    if not value:
+        return Q()
+    normalized = value.lower()
+    value_int = _safe_int(value)
+
+    if source_type == "report":
+        query = (
+            Q(project__title__icontains=value)
+            | _user_q("publisher", value)
+            | _user_q("reporter", value)
+            | Q(category__icontains=normalized)
+            | Q(message__icontains=value)
+            | Q(status__icontains=normalized)
+            | Q(project__moderation_status__icontains=normalized)
+            | Q(project__manual_moderation_status__icontains=normalized)
+            | Q(project__manual_moderation_reason__icontains=value)
+        )
+        for category in _report_categories_matching_label(value):
+            query |= Q(category=category)
+        if value_int is not None:
+            query |= Q(pk=value_int) | Q(project_id=value_int)
+        return query
+
+    if source_type == "review_request":
+        query = (
+            Q(project__title__icontains=value)
+            | _user_q("project__user", value)
+            | _user_q("requested_by", value)
+            | _user_q("reviewed_by", value)
+            | Q(status__icontains=normalized)
+            | Q(publisher_message__icontains=value)
+            | Q(admin_response__icontains=value)
+            | Q(project__moderation_status__icontains=normalized)
+            | Q(project__manual_moderation_status__icontains=normalized)
+            | Q(project__manual_moderation_reason__icontains=value)
+            | Q(run__final_decision__icontains=normalized)
+            | _finding_search_q("run__findings__", value)
+        )
+        if value_int is not None:
+            query |= Q(pk=value_int) | Q(project_id=value_int)
+        return query
+
+    query = (
+        Q(title__icontains=value)
+        | _user_q("user", value)
+        | Q(moderation_status__icontains=normalized)
+        | Q(manual_moderation_status__icontains=normalized)
+        | Q(manual_moderation_reason__icontains=value)
+        | Q(publication_blocks__reason_category__icontains=normalized)
+        | Q(publication_blocks__message_to_user__icontains=value)
+        | Q(publication_blocks__message_to_admin__icontains=value)
+        | Q(admin_review_requests__publisher_message__icontains=value)
+        | Q(admin_review_requests__admin_response__icontains=value)
+        | Q(agent_runs__final_decision__icontains=normalized)
+        | _finding_search_q("agent_runs__findings__", value)
+    )
+    if value_int is not None:
+        query |= Q(pk=value_int)
+    return query
+
+
+def _user_q(prefix: str, value: str) -> Q:
+    return (
+        Q(**{f"{prefix}__username__icontains": value})
+        | Q(**{f"{prefix}__email__icontains": value})
+        | Q(**{f"{prefix}__first_name__icontains": value})
+        | Q(**{f"{prefix}__last_name__icontains": value})
+    )
+
+
+def _finding_search_q(prefix: str, value: str) -> Q:
+    normalized = str(value or "").strip().lower()
+    return (
+        Q(**{f"{prefix}category__icontains": normalized})
+        | Q(**{f"{prefix}severity__icontains": normalized})
+        | Q(**{f"{prefix}decision__icontains": normalized})
+        | Q(**{f"{prefix}object_type__icontains": normalized})
+        | Q(**{f"{prefix}content_type__icontains": normalized})
+        | Q(**{f"{prefix}provider__icontains": normalized})
+        | Q(**{f"{prefix}user_message__icontains": value})
+        | Q(**{f"{prefix}admin_message__icontains": value})
+        | Q(**{f"{prefix}evidence_excerpt__icontains": value})
+    )
+
+
+def _report_categories_matching_label(value: str) -> list[str]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return []
+    return [
+        key
+        for key, label in ModerationReport.CATEGORY_CHOICES
+        if normalized in str(key).lower() or normalized in str(label).lower()
+    ]
+
+
+def _value_aliases(value: str) -> set[str]:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return set()
+    return {normalized, normalized.replace(" ", "_").replace("-", "_")}
+
+
+def _filter_by_status_value(queryset, source_type: str, value: str):
+    aliases = _value_aliases(value)
+    if source_type == "report":
+        if value == "reviewed":
+            return queryset.exclude(status="open")
+        return queryset.filter(status__in=aliases)
+    if source_type == "review_request":
+        if value == "reviewed":
+            return queryset.exclude(status="open")
+        return queryset.filter(
+            Q(status__in=aliases)
+            | Q(project__moderation_status__in=aliases)
+            | Q(project__manual_moderation_status__in=aliases)
+            | Q(run__final_decision__in=aliases)
+        )
+    if value == "reviewed":
+        return queryset.filter(_history_project_q())
+    return queryset.filter(
+        Q(status__in=aliases)
+        | Q(moderation_status__in=aliases)
+        | Q(manual_moderation_status__in=aliases)
+        | Q(agent_runs__final_decision__in=aliases)
+    )
+
+
+def _filter_by_severity_value(queryset, source_type: str, value: str):
+    aliases = _value_aliases(value)
+    if source_type == "report":
+        return queryset.none()
+    if source_type == "review_request":
+        return queryset.filter(run__findings__severity__in=aliases)
+    return queryset.filter(Q(agent_runs__findings__severity__in=aliases) | Q(publication_blocks__highest_severity__in=aliases))
+
+
+def _filter_by_category_value(queryset, source_type: str, value: str):
+    aliases = _value_aliases(value)
+    if source_type == "report":
+        matching_labels = set(_report_categories_matching_label(value))
+        return queryset.filter(category__in=aliases | matching_labels)
+    if source_type == "review_request":
+        return queryset.filter(run__findings__category__in=aliases)
+    return queryset.filter(Q(agent_runs__findings__category__in=aliases) | Q(publication_blocks__reason_category__in=aliases))
+
+
+def _filter_by_asset_kind_value(queryset, source_type: str, value: str):
+    aliases = _value_aliases(value)
+    if source_type == "report":
+        return queryset.none()
+    if source_type == "review_request":
+        return queryset.filter(Q(run__findings__object_type__in=aliases) | Q(run__findings__content_type__in=aliases))
+    return queryset.filter(Q(agent_runs__findings__object_type__in=aliases) | Q(agent_runs__findings__content_type__in=aliases))
+
+
+def _filter_by_provider_unavailable(queryset, source_type: str):
+    if source_type == "report":
+        return queryset.filter(Q(message__icontains="provider unavailable") | Q(message__icontains="provider missing"))
+    if source_type == "review_request":
+        return queryset.filter(
+            Q(run__findings__category="provider_unavailable")
+            | Q(run__findings__provider__icontains="provider_unavailable")
+            | Q(run__findings__evidence_excerpt__icontains="provider_unavailable")
+            | Q(project__manual_moderation_reason__icontains="provider unavailable")
+            | Q(project__manual_moderation_reason__icontains="provider missing")
+        )
+    return queryset.filter(
+        Q(agent_runs__findings__category="provider_unavailable")
+        | Q(agent_runs__findings__provider__icontains="provider_unavailable")
+        | Q(agent_runs__findings__evidence_excerpt__icontains="provider_unavailable")
+        | Q(publication_blocks__reason_category="provider_unavailable")
+        | Q(publication_blocks__message_to_user__icontains="provider unavailable")
+        | Q(publication_blocks__message_to_admin__icontains="provider unavailable")
+        | Q(manual_moderation_reason__icontains="provider unavailable")
+        | Q(manual_moderation_reason__icontains="provider missing")
+    )
+
+
+def _filter_by_needs_review(queryset, source_type: str):
+    if source_type == "report":
+        return queryset.filter(status="open")
+    if source_type == "review_request":
+        return queryset.filter(
+            Q(status="open")
+            | Q(project__moderation_status="needs_admin_review")
+            | Q(project__manual_moderation_status="needs_review")
+            | Q(run__final_decision="needs_admin_review")
+        )
+    return queryset.filter(
+        Q(moderation_status__in=["needs_admin_review", "failed", "pending", "not_scanned"])
+        | Q(manual_moderation_status="needs_review")
+        | Q(agent_runs__final_decision="needs_admin_review")
+    )
+
+
+def _filter_by_finding_profile(queryset, source_type: str, *, profile: str):
+    if source_type == "report":
+        return queryset.none()
+    if profile == "visual":
+        categories = VISUAL_MODERATION_CATEGORIES
+        asset_kinds = VISUAL_MODERATION_ASSET_KINDS
+        content_types = {"image", "video_frame"}
+        provider = "visual"
+    else:
+        categories = TEXT_MODERATION_CATEGORIES
+        asset_kinds = {"text", "ocr", "transcript", "subtitle", "language"}
+        content_types = TEXT_MODERATION_CONTENT_TYPES
+        provider = "text"
+    if source_type == "review_request":
+        prefix = "run__findings__"
+    else:
+        prefix = "agent_runs__findings__"
+    return queryset.filter(
+        Q(**{f"{prefix}category__in": list(categories)})
+        | Q(**{f"{prefix}object_type__in": list(asset_kinds)})
+        | Q(**{f"{prefix}content_type__in": list(content_types)})
+        | Q(**{f"{prefix}provider__icontains": provider})
+    )
 
 
 def _open_moderation_items() -> list[dict]:
@@ -687,7 +1250,7 @@ def _summary_has_provider_unavailable(item: dict) -> bool:
     return "provider" in text and ("unavailable" in text or "missing" in text)
 
 
-def _admin_moderation_queue_response(requested_queue: str):
+def _admin_moderation_queue_response(requested_queue: str, *, request=None):
     allowed_queues = {
         "needs_review",
         "auto_rejected",
@@ -708,6 +1271,13 @@ def _admin_moderation_queue_response(requested_queue: str):
             .exclude(project__manual_moderation_status="request_changes")
             .order_by("-created_at", "-id")
         )
+        if request is not None and _moderation_uses_paginated_response(request):
+            queryset = _apply_moderation_query_params(queryset, "review_request", request)
+            return _paginated_queryset_response(
+                request,
+                queryset=queryset.distinct(),
+                payload_factory=admin_review_list_payload,
+            )
         return Response([admin_review_list_payload(review) for review in queryset], status=status.HTTP_200_OK)
 
     projects = Project.objects.select_related("user").all().order_by("-updated_at", "-id")
@@ -730,6 +1300,14 @@ def _admin_moderation_queue_response(requested_queue: str):
         projects = projects.filter(
             moderation_status__in=list(APPROVED_MODERATION_STATUSES),
             moderation_blocked_until_review=False,
+        )
+
+    if request is not None and _moderation_uses_paginated_response(request):
+        projects = _apply_moderation_query_params(projects, "project", request).distinct()
+        return _paginated_queryset_response(
+            request,
+            queryset=projects,
+            payload_factory=lambda project: admin_project_queue_payload(project, queue=requested_queue),
         )
 
     return Response(

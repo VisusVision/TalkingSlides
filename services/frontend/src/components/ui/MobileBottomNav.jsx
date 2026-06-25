@@ -1,11 +1,12 @@
 import { BarChart3, BookOpenText, LayoutDashboard, ShieldCheck, SlidersHorizontal } from 'lucide-react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import {
   canAccessAnalytics,
   canAccessModeration,
   canAccessStudio,
   isSignedIn,
 } from '../../lib/auth';
+import { requestRouteReset, routeIdForPath } from '../../utils/routeSession';
 
 const MOBILE_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard, end: true },
@@ -24,6 +25,7 @@ function mobileItemClass(isActive) {
 }
 
 export default function MobileBottomNav({ user }) {
+  const location = useLocation();
   const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
   const analyticsAllowed = canAccessAnalytics(user);
@@ -43,12 +45,20 @@ export default function MobileBottomNav({ user }) {
     >
       {mobileItems.map((item) => {
         const Icon = item.icon;
+        const routeId = routeIdForPath(item.to);
+        const activeRouteId = routeIdForPath(location.pathname);
+        const activeForReset = routeId && activeRouteId === routeId && (!item.end || location.pathname === item.to);
 
         return (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.end}
+            onClick={() => {
+              if (activeForReset) {
+                requestRouteReset(routeId, user);
+              }
+            }}
             className={({ isActive }) => mobileItemClass(isActive)}
             aria-label={item.label}
           >

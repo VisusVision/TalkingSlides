@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Hls from 'hls.js';
 import { AlertCircle, Maximize2, Minimize2 } from 'lucide-react';
 import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer';
+import ContinueNextPrompt from './ContinueNextPrompt';
 import WatermarkOverlay from './WatermarkOverlay';
 import SurfaceCard from '../ui/SurfaceCard';
 
@@ -9,7 +10,18 @@ const NATIVE_FULLSCREEN_CONTROL_HIDE_CSS = `
 .visus-shell-video::-webkit-media-controls-fullscreen-button {
   display: none;
 }
+.visus-shell-video::cue {
+  color: #fff;
+  background-color: rgba(0, 0, 0, 0.82);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 5px rgba(0, 0, 0, 0.9);
+  font-weight: 700;
+}
 `;
+const CAPTION_PILL_CLASSNAME = [
+  'max-w-[92%] whitespace-pre-line rounded-lg bg-black/80 px-3.5 py-2 text-sm font-semibold leading-snug text-white',
+  'shadow-[0_10px_30px_rgba(0,0,0,0.45)] ring-1 ring-white/20 backdrop-blur-[1px] sm:text-base',
+].join(' ');
+const CAPTION_TEXT_SHADOW = '0 1px 2px rgba(0,0,0,0.95), 0 0 5px rgba(0,0,0,0.9)';
 
 function vttUrlForLesson(lesson) {
   return [lesson?.vtt_url, lesson?.subtitle_vtt_url]
@@ -113,7 +125,7 @@ function CaptionLayer({ text }) {
       className="pointer-events-none absolute inset-x-3 bottom-14 flex justify-center px-2 text-center sm:bottom-16"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions }}
     >
-      <span className="max-w-[92%] whitespace-pre-line rounded-md bg-black/78 px-3 py-1.5 text-sm font-semibold leading-snug text-white shadow-lg sm:text-base">
+      <span className={CAPTION_PILL_CLASSNAME} style={{ textShadow: CAPTION_TEXT_SHADOW }}>
         {text}
       </span>
     </div>
@@ -157,6 +169,9 @@ export default function HlsPlayer({
   onSubtitleKeyChange,
   avatarOverlayMode = 'floating',
   watermarkLesson = null,
+  continueNextPrompt = null,
+  onContinueNext,
+  onCancelContinueNext,
 }) {
   const internalVideoRef = useRef(null);
   const playerShellRef = useRef(null);
@@ -426,6 +441,11 @@ export default function HlsPlayer({
             <PlayerShellFullscreenButton
               active={fullscreenActive}
               onClick={handlePlayerShellFullscreenToggle}
+            />
+            <ContinueNextPrompt
+              prompt={continueNextPrompt}
+              onContinue={onContinueNext}
+              onCancel={onCancelContinueNext}
             />
           </>
         ) : (

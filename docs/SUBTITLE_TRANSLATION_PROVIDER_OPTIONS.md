@@ -131,7 +131,14 @@ For local development, it is available as an optional Docker Compose service:
 ```bash
 # Start LibreTranslate (may take several minutes to download models)
 docker compose -f infra/docker-compose.yml --profile translation up -d libretranslate
+
+# Verify the local endpoint from the host
+curl http://localhost:5000/languages
 ```
+
+The service name is `libretranslate` and it is only included when the
+`translation` profile is enabled. A command such as `docker compose up -d libertranslate`
+will fail because the service name is misspelled and the profile is omitted.
 
 ### Configuration
 

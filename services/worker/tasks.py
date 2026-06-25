@@ -3049,10 +3049,11 @@ def _run_auto_visual_asset_moderation_after_export(
                     )
                 except Exception:
                     logger.warning("Could not load draft cover path for project=%s", project.id, exc_info=True)
-            if cover_rel_path:
+            if str(cover_rel_path or "").strip():
                 cover_path = _visual_asset_path(cover_rel_path)
-                results.append(agent.scan_cover_image(project, image_path=cover_path))
-                if safety_agent is not None:
+                cover_result = agent.scan_cover_image(project, image_path=cover_path)
+                results.append(cover_result)
+                if safety_agent is not None and _visual_result_semantic_scan_eligible(cover_result):
                     results.append(safety_agent.scan_cover_image(project, image_path=cover_path))
 
         if scan_slides_enabled:
@@ -3077,18 +3078,17 @@ def _run_auto_visual_asset_moderation_after_export(
                         )
                     )
                     continue
-                results.append(
-                    agent.scan_slide_image(
-                        project_id=int(project.id),
-                        image_path=asset["image_path"],
-                        slide_order=asset["slide_order"],
-                        transcript_page_id=asset.get("transcript_page_id"),
-                        page_key=asset["page_key"],
-                        ui_anchor=asset["ui_anchor"],
-                        asset_type=asset["asset_type"],
-                    )
+                slide_result = agent.scan_slide_image(
+                    project_id=int(project.id),
+                    image_path=asset["image_path"],
+                    slide_order=asset["slide_order"],
+                    transcript_page_id=asset.get("transcript_page_id"),
+                    page_key=asset["page_key"],
+                    ui_anchor=asset["ui_anchor"],
+                    asset_type=asset["asset_type"],
                 )
-                if safety_agent is not None:
+                results.append(slide_result)
+                if safety_agent is not None and _visual_result_semantic_scan_eligible(slide_result):
                     results.append(
                         safety_agent.scan_slide_image(
                             project_id=int(project.id),
@@ -3174,10 +3174,11 @@ def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[
             or slide.get("slide_path")
             or ""
         )
-        if image_path and image_path in seen_paths:
+        if not image_path:
             continue
-        if image_path:
-            seen_paths.add(image_path)
+        if image_path in seen_paths:
+            continue
+        seen_paths.add(image_path)
         slide_order = _safe_int_value(slide.get("source_slide_index"), fallback=_safe_int_value(slide.get("index"), fallback=order))
         asset_type = _normalise_visual_asset_type(slide.get("asset_type") or slide.get("visual_asset_type") or "slide_image")
         page_key = str(slide.get("page_key") or "")
@@ -3212,7 +3213,7 @@ def _visual_asset_path(value: Any) -> str:
         return str(direct)
     if ".." in raw.replace("\\", "/").split("/"):
         return raw
-    storage_path = Path(STORAGE_ROOT) / raw.lstrip("/\\")
+    storage_path = Path(_visual_storage_root()) / raw.lstrip("/\\")
     if storage_path.is_file():
         return str(storage_path)
     return raw
@@ -3224,6 +3225,31 @@ def _missing_visual_asset_reason(image_path: str) -> str:
     if not Path(image_path).is_file():
         return "missing_image_file"
     return ""
+
+
+def _visual_storage_root() -> str:
+    try:
+        from django.conf import settings
+
+        return str(getattr(settings, "STORAGE_ROOT", STORAGE_ROOT) or STORAGE_ROOT)
+    except Exception:
+        return str(os.environ.get("STORAGE_ROOT", STORAGE_ROOT) or STORAGE_ROOT)
+
+
+def _visual_result_semantic_scan_eligible(result) -> bool:
+    metadata = dict(getattr(result, "metadata", {}) or {})
+    if metadata.get("missing") or metadata.get("asset_missing") or metadata.get("error"):
+        return False
+    if getattr(result, "findings", []) or str(getattr(result, "decision", "") or "") != "allow":
+        return False
+    location = _visual_result_location_payload(result)
+    image_path = str(location.get("image_path") or location.get("frame_path") or "").strip()
+    if not image_path:
+        return False
+    try:
+        return Path(image_path).is_file()
+    except OSError:
+        return False
 
 
 def _safe_int_value(value: Any, *, fallback: int = 0) -> int:
@@ -3314,6 +3340,11 @@ def _persist_auto_visual_moderation_results(
             ]
         )
         existing_summary = dict(project.moderation_summary or {})
+        previous_visual_scan = (
+            dict(existing_summary.get("visual_asset_scan"))
+            if isinstance(existing_summary.get("visual_asset_scan"), dict)
+            else {}
+        )
         summary_key = "draft_visual_asset_scan" if use_draft else "visual_asset_scan"
         existing_summary[summary_key] = {
             **summary,
@@ -3353,6 +3384,32 @@ def _persist_auto_visual_moderation_results(
             update_fields.append("moderation_status")
             if should_apply_rejection:
                 _enforce_project_unpublished_for_moderation(project, update_fields)
+        elif (
+            not use_draft
+            and final_decision == "allow"
+            and not manual_moderation_prevents_auto_override(project)
+        ):
+            _resolve_stale_visual_publication_blocks(project, run)
+            if _visual_allow_clears_project_block(project, previous_visual_scan):
+                project.moderation_status = "approved"
+                project.manual_moderation_status = ""
+                project.manual_moderation_reason = ""
+                project.manual_moderation_by = None
+                project.manual_moderation_at = None
+                project.moderation_blocked_until_review = False
+                existing_summary["moderation_status"] = "approved"
+                existing_summary["message"] = "Visual moderation approved current lesson assets."
+                update_fields.extend(
+                    [
+                        "moderation_status",
+                        "manual_moderation_status",
+                        "manual_moderation_reason",
+                        "manual_moderation_by",
+                        "manual_moderation_at",
+                        "moderation_blocked_until_review",
+                    ]
+                )
+                _close_stale_visual_review_requests(project)
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
         if should_apply_rejection:
@@ -3365,6 +3422,126 @@ def _persist_auto_visual_moderation_results(
         logger.warning("Visual moderation summary update failed for project=%s", project.id, exc_info=True)
 
     return run
+
+
+VISUAL_PUBLICATION_BLOCK_CATEGORIES = frozenset(
+    {
+        "provider_unavailable",
+        "graphic_content",
+        "sexual",
+        "violence",
+        "self_harm",
+        "hate_or_harassment",
+    }
+)
+VISUAL_BLOCKING_PROJECT_STATUSES = frozenset({"revision_required", "needs_admin_review", "admin_rejected", "failed"})
+VISUAL_BLOCKING_RUN_DECISIONS = frozenset({"block", "blocked", "revision_required", "needs_admin_review"})
+
+
+def _resolve_stale_visual_publication_blocks(project, run) -> None:
+    try:
+        from ai_agents.models import PublicationBlockEvent
+        from django.db.models import Q
+        from django.utils import timezone
+
+        PublicationBlockEvent.objects.filter(project=project, resolved=False).filter(
+            Q(blocked_by__icontains="visual")
+            | Q(reason_category__in=VISUAL_PUBLICATION_BLOCK_CATEGORIES)
+        ).update(resolved=True, resolved_at=timezone.now(), run=run)
+    except Exception:
+        logger.warning("Visual publication block reconciliation failed project=%s", getattr(project, "id", None), exc_info=True)
+
+
+def _close_stale_visual_review_requests(project) -> None:
+    try:
+        from ai_agents.models import AdminReviewRequest
+        from django.utils import timezone
+
+        AdminReviewRequest.objects.filter(
+            project=project,
+            status="open",
+            requested_by__isnull=True,
+            publisher_message__icontains="Visual moderation",
+        ).update(
+            status="closed",
+            admin_response="Closed automatically after current visual assets passed moderation.",
+            reviewed_at=timezone.now(),
+        )
+    except Exception:
+        logger.warning("Visual review request reconciliation failed project=%s", getattr(project, "id", None), exc_info=True)
+
+
+def _visual_allow_clears_project_block(project, previous_visual_scan: dict[str, Any]) -> bool:
+    current_status = str(getattr(project, "moderation_status", "") or "").strip().lower()
+    if current_status not in VISUAL_BLOCKING_PROJECT_STATUSES:
+        return False
+    if _has_blocking_non_visual_moderation(project):
+        return False
+    previous_decision = str(previous_visual_scan.get("final_decision") or previous_visual_scan.get("status") or "").strip().lower()
+    previous_message = str((project.moderation_summary or {}).get("message") or "").strip().lower()
+    return bool(
+        previous_decision in VISUAL_BLOCKING_RUN_DECISIONS
+        or previous_visual_scan.get("provider_errors")
+        or previous_visual_scan.get("stale")
+        or previous_visual_scan.get("needs_rescan")
+        or "visual moderation" in previous_message
+    )
+
+
+def _has_blocking_non_visual_moderation(project) -> bool:
+    try:
+        from ai_agents.policies import project_has_unresolved_publication_block
+
+        manual_status = str(getattr(project, "manual_moderation_status", "") or "").strip().lower()
+        if manual_status in {"blocked", "rejected", "request_changes", "needs_review"}:
+            return True
+        if project_has_unresolved_publication_block(project):
+            return True
+    except Exception:
+        manual_status = str(getattr(project, "manual_moderation_status", "") or "").strip().lower()
+        if manual_status in {"blocked", "rejected", "request_changes", "needs_review"}:
+            return True
+        if bool(getattr(project, "moderation_blocked_until_review", False)):
+            return True
+
+    for phase in (_source_moderation_phase(), _ocr_moderation_phase(), _video_frame_audit_phase()):
+        if _latest_moderation_phase_blocks(project, phase):
+            return True
+    return False
+
+
+def _latest_moderation_phase_blocks(project, phase: str) -> bool:
+    try:
+        from ai_agents.models import AgentFinding, AgentRun
+        from django.db.models import Q
+
+        run = (
+            AgentRun.objects.filter(
+                project_id=getattr(project, "id", None),
+                purpose="moderation",
+                phase=str(phase or ""),
+                status__in=["done", "completed"],
+            )
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if run is None:
+            return False
+        decision = str(getattr(run, "final_decision", "") or "").strip().lower()
+        if decision in VISUAL_BLOCKING_RUN_DECISIONS:
+            return True
+        return AgentFinding.objects.filter(run=run).filter(
+            Q(decision__in=VISUAL_BLOCKING_RUN_DECISIONS)
+            | Q(severity__in=["high", "critical"])
+        ).exists()
+    except Exception:
+        logger.warning(
+            "Moderation phase reconciliation failed project=%s phase=%s",
+            getattr(project, "id", None),
+            phase,
+            exc_info=True,
+        )
+        return True
 
 
 def _visual_moderation_summary(*, final_decision: str, results: list, finding_count: int, job_id: str | int | None) -> dict[str, Any]:
@@ -3454,6 +3631,8 @@ def _visual_provider_unavailable_results_for_locations(
     location_payloads: list[dict[str, Any]] = []
     seen: set[tuple[Any, ...]] = set()
     for result in results or []:
+        if not _visual_result_semantic_scan_eligible(result):
+            continue
         location_payload = _visual_result_location_payload(result)
         if not location_payload:
             continue
@@ -3475,13 +3654,7 @@ def _visual_provider_unavailable_results_for_locations(
         location_payloads.append(location_payload)
 
     if not location_payloads:
-        location_payloads.append(
-            {
-                "project_id": fallback_project_id,
-                "asset_type": _normalise_visual_asset_type(fallback_asset_type),
-                "ui_anchor": f"project-{fallback_project_id or 'unknown'}-visual-provider",
-            }
-        )
+        return []
 
     return [
         _visual_provider_unavailable_result(
@@ -3588,6 +3761,9 @@ def _visual_semantic_provider_missing(results: list, *, classifier_requested: bo
     if not _visual_semantic_provider_required() or _weak_local_visual_approval_allowed():
         return False
     if not results:
+        return False
+    eligible_results = [result for result in results if _visual_result_semantic_scan_eligible(result)]
+    if not eligible_results:
         return False
     semantic_results = [
         result
@@ -6044,8 +6220,21 @@ def _mark_lesson_intelligence_enhancement(
     if status_value in {"running", "done", "partial", "failed"}:
         attempt_status = "success" if status_value == "done" else status_value
         _replace_intelligence_attempt(metadata, "ollama", attempt_status, error)
+    update_fields = ["metadata", "updated_at"]
+    if status_value == "failed" and str(getattr(report, "provider", "") or "").strip().lower() == "heuristic":
+        metadata["degraded"] = True
+        metadata["enhancement_failed"] = True
+        metadata["fallback_used"] = True
+        enhancement = metadata.get(PROGRESSIVE_ENHANCEMENT_KEY)
+        if isinstance(enhancement, dict):
+            enhancement["degraded"] = True
+            enhancement["enhancement_failed"] = True
+            enhancement["fallback_used"] = True
+            metadata[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
+        report.fallback_used = True
+        update_fields.append("fallback_used")
     report.metadata = metadata
-    report.save(update_fields=["metadata", "updated_at"])
+    report.save(update_fields=update_fields)
     if status_value in TERMINAL_ENHANCEMENT_STATUSES:
         try:
             from django.core.cache import cache
@@ -6098,8 +6287,21 @@ def _mark_analytics_intelligence_enhancement(
     )
     if status_value in {"running", "done", "partial", "failed"}:
         _replace_intelligence_attempt(metadata, "ollama", "success" if status_value == "done" else status_value, error)
+    update_fields = ["metadata", "updated_at"]
+    if status_value == "failed" and str(getattr(report, "provider", "") or "").strip().lower() == "heuristic":
+        metadata["degraded"] = True
+        metadata["enhancement_failed"] = True
+        metadata["fallback_used"] = True
+        enhancement = metadata.get(PROGRESSIVE_ENHANCEMENT_KEY)
+        if isinstance(enhancement, dict):
+            enhancement["degraded"] = True
+            enhancement["enhancement_failed"] = True
+            enhancement["fallback_used"] = True
+            metadata[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
+        report.fallback_used = True
+        update_fields.append("fallback_used")
     report.metadata = metadata
-    report.save(update_fields=["metadata", "updated_at"])
+    report.save(update_fields=update_fields)
     if status_value in TERMINAL_ENHANCEMENT_STATUSES:
         try:
             from django.core.cache import cache
@@ -6111,6 +6313,36 @@ def _mark_analytics_intelligence_enhancement(
         except Exception:
             pass
     return report
+
+
+def _intelligence_degraded_task_result(report, report_id: int, error_name: str) -> dict[str, Any] | None:
+    if report is None:
+        return None
+    if str(getattr(report, "provider", "") or "").strip().lower() != "heuristic":
+        return None
+    return {
+        "report_id": int(report_id),
+        "status": "degraded",
+        "report_status": str(getattr(report, "status", "") or "done"),
+        "provider": "heuristic",
+        "fallback_used": True,
+        "error": str(error_name or ""),
+    }
+
+
+def _release_intelligence_enhancement_lock(metadata: dict[str, Any] | None) -> None:
+    try:
+        from django.core.cache import cache
+
+        from core.intelligence_progressive import PROGRESSIVE_ENHANCEMENT_KEY, enhancement_lock_key
+
+        source = metadata if isinstance(metadata, dict) else {}
+        enhancement = source.get(PROGRESSIVE_ENHANCEMENT_KEY) if isinstance(source.get(PROGRESSIVE_ENHANCEMENT_KEY), dict) else {}
+        lock_key = enhancement_lock_key(str(enhancement.get("run_key") or source.get("run_key") or ""))
+        if lock_key:
+            cache.delete(lock_key)
+    except Exception:
+        return
 
 
 @app.task(bind=True, name="worker.tasks.schedule_lesson_intelligence", max_retries=0)
@@ -6220,7 +6452,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             "running",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
-            phase="analyzing_chunks",
+            phase="chunk_processing",
             chunk_count=chunk_count,
             completed_chunks=0,
             failed_chunks=0,
@@ -6277,14 +6509,42 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         )
         enhancement_extra = {
             **run_identity,
-            "phase": "done",
+            "phase": str(analysis_meta.get("phase") or "persistence"),
             "chunked": bool(analysis_meta.get("chunked")),
             "chunk_count": int(analysis_meta.get("chunk_count") or 0),
             "completed_chunks": int(analysis_meta.get("completed_chunks") or 0),
             "failed_chunks": int(analysis_meta.get("failed_chunks") or 0),
+            "chunks_attempted": int(analysis_meta.get("chunks_attempted") or 0),
+            "chunks_completed": int(analysis_meta.get("chunks_completed") or analysis_meta.get("completed_chunks") or 0),
+            "last_completed_chunk_index": int(analysis_meta.get("last_completed_chunk_index") or 0),
             "partial_enhancement": bool(analysis_meta.get("partial_enhancement") or has_failed_sections),
+            "degraded": bool(analysis_meta.get("degraded")),
+            "partial_ollama_used": bool(analysis_meta.get("partial_ollama_used")),
+            "fallback_used": bool(analysis_meta.get("fallback_used") or has_failed_sections),
+            "degraded_reason": str(analysis_meta.get("degraded_reason") or ""),
+            "calculated_budget_seconds": analysis_meta.get("calculated_budget_seconds"),
+            "safety_factor": analysis_meta.get("safety_factor"),
+            "configured_safety_margin_seconds": analysis_meta.get("configured_safety_margin_seconds"),
+            "safety_margin_seconds": analysis_meta.get("safety_margin_seconds"),
+            "timeout_budget_seconds": analysis_meta.get("timeout_budget_seconds"),
+            "absolute_cap_seconds": analysis_meta.get("absolute_cap_seconds"),
+            "no_progress_timeout_seconds": analysis_meta.get("no_progress_timeout_seconds"),
+            "elapsed_seconds": analysis_meta.get("elapsed_seconds") or analysis_meta.get("timeout_seconds"),
+            "finalization_budget_seconds": analysis_meta.get("finalization_budget_seconds"),
+            "finalization_elapsed_seconds": analysis_meta.get("finalization_elapsed_seconds"),
+            "finalization_timeout": bool(analysis_meta.get("finalization_timeout")),
+            "finalization_calculated_budget_seconds": analysis_meta.get("finalization_calculated_budget_seconds"),
+            "finalization_timeout_budget_seconds": analysis_meta.get("finalization_timeout_budget_seconds"),
+            "finalization_absolute_cap_seconds": analysis_meta.get("finalization_absolute_cap_seconds"),
             "sections": section_statuses,
         }
+        if enhancement_extra["degraded"]:
+            enhancement_extra["last_failure_reason"] = (
+                analysis_meta.get("last_failure_reason")
+                or "Ollama timed out during final lesson summary after all chunks completed."
+            )
+        if isinstance(analysis_meta.get("estimated_workload"), dict):
+            enhancement_extra["estimated_workload"] = analysis_meta.get("estimated_workload")
         if isinstance(analysis_meta.get("chunk_limitations"), list):
             enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
         if isinstance(analysis_meta.get("chunk_diagnostics"), list):
@@ -6301,13 +6561,21 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
         analysis["metadata"] = merge_enhancement_metadata(
             analysis_metadata,
             provider="ollama",
-            status="partial" if enhancement_extra["partial_enhancement"] else "done",
+            status="degraded" if enhancement_extra["degraded"] else "partial" if enhancement_extra["partial_enhancement"] else "done",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
             extra=enhancement_extra,
         )
         report = apply_analysis_to_report(report, analysis, source_hash=lesson_input.source_hash)
-        return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
+        _release_intelligence_enhancement_lock(report.metadata if isinstance(report.metadata, dict) else {})
+        task_status = "degraded" if enhancement_extra["degraded"] else "partial" if enhancement_extra["partial_enhancement"] else "done"
+        return {
+            "report_id": report.id,
+            "status": task_status,
+            "report_status": report.status,
+            "provider": report.provider,
+            "fallback_used": bool(report.fallback_used),
+        }
     except (LessonIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Lesson intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
         failure_extra: dict[str, Any] = {}
@@ -6321,7 +6589,7 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             last_diagnostic = failure_extra["chunk_diagnostics"][-1]
             if isinstance(last_diagnostic, dict):
                 failure_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
-        _mark_lesson_intelligence_enhancement(
+        marked_report = _mark_lesson_intelligence_enhancement(
             report_id,
             "failed",
             task_id=task_id,
@@ -6330,6 +6598,9 @@ def enhance_lesson_intelligence_report(self, report_id: int, source_hash: str) -
             phase="failed",
             extra=failure_extra,
         )
+        degraded = _intelligence_degraded_task_result(marked_report, report_id, exc.__class__.__name__)
+        if degraded is not None:
+            return degraded
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 
 
@@ -6424,7 +6695,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             "running",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
-            phase="analyzing_chunks",
+            phase="chunk_processing",
             chunk_count=chunk_count,
             completed_chunks=0,
             failed_chunks=0,
@@ -6470,13 +6741,41 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         analysis_meta = analysis.get("metadata") if isinstance(analysis.get("metadata"), dict) else {}
         enhancement_extra = {
             **run_identity,
-            "phase": "done",
+            "phase": str(analysis_meta.get("phase") or "persistence"),
             "chunked": bool(analysis_meta.get("chunked")),
             "chunk_count": int(analysis_meta.get("chunk_count") or 0),
             "completed_chunks": int(analysis_meta.get("completed_chunks") or 0),
             "failed_chunks": int(analysis_meta.get("failed_chunks") or 0),
+            "chunks_attempted": int(analysis_meta.get("chunks_attempted") or 0),
+            "chunks_completed": int(analysis_meta.get("chunks_completed") or analysis_meta.get("completed_chunks") or 0),
+            "last_completed_chunk_index": int(analysis_meta.get("last_completed_chunk_index") or 0),
             "partial_enhancement": bool(analysis_meta.get("partial_enhancement")),
+            "degraded": bool(analysis_meta.get("degraded")),
+            "partial_ollama_used": bool(analysis_meta.get("partial_ollama_used")),
+            "fallback_used": bool(analysis_meta.get("fallback_used")),
+            "degraded_reason": str(analysis_meta.get("degraded_reason") or ""),
+            "calculated_budget_seconds": analysis_meta.get("calculated_budget_seconds"),
+            "safety_factor": analysis_meta.get("safety_factor"),
+            "configured_safety_margin_seconds": analysis_meta.get("configured_safety_margin_seconds"),
+            "safety_margin_seconds": analysis_meta.get("safety_margin_seconds"),
+            "timeout_budget_seconds": analysis_meta.get("timeout_budget_seconds"),
+            "absolute_cap_seconds": analysis_meta.get("absolute_cap_seconds"),
+            "no_progress_timeout_seconds": analysis_meta.get("no_progress_timeout_seconds"),
+            "elapsed_seconds": analysis_meta.get("elapsed_seconds") or analysis_meta.get("timeout_seconds"),
+            "finalization_budget_seconds": analysis_meta.get("finalization_budget_seconds"),
+            "finalization_elapsed_seconds": analysis_meta.get("finalization_elapsed_seconds"),
+            "finalization_timeout": bool(analysis_meta.get("finalization_timeout")),
+            "finalization_calculated_budget_seconds": analysis_meta.get("finalization_calculated_budget_seconds"),
+            "finalization_timeout_budget_seconds": analysis_meta.get("finalization_timeout_budget_seconds"),
+            "finalization_absolute_cap_seconds": analysis_meta.get("finalization_absolute_cap_seconds"),
         }
+        if enhancement_extra["degraded"]:
+            enhancement_extra["last_failure_reason"] = (
+                analysis_meta.get("last_failure_reason")
+                or "Ollama timed out during final analytics summary after all chunks completed."
+            )
+        if isinstance(analysis_meta.get("estimated_workload"), dict):
+            enhancement_extra["estimated_workload"] = analysis_meta.get("estimated_workload")
         if isinstance(analysis_meta.get("chunk_limitations"), list):
             enhancement_extra["chunk_limitations"] = analysis_meta.get("chunk_limitations")
         if isinstance(analysis_meta.get("chunk_diagnostics"), list):
@@ -6492,13 +6791,21 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
         analysis["metadata"] = merge_enhancement_metadata(
             analysis_metadata,
             provider="ollama",
-            status="partial" if enhancement_extra["partial_enhancement"] else "done",
+            status="degraded" if enhancement_extra["degraded"] else "partial" if enhancement_extra["partial_enhancement"] else "done",
             task_id=task_id,
             timeout_seconds=timeout_seconds,
             extra=enhancement_extra,
         )
         report = apply_analytics_analysis_to_report(report, analysis, source_hash=analytics_input.source_hash)
-        return {"report_id": report.id, "status": "partial" if enhancement_extra["partial_enhancement"] else "done", "provider": report.provider}
+        _release_intelligence_enhancement_lock(report.metadata if isinstance(report.metadata, dict) else {})
+        task_status = "degraded" if enhancement_extra["degraded"] else "partial" if enhancement_extra["partial_enhancement"] else "done"
+        return {
+            "report_id": report.id,
+            "status": task_status,
+            "report_status": report.status,
+            "provider": report.provider,
+            "fallback_used": bool(report.fallback_used),
+        }
     except (AnalyticsIntelligenceInputError, Exception) as exc:  # noqa: BLE001
         logger.warning("Analytics intelligence enhancement failed report=%s error=%s", report_id, exc.__class__.__name__)
         failure_extra: dict[str, Any] = {}
@@ -6512,7 +6819,7 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             last_diagnostic = failure_extra["chunk_diagnostics"][-1]
             if isinstance(last_diagnostic, dict):
                 failure_extra["last_failure_reason"] = last_diagnostic.get("safe_reason") or last_diagnostic.get("reason")
-        _mark_analytics_intelligence_enhancement(
+        marked_report = _mark_analytics_intelligence_enhancement(
             report_id,
             "failed",
             task_id=task_id,
@@ -6521,6 +6828,9 @@ def enhance_analytics_intelligence_report(self, report_id: int, source_hash: str
             phase="failed",
             extra=failure_extra,
         )
+        degraded = _intelligence_degraded_task_result(marked_report, report_id, exc.__class__.__name__)
+        if degraded is not None:
+            return degraded
         return {"report_id": report_id, "status": "failed", "error": exc.__class__.__name__}
 
 

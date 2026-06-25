@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import ProtectedRoute from './ProtectedRoute';
+import { RouteLoadingFallback } from '../components/ui/PageLoading';
 
 const Home = lazy(() => import('../pages/Home'));
 const Watch = lazy(() => import('../pages/Watch'));
@@ -24,7 +25,7 @@ export default function AppRouter({
   onUserRefresh,
 }) {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<RouteLoadingFallback />}>
       <Routes>
         <Route path="/" element={<Home searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />
         <Route path="/watch" element={<Watch searchQuery={searchQuery} user={user} onLoginRequest={onLoginRequest} />} />

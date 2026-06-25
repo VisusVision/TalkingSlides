@@ -351,6 +351,10 @@ def mark_draft_moderation_failed(project: Project, moderation_result: dict[str, 
     if not draft_summary:
         draft_summary = {
             "moderation_status": moderation_status,
+            "final_decision": str(moderation_result.get("final_decision") or moderation_status),
+            "phase": str(moderation_result.get("phase") or ""),
+            "scope": str(moderation_result.get("scope") or moderation_result.get("draft_moderation_scope") or ""),
+            "asset_type": str(moderation_result.get("asset_type") or ""),
             "message": str(moderation_result.get("message") or "Draft blocked by moderation."),
             "finding_count": int(moderation_result.get("finding_count") or 0),
             "findings": list(moderation_result.get("findings") or []),

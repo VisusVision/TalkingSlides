@@ -262,6 +262,25 @@
   .reveal-up {
     animation: reveal-up 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
   }
+
+  .visus-loading-sheen {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .visus-loading-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, var(--surface-container-lowest), transparent 42%),
+      transparent
+    );
+    animation: visus-skeleton-sheen 1.25s ease-in-out infinite;
+  }
 }
 
 @keyframes cinematic-fade {
@@ -286,6 +305,30 @@
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+@keyframes visus-page-progress {
+  0% {
+    transform: translateX(-110%) scaleX(0.7);
+  }
+
+  55% {
+    transform: translateX(120%) scaleX(1);
+  }
+
+  100% {
+    transform: translateX(330%) scaleX(0.85);
+  }
+}
+
+@keyframes visus-skeleton-sheen {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.visus-page-progress {
+  animation: visus-page-progress 1.05s ease-in-out infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -197,6 +197,8 @@ def test_staff_admin_stats_still_load_and_creator_endpoint_stays_scoped():
     assert "summary" in admin_response.data
     assert creator_response.status_code == 200
     assert creator_response.data["summary"]["total_lessons"] == 1
+    assert creator_response.data["meta"]["global_scope"] is False
+    assert creator_response.data["meta"]["scope_owner_id"] == staff.id
     titles = [row["title"] for row in creator_response.data["tables"]["top_lessons"]]
     assert titles == ["Staff own lesson"]
 

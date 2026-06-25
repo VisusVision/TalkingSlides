@@ -459,8 +459,14 @@ export async function deleteProject(projectId) {
 
 export async function rerenderProject(projectId, options = {}) {
   const body = {};
-  if (Object.prototype.hasOwnProperty.call(options, "avatarEnabled")) {
-    body.avatar_enabled = options.avatarEnabled ? "1" : "0";
+  const hasAvatarOption =
+    Object.prototype.hasOwnProperty.call(options, "avatarEnabled") ||
+    Object.prototype.hasOwnProperty.call(options, "renderWithAvatar") ||
+    Object.prototype.hasOwnProperty.call(options, "render_with_avatar");
+  if (hasAvatarOption) {
+    const renderWithAvatar = Boolean(options.avatarEnabled ?? options.renderWithAvatar ?? options.render_with_avatar);
+    body.avatar_enabled = renderWithAvatar ? "1" : "0";
+    body.render_with_avatar = renderWithAvatar;
   }
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/rerender/`, {
     method: "POST",
@@ -1499,6 +1505,15 @@ export async function updateProjectTranscript(projectId, pages, options = {}) {
     pause_sec: options.pauseSec ?? 2.2,
     lang_hint: options.langHint ?? 'auto',
   };
+  const hasAvatarOption =
+    Object.prototype.hasOwnProperty.call(options, 'avatarEnabled') ||
+    Object.prototype.hasOwnProperty.call(options, 'renderWithAvatar') ||
+    Object.prototype.hasOwnProperty.call(options, 'render_with_avatar');
+  if (hasAvatarOption) {
+    const renderWithAvatar = Boolean(options.avatarEnabled ?? options.renderWithAvatar ?? options.render_with_avatar);
+    body.avatar_enabled = renderWithAvatar ? '1' : '0';
+    body.render_with_avatar = renderWithAvatar;
+  }
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript/`, {
     method: 'PATCH',
     headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -1581,6 +1596,19 @@ export async function uploadTranscriptPageBackground(projectId, pageId, file, op
   return data;
 }
 
+export async function removeTranscriptPageBackground(projectId, pageId, options = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/transcript-pages/${pageId}/background/`, {
+    method: 'DELETE',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ draft_only: options.draftOnly ?? true }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to remove slide background'));
+  }
+  return data;
+}
+
 export async function applyProjectBackgroundToAll(projectId, payload = {}) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/background/apply-all/`, {
     method: 'POST',
@@ -1606,6 +1634,19 @@ export async function uploadProjectCover(projectId, file, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     throw new Error(apiErrorMessage(data, 'Failed to update lesson cover'));
+  }
+  return data;
+}
+
+export async function removeProjectCover(projectId, options = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/cover/`, {
+    method: 'DELETE',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ draft_only: options.draftOnly ?? true }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to remove lesson cover'));
   }
   return data;
 }

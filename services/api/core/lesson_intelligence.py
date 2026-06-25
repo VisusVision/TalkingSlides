@@ -20,12 +20,16 @@ from core.intelligence_progressive import (
     bounded_adaptive_background_timeout,
     enhancement_response_fields,
     first_provider_name,
+    intelligence_hardware_profile,
     intelligence_runtime_profile_metadata,
     lesson_section_statuses,
     ollama_chunk_max_chars,
     ollama_chunk_concurrency,
     ollama_chunk_timeout_seconds,
+    ollama_finalization_timeout_budget_details,
+    ollama_no_progress_timeout_seconds,
     ollama_total_timeout_budget_seconds,
+    ollama_workload_timeout_budget_details,
     provider_attempt as progressive_provider_attempt,
     provider_chain_contains_ollama,
     safe_response_preview,
@@ -579,9 +583,12 @@ def provider_chain_from_settings() -> list[str]:
     providers = [item.strip().lower() for item in re.split(r"[\s,]+", raw) if item.strip()]
     if not providers:
         providers = ["heuristic"]
-    if "heuristic" not in providers:
-        providers.append("heuristic")
     return providers
+
+
+def _provider_chain_contains(provider_chain: list[str] | tuple[str, ...] | None, provider: str) -> bool:
+    expected = str(provider or "").strip().lower()
+    return any(str(item or "").strip().lower() == expected for item in (provider_chain or []))
 
 
 def get_lesson_intelligence_provider(provider_name: str) -> LessonIntelligenceProvider:
@@ -712,24 +719,26 @@ def analyze_with_provider_chain(
         }
         return normalized
 
-    fallback_provider = HeuristicLessonIntelligenceProvider()
-    fallback = _normalize_provider_result(fallback_provider.analyze_lesson(input_payload), provider_name="heuristic")
-    attempts.append(_provider_attempt("heuristic", "success"))
-    fallback["provider_chain"] = provider_chain
-    fallback["fallback_used"] = True
-    fallback["metadata"] = {
-        **dict(fallback.get("metadata") or {}),
-        "provider_chain_attempts": attempts,
-        "source_hash": lesson_input.source_hash,
-        "detected_language": lesson_input.detected_language,
-        "output_language": lesson_input.output_language,
-        "language_confidence": lesson_input.language_confidence,
-        "input_truncated": lesson_input.input_truncated,
-        "source_char_count": lesson_input.source_chars,
-        "input_char_count": lesson_input.input_chars,
-        "sections": lesson_section_statuses(status="done", provider="heuristic"),
-    }
-    return fallback
+    if _provider_chain_contains(provider_chain, "heuristic"):
+        fallback_provider = HeuristicLessonIntelligenceProvider()
+        fallback = _normalize_provider_result(fallback_provider.analyze_lesson(input_payload), provider_name="heuristic")
+        attempts.append(_provider_attempt("heuristic", "success"))
+        fallback["provider_chain"] = provider_chain
+        fallback["fallback_used"] = True
+        fallback["metadata"] = {
+            **dict(fallback.get("metadata") or {}),
+            "provider_chain_attempts": attempts,
+            "source_hash": lesson_input.source_hash,
+            "detected_language": lesson_input.detected_language,
+            "output_language": lesson_input.output_language,
+            "language_confidence": lesson_input.language_confidence,
+            "input_truncated": lesson_input.input_truncated,
+            "source_char_count": lesson_input.source_chars,
+            "input_char_count": lesson_input.input_chars,
+            "sections": lesson_section_statuses(status="done", provider="heuristic"),
+        }
+        return fallback
+    raise LessonIntelligenceProviderUnavailable("No lesson intelligence provider completed.")
 
 
 def progressive_ollama_enabled(chain: list[str] | None = None) -> bool:
@@ -738,6 +747,7 @@ def progressive_ollama_enabled(chain: list[str] | None = None) -> bool:
         local_ollama_enabled()
         and _bool_setting("INTELLIGENCE_BACKGROUND_ENHANCEMENT_ENABLED", True)
         and provider_chain_contains_ollama(provider_chain)
+        and _provider_chain_contains(provider_chain, "heuristic")
     )
 
 
@@ -873,6 +883,30 @@ def lesson_ollama_chunk_count(lesson_input: LessonIntelligenceInput) -> int:
     return max(1, len(_lesson_chunk_payloads(lesson_input.to_provider_payload())))
 
 
+def _serialized_char_count(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+    except (TypeError, ValueError):
+        return len(str(value or ""))
+
+
+def _lesson_finalization_timeout_failure(*, chunk_count: int, completed_chunks: int, elapsed_seconds: float) -> LessonIntelligenceProviderUnavailable:
+    message = "Ollama timed out during final lesson summary after all chunks completed."
+    failure = LessonIntelligenceProviderUnavailable(message)
+    failure.last_failure_reason = message
+    failure.diagnostic = {
+        "model": "",
+        "error_class": "TimeoutError",
+        "parse_stage": "final_aggregation_timeout",
+        "reason": "final_aggregation_timeout",
+        "safe_reason": message,
+        "chunk_count": int(chunk_count),
+        "chunks_completed": int(completed_chunks),
+        "finalization_elapsed_seconds": round(float(elapsed_seconds or 0.0), 2),
+    }
+    return failure
+
+
 def _complexity_level_from_score(score: int) -> str:
     if score >= 70:
         return "advanced"
@@ -914,6 +948,10 @@ def _lesson_chunk_limitation(language: str, key: str, *, failed: int = 0, total:
         return f"Ollama could not complete {failed} of {total} chunks; the final report uses partial enhancement."
     if key == "budget":
         return "Ollama reached the total time budget; remaining chunks kept heuristic coverage."
+    if key == "no_progress":
+        return "Ollama enhancement timed out after partial progress; remaining chunks kept heuristic coverage."
+    if key == "chunk_timeout":
+        return "Ollama could not finish lesson chunks before timing out; heuristic coverage was kept."
     return "Large lesson was analyzed in chunks."
 
 
@@ -1080,30 +1118,98 @@ def analyze_lesson_ollama_background(
     provider = OllamaLessonIntelligenceProvider(background=True)
     run_identity = lesson_ollama_run_identity(lesson_input)
     chunks = _lesson_chunk_payloads(input_payload)
+    estimated_chunk_count = len(chunks) or 1
+    estimated_workload = {
+        "kind": "lesson",
+        "input_chars": int(lesson_input.input_chars or 0),
+        "estimated_input_chars": int(lesson_input.input_chars or 0),
+        "estimated_tokens": int(((lesson_input.input_chars or 0) + 3) / 4),
+        "source_chars": int(lesson_input.source_chars or lesson_input.input_chars or 0),
+        "page_count": len(lesson_input.pages),
+        "chunk_count": estimated_chunk_count,
+        "model": provider.model,
+        "model_profile": intelligence_hardware_profile(),
+        "hardware_profile": intelligence_hardware_profile(),
+    }
     should_chunk = len(chunks) > 1
     if not should_chunk:
         if callable(progress_callback):
-            progress_callback("analyzing_chunks", 1, 0, 0, {"index": 1, "count": 1})
-        result = provider.analyze_lesson(input_payload)
+            progress_callback("chunk_processing", 1, 0, 0, {"index": 1, "count": 1})
+        budget_details = ollama_workload_timeout_budget_details(
+            input_chars=lesson_input.input_chars,
+            chunk_count=1,
+            base_seconds=adaptive_lesson_intelligence_timeout(input_payload, base_seconds=provider.timeout_seconds),
+            hard_max_seconds=ollama_total_timeout_budget_seconds(),
+            kind="lesson",
+            model=provider.model,
+            base_url=provider.base_url,
+        )
+        result = provider.analyze_lesson(input_payload, timeout_seconds_override=float(budget_details["timeout_budget_seconds"]))
         normalized = _normalize_provider_result(result, provider_name=provider.provider_name)
-        chunk_metadata = {"chunked": False, "chunk_count": 1, "completed_chunks": 1, "failed_chunks": 0}
+        provider_meta = normalized.get("metadata") if isinstance(normalized.get("metadata"), dict) else {}
+        elapsed_seconds = provider_meta.get("elapsed_seconds")
+        finalization_details = ollama_finalization_timeout_budget_details(
+            input_chars=lesson_input.input_chars,
+            output_chars=_serialized_char_count(normalized),
+            chunk_count=1,
+            hard_max_seconds=budget_details.get("absolute_cap_seconds"),
+            kind="lesson",
+            model=provider.model,
+            base_url=provider.base_url,
+        )
+        chunk_metadata = {
+            "chunked": False,
+            "chunk_count": 1,
+            "completed_chunks": 1,
+            "failed_chunks": 0,
+            "chunks_attempted": 1,
+            "chunks_completed": 1,
+            "last_completed_chunk_index": 1,
+            "partial_ollama_used": False,
+            "fallback_used": False,
+            "degraded_reason": "",
+            "estimated_workload": estimated_workload,
+            "elapsed_seconds": elapsed_seconds,
+            "actual_elapsed_seconds": elapsed_seconds,
+            "finalization_budget_seconds": finalization_details["timeout_budget_seconds"],
+            "finalization_elapsed_seconds": 0.0,
+            "finalization_timeout": False,
+            "finalization_calculated_budget_seconds": finalization_details["calculated_budget_seconds"],
+            "finalization_timeout_budget_seconds": finalization_details["timeout_budget_seconds"],
+            "finalization_absolute_cap_seconds": finalization_details["absolute_cap_seconds"],
+            **budget_details,
+        }
         provider_attempt = progressive_provider_attempt("ollama", "success")
         timeout_seconds = getattr(provider, "last_timeout_seconds", None)
         if callable(progress_callback):
-            progress_callback("synthesizing", 1, 1, 0, {"index": 1, "count": 1})
+            progress_callback("final_synthesis", 1, 1, 0, {"index": 1, "count": 1})
     else:
         chunk_count = len(chunks)
         if callable(progress_callback):
-            progress_callback("analyzing_chunks", chunk_count, 0, 0, {"index": 0, "count": chunk_count})
+            progress_callback("chunk_processing", chunk_count, 0, 0, {"index": 0, "count": chunk_count})
         started_at = time.monotonic()
-        total_budget = ollama_total_timeout_budget_seconds()
+        budget_details = ollama_workload_timeout_budget_details(
+            input_chars=lesson_input.input_chars,
+            chunk_count=chunk_count,
+            base_seconds=adaptive_lesson_intelligence_timeout(input_payload),
+            hard_max_seconds=ollama_total_timeout_budget_seconds(),
+            kind="lesson",
+            model=provider.model,
+            base_url=provider.base_url,
+        )
+        absolute_cap = float(budget_details.get("absolute_cap_seconds") or budget_details["timeout_budget_seconds"])
         completed_chunks = 0
         failed_chunks = 0
+        attempted_chunks = 0
+        last_completed_chunk_index = 0
+        max_no_progress_timeout = float(budget_details.get("no_progress_timeout_seconds") or 0.0)
+        budget_exceeded = False
+        no_progress_exceeded = False
         chunk_results: list[dict[str, Any]] = []
         chunk_limitations: list[str] = []
         chunk_diagnostics: list[dict[str, Any]] = []
         if callable(progress_callback):
-            progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, {"index": 0, "count": chunk_count})
+            progress_callback("chunk_processing", chunk_count, completed_chunks, failed_chunks, {"index": 0, "count": chunk_count})
         for position, chunk_payload in enumerate(chunks, start=1):
             chunk_meta = chunk_payload.get("chunk") if isinstance(chunk_payload.get("chunk"), dict) else {}
             current_chunk = {
@@ -1112,10 +1218,11 @@ def analyze_lesson_ollama_background(
                 "page_numbers": chunk_meta.get("page_numbers") if isinstance(chunk_meta.get("page_numbers"), list) else [],
             }
             if callable(progress_callback):
-                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, current_chunk)
+                progress_callback("chunk_processing", chunk_count, completed_chunks, failed_chunks, current_chunk)
             elapsed = time.monotonic() - started_at
-            remaining = max(0.0, total_budget - elapsed)
-            if remaining < 1.0:
+            remaining_absolute = max(0.0, absolute_cap - elapsed)
+            if remaining_absolute < 1.0:
+                budget_exceeded = True
                 remaining_chunks = max(1, chunk_count - position + 1)
                 failed_chunks += remaining_chunks
                 chunk_limitations.append(_lesson_chunk_limitation(lesson_input.output_language, "budget"))
@@ -1127,6 +1234,7 @@ def analyze_lesson_ollama_background(
                         "parse_stage": "timeout",
                         "reason": "total_budget_exceeded",
                         "safe_reason": "Ollama time budget was exceeded.",
+                        "absolute_cap_seconds": round(absolute_cap, 2),
                         "elapsed_seconds": round(elapsed, 2),
                         "retry_count": 0,
                     },
@@ -1134,7 +1242,7 @@ def analyze_lesson_ollama_background(
                 chunk_diagnostics.append(diagnostic)
                 if callable(progress_callback):
                     progress_callback(
-                        "analyzing_chunks",
+                        "chunk_processing",
                         chunk_count,
                         completed_chunks,
                         failed_chunks,
@@ -1145,17 +1253,58 @@ def analyze_lesson_ollama_background(
                             "chunk_diagnostics": chunk_diagnostics[-10:],
                             "last_failure_reason": diagnostic.get("safe_reason") or diagnostic.get("reason"),
                         },
-                    )
+                )
                 break
-            chunk_timeout = min(ollama_chunk_timeout_seconds(_safe_int(chunk_payload.get("input_chars"), 0)), remaining)
+            chunk_input_chars = _safe_int(chunk_payload.get("input_chars"), 0)
+            budget_chunk_timeout = float(
+                budget_details.get("average_chunk_timeout_seconds")
+                or ollama_chunk_timeout_seconds(chunk_input_chars)
+            )
+            chunk_no_progress_timeout = ollama_no_progress_timeout_seconds(
+                chunk_input_chars,
+                hard_max_seconds=remaining_absolute,
+            )
+            chunk_no_progress_timeout = min(remaining_absolute, max(chunk_no_progress_timeout, budget_chunk_timeout))
+            max_no_progress_timeout = max(max_no_progress_timeout, chunk_no_progress_timeout)
+            chunk_timeout = min(
+                max(ollama_chunk_timeout_seconds(chunk_input_chars), budget_chunk_timeout),
+                chunk_no_progress_timeout,
+                remaining_absolute,
+            )
             try:
+                attempted_chunks += 1
                 result = provider.analyze_lesson(chunk_payload, timeout_seconds_override=chunk_timeout)
                 normalized_chunk = _normalize_provider_result(result, provider_name=provider.provider_name)
                 completed_chunks += 1
+                last_completed_chunk_index = int(current_chunk.get("index") or position)
             except Exception as exc:  # noqa: BLE001
-                failed_chunks += 1
                 diagnostic = _chunk_failure_diagnostic(current_chunk, _diagnostic_from_exception(exc, model=provider.model))
+                diagnostic["no_progress_timeout_seconds"] = round(chunk_no_progress_timeout, 2)
                 chunk_diagnostics.append(diagnostic)
+                if str(diagnostic.get("parse_stage") or "").lower() == "timeout" and completed_chunks > 0:
+                    no_progress_exceeded = True
+                    remaining_chunks = max(1, chunk_count - position + 1)
+                    failed_chunks += remaining_chunks
+                    chunk_limitations.append(_lesson_chunk_limitation(lesson_input.output_language, "no_progress"))
+                    diagnostic["reason"] = "no_progress_timeout"
+                    diagnostic["safe_reason"] = "Ollama enhancement timed out after partial progress."
+                    diagnostic["skipped_remaining_chunks"] = remaining_chunks
+                    if callable(progress_callback):
+                        progress_callback(
+                            "chunk_processing",
+                            chunk_count,
+                            completed_chunks,
+                            failed_chunks,
+                            {
+                                **current_chunk,
+                                "no_progress_timeout": True,
+                                "skipped_remaining_chunks": remaining_chunks,
+                                "chunk_diagnostics": chunk_diagnostics[-10:],
+                                "last_failure_reason": diagnostic.get("safe_reason") or diagnostic.get("reason"),
+                            },
+                        )
+                    break
+                failed_chunks += 1
                 chunk_limitations.append(diagnostic.get("safe_reason") or f"chunk_failed:{exc.__class__.__name__}")
                 fallback = HeuristicLessonIntelligenceProvider().analyze_lesson(chunk_payload)
                 normalized_chunk = _normalize_provider_result(fallback, provider_name="heuristic")
@@ -1165,40 +1314,163 @@ def analyze_lesson_ollama_background(
                 if chunk_diagnostics:
                     progress_payload["chunk_diagnostics"] = chunk_diagnostics[-10:]
                     progress_payload["last_failure_reason"] = chunk_diagnostics[-1].get("safe_reason") or chunk_diagnostics[-1].get("reason")
-                progress_callback("analyzing_chunks", chunk_count, completed_chunks, failed_chunks, progress_payload)
-        if completed_chunks <= 0:
-            failure = LessonIntelligenceProviderUnavailable("Ollama chunk analysis failed for all chunks")
-            failure.chunk_diagnostics = chunk_diagnostics[-20:]
-            if chunk_diagnostics:
-                failure.last_failure_reason = chunk_diagnostics[-1].get("safe_reason") or chunk_diagnostics[-1].get("reason")
-            raise failure
-        if callable(progress_callback):
-            progress_callback("synthesizing", chunk_count, completed_chunks, failed_chunks, {"index": chunk_count, "count": chunk_count})
-        timeout_seconds = round(min(total_budget, time.monotonic() - started_at), 2)
-        normalized = _normalize_provider_result(
-            _synthesize_lesson_chunk_results(
-                lesson_input,
-                chunk_count=chunk_count,
-                completed_chunks=completed_chunks,
-                failed_chunks=failed_chunks,
-                chunk_results=chunk_results,
-                chunk_limitations=chunk_limitations,
-                timeout_seconds=timeout_seconds,
-            ),
-            provider_name=provider.provider_name,
+                progress_callback("chunk_processing", chunk_count, completed_chunks, failed_chunks, progress_payload)
+        all_ollama_chunks_failed = completed_chunks <= 0
+        chunk_output_chars = _serialized_char_count(chunk_results)
+        finalization_details = ollama_finalization_timeout_budget_details(
+            input_chars=lesson_input.input_chars,
+            output_chars=chunk_output_chars,
+            chunk_count=chunk_count,
+            hard_max_seconds=absolute_cap,
+            kind="lesson",
+            model=provider.model,
+            base_url=provider.base_url,
         )
+        finalization_budget = float(finalization_details["timeout_budget_seconds"])
+        finalization_elapsed = 0.0
+        finalization_timeout = False
+        finalization_message = "Ollama timed out during final lesson summary after all chunks completed."
+        timeout_seconds = round(min(absolute_cap, time.monotonic() - started_at), 2)
+        all_chunks_message = "Ollama chunk analysis timed out before any lesson chunk completed."
+        all_chunk_failures_timed_out = bool(
+            chunk_diagnostics
+            and all(str(item.get("parse_stage") or "").lower() == "timeout" for item in chunk_diagnostics)
+        )
+        if all_ollama_chunks_failed:
+            if not _provider_chain_contains(provider_chain, "heuristic"):
+                failure = LessonIntelligenceProviderUnavailable("Ollama chunk analysis failed for all chunks")
+                failure.chunk_diagnostics = chunk_diagnostics[-20:]
+                if chunk_diagnostics:
+                    failure.last_failure_reason = chunk_diagnostics[-1].get("safe_reason") or chunk_diagnostics[-1].get("reason")
+                raise failure
+            fallback = HeuristicLessonIntelligenceProvider().analyze_lesson(input_payload)
+            normalized = _normalize_provider_result(fallback, provider_name="heuristic")
+            provider_attempt = progressive_provider_attempt("ollama", "degraded", all_chunks_message)
+            chunk_limitations.append(_lesson_chunk_limitation(lesson_input.output_language, "chunk_timeout"))
+        elif callable(progress_callback):
+            progress_callback(
+                "final_synthesis",
+                chunk_count,
+                completed_chunks,
+                failed_chunks,
+                {
+                    "index": chunk_count,
+                    "count": chunk_count,
+                    "finalization_budget_seconds": finalization_budget,
+                    "chunks_completed": completed_chunks,
+                },
+            )
+        if not all_ollama_chunks_failed:
+            finalization_started = time.monotonic()
+            finalization_error: Exception | None = None
+            synthesized_payload: dict[str, Any] | None = None
+            try:
+                synthesized_payload = _synthesize_lesson_chunk_results(
+                    lesson_input,
+                    chunk_count=chunk_count,
+                    completed_chunks=completed_chunks,
+                    failed_chunks=failed_chunks,
+                    chunk_results=chunk_results,
+                    chunk_limitations=chunk_limitations,
+                    timeout_seconds=round(min(absolute_cap, finalization_started - started_at), 2),
+                )
+            except TimeoutError as exc:
+                finalization_error = exc
+            finalization_elapsed_raw = max(0.0, time.monotonic() - finalization_started)
+            finalization_elapsed = round(finalization_elapsed_raw, 2)
+            finalization_timeout = bool(finalization_error or finalization_elapsed_raw > finalization_budget)
+            timeout_seconds = round(min(absolute_cap, (finalization_started - started_at) + finalization_elapsed_raw), 2)
+            if finalization_timeout:
+                diagnostic = _chunk_failure_diagnostic(
+                    {"index": chunk_count, "count": chunk_count, "section": "final_synthesis"},
+                    {
+                        "model": provider.model,
+                        "error_class": (finalization_error.__class__.__name__ if finalization_error else "TimeoutError"),
+                        "parse_stage": "final_aggregation_timeout",
+                        "reason": "final_aggregation_timeout",
+                        "safe_reason": finalization_message,
+                        "finalization_budget_seconds": finalization_budget,
+                        "finalization_elapsed_seconds": finalization_elapsed,
+                        "chunks_completed": completed_chunks,
+                        "chunk_count": chunk_count,
+                        "retry_count": 0,
+                    },
+                )
+                chunk_diagnostics.append(diagnostic)
+                if not _provider_chain_contains(provider_chain, "heuristic"):
+                    failure = _lesson_finalization_timeout_failure(
+                        chunk_count=chunk_count,
+                        completed_chunks=completed_chunks,
+                        elapsed_seconds=finalization_elapsed,
+                    )
+                    failure.chunk_diagnostics = chunk_diagnostics[-20:]
+                    raise failure
+                fallback = HeuristicLessonIntelligenceProvider().analyze_lesson(input_payload)
+                normalized = _normalize_provider_result(fallback, provider_name="heuristic")
+                provider_attempt = progressive_provider_attempt("ollama", "degraded", finalization_message)
+            else:
+                normalized = _normalize_provider_result(
+                    synthesized_payload or {},
+                    provider_name=provider.provider_name,
+                )
+                timeout_degraded = bool(budget_exceeded or no_progress_exceeded)
+                provider_attempt = progressive_provider_attempt(
+                    "ollama",
+                    "degraded" if timeout_degraded else "partial" if failed_chunks else "success",
+                    (
+                        "Ollama time budget was exceeded."
+                        if budget_exceeded
+                        else "Ollama enhancement timed out after partial progress."
+                        if no_progress_exceeded
+                        else None
+                    ),
+                )
+        degraded_reason = (
+            "ollama_total_budget_exceeded"
+            if budget_exceeded
+            else "ollama_no_progress_timeout"
+            if no_progress_exceeded
+            else "chunk_timeout"
+            if all_ollama_chunks_failed and all_chunk_failures_timed_out
+            else "chunk_failure"
+            if all_ollama_chunks_failed
+            else "final_aggregation_timeout"
+            if finalization_timeout
+            else "partial_ollama_chunk_failure"
+            if failed_chunks
+            else ""
+        )
+        timeout_degraded = bool(all_ollama_chunks_failed or budget_exceeded or no_progress_exceeded or finalization_timeout)
         chunk_metadata = {
             "chunked": True,
             "chunk_count": chunk_count,
             "completed_chunks": completed_chunks,
             "failed_chunks": failed_chunks,
+            "chunks_attempted": attempted_chunks,
+            "chunks_completed": completed_chunks,
+            "last_completed_chunk_index": last_completed_chunk_index,
             "chunk_limitations": chunk_limitations,
             "chunk_diagnostics": chunk_diagnostics[-20:],
-            "partial_enhancement": bool(failed_chunks),
+            "partial_enhancement": bool(failed_chunks or finalization_timeout),
+            "partial_ollama_used": bool(completed_chunks and (failed_chunks or finalization_timeout or budget_exceeded or no_progress_exceeded)),
+            "fallback_used": bool(failed_chunks or finalization_timeout or all_ollama_chunks_failed or budget_exceeded or no_progress_exceeded),
+            "degraded": timeout_degraded,
+            "degraded_reason": degraded_reason,
+            "estimated_workload": estimated_workload,
+            "elapsed_seconds": timeout_seconds,
+            "actual_elapsed_seconds": timeout_seconds,
+            "phase": "chunk_processing" if all_ollama_chunks_failed else "final_synthesis" if finalization_timeout else "persistence",
+            "finalization_budget_seconds": finalization_budget,
+            "finalization_elapsed_seconds": finalization_elapsed,
+            "finalization_timeout": finalization_timeout,
+            "finalization_calculated_budget_seconds": finalization_details["calculated_budget_seconds"],
+            "finalization_timeout_budget_seconds": finalization_details["timeout_budget_seconds"],
+            "finalization_absolute_cap_seconds": finalization_details["absolute_cap_seconds"],
+            **budget_details,
+            "no_progress_timeout_seconds": round(max_no_progress_timeout, 2),
         }
-        provider_attempt = progressive_provider_attempt("ollama", "partial" if failed_chunks else "success")
     normalized["provider_chain"] = provider_chain
-    normalized["fallback_used"] = False
+    normalized["fallback_used"] = bool(normalized.get("fallback_used") or chunk_metadata.get("fallback_used"))
     normalized["metadata"] = {
         **dict(normalized.get("metadata") or {}),
         "provider_chain_attempts": [provider_attempt],
@@ -1213,6 +1485,7 @@ def analyze_lesson_ollama_background(
         **run_identity,
         **chunk_metadata,
         **intelligence_runtime_profile_metadata(),
+        "total_timeout_max_seconds": chunk_metadata.get("timeout_budget_seconds") or ollama_total_timeout_budget_seconds(),
         "chunk_concurrency": ollama_chunk_concurrency(),
         "timeout_seconds": timeout_seconds,
     }
@@ -1430,12 +1703,57 @@ def report_response_payload(
                 "total_timeout_max_seconds",
                 "sections",
                 "chunked",
+                "estimated_workload",
+                "input_chars",
+                "estimated_input_chars",
+                "estimated_input_tokens",
+                "estimated_output_tokens",
+                "estimated_tokens",
                 "chunk_count",
                 "completed_chunks",
                 "failed_chunks",
+                "chunks_attempted",
+                "chunks_completed",
+                "last_completed_chunk_index",
                 "chunk_limitations",
                 "chunk_diagnostics",
                 "partial_enhancement",
+                "partial_ollama_used",
+                "degraded_reason",
+                "calculated_budget_seconds",
+                "calibrated_estimate_seconds",
+                "configured_safety_margin_seconds",
+                "safety_margin_seconds",
+                "hard_max_seconds",
+                "timeout_budget_seconds",
+                "absolute_cap_seconds",
+                "average_chunk_timeout_seconds",
+                "no_progress_timeout_seconds",
+                "elapsed_seconds",
+                "actual_elapsed_seconds",
+                "finalization_budget_seconds",
+                "finalization_elapsed_seconds",
+                "finalization_timeout",
+                "finalization_calculated_budget_seconds",
+                "finalization_timeout_budget_seconds",
+                "finalization_absolute_cap_seconds",
+                "degraded",
+                "enhancement_failed",
+                "fallback_used",
+                "model_profile",
+                "workload_kind",
+                "calibration_enabled",
+                "calibration_used",
+                "calibration_cache_hit",
+                "calibration_failed",
+                "calibration_elapsed_seconds",
+                "calibration_error",
+                "measured_chars_per_second",
+                "measured_tokens_per_second",
+                "fallback_chars_per_second",
+                "fallback_tokens_per_second",
+                "throughput_chars_per_second",
+                "throughput_tokens_per_second",
                 "force",
                 "forced_at",
                 "manual_retry",
@@ -1506,6 +1824,7 @@ def _normalize_provider_result(raw: Any, *, provider_name: str) -> dict[str, Any
 
 def _normalize_expanded_narration_suggestions(raw: Any, *, provider_name: str) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
+    normalized_provider = str(provider_name or "heuristic").strip().lower() or "heuristic"
     for item in _safe_json_list(raw):
         if isinstance(item, str):
             normalized.append(
@@ -1518,8 +1837,8 @@ def _normalize_expanded_narration_suggestions(raw: Any, *, provider_name: str) -
                     "suggestion": item,
                     "draft_narration": "",
                     "copy_text": "",
-                    "generated_by": provider_name,
-                    "ai_generated": True,
+                    "generated_by": normalized_provider,
+                    "ai_generated": normalized_provider not in {"heuristic", "local_heuristic"},
                 }
             )
             continue
@@ -1529,6 +1848,15 @@ def _normalize_expanded_narration_suggestions(raw: Any, *, provider_name: str) -
         title = _clean_text(item.get("title"), max_chars=120) or _expanded_suggestion_title(suggestion_type)
         advice = _clean_text(item.get("advice") or item.get("suggestion") or item.get("message"), max_chars=700)
         draft = _clean_text(item.get("draft_narration") or item.get("copy_text"), max_chars=1200)
+        generated_by = _clean_text(item.get("generated_by"), max_chars=40) or normalized_provider
+        generated_by = str(generated_by or "heuristic").strip().lower() or "heuristic"
+        raw_ai_generated = item.get("ai_generated")
+        if raw_ai_generated is None:
+            ai_generated = generated_by not in {"heuristic", "local_heuristic"}
+        elif isinstance(raw_ai_generated, bool):
+            ai_generated = raw_ai_generated
+        else:
+            ai_generated = str(raw_ai_generated).strip().lower() in {"1", "true", "yes", "on"}
         normalized.append(
             {
                 "page_number": _safe_int(item.get("page_number"), 0),
@@ -1539,8 +1867,8 @@ def _normalize_expanded_narration_suggestions(raw: Any, *, provider_name: str) -
                 "suggestion": advice,
                 "draft_narration": draft,
                 "copy_text": draft,
-                "generated_by": _clean_text(item.get("generated_by"), max_chars=40) or provider_name,
-                "ai_generated": bool(item.get("ai_generated", True)),
+                "generated_by": generated_by,
+                "ai_generated": ai_generated,
             }
         )
     return normalized
@@ -1979,6 +2307,7 @@ def _expanded_suggestion(
     generated_by: str = "heuristic",
 ) -> dict[str, Any]:
     clean_draft = _clean_text(draft_narration, max_chars=900)
+    provider = str(generated_by or "heuristic").strip().lower() or "heuristic"
     return {
         "page_number": page_number,
         "page_key": page_key,
@@ -1988,8 +2317,8 @@ def _expanded_suggestion(
         "suggestion": advice,
         "draft_narration": clean_draft,
         "copy_text": clean_draft,
-        "generated_by": generated_by,
-        "ai_generated": True,
+        "generated_by": provider,
+        "ai_generated": provider not in {"heuristic", "local_heuristic"},
     }
 
 
@@ -2012,42 +2341,38 @@ def _draft_narration_for_page(
     if output_language == "tr":
         if not source:
             return (
-                "Bu bölümde slaydın ana fikrini kısa ve net biçimde tanıtıyoruz. "
-                "Öğrenciye önce konunun neden önemli olduğunu söylüyor, ardından basit bir örnekle bağlantı kuruyoruz. "
-                "Son olarak bir sonraki adıma geçmeden önce öğrenilmesi gereken noktayı özetliyoruz."
+                "Bu slayt derste kısa bir duraklama olarak kullanılabilir. "
+                "Önce önceki fikri kısaca hatırlayalım, sonra sıradaki konuya hazırlanalım."
             )
         if bullet_items:
             items = ", ".join(bullet_items[:3])
             return _truncate(
-                "Bu bölümde listedeki ana noktaları birlikte anlamlandırıyoruz: "
-                f"{items}. Her madde, dersin ana fikrine nasıl katkı verdiğini gösteren kısa bir açıklamayla ele alınır. "
-                "Böylece öğrenci yalnızca listeyi okumaz, maddeler arasındaki ilişkiyi de duyar.",
+                f"Bu slaytta {items} ana maddeleri oluşturuyor. "
+                "Her maddeyi tek tek ele alalım ve dersin ana fikriyle nasıl bağlandığını netleştirelim. "
+                "Bu bağlantı, listeyi yalnızca okumak yerine konunun mantığını takip etmeyi kolaylaştırır.",
                 900,
             )
         return _truncate(
-            f"Bu bölümde ana fikri şöyle açıklıyoruz: {source}. "
-            "Bunu somut bir örnekle düşünürsek, öğrenci kavramın nerede kullanılacağını daha kolay görür. "
-            "Bir sonraki adımda bu fikri dersin devamındaki uygulamayla ilişkilendiriyoruz.",
+            f"{source}. Bu fikir, dersin bu noktasında hangi kavramı takip edeceğimizi belirler. "
+            "Kısa bir örnek üzerinden düşündüğümüzde, kavramın karar verme veya problem çözme sürecine nasıl katıldığı daha net görülür.",
             900,
         )
     if not source:
         return (
-            "In this part, we introduce the slide's main idea in clear learner-friendly language. "
-            "First, we explain why the point matters, then we connect it to a simple example. "
-            "Before moving on, we summarize the takeaway learners should remember."
+            "This slide can serve as a short pause in the lesson. "
+            "Review the previous idea briefly, then prepare the learner for the next topic."
         )
     if bullet_items:
         items = ", ".join(bullet_items[:3])
         return _truncate(
-            "In this part, we connect the bullet points into a clear explanation: "
-            f"{items}. Each point should be described in terms of why it matters and how it supports the main idea. "
-            "That gives learners the reasoning behind the list instead of only reading the items.",
+            f"{items} are the main points on this slide. "
+            "Take them one at a time, connect each point to the central idea, and show how the list works as one sequence. "
+            "That turns the slide from separate labels into a spoken explanation learners can follow.",
             900,
         )
     return _truncate(
-        f"In this part, we explain the key idea: {source}. "
-        "A simple example can make the concept easier to place in a real learning context. "
-        "Then we transition to the next step by showing how this idea will be used in the rest of the lesson.",
+        f"{source}. This is the idea to keep in mind for this slide. "
+        "Connect it to one concrete situation, explain what changes because of it, and use that point to lead into the next step of the lesson.",
         900,
     )
 

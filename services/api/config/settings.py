@@ -676,9 +676,10 @@ _INTELLIGENCE_PROFILE_DEFAULTS = {
         "chunk_pages": "4",
         "chunk_items": "6",
         "row_threshold": "24",
-        "chunk_timeout_min": "130",
-        "chunk_timeout_max": "240",
-        "total_timeout_max": "720",
+        "chunk_timeout_min": "30",
+        "chunk_timeout_max": "75",
+        "total_timeout_max": "300",
+        "analytics_background_max": "180",
         "chunk_concurrency": "1",
     },
     "local_mid": {
@@ -688,9 +689,10 @@ _INTELLIGENCE_PROFILE_DEFAULTS = {
         "chunk_pages": "8",
         "chunk_items": "10",
         "row_threshold": "40",
-        "chunk_timeout_min": "130",
-        "chunk_timeout_max": "240",
+        "chunk_timeout_min": "30",
+        "chunk_timeout_max": "75",
         "total_timeout_max": "600",
+        "analytics_background_max": "180",
         "chunk_concurrency": "1",
     },
     "production_gpu": {
@@ -703,6 +705,7 @@ _INTELLIGENCE_PROFILE_DEFAULTS = {
         "chunk_timeout_min": "30",
         "chunk_timeout_max": "90",
         "total_timeout_max": "900",
+        "analytics_background_max": "180",
         "chunk_concurrency": "2",
     },
 }
@@ -757,6 +760,25 @@ INTELLIGENCE_OLLAMA_CHUNK_TIMEOUT_MAX_SECONDS = float(
 )
 INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS = float(
     os.environ.get("INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS", _INTELLIGENCE_PROFILE["total_timeout_max"])
+)
+INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR = float(
+    os.environ.get("INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR", "1.15")
+)
+INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS = float(
+    os.environ.get("INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS", "0")
+)
+INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED = _env_bool("INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED", default=True)
+INTELLIGENCE_OLLAMA_CALIBRATION_TTL_SECONDS = int(
+    os.environ.get("INTELLIGENCE_OLLAMA_CALIBRATION_TTL_SECONDS", "1800")
+)
+INTELLIGENCE_OLLAMA_CALIBRATION_TIMEOUT_SECONDS = float(
+    os.environ.get("INTELLIGENCE_OLLAMA_CALIBRATION_TIMEOUT_SECONDS", "20")
+)
+INTELLIGENCE_OLLAMA_CALIBRATION_CHUNK_OVERHEAD_SECONDS = float(
+    os.environ.get("INTELLIGENCE_OLLAMA_CALIBRATION_CHUNK_OVERHEAD_SECONDS", "2")
+)
+INTELLIGENCE_OLLAMA_CALIBRATION_FINALIZATION_OVERHEAD_SECONDS = float(
+    os.environ.get("INTELLIGENCE_OLLAMA_CALIBRATION_FINALIZATION_OVERHEAD_SECONDS", "3")
 )
 LESSON_INTELLIGENCE_SYNC_PROVIDER_TIMEOUT_CAP_SECONDS = float(
     os.environ.get(
@@ -815,7 +837,7 @@ ANALYTICS_INTELLIGENCE_BACKGROUND_PROVIDER_TIMEOUT_SECONDS = float(
     )
 )
 ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS = float(
-    os.environ.get("ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS", "180")
+    os.environ.get("ANALYTICS_INTELLIGENCE_MAX_BACKGROUND_SECONDS", _INTELLIGENCE_PROFILE["analytics_background_max"])
 )
 ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS = int(os.environ.get("ANALYTICS_INTELLIGENCE_MAX_INPUT_CHARS", "20000"))
 ANALYTICS_INTELLIGENCE_AUTO_ENABLED = os.environ.get(

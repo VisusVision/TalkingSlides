@@ -1435,6 +1435,20 @@ def _scene_mode_validation_error(project: Project, scene: dict, mode: str) -> st
     return ""
 
 
+def _fallback_scene_mode_after_custom_removal(project: Project, scene: dict) -> str:
+    for candidate in ("source_background", "original"):
+        if not _scene_mode_validation_error(project, scene, candidate):
+            return candidate
+    return "whiteboard"
+
+
+def _effective_scene_visual_asset(scene: dict) -> tuple[str, str]:
+    mode = _clean_scene_mode(scene.get("background_mode"), fallback="original")
+    if mode != "custom":
+        return "", ""
+    return "custom_background", _normalize_rel_storage_path(str(scene.get("custom_background_path") or ""))
+
+
 def _page_scene_response(page: TranscriptPage, request) -> dict:
     return TranscriptPageSerializer(page, context={"request": request}).data
 
@@ -3230,7 +3244,7 @@ class ProjectCoverImageView(APIView):
     - Draft/private lesson covers are visible to the owner or staff only.
     """
 
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
     permission_classes = [permissions.AllowAny]
 
     def _can_view_private_cover(self, request, project: Project) -> bool:
@@ -3300,6 +3314,8 @@ class ProjectCoverImageView(APIView):
         project_fields = draft_data.setdefault("project", {})
         project_fields["cover_image_original"] = cover_rel_path
         project_fields["cover_image_processed"] = cover_rel_path
+        metadata = draft_data.setdefault("metadata", {})
+        metadata.pop("cover_removed", None)
         mark_draft_dirty(
             draft_data,
             metadata_dirty=True,
@@ -3334,6 +3350,37 @@ class ProjectCoverImageView(APIView):
             if _draft_moderation_result_blocks(moderation_result)
             else "Visual scan pending."
         )
+        return Response(data, status=status.HTTP_200_OK)
+
+    def delete(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_review_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        draft_data = ensure_project_draft_data(project)
+        project_fields = draft_data.setdefault("project", {})
+        project_fields["cover_image_original"] = ""
+        project_fields["cover_image_processed"] = ""
+        metadata = draft_data.setdefault("metadata", {})
+        metadata["cover_removed"] = True
+        mark_draft_dirty(
+            draft_data,
+            metadata_dirty=True,
+            cover_dirty=True,
+            visual_assets_dirty=False,
+            render_required=False,
+        )
+        draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
+        save_project_draft_data(project, draft_data, dirty=True)
+        project.refresh_from_db()
+        enforce_unpublished_for_unresolved_moderation(project)
+        data = ProjectSerializer(project, context={"request": request}).data
+        data["render_required"] = False
+        data["moderation"] = None
+        data["message"] = "Draft cover removal saved. Public cover is unchanged until Save changes succeeds."
         return Response(data, status=status.HTTP_200_OK)
 
 
@@ -6613,12 +6660,40 @@ def _draft_moderation_scope(moderation: dict | None) -> str:
     if not isinstance(moderation, dict):
         return ""
     phase = str(moderation.get("phase") or "").strip().lower()
+    explicit_scope = str(moderation.get("scope") or moderation.get("draft_moderation_scope") or "").strip().lower()
     keys = " ".join(str(key).lower() for key in moderation.keys())
+    if explicit_scope in {"visual", "asset", "image"}:
+        return "visual"
+    if explicit_scope in {"text", "source", "transcript"}:
+        return "text"
     if "visual" in phase or "visual" in keys or "scanned_asset_count" in moderation:
         return "visual"
     if "source" in phase or "text" in phase or "input_hash" in moderation or "text" in keys:
         return "text"
     return ""
+
+
+def _draft_blocking_moderation_result(project: Project) -> dict | None:
+    draft_data = get_project_draft_data(project)
+    metadata = draft_data.get("metadata") if isinstance(draft_data.get("metadata"), dict) else {}
+    moderation_status = str(metadata.get("moderation_status") or "").strip().lower()
+    if moderation_status not in _DRAFT_BLOCKED_MODERATION_STATUSES:
+        return None
+    moderation = metadata.get("moderation") if isinstance(metadata.get("moderation"), dict) else {}
+    result = dict(moderation)
+    if not _draft_moderation_scope(result):
+        if metadata.get("cover_dirty") or metadata.get("visual_assets_dirty") or metadata.get("background_dirty"):
+            result["scope"] = "visual"
+        elif metadata.get("transcript_dirty") or metadata.get("source_dirty"):
+            result["scope"] = "text"
+    result.setdefault("moderation_status", moderation_status)
+    result.setdefault("final_decision", moderation_status)
+    result.setdefault("message", "Draft moderation must pass before rerender.")
+    return result
+
+
+def _draft_blocked_rerender_strategy(result: dict | None) -> str:
+    return "blocked_by_visual_moderation" if _draft_moderation_scope(result) == "visual" else "blocked_by_draft_moderation"
 
 
 def _clear_stale_draft_moderation_block(
@@ -7488,6 +7563,19 @@ class ProjectTranscriptView(APIView):
                     ),
                 }
                 return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+            if draft_rerender:
+                blocking_result = _draft_blocking_moderation_result(project)
+                if blocking_result is not None:
+                    payload = {
+                        **_studio_transcript_response_payload(project, request),
+                        **_project_moderation_state_payload(project),
+                        "changed_page_keys": sorted(changed_page_keys),
+                        "rerender_job": None,
+                        "rerender_strategy": _draft_blocked_rerender_strategy(blocking_result),
+                        "moderation": blocking_result,
+                        "message": str(blocking_result.get("message") or "Draft moderation must pass before rerender."),
+                    }
+                    return Response(payload, status=status.HTTP_400_BAD_REQUEST)
             rerender_job = None
             followup_payload = {}
             if draft_rerender:
@@ -7784,10 +7872,21 @@ def _mark_lesson_enhancement_failed(
     enhancement = enhancement_from_metadata(metadata)
     if stale:
         enhancement["stale"] = True
+    if str(getattr(report, "provider", "") or "").strip().lower() == "heuristic":
+        enhancement["degraded"] = True
+        enhancement["enhancement_failed"] = True
+        enhancement["fallback_used"] = True
+        metadata["degraded"] = True
+        metadata["enhancement_failed"] = True
+        metadata["fallback_used"] = True
+        report.fallback_used = True
     metadata[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
     _with_replaced_intelligence_attempt(metadata, "ollama", "failed", enhancement.get("error"))
     report.metadata = metadata
-    report.save(update_fields=["metadata", "updated_at"])
+    update_fields = ["metadata", "updated_at"]
+    if str(getattr(report, "provider", "") or "").strip().lower() == "heuristic":
+        update_fields.append("fallback_used")
+    report.save(update_fields=update_fields)
     lock_key = enhancement_lock_key(str(enhancement.get("run_key") or metadata.get("run_key") or ""))
     if lock_key:
         cache.delete(lock_key)
@@ -7817,10 +7916,21 @@ def _mark_analytics_enhancement_failed(
     enhancement = enhancement_from_metadata(metadata)
     if stale:
         enhancement["stale"] = True
+    if str(getattr(report, "provider", "") or "").strip().lower() == "heuristic":
+        enhancement["degraded"] = True
+        enhancement["enhancement_failed"] = True
+        enhancement["fallback_used"] = True
+        metadata["degraded"] = True
+        metadata["enhancement_failed"] = True
+        metadata["fallback_used"] = True
+        report.fallback_used = True
     metadata[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
     _with_replaced_intelligence_attempt(metadata, "ollama", "failed", enhancement.get("error"))
     report.metadata = metadata
-    report.save(update_fields=["metadata", "updated_at"])
+    update_fields = ["metadata", "updated_at"]
+    if str(getattr(report, "provider", "") or "").strip().lower() == "heuristic":
+        update_fields.append("fallback_used")
+    report.save(update_fields=update_fields)
     lock_key = enhancement_lock_key(str(enhancement.get("run_key") or metadata.get("run_key") or ""))
     if lock_key:
         cache.delete(lock_key)
@@ -7845,6 +7955,120 @@ def _recover_stale_analytics_enhancement(report: AnalyticsIntelligenceReport | N
     if report is not None and _enhancement_is_stale(report):
         return _mark_analytics_enhancement_stale(report)
     return report
+
+
+def _analytics_report_has_usable_result(report: AnalyticsIntelligenceReport | None) -> bool:
+    if report is None or str(report.status or "").strip().lower() != "done":
+        return False
+    if str(report.summary or "").strip():
+        return True
+    return any(
+        isinstance(getattr(report, field_name, None), list) and bool(getattr(report, field_name))
+        for field_name in ("insights", "recommendations", "lesson_actions", "category_actions")
+    )
+
+
+def _analytics_report_refresh_status(report: AnalyticsIntelligenceReport | None) -> str:
+    if report is None:
+        return "idle"
+    report_status = str(getattr(report, "status", "") or "").strip().lower()
+    enhancement_status = _enhancement_status_for_report(report)
+    if report_status in {"pending", "running"}:
+        return report_status
+    if enhancement_status:
+        return enhancement_status
+    return report_status or "idle"
+
+
+def _analytics_report_ready_for_display(report: AnalyticsIntelligenceReport | None) -> bool:
+    if not _analytics_report_has_usable_result(report):
+        return False
+    return _analytics_report_refresh_status(report) not in PENDING_ENHANCEMENT_STATUSES
+
+
+def _latest_creator_analytics_display_report(user: User, analytics_input):
+    reports = list(
+        AnalyticsIntelligenceReport.objects.filter(
+            requested_by=user,
+            scope=analytics_input.scope,
+            date_range=analytics_input.date_range,
+            category_filter=analytics_input.category_filter,
+        ).order_by("-created_at", "-id")[:30]
+    )
+    recovered_reports = [
+        _recover_stale_analytics_enhancement(report)
+        for report in reports
+    ]
+    current_source_hash = str(analytics_input.source_hash or "")
+    current_reports = [
+        report
+        for report in recovered_reports
+        if report is not None and str(report.source_hash or "") == current_source_hash
+    ]
+
+    current_ready = next(
+        (report for report in current_reports if _analytics_report_ready_for_display(report)),
+        None,
+    )
+    if current_ready is not None:
+        return current_ready, None
+
+    latest_current = current_reports[0] if current_reports else None
+    previous_ready = next(
+        (
+            report
+            for report in recovered_reports
+            if report is not None
+            and _analytics_report_ready_for_display(report)
+            and (latest_current is None or report.id != latest_current.id)
+        ),
+        None,
+    )
+    if previous_ready is not None:
+        return previous_ready, latest_current
+
+    if latest_current is not None:
+        return latest_current, None
+    return (recovered_reports[0], None) if recovered_reports else (None, None)
+
+
+def _analytics_display_payload(
+    report: AnalyticsIntelligenceReport | None,
+    *,
+    refresh_report: AnalyticsIntelligenceReport | None = None,
+    enabled: bool = True,
+    current_source_hash: str = "",
+    current_run_key: str = "",
+) -> dict[str, Any]:
+    payload = analytics_report_response_payload(
+        report,
+        enabled=enabled,
+        current_source_hash=current_source_hash,
+        current_run_key=current_run_key,
+    )
+    if report is None or refresh_report is None or refresh_report.id == report.id:
+        return payload
+
+    refresh_status = _analytics_report_refresh_status(refresh_report)
+    refresh_pending = refresh_status in PENDING_ENHANCEMENT_STATUSES
+    refresh_failed = str(getattr(refresh_report, "status", "") or "").strip().lower() == "failed" or refresh_status in {
+        "failed",
+        "unavailable",
+        "disabled",
+        "stale",
+    }
+    payload.update(
+        {
+            "insight_stale": True,
+            "refresh_status": refresh_status,
+            "latest_refresh_failed": bool(refresh_failed and not _analytics_report_has_usable_result(refresh_report)),
+            "pending_report_id": refresh_report.id if refresh_pending else None,
+            "latest_refresh_report_id": refresh_report.id,
+        }
+    )
+    if refresh_pending:
+        payload["enhancement_pending"] = True
+    return payload
 
 
 def _report_run_key(report) -> str:
@@ -7892,7 +8116,7 @@ def _ollama_fallback_retry_candidate(report) -> bool:
         report.provider == "heuristic"
         and report.fallback_used
         and str(enhancement.get("provider") or "").strip().lower() == "ollama"
-        and str(enhancement.get("status") or "").strip().lower() == "failed"
+        and str(enhancement.get("status") or "").strip().lower() in {"failed", "degraded"}
     )
 
 
@@ -7975,6 +8199,50 @@ def _retry_attempt_metadata(previous_report, *, force: bool, manual_retry: bool)
         "retry_count": retry_count,
         "retry_requested_at": timezone.now().isoformat(),
         "retry_bypassed_cooldown": bool(force),
+    }
+
+
+_LESSON_READY_AUTO_REPAIR_REASONS = {
+    "project_ready",
+    "ready",
+    "render_completed",
+}
+
+
+def _lesson_auto_repair_ready(project: Project, *, reason: str) -> bool:
+    normalized_reason = str(reason or "").strip().lower()
+    return normalized_reason in _LESSON_READY_AUTO_REPAIR_REASONS and str(project.status or "").lower() == "ready"
+
+
+def _lesson_report_needs_auto_enhancement_repair(
+    report: LessonIntelligenceReport | None,
+    *,
+    project: Project,
+    reason: str,
+    chain: list[str],
+) -> bool:
+    if report is None or not _lesson_auto_repair_ready(project, reason=reason):
+        return False
+    if not progressive_ollama_enabled(chain):
+        return False
+    if str(report.provider or "").strip().lower() != "heuristic":
+        return False
+    status_value = _enhancement_status_for_report(report)
+    if status_value in PENDING_ENHANCEMENT_STATUSES or status_value in {"done", "partial"}:
+        return False
+    enhancement = enhancement_from_metadata(report.metadata if isinstance(report.metadata, dict) else {})
+    enhancement_provider = str(enhancement.get("provider") or "").strip().lower()
+    return not status_value or enhancement_provider == "ollama"
+
+
+def _lesson_auto_repair_metadata(previous_report, *, reason: str) -> dict[str, Any]:
+    if previous_report is None:
+        return {}
+    return {
+        "auto_repair": True,
+        "auto_repair_reason": str(reason or "auto"),
+        "auto_repair_requested_at": timezone.now().isoformat(),
+        "auto_repair_of_report_id": int(previous_report.id),
     }
 
 
@@ -8144,8 +8412,17 @@ def _record_lesson_enhancement_dispatch_failure(report: LessonIntelligenceReport
             if isinstance(item, dict) and str(item.get("provider") or "").lower() != "ollama"
         ],
     ]
+    enhancement = enhancement_from_metadata(metadata)
+    enhancement["degraded"] = True
+    enhancement["enhancement_failed"] = True
+    enhancement["fallback_used"] = True
+    metadata[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
+    metadata["degraded"] = True
+    metadata["enhancement_failed"] = True
+    metadata["fallback_used"] = True
+    report.fallback_used = True
     report.metadata = metadata
-    report.save(update_fields=["metadata", "updated_at"])
+    report.save(update_fields=["metadata", "fallback_used", "updated_at"])
 
 
 def _record_analytics_enhancement_dispatch_failure(report: AnalyticsIntelligenceReport, error: Exception | str):
@@ -8163,8 +8440,17 @@ def _record_analytics_enhancement_dispatch_failure(report: AnalyticsIntelligence
             if isinstance(item, dict) and str(item.get("provider") or "").lower() != "ollama"
         ],
     ]
+    enhancement = enhancement_from_metadata(metadata)
+    enhancement["degraded"] = True
+    enhancement["enhancement_failed"] = True
+    enhancement["fallback_used"] = True
+    metadata[PROGRESSIVE_ENHANCEMENT_KEY] = enhancement
+    metadata["degraded"] = True
+    metadata["enhancement_failed"] = True
+    metadata["fallback_used"] = True
+    report.fallback_used = True
     report.metadata = metadata
-    report.save(update_fields=["metadata", "updated_at"])
+    report.save(update_fields=["metadata", "fallback_used", "updated_at"])
 
 
 def _reserve_enhancement_run_lock(report) -> str:
@@ -8396,12 +8682,18 @@ def schedule_lesson_intelligence(
         run_key=str(run_identity.get("run_key") or ""),
     )
     if existing_report is not None:
-        return {
-            "status": "existing",
-            "project_id": project_id,
-            "report_id": existing_report.id,
-            "provider": existing_report.provider,
-        }
+        if not _lesson_report_needs_auto_enhancement_repair(
+            existing_report,
+            project=project,
+            reason=reason,
+            chain=chain,
+        ):
+            return {
+                "status": "existing",
+                "project_id": project_id,
+                "report_id": existing_report.id,
+                "provider": existing_report.provider,
+            }
 
     requested_by = User.objects.filter(pk=int(requested_by_id)).first() if requested_by_id else project.user
     report = LessonIntelligenceReport.objects.create(
@@ -8414,7 +8706,11 @@ def schedule_lesson_intelligence(
         source_hash=lesson_input.source_hash,
     )
     try:
-        force_metadata = _force_metadata(force)
+        force_metadata = {
+            **_retry_attempt_metadata(existing_report, force=force, manual_retry=False),
+            **_lesson_auto_repair_metadata(existing_report, reason=reason),
+            **_force_metadata(force),
+        }
         if progressive_ollama_enabled(chain):
             queue_name = _lesson_intelligence_queue_name()
             identity_metadata = _identity_metadata(run_identity)
@@ -8952,7 +9248,7 @@ class TranscriptPageBackgroundImageView(APIView):
             project = Project.objects.get(pk=project_id)
         except Project.DoesNotExist:
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _can_manage_project(request.user, project):
+        if not _can_review_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
 
         page_token = page_ref if page_ref is not None else page_id
@@ -9051,19 +9347,20 @@ class TranscriptPageSceneView(APIView):
             )
             draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
             save_project_draft_data(project, draft_data, dirty=True)
-            _mark_project_visual_moderation_stale(
-                project,
-                reason="studio_scene_background_changed",
-                asset_type="custom_background",
-                page=page,
-                asset_path=str(scene.get("custom_background_path") or ""),
-            )
             moderation_result = None
-            if str(scene.get("custom_background_path") or "").strip():
+            asset_type, asset_path = _effective_scene_visual_asset(scene)
+            if asset_path:
+                _mark_project_visual_moderation_stale(
+                    project,
+                    reason="studio_scene_background_changed",
+                    asset_type=asset_type,
+                    page=page,
+                    asset_path=asset_path,
+                )
                 moderation_result = _run_auto_visual_moderation_for_changed_asset(
                     project,
-                    asset_type="custom_background",
-                    asset_path=str(scene.get("custom_background_path") or ""),
+                    asset_type=asset_type,
+                    asset_path=asset_path,
                     page=page,
                     use_draft=True,
                 )
@@ -9372,7 +9669,7 @@ class TranscriptPageHighlightPreviewImageView(APIView):
 class TranscriptPageBackgroundUploadView(APIView):
     """Upload a custom background image for one transcript page."""
 
-    parser_classes = [MultiPartParser, FormParser]
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, project_id, page_id=None, page_ref=None):
@@ -9485,6 +9782,74 @@ class TranscriptPageBackgroundUploadView(APIView):
                 "project_id": project.id,
                 "page": _page_scene_response(page, request),
                 **_project_moderation_state_payload(project),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, project_id, page_id=None, page_ref=None):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_manage_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        page_token = page_ref if page_ref is not None else page_id
+        draft_only = _truthy_request_value(
+            request.data.get("draft_only", request.query_params.get("draft_only", True))
+        )
+        if draft_only:
+            draft_data = ensure_project_draft_data(project)
+            draft_page = _draft_page_for_ref(draft_data, page_token)
+            if draft_page is None:
+                return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
+            page = _active_page_for_draft_page(project, draft_page)
+            scene = _draft_page_scene_for_storage(draft_page, page)
+            scene.pop("custom_background_path", None)
+            if _clean_scene_mode(scene.get("background_mode"), fallback="original") == "custom":
+                scene["background_mode"] = _fallback_scene_mode_after_custom_removal(project, scene)
+            _set_draft_page_scene(draft_page, scene)
+            mark_draft_dirty(
+                draft_data,
+                background_dirty=True,
+                visual_assets_dirty=True,
+                render_required=True,
+            )
+            draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
+            save_project_draft_data(project, draft_data, dirty=True)
+            project.refresh_from_db()
+            return Response(
+                {
+                    "project_id": project.id,
+                    "page": _draft_page_response(project, draft_page, request),
+                    "has_draft": has_project_draft(project),
+                    "draft_metadata": _studio_draft_metadata(project),
+                    "moderation": None,
+                    "message": "Draft custom background removed. Public background is unchanged until Save & Rerender succeeds.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            page = _get_project_page(project, page_token, active=True, field_name="page_id")
+        except TranscriptActionError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+
+        scene = _page_scene_for_storage(page)
+        scene.pop("custom_background_path", None)
+        if _clean_scene_mode(scene.get("background_mode"), fallback="original") == "custom":
+            scene["background_mode"] = _fallback_scene_mode_after_custom_removal(project, scene)
+        _set_page_scene(page, scene)
+        page.whiteboard_mode = scene["background_mode"] == "whiteboard"
+        page.save(update_fields=["editor_document", "whiteboard_mode", "updated_at"])
+        project.refresh_from_db()
+        enforce_unpublished_for_unresolved_moderation(project)
+        return Response(
+            {
+                "project_id": project.id,
+                "page": _page_scene_response(page, request),
+                **_project_moderation_state_payload(project),
+                "message": "Custom background removed.",
             },
             status=status.HTTP_200_OK,
         )
@@ -9688,6 +10053,15 @@ class ProjectRerenderView(APIView):
                 return Response(_active_render_job_response(existing_job, avatar_options), status=status.HTTP_202_ACCEPTED)
 
             use_draft = has_dirty_draft(project)
+            if use_draft:
+                blocking_result = _draft_blocking_moderation_result(project)
+                if blocking_result is not None:
+                    data = ProjectSerializer(project, context={"request": request}).data
+                    data["rerender_job"] = None
+                    data["rerender_strategy"] = _draft_blocked_rerender_strategy(blocking_result)
+                    data["moderation"] = blocking_result
+                    data["message"] = str(blocking_result.get("message") or "Draft moderation must pass before rerender.")
+                    return Response(data, status=status.HTTP_400_BAD_REQUEST)
             if use_draft and not draft_requires_render(project):
                 moderation_result = _run_draft_visual_moderation_before_promotion(project)
                 if _draft_visual_moderation_blocks_promotion(moderation_result):
@@ -11896,6 +12270,21 @@ class CreatorAnalyticsView(APIView):
         if current is None or timestamp > current:
             lesson_payload["_latest_activity_at"] = timestamp
 
+    def _publisher_scope(self, request) -> dict[str, Any]:
+        owner = request.user
+        return {
+            "scope": "creator",
+            "owner": owner,
+            "owner_id": int(getattr(owner, "id", 0) or 0),
+            "is_global": False,
+            "projects": (
+                Project.objects.filter(user=owner)
+                .select_related("user", "category")
+                .prefetch_related("slides", "jobs", "likes", "comments")
+                .distinct()
+            ),
+        }
+
     def _activity_item(self, *, activity_type: str, timestamp, lesson_id: int, lesson_title: str, value=None) -> dict:
         labels = {
             "progress": "Progress",
@@ -11945,12 +12334,8 @@ class CreatorAnalyticsView(APIView):
         if sort_by not in supported_sort:
             sort_by = "views"
 
-        owned_projects_base = (
-            Project.objects.filter(user=request.user)
-            .select_related("user", "category")
-            .prefetch_related("slides", "jobs", "likes", "comments")
-            .distinct()
-        )
+        analytics_scope = self._publisher_scope(request)
+        owned_projects_base = analytics_scope["projects"]
 
         category_options = [
             category
@@ -12350,6 +12735,8 @@ class CreatorAnalyticsView(APIView):
             "meta": {
                 "contract": "creator_analytics_v1",
                 "scope": "creator",
+                "scope_owner_id": analytics_scope["owner_id"],
+                "global_scope": analytics_scope["is_global"],
                 "estimated_metrics": True,
                 "comment_feedback_truncated": bool(comments_count_truncated or comments_text_truncated),
                 "estimated_fields": [
@@ -12410,17 +12797,8 @@ class CreatorAnalyticsIntelligenceView(APIView):
             latest = _recover_stale_analytics_enhancement(latest)
             return Response(analytics_report_response_payload(latest, enabled=True), status=status.HTTP_200_OK)
 
-        latest = _recover_stale_analytics_enhancement(
-            AnalyticsIntelligenceReport.objects.filter(
-                requested_by=request.user,
-                scope="creator",
-                date_range=analytics_input.date_range,
-                category_filter=analytics_input.category_filter,
-            )
-            .order_by("-created_at", "-id")
-            .first()
-        )
-        payload = analytics_report_response_payload(
+        latest, refresh_report = _latest_creator_analytics_display_report(request.user, analytics_input)
+        payload = _analytics_display_payload(
             latest,
             enabled=True,
             current_source_hash=analytics_input.source_hash,
@@ -12429,6 +12807,7 @@ class CreatorAnalyticsIntelligenceView(APIView):
                 if progressive_analytics_ollama_enabled(analytics_provider_chain_from_settings())
                 else ""
             ),
+            refresh_report=refresh_report,
         )
         return Response(
             payload,

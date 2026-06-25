@@ -3,19 +3,32 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from datetime import timedelta
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from django.conf import settings
 from django.utils import timezone
 
 
 PROGRESSIVE_ENHANCEMENT_KEY = "progressive_enhancement"
-PENDING_ENHANCEMENT_STATUSES = {"pending", "running", "analyzing_chunks", "synthesizing"}
+PENDING_ENHANCEMENT_STATUSES = {
+    "pending",
+    "running",
+    "analyzing_chunks",
+    "chunk_processing",
+    "synthesizing",
+    "final_synthesis",
+    "final_aggregation",
+}
 TERMINAL_ENHANCEMENT_STATUSES = {"done", "failed", "unavailable", "disabled", "stale"}
 TERMINAL_ENHANCEMENT_STATUSES.add("partial")
 TERMINAL_ENHANCEMENT_STATUSES.add("superseded")
+TERMINAL_ENHANCEMENT_STATUSES.add("degraded")
 LESSON_SECTION_KEYS = ("summary", "clarity", "page_suggestions", "expanded_narration", "tags")
+_OLLAMA_CALIBRATION_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def provider_chain_contains_ollama(chain: list[str] | tuple[str, ...] | None) -> bool:
@@ -52,6 +65,13 @@ def _int_setting(name: str, default: int, *, minimum: int | None = None, maximum
     if maximum is not None:
         value = min(int(maximum), value)
     return value
+
+
+def _bool_setting(name: str, default: bool) -> bool:
+    value = getattr(settings, name, default)
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def intelligence_retry_cooldown_seconds() -> int:
@@ -198,8 +218,399 @@ def ollama_chunk_timeout_seconds(input_chars: int) -> float:
     return round(max(min_seconds, min(max_seconds, adaptive)), 2)
 
 
+def ollama_no_progress_timeout_seconds(input_chars: int, *, hard_max_seconds: float | int | None = None) -> float:
+    """Return the maximum wait for one chunk to finish before treating it as stalled."""
+    chunk_timeout = ollama_chunk_timeout_seconds(input_chars)
+    hard_max = float(hard_max_seconds) if hard_max_seconds is not None else ollama_total_timeout_budget_seconds()
+    return round(max(1.0, min(max(1.0, hard_max), chunk_timeout)), 2)
+
+
 def ollama_total_timeout_budget_seconds() -> float:
     return _float_setting("INTELLIGENCE_OLLAMA_TOTAL_TIMEOUT_MAX_SECONDS", 600.0, minimum=30.0, maximum=7200.0)
+
+
+def ollama_timeout_safety_factor() -> float:
+    return _float_setting("INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_FACTOR", 1.15, minimum=1.0, maximum=2.0)
+
+
+def ollama_timeout_safety_margin_seconds() -> float:
+    return _float_setting("INTELLIGENCE_OLLAMA_TIMEOUT_SAFETY_MARGIN_SECONDS", 0.0, minimum=0.0, maximum=300.0)
+
+
+def _model_parameter_size_b(model: str) -> float:
+    lowered = str(model or "").strip().lower()
+    match = re.search(r"(\d+(?:\.\d+)?)\s*b", lowered)
+    if not match:
+        return 0.0
+    try:
+        return max(0.0, float(match.group(1)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fallback_tokens_per_second(model: str) -> float:
+    profile = intelligence_hardware_profile()
+    base = {
+        "local_low": 5.0,
+        "local_mid": 9.0,
+        "production_gpu": 28.0,
+    }.get(profile, 8.0)
+    size_b = _model_parameter_size_b(model)
+    if 0 < size_b <= 4:
+        base *= 2.2
+    elif size_b >= 30:
+        base *= 0.25
+    elif size_b >= 13:
+        base *= 0.45
+    elif size_b >= 7:
+        base *= 1.0
+    return round(max(1.0, base), 2)
+
+
+def clear_ollama_calibration_cache() -> None:
+    _OLLAMA_CALIBRATION_CACHE.clear()
+
+
+def ollama_model_calibration_details(
+    *,
+    model: str,
+    base_url: str = "",
+    timeout_seconds: float | int | None = None,
+) -> dict[str, Any]:
+    normalized_model = str(model or "").strip()
+    normalized_base_url = str(base_url or getattr(settings, "OLLAMA_BASE_URL", "") or "").strip().rstrip("/")
+    fallback_tps = _fallback_tokens_per_second(normalized_model)
+    fallback_cps = round(fallback_tps * 4.0, 2)
+    base_payload: dict[str, Any] = {
+        "model": normalized_model,
+        "hardware_profile": intelligence_hardware_profile(),
+        "calibration_enabled": _bool_setting("INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED", True),
+        "calibration_used": False,
+        "calibration_cache_hit": False,
+        "calibration_failed": False,
+        "calibration_elapsed_seconds": 0.0,
+        "measured_chars_per_second": None,
+        "measured_tokens_per_second": None,
+        "fallback_chars_per_second": fallback_cps,
+        "fallback_tokens_per_second": fallback_tps,
+        "throughput_chars_per_second": fallback_cps,
+        "throughput_tokens_per_second": fallback_tps,
+    }
+    if not base_payload["calibration_enabled"]:
+        return base_payload
+    if not normalized_model or not normalized_base_url:
+        return {
+            **base_payload,
+            "calibration_failed": True,
+            "calibration_error": "missing_model_or_base_url",
+        }
+
+    ttl_seconds = _float_setting("INTELLIGENCE_OLLAMA_CALIBRATION_TTL_SECONDS", 1800.0, minimum=0.0, maximum=86400.0)
+    cache_key = f"{normalized_base_url}|{normalized_model}"
+    now = time.monotonic()
+    cached = _OLLAMA_CALIBRATION_CACHE.get(cache_key)
+    if cached and (ttl_seconds <= 0 or now - float(cached.get("cached_at") or 0.0) <= ttl_seconds):
+        payload = {k: v for k, v in cached.items() if k != "cached_at"}
+        payload["calibration_cache_hit"] = True
+        return payload
+
+    timeout = (
+        float(timeout_seconds)
+        if timeout_seconds is not None
+        else _float_setting("INTELLIGENCE_OLLAMA_CALIBRATION_TIMEOUT_SECONDS", 20.0, minimum=1.0, maximum=120.0)
+    )
+    request_payload = {
+        "model": normalized_model,
+        "prompt": "Calibration check. Reply with one short sentence about readiness.",
+        "stream": False,
+        "options": {"temperature": 0, "num_predict": 32},
+    }
+    request = Request(
+        f"{normalized_base_url}/api/generate",
+        data=json.dumps(request_payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    started_at = time.monotonic()
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8")
+        elapsed = max(0.001, time.monotonic() - started_at)
+        data = json.loads(body)
+        response_text = str(data.get("response") or "")
+        eval_count = int(data.get("eval_count") or 0)
+        eval_duration_seconds = float(data.get("eval_duration") or 0.0) / 1_000_000_000.0
+        measured_tps = (
+            round(eval_count / eval_duration_seconds, 2)
+            if eval_count > 0 and eval_duration_seconds > 0
+            else round(max(1, len(response_text) // 4) / elapsed, 2)
+        )
+        measured_cps = round(len(response_text) / elapsed, 2)
+        payload = {
+            **base_payload,
+            "calibration_used": True,
+            "calibration_elapsed_seconds": round(elapsed, 2),
+            "measured_chars_per_second": measured_cps,
+            "measured_tokens_per_second": measured_tps,
+            "throughput_chars_per_second": measured_cps if measured_cps > 0 else fallback_cps,
+            "throughput_tokens_per_second": measured_tps if measured_tps > 0 else fallback_tps,
+        }
+        _OLLAMA_CALIBRATION_CACHE[cache_key] = {**payload, "cached_at": now}
+        return payload
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+        elapsed = max(0.0, time.monotonic() - started_at)
+        payload = {
+            **base_payload,
+            "calibration_failed": True,
+            "calibration_elapsed_seconds": round(elapsed, 2),
+            "calibration_error": safe_enhancement_error(exc),
+        }
+        _OLLAMA_CALIBRATION_CACHE[cache_key] = {**payload, "cached_at": now}
+        return payload
+
+
+def _ollama_estimated_output_tokens(*, kind: str, chunk_count: int, finalization: bool = False) -> int:
+    normalized = str(kind or "").strip().lower()
+    per_chunk = 450 if normalized == "lesson" else 320
+    if finalization:
+        per_chunk = 220 if normalized == "lesson" else 180
+    return max(0, int(chunk_count or 1) * per_chunk)
+
+
+def ollama_workload_timeout_budget_details(
+    *,
+    input_chars: int = 0,
+    chunk_count: int = 1,
+    base_seconds: float | int | None = None,
+    hard_max_seconds: float | int | None = None,
+    kind: str = "",
+    model: str = "",
+    base_url: str = "",
+) -> dict[str, Any]:
+    try:
+        chars = max(0, int(input_chars or 0))
+    except (TypeError, ValueError):
+        chars = 0
+    try:
+        chunks = max(1, int(chunk_count or 1))
+    except (TypeError, ValueError):
+        chunks = 1
+    hard_max = float(hard_max_seconds) if hard_max_seconds is not None else ollama_total_timeout_budget_seconds()
+    hard_max = max(1.0, hard_max)
+    if base_seconds is None:
+        base = ollama_chunk_timeout_seconds(chars)
+    else:
+        try:
+            base = max(1.0, float(base_seconds))
+        except (TypeError, ValueError):
+            base = ollama_chunk_timeout_seconds(chars)
+    avg_chunk_chars = int((chars + chunks - 1) / chunks) if chunks else chars
+    avg_chunk_timeout = ollama_chunk_timeout_seconds(avg_chunk_chars)
+    estimated_input_tokens = int((chars + 3) / 4) if chars else 0
+    estimated_output_tokens = _ollama_estimated_output_tokens(kind=kind, chunk_count=chunks)
+    estimated_tokens = estimated_input_tokens + estimated_output_tokens
+    calibration = ollama_model_calibration_details(model=model, base_url=base_url) if model else {
+        "model": str(model or "").strip(),
+        "hardware_profile": intelligence_hardware_profile(),
+        "calibration_enabled": False,
+        "calibration_used": False,
+        "calibration_cache_hit": False,
+        "calibration_failed": False,
+        "calibration_elapsed_seconds": 0.0,
+        "measured_chars_per_second": None,
+        "measured_tokens_per_second": None,
+        "fallback_chars_per_second": None,
+        "fallback_tokens_per_second": None,
+        "throughput_chars_per_second": None,
+        "throughput_tokens_per_second": None,
+    }
+    calibrated_estimate = 0.0
+    if calibration.get("calibration_enabled"):
+        throughput_tps = float(calibration.get("throughput_tokens_per_second") or 0.0)
+        if throughput_tps > 0:
+            per_chunk_overhead = _float_setting(
+                "INTELLIGENCE_OLLAMA_CALIBRATION_CHUNK_OVERHEAD_SECONDS",
+                2.0,
+                minimum=0.0,
+                maximum=60.0,
+            )
+            calibrated_estimate = (estimated_tokens / throughput_tps) + (chunks * per_chunk_overhead)
+            avg_chunk_timeout = max(avg_chunk_timeout, round(calibrated_estimate / chunks, 2))
+    chunk_estimate = chunks * avg_chunk_timeout
+    calculated_budget = round(min(hard_max, max(base, chunk_estimate, calibrated_estimate)), 2)
+    safety_factor = ollama_timeout_safety_factor()
+    configured_margin = ollama_timeout_safety_margin_seconds()
+    budget_with_factor = calculated_budget * safety_factor
+    budget_with_margin = calculated_budget + configured_margin
+    timeout_budget = round(min(hard_max, max(budget_with_factor, budget_with_margin)), 2)
+    no_progress_timeout = ollama_no_progress_timeout_seconds(avg_chunk_chars, hard_max_seconds=hard_max)
+    return {
+        "input_chars": chars,
+        "estimated_input_chars": chars,
+        "estimated_input_tokens": estimated_input_tokens,
+        "estimated_output_tokens": estimated_output_tokens,
+        "estimated_tokens": estimated_tokens,
+        "chunk_count": chunks,
+        "calculated_budget_seconds": calculated_budget,
+        "safety_factor": round(safety_factor, 4),
+        "configured_safety_margin_seconds": round(configured_margin, 2),
+        "safety_margin_seconds": round(max(0.0, timeout_budget - calculated_budget), 2),
+        "timeout_budget_seconds": timeout_budget,
+        "hard_max_seconds": round(hard_max, 2),
+        "absolute_cap_seconds": round(hard_max, 2),
+        "no_progress_timeout_seconds": no_progress_timeout,
+        "average_chunk_timeout_seconds": avg_chunk_timeout,
+        "model_profile": intelligence_hardware_profile(),
+        "hardware_profile": intelligence_hardware_profile(),
+        "workload_kind": str(kind or "").strip().lower(),
+        "model": str(model or "").strip(),
+        "calibrated_estimate_seconds": round(calibrated_estimate, 2),
+        **calibration,
+    }
+
+
+def ollama_workload_timeout_budget_seconds(
+    *,
+    input_chars: int = 0,
+    chunk_count: int = 1,
+    base_seconds: float | int | None = None,
+    hard_max_seconds: float | int | None = None,
+) -> float:
+    details = ollama_workload_timeout_budget_details(
+        input_chars=input_chars,
+        chunk_count=chunk_count,
+        base_seconds=base_seconds,
+        hard_max_seconds=hard_max_seconds,
+    )
+    return float(details["timeout_budget_seconds"])
+
+
+def _model_size_multiplier(model: str) -> float:
+    size_b = _model_parameter_size_b(model)
+    if size_b <= 0:
+        return 1.0
+    if size_b >= 30:
+        return 1.7
+    if size_b >= 13:
+        return 1.35
+    return 1.0
+
+
+def ollama_finalization_timeout_budget_details(
+    *,
+    input_chars: int = 0,
+    output_chars: int = 0,
+    chunk_count: int = 1,
+    hard_max_seconds: float | int | None = None,
+    kind: str = "",
+    model: str = "",
+    base_url: str = "",
+) -> dict[str, Any]:
+    try:
+        source_chars = max(0, int(input_chars or 0))
+    except (TypeError, ValueError):
+        source_chars = 0
+    try:
+        result_chars = max(0, int(output_chars or 0))
+    except (TypeError, ValueError):
+        result_chars = 0
+    try:
+        chunks = max(1, int(chunk_count or 1))
+    except (TypeError, ValueError):
+        chunks = 1
+
+    configured_cap = _float_setting(
+        "INTELLIGENCE_OLLAMA_FINALIZATION_TIMEOUT_MAX_SECONDS",
+        120.0,
+        minimum=1.0,
+        maximum=ollama_total_timeout_budget_seconds(),
+    )
+    absolute_cap = float(hard_max_seconds) if hard_max_seconds is not None else configured_cap
+    absolute_cap = max(1.0, min(float(ollama_total_timeout_budget_seconds()), absolute_cap))
+
+    base_seconds = _float_setting("INTELLIGENCE_OLLAMA_FINALIZATION_TIMEOUT_BASE_SECONDS", 8.0, minimum=1.0, maximum=600.0)
+    per_chunk_seconds = _float_setting("INTELLIGENCE_OLLAMA_FINALIZATION_TIMEOUT_PER_CHUNK_SECONDS", 1.5, minimum=0.0, maximum=60.0)
+    per_1000_tokens_seconds = _float_setting(
+        "INTELLIGENCE_OLLAMA_FINALIZATION_TIMEOUT_PER_1000_TOKENS_SECONDS",
+        2.0,
+        minimum=0.0,
+        maximum=120.0,
+    )
+
+    estimated_input_tokens = int((source_chars + 3) / 4) if source_chars else 0
+    estimated_output_tokens = int((result_chars + 3) / 4) if result_chars else 0
+    estimated_tokens = estimated_input_tokens + estimated_output_tokens + _ollama_estimated_output_tokens(
+        kind=kind,
+        chunk_count=chunks,
+        finalization=True,
+    )
+    profile_multiplier = {
+        "local_low": 1.35,
+        "local_mid": 1.0,
+        "production_gpu": 0.75,
+    }.get(intelligence_hardware_profile(), 1.0)
+    calculated = (
+        base_seconds
+        + (chunks * per_chunk_seconds)
+        + ((estimated_tokens / 1000.0) * per_1000_tokens_seconds)
+    ) * profile_multiplier * _model_size_multiplier(model)
+    calibration = ollama_model_calibration_details(model=model, base_url=base_url) if model else {
+        "model": str(model or "").strip(),
+        "hardware_profile": intelligence_hardware_profile(),
+        "calibration_enabled": False,
+        "calibration_used": False,
+        "calibration_cache_hit": False,
+        "calibration_failed": False,
+        "calibration_elapsed_seconds": 0.0,
+        "measured_chars_per_second": None,
+        "measured_tokens_per_second": None,
+        "fallback_chars_per_second": None,
+        "fallback_tokens_per_second": None,
+        "throughput_chars_per_second": None,
+        "throughput_tokens_per_second": None,
+    }
+    calibrated = 0.0
+    if calibration.get("calibration_enabled"):
+        throughput_tps = float(calibration.get("throughput_tokens_per_second") or 0.0)
+        if throughput_tps > 0:
+            final_overhead = _float_setting(
+                "INTELLIGENCE_OLLAMA_CALIBRATION_FINALIZATION_OVERHEAD_SECONDS",
+                3.0,
+                minimum=0.0,
+                maximum=90.0,
+            )
+            calibrated = (estimated_tokens / throughput_tps) + final_overhead
+            calculated = max(calculated, calibrated)
+    calculated_budget = round(min(absolute_cap, max(1.0, calculated)), 2)
+
+    safety_factor = ollama_timeout_safety_factor()
+    configured_margin = ollama_timeout_safety_margin_seconds()
+    budget_with_factor = calculated_budget * safety_factor
+    budget_with_margin = calculated_budget + configured_margin
+    timeout_budget = round(min(absolute_cap, max(budget_with_factor, budget_with_margin)), 2)
+    return {
+        "input_chars": source_chars,
+        "estimated_input_chars": source_chars,
+        "output_chars": result_chars,
+        "estimated_input_tokens": estimated_input_tokens,
+        "estimated_output_tokens": estimated_output_tokens,
+        "estimated_tokens": estimated_tokens,
+        "chunk_count": chunks,
+        "calculated_budget_seconds": calculated_budget,
+        "safety_factor": round(safety_factor, 4),
+        "configured_safety_margin_seconds": round(configured_margin, 2),
+        "safety_margin_seconds": round(max(0.0, timeout_budget - calculated_budget), 2),
+        "timeout_budget_seconds": timeout_budget,
+        "hard_max_seconds": round(absolute_cap, 2),
+        "absolute_cap_seconds": round(absolute_cap, 2),
+        "model_profile": intelligence_hardware_profile(),
+        "hardware_profile": intelligence_hardware_profile(),
+        "workload_kind": str(kind or "").strip().lower(),
+        "model": str(model or "").strip(),
+        "calibrated_estimate_seconds": round(calibrated, 2),
+        **calibration,
+    }
+
 
 
 def bounded_adaptive_background_timeout(

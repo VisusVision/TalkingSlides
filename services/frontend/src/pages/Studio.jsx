@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  ArrowLeft,
   BookOpenText,
   Check,
   ChevronDown,
@@ -17,6 +18,7 @@ import {
   Trash2,
   Upload,
   Volume2,
+  X,
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -32,11 +34,14 @@ import {
   fetchProjectLessonIntelligence,
   fetchProject,
   fetchProjects,
+  getModerationReviewRequest,
   getProjectModeration,
   generateSubtitleTrack,
   fetchSubtitleTrackBundle,
   promoteProjectDraft,
   requestProjectAdminReview,
+  removeProjectCover,
+  removeTranscriptPageBackground,
   rerenderProjectAvatar,
   rerenderProject,
   rescanProjectModeration,
@@ -44,9 +49,7 @@ import {
   updateProjectPublished,
   fetchSubtitleTracks,
   fetchAuthenticatedAssetBlobUrl,
-  adminApproveLesson,
-  adminBlockLesson,
-  adminRequestLessonChanges,
+  runAdminProjectModerationAction,
   previewTranscriptPageHighlight,
   uploadProjectCover,
   uploadTranscriptPageBackground,
@@ -54,9 +57,10 @@ import {
 } from '../api';
 import { canAccessStudio, isStaffOrAdmin } from '../lib/auth';
 import { avatarRuntimeStatusMessage } from '../utils/avatarRuntimeSettings';
-import { visualModerationRerenderMessage } from '../utils/studioModeration';
+import { adminReviewBackLabel, visualModerationRerenderMessage } from '../utils/studioModeration';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { usePageLoading } from '../components/ui/PageLoading';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import PlaylistManager from '../components/studio/PlaylistManager';
 import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
@@ -64,6 +68,7 @@ import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
+import { onRouteReset, safeInternalReturnTo } from '../utils/routeSession';
 
 const LESSON_TABS = ['overview', 'transcript', 'slides'];
 const EDITOR_PANELS = ['transcript', 'slides', 'moderation', 'intelligence', 'notes', 'tts'];
@@ -1063,6 +1068,7 @@ function publishAvailabilityLabel(moderation, canPublish) {
   if (moderation?.publish_blocked_by_moderation) return 'Publish blocked by moderation';
   const reason = String(moderation?.publish_block_reason || moderation?.publish_block?.reason || '').trim();
   if (reason === 'render_not_ready') return 'Waiting for render';
+  if (reason === 'draft_render_required') return 'Rerender required';
   return 'Publish unavailable';
 }
 
@@ -1115,6 +1121,64 @@ function VisualIssuePreview({ issue }) {
       src={blobUrl}
       alt={findingLocationLabel(issue)}
       className="h-16 w-24 shrink-0 rounded-lg object-cover"
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function AuthenticatedMediaThumbnail({
+  src,
+  alt,
+  className = 'h-14 w-20 rounded-lg object-cover',
+  fallbackLabel = 'Image unavailable',
+}) {
+  const previewUrl = textValue(src).trim();
+  const [blobUrl, setBlobUrl] = useState('');
+  const [failed, setFailed] = useState(!previewUrl);
+
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = '';
+    setBlobUrl('');
+    setFailed(!previewUrl);
+    if (!previewUrl) return () => {};
+    if (/^(blob:|data:)/i.test(previewUrl)) {
+      setBlobUrl(previewUrl);
+      setFailed(false);
+      return () => {};
+    }
+    fetchAuthenticatedAssetBlobUrl(previewUrl)
+      .then((url) => {
+        if (cancelled) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        objectUrl = url;
+        setBlobUrl(url);
+        setFailed(!url);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [previewUrl]);
+
+  if (failed || !blobUrl) {
+    return (
+      <div className="flex h-14 w-20 items-center justify-center rounded-lg border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-container-high)] px-2 text-center text-[0.65rem] leading-tight text-[var(--text-muted)]">
+        {fallbackLabel}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={blobUrl}
+      alt={alt}
+      className={className}
       onError={() => setFailed(true)}
     />
   );
@@ -1428,6 +1492,16 @@ function writeStudioSession(key, patch) {
   } catch {
     // Ignore storage quota/privacy mode failures; position memory is best-effort.
   }
+}
+
+function clearStudioSession(key) {
+  if (!key || typeof window === 'undefined') return;
+  window.sessionStorage.removeItem(key);
+}
+
+function positiveIdParam(searchParams, key) {
+  const value = Number(searchParams.get(key) || 0);
+  return Number.isFinite(value) && value > 0 ? value : null;
 }
 
 function safeCssBackgroundUrl(value) {
@@ -1893,6 +1967,10 @@ function AdminReviewActionPanel({
   response,
   onResponseChange,
   onAction,
+  onBack,
+  backLabel = 'Back to moderation',
+  contextLabel,
+  contextError,
   busy,
   message,
   error,
@@ -1900,14 +1978,18 @@ function AdminReviewActionPanel({
   const disabled = Boolean(busy);
 
   return (
-    <div className="rounded-2xl token-surface p-4">
+    <div className="sticky top-20 z-30 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-4 shadow-xl">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="label-sm">Staff decision</p>
           <p className="mt-1 text-sm text-[var(--text-secondary)]">
-            Send publisher guidance, keep the lesson blocked, or approve the review without opening the editor.
+            {contextLabel || 'Moderation review context'}
           </p>
         </div>
+        <Button size="sm" variant="secondary" onClick={onBack}>
+          <ArrowLeft size={14} />
+          <span>{backLabel}</span>
+        </Button>
       </div>
 
       <label className="mt-4 block text-sm text-[var(--text-secondary)]">
@@ -1931,9 +2013,9 @@ function AdminReviewActionPanel({
             <FileText size={14} />
             <span>{busy === 'request_changes' ? 'Requesting...' : 'Request changes'}</span>
           </Button>
-          <Button size="sm" variant="secondary" onClick={() => onAction('block')} disabled={disabled}>
+          <Button size="sm" variant="secondary" onClick={() => onAction('reject')} disabled={disabled}>
             <AlertTriangle size={14} />
-            <span>{busy === 'block' ? 'Blocking...' : 'Keep blocked'}</span>
+            <span>{busy === 'reject' ? 'Rejecting...' : 'Reject'}</span>
           </Button>
           <Button size="sm" onClick={() => onAction('approve')} disabled={disabled}>
             <Check size={14} />
@@ -1947,6 +2029,11 @@ function AdminReviewActionPanel({
           {message}
         </p>
       )}
+      {contextError && (
+        <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-sm text-[color:var(--status-warning-fg)]">
+          {contextError}
+        </p>
+      )}
       {error && (
         <p className="mt-3 rounded-xl bg-[color:var(--feedback-danger-bg)] px-3 py-2 text-sm text-[color:var(--feedback-danger-fg)]">
           {error}
@@ -1956,12 +2043,14 @@ function AdminReviewActionPanel({
   );
 }
 
-function lessonIntelligenceProviderLabel(report) {
+export function lessonIntelligenceProviderLabel(report) {
   if (report?.enabled === false) return 'Disabled';
-  if (report?.fallback_used) return 'Heuristic fallback kept';
   const provider = String(report?.provider || '').toLowerCase();
-  if (provider === 'ollama') return 'Ollama enhanced';
-  if (provider === 'heuristic') return 'Quick heuristic summary';
+  if (provider === 'ollama' && report?.fallback_used) return 'Partial Ollama insight with heuristic fallback';
+  if (provider === 'ollama') return 'Ollama insight completed';
+  if (provider === 'heuristic' && report?.fallback_used) return 'Heuristic fallback shown';
+  if (provider === 'heuristic') return 'Heuristic suggestion';
+  if (report?.fallback_used) return 'Heuristic fallback shown';
   if (provider) return `${provider.charAt(0).toUpperCase()}${provider.slice(1)} analysis`;
   return 'No analysis yet';
 }
@@ -1974,7 +2063,10 @@ const LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES = new Set([
   'pending',
   'running',
   'analyzing_chunks',
+  'chunk_processing',
   'synthesizing',
+  'final_synthesis',
+  'final_aggregation',
 ]);
 const LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES = new Set([
   'failed',
@@ -1982,6 +2074,7 @@ const LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES = new Set([
   'disabled',
   'stale',
   'superseded',
+  'degraded',
 ]);
 
 function lessonIntelligenceEnhancementPending(report) {
@@ -2020,7 +2113,11 @@ function lessonIntelligenceEnhancementMeta(report) {
   return report?.metadata?.progressive_enhancement || {};
 }
 
-function lessonIntelligenceEnhancementLabel(report) {
+function lessonIntelligenceReportHasUsableResult(report) {
+  return Boolean(report?.id && String(report?.status || '').toLowerCase() === 'done');
+}
+
+export function lessonIntelligenceEnhancementLabel(report) {
   const status = lessonIntelligenceEnhancementStatus(report);
   const provider = String(report?.enhancement_provider || '').toLowerCase();
   if (provider !== 'ollama') return '';
@@ -2029,22 +2126,53 @@ function lessonIntelligenceEnhancementLabel(report) {
   const chunkCount = Number(meta.chunk_count || report?.metadata?.chunk_count || 0);
   const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
   const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
+  const degradedReason = String(meta.degraded_reason || '').toLowerCase();
+  const chunkAnalysisTimedOut = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)
+    && chunkCount > 0
+    && completedChunks <= 0
+    && degradedReason === 'chunk_timeout';
+  const partialProgressTimedOut = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)
+    && completedChunks > 0
+    && degradedReason === 'ollama_no_progress_timeout';
+  const finalAggregationTimedOut = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)
+    && chunkCount > 0
+    && completedChunks >= chunkCount
+    && degradedReason === 'final_aggregation_timeout';
   const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
   if (LESSON_INTELLIGENCE_ACTIVE_ENHANCEMENT_STATUSES.has(status)) {
-    if (phase === 'synthesizing') return 'Synthesizing final insight';
+    if (phase === 'synthesizing' || phase === 'final_synthesis' || phase === 'final_aggregation') return 'Synthesizing final insight';
     const currentChunk = Number(meta.current_chunk_index || meta.current_chunk?.index || 0);
     const visibleProgress = Math.max(processedChunks, currentChunk);
     if (chunkCount > 1) return `Ollama analyzing ${visibleProgress}/${chunkCount} chunks`;
     return 'Ollama enhancement running';
   }
+  const usableReport = lessonIntelligenceReportHasUsableResult(report);
+  const reportProvider = String(report?.provider || '').toLowerCase();
+  const partialWithFallback = Boolean(
+    usableReport
+    && reportProvider === 'ollama'
+    && report?.fallback_used
+    && (status === 'partial' || status === 'degraded' || failedChunks > 0 || completedChunks > 0),
+  );
+  const heuristicFallback = Boolean(
+    usableReport
+    && reportProvider === 'heuristic'
+    && report?.fallback_used
+    && LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status),
+  );
   if (status === 'done') {
-    if (failedChunks > 0) return 'Partial Ollama insight; heuristic kept for some sections.';
-    return 'Ollama enhanced';
+    if (failedChunks > 0 || report?.fallback_used) return 'Partial Ollama insight with heuristic fallback';
+    return 'Ollama insight completed';
   }
-  if (status === 'partial') return 'Partial Ollama insight; heuristic kept for some sections.';
+  if (status === 'partial' || partialWithFallback) return 'Partial Ollama insight with heuristic fallback';
+  if (heuristicFallback) return 'Heuristic fallback shown';
   if (LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(status)) {
-    if (lessonIntelligenceOllamaFallbackFailed(report)) return 'Heuristic fallback shown. Retry Ollama';
-    return 'Ollama enhancement failed; heuristic analysis kept.';
+    if (usableReport) return 'Heuristic fallback shown';
+    if (finalAggregationTimedOut) return 'Ollama enhancement failed during final summary';
+    if (chunkAnalysisTimedOut) return 'Ollama enhancement failed during chunk analysis';
+    if (partialProgressTimedOut) return 'Ollama enhancement timed out after partial progress';
+    if (lessonIntelligenceOllamaFallbackFailed(report)) return 'Heuristic fallback shown';
+    return 'Ollama enhancement failed';
   }
   return '';
 }
@@ -2153,6 +2281,15 @@ function lessonIntelligenceItemKey(item, index = 0) {
 function lessonIntelligenceDraftNarration(item) {
   if (!item || typeof item !== 'object') return '';
   return textValue(item.draft_narration || item.copy_text).trim();
+}
+
+export function lessonIntelligenceDraftLabel(item) {
+  if (!item || typeof item !== 'object') return '';
+  const provider = textValue(item.generated_by || item.provider).trim().toLowerCase();
+  if (provider === 'heuristic' || provider === 'local_heuristic' || item.ai_generated === false) {
+    return 'Heuristic suggestion';
+  }
+  return 'AI draft';
 }
 
 function getCleanSuggestionCopyText(item) {
@@ -2274,7 +2411,9 @@ function LessonIntelligencePanel({
   const providerLabel = lessonIntelligenceProviderLabel(report);
   const enhancementLabel = lessonIntelligenceEnhancementLabel(report);
   const enhancementPending = lessonIntelligenceEnhancementPending(report);
-  const enhancementFailed = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report));
+  const enhancementFailed = LESSON_INTELLIGENCE_FAILED_ENHANCEMENT_STATUSES.has(lessonIntelligenceEnhancementStatus(report))
+    && !lessonIntelligenceReportHasUsableResult(report);
+  const enhancementFallback = /fallback/i.test(enhancementLabel);
   const copyDisabled = !hasReport || actionBusy || loading;
   const stale = lessonIntelligenceIsStale(report);
   const retryOllama = lessonIntelligenceOllamaFallbackFailed(report);
@@ -2331,7 +2470,9 @@ function LessonIntelligencePanel({
                   ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
                   : enhancementPending
                     ? 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)]'
-                    : 'bg-[color:var(--feedback-success-bg)] text-[color:var(--feedback-success-fg)]'
+                    : enhancementFallback
+                      ? 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                      : 'bg-[color:var(--feedback-success-bg)] text-[color:var(--feedback-success-fg)]'
               }`}>
                 {enhancementLabel}
               </span>
@@ -2468,6 +2609,7 @@ function LessonIntelligencePanel({
               const title = textValue(item?.title || 'Expand narration');
               const advice = textValue(item?.advice || item?.suggestion || lessonIntelligenceItemText(item));
               const draftNarration = lessonIntelligenceDraftNarration(item);
+              const draftLabel = lessonIntelligenceDraftLabel(item);
               const copiedThis = copiedSuggestionKey === key;
               return (
                 <article key={key} className="space-y-3 rounded-xl bg-[color:var(--surface-muted)] p-3">
@@ -2478,10 +2620,10 @@ function LessonIntelligencePanel({
                       </span>
                       <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">{title}</p>
                     </div>
-                    {item?.ai_generated && (
+                    {draftLabel && (
                       <span className="inline-flex items-center gap-1 rounded-full bg-[color:rgba(208,188,255,0.16)] px-2.5 py-1 text-xs font-semibold text-[var(--accent-primary)]">
-                        <Sparkles size={12} />
-                        <span>AI draft</span>
+                        {draftLabel === 'AI draft' ? <Sparkles size={12} /> : <FileText size={12} />}
+                        <span>{draftLabel}</span>
                       </span>
                     )}
                   </div>
@@ -2490,7 +2632,7 @@ function LessonIntelligencePanel({
                   )}
                   {draftNarration ? (
                     <div className="rounded-xl border border-[color:rgba(208,188,255,0.32)] bg-[color:rgba(208,188,255,0.08)] p-3">
-                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">Draft narration</p>
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">{draftLabel || 'Draft narration'}</p>
                       <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-6 text-[var(--text-primary)]">{draftNarration}</p>
                     </div>
                   ) : (
@@ -2540,10 +2682,28 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
   const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
   const [searchParams, setSearchParams] = useSearchParams();
-  const readOnlyReviewRequested = searchParams.get('review') === '1' && isStaffOrAdmin(user);
-  const requestedLessonId = Number(searchParams.get('lesson') || 0) || null;
+  const requestedMode = String(searchParams.get('mode') || '').trim().toLowerCase();
+  const requestedReviewParam = String(searchParams.get('review') || '').trim();
+  const readOnlyReviewRequested = (
+    requestedMode === 'review'
+    || searchParams.has('review')
+    || searchParams.has('report')
+  ) && isStaffOrAdmin(user);
+  const requestedReviewId = requestedReviewParam && (requestedMode === 'review' || requestedReviewParam !== '1')
+    ? positiveIdParam(searchParams, 'review')
+    : null;
+  const requestedReportId = positiveIdParam(searchParams, 'report');
+  const requestedLessonId = positiveIdParam(searchParams, 'lesson');
   const requestedStudioView = searchParams.get('view');
-  const hasDirectStudioLocation = searchParams.has('view') || searchParams.has('lesson') || searchParams.has('review');
+  const requestedReviewReturnTo = safeInternalReturnTo(searchParams.get('returnTo'), '/moderation');
+  const requestedSourceItem = textValue(searchParams.get('sourceItem'));
+  const requestedSource = textValue(searchParams.get('source'));
+  const hasDirectStudioLocation = searchParams.has('view')
+    || searchParams.has('lesson')
+    || searchParams.has('review')
+    || searchParams.has('mode')
+    || searchParams.has('report')
+    || searchParams.has('returnTo');
   const studioPositionStorageKey = useMemo(() => studioSessionKey(user), [user]);
   const storedStudioPosition = useMemo(
     () => (hasDirectStudioLocation ? {} : readStudioSession(studioPositionStorageKey)),
@@ -2578,6 +2738,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     nextOffset: null,
     hasNext: false,
   });
+  usePageLoading(loadingProjects && projects.length === 0, 'studio-projects');
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
@@ -2625,6 +2786,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [adminReviewActionBusy, setAdminReviewActionBusy] = useState('');
   const [adminReviewActionMessage, setAdminReviewActionMessage] = useState('');
   const [adminReviewActionError, setAdminReviewActionError] = useState('');
+  const [adminReviewContext, setAdminReviewContext] = useState(null);
+  const [adminReviewContextError, setAdminReviewContextError] = useState('');
   const [lessonIntelligenceByProject, setLessonIntelligenceByProject] = useState({});
   const [loadingLessonIntelligence, setLoadingLessonIntelligence] = useState(false);
   const [lessonIntelligenceActionBusy, setLessonIntelligenceActionBusy] = useState('');
@@ -2696,15 +2859,15 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const isStudioUser = canAccessStudio(user);
 
   useEffect(() => {
-    if (hasDirectStudioLocation || !storedStudioPosition.scrollY) return undefined;
+    if (hasDirectStudioLocation || loadingProjects || !projects.length || !storedStudioPosition.scrollY) return undefined;
     const restoreId = window.requestAnimationFrame(() => {
       window.scrollTo({ top: Number(storedStudioPosition.scrollY) || 0, behavior: 'auto' });
     });
     return () => window.cancelAnimationFrame(restoreId);
-  }, [hasDirectStudioLocation, storedStudioPosition.scrollY]);
+  }, [hasDirectStudioLocation, loadingProjects, projects.length, storedStudioPosition.scrollY]);
 
   useEffect(() => {
-    if (!studioPositionStorageKey || !isStudioUser) return;
+    if (!studioPositionStorageKey || !isStudioUser || isReviewMode) return;
     writeStudioSession(studioPositionStorageKey, {
       studioView,
       selectedLessonId: selectedLessonId || null,
@@ -2718,6 +2881,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     activeEditorPanel,
     activeTab,
     isStudioUser,
+    isReviewMode,
     selectedLessonId,
     selectedPageIndex,
     selectedPageKey,
@@ -2726,7 +2890,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   ]);
 
   useEffect(() => {
-    if (!studioPositionStorageKey || !isStudioUser) return undefined;
+    if (!studioPositionStorageKey || !isStudioUser || isReviewMode) return undefined;
     const persistScrollPosition = () => {
       writeStudioSession(studioPositionStorageKey, {
         studioView,
@@ -2749,6 +2913,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     activeEditorPanel,
     activeTab,
     isStudioUser,
+    isReviewMode,
     selectedLessonId,
     selectedPageIndex,
     selectedPageKey,
@@ -2886,10 +3051,38 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setAdminReviewActionMessage('');
     setAdminReviewActionError('');
     setAdminReviewActionBusy('');
-  }, [selectedLesson?.id]);
+    setAdminReviewContext(null);
+    setAdminReviewContextError('');
+  }, [requestedReviewId, selectedLesson?.id]);
 
   const selectedModeration = selectedLesson?.id ? moderationByProject[selectedLesson.id] || null : null;
   const selectedLessonIntelligence = selectedLesson?.id ? lessonIntelligenceByProject[selectedLesson.id] || null : null;
+
+  useEffect(() => {
+    if (!readOnlyReview || !requestedReviewId) return undefined;
+    let active = true;
+    setAdminReviewContextError('');
+    getModerationReviewRequest(requestedReviewId)
+      .then((detail) => {
+        if (!active) return;
+        setAdminReviewContext(detail);
+        const suggestedResponse = textValue(
+          detail?.admin_response
+          || detail?.publisher_message
+          || detail?.project_moderation?.admin_review?.publisher_message,
+        ).trim();
+        if (suggestedResponse) {
+          setAdminReviewResponse((current) => (current.trim() ? current : suggestedResponse));
+        }
+      })
+      .catch((error) => {
+        if (!active) return;
+        setAdminReviewContextError(error.message || 'Could not load the moderation review context.');
+      });
+    return () => {
+      active = false;
+    };
+  }, [readOnlyReview, requestedReviewId]);
 
   useEffect(() => {
     if (!readOnlyReview || adminReviewResponse.trim()) return;
@@ -2961,8 +3154,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   );
   const draftCoverUrl = textValue(selectedLesson?.draft_cover_url || selectedLesson?.draft_thumbnail_url);
   const hasDraftCover = Boolean(draftCoverUrl);
+  const draftCoverRemoved = Boolean(selectedLessonDraftMetadata?.cover_removed && !hasDraftCover);
+  const hasSelectedLessonCover = Boolean(
+    draftCoverUrl || selectedLesson?.cover_url || selectedLesson?.thumbnail_url || draftCoverRemoved,
+  );
   const selectedLessonCoverBackgroundUrl = safeCssBackgroundUrl(
-    draftCoverUrl || selectedLesson?.cover_url || selectedLesson?.thumbnail_url,
+    draftCoverRemoved ? '' : draftCoverUrl || selectedLesson?.cover_url || selectedLesson?.thumbnail_url,
   );
   const selectedVisualMarker = projectVisualStaleMarker(selectedLesson, selectedModeration);
   const coverVisualNeedsRecheck = visualModerationEnabled
@@ -3645,14 +3842,32 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   };
 
   const handleRerenderProject = async (project, options = {}) => {
-    const hasAvatarOverride = Object.prototype.hasOwnProperty.call(options, 'avatarEnabled');
-    const avatarQueueExpected = avatarFeatureEnabled && projectAvatarEnabled(project) && !(hasAvatarOverride && options.avatarEnabled === false);
+    const hasAvatarOverride =
+      Object.prototype.hasOwnProperty.call(options, 'avatarEnabled') ||
+      Object.prototype.hasOwnProperty.call(options, 'renderWithAvatar');
+    const shouldUseEditorAvatarOption = Boolean(
+      avatarFeatureEnabled &&
+      selectedLesson?.id &&
+      project?.id === selectedLesson.id &&
+      !hasAvatarOverride
+    );
+    const renderWithAvatar = shouldUseEditorAvatarOption
+      ? Boolean(avatarEnabled)
+      : Boolean(options.avatarEnabled ?? options.renderWithAvatar);
+    const avatarQueueExpected = (hasAvatarOverride || shouldUseEditorAvatarOption)
+      ? Boolean(avatarFeatureEnabled && renderWithAvatar)
+      : Boolean(avatarFeatureEnabled && projectAvatarEnabled(project));
     const queueNote = avatarQueueExpected
       ? ' Avatar will continue in the background after the base render is ready.'
       : '';
     if (!window.confirm(`Rerender ${project.title || `project #${project.id}`}?${queueNote}`)) return false;
     try {
-      await rerenderProject(project.id, hasAvatarOverride ? { avatarEnabled: options.avatarEnabled } : {});
+      await rerenderProject(
+        project.id,
+        (hasAvatarOverride || shouldUseEditorAvatarOption)
+          ? { renderWithAvatar }
+          : {},
+      );
       invalidateSelectedLessonCache(project.id);
       await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
       return true;
@@ -3935,21 +4150,25 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setAdminReviewActionMessage('');
     setAdminReviewActionError('');
     try {
-      let payload = null;
       let nextStatus = '';
+      let apiAction = action;
       if (action === 'approve') {
-        payload = await adminApproveLesson(selectedLesson.id, reason);
+        apiAction = 'approve';
         nextStatus = 'admin_approved';
-      } else if (action === 'block') {
-        payload = await adminBlockLesson(selectedLesson.id, reason);
+      } else if (action === 'reject' || action === 'block') {
+        apiAction = 'block';
         nextStatus = 'admin_rejected';
       } else {
-        payload = await adminRequestLessonChanges(selectedLesson.id, {
-          reason,
-          unpublish: true,
-        });
+        apiAction = 'request_changes';
         nextStatus = 'revision_required';
       }
+      const payload = await runAdminProjectModerationAction(
+        selectedLesson.id,
+        apiAction,
+        reason,
+        'manual_admin_review',
+        { unpublish: true },
+      );
 
       if (nextStatus) updateProjectModerationStatus(selectedLesson.id, nextStatus);
       invalidateSelectedLessonCache(selectedLesson.id);
@@ -4032,7 +4251,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       return;
     }
     setLessonIntelligenceError('');
-    setLessonIntelligenceNotice('AI draft applied. Review it, then save changes when ready.');
+    setLessonIntelligenceNotice(`${lessonIntelligenceDraftLabel(item) || 'Draft narration'} applied. Review it, then save changes when ready.`);
   };
 
   useEffect(() => {
@@ -4098,7 +4317,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     const nextParams = new URLSearchParams();
     nextParams.set('view', ['editor', 'playlists'].includes(nextView) ? nextView : 'lessons');
     if (isReviewMode) {
-      nextParams.set('review', '1');
+      nextParams.set('mode', 'review');
+      nextParams.set('review', requestedReviewId ? String(requestedReviewId) : '1');
+      if (requestedReportId) nextParams.set('report', String(requestedReportId));
+      if (requestedSource) nextParams.set('source', requestedSource);
+      if (requestedSourceItem) nextParams.set('sourceItem', requestedSourceItem);
+      if (requestedReviewReturnTo) nextParams.set('returnTo', requestedReviewReturnTo);
     }
 
     const targetLessonId = lessonId || selectedLessonId;
@@ -4107,7 +4331,60 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
 
     setSearchParams(nextParams);
-  }, [isReviewMode, selectedLessonId, setSearchParams]);
+  }, [
+    isReviewMode,
+    requestedReportId,
+    requestedReviewId,
+    requestedReviewReturnTo,
+    requestedSource,
+    requestedSourceItem,
+    selectedLessonId,
+    setSearchParams,
+  ]);
+
+  useEffect(() => onRouteReset('studio', () => {
+    clearStudioSession(studioPositionStorageKey);
+    setSearchParams(new URLSearchParams());
+    setSelectedLessonId(null);
+    setActiveTab('overview');
+    setActiveEditorPanel(visibleEditorPanels[0] || 'transcript');
+    setSelectedPageKey('');
+    setSelectedPageIndex(0);
+    setExpandedSlideKeys({});
+    setReviewDialogOpen(false);
+    setReviewMessage('');
+    setAdminReviewResponse('');
+    setAdminReviewActionMessage('');
+    setAdminReviewActionError('');
+    setAdminReviewContext(null);
+    setAdminReviewContextError('');
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }), [setSearchParams, studioPositionStorageKey, visibleEditorPanels]);
+
+  const handleBackToReviewContext = useCallback(() => {
+    navigate(requestedReviewReturnTo || '/moderation');
+  }, [navigate, requestedReviewReturnTo]);
+
+  const adminReviewBackLabelText = useMemo(
+    () => adminReviewBackLabel({
+      reportId: requestedReportId,
+      source: requestedSource,
+      sourceItem: requestedSourceItem,
+      returnTo: requestedReviewReturnTo,
+    }),
+    [requestedReportId, requestedReviewReturnTo, requestedSource, requestedSourceItem],
+  );
+
+  const adminReviewContextLabel = useMemo(() => {
+    const parts = [];
+    if (selectedLesson?.id) parts.push(`Project #${selectedLesson.id}`);
+    if (requestedReviewId) parts.push(`Review #${requestedReviewId}`);
+    if (requestedReportId) parts.push(`Report #${requestedReportId}`);
+    if (requestedSourceItem && !parts.includes(requestedSourceItem)) {
+      parts.push(requestedSourceItem.replace(/:/g, ' #'));
+    }
+    return parts.length ? parts.join(' - ') : 'Moderation review context';
+  }, [requestedReportId, requestedReviewId, requestedSourceItem, selectedLesson?.id]);
 
   const openEditorForProject = (project) => {
     if (readOnlyReview) return;
@@ -4170,6 +4447,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           subtitleCount: Array.isArray(page.subtitle_chunks) ? page.subtitle_chunks.length : 0,
           thumbnailUrl,
           backgroundUrl,
+          customBackgroundUrl: sceneSettings.customUrl,
           backgroundMode: sceneSettings.backgroundMode,
           backgroundFit: sceneSettings.backgroundFit,
           textScale: sceneSettings.textScale,
@@ -4261,6 +4539,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const selectedSceneFit = selectedScene?.backgroundFit || 'contain';
   const selectedSceneTextScale = selectedScene?.textScale ?? 1;
   const selectedSceneBackgroundUrl = selectedScene?.backgroundUrl || '';
+  const selectedSceneCustomBackgroundUrl = selectedScene?.customBackgroundUrl || '';
   const selectedSceneSourceBackgroundAvailable = Boolean(selectedScene?.sourceBackgroundAvailable);
   const selectedSceneHasCustomBackground = Boolean(selectedScene?.hasCustomBackground);
   const selectedSceneOriginalAvailable = selectedScene?.sourceType !== 'txt'
@@ -4533,6 +4812,27 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   }, [invalidateSelectedLessonCache, readOnlyReview, refreshSelectedLessonState, replaceTranscriptPage, selectedLesson?.id, selectedScene?.page, selectedSceneFit, selectedSceneTextScale]);
 
+  const handleSceneBackgroundRemove = useCallback(async () => {
+    if (readOnlyReview || !selectedLesson?.id || !selectedScene?.page?.id || !selectedSceneHasCustomBackground) return;
+    setSceneActionBusy('background-remove');
+    setSceneActionError('');
+    setSceneActionMessage('');
+    try {
+      const payload = await removeTranscriptPageBackground(selectedLesson.id, selectedScene.page.id, { draftOnly: true });
+      invalidateSelectedLessonCache(selectedLesson.id);
+      replaceTranscriptPage(payload?.page);
+      if (payload?.has_draft) {
+        setSelectedLessonDraftMetadata(payload?.draft_metadata || {});
+      }
+      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
+      setSceneActionMessage(payload?.message || 'Draft custom background removed. Public background is unchanged until Save & Rerender succeeds.');
+    } catch (err) {
+      setSceneActionError(err.message || 'Could not remove slide background.');
+    } finally {
+      setSceneActionBusy('');
+    }
+  }, [invalidateSelectedLessonCache, readOnlyReview, refreshSelectedLessonState, replaceTranscriptPage, selectedLesson?.id, selectedScene?.page, selectedSceneHasCustomBackground]);
+
   const handleApplyBackgroundToAll = useCallback(async () => {
     if (readOnlyReview || !selectedLesson?.id || !selectedScene?.page?.id) return;
     if (selectedSceneMode === 'source_background' && !selectedSceneSourceBackgroundAvailable) {
@@ -4618,6 +4918,36 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
   }, [handleProjectUpdated, invalidateSelectedLessonCache, readOnlyReview, selectedLesson?.id]);
 
+  const handleCoverRemove = useCallback(async () => {
+    if (readOnlyReview || !selectedLesson?.id || !hasSelectedLessonCover) return;
+    setSceneActionBusy('cover-remove');
+    setSceneActionError('');
+    setSceneActionMessage('');
+    try {
+      const updatedProject = await removeProjectCover(selectedLesson.id, { draftOnly: true });
+      invalidateSelectedLessonCache(selectedLesson.id);
+      const cacheToken = Date.now();
+      const nextProject = {
+        ...updatedProject,
+        draft_cover_url: '',
+        draft_thumbnail_url: '',
+      };
+      if (updatedProject?.cover_url) {
+        nextProject.cover_url = cacheBustedMediaUrl(updatedProject.cover_url, cacheToken);
+      }
+      if (updatedProject?.thumbnail_url) {
+        nextProject.thumbnail_url = cacheBustedMediaUrl(updatedProject.thumbnail_url, cacheToken);
+      }
+      handleProjectUpdated(nextProject);
+      setSelectedLessonDraftMetadata(updatedProject?.draft_metadata || {});
+      setSceneActionMessage(updatedProject?.message || 'Draft cover removal saved. Public cover is unchanged until Save changes succeeds.');
+    } catch (err) {
+      setSceneActionError(err.message || 'Could not remove lesson cover.');
+    } finally {
+      setSceneActionBusy('');
+    }
+  }, [handleProjectUpdated, hasSelectedLessonCover, invalidateSelectedLessonCache, readOnlyReview, selectedLesson?.id]);
+
   const handleDraftStatusChange = useCallback((nextStatus) => {
     setSceneDraftStatus((previous) => {
       const previousJson = JSON.stringify(previous || {});
@@ -4662,7 +4992,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         handleProjectUpdated(ttsResult);
       }
 
-      const transcriptResult = await transcriptEditorRef.current?.save?.({ triggerRerender: shouldTriggerRerender });
+      const transcriptSaveOptions = { triggerRerender: shouldTriggerRerender };
+      if (shouldTriggerRerender && avatarFeatureEnabled) {
+        transcriptSaveOptions.renderWithAvatar = Boolean(avatarEnabled);
+      }
+      const transcriptResult = await transcriptEditorRef.current?.save?.(transcriptSaveOptions);
       invalidateSelectedLessonCache(selectedLesson.id);
       applyProjectModerationPayload(transcriptResult, 'not_scanned');
       let promoteResult = null;
@@ -4730,6 +5064,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }, [
     activeEditorPanel,
     applyProjectModerationPayload,
+    avatarEnabled,
+    avatarFeatureEnabled,
     handleAnalyzeLessonIntelligence,
     handleProjectUpdated,
     intelligenceFeatureEnabled,
@@ -4949,9 +5285,31 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       </SurfaceCard>
 
       {readOnlyReview && (
-        <SurfaceCard className="border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)] p-4">
-          <p className="text-sm font-semibold text-[color:var(--status-info-fg)]">Admin review mode — read only</p>
-        </SurfaceCard>
+        <>
+          <SurfaceCard className="flex flex-wrap items-center justify-between gap-3 border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)] p-4">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-[color:var(--status-info-fg)]">Admin review mode - read only</p>
+              <p className="mt-1 break-words text-xs font-medium text-[color:var(--status-info-fg)]">
+                {adminReviewContextLabel}
+              </p>
+            </div>
+          </SurfaceCard>
+
+          {selectedLesson && (
+            <AdminReviewActionPanel
+              response={adminReviewResponse}
+              onResponseChange={setAdminReviewResponse}
+              onAction={handleAdminReviewAction}
+              onBack={handleBackToReviewContext}
+              backLabel={adminReviewBackLabelText}
+              contextLabel={adminReviewContext?.project_title || adminReviewContextLabel}
+              contextError={adminReviewContextError}
+              busy={adminReviewActionBusy}
+              message={adminReviewActionMessage}
+              error={adminReviewActionError}
+            />
+          )}
+        </>
       )}
 
       {submitError && (
@@ -5225,16 +5583,6 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     onSubmitReview={() => handleRequestAdminReview(selectedLesson)}
                     onSelectFinding={handleSelectModerationFinding}
                   />
-                  {readOnlyReview && selectedLesson && (
-                    <AdminReviewActionPanel
-                      response={adminReviewResponse}
-                      onResponseChange={setAdminReviewResponse}
-                      onAction={handleAdminReviewAction}
-                      busy={adminReviewActionBusy}
-                      message={adminReviewActionMessage}
-                      error={adminReviewActionError}
-                    />
-                  )}
                 </div>
               )}
 
@@ -5446,11 +5794,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 <div className="space-y-3" aria-label="Loading lessons">
                   {Array.from({ length: 4 }, (_, index) => (
                     <div key={`lesson-skeleton-${index}`} className="rounded-2xl token-surface p-3">
-                      <div className="h-4 w-3/4 rounded-full bg-[color:var(--surface-container-high)]" />
-                      <div className="mt-2 h-3 w-1/3 rounded-full bg-[color:var(--surface-container-high)]" />
+                      <div className="visus-loading-sheen h-4 w-3/4 rounded-full bg-[color:var(--surface-container-high)]" />
+                      <div className="visus-loading-sheen mt-2 h-3 w-1/3 rounded-full bg-[color:var(--surface-container-high)]" />
                       <div className="mt-3 flex gap-2">
-                        <div className="h-5 w-16 rounded-full bg-[color:var(--surface-container-high)]" />
-                        <div className="h-5 w-20 rounded-full bg-[color:var(--surface-container-high)]" />
+                        <div className="visus-loading-sheen h-5 w-16 rounded-full bg-[color:var(--surface-container-high)]" />
+                        <div className="visus-loading-sheen h-5 w-20 rounded-full bg-[color:var(--surface-container-high)]" />
                       </div>
                     </div>
                   ))}
@@ -5903,6 +6251,21 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           <Trash2 size={14} />
                           <span>{globalEditorActionBusy === 'discard' ? 'Discarding...' : 'Discard changes'}</span>
                         </Button>
+                        {avatarFeatureEnabled && (
+                          <label className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] px-2.5 py-1 text-xs font-semibold text-[var(--text-secondary)]">
+                            <input
+                              type="checkbox"
+                              checked={avatarEnabled}
+                              onChange={(event) => setAvatarEnabled(event.target.checked)}
+                              disabled={Boolean(globalEditorActionBusy)}
+                              aria-label="Render with avatar"
+                            />
+                            <span>Render with avatar</span>
+                            <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-0.5 text-[0.68rem] text-[var(--text-muted)]">
+                              Next rerender
+                            </span>
+                          </label>
+                        )}
                         <Button
                           size="sm"
                           variant={selectedLessonDirtyScope.canSaveRerender ? 'primary' : 'secondary'}
@@ -6022,41 +6385,6 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         </label>
                       )}
 
-                      {!readOnlyReview && (
-                      <div className="space-y-3 rounded-2xl token-surface p-3">
-                        <label className="block text-sm text-[var(--text-secondary)]">
-                          Pause between slides (sec)
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.1"
-                            value={pauseSec}
-                            onChange={(event) => setPauseSec(event.target.value)}
-                            className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-[var(--text-primary)]"
-                          />
-                        </label>
-
-                        <label className="inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm text-[var(--text-secondary)]">
-                          <input
-                            type="checkbox"
-                            checked={whiteboardModeAll}
-                            onChange={(event) => setWhiteboardModeAll(event.target.checked)}
-                          />
-                          <span>Whiteboard mode all slides</span>
-                        </label>
-
-                        {avatarFeatureEnabled && (
-                          <label className="inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm text-[var(--text-secondary)]">
-                            <input
-                              type="checkbox"
-                              checked={avatarEnabled}
-                              onChange={(event) => setAvatarEnabled(event.target.checked)}
-                            />
-                            <span>Render with avatar</span>
-                          </label>
-                        )}
-                      </div>
-                      )}
                   </div>
 
                   <div className={activeEditorPanel === 'slides' ? 'space-y-3' : 'hidden'}>
@@ -6081,9 +6409,19 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                                   Draft cover
                                 </span>
                               )}
+                              {draftCoverRemoved && (
+                                <span className="mt-2 inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
+                                  Draft removal
+                                </span>
+                              )}
                               {hasDraftCover && !moderationAssetWarnings.cover && (
                                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
                                   Draft cover saved. Public cover is unchanged until Save changes succeeds.
+                                </p>
+                              )}
+                              {draftCoverRemoved && !moderationAssetWarnings.cover && (
+                                <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                                  Draft cover removal saved. Public cover is unchanged until Save changes succeeds.
                                 </p>
                               )}
                               {moderationAssetWarnings.cover && (
@@ -6110,20 +6448,20 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             <div className="flex gap-2">
                               {selectedLesson.cover_url && (
                                 <div className="space-y-1 text-right">
-                                  <img
+                                  <AuthenticatedMediaThumbnail
                                     src={selectedLesson.cover_url}
                                     alt="Public lesson cover"
-                                    className="h-14 w-20 rounded-lg object-cover"
+                                    fallbackLabel="Cover unavailable"
                                   />
                                   {hasDraftCover && <span className="block text-[0.65rem] text-[var(--text-muted)]">Public</span>}
                                 </div>
                               )}
                               {hasDraftCover && (
                                 <div className="space-y-1 text-right">
-                                  <img
+                                  <AuthenticatedMediaThumbnail
                                     src={draftCoverUrl}
                                     alt="Draft lesson cover"
-                                    className="h-14 w-20 rounded-lg object-cover"
+                                    fallbackLabel="Draft unavailable"
                                   />
                                   <span className="block text-[0.65rem] font-semibold text-[var(--text-secondary)]">Draft</span>
                                 </div>
@@ -6131,20 +6469,33 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             </div>
                           </div>
                           {!readOnlyReview && (
-                            <label className="block text-xs font-medium text-[var(--text-secondary)]">
-                              Upload cover image
-                              <input
-                                type="file"
-                                accept="image/*"
-                                onChange={(event) => {
-                                  const file = event.target.files?.[0] || null;
-                                  event.target.value = '';
-                                  if (file) handleCoverUpload(file);
-                                }}
-                                disabled={Boolean(sceneActionBusy)}
-                                className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-2 text-sm text-[var(--text-primary)]"
-                              />
-                            </label>
+                            <div className="flex flex-wrap items-end gap-2">
+                              <label className="min-w-[12rem] flex-1 text-xs font-medium text-[var(--text-secondary)]">
+                                Upload cover image
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={(event) => {
+                                    const file = event.target.files?.[0] || null;
+                                    event.target.value = '';
+                                    if (file) handleCoverUpload(file);
+                                  }}
+                                  disabled={Boolean(sceneActionBusy)}
+                                  className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-2 text-sm text-[var(--text-primary)]"
+                                />
+                              </label>
+                              {hasSelectedLessonCover && (
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={handleCoverRemove}
+                                  disabled={Boolean(sceneActionBusy)}
+                                >
+                                  <X size={14} />
+                                  <span>Remove cover</span>
+                                </Button>
+                              )}
+                            </div>
                           )}
                         </div>
                       )}
@@ -6222,6 +6573,36 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             <p className="rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-medium text-[color:var(--status-warning-fg)]">
                               High-fidelity slide rendering requires LibreOffice/Poppler. Current output may use fallback reconstruction.
                             </p>
+                          )}
+
+                          {selectedSceneHasCustomBackground && (
+                            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-[var(--surface-container-high)] p-3">
+                              <div className="flex min-w-0 items-center gap-3">
+                                <AuthenticatedMediaThumbnail
+                                  src={selectedSceneCustomBackgroundUrl}
+                                  alt="Custom scene background"
+                                  className="h-16 w-24 rounded-lg object-cover"
+                                  fallbackLabel="Custom background unavailable"
+                                />
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-[var(--text-primary)]">Custom background</p>
+                                  <p className="text-xs text-[var(--text-secondary)]">
+                                    {selectedSceneMode === 'custom' ? 'Selected for this slide.' : 'Available for this slide.'}
+                                  </p>
+                                </div>
+                              </div>
+                              {!readOnlyReview && (
+                                <Button
+                                  size="sm"
+                                  variant="secondary"
+                                  onClick={handleSceneBackgroundRemove}
+                                  disabled={Boolean(sceneActionBusy)}
+                                >
+                                  <X size={14} />
+                                  <span>Remove</span>
+                                </Button>
+                              )}
+                            </div>
                           )}
 
                           <label className="block text-xs font-medium text-[var(--text-secondary)]">

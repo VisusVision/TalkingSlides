@@ -15,20 +15,26 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import {
   analyzeMyAnalyticsIntelligence,
   createProject,
-  fetchAdminStats,
   fetchCategories,
   fetchMyAnalytics,
   fetchMyAnalyticsIntelligence,
 } from '../api';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { usePageLoading } from '../components/ui/PageLoading';
 import { canAccessStudio } from '../lib/auth';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import { copyTextToClipboard } from '../utils/clipboard';
+import {
+  clearRouteSessionState,
+  onRouteReset,
+  readRouteSessionState,
+  writeRouteSessionState,
+} from '../utils/routeSession';
 
 const RANGE_OPTIONS = [
   { key: '7', label: 'Last 7 days' },
@@ -446,38 +452,41 @@ function CompletionRing({ value }) {
   );
 }
 
-function ProviderLabel({ report }) {
-  if (!report || report.status === 'empty') {
-    return (
-      <span className="inline-flex items-center rounded-full bg-[color:var(--surface-muted)]/45 px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-        No report yet
-      </span>
-    );
-  }
-  if (report.enabled === false || report.status === 'disabled') {
-    return (
-      <span className="inline-flex items-center rounded-full bg-amber-400/15 px-3 py-1 text-xs font-semibold text-amber-300">
-        AI provider disabled
-      </span>
-    );
-  }
-  if (report.fallback_used) {
-    return (
-      <span className="inline-flex items-center rounded-full bg-amber-400/15 px-3 py-1 text-xs font-semibold text-amber-300">
-        Basic fallback insight
-      </span>
-    );
-  }
+export function analyticsProviderStatusLabel(report) {
+  if (!report || report.status === 'empty') return 'No report yet';
+  if (report.enabled === false || report.status === 'disabled') return 'AI provider disabled';
   const provider = String(report.provider || '').toLowerCase();
-  const label = provider === 'ollama'
-    ? 'Ollama enhanced insight'
-    : provider === 'heuristic'
-      ? 'Basic insight'
-      : provider
-        ? `${provider} analysis`
-        : 'Analysis';
+  const enhancementStatus = analyticsEnhancementStatus(report);
+  const fallbackUsed = Boolean(report.fallback_used);
+  if (provider === 'ollama' && fallbackUsed) return 'Partial Ollama insight with heuristic fallback';
+  if (provider === 'ollama') return 'Ollama insight completed';
+  if (provider === 'heuristic' && fallbackUsed) return 'Heuristic fallback shown';
+  if (provider === 'heuristic') return 'Heuristic insight';
+  if (fallbackUsed) return 'Heuristic fallback shown';
+  if (enhancementStatus === 'partial') return 'Partial Ollama insight with heuristic fallback';
+  if (provider) return `${provider.charAt(0).toUpperCase()}${provider.slice(1)} analysis`;
+  return 'Analysis';
+}
+
+function analyticsProviderStatusTone(report) {
+  const label = analyticsProviderStatusLabel(report);
+  if (label === 'No report yet') return 'bg-[color:var(--surface-muted)]/45 text-[var(--text-secondary)]';
+  if (label === 'AI provider disabled') return 'bg-amber-400/15 text-amber-300';
+  if (label === 'Partial Ollama insight with heuristic fallback' || label === 'Heuristic fallback shown') {
+    return 'bg-amber-400/15 text-amber-300';
+  }
+  return 'bg-emerald-400/15 text-emerald-300';
+}
+
+function analyticsReportHasUsableResult(report) {
+  return Boolean(report?.id && String(report?.status || '').toLowerCase() === 'done');
+}
+
+function ProviderLabel({ report }) {
+  const label = analyticsProviderStatusLabel(report);
+  const className = analyticsProviderStatusTone(report);
   return (
-    <span className="inline-flex items-center rounded-full bg-emerald-400/15 px-3 py-1 text-xs font-semibold text-emerald-300">
+    <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${className}`}>
       {label}
     </span>
   );
@@ -487,11 +496,18 @@ function analyticsEnhancementStatus(report) {
   return String(report?.enhancement_status || '').trim().toLowerCase();
 }
 
+function analyticsRefreshStatus(report) {
+  return String(report?.refresh_status || '').trim().toLowerCase();
+}
+
 const ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES = new Set([
   'pending',
   'running',
   'analyzing_chunks',
+  'chunk_processing',
   'synthesizing',
+  'final_synthesis',
+  'final_aggregation',
 ]);
 const ANALYTICS_FAILED_ENHANCEMENT_STATUSES = new Set([
   'failed',
@@ -499,10 +515,15 @@ const ANALYTICS_FAILED_ENHANCEMENT_STATUSES = new Set([
   'disabled',
   'stale',
   'superseded',
+  'degraded',
 ]);
 
 function analyticsEnhancementPending(report) {
-  return Boolean(report?.enhancement_pending || ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(report)));
+  return Boolean(
+    report?.enhancement_pending
+    || ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(report))
+    || ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(analyticsRefreshStatus(report)),
+  );
 }
 
 function analyticsOllamaFallbackFailed(report) {
@@ -534,10 +555,17 @@ function analyticsEnhancementMeta(report) {
   return report?.metadata?.progressive_enhancement || {};
 }
 
-function AnalyticsEnhancementLabel({ report }) {
+export function analyticsEnhancementLabelText(report) {
+  const refreshStatus = analyticsRefreshStatus(report);
+  if (report?.pending_report_id && ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(refreshStatus)) {
+    return 'Updating insight...';
+  }
+  if (report?.latest_refresh_failed) {
+    return 'Latest refresh failed';
+  }
   const status = analyticsEnhancementStatus(report);
   const provider = String(report?.enhancement_provider || '').toLowerCase();
-  if (provider !== 'ollama') return null;
+  if (provider !== 'ollama') return '';
   const failed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(status);
   const pending = ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(status);
   const meta = analyticsEnhancementMeta(report);
@@ -545,22 +573,65 @@ function AnalyticsEnhancementLabel({ report }) {
   const chunkCount = Number(meta.chunk_count || report?.metadata?.chunk_count || 0);
   const completedChunks = Number(meta.completed_chunks || report?.metadata?.completed_chunks || 0);
   const failedChunks = Number(meta.failed_chunks || report?.metadata?.failed_chunks || 0);
+  const degradedReason = String(meta.degraded_reason || '').toLowerCase();
+  const chunkAnalysisTimedOut = failed
+    && chunkCount > 0
+    && completedChunks <= 0
+    && degradedReason === 'chunk_timeout';
+  const partialProgressTimedOut = failed
+    && completedChunks > 0
+    && degradedReason === 'ollama_no_progress_timeout';
+  const finalAggregationTimedOut = failed
+    && chunkCount > 0
+    && completedChunks >= chunkCount
+    && degradedReason === 'final_aggregation_timeout';
   const processedChunks = Math.min(chunkCount, completedChunks + failedChunks);
   const currentChunk = Number(meta.current_chunk_index || meta.current_chunk?.index || 0);
   const visibleProgress = Math.max(processedChunks, currentChunk);
-  const label = pending
-    ? (phase === 'synthesizing'
-      ? 'Synthesizing final insight'
-      : chunkCount > 1
-        ? `Ollama analyzing ${visibleProgress}/${chunkCount} chunks`
-        : 'Ollama enhancement running')
-    : status === 'done'
-      ? (failedChunks > 0 ? 'Partial Ollama insight; heuristic kept for some sections.' : 'Ollama enhanced insight')
-    : status === 'partial'
-      ? 'Partial Ollama insight; heuristic kept for some sections.'
-      : failed
-        ? (analyticsOllamaFallbackFailed(report) ? 'Heuristic fallback shown. Retry Ollama' : 'Ollama enhancement failed; heuristic analysis kept.')
-        : '';
+  const usableReport = analyticsReportHasUsableResult(report);
+  const reportProvider = String(report?.provider || '').toLowerCase();
+  const partialWithFallback = Boolean(
+    usableReport
+    && reportProvider === 'ollama'
+    && report?.fallback_used
+    && (status === 'partial' || status === 'degraded' || failedChunks > 0 || completedChunks > 0),
+  );
+  const heuristicFallback = Boolean(
+    usableReport
+    && reportProvider === 'heuristic'
+    && report?.fallback_used
+    && failed,
+  );
+  if (pending) {
+    if (phase === 'synthesizing' || phase === 'final_synthesis' || phase === 'final_aggregation') return 'Synthesizing final insight';
+    if (chunkCount > 1) return `Ollama analyzing ${visibleProgress}/${chunkCount} chunks`;
+    return 'Ollama enhancement running';
+  }
+  if (status === 'done') {
+    return failedChunks > 0 || report?.fallback_used
+      ? 'Partial Ollama insight with heuristic fallback'
+      : 'Ollama insight completed';
+  }
+  if (status === 'partial' || partialWithFallback) return 'Partial Ollama insight with heuristic fallback';
+  if (heuristicFallback) return 'Heuristic fallback shown';
+  if (failed) {
+    if (usableReport) return 'Heuristic fallback shown';
+    if (finalAggregationTimedOut) return 'Ollama enhancement failed during final summary';
+    if (chunkAnalysisTimedOut) return 'Ollama enhancement failed during chunk analysis';
+    if (partialProgressTimedOut) return 'Ollama enhancement timed out after partial progress';
+    if (analyticsOllamaFallbackFailed(report)) return 'Heuristic fallback shown';
+    return 'Ollama enhancement failed';
+  }
+  return '';
+}
+
+function AnalyticsEnhancementLabel({ report }) {
+  const status = analyticsEnhancementStatus(report);
+  const refreshStatus = analyticsRefreshStatus(report);
+  const pending = ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(status)
+    || ANALYTICS_ACTIVE_ENHANCEMENT_STATUSES.has(refreshStatus);
+  const failed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(status) || Boolean(report?.latest_refresh_failed);
+  const label = analyticsEnhancementLabelText(report);
   if (!label) return null;
   const className = failed
     ? 'bg-amber-400/15 text-amber-300'
@@ -597,7 +668,35 @@ function analyticsInputWasCompacted(report) {
 }
 
 function analyticsIntelligenceIsStale(report) {
-  return Boolean(report?.is_stale);
+  return Boolean(report?.is_stale || report?.insight_stale);
+}
+
+export function analyticsDisplayReportAfterRefresh(currentReport, nextReport) {
+  if (!nextReport) return currentReport || null;
+  if (!currentReport || !analyticsReportHasUsableResult(currentReport)) return nextReport;
+  if (nextReport.active_report_id && nextReport.active_report_id === currentReport.id) return nextReport;
+
+  const nextRefreshStatus = analyticsRefreshStatus(nextReport) || analyticsEnhancementStatus(nextReport);
+  const nextPending = analyticsEnhancementPending(nextReport);
+  const nextFailedWithoutResult = (
+    !analyticsReportHasUsableResult(nextReport)
+    && (nextReport.latest_refresh_failed || ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(nextRefreshStatus))
+  );
+
+  if (!nextPending && !nextFailedWithoutResult) return nextReport;
+
+  return {
+    ...currentReport,
+    current_source_hash: nextReport.current_source_hash || nextReport.source_hash || currentReport.current_source_hash || '',
+    current_run_key: nextReport.current_run_key || nextReport.run_key || currentReport.current_run_key || '',
+    insight_stale: true,
+    is_stale: true,
+    refresh_status: nextRefreshStatus || (nextPending ? 'pending' : 'failed'),
+    enhancement_pending: nextPending,
+    latest_refresh_failed: Boolean(nextFailedWithoutResult),
+    pending_report_id: nextPending ? (nextReport.pending_report_id || nextReport.id || null) : null,
+    latest_refresh_report_id: nextReport.latest_refresh_report_id || nextReport.id || null,
+  };
 }
 
 function RiskBadge({ level, outputLanguage = 'en' }) {
@@ -805,7 +904,7 @@ function CategoryDonut({ categories }) {
   if (total <= 0 || visibleCategories.length === 0) return null;
 
   return (
-    <div className="flex items-center gap-5 rounded-2xl bg-[color:var(--surface-muted)]/25 p-4">
+    <div className="flex flex-col gap-5 rounded-2xl bg-[color:var(--surface-muted)]/25 p-4 sm:flex-row sm:items-center">
       <div className="relative h-28 w-28 shrink-0">
         <svg viewBox="0 0 112 112" className="h-full w-full -rotate-90">
           <circle
@@ -884,18 +983,39 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
 }
 
 export default function Analytics({ user }) {
+  const location = useLocation();
   const { capabilities } = useCapabilities();
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
-  const [rangeKey, setRangeKey] = useState('7');
-  const [categorySlug, setCategorySlug] = useState('');
+  const directAnalyticsState = useMemo(() => {
+    const params = new URLSearchParams(location.search || '');
+    const range = String(params.get('range') || '').trim();
+    const category = String(params.get('category') || '').trim();
+    return {
+      hasDirectState: Boolean(range || category),
+      rangeKey: RANGE_OPTIONS.some((option) => option.key === range) ? range : '',
+      categorySlug: category,
+    };
+  }, [location.search]);
+  const storedAnalyticsState = useMemo(
+    () => (directAnalyticsState.hasDirectState ? {} : readRouteSessionState('analytics', user)),
+    [directAnalyticsState.hasDirectState, user],
+  );
+  const [rangeKey, setRangeKey] = useState(
+    () => directAnalyticsState.rangeKey || String(storedAnalyticsState.rangeKey || '7'),
+  );
+  const [categorySlug, setCategorySlug] = useState(
+    () => directAnalyticsState.categorySlug || String(storedAnalyticsState.categorySlug || ''),
+  );
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [stats, setStats] = useState(() => emptyAnalyticsStats());
   const [categories, setCategories] = useState([]);
   const [analyticsCategories, setAnalyticsCategories] = useState([]);
-  const [recentActivityExpanded, setRecentActivityExpanded] = useState(false);
+  const [recentActivityExpanded, setRecentActivityExpanded] = useState(
+    () => Boolean(storedAnalyticsState.recentActivityExpanded),
+  );
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [createError, setCreateError] = useState('');
@@ -919,14 +1039,63 @@ export default function Analytics({ user }) {
   }, [categorySlug, rangeKey]);
   const analyticsFilterKey = useMemo(() => JSON.stringify(analyticsFilters), [analyticsFilters]);
 
+  usePageLoading(loading, 'analytics-dashboard');
+
+  useEffect(() => {
+    if (!directAnalyticsState.hasDirectState) return;
+    setRangeKey(directAnalyticsState.rangeKey || '7');
+    setCategorySlug(directAnalyticsState.categorySlug || '');
+  }, [directAnalyticsState]);
+
+  useEffect(() => {
+    writeRouteSessionState('analytics', user, {
+      rangeKey,
+      categorySlug,
+      recentActivityExpanded,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [categorySlug, rangeKey, recentActivityExpanded, user]);
+
+  useEffect(() => onRouteReset('analytics', () => {
+    clearRouteSessionState('analytics', user);
+    setRangeKey('7');
+    setCategorySlug('');
+    setRecentActivityExpanded(false);
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }), [user]);
+
+  useEffect(() => {
+    if (loading || directAnalyticsState.hasDirectState || !storedAnalyticsState.scrollY) return undefined;
+    const restoreId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number(storedAnalyticsState.scrollY) || 0, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(restoreId);
+  }, [directAnalyticsState.hasDirectState, loading, storedAnalyticsState.scrollY]);
+
+  useEffect(() => {
+    const persistScroll = () => {
+      writeRouteSessionState('analytics', user, {
+        rangeKey,
+        categorySlug,
+        recentActivityExpanded,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('pagehide', persistScroll);
+    window.addEventListener('beforeunload', persistScroll);
+    return () => {
+      persistScroll();
+      window.removeEventListener('pagehide', persistScroll);
+      window.removeEventListener('beforeunload', persistScroll);
+    };
+  }, [categorySlug, rangeKey, recentActivityExpanded, user]);
+
   const loadStats = useCallback(async (activeRef = { current: true }) => {
     setLoading(true);
     setError('');
 
     try {
-      const payload = isStaffUser(user)
-        ? await fetchAdminStats(analyticsFilters)
-        : await fetchMyAnalytics(analyticsFilters);
+      const payload = await fetchMyAnalytics(analyticsFilters);
 
       if (!activeRef.current) return;
       const normalized = normalizeAnalyticsStats(payload);
@@ -1076,7 +1245,7 @@ export default function Analytics({ user }) {
 
     try {
       const payload = await analyzeMyAnalyticsIntelligence(analyticsFilters, { force: Boolean(force) && !auto });
-      setIntelligenceReport(payload);
+      setIntelligenceReport((currentReport) => analyticsDisplayReportAfterRefresh(currentReport, payload));
       setIntelligenceLoadedFilterKey(analyticsFilterKey);
       return payload;
     } catch (analyzeError) {
@@ -1114,7 +1283,11 @@ export default function Analytics({ user }) {
   const intelligenceStale = analyticsIntelligenceIsStale(intelligenceReport);
   const intelligenceCompacted = analyticsInputWasCompacted(intelligenceReport);
   const intelligenceEnhancementPending = analyticsEnhancementPending(intelligenceReport);
-  const intelligenceEnhancementFailed = ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(intelligenceReport));
+  const intelligenceRefreshFailed = Boolean(intelligenceReport?.latest_refresh_failed);
+  const intelligenceEnhancementFailed = (
+    ANALYTICS_FAILED_ENHANCEMENT_STATUSES.has(analyticsEnhancementStatus(intelligenceReport))
+    && !analyticsReportHasUsableResult(intelligenceReport)
+  ) || intelligenceRefreshFailed;
   const intelligenceRetryOllama = analyticsOllamaFallbackFailed(intelligenceReport);
   const intelligenceRetryCooldown = analyticsRetryOnCooldown(intelligenceReport);
   const intelligenceUpToDate = analyticsUpToDate(intelligenceReport);
@@ -1305,8 +1478,8 @@ export default function Analytics({ user }) {
         />
       </section>
 
-      <section className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(22rem,1fr)]">
-        <SurfaceCard className="space-y-6">
+      <section className="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,0.9fr)]">
+        <SurfaceCard className="flex min-h-[24rem] flex-col gap-6">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Views over time</h2>
@@ -1318,8 +1491,8 @@ export default function Analytics({ user }) {
           </div>
 
           {hasChartActivity ? (
-            <div className="grid gap-3">
-              <div className="relative flex h-64 items-end gap-2 rounded-2xl bg-[linear-gradient(to_bottom,transparent,rgba(127,127,127,0.06))] px-2 pt-8">
+            <div data-testid="analytics-chart-body" className="flex min-h-[17rem] flex-1 flex-col gap-3">
+              <div className="relative flex min-h-64 flex-1 items-end gap-2 rounded-2xl bg-[linear-gradient(to_bottom,transparent,rgba(127,127,127,0.06))] px-2 pt-8">
                 <div className="pointer-events-none absolute inset-x-2 top-1/3 border-t border-dashed border-[color:var(--border-subtle)]" />
                 <div className="pointer-events-none absolute inset-x-2 top-2/3 border-t border-dashed border-[color:var(--border-subtle)]" />
                 {stats.series.map((point) => {
@@ -1354,17 +1527,17 @@ export default function Analytics({ user }) {
               </div>
             </div>
           ) : (
-            <EmptyPanel message="No recorded activity in this range." className="h-64" />
+            <EmptyPanel message="No recorded activity in this range." className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
 
-        <SurfaceCard className="space-y-6">
+        <SurfaceCard className="flex min-h-[24rem] flex-col gap-6 xl:max-h-[34rem]">
           <div>
             <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Category Breakdown</h2>
             <p className="text-xs text-[var(--text-secondary)]">Engagement by owned lesson category</p>
           </div>
           {stats.categoryBreakdown.length > 0 ? (
-            <div className="space-y-4">
+            <div data-testid="analytics-category-list" className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
               {stats.categoryBreakdown.length <= 6 && (
                 <CategoryDonut categories={stats.categoryBreakdown} />
               )}
@@ -1372,7 +1545,7 @@ export default function Analytics({ user }) {
                 const width = Math.max(6, Math.round((category.value / categoryMax) * 100));
                 const color = DONUT_COLORS[index % DONUT_COLORS.length];
                 return (
-                  <article key={category.id} className="space-y-2">
+                  <article key={category.id} data-testid="analytics-category-row" className="space-y-2">
                     <div className="flex items-center justify-between gap-3 text-sm">
                       <p className="line-clamp-1 font-semibold text-[var(--text-primary)]">{category.name}</p>
                       <p className="text-xs font-semibold text-[var(--accent-primary)]">{compactNumber(category.value)}</p>
@@ -1388,7 +1561,7 @@ export default function Analytics({ user }) {
               })}
             </div>
           ) : (
-            <EmptyPanel message="Category breakdown will appear once lessons collect activity." />
+            <EmptyPanel message="Category breakdown will appear once lessons collect activity." className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
       </section>
@@ -1434,7 +1607,7 @@ export default function Analytics({ user }) {
           )}
         </SurfaceCard>
 
-        <SurfaceCard className="space-y-6">
+        <SurfaceCard data-testid="analytics-recent-activity-card" className="flex max-h-[34rem] flex-col gap-6 overflow-hidden">
           <div className="flex items-start justify-between gap-4">
             <div>
               <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recent Activity</h2>
@@ -1451,14 +1624,14 @@ export default function Analytics({ user }) {
             )}
           </div>
           {stats.recentActivity.length > 0 ? (
-            <div className="space-y-3">
+            <div data-testid="analytics-recent-activity-list" className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
               {visibleRecentActivity.map((activity) => (
-                <article key={activity.id} className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-3">
+                <article key={activity.id} data-testid="analytics-recent-activity-row" className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-3">
                   <span className="mt-1.5 h-3 w-3 rounded-full bg-[var(--accent-primary)] shadow-[0_0_0_4px_rgba(208,188,255,0.14)]" />
-                  <div className="rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
-                      <div className="flex shrink-0 items-center gap-2">
+                  <div className="min-w-0 rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
+                    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                      <p className="line-clamp-1 min-w-0 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
+                      <div className="flex shrink-0 flex-wrap items-center gap-2">
                         <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
                           {activity.label}
                         </span>
@@ -1471,7 +1644,7 @@ export default function Analytics({ user }) {
               ))}
             </div>
           ) : (
-            <EmptyPanel message="Activity will appear here after viewers like, comment, or make progress on your lessons." />
+            <EmptyPanel message="Activity will appear here after viewers like, comment, or make progress on your lessons." className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
       </section>
@@ -1590,8 +1763,14 @@ export default function Analytics({ user }) {
           <div className="flex items-start gap-2 rounded-2xl bg-amber-400/15 p-3 text-sm text-amber-200">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <span>
-              {intelligenceRetryOllama ? 'Heuristic fallback shown. Retry Ollama when available. ' : ''}
-              {intelligenceReport?.enhancement_last_failure_reason || intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
+              {intelligenceRefreshFailed
+                ? 'Latest refresh failed; previous insight kept.'
+                : (
+                  <>
+                    {intelligenceRetryOllama ? 'Heuristic fallback shown. Retry Ollama when available. ' : ''}
+                    {intelligenceReport?.enhancement_last_failure_reason || intelligenceReport?.enhancement_error_safe || 'Ollama enhancement failed; heuristic analysis kept.'}
+                  </>
+                )}
             </span>
           </div>
         )}
@@ -1628,6 +1807,7 @@ export default function Analytics({ user }) {
                 </p>
                 <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">
                   Based on aggregate creator analytics for the selected range.
+                  {intelligenceReport.last_analyzed_at ? ` Last analyzed ${formatActivityTimestamp(intelligenceReport.last_analyzed_at)}.` : ''}
                 </p>
               </div>
               <div className="flex items-center justify-between gap-4 rounded-xl bg-[color:var(--surface-muted)]/25 p-5">

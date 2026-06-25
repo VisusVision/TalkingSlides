@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -24,10 +24,107 @@ import {
 } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { usePageLoading } from '../components/ui/PageLoading';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
+import {
+  clearRouteSessionState,
+  onRouteReset,
+  readRouteSessionState,
+  safeInternalReturnTo,
+  writeRouteSessionState,
+} from '../utils/routeSession';
 
 function normalizeReviewRequests(payload) {
   return Array.isArray(payload) ? payload : payload?.results || [];
+}
+
+const MODERATION_PAGE_SIZE = 25;
+
+function moderationItemKey(item) {
+  return `${item?.source_type || 'review_request'}:${item?.id}`;
+}
+
+function parseModerationLocation(search) {
+  const params = new URLSearchParams(search || '');
+  const tab = String(params.get('tab') || '').trim();
+  const filter = String(params.get('filter') || '').trim();
+  const item = String(params.get('item') || '').trim();
+  const reviewId = String(params.get('review') || '').trim();
+  const reportId = String(params.get('report') || '').trim();
+  return {
+    hasDirectState: Boolean(tab || filter || item || reviewId || reportId),
+    activeTabKey: REVIEW_TABS.some((candidate) => candidate.key === tab) ? tab : '',
+    activeFilter: normalizedModerationFilter(tab, filter),
+    expandedId: item
+      || (reviewId && reviewId !== '1' ? `review_request:${reviewId}` : '')
+      || (reportId ? `report:report-${reportId}` : ''),
+  };
+}
+
+function moderationReturnPath(location, { tab, filter, itemKey } = {}) {
+  const params = new URLSearchParams(location.search || '');
+  params.set('tab', tab || 'open');
+  params.set('filter', filter || 'all');
+  if (itemKey) params.set('item', itemKey);
+  const query = params.toString();
+  return `${location.pathname || '/moderation'}${query ? `?${query}` : ''}`;
+}
+
+function studioReviewUrl(review, returnPath) {
+  const projectId = review?.project_id;
+  if (!projectId) return '/moderation';
+  const params = new URLSearchParams();
+  params.set('mode', 'review');
+  params.set('view', 'editor');
+  params.set('lesson', String(projectId));
+  params.set('source', 'moderation');
+  params.set('sourceItem', moderationItemKey(review));
+  params.set('returnTo', safeInternalReturnTo(returnPath, '/moderation'));
+  if (review?.source_type === 'review_request' && review.id) {
+    params.set('review', String(review.id));
+  }
+  const reportId = review?.report_id || (
+    review?.source_type === 'report'
+      ? String(review.id || '').replace(/^report-/, '')
+      : ''
+  );
+  if (reportId) params.set('report', String(reportId));
+  if (review?.admin_review_request_id) {
+    params.set('review', String(review.admin_review_request_id));
+  }
+  return `/studio?${params.toString()}`;
+}
+
+function appendUniqueModerationItems(previous, incoming) {
+  const merged = Array.isArray(previous) ? [...previous] : [];
+  const seen = new Set(merged.map(moderationItemKey));
+  (Array.isArray(incoming) ? incoming : []).forEach((item) => {
+    const key = moderationItemKey(item);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(item);
+  });
+  return merged;
+}
+
+function normalizeReviewRequestPage(payload, { limit = MODERATION_PAGE_SIZE, offset = 0 } = {}) {
+  const results = normalizeReviewRequests(payload);
+  const count = Number(payload?.count ?? payload?.total ?? results.length);
+  const safeCount = Number.isFinite(count) ? count : results.length;
+  const nextOffset = payload?.next_offset ?? payload?.next ?? null;
+  const numericNextOffset = Number(nextOffset);
+  const fallbackHasMore = offset + results.length < safeCount;
+  const hasMore = Boolean(payload?.has_more ?? (Number.isFinite(numericNextOffset) ? true : fallbackHasMore));
+  return {
+    results,
+    count: safeCount,
+    limit: Number(payload?.limit ?? limit) || limit,
+    offset: Number(payload?.offset ?? offset) || offset,
+    hasMore,
+    nextOffset: hasMore
+      ? (Number.isFinite(numericNextOffset) ? numericNextOffset : offset + results.length)
+      : null,
+  };
 }
 
 function normalizeReports(payload) {
@@ -81,6 +178,13 @@ const HISTORY_FILTERS = [
   { key: 'copyright', label: 'Copyright' },
   { key: 'other', label: 'Other' },
 ];
+
+function normalizedModerationFilter(tabKey, filterKey) {
+  const tab = REVIEW_TABS.some((candidate) => candidate.key === tabKey) ? tabKey : 'open';
+  const filters = tab === 'history' ? HISTORY_FILTERS : OPEN_FILTERS;
+  const filter = String(filterKey || '').trim();
+  return filters.some((candidate) => candidate.key === filter) ? filter : '';
+}
 
 function findingLocationLabel(finding) {
   if (finding?.asset_label) return finding.asset_label;
@@ -137,9 +241,10 @@ function savedAdminResponse(review, detail) {
 }
 
 function draftAdminResponse(responsesById, review, detail) {
+  const key = moderationItemKey(review);
   if (!review?.id) return '';
-  if (Object.prototype.hasOwnProperty.call(responsesById, review.id)) {
-    return String(responsesById[review.id] || '');
+  if (Object.prototype.hasOwnProperty.call(responsesById, key)) {
+    return String(responsesById[key] || '');
   }
   return savedAdminResponse(review, detail);
 }
@@ -385,24 +490,61 @@ function ModerationPreview({ issue }) {
   );
 }
 
-export default function ModerationDashboard({ searchQuery = '' }) {
+export default function ModerationDashboard({ user, searchQuery = '' }) {
+  const location = useLocation();
+  const navigate = useNavigate();
   const { capabilities } = useCapabilities();
   const visualModerationEnabled = featureEnabled(capabilities, 'visual_moderation');
+  const directModerationState = useMemo(
+    () => parseModerationLocation(location.search),
+    [location.search],
+  );
+  const storedModerationState = useMemo(
+    () => (directModerationState.hasDirectState ? {} : readRouteSessionState('moderation', user)),
+    [directModerationState.hasDirectState, user],
+  );
+  const initialModerationTabKey = directModerationState.activeTabKey
+    || (REVIEW_TABS.some((tab) => tab.key === storedModerationState.activeTabKey)
+      ? storedModerationState.activeTabKey
+      : 'open');
+  const initialModerationFilter = directModerationState.activeFilter
+    || normalizedModerationFilter(initialModerationTabKey, storedModerationState.activeFilter)
+    || 'all';
   const [reviewRequests, setReviewRequests] = useState([]);
   const [detailsById, setDetailsById] = useState({});
-  const [expandedId, setExpandedId] = useState(null);
+  const [expandedId, setExpandedId] = useState(
+    () => directModerationState.expandedId || String(storedModerationState.expandedId || '') || null,
+  );
   const [responsesById, setResponsesById] = useState({});
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [detailLoadingId, setDetailLoadingId] = useState(null);
   const [actionBusy, setActionBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [activeTabKey, setActiveTabKey] = useState('open');
-  const [activeFilter, setActiveFilter] = useState('all');
+  const [activeTabKey, setActiveTabKey] = useState(
+    () => initialModerationTabKey,
+  );
+  const [activeFilter, setActiveFilter] = useState(
+    () => initialModerationFilter,
+  );
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(String(searchQuery || '').trim());
+  const [pageInfo, setPageInfo] = useState({
+    count: 0,
+    hasMore: false,
+    nextOffset: null,
+    limit: MODERATION_PAGE_SIZE,
+    offset: 0,
+  });
   const [filterPanelOpen, setFilterPanelOpen] = useState(false);
   const [pendingDecision, setPendingDecision] = useState(null);
   const [requestChangesDialog, setRequestChangesDialog] = useState(null);
   const filterPanelRef = useRef(null);
+  const loadMoreRef = useRef(null);
+  const requestSequenceRef = useRef(0);
+  const initialPageLimitRef = useRef(
+    Math.max(MODERATION_PAGE_SIZE, Number(storedModerationState.loadedCount || 0) || 0),
+  );
 
   const activeTab = useMemo(
     () => REVIEW_TABS.find((tab) => tab.key === activeTabKey) || REVIEW_TABS[0],
@@ -412,46 +554,174 @@ export default function ModerationDashboard({ searchQuery = '' }) {
   const activeFilterOption = activeFilters.find((filter) => filter.key === activeFilter) || activeFilters[0];
   const activeFilterCount = activeFilter === 'all' ? 0 : 1;
   const activeFilterLabel = activeFilterCount ? activeFilterOption.label : 'No filters';
-  
-  const filteredReviewRequests = useMemo(() => {
-    if (!searchQuery) return reviewRequests;
-    const q = searchQuery.toLowerCase();
-    return reviewRequests.filter((review) => {
-      const title = String(review.project_title || `Project #${review.project_id}`).toLowerCase();
-      const publisher = String(review.publisher_username || review.requested_by_username || '').toLowerCase();
-      const status = String(review.status || '').toLowerCase();
-      const message = String(review.publisher_message || '').toLowerCase();
-      const idStr = String(review.id);
-      const projIdStr = String(review.project_id);
-      
-      return (
-        title.includes(q)
-        || publisher.includes(q)
-        || status.includes(q)
-        || message.includes(q)
-        || idStr.includes(q)
-        || projIdStr.includes(q)
-      );
-    });
-  }, [reviewRequests, searchQuery]);
+  const activeSearchQuery = debouncedSearchQuery.trim();
+  const showingCount = reviewRequests.length;
+  const totalCount = pageInfo.count || showingCount;
+  const initialReviewLoading = loading && reviewRequests.length === 0;
+  usePageLoading(initialReviewLoading, 'moderation-dashboard');
 
-  const loadReviewRequests = useCallback(async () => {
-    setLoading(true);
+  useEffect(() => {
+    if (!directModerationState.hasDirectState) return;
+    setActiveTabKey(directModerationState.activeTabKey || 'open');
+    setActiveFilter(directModerationState.activeFilter || 'all');
+    setExpandedId(directModerationState.expandedId || null);
+  }, [directModerationState]);
+
+  useEffect(() => {
+    if (activeFilters.some((filter) => filter.key === activeFilter)) return;
+    setActiveFilter('all');
+  }, [activeFilter, activeFilters]);
+
+  useEffect(() => {
+    writeRouteSessionState('moderation', user, {
+      activeTabKey,
+      activeFilter,
+      expandedId,
+      loadedCount: reviewRequests.length,
+      scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+    });
+  }, [activeFilter, activeTabKey, expandedId, reviewRequests.length, user]);
+
+  useEffect(() => onRouteReset('moderation', () => {
+    clearRouteSessionState('moderation', user);
+    initialPageLimitRef.current = MODERATION_PAGE_SIZE;
+    setActiveTabKey('open');
+    setActiveFilter('all');
+    setExpandedId(null);
+    setDetailsById({});
+    setResponsesById({});
+    setFilterPanelOpen(false);
+    setPendingDecision(null);
+    setRequestChangesDialog(null);
+    setPageInfo({
+      count: 0,
+      hasMore: false,
+      nextOffset: null,
+      limit: MODERATION_PAGE_SIZE,
+      offset: 0,
+    });
+    if (location.search) {
+      navigate('/moderation', { replace: true });
+    }
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  }), [location.search, navigate, user]);
+
+  useEffect(() => {
+    if (initialReviewLoading || directModerationState.hasDirectState || !storedModerationState.scrollY) return undefined;
+    const restoreId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: Number(storedModerationState.scrollY) || 0, behavior: 'auto' });
+    });
+    return () => window.cancelAnimationFrame(restoreId);
+  }, [directModerationState.hasDirectState, initialReviewLoading, storedModerationState.scrollY]);
+
+  useEffect(() => {
+    const persistScroll = () => {
+      writeRouteSessionState('moderation', user, {
+        activeTabKey,
+        activeFilter,
+        expandedId,
+        loadedCount: reviewRequests.length,
+        scrollY: window.scrollY,
+      });
+    };
+    window.addEventListener('pagehide', persistScroll);
+    window.addEventListener('beforeunload', persistScroll);
+    return () => {
+      persistScroll();
+      window.removeEventListener('pagehide', persistScroll);
+      window.removeEventListener('beforeunload', persistScroll);
+    };
+  }, [activeFilter, activeTabKey, expandedId, reviewRequests.length, user]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchQuery(String(searchQuery || '').trim());
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
+  const loadReviewPage = useCallback(async ({
+    offset = 0,
+    limit = MODERATION_PAGE_SIZE,
+    replace = false,
+    silent = false,
+  } = {}) => {
+    const sequence = requestSequenceRef.current + 1;
+    requestSequenceRef.current = sequence;
     setError('');
+    if (replace) {
+      if (!silent) setLoading(true);
+    } else {
+      setLoadingMore(true);
+    }
     try {
-      const payload = await listModerationReviewRequests({ tab: activeTabKey, filter: activeFilter });
-      setReviewRequests(normalizeReviewRequests(payload));
+      const payload = await listModerationReviewRequests({
+        tab: activeTabKey,
+        filter: activeFilter,
+        limit,
+        offset,
+        q: activeSearchQuery || undefined,
+      });
+      if (requestSequenceRef.current !== sequence) return;
+      const page = normalizeReviewRequestPage(payload, { limit, offset });
+      setReviewRequests((previous) => (
+        replace ? page.results : appendUniqueModerationItems(previous, page.results)
+      ));
+      setPageInfo({
+        count: page.count,
+        hasMore: page.hasMore,
+        nextOffset: page.nextOffset,
+        limit: page.limit,
+        offset: page.offset,
+      });
     } catch (reviewError) {
-      setReviewRequests([]);
+      if (requestSequenceRef.current !== sequence) return;
+      if (replace) setReviewRequests([]);
       setError(reviewError.message || 'Could not load moderation review requests.');
     } finally {
-      setLoading(false);
+      if (requestSequenceRef.current === sequence) {
+        if (replace) setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [activeFilter, activeTabKey]);
+  }, [activeFilter, activeSearchQuery, activeTabKey]);
+
+  const loadReviewRequests = useCallback(async ({ silent = false } = {}) => {
+    const initialLimit = initialPageLimitRef.current || MODERATION_PAGE_SIZE;
+    initialPageLimitRef.current = MODERATION_PAGE_SIZE;
+    await loadReviewPage({ offset: 0, limit: initialLimit, replace: true, silent });
+  }, [loadReviewPage]);
+
+  const refreshLoadedReviewRequests = useCallback(async ({ silent = false } = {}) => {
+    const limit = Math.max(MODERATION_PAGE_SIZE, reviewRequests.length || 0);
+    await loadReviewPage({ offset: 0, limit, replace: true, silent });
+  }, [loadReviewPage, reviewRequests.length]);
+
+  const handleLoadMore = useCallback(() => {
+    if (loading || loadingMore || !pageInfo.hasMore) return;
+    loadReviewPage({
+      offset: pageInfo.nextOffset ?? reviewRequests.length,
+      limit: MODERATION_PAGE_SIZE,
+      replace: false,
+    });
+  }, [loadReviewPage, loading, loadingMore, pageInfo.hasMore, pageInfo.nextOffset, reviewRequests.length]);
 
   useEffect(() => {
     loadReviewRequests();
   }, [loadReviewRequests]);
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return undefined;
+    const node = loadMoreRef.current;
+    if (!node || !pageInfo.hasMore || loading || loadingMore) return undefined;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        handleLoadMore();
+      }
+    }, { rootMargin: '360px 0px' });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [handleLoadMore, loading, loadingMore, pageInfo.hasMore]);
 
   useEffect(() => {
     if (!filterPanelOpen) return undefined;
@@ -474,17 +744,18 @@ export default function ModerationDashboard({ searchQuery = '' }) {
 
   const handleToggleDetail = async (review) => {
     if (!review?.id) return;
-    const nextExpanded = expandedId === review.id ? null : review.id;
+    const itemKey = moderationItemKey(review);
+    const nextExpanded = expandedId === itemKey ? null : itemKey;
     setExpandedId(nextExpanded);
     setError('');
 
-    if (!nextExpanded || detailsById[review.id]) return;
+    if (!nextExpanded || detailsById[itemKey]) return;
     if (review.source_type !== 'review_request') return;
 
-    setDetailLoadingId(review.id);
+    setDetailLoadingId(itemKey);
     try {
       const detail = await getModerationReviewRequest(review.id);
-      setDetailsById((previous) => ({ ...previous, [review.id]: detail }));
+      setDetailsById((previous) => ({ ...previous, [itemKey]: detail }));
     } catch (detailError) {
       setError(detailError.message || 'Could not load moderation review request.');
     } finally {
@@ -492,21 +763,46 @@ export default function ModerationDashboard({ searchQuery = '' }) {
     }
   };
 
+  useEffect(() => {
+    if (!expandedId || detailsById[expandedId] || detailLoadingId) return;
+    const review = reviewRequests.find((item) => moderationItemKey(item) === expandedId);
+    if (!review || review.source_type !== 'review_request') return;
+    let active = true;
+    setDetailLoadingId(expandedId);
+    getModerationReviewRequest(review.id)
+      .then((detail) => {
+        if (!active) return;
+        setDetailsById((previous) => ({ ...previous, [expandedId]: detail }));
+      })
+      .catch((detailError) => {
+        if (!active) return;
+        setError(detailError.message || 'Could not load moderation review request.');
+      })
+      .finally(() => {
+        if (active) setDetailLoadingId(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [detailLoadingId, detailsById, expandedId, reviewRequests]);
+
   const mergeReviewPayload = useCallback((payload) => {
     if (!payload?.id) return;
+    const payloadKey = moderationItemKey(payload);
     setReviewRequests((previous) => previous.map((item) => (
-      item.id === payload.id ? { ...item, ...payload } : item
+      moderationItemKey(item) === payloadKey ? { ...item, ...payload } : item
     )));
     setDetailsById((previous) => ({
       ...previous,
-      [payload.id]: { ...(previous[payload.id] || {}), ...payload },
+      [payloadKey]: { ...(previous[payloadKey] || {}), ...payload },
     }));
-    setResponsesById((previous) => ({ ...previous, [payload.id]: String(payload.admin_response || '') }));
+    setResponsesById((previous) => ({ ...previous, [payloadKey]: String(payload.admin_response || '') }));
   }, []);
 
   const handleDecision = async (review, decision, detail = null) => {
     if (!review?.project_id) return;
-    const key = `${decision}-${review.id}`;
+    const itemKey = moderationItemKey(review);
+    const key = `${decision}-${itemKey}`;
     setActionBusy(key);
     setError('');
     setNotice('');
@@ -528,7 +824,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
         setNotice('Lesson blocked.');
       }
       setPendingDecision(null);
-      await loadReviewRequests();
+      await refreshLoadedReviewRequests({ silent: true });
     } catch (decisionError) {
       setError(decisionError.message || 'Could not update moderation review request.');
     } finally {
@@ -554,7 +850,8 @@ export default function ModerationDashboard({ searchQuery = '' }) {
       setError('A message is required when requesting changes.');
       return;
     }
-    const key = `request_changes-${review.id}`;
+    const itemKey = moderationItemKey(review);
+    const key = `request_changes-${itemKey}`;
     setActionBusy(key);
     setError('');
     setNotice('');
@@ -565,7 +862,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
       });
       setRequestChangesDialog(null);
       setNotice(payload?.message || 'Moderation action saved.');
-      await loadReviewRequests();
+      await refreshLoadedReviewRequests({ silent: true });
     } catch (actionError) {
       setError(actionError.message || 'Could not update moderation state.');
     } finally {
@@ -576,14 +873,14 @@ export default function ModerationDashboard({ searchQuery = '' }) {
   const handleDismissReport = async (review) => {
     const reportId = review?.report_id || String(review?.id || '').replace(/^report-/, '');
     if (!reportId) return;
-    const key = `dismiss-${review.id}`;
+    const key = `dismiss-${moderationItemKey(review)}`;
     setActionBusy(key);
     setError('');
     setNotice('');
     try {
       await runModerationReportAction(reportId, 'dismiss');
       setNotice('Report dismissed.');
-      await loadReviewRequests();
+      await refreshLoadedReviewRequests({ silent: true });
     } catch (actionError) {
       setError(actionError.message || 'Could not dismiss report.');
     } finally {
@@ -593,7 +890,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
 
   const handleRescan = async (review, detail = null) => {
     if (!review?.project_id) return;
-    const key = `rescan-${review.id}`;
+    const key = `rescan-${moderationItemKey(review)}`;
     setActionBusy(key);
     setError('');
     setNotice('');
@@ -601,7 +898,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
       const response = draftAdminResponse(responsesById, review, detail);
       await runAdminProjectModerationAction(review.project_id, 'rescan', response, 'manual_admin_rescan');
       setNotice('Moderation rescan started.');
-      await loadReviewRequests();
+      await refreshLoadedReviewRequests({ silent: true });
     } catch (actionError) {
       setError(actionError.message || 'Could not start moderation rescan.');
     } finally {
@@ -667,11 +964,11 @@ export default function ModerationDashboard({ searchQuery = '' }) {
             </h2>
           </div>
           <span className="rounded-full bg-[color:var(--surface-muted)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-            {filteredReviewRequests.length} {activeTab.countLabel}
+            {showingCount} of {totalCount} {activeTab.countLabel}
           </span>
         </div>
 
-        <div className="flex flex-wrap gap-2">
+        <div data-testid="moderation-filter-row" className="flex flex-wrap items-center gap-2">
           {REVIEW_TABS.map((tab) => (
             <button
               key={tab.key}
@@ -694,59 +991,89 @@ export default function ModerationDashboard({ searchQuery = '' }) {
               {tab.label}
             </button>
           ))}
+
+          <div className="relative flex w-full sm:ml-auto sm:w-auto" ref={filterPanelRef}>
+            <button
+              type="button"
+              onClick={() => setFilterPanelOpen((open) => !open)}
+              className={`focus-ring inline-flex w-full items-center justify-center gap-2 rounded-full px-3 py-2 text-sm font-semibold transition sm:w-auto ${
+                activeFilterCount
+                  ? 'bg-[var(--accent-primary)] text-[var(--accent-inverse)] shadow-sm'
+                  : 'bg-[color:var(--surface-muted)] text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)]'
+              }`}
+              aria-expanded={filterPanelOpen}
+              aria-label={`Filter moderation queue: ${activeFilterCount ? activeFilterLabel : 'All'}`}
+              title={`Filter moderation queue: ${activeFilterCount ? activeFilterLabel : 'All'}`}
+            >
+              <Filter size={15} />
+              <span>{activeFilterCount ? activeFilterLabel : 'Filters'}</span>
+              {activeFilterCount > 0 && (
+                <span className="rounded-full bg-[color:rgba(255,255,255,0.22)] px-2 py-0.5 text-[0.68rem] font-bold text-current">
+                  {activeFilterCount}
+                </span>
+              )}
+              <ChevronDown size={14} className={filterPanelOpen ? 'rotate-180 transition' : 'transition'} />
+            </button>
+
+            {filterPanelOpen && (
+              <div className="absolute left-0 right-0 top-full z-20 mt-2 w-full rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 shadow-xl sm:left-auto sm:right-0 sm:w-[min(64rem,calc(100vw-2rem))] sm:max-w-[calc(100vw-2rem)]">
+                <div className="flex flex-wrap gap-2">
+                  {activeFilters.map((filter) => (
+                    <button
+                      key={filter.key}
+                      type="button"
+                      onClick={() => {
+                        setActiveFilter(filter.key);
+                        setExpandedId(null);
+                        setNotice('');
+                        setPendingDecision(null);
+                        setFilterPanelOpen(false);
+                      }}
+                      className={`focus-ring min-w-0 rounded-full px-3 py-2 text-left text-xs font-semibold transition ${
+                        activeFilter === filter.key
+                          ? 'bg-[color:var(--surface-container-highest)] text-[var(--text-primary)] ring-1 ring-[var(--accent-primary)]'
+                          : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface-strong)]'
+                      }`}
+                    >
+                      {filter.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
-        <div className="relative" ref={filterPanelRef}>
-          <button
-            type="button"
-            onClick={() => setFilterPanelOpen((open) => !open)}
-            className={`focus-ring inline-flex w-full items-center justify-center gap-2 rounded-full px-3 py-2 text-sm font-semibold transition sm:w-auto ${
-              activeFilterCount
-                ? 'bg-[var(--accent-primary)] text-[var(--accent-inverse)] shadow-sm'
-                : 'bg-[color:var(--surface-muted)] text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)]'
-            }`}
-            aria-expanded={filterPanelOpen}
-          >
-            <Filter size={15} />
-            <span>{activeFilterCount ? activeFilterLabel : 'Filters'}</span>
-            {activeFilterCount > 0 && (
-              <span className="rounded-full bg-[color:rgba(255,255,255,0.22)] px-2 py-0.5 text-[0.68rem] font-bold text-current">
-                {activeFilterCount}
+        {(activeSearchQuery || (!activeFilterCount && !activeSearchQuery)) && (
+          <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--text-secondary)]">
+            {activeSearchQuery && (
+              <span className="max-w-full rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">
+                Search: {activeSearchQuery}
               </span>
             )}
-            <ChevronDown size={14} className={filterPanelOpen ? 'rotate-180 transition' : 'transition'} />
-          </button>
+            {!activeFilterCount && !activeSearchQuery && (
+              <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">
+                No active search or filters
+              </span>
+            )}
+          </div>
+        )}
 
-          {filterPanelOpen && (
-            <div className="absolute left-0 z-20 mt-2 w-[min(64rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 shadow-xl">
-              <div className="flex flex-wrap gap-2">
-                {activeFilters.map((filter) => (
-                  <button
-                    key={filter.key}
-                    type="button"
-                    onClick={() => {
-                      setActiveFilter(filter.key);
-                      setExpandedId(null);
-                      setNotice('');
-                      setPendingDecision(null);
-                      setFilterPanelOpen(false);
-                    }}
-                    className={`focus-ring min-w-0 rounded-full px-3 py-2 text-left text-xs font-semibold transition ${
-                      activeFilter === filter.key
-                        ? 'bg-[color:var(--surface-container-highest)] text-[var(--text-primary)] ring-1 ring-[var(--accent-primary)]'
-                        : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface-strong)]'
-                    }`}
-                  >
-                    {filter.label}
-                  </button>
-                ))}
+        {initialReviewLoading ? (
+          <div className="space-y-3" aria-label="Loading review requests">
+            {Array.from({ length: 3 }, (_, index) => (
+              <div key={`moderation-loading-${index}`} className="rounded-2xl token-surface p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1 space-y-3">
+                    <div className="visus-loading-sheen h-4 w-2/3 rounded-full bg-[color:var(--surface-container-high)]" />
+                    <div className="visus-loading-sheen h-3 w-full rounded-full bg-[color:var(--surface-container-high)]" />
+                    <div className="visus-loading-sheen h-3 w-4/5 rounded-full bg-[color:var(--surface-container-high)]" />
+                  </div>
+                  <div className="visus-loading-sheen h-8 w-24 shrink-0 rounded-full bg-[color:var(--surface-container-high)]" />
+                </div>
               </div>
-            </div>
-          )}
-        </div>
-
-        {loading ? (
-          <p className="text-sm text-[var(--text-secondary)]">Loading review requests...</p>
+            ))}
+          </div>
         ) : reviewRequests.length === 0 ? (
           <div className="rounded-2xl token-surface p-4">
             <div className="flex items-center gap-3">
@@ -763,16 +1090,17 @@ export default function ModerationDashboard({ searchQuery = '' }) {
           </div>
         ) : (
           <div className="space-y-3">
-            {filteredReviewRequests.map((review) => {
-              const detail = detailsById[review.id] || null;
-              const expanded = expandedId === review.id;
+            {reviewRequests.map((review) => {
+              const itemKey = moderationItemKey(review);
+              const detail = detailsById[itemKey] || null;
+              const expanded = expandedId === itemKey;
               const response = draftAdminResponse(responsesById, review, detail);
               const savedResponse = savedAdminResponse(review, detail);
               const responseChanged = response !== savedResponse;
-              const approveBusy = actionBusy === `approve-${review.id}`;
-              const rejectBusy = actionBusy === `reject-${review.id}`;
-              const requestChangesBusy = actionBusy === `request_changes-${review.id}`;
-              const rescanBusy = actionBusy === `rescan-${review.id}`;
+              const approveBusy = actionBusy === `approve-${itemKey}`;
+              const rejectBusy = actionBusy === `reject-${itemKey}`;
+              const requestChangesBusy = actionBusy === `request_changes-${itemKey}`;
+              const rescanBusy = actionBusy === `rescan-${itemKey}`;
               const canReview = reviewAllowed(review, 'approve') || reviewAllowed(review, 'reject_block') || reviewAllowed(review, 'request_changes');
               const rescanRelevant = reviewAllowed(review, 'rescan');
               const canDismissReport = reviewAllowed(review, 'dismiss_report');
@@ -789,9 +1117,15 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                 : isTextIssue(primaryIssue)
                   ? 'Review the transcript text and request a rewrite if needed.'
                   : 'Review the attached moderation details before deciding.';
+              const reviewReturnPath = moderationReturnPath(location, {
+                tab: activeTabKey,
+                filter: activeFilter,
+                itemKey,
+              });
+              const reviewStudioUrl = studioReviewUrl(review, reviewReturnPath);
 
               return (
-                <article key={review.id} className="rounded-2xl token-surface p-4">
+                <article key={itemKey} className="rounded-2xl token-surface p-4">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
@@ -866,13 +1200,13 @@ export default function ModerationDashboard({ searchQuery = '' }) {
 
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Link
-                      to={`/studio?view=editor&lesson=${review.project_id}&review=1`}
+                      to={reviewStudioUrl}
                       className="focus-ring inline-flex h-9 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-3 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
                     >
                       <ExternalLink size={14} />
                       <span>Open in read-only Studio</span>
                     </Link>
-                    <Button size="sm" variant="secondary" onClick={() => handleToggleDetail(review)} disabled={detailLoadingId === review.id}>
+                    <Button size="sm" variant="secondary" onClick={() => handleToggleDetail(review)} disabled={detailLoadingId === itemKey}>
                       <ChevronDown size={14} className={expanded ? 'rotate-180 transition' : 'transition'} />
                       <span>{expanded ? 'Hide details' : 'View details'}</span>
                     </Button>
@@ -880,7 +1214,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
 
                   {expanded && (
                     <div className="mt-4 space-y-3 rounded-xl border border-[var(--border-subtle)] p-3">
-                      {detailLoadingId === review.id ? (
+                      {detailLoadingId === itemKey ? (
                         <p className="text-sm text-[var(--text-secondary)]">Loading request details...</p>
                       ) : (
                         <>
@@ -945,7 +1279,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                           value={response}
                           onChange={(event) => setResponsesById((previous) => ({
                             ...previous,
-                            [review.id]: event.target.value,
+                            [itemKey]: event.target.value,
                           }))}
                           maxLength={4000}
                           placeholder="Add a short response for the publisher..."
@@ -976,7 +1310,7 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                               disabled={Boolean(actionBusy)}
                             >
                               <XCircle size={14} />
-                              <span>{actionBusy === `dismiss-${review.id}` ? 'Dismissing...' : 'Dismiss report'}</span>
+                              <span>{actionBusy === `dismiss-${itemKey}` ? 'Dismissing...' : 'Dismiss report'}</span>
                             </Button>
                           )}
                           <Button
@@ -1023,6 +1357,23 @@ export default function ModerationDashboard({ searchQuery = '' }) {
                 </article>
               );
             })}
+            <div ref={loadMoreRef} className="h-1" aria-hidden="true" />
+            {pageInfo.hasMore && (
+              <div className="flex justify-center pt-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={handleLoadMore}
+                  disabled={loadingMore || loading}
+                >
+                  <ChevronDown size={14} />
+                  <span>{loadingMore ? 'Loading...' : 'Load more'}</span>
+                </Button>
+              </div>
+            )}
+            {loadingMore && !pageInfo.hasMore && (
+              <p className="text-center text-sm text-[var(--text-secondary)]">Loading more review requests...</p>
+            )}
           </div>
         )}
       </SurfaceCard>
@@ -1044,7 +1395,11 @@ export default function ModerationDashboard({ searchQuery = '' }) {
               <Button
                 size="sm"
                 variant={pendingDecision.decision === 'reject' ? 'secondary' : 'primary'}
-                onClick={() => handleDecision(pendingDecision.review, pendingDecision.decision, detailsById[pendingDecision.review.id] || null)}
+                onClick={() => handleDecision(
+                  pendingDecision.review,
+                  pendingDecision.decision,
+                  detailsById[moderationItemKey(pendingDecision.review)] || null,
+                )}
                 disabled={Boolean(actionBusy)}
               >
                 {pendingDecision.decision === 'approve'
