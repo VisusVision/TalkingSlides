@@ -634,6 +634,21 @@ def test_avatar_overlay_queue_writes_manifest_and_sends_path_only(tmp_path, monk
     monkeypatch.setattr(core_models, "Project", SimpleNamespace(objects=FakeProjectObjects()))
     monkeypatch.setattr(worker_tasks.render_lesson_avatar_overlay, "apply_async", fake_apply_async)
 
+    sidecar_path = tmp_path / "129" / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "mp4_rel_path": "129/129.mp4",
+                "avatar": None,
+                "avatar_status": "none",
+                "avatar_slide_metadata": [{"index": 0, "avatar_status": "none"}],
+                "final_segments": [{"index": 0, "avatar_status": "none"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
     ordered_results = [{"index": 0, "slide_num": 1, "tts_audio_path": "129/audio/slide_001.mp3"}]
     result = worker_tasks._queue_lesson_avatar_overlay_after_base_render(
         project_id="129",
@@ -663,6 +678,13 @@ def test_avatar_overlay_queue_writes_manifest_and_sends_path_only(tmp_path, monk
     assert manifest["ordered_results"] == ordered_results
     assert manifest["avatar_settings"]["lipsync_engine"] == "liveportrait+musetalk"
     assert state_updates[-1]["status"] == "queued"
+    sidecar_payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert sidecar_payload["avatar"] is None
+    assert sidecar_payload["avatar_status"] == "queued"
+    assert sidecar_payload["avatar_processing_status"] == "queued"
+    assert sidecar_payload["avatar_job_id"] == "77"
+    assert sidecar_payload["avatar_slide_metadata"][0]["avatar_status"] == "queued"
+    assert sidecar_payload["final_segments"][0]["avatar_status"] == "queued"
 
 
 def test_render_lesson_avatar_overlay_reads_handoff_manifest_path(tmp_path, monkeypatch):

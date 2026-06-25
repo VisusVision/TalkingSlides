@@ -47,6 +47,8 @@ Head-motion tuning remains an area for polish. The goal is professional teaching
 
 MuseTalk provides lip sync against generated lesson audio. The worker can route MuseTalk through a persistent service first, with standalone fallback intentionally disabled by default in the template.
 
+Before starting `worker-avatar`, provision and validate the local MuseTalk model bundle with [AVATAR_MODEL_PROVISIONING.md](AVATAR_MODEL_PROVISIONING.md). The repository does not ship model weights, and a normal `worker-avatar` start can consume pending jobs from the real `avatar` queue.
+
 ## Restoration
 
 Restoration is optional and should remain switchable. Preview defaults can skip restoration for speed. Final renders can enable restoration where GPU budget and quality targets justify it. Restoration failure should not block the base lesson.
@@ -81,5 +83,6 @@ Overlay controls are expected to let users show/hide, move, and size the avatar 
 
 - [PRODUCTION_DEPLOYMENT.md](PRODUCTION_DEPLOYMENT.md)
 - [ENVIRONMENT_VARIABLES.md](ENVIRONMENT_VARIABLES.md)
+- [AVATAR_MODEL_PROVISIONING.md](AVATAR_MODEL_PROVISIONING.md)
 - [avatar-production-roadmap.md](avatar-production-roadmap.md)
 - [TRADEOFFS_PLUS_MINUS.md](TRADEOFFS_PLUS_MINUS.md)

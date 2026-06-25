@@ -23,10 +23,17 @@ from django.core.management import call_command  # noqa: E402
 from django.db.models import Avg  # noqa: E402
 
 from ai_agents.models import AdminReviewRequest  # noqa: E402
+from core.management.commands import seed_demo_data  # noqa: E402
 from core.models import LessonComment, LessonLike, LessonProgress, Project, TranscriptPage  # noqa: E402
 
 
 pytestmark = pytest.mark.django_db
+FAKE_MP4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2demo-video"
+
+
+@pytest.fixture(autouse=True)
+def _stub_demo_video_generation(monkeypatch):
+    monkeypatch.setattr(seed_demo_data, "_generate_demo_video_bytes", lambda _duration: FAKE_MP4)
 
 
 def _seed(*args: str) -> str:

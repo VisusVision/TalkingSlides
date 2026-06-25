@@ -193,6 +193,32 @@ describe('resolvePlayerMode', () => {
     expect(mode.fallbackAllowed).toBe(true);
   });
 
+  it('uses authorized MP4 fallback for secure stream when HLS is missing and token fallback is allowed', () => {
+    const mode = resolvePlayerMode({
+      protection_mode: 'secure_stream',
+      video_url: '/api/v1/stream/mp4-token/',
+      allow_mp4_fallback: true,
+      streaming: {
+        preferred: 'mp4',
+        fallback: {
+          type: 'mp4',
+          url: '/api/v1/stream/mp4-token/',
+        },
+        hls: {
+          enabled: false,
+          manifest_url: '',
+        },
+      },
+    }, {
+      hlsJsSupported: true,
+    });
+
+    expect(mode.mode).toBe(PLAYER_MODES.PUBLIC_MP4);
+    expect(mode.reason).toBe('secure_hls_missing_mp4_fallback');
+    expect(mode.fallbackUrl).toBe('/api/v1/stream/mp4-token/');
+    expect(mode.fallbackAllowed).toBe(true);
+  });
+
   it('keeps secure stream unavailable when HLS is unavailable and fallback is not allowed', () => {
     const mode = resolvePlayerMode({
       protection_mode: 'secure_stream',

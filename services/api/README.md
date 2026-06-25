@@ -89,9 +89,21 @@ docker compose -f infra/docker-compose.yml up --build
 # run migrations inside the running container
 docker compose -f infra/docker-compose.yml exec api python manage.py migrate
 
+# explicitly seed local demo accounts and lessons
+docker compose -f infra/docker-compose.yml exec api python manage.py seed_demo_data
+
 # create superuser
 docker compose -f infra/docker-compose.yml exec api python manage.py createsuperuser
 ```
+
+The demo seed is not part of API startup and is never created implicitly. After running it, the documented local teacher login is:
+
+```text
+Username: demo.tech.teacher@example.com
+Password: visus-demo-local
+```
+
+Set `VISUS_DEMO_PASSWORD` on the API container to override the local password.
 
 ### Protection mode config reload behavior
 

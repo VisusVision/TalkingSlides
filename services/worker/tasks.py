@@ -1553,6 +1553,55 @@ def _read_playback_sidecar(project_id: str | int) -> dict[str, Any]:
     return _read_json_sidecar(project_id, "playback_assets.json")
 
 
+def _mark_playback_sidecar_avatar_queued(
+    project_id: str | int,
+    *,
+    avatar_job_id: int | str | None,
+    avatar_cfg: dict[str, Any] | None = None,
+) -> None:
+    sidecar = _read_playback_sidecar(project_id)
+    if not sidecar:
+        return
+
+    cfg = dict(avatar_cfg or {})
+    engine_selected = str(
+        cfg.get("avatar_engine_selected")
+        or cfg.get("normalized_engine")
+        or cfg.get("lipsync_engine")
+        or "liveportrait+musetalk"
+    )
+    sidecar["avatar"] = None
+    sidecar["avatar_status"] = "queued"
+    sidecar["avatar_processing_status"] = "queued"
+    sidecar["avatar_processing_message"] = "Avatar is still processing and will be added when ready."
+    sidecar["avatar_job_id"] = str(avatar_job_id or "")
+    sidecar["avatar_engine_selected"] = engine_selected
+    sidecar["normalized_engine"] = engine_selected
+    sidecar["avatar_runtime_settings"] = dict(cfg.get("avatar_runtime_settings") or {})
+    sidecar["avatar_failures"] = []
+
+    avatar_slide_metadata = sidecar.get("avatar_slide_metadata")
+    if isinstance(avatar_slide_metadata, list):
+        for item in avatar_slide_metadata:
+            if not isinstance(item, dict):
+                continue
+            item["avatar_status"] = "queued"
+            item["avatar_error"] = ""
+            item["avatar_failed"] = False
+
+    final_segments = sidecar.get("final_segments")
+    if isinstance(final_segments, list):
+        for item in final_segments:
+            if not isinstance(item, dict):
+                continue
+            item["avatar_status"] = "queued"
+            item["avatar_error"] = ""
+            item["avatar_failure_reason"] = ""
+            item["avatar_failed"] = False
+
+    _write_playback_sidecar(project_id, sidecar)
+
+
 def _detect_language_from_slides(slides: list[dict[str, Any]], *, lang_hint: str = "auto") -> dict[str, Any]:
     supported_languages = ["en", "tr"]
     hint = str(lang_hint or "auto").strip().lower()
@@ -2367,6 +2416,12 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
             payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
             if payload_source_background:
                 scene["source_background_path"] = payload_source_background
+        moderation_image_path = str(
+            slide_payload.get("moderation_image_path")
+            or slide_payload.get("image_path")
+            or slide_payload.get("slide_path")
+            or ""
+        )
         render_image_path = _scene_background_image_for_render(scene, slide_payload.get("image_path") or slide_payload.get("slide_path") or "")
         source_background_warnings = _scene_render_warning_list(slide_payload, scene)
         scene_mode, source_background_warnings, effective_whiteboard_mode = _normalize_scene_mode_for_render(
@@ -2413,6 +2468,7 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
                     scene.get("text_scale"),
                     fallback=1.0,
                 ),
+                "moderation_image_path": moderation_image_path,
                 "image_path": render_image_path,
                 "audio_out": str(ws["audio"] / f"slide_{display_index + 1:03d}.mp3"),
                 "part_out": str(ws["parts"] / f"part_{display_index + 1:03d}.mp4"),
@@ -2489,6 +2545,12 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
             payload_source_background = _scene_storage_rel_path(slide_payload.get("source_background_path"))
             if payload_source_background:
                 scene["source_background_path"] = payload_source_background
+        moderation_image_path = str(
+            slide_payload.get("moderation_image_path")
+            or slide_payload.get("image_path")
+            or slide_payload.get("slide_path")
+            or ""
+        )
         render_image_path = _scene_background_image_for_render(
             scene,
             slide_payload.get("image_path") or slide_payload.get("slide_path") or "",
@@ -2535,6 +2597,7 @@ def _build_render_slides_from_draft(project_id: str | int, exported_slides: list
                 "custom_background_path": scene.get("custom_background_path") or "",
                 "scene_background_fit": _scene_fit_from_value(scene.get("background_fit")),
                 "scene_text_scale": _scene_text_scale_from_value(scene.get("text_scale"), fallback=1.0),
+                "moderation_image_path": moderation_image_path,
                 "image_path": render_image_path,
                 "audio_out": str(ws["audio"] / f"slide_{display_index + 1:03d}.mp3"),
                 "part_out": str(ws["parts"] / f"part_{display_index + 1:03d}.mp4"),
@@ -2948,9 +3011,9 @@ def _run_auto_visual_asset_moderation_after_export(
             "status": "failed",
             "project_id": int(project_id),
             "phase": _visual_moderation_phase(),
-            "final_decision": "allow",
+            "final_decision": "needs_admin_review",
             "error_message": _concise_error_text(exc, fallback="auto_visual_moderation_import_failed"),
-            "block_render": False,
+            "block_render": _visual_moderation_block_render_on_rejection(),
         }
 
     project = Project.objects.filter(pk=int(project_id)).first()
@@ -2995,6 +3058,26 @@ def _run_auto_visual_asset_moderation_after_export(
 
         if scan_slides_enabled:
             for asset in _visual_slide_assets_from_export(export_result or []):
+                missing_reason = _missing_visual_asset_reason(asset["image_path"])
+                if missing_reason:
+                    results.append(
+                        _visual_provider_unavailable_result(
+                            project_id=int(project.id),
+                            asset_type=asset["asset_type"],
+                            reason=missing_reason,
+                            modality="image",
+                            location_payload={
+                                "project_id": int(project.id),
+                                "transcript_page_id": asset.get("transcript_page_id"),
+                                "page_key": asset["page_key"] or None,
+                                "slide_order": asset["slide_order"],
+                                "asset_type": asset["asset_type"],
+                                "image_path": asset["image_path"],
+                                "ui_anchor": asset["ui_anchor"],
+                            },
+                        )
+                    )
+                    continue
                 slide_result = agent.scan_slide_image(
                     project_id=int(project.id),
                     image_path=asset["image_path"],
@@ -3073,9 +3156,9 @@ def _run_auto_visual_asset_moderation_after_export(
             "status": "failed",
             "project_id": int(project.id),
             "phase": phase,
-            "final_decision": "allow",
+            "final_decision": "needs_admin_review",
             "error_message": _concise_error_text(exc, fallback="auto_visual_moderation_failed"),
-            "block_render": False,
+            "block_render": _visual_moderation_block_render_on_rejection(),
         }
 
 
@@ -3085,7 +3168,19 @@ def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[
     for order, slide in enumerate(slides or []):
         if not isinstance(slide, dict):
             continue
-        image_path = _visual_asset_path(slide.get("image_path") or slide.get("slide_path") or "")
+        if (
+            str(slide.get("scene_background_mode") or "").strip().lower() == "whiteboard"
+            and _source_type_from_value(slide.get("source_type")) != "txt"
+            and not str(slide.get("image_path") or "").strip()
+            and not str(slide.get("slide_path") or "").strip()
+        ):
+            continue
+        image_path = _visual_asset_path(
+            slide.get("moderation_image_path")
+            or slide.get("image_path")
+            or slide.get("slide_path")
+            or ""
+        )
         if not image_path:
             continue
         if image_path in seen_paths:
@@ -3129,6 +3224,14 @@ def _visual_asset_path(value: Any) -> str:
     if storage_path.is_file():
         return str(storage_path)
     return raw
+
+
+def _missing_visual_asset_reason(image_path: str) -> str:
+    if not str(image_path or "").strip():
+        return "missing_image_path"
+    if not Path(image_path).is_file():
+        return "missing_image_file"
+    return ""
 
 
 def _visual_storage_root() -> str:
@@ -3255,24 +3358,39 @@ def _persist_auto_visual_moderation_results(
             "run_id": run.id,
             "phase": phase,
         }
-        update_fields = ["moderation_summary", "updated_at"]
-        should_update_project_status = (
+        update_fields = ["moderation_summary", "last_moderation_run_id", "updated_at"]
+        project.last_moderation_run_id = run.id
+        manual_override_active = manual_moderation_prevents_auto_override(project)
+        current_status = str(project.moderation_status or "").strip().lower()
+        should_apply_approval = (
+            not use_draft
+            and final_decision in {"allow", "warn"}
+            and current_status in {"", "not_scanned", "pending", "failed", "approved"}
+            and not manual_override_active
+        )
+        should_apply_rejection = (
             not use_draft
             and final_decision in {"block", "needs_admin_review"}
-            and not manual_moderation_prevents_auto_override(project)
+            and not manual_override_active
         )
+        should_update_project_status = should_apply_approval or should_apply_rejection
         if should_update_project_status:
-            if final_decision == "block":
+            if should_apply_approval:
+                project.moderation_status = "approved"
+            elif final_decision == "block":
                 project.moderation_status = "revision_required"
             elif str(project.moderation_status or "") not in {"revision_required", "admin_rejected"}:
                 project.moderation_status = "needs_admin_review"
             existing_summary["moderation_status"] = project.moderation_status
-            if final_decision == "block":
+            if should_apply_approval:
+                existing_summary["message"] = "Visual moderation approved this lesson for publication."
+            elif final_decision == "block":
                 existing_summary["message"] = "Visual moderation blocked this lesson pending revision."
             else:
                 existing_summary["message"] = "Visual moderation requires admin review before publication."
             update_fields.append("moderation_status")
-            _enforce_project_unpublished_for_moderation(project, update_fields)
+            if should_apply_rejection:
+                _enforce_project_unpublished_for_moderation(project, update_fields)
         elif (
             not use_draft
             and final_decision == "allow"
@@ -3301,7 +3419,7 @@ def _persist_auto_visual_moderation_results(
                 _close_stale_visual_review_requests(project)
         project.moderation_summary = existing_summary
         project.save(update_fields=[*dict.fromkeys(update_fields)])
-        if should_update_project_status:
+        if should_apply_rejection:
             _ensure_auto_project_review_request(
                 project,
                 run,
@@ -5958,6 +6076,11 @@ def _queue_lesson_avatar_overlay_after_base_render(
             message="Avatar is still processing and will be added when ready.",
             job_id=job.id,
             clear_output=True,
+        )
+        _mark_playback_sidecar_avatar_queued(
+            project_id,
+            avatar_job_id=job.id,
+            avatar_cfg=avatar_cfg,
         )
         async_result = render_lesson_avatar_overlay.apply_async(
             kwargs={

@@ -41,6 +41,7 @@ function projectPayload(overrides = {}) {
     teacher: AUTH_USER,
     user: AUTH_USER,
     category_name: 'Release QA',
+    duration_seconds: 161,
     duration_minutes: 3,
     moderation_status: 'approved',
     manual_moderation_status: '',
@@ -94,6 +95,7 @@ const SUBTITLE_BUNDLE = {
 
 async function mockAuthenticatedReleaseGateApi(page) {
   let created = false;
+  let transcriptRequestCount = 0;
 
   await mockCommonAppChromeApi(page, {
     user: AUTH_USER,
@@ -138,11 +140,13 @@ async function mockAuthenticatedReleaseGateApi(page) {
     }));
   });
   await page.route(`**/api/v1/projects/${CREATED_PROJECT_ID}/transcript/**`, (route) => {
+    transcriptRequestCount += 1;
     route.fulfill(jsonResponse(TRANSCRIPT_PAYLOAD));
   });
   await page.route(`**/api/v1/projects/${CREATED_PROJECT_ID}/studio-preview-token/**`, (route) => {
     route.fulfill(jsonResponse({
       video_url: '',
+      duration_seconds: 161,
       vtt_url: '/media/subtitles/release-gate-original.vtt',
       subtitle_vtt_url: '/media/subtitles/release-gate-original.vtt',
     }));
@@ -164,7 +168,9 @@ async function mockAuthenticatedReleaseGateApi(page) {
     route.fulfill(jsonResponse([projectPayload()]));
   });
   await page.route(`**/api/v1/catalog/${CREATED_PROJECT_ID}/`, (route) => {
-    route.fulfill(jsonResponse(projectPayload()));
+    route.fulfill(jsonResponse(projectPayload({
+      transcript_pages: TRANSCRIPT_PAYLOAD.pages,
+    })));
   });
   await page.route(`**/api/v1/catalog/${CREATED_PROJECT_ID}/comments/**`, (route) => {
     route.fulfill(jsonResponse([]));
@@ -172,22 +178,29 @@ async function mockAuthenticatedReleaseGateApi(page) {
   await page.route(`**/api/v1/catalog/${CREATED_PROJECT_ID}/playlist-context/**`, (route) => {
     route.fulfill(jsonResponse({ mode: 'publisher', items: [] }));
   });
+
+  return {
+    getTranscriptRequestCount: () => transcriptRequestCount,
+    resetTranscriptRequestCount: () => {
+      transcriptRequestCount = 0;
+    },
+  };
 }
 
 async function setupAuthenticatedSession(page) {
   const expectNoBrowserErrors = collectBrowserErrors(page);
 
-  await mockAuthenticatedReleaseGateApi(page);
+  const requestCounts = await mockAuthenticatedReleaseGateApi(page);
   await seedAuthenticatedSession(page, {
     token: 'release-gate-token',
     user: AUTH_USER,
   });
 
-  return expectNoBrowserErrors;
+  return { expectNoBrowserErrors, requestCounts };
 }
 
 test('authenticated Studio to Watch release gate surfaces core flow', async ({ page }) => {
-  const expectNoBrowserErrors = await setupAuthenticatedSession(page);
+  const { expectNoBrowserErrors, requestCounts } = await setupAuthenticatedSession(page);
 
   await page.goto('/studio');
 
@@ -211,6 +224,8 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByText('Moderation: Approved').first()).toBeVisible();
   await expect(page.getByText('Release Gate Lesson').first()).toBeVisible();
 
+  await page.waitForLoadState('networkidle');
+  expect(requestCounts.getTranscriptRequestCount()).toBeGreaterThan(0);
   await page.goto(`/watch?lesson=${CREATED_PROJECT_ID}`);
 
   await expect(page.getByRole('heading', { name: 'Study With Focused Context' })).toBeVisible();
@@ -222,5 +237,17 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.locator('#watch-subtitle-track')).toContainText('Original');
   await expect(page.getByText('Welcome to the release gate lesson.').first()).toBeVisible();
 
+  expectNoBrowserErrors();
+});
+
+test('public Watch uses catalog transcript without the project transcript endpoint', async ({ page }) => {
+  const { expectNoBrowserErrors, requestCounts } = await setupAuthenticatedSession(page);
+  requestCounts.resetTranscriptRequestCount();
+
+  await page.goto(`/watch?lesson=${CREATED_PROJECT_ID}`);
+
+  await expect(page.getByRole('heading', { name: 'Release Gate Lesson' })).toBeVisible();
+  await expect(page.getByText('Welcome to the release gate lesson.').first()).toBeVisible();
+  expect(requestCounts.getTranscriptRequestCount()).toBe(0);
   expectNoBrowserErrors();
 });

@@ -40,7 +40,26 @@ Useful local URLs:
 - Frontend: `http://localhost:3000`
 - MinIO console: `http://localhost:9001`
 
-## 3. Local API Setup
+## 3. Seed the Local Demo Account
+
+Docker startup intentionally runs migrations but does not create users. After the API is running, explicitly seed the reusable local demo accounts and lessons:
+
+```powershell
+docker compose -f infra/docker-compose.yml exec api python manage.py seed_demo_data
+```
+
+Sign in at `http://localhost:3000` with:
+
+```text
+Username: demo.tech.teacher@example.com
+Password: visus-demo-local
+```
+
+The command is idempotent and resets the documented demo account password to the configured local demo password. To replace previously seeded demo records, add `--reset-demo`. To override the password for a local run, set `VISUS_DEMO_PASSWORD` on the API container before running the command.
+
+This command is explicit and local/demo-scoped. API startup does not automatically create demo users, including in production deployments.
+
+## 4. Local API Setup
 
 Use this when developing the Django API outside Docker:
 
@@ -58,7 +77,13 @@ python manage.py runserver 8000
 
 Without `POSTGRES_HOST`, Django uses SQLite at `services/api/db.sqlite3`. With Docker Postgres, keep the database variables from `infra/.env`.
 
-## 4. Local Frontend Setup
+For a locally run API, seed the same demo account from `services/api`:
+
+```powershell
+python manage.py seed_demo_data
+```
+
+## 5. Local Frontend Setup
 
 ```powershell
 cd services/frontend
@@ -68,7 +93,7 @@ npm run dev -- --host 0.0.0.0 --port 3000
 
 The frontend reads `VITE_API_BASE_URL` and defaults to `http://localhost:8000/api/v1`.
 
-## 5. Local TTS Lightweight Mode
+## 6. Local TTS Lightweight Mode
 
 For basic development, skip XTTS model loading and rely on gTTS/silent fallback:
 
@@ -84,7 +109,7 @@ uvicorn main:app --host 0.0.0.0 --port 8001
 
 XTTS, voice cloning, model caches, and GPU acceleration are not required for a lightweight API/frontend startup.
 
-## 6. Local Worker Note
+## 7. Local Worker Note
 
 The worker needs the API code on `PYTHONPATH`, Redis, the TTS service URL, and `STORAGE_ROOT` pointing at repo-root `storage_local/`.
 
@@ -106,5 +131,6 @@ On Linux/macOS/WSL, use `:` instead of `;` in `PYTHONPATH`.
 - Wrong `STORAGE_ROOT`: local runtime media should live in repo-root `storage_local/`; Docker containers should use `/app/storage_local`.
 - Ports already in use: stop the process using `3000`, `8000`, `8001`, `5432`, `6379`, `9000`, or `9001`, or change the Compose port mapping for local testing.
 - Migrations not run: run `python services/api/manage.py migrate` locally or `docker compose -f infra/docker-compose.yml exec api python manage.py migrate`.
+- Demo login returns `401`: run `docker compose -f infra/docker-compose.yml exec api python manage.py seed_demo_data`, then use `demo.tech.teacher@example.com` / `visus-demo-local`.
 - Frontend dependencies missing: run `cd services/frontend && npm install`.
 - GPU/avatar runtime unavailable: MuseTalk/LivePortrait/avatar preview is optional and heavy. Basic API, frontend, storage, and lightweight TTS startup do not require avatar models or GPU setup.

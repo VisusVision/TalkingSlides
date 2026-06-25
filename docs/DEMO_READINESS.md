@@ -8,6 +8,12 @@ cd services/api
 cd ..\..
 ```
 
+For a running Docker environment, run the seed explicitly after startup:
+
+```powershell
+docker compose -f infra/docker-compose.yml exec api python manage.py seed_demo_data
+```
+
 Useful variants:
 
 ```powershell
@@ -17,7 +23,7 @@ python manage.py seed_demo_data --with-moderation-fixtures --run-moderation
 python manage.py seed_demo_data --with-analytics-activity --run-intelligence
 ```
 
-The command prints the deterministic local password for all demo accounts. You can override it for a local run with `VISUS_DEMO_PASSWORD`.
+The default local password is `visus-demo-local`. The command prints the effective deterministic password for all demo accounts, and you can override it for a local run with `VISUS_DEMO_PASSWORD`. Docker/API startup intentionally does not run this command or create demo users automatically.
 
 ## Demo Accounts
 

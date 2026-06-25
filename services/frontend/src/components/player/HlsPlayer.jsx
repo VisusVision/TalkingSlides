@@ -187,6 +187,9 @@ export default function HlsPlayer({
   const avatarPlacement = avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {};
   const avatarStreamUrl = String(avatarOverlay?.stream_url || '').trim();
   const avatarOverlayEnabled = Boolean(avatarOverlayMode !== 'disabled' && avatarOverlay?.enabled && avatarStreamUrl);
+  const mediaCrossOrigin = lesson?.session_binding_active || lesson?.protection?.session_binding_active
+    ? 'use-credentials'
+    : 'anonymous';
 
   const availableTracks = useMemo(() => {
     const byKey = new Map();
@@ -302,7 +305,12 @@ export default function HlsPlayer({
       return undefined;
     }
 
-    const hls = new Hls({ enableWorker: true });
+    const hls = new Hls({
+      enableWorker: true,
+      xhrSetup: (xhr) => {
+        xhr.withCredentials = mediaCrossOrigin === 'use-credentials';
+      },
+    });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       if (data?.fatal) {
         hls.destroy();
@@ -315,7 +323,7 @@ export default function HlsPlayer({
     return () => {
       hls.destroy();
     };
-  }, [activateFallback, activeVideoRef, sourceUrl, usingFallback]);
+  }, [activateFallback, activeVideoRef, mediaCrossOrigin, sourceUrl, usingFallback]);
 
   const handleVideoError = useCallback(() => {
     if (!usingFallback) {
@@ -399,7 +407,7 @@ export default function HlsPlayer({
               onContextMenu={(event) => event.preventDefault()}
               playsInline
               preload="metadata"
-              crossOrigin="anonymous"
+              crossOrigin={mediaCrossOrigin}
               onLoadedMetadata={handleTrackReady}
               onError={handleVideoError}
               onPlay={handlePlay}

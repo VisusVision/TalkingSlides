@@ -890,7 +890,7 @@ export default function AvatarOverlayLayer({
       muted
       playsInline
       preload="metadata"
-      crossOrigin="anonymous"
+      crossOrigin="use-credentials"
       onLoadedMetadata={syncAvatarPlayback}
     />
   );
