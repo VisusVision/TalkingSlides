@@ -3170,6 +3170,7 @@ def _visual_slide_assets_from_export(slides: list[dict[str, Any]]) -> list[dict[
             continue
         if (
             str(slide.get("scene_background_mode") or "").strip().lower() == "whiteboard"
+            and _source_type_from_value(slide.get("source_type")) != "txt"
             and not str(slide.get("image_path") or "").strip()
             and not str(slide.get("slide_path") or "").strip()
         ):
