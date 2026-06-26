@@ -1962,7 +1962,10 @@ export async function fetchSubtitleTrackBundle(projectId) {
   const headers = authHeaders();
   const res = await fetch(
     `${API_BASE_URL}/projects/${safeProjectId}/subtitle-tracks/`,
-    Object.keys(headers).length ? { headers } : undefined
+    {
+      ...(Object.keys(headers).length ? { headers } : {}),
+      credentials: 'include',
+    }
   );
   if (!res.ok) {
     const payload = await res.json().catch(() => ({}));

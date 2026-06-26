@@ -5081,7 +5081,7 @@ def _subtitle_playback_token_context(request, project: Project, job: Job, sideca
     ttl_seconds = _token_ttl_for_mode(protection_mode)
     grant_id = None
     bind_key = None
-    if not lesson_is_public or protection_mode == "drm_protected":
+    if protection_mode != "public":
         grant_id, _scope_key = _issue_playback_grant(project.id, request, protection_mode, ttl_seconds)
         bind_key = _bind_key_for_request(request) if bool(getattr(settings, "LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION", True)) else None
     return protection_mode, ttl_seconds, grant_id, bind_key
