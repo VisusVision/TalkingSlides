@@ -60,6 +60,45 @@ def test_avatar_profile_patch_accepts_json_payload(monkeypatch):
     assert response.data["action_required"] == response.data["avatar_setup_status"]["action_required"]
 
 
+def test_staff_can_initialize_own_avatar_preferences_without_teacher_role(monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_CMD", "echo liveportrait")
+    monkeypatch.setenv("AVATAR_MUSETALK_CMD", "echo musetalk")
+    monkeypatch.setattr(views, "avatar_enabled", lambda: True)
+    suffix = uuid.uuid4().hex[:8]
+    staff = User.objects.create_user(
+        username=f"staff_avatar_get_{suffix}",
+        password="pass",
+        is_staff=True,
+    )
+
+    factory = APIRequestFactory()
+    request = factory.get(f"/api/v1/users/{staff.id}/avatar/")
+    force_authenticate(request, user=staff)
+
+    response = views.AvatarProfileView.as_view()(request, user_id=staff.id)
+
+    assert response.status_code == 200
+    profile = UserProfile.objects.get(user=staff)
+    assert profile.role == "student"
+    assert response.data["profile"]["role"] == "student"
+    assert response.data["avatar_setup_status"]["state"] == "missing_consent"
+
+
+def test_student_cannot_read_avatar_preferences(monkeypatch):
+    monkeypatch.setattr(views, "avatar_enabled", lambda: True)
+    suffix = uuid.uuid4().hex[:8]
+    student = User.objects.create_user(username=f"student_avatar_get_{suffix}", password="pass")
+    UserProfile.objects.create(user=student, role="student")
+
+    factory = APIRequestFactory()
+    request = factory.get(f"/api/v1/users/{student.id}/avatar/")
+    force_authenticate(request, user=student)
+
+    response = views.AvatarProfileView.as_view()(request, user_id=student.id)
+
+    assert response.status_code == 403
+
+
 def test_avatar_profile_patch_persists_consent_and_returns_setup_status(monkeypatch):
     skip_if_column_missing("core_userprofile", "avatar_consent_confirmed")
 

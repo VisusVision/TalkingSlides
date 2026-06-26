@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   ChevronDown,
+  Mic,
   MonitorPlay,
   MoonStar,
+  Play,
   Save,
   Sparkles,
+  Square,
   Sun,
   Trash2,
   Upload,
@@ -103,6 +106,130 @@ const AVATAR_STATUS_MESSAGES = {
   ready: 'Avatar is prepared and ready for preview generation.',
   failed: 'Avatar preparation failed. Upload a clear portrait or prepare the avatar again.',
 };
+
+const VOICE_RECORDING_SAMPLE_TEXT = 'Merhaba, bu ses ornegini avatar ses profilim icin kaydediyorum. Derslerimde sakin, net ve dogal bir anlatim kullanmak istiyorum.';
+
+function formatRecordingDuration(seconds) {
+  const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const minutes = Math.floor(safeSeconds / 60);
+  const remainingSeconds = safeSeconds % 60;
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
+function preferredVoiceRecordingMimeType() {
+  if (typeof window === 'undefined' || typeof window.MediaRecorder === 'undefined') {
+    return '';
+  }
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/ogg;codecs=opus',
+    'audio/webm',
+    'audio/ogg',
+  ];
+  return candidates.find((candidate) => window.MediaRecorder.isTypeSupported?.(candidate)) || '';
+}
+
+function recordedVoiceFileExtension(mimeType) {
+  return String(mimeType || '').toLowerCase().includes('ogg') ? 'ogg' : 'webm';
+}
+
+async function voiceRecordingDiagnostics(phase, error = null) {
+  let microphonePermission = 'unsupported';
+  try {
+    if (navigator.permissions?.query) {
+      const status = await navigator.permissions.query({ name: 'microphone' });
+      microphonePermission = status?.state || 'unknown';
+    }
+  } catch (permissionError) {
+    microphonePermission = `unavailable: ${permissionError?.name || 'unknown'}`;
+  }
+
+  return {
+    phase,
+    origin: window.location.origin,
+    href: window.location.href,
+    isSecureContext: window.isSecureContext,
+    hasMediaDevices: Boolean(navigator.mediaDevices),
+    hasGetUserMedia: typeof navigator.mediaDevices?.getUserMedia === 'function',
+    mediaRecorderType: typeof window.MediaRecorder,
+    mediaRecorderSupported: typeof window.MediaRecorder === 'function',
+    webmOpusSupported: Boolean(window.MediaRecorder?.isTypeSupported?.('audio/webm;codecs=opus')),
+    oggOpusSupported: Boolean(window.MediaRecorder?.isTypeSupported?.('audio/ogg;codecs=opus')),
+    microphonePermission,
+    errorName: error?.name || '',
+    errorMessage: error?.message || '',
+    errorStack: error?.stack || '',
+  };
+}
+
+function logVoiceRecordingDiagnostics(phase, diagnostics, error = null) {
+  // Keep this intentionally verbose: browser microphone failures are policy- and device-dependent.
+  console.info('voice_recording_diagnostics', diagnostics);
+  if (error) {
+    console.warn('voice_recording_exception', {
+      phase,
+      error,
+      name: error?.name,
+      message: error?.message,
+      diagnostics,
+    });
+  }
+}
+
+function voiceRecordingErrorMessage(error, phase, diagnostics = {}) {
+  const name = String(error?.name || '').trim();
+  if (phase === 'preflight' && diagnostics.isSecureContext === false) {
+    return 'Microphone recording requires a secure context. Use localhost, 127.0.0.1, or HTTPS.';
+  }
+  if (phase === 'preflight' && !diagnostics.hasMediaDevices) {
+    return 'This browser cannot access microphone devices from the current page.';
+  }
+  if (phase === 'preflight' && !diagnostics.hasGetUserMedia) {
+    return 'This browser does not support microphone capture.';
+  }
+  if (phase === 'preflight' && !diagnostics.mediaRecorderSupported) {
+    return 'This browser does not support microphone recording.';
+  }
+
+  if ((name === 'NotAllowedError' || name === 'PermissionDeniedError') && phase === 'getUserMedia') {
+    return 'Microphone permission was denied by the browser or operating system.';
+  }
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+    return 'The browser allowed microphone capture but blocked recording from the captured stream.';
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return 'No microphone was found. Connect or enable a microphone and try again.';
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError') {
+    return 'The microphone is busy or unavailable. Close other apps using it and try again.';
+  }
+  if (name === 'AbortError') {
+    return 'Microphone capture was interrupted before recording could start.';
+  }
+  if (name === 'SecurityError') {
+    return 'The browser blocked microphone access for this page or origin.';
+  }
+  if (name === 'NotSupportedError') {
+    return 'This browser cannot record the selected microphone audio format.';
+  }
+  if (name === 'TypeError') {
+    return diagnostics.isSecureContext === false
+      ? 'Microphone recording requires localhost, 127.0.0.1, or HTTPS.'
+      : 'The browser rejected the microphone capture request.';
+  }
+
+  return 'Unable to start microphone recording. Check browser console diagnostics for details.';
+}
+
+function voiceTrackDiagnostics(stream) {
+  return stream?.getTracks?.().map((track) => ({
+    kind: track.kind,
+    label: track.label,
+    enabled: track.enabled,
+    muted: track.muted,
+    readyState: track.readyState,
+  })) || [];
+}
 
 function toAbsoluteMediaUrl(value) {
   const raw = String(value || '').trim();
@@ -377,6 +504,11 @@ export default function Settings({ user, onUserRefresh }) {
   const [logoPreviewUrl, setLogoPreviewUrl] = useState('');
   const [voiceFile, setVoiceFile] = useState(null);
   const [voicePreviewUrl, setVoicePreviewUrl] = useState('');
+  const [voiceRecorderStatus, setVoiceRecorderStatus] = useState('idle');
+  const [voiceRecorderError, setVoiceRecorderError] = useState('');
+  const [voiceRecordingDuration, setVoiceRecordingDuration] = useState(0);
+  const [recordedVoiceBlob, setRecordedVoiceBlob] = useState(null);
+  const [recordedVoicePreviewUrl, setRecordedVoicePreviewUrl] = useState('');
   const [imageFile, setImageFile] = useState(null);
   const [videoFile, setVideoFile] = useState(null);
   const [mediaPreviewUrl, setMediaPreviewUrl] = useState('');
@@ -391,6 +523,12 @@ export default function Settings({ user, onUserRefresh }) {
   const [localDataMessage, setLocalDataMessage] = useState('');
   const [notificationPreferences, setNotificationPreferences] = useState(readNotificationPreferences);
   const [avatarModal, setAvatarModal] = useState('');
+  const voiceRecorderRef = useRef(null);
+  const voiceRecordingStreamRef = useRef(null);
+  const voiceRecordingChunksRef = useRef([]);
+  const voiceRecordingTimerRef = useRef(null);
+  const voiceRecordingStartedAtRef = useRef(0);
+  const recordedVoiceAudioRef = useRef(null);
 
   useEffect(() => {
     setSettingsOpenSections(
@@ -524,6 +662,17 @@ export default function Settings({ user, onUserRefresh }) {
     setVoicePreviewUrl(objectUrl);
     return () => URL.revokeObjectURL(objectUrl);
   }, [voiceFile]);
+
+  useEffect(() => {
+    if (!recordedVoiceBlob) {
+      setRecordedVoicePreviewUrl('');
+      return undefined;
+    }
+
+    const objectUrl = URL.createObjectURL(recordedVoiceBlob);
+    setRecordedVoicePreviewUrl(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [recordedVoiceBlob]);
 
   useEffect(() => {
     const sample = videoFile || imageFile;
@@ -733,6 +882,11 @@ export default function Settings({ user, onUserRefresh }) {
     setAvatarModal('');
     setTeacherBusy(false);
     setTeacherMessage('');
+    setVoiceFile(null);
+    setVoiceRecorderStatus('idle');
+    setVoiceRecorderError('');
+    setVoiceRecordingDuration(0);
+    setRecordedVoiceBlob(null);
     setImageFile(null);
     setVideoFile(null);
     setMediaPreviewUrl('');
@@ -740,6 +894,47 @@ export default function Settings({ user, onUserRefresh }) {
     setPreviewJobId('');
     setPreviewVideoUrl('');
   }, [avatarFeatureEnabled]);
+
+  const clearVoiceRecordingTimer = useCallback(() => {
+    if (voiceRecordingTimerRef.current) {
+      window.clearInterval(voiceRecordingTimerRef.current);
+      voiceRecordingTimerRef.current = null;
+    }
+  }, []);
+
+  const stopVoiceRecordingStream = useCallback(() => {
+    voiceRecordingStreamRef.current?.getTracks?.().forEach((track) => track.stop());
+    voiceRecordingStreamRef.current = null;
+  }, []);
+
+  const cancelActiveVoiceRecording = useCallback(() => {
+    const recorder = voiceRecorderRef.current;
+    if (recorder) {
+      recorder.ondataavailable = null;
+      recorder.onstop = null;
+      recorder.onerror = null;
+      if (recorder.state === 'recording') {
+        recorder.stop();
+      }
+      voiceRecorderRef.current = null;
+    }
+    clearVoiceRecordingTimer();
+    stopVoiceRecordingStream();
+    voiceRecordingChunksRef.current = [];
+  }, [clearVoiceRecordingTimer, stopVoiceRecordingStream]);
+
+  useEffect(() => () => {
+    cancelActiveVoiceRecording();
+  }, [cancelActiveVoiceRecording]);
+
+  useEffect(() => {
+    if (avatarModal === 'voice') return;
+    cancelActiveVoiceRecording();
+    setRecordedVoiceBlob(null);
+    setVoiceRecorderStatus('idle');
+    setVoiceRecorderError('');
+    setVoiceRecordingDuration(0);
+  }, [avatarModal, cancelActiveVoiceRecording]);
 
   const clearLocalNotes = () => {
     const noteKeys = [];
@@ -832,6 +1027,168 @@ export default function Settings({ user, onUserRefresh }) {
 
   const updateNotificationPreference = (field, checked) => {
     setNotificationPreferences((previous) => ({ ...previous, [field]: checked }));
+  };
+
+  const handleVoiceFileChange = (file) => {
+    setVoiceFile(file || null);
+    setVoiceRecorderError('');
+  };
+
+  const handleStartVoiceRecording = async () => {
+    const preflightDiagnostics = await voiceRecordingDiagnostics('preflight');
+    logVoiceRecordingDiagnostics('preflight', preflightDiagnostics);
+    if (
+      !preflightDiagnostics.isSecureContext
+      || !preflightDiagnostics.hasMediaDevices
+      || !preflightDiagnostics.hasGetUserMedia
+      || !preflightDiagnostics.mediaRecorderSupported
+    ) {
+      setVoiceRecorderStatus('error');
+      setVoiceRecorderError(voiceRecordingErrorMessage(null, 'preflight', preflightDiagnostics));
+      return;
+    }
+
+    setVoiceRecorderStatus('requesting permission');
+    setVoiceRecorderError('');
+    setRecordedVoiceBlob(null);
+    setVoiceRecordingDuration(0);
+    voiceRecordingChunksRef.current = [];
+
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (error) {
+      const diagnostics = await voiceRecordingDiagnostics('getUserMedia', error);
+      logVoiceRecordingDiagnostics('getUserMedia', diagnostics, error);
+      setVoiceRecorderStatus('error');
+      setVoiceRecorderError(voiceRecordingErrorMessage(error, 'getUserMedia', diagnostics));
+      return;
+    }
+
+    console.info('voice_recording_stream_received', {
+      origin: window.location.origin,
+      tracks: voiceTrackDiagnostics(stream),
+    });
+    if (!stream.getAudioTracks?.().length) {
+      stream.getTracks?.().forEach((track) => track.stop());
+      setVoiceRecorderStatus('error');
+      setVoiceRecorderError('No microphone audio track was captured.');
+      return;
+    }
+    stream.getTracks?.().forEach((track) => {
+      track.addEventListener?.('ended', () => {
+        console.info('voice_recording_track_ended', {
+          kind: track.kind,
+          label: track.label,
+          readyState: track.readyState,
+        });
+      });
+    });
+
+    const mimeType = preferredVoiceRecordingMimeType();
+    let recorder = null;
+    try {
+      recorder = new window.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    } catch (error) {
+      stream.getTracks?.().forEach((track) => track.stop());
+      const diagnostics = await voiceRecordingDiagnostics('MediaRecorder', error);
+      logVoiceRecordingDiagnostics('MediaRecorder', diagnostics, error);
+      setVoiceRecorderStatus('error');
+      setVoiceRecorderError(voiceRecordingErrorMessage(error, 'MediaRecorder', diagnostics));
+      return;
+    }
+
+    voiceRecordingStreamRef.current = stream;
+    voiceRecorderRef.current = recorder;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data?.size > 0) {
+        voiceRecordingChunksRef.current.push(event.data);
+      }
+    };
+    recorder.onerror = async (event) => {
+      clearVoiceRecordingTimer();
+      stopVoiceRecordingStream();
+      const error = event.error || event;
+      const diagnostics = await voiceRecordingDiagnostics('MediaRecorder.onerror', error);
+      logVoiceRecordingDiagnostics('MediaRecorder.onerror', diagnostics, error);
+      setVoiceRecorderStatus('error');
+      setVoiceRecorderError(voiceRecordingErrorMessage(error, 'MediaRecorder.onerror', diagnostics));
+    };
+    recorder.onstop = () => {
+      clearVoiceRecordingTimer();
+      stopVoiceRecordingStream();
+      const chunks = voiceRecordingChunksRef.current;
+      voiceRecordingChunksRef.current = [];
+      voiceRecorderRef.current = null;
+      if (!chunks.length) {
+        setRecordedVoiceBlob(null);
+        setVoiceRecorderStatus('error');
+        setVoiceRecorderError('No audio was captured. Check the microphone and try again.');
+        return;
+      }
+      const recordingType = recorder.mimeType || mimeType || chunks[0]?.type || 'audio/webm';
+      setRecordedVoiceBlob(new Blob(chunks, { type: recordingType }));
+      setVoiceRecorderStatus('recorded');
+      setVoiceRecorderError('');
+    };
+
+    try {
+      recorder.start();
+    } catch (error) {
+      clearVoiceRecordingTimer();
+      stopVoiceRecordingStream();
+      const diagnostics = await voiceRecordingDiagnostics('MediaRecorder.start', error);
+      logVoiceRecordingDiagnostics('MediaRecorder.start', diagnostics, error);
+      setVoiceRecorderStatus('error');
+      setVoiceRecorderError(voiceRecordingErrorMessage(error, 'MediaRecorder.start', diagnostics));
+      return;
+    }
+
+    console.info('voice_recording_started', {
+      origin: window.location.origin,
+      recorderState: recorder.state,
+      mimeType: recorder.mimeType,
+      tracks: voiceTrackDiagnostics(stream),
+    });
+    voiceRecordingStartedAtRef.current = Date.now();
+    setVoiceRecorderStatus('recording');
+    voiceRecordingTimerRef.current = window.setInterval(() => {
+      setVoiceRecordingDuration(Math.floor((Date.now() - voiceRecordingStartedAtRef.current) / 1000));
+    }, 250);
+  };
+
+  const handleStopVoiceRecording = () => {
+    const recorder = voiceRecorderRef.current;
+    if (recorder?.state === 'recording') {
+      setVoiceRecordingDuration(Math.floor((Date.now() - voiceRecordingStartedAtRef.current) / 1000));
+      recorder.stop();
+      return;
+    }
+    clearVoiceRecordingTimer();
+    stopVoiceRecordingStream();
+  };
+
+  const handlePlayRecordedVoice = () => {
+    recordedVoiceAudioRef.current?.play?.();
+  };
+
+  const handleUseRecordedVoice = () => {
+    if (!recordedVoiceBlob) return;
+    const extension = recordedVoiceFileExtension(recordedVoiceBlob.type);
+    const file = new File([recordedVoiceBlob], `voice-sample-recording.${extension}`, {
+      type: recordedVoiceBlob.type || `audio/${extension}`,
+      lastModified: Date.now(),
+    });
+    handleVoiceFileChange(file);
+  };
+
+  const handleDiscardRecordedVoice = () => {
+    cancelActiveVoiceRecording();
+    setRecordedVoiceBlob(null);
+    setVoiceRecorderStatus('idle');
+    setVoiceRecorderError('');
+    setVoiceRecordingDuration(0);
   };
 
   const handleSavePublicProfile = async (event) => {
@@ -1316,13 +1673,13 @@ export default function Settings({ user, onUserRefresh }) {
         titleId="avatar-voice-modal-title"
         closeLabel="Close voice sample"
         onClose={closeAvatarModal}
-        closeDisabled={teacherBusy}
-        canBackdropClose={!voiceFile}
+        closeDisabled={teacherBusy || voiceRecorderStatus === 'recording'}
+        canBackdropClose={!voiceFile && voiceRecorderStatus !== 'recording' && !recordedVoiceBlob}
         maxWidthClass="max-w-xl"
         footer={(
           <div className="flex justify-end">
             <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
-              <span>{voiceFile ? 'Discard and close' : 'Close'}</span>
+              <span>{voiceFile || recordedVoiceBlob ? 'Discard and close' : 'Close'}</span>
             </Button>
           </div>
         )}
@@ -1333,10 +1690,85 @@ export default function Settings({ user, onUserRefresh }) {
             <input
               type="file"
               accept="audio/*"
-              onChange={(event) => setVoiceFile(event.target.files?.[0] || null)}
+              onChange={(event) => handleVoiceFileChange(event.target.files?.[0] || null)}
               className="focus-ring mt-1 block w-full cursor-pointer rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] p-2 text-sm text-[var(--text-primary)]"
             />
           </label>
+
+          <div className="space-y-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-[var(--text-primary)]">Record from microphone</p>
+                <p className="mt-1 text-xs text-[var(--text-secondary)]">
+                  Status: {voiceRecorderStatus}. Duration: {formatRecordingDuration(voiceRecordingDuration)}
+                </p>
+              </div>
+              <Mic size={18} className="text-[var(--accent-primary)]" />
+            </div>
+
+            <blockquote className="rounded-xl bg-[var(--surface-container-highest)] px-3 py-2 text-sm leading-6 text-[var(--text-secondary)]">
+              {VOICE_RECORDING_SAMPLE_TEXT}
+            </blockquote>
+
+            {voiceRecorderError && (
+              <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">
+                {voiceRecorderError}
+              </p>
+            )}
+
+            {recordedVoicePreviewUrl && (
+              <audio ref={recordedVoiceAudioRef} src={recordedVoicePreviewUrl} className="hidden" />
+            )}
+
+            <div className="flex flex-wrap gap-2">
+              {voiceRecorderStatus !== 'recording' ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={handleStartVoiceRecording}
+                  disabled={teacherBusy || voiceRecorderStatus === 'requesting permission'}
+                >
+                  <Mic size={15} />
+                  <span>{voiceRecorderStatus === 'requesting permission' ? 'Requesting...' : 'Start recording'}</span>
+                </Button>
+              ) : (
+                <Button variant="secondary" size="sm" onClick={handleStopVoiceRecording} disabled={teacherBusy}>
+                  <Square size={15} />
+                  <span>Stop recording</span>
+                </Button>
+              )}
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handlePlayRecordedVoice}
+                disabled={!recordedVoiceBlob || voiceRecorderStatus === 'recording'}
+              >
+                <Play size={15} />
+                <span>Play preview</span>
+              </Button>
+
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleUseRecordedVoice}
+                disabled={!recordedVoiceBlob || voiceRecorderStatus === 'recording'}
+              >
+                <Upload size={15} />
+                <span>Use recording</span>
+              </Button>
+
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleDiscardRecordedVoice}
+                disabled={teacherBusy || (!recordedVoiceBlob && voiceRecorderStatus !== 'recording' && voiceRecorderStatus !== 'error')}
+              >
+                <Trash2 size={15} />
+                <span>Discard recording</span>
+              </Button>
+            </div>
+          </div>
 
           {voicePreviewUrl && (
             <audio controls src={voicePreviewUrl} className="w-full" />
