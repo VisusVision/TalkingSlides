@@ -46,6 +46,13 @@ Future packaging may wrap the scripts in an EXE/MSI, but the script contract sho
 
 ## Preflight Checker
 
+The current script entry point is:
+
+```powershell
+.\scripts\windows-preflight.ps1
+.\scripts\windows-preflight.ps1 -Json
+```
+
 The preflight checker should report pass/warn/fail status for:
 
 - Windows version.
@@ -62,6 +69,8 @@ The preflight checker should report pass/warn/fail status for:
 - Existing `infra/.env` state and missing required placeholders.
 
 The checker may offer links or open official installers, but should not silently install WSL, Docker Desktop, GPU drivers, or system packages.
+
+Current Phase B behavior is intentionally read-only: it prints clear next steps for missing external prerequisites and exits with code `1` only when core blockers are present.
 
 ## Profile Selector
 
@@ -109,6 +118,13 @@ Model handling should be explicit:
 
 ## Health Summary
 
+The current script entry point is:
+
+```powershell
+.\scripts\windows-runtime-health.ps1
+.\scripts\windows-runtime-health.ps1 -Json
+```
+
 The final summary should include:
 
 - Selected profiles.
@@ -119,14 +135,18 @@ The final summary should include:
 - Missing or degraded capabilities.
 - Exact next commands for logs, stop, update, and troubleshooting.
 
+The current health script checks already-running services only. It must not start services, rebuild images, pull models, or install optional providers.
+It may exit with code `1` when core API/frontend services are stopped, which is the expected health result for a stopped core stack.
+
 ## Start / Stop / Update Scripts
 
 Initial script contract:
 
+- `windows-preflight.ps1`: read-only host prerequisite and profile-readiness check with optional JSON output.
 - `windows-dev-setup.ps1`: prerequisite and local dependency checks.
 - `windows-dev-start.ps1`: profile-aware service startup.
 - `windows-dev-stop.ps1`: stop selected Compose services.
-- Future `windows-dev-health.ps1`: profile-aware summary.
+- `windows-runtime-health.ps1`: profile-aware summary for already-running services, with optional JSON output.
 - Future `windows-dev-update.ps1`: image pull/build, migrations, and dependency refresh with consent.
 
 Destructive actions, such as volume removal, must require explicit flags and visible warnings.
@@ -157,14 +177,14 @@ Recovery should prefer clear instructions, rerunnable commands, and narrow retri
 
 ### Phase B: Preflight Check Script
 
-- Add a read-only profile-aware preflight command.
+- Add a read-only profile-aware preflight command. Initial script exists as `scripts/windows-preflight.ps1`.
 - Report host prerequisites, ports, Docker state, disk space, GPU state, and env-file status.
 - Keep major prerequisite installation user-driven.
 
 ### Phase C: Runtime Profile Health Summary
 
-- Add a profile-aware health command.
-- Summarize selected service status, endpoints, Docker GPU state, Ollama reachability, and missing capabilities.
+- Add a profile-aware health command. Initial script exists as `scripts/windows-runtime-health.ps1`.
+- Summarize selected service status, endpoints, Docker service state, Ollama reachability, and missing capabilities.
 - Keep health checks non-mutating.
 
 ### Phase D: Full-stack Compose / Ollama Strategy

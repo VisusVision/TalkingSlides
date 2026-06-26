@@ -6,6 +6,11 @@
 - [Local development quickstart](LOCAL_DEVELOPMENT_QUICKSTART.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 
+Useful Windows diagnostics:
+
+- `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing or starting services.
+- `scripts/windows-runtime-health.ps1` checks already-running services and HTTP endpoints without rebuilding or pulling images.
+
 ## Developer Docs
 
 - [Local development](LOCAL_DEVELOPMENT.md)

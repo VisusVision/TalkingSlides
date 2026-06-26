@@ -9,9 +9,11 @@ Use this flow for normal local development:
 ```powershell
 git clone <repo-url> AI_ACADEMY
 cd AI_ACADEMY
+.\scripts\windows-preflight.ps1
 Copy-Item infra\.env.example infra\.env
 .\scripts\windows-dev-setup.ps1 -CheckOnly
 .\scripts\windows-dev-start.ps1
+.\scripts\windows-runtime-health.ps1
 ```
 
 The default start script launches the core stack:
@@ -65,11 +67,21 @@ node --version
 npm --version
 ```
 
-Run the read-only setup check:
+Run the read-only preflight and setup checks:
 
 ```powershell
+.\scripts\windows-preflight.ps1
+.\scripts\windows-preflight.ps1 -Json
 .\scripts\windows-dev-setup.ps1 -CheckOnly
 ```
+
+`windows-preflight.ps1` does not install Docker, WSL2, Ollama, GPU drivers, models, or Python packages. It reports host prerequisites, ports, disk space, `infra\.env` state, Compose config, optional GPU hints, and optional Ollama reachability.
+
+Status meanings:
+
+- `PASS`: ready for the selected path.
+- `WARN`: optional, degraded, already-running, or follow-up-needed state.
+- `FAIL`: core blocker. The script exits with code `1` when core blockers are present.
 
 ## Docker Desktop and WSL2 Notes
 
@@ -110,6 +122,15 @@ Start the core stack:
 ```powershell
 .\scripts\windows-dev-start.ps1
 ```
+
+Check already-running services without starting, rebuilding, or pulling anything:
+
+```powershell
+.\scripts\windows-runtime-health.ps1
+.\scripts\windows-runtime-health.ps1 -Json
+```
+
+The runtime health script may exit with code `1` when the core stack is stopped. That is expected: it reports stopped or missing core API/frontend services as `FAIL` and does not start them.
 
 Access:
 
@@ -176,12 +197,14 @@ Important current reality:
 - Avatar heavy dependencies belong in the Docker worker image.
 - Full avatar runtime is not a normal CI path.
 - The one-click EXE/MSI installer is planned, not present.
+- The current preflight and health scripts are installer-friendly building blocks; they are not an EXE/MSI package.
 
 ## Future One-click Installer Goal
 
 The future installer should:
 
 - Run prerequisite checks for Windows, WSL2, Docker Desktop, Docker daemon, ports, disk space, and optional GPU mode.
+- Wrap the current preflight and runtime health script contracts.
 - Let the user select runtime profiles before heavy downloads or builds.
 - Generate `.env` safely without exposing secrets.
 - Pull or build Docker images for selected profiles.

@@ -5,6 +5,8 @@ This document describes the local runtime profiles VISUS VidLab should expose th
 Current reality:
 
 - `scripts/windows-dev-start.ps1` starts selected Compose services by name.
+- `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing, building, or starting services.
+- `scripts/windows-runtime-health.ps1` summarizes already-running services and HTTP endpoints without starting, rebuilding, or pulling anything.
 - `infra/docker-compose.yml` currently has one explicit Compose profile: `translation` for `libretranslate`.
 - Ollama currently runs on the host unless a future Compose service is added.
 - Avatar worker dependencies belong in the Docker worker image, not the Windows virtual environment.
@@ -47,9 +49,11 @@ Host requirements:
 Expected health checks:
 
 ```powershell
+.\scripts\windows-preflight.ps1
 docker compose -f infra\docker-compose.yml ps
 Invoke-WebRequest http://localhost:8000/api/v1/ready/
 Invoke-WebRequest http://localhost:3000/
+.\scripts\windows-runtime-health.ps1
 ```
 
 Known gaps:
@@ -82,6 +86,7 @@ Expected health checks:
 ```powershell
 Invoke-WebRequest http://localhost:8001/ready
 docker compose -f infra\docker-compose.yml logs -f tts_service
+.\scripts\windows-runtime-health.ps1
 ```
 
 Known gaps:
@@ -114,6 +119,7 @@ Expected health checks:
 ```powershell
 ollama list
 Invoke-WebRequest http://localhost:11434/api/tags
+.\scripts\windows-preflight.ps1
 ```
 
 From containers, Docker Desktop should use:
@@ -155,6 +161,7 @@ Expected health checks:
 ```powershell
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 docker compose -f infra\docker-compose.yml logs -f worker-avatar
+.\scripts\windows-preflight.ps1
 ```
 
 When validating a built heavy worker image, import checks should run inside the container, not the Windows virtual environment.
@@ -188,6 +195,7 @@ Expected health checks:
 ```powershell
 docker compose -f infra\docker-compose.yml --profile translation up -d libretranslate
 Invoke-WebRequest http://localhost:5000/languages
+.\scripts\windows-runtime-health.ps1
 ```
 
 Known gaps:
@@ -225,6 +233,18 @@ Expected health checks:
 - Ollama model list is reachable when local LLM enhancement is selected.
 - LibreTranslate languages endpoint responds when translation profile is selected.
 - GPU smoke passes before avatar worker is started.
+
+The read-only summary commands are:
+
+```powershell
+.\scripts\windows-preflight.ps1
+.\scripts\windows-preflight.ps1 -Json
+.\scripts\windows-runtime-health.ps1
+.\scripts\windows-runtime-health.ps1 -Json
+```
+
+`PASS` means the capability is ready, `WARN` means an optional or degraded path needs attention, and `FAIL` means the core path is blocked.
+`windows-runtime-health.ps1` may exit with code `1` when the core stack is stopped because it checks running services only.
 
 Known gaps:
 

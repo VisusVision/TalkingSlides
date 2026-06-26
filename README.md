@@ -31,8 +31,10 @@ From the repository root:
 
 ```powershell
 Copy-Item .\infra\.env.example .\infra\.env
+.\scripts\windows-preflight.ps1
 .\scripts\windows-dev-setup.ps1 -CheckOnly
 .\scripts\windows-dev-start.ps1
+.\scripts\windows-runtime-health.ps1
 ```
 
 Then open:
@@ -63,6 +65,18 @@ The planned installer/runtime profiles are documented in [docs/FULL_STACK_LOCAL_
 - `avatar-gpu`: adds the GPU avatar worker path.
 - `translation`: enables the Compose `translation` profile for LibreTranslate.
 - `full-stack`: planned combination after preflight checks pass.
+
+Use the read-only Windows checks before and after startup:
+
+```powershell
+.\scripts\windows-preflight.ps1
+.\scripts\windows-preflight.ps1 -Json
+.\scripts\windows-runtime-health.ps1
+.\scripts\windows-runtime-health.ps1 -Json
+```
+
+`PASS` means the check is ready, `WARN` means optional or degraded behavior needs attention, and `FAIL` means a core blocker must be fixed before the core app should be considered ready.
+`windows-runtime-health.ps1` may exit with code `1` when the core stack is stopped because it only checks already-running services.
 
 ## Full Local AI Runtime
 
