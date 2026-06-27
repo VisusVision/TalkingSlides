@@ -1,5 +1,6 @@
 # pyright: reportMissingImports=false
 
+from copy import deepcopy
 import json
 import os
 import sys
@@ -24,7 +25,9 @@ from django.contrib.auth.models import User  # noqa: E402
 from core.models import Job, Project, UserProfile  # noqa: E402
 from worker import tasks as worker_tasks  # noqa: E402
 from worker.partial_render_manifest import (  # noqa: E402
+    build_expected_partial_render_manifest,
     build_partial_render_manifest,
+    classify_partial_render_changes,
     canonical_json,
     normalize_text,
     stable_hash,
@@ -134,6 +137,18 @@ def _playback_assets(project_id: int = 42) -> dict:
     }
 
 
+def _two_page_manifest(project_id: int = 42) -> dict:
+    first = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
+    second = _render_result(index=1, page_key="s2-p1", display_text="Visible two", narration_text="Narration two")
+    return build_partial_render_manifest(
+        project_id=project_id,
+        job_id=77,
+        ordered_results=[first, second],
+        playback_assets=_playback_assets(project_id),
+        avatar_options={"enabled": True, "teacher_id": 9},
+    )
+
+
 def test_hash_helpers_are_stable():
     left = {"b": [2, 1], "a": {"z": True, "m": None}}
     right = {"a": {"m": None, "z": True}, "b": [2, 1]}
@@ -228,6 +243,227 @@ def test_manifest_fallback_page_key_and_targeted_merge_artifact_stability():
         manifest["pages"]["slide:1"]["narration_text_hash"]
         != changed_narration["pages"]["slide:1"]["narration_text_hash"]
     )
+
+
+def test_classifier_identical_manifests_are_unchanged_even_when_job_hash_changes():
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["job_id"] = 999
+    expected_manifest["manifest_hash"] = stable_hash(
+        {key: value for key, value in expected_manifest.items() if key != "manifest_hash"}
+    )
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+
+    assert report["summary"]["unchanged"] == 2
+    assert report["summary"]["unknown_requires_full"] == 0
+    assert report["pages"]["s1-p1"]["classification"] == "unchanged"
+    assert report["pages"]["s2-p1"]["classification"] == "unchanged"
+
+
+@pytest.mark.parametrize(
+    ("hash_key", "reason", "requires_full"),
+    [
+        ("display_text_hash", "display_text_changed", False),
+        ("narration_text_hash", "narration_text_changed", False),
+        ("subtitle_text_hash", "subtitle_text_changed", False),
+        ("tts_input_hash", "tts_input_changed", False),
+        ("tts_settings_hash", "tts_settings_changed", False),
+        ("avatar_input_hash", "avatar_input_changed", False),
+        ("avatar_display_hash", "avatar_display_changed", False),
+        ("background_hash", "background_changed", False),
+        ("layout_hash", "layout_changed", False),
+        ("structural_hash", "structural_changed", True),
+        ("source_render_hash", "structural_changed", True),
+    ],
+)
+def test_classifier_maps_hash_fields_to_reasons(hash_key, reason, requires_full):
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["pages"]["s1-p1"][hash_key] = stable_hash({"changed": hash_key})
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+    page = report["pages"]["s1-p1"]
+
+    assert page["classification"] == reason
+    assert page["reasons"] == [reason]
+    assert page["changed_hashes"] == [hash_key]
+    assert page["requires_full"] is requires_full
+
+
+@pytest.mark.parametrize("old_manifest", [None, {"version": "legacy", "pages": []}])
+def test_classifier_missing_or_invalid_old_manifest_requires_full(old_manifest):
+    expected_manifest = _two_page_manifest()
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+
+    assert report["global_reasons"] == ["unknown_requires_full"]
+    assert report["summary"]["unknown_requires_full"] == 2
+    assert all(page["requires_full"] for page in report["pages"].values())
+
+
+def test_classifier_page_membership_changes_are_structural():
+    first = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
+    second = _render_result(index=1, page_key="s2-p1", display_text="Visible two", narration_text="Narration two")
+    third = _render_result(index=2, page_key="s3-p1", display_text="Visible three", narration_text="Narration three")
+    old_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first, second],
+        playback_assets=_playback_assets(42),
+    )
+    added_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first, second, third],
+        playback_assets=_playback_assets(42),
+    )
+    deleted_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first],
+        playback_assets=_playback_assets(42),
+    )
+
+    added_report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=added_manifest,
+    )
+    deleted_report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=deleted_manifest,
+    )
+
+    assert added_report["pages"]["s3-p1"]["classification"] == "structural_changed"
+    assert added_report["pages"]["s3-p1"]["requires_full"] is True
+    assert deleted_report["pages"]["s2-p1"]["classification"] == "structural_changed"
+    assert deleted_report["pages"]["s2-p1"]["requires_full"] is True
+
+
+def test_classifier_reordered_pages_are_structural():
+    first = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
+    second = _render_result(index=1, page_key="s2-p1", display_text="Visible two", narration_text="Narration two")
+    old_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first, second],
+        playback_assets=_playback_assets(42),
+    )
+    reordered_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[second, first],
+        playback_assets=_playback_assets(42),
+    )
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=reordered_manifest,
+    )
+
+    assert report["global_reasons"] == ["structural_changed"]
+    assert report["pages"]["s1-p1"]["classification"] == "structural_changed"
+    assert report["pages"]["s2-p1"]["classification"] == "structural_changed"
+
+
+def test_classifier_missing_artifacts_do_not_require_full_by_themselves():
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["pages"]["s1-p1"]["artifacts"]["tts_audio"] = ""
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+    page = report["pages"]["s1-p1"]
+
+    assert page["classification"] == "missing_artifact"
+    assert page["reasons"] == ["missing_artifact"]
+    assert page["missing_artifacts"] == ["tts_audio"]
+    assert page["requires_full"] is False
+
+
+def test_classifier_orders_multiple_reasons_counts_summary_and_does_not_mutate_inputs():
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["pages"]["s1-p1"]["display_text_hash"] = stable_hash("display changed")
+    expected_manifest["pages"]["s1-p1"]["layout_hash"] = stable_hash("layout changed")
+    expected_manifest["pages"]["s1-p1"]["artifacts"]["slide_image"] = ""
+    old_before = deepcopy(old_manifest)
+    expected_before = deepcopy(expected_manifest)
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+    page = report["pages"]["s1-p1"]
+
+    assert page["classification"] == "display_text_changed"
+    assert page["reasons"] == ["display_text_changed", "layout_changed", "missing_artifact"]
+    assert page["changed_hashes"] == ["display_text_hash", "layout_hash"]
+    assert report["summary"]["display_text_changed"] == 1
+    assert report["summary"]["unchanged"] == 1
+    assert old_manifest == old_before
+    assert expected_manifest == expected_before
+
+
+def test_expected_manifest_builder_uses_new_slide_inputs_and_reuses_artifacts_by_page_key_only():
+    previous_playback_assets = {
+        "final_segments": [
+            {
+                "index": 0,
+                "page_key": "old-position-key",
+                "tts_audio": "42/audio/old-position.mp3",
+                "avatar_clip": "42/avatar_segments/old-position.mp4",
+                "part_rel_path": "42/parts/old-position.mp4",
+                "slide": "42/images/old-position.png",
+            },
+            {
+                "index": 1,
+                "page_key": "new-key",
+                "tts_audio": "42/audio/new-key.mp3",
+                "avatar_clip": "42/avatar_segments/new-key.mp4",
+                "part_rel_path": "42/parts/new-key.mp4",
+                "slide": "42/images/new-key.png",
+            },
+        ]
+    }
+
+    manifest = build_expected_partial_render_manifest(
+        project_id=42,
+        job_id=88,
+        slides=[
+            {
+                "index": 0,
+                "slide_num": 1,
+                "page_key": "new-key",
+                "page_id": 500,
+                "display_text": "New display",
+                "narration_text": "New narration",
+                "subtitle_chunks": ["New narration"],
+                "duration": 4.0,
+                "pause_seconds": 0.5,
+                "tts_settings": {"provider_preference": "gtts"},
+            }
+        ],
+        previous_playback_assets=previous_playback_assets,
+        avatar_options={"enabled": True, "teacher_id": 9, "default_position": "bottom-left"},
+    )
+
+    assert list(manifest["pages"]) == ["new-key"]
+    page = manifest["pages"]["new-key"]
+    assert page["display_text_hash"] == stable_hash("New display")
+    assert page["narration_text_hash"] == stable_hash("New narration")
+    assert page["artifacts"] == {
+        "tts_audio": "42/audio/new-key.mp3",
+        "avatar_clip": "42/avatar_segments/new-key.mp4",
+        "composed_segment": "42/parts/new-key.mp4",
+        "slide_image": "42/images/new-key.png",
+    }
 
 
 def _patch_finalize_side_effects(monkeypatch, tmp_path):
