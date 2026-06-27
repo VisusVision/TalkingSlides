@@ -142,6 +142,7 @@ It may exit with code `1` when core API/frontend services are stopped, which is 
 
 Initial script contract:
 
+- `windows-runtime.ps1`: profile selector/start wrapper for preflight, start, status, stop, and health actions.
 - `windows-preflight.ps1`: read-only host prerequisite and profile-readiness check with optional JSON output.
 - `windows-dev-setup.ps1`: prerequisite and local dependency checks.
 - `windows-dev-start.ps1`: profile-aware service startup.
@@ -187,13 +188,21 @@ Recovery should prefer clear instructions, rerunnable commands, and narrow retri
 - Summarize selected service status, endpoints, Docker service state, Ollama reachability, and missing capabilities.
 - Keep health checks non-mutating.
 
-### Phase D: Full-stack Compose / Ollama Strategy
+### Phase D: Runtime Profile Wrapper
+
+- Add a conservative runtime wrapper. Initial script exists as `scripts/windows-runtime.ps1`.
+- Support `core`, `worker`, `tts`, `avatar`, `translation`, and `full` profiles.
+- Run preflight before start and health after start by default.
+- Use `docker compose stop` for stop actions so volumes and runtime data are preserved.
+- Avoid Docker builds, Docker pulls, model pulls, system installers, and destructive cleanup.
+
+### Phase E: Full-stack Compose / Ollama Strategy
 
 - Decide whether Ollama remains host-side or gains a Compose-managed optional service.
 - Document model storage and resource expectations.
 - Add Compose/service wiring only after the resource and update model is clear.
 
-### Phase E: Packaged EXE/MSI Wrapper
+### Phase F: Packaged EXE/MSI Wrapper
 
 - Wrap the script contract in a signed launcher or installer.
 - Preserve transparent commands and logs.

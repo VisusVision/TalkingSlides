@@ -12,7 +12,7 @@ cd AI_ACADEMY
 .\scripts\windows-preflight.ps1
 Copy-Item infra\.env.example infra\.env
 .\scripts\windows-dev-setup.ps1 -CheckOnly
-.\scripts\windows-dev-start.ps1
+.\scripts\windows-runtime.ps1 -Profile core
 .\scripts\windows-runtime-health.ps1
 ```
 
@@ -27,12 +27,14 @@ The default start script launches the core stack:
 Add heavier services only when needed:
 
 ```powershell
-.\scripts\windows-dev-start.ps1 -WithTts
-.\scripts\windows-dev-start.ps1 -WithWorker
-.\scripts\windows-dev-start.ps1 -WithAvatar
+.\scripts\windows-runtime.ps1 -Profile worker
+.\scripts\windows-runtime.ps1 -Profile tts
+.\scripts\windows-runtime.ps1 -Profile avatar
+.\scripts\windows-runtime.ps1 -Profile translation
+.\scripts\windows-runtime.ps1 -Profile full
 ```
 
-`-WithAvatar` also starts TTS and the render worker. Use it only on a validated GPU host.
+`-Profile avatar` also starts TTS and the render worker. Use it only on a validated GPU host.
 
 ## Prerequisite Checklist
 
@@ -120,7 +122,7 @@ Never commit `infra/.env`. The template contains placeholders only. For local de
 Start the core stack:
 
 ```powershell
-.\scripts\windows-dev-start.ps1
+.\scripts\windows-runtime.ps1 -Profile core
 ```
 
 Check already-running services without starting, rebuilding, or pulling anything:
@@ -128,6 +130,8 @@ Check already-running services without starting, rebuilding, or pulling anything
 ```powershell
 .\scripts\windows-runtime-health.ps1
 .\scripts\windows-runtime-health.ps1 -Json
+.\scripts\windows-runtime.ps1 -HealthOnly
+.\scripts\windows-runtime.ps1 -Status
 ```
 
 The runtime health script may exit with code `1` when the core stack is stopped. That is expected: it reports stopped or missing core API/frontend services as `FAIL` and does not start them.
@@ -142,21 +146,44 @@ Access:
 Stop:
 
 ```powershell
-.\scripts\windows-dev-stop.ps1
+.\scripts\windows-runtime.ps1 -Stop
 ```
 
-Remove Compose volumes only with the explicit destructive flag:
+`windows-runtime.ps1 -Stop` uses `docker compose stop`, not `down`, so Compose volumes, images, and runtime data are preserved.
+
+The older development stop script still has an explicit destructive volume-removal flag. Use it only when you intentionally want to remove Compose volumes:
 
 ```powershell
 .\scripts\windows-dev-stop.ps1 -RemoveVolumes
 ```
+
+## Runtime Wrapper
+
+`scripts/windows-runtime.ps1` is the current profile selector/start wrapper. It is still a PowerShell script, not an EXE/MSI installer.
+
+Common commands:
+
+```powershell
+.\scripts\windows-runtime.ps1 -PreflightOnly
+.\scripts\windows-runtime.ps1 -HealthOnly
+.\scripts\windows-runtime.ps1 -Status
+.\scripts\windows-runtime.ps1 -Stop
+.\scripts\windows-runtime.ps1 -Profile core
+.\scripts\windows-runtime.ps1 -Profile worker
+.\scripts\windows-runtime.ps1 -Profile tts
+.\scripts\windows-runtime.ps1 -Profile avatar
+.\scripts\windows-runtime.ps1 -Profile translation
+.\scripts\windows-runtime.ps1 -Profile full
+```
+
+The wrapper runs preflight before start unless `-SkipPreflight` is supplied. It runs the health summary after start unless `-NoHealth` is supplied. Starts use Compose with no build and no pull behavior; missing images fail instead of being built or downloaded by the wrapper.
 
 ## TTS and Worker Start
 
 For render/TTS work:
 
 ```powershell
-.\scripts\windows-dev-start.ps1 -WithTts -WithWorker
+.\scripts\windows-runtime.ps1 -Profile tts
 ```
 
 Access:
@@ -169,7 +196,7 @@ Access:
 Compose includes LibreTranslate behind the `translation` profile:
 
 ```powershell
-docker compose -f infra\docker-compose.yml --profile translation up -d libretranslate
+.\scripts\windows-runtime.ps1 -Profile translation
 ```
 
 Check:
@@ -194,17 +221,18 @@ See [FULL_STACK_LOCAL_RUNTIME.md](FULL_STACK_LOCAL_RUNTIME.md) for profile detai
 Important current reality:
 
 - Ollama currently runs host-side unless a future Compose service is added.
+- `windows-runtime.ps1 -Profile full` reports Ollama as host-side and does not install, start, or pull Ollama models.
 - Avatar heavy dependencies belong in the Docker worker image.
 - Full avatar runtime is not a normal CI path.
 - The one-click EXE/MSI installer is planned, not present.
-- The current preflight and health scripts are installer-friendly building blocks; they are not an EXE/MSI package.
+- The current runtime, preflight, and health scripts are installer-friendly building blocks; they are not an EXE/MSI package.
 
 ## Future One-click Installer Goal
 
 The future installer should:
 
 - Run prerequisite checks for Windows, WSL2, Docker Desktop, Docker daemon, ports, disk space, and optional GPU mode.
-- Wrap the current preflight and runtime health script contracts.
+- Wrap the current runtime, preflight, and runtime health script contracts.
 - Let the user select runtime profiles before heavy downloads or builds.
 - Generate `.env` safely without exposing secrets.
 - Pull or build Docker images for selected profiles.

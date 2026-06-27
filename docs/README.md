@@ -8,6 +8,7 @@
 
 Useful Windows diagnostics:
 
+- `scripts/windows-runtime.ps1` runs the profile wrapper for preflight, start, status, stop, and health actions.
 - `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing or starting services.
 - `scripts/windows-runtime-health.ps1` checks already-running services and HTTP endpoints without rebuilding or pulling images.
 

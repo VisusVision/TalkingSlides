@@ -4,6 +4,7 @@ This document describes the local runtime profiles VISUS VidLab should expose th
 
 Current reality:
 
+- `scripts/windows-runtime.ps1` is the profile selector/start wrapper that a future EXE/MSI can wrap.
 - `scripts/windows-dev-start.ps1` starts selected Compose services by name.
 - `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing, building, or starting services.
 - `scripts/windows-runtime-health.ps1` summarizes already-running services and HTTP endpoints without starting, rebuilding, or pulling anything.
@@ -16,12 +17,13 @@ Current reality:
 
 | Profile | Purpose | Current entry point |
 | --- | --- | --- |
-| `core` | API, frontend, database, Redis, and local object-store helper. | `.\scripts\windows-dev-start.ps1` |
-| `tts` | Add TTS service for render and preview work. | `.\scripts\windows-dev-start.ps1 -WithTts` |
+| `core` | API, frontend, database, Redis, and local object-store helper. | `.\scripts\windows-runtime.ps1 -Profile core` |
+| `worker` | Add the render worker to the core stack. | `.\scripts\windows-runtime.ps1 -Profile worker` |
+| `tts` | Add TTS service for render and preview work. | `.\scripts\windows-runtime.ps1 -Profile tts` |
 | `intelligence` | Enable heuristic intelligence and optional host-side Ollama enhancement. | Env configuration plus core/worker services |
-| `avatar-gpu` | Add GPU avatar worker for LivePortrait/MuseTalk work. | `.\scripts\windows-dev-start.ps1 -WithAvatar` |
-| `translation` | Add local LibreTranslate service for translation fallback checks. | `docker compose -f infra\docker-compose.yml --profile translation up -d libretranslate` |
-| `full-stack` | Planned installer profile combining selected AI services after preflight passes. | Roadmap |
+| `avatar` | Add GPU avatar worker for LivePortrait/MuseTalk work. | `.\scripts\windows-runtime.ps1 -Profile avatar` |
+| `translation` | Add local LibreTranslate service for translation fallback checks. | `.\scripts\windows-runtime.ps1 -Profile translation` |
+| `full` | Combine core, worker, TTS, avatar worker, and LibreTranslate after preflight passes. | `.\scripts\windows-runtime.ps1 -Profile full` |
 
 ## Core
 
@@ -50,6 +52,7 @@ Expected health checks:
 
 ```powershell
 .\scripts\windows-preflight.ps1
+.\scripts\windows-runtime.ps1 -Profile core
 docker compose -f infra\docker-compose.yml ps
 Invoke-WebRequest http://localhost:8000/api/v1/ready/
 Invoke-WebRequest http://localhost:3000/
@@ -84,6 +87,7 @@ Host requirements:
 Expected health checks:
 
 ```powershell
+.\scripts\windows-runtime.ps1 -Profile tts
 Invoke-WebRequest http://localhost:8001/ready
 docker compose -f infra\docker-compose.yml logs -f tts_service
 .\scripts\windows-runtime-health.ps1
@@ -160,6 +164,7 @@ Expected health checks:
 
 ```powershell
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+.\scripts\windows-runtime.ps1 -Profile avatar
 docker compose -f infra\docker-compose.yml logs -f worker-avatar
 .\scripts\windows-preflight.ps1
 ```
@@ -193,7 +198,7 @@ Host requirements:
 Expected health checks:
 
 ```powershell
-docker compose -f infra\docker-compose.yml --profile translation up -d libretranslate
+.\scripts\windows-runtime.ps1 -Profile translation
 Invoke-WebRequest http://localhost:5000/languages
 .\scripts\windows-runtime-health.ps1
 ```
@@ -241,14 +246,19 @@ The read-only summary commands are:
 .\scripts\windows-preflight.ps1 -Json
 .\scripts\windows-runtime-health.ps1
 .\scripts\windows-runtime-health.ps1 -Json
+.\scripts\windows-runtime.ps1 -PreflightOnly
+.\scripts\windows-runtime.ps1 -HealthOnly
+.\scripts\windows-runtime.ps1 -Status
 ```
 
 `PASS` means the capability is ready, `WARN` means an optional or degraded path needs attention, and `FAIL` means the core path is blocked.
 `windows-runtime-health.ps1` may exit with code `1` when the core stack is stopped because it checks running services only.
+`windows-runtime.ps1 -Stop` uses `docker compose stop` and preserves volumes, images, and runtime data.
 
 Known gaps:
 
 - There is no one-click installer yet.
 - There is no packaged EXE/MSI wrapper yet.
 - Ollama is not Compose-managed yet.
+- `windows-runtime.ps1` does not install or start Ollama and does not pull Ollama models.
 - Full avatar runtime is not a normal CI path and should remain a hardware smoke path.

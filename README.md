@@ -33,7 +33,7 @@ From the repository root:
 Copy-Item .\infra\.env.example .\infra\.env
 .\scripts\windows-preflight.ps1
 .\scripts\windows-dev-setup.ps1 -CheckOnly
-.\scripts\windows-dev-start.ps1
+.\scripts\windows-runtime.ps1 -Profile core
 .\scripts\windows-runtime-health.ps1
 ```
 
@@ -48,12 +48,14 @@ The default Windows start script launches the core developer stack: `postgres`, 
 Add services only when they are needed:
 
 ```powershell
-.\scripts\windows-dev-start.ps1 -WithTts
-.\scripts\windows-dev-start.ps1 -WithWorker
-.\scripts\windows-dev-start.ps1 -WithAvatar
+.\scripts\windows-runtime.ps1 -Profile worker
+.\scripts\windows-runtime.ps1 -Profile tts
+.\scripts\windows-runtime.ps1 -Profile avatar
+.\scripts\windows-runtime.ps1 -Profile translation
+.\scripts\windows-runtime.ps1 -Profile full
 ```
 
-`-WithAvatar` implies TTS and worker services and should be used only on a validated GPU host with avatar models and Docker GPU support ready.
+`-Profile avatar` implies TTS and worker services and should be used only on a validated GPU host with avatar models and Docker GPU support ready.
 
 ## Runtime Profiles
 
@@ -73,10 +75,12 @@ Use the read-only Windows checks before and after startup:
 .\scripts\windows-preflight.ps1 -Json
 .\scripts\windows-runtime-health.ps1
 .\scripts\windows-runtime-health.ps1 -Json
+.\scripts\windows-runtime.ps1 -Status
 ```
 
 `PASS` means the check is ready, `WARN` means optional or degraded behavior needs attention, and `FAIL` means a core blocker must be fixed before the core app should be considered ready.
 `windows-runtime-health.ps1` may exit with code `1` when the core stack is stopped because it only checks already-running services.
+`windows-runtime.ps1 -Stop` uses `docker compose stop` and preserves volumes, images, and runtime data.
 
 ## Full Local AI Runtime
 
