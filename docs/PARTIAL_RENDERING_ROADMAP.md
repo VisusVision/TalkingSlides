@@ -12,6 +12,7 @@ Implemented today:
 - When `rerender_page_keys` is non-empty, the worker renders only target slides and calls `merge_and_finalize_segments`.
 - `merge_and_finalize_segments` merges newly rendered slide outputs with existing unchanged artifacts, then finalizes the full lesson output.
 - `playback_assets.json` stores per-slide and final playback sidecar data used by Watch/API payloads.
+- `playback_assets.json` now includes report-only `partial_render_manifest` metadata with deterministic per-page dependency hashes.
 - `RenderFollowUpIntent` supports targeted and full follow-up requests while another render is active.
 
 Current safety rule:
@@ -122,7 +123,7 @@ Structural reorder/delete/split/merge:
 ### Phase 1: Manifest Readiness
 
 - Document existing `playback_assets.json` fields and all artifact dependencies.
-- Add manifest generation in report-only mode.
+- Add manifest generation in report-only mode. Implemented for `playback_assets.json`.
 - Compare manifest decisions against current rerender behavior without changing output.
 
 ### Phase 2: Visual-only Targeting

@@ -60,6 +60,7 @@ from celery.signals import worker_ready  # noqa: E402
 
 from .avatar_timeout_policy import resolve_preview_task_time_limits  # noqa: E402
 from .celery_app import app  # noqa: E402
+from .partial_render_manifest import build_partial_render_manifest  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -7901,6 +7902,13 @@ def concat_and_finalize(
             output_rel_prefix=output_rel_prefix,
             protection_mode=protection_mode,
             package_hls_stream_func=package_hls_stream,
+        )
+        playback_assets["partial_render_manifest"] = build_partial_render_manifest(
+            project_id=project_id,
+            job_id=job_id,
+            ordered_results=ordered,
+            playback_assets=playback_assets,
+            avatar_options=avatar_options,
         )
 
         if use_draft:
