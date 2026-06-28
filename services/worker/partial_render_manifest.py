@@ -655,6 +655,116 @@ def build_partial_render_plan(classification_result: Mapping[str, Any] | None) -
     }
 
 
+def get_visual_only_recompose_eligibility(
+    *,
+    classification_result: Mapping[str, Any] | None,
+    plan: Mapping[str, Any] | None,
+    target_page_keys: Iterable[str],
+) -> dict[str, Any]:
+    """Return an all-or-nothing report for the first visual-only optimization."""
+
+    targets = sorted({str(key) for key in (target_page_keys or []) if str(key)})
+    report: dict[str, Any] = {
+        "eligible": False,
+        "mode": "visual_only_recompose",
+        "target_page_keys": targets,
+        "fallback_reasons": [],
+        "pages": {},
+    }
+
+    def add_fallback(reason: str) -> None:
+        reasons = report["fallback_reasons"]
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if not targets:
+        add_fallback("target_page_keys_empty")
+        return report
+    if not isinstance(classification_result, Mapping):
+        add_fallback("classification_result_missing")
+        return report
+    if not isinstance(plan, Mapping):
+        add_fallback("partial_render_plan_missing")
+        return report
+
+    global_reasons = _ordered_reasons(_sequence_of_strings(classification_result.get("global_reasons")))
+    if global_reasons:
+        add_fallback("global_reasons_present")
+        if set(global_reasons) & _PLAN_FULL_REASONS:
+            add_fallback("global_full_rerender_required")
+
+    classifier_pages = _classification_report_pages(classification_result)
+    plan_pages = _classification_report_pages(plan)
+    visual_reasons = set(_PLAN_VISUAL_REASONS)
+
+    for page_key in targets:
+        classifier_page = classifier_pages.get(page_key)
+        plan_page = plan_pages.get(page_key)
+        page_report: dict[str, Any] = {
+            "page_key": page_key,
+            "eligible": False,
+            "classification": "",
+            "reasons": [],
+            "recommended_action": "",
+            "fallback_reasons": [],
+        }
+
+        def add_page_fallback(reason: str) -> None:
+            page_reasons = page_report["fallback_reasons"]
+            if reason not in page_reasons:
+                page_reasons.append(reason)
+            add_fallback(reason)
+
+        if not isinstance(classifier_page, Mapping):
+            add_page_fallback("target_page_missing_from_classifier")
+            report["pages"][page_key] = page_report
+            continue
+        if not isinstance(plan_page, Mapping):
+            add_page_fallback("target_page_missing_from_plan")
+            report["pages"][page_key] = page_report
+            continue
+
+        classification = _plan_classification(classifier_page)
+        classifier_reasons = _plan_reasons(classifier_page, classification)
+        plan_reasons = [
+            reason
+            for reason in _sequence_of_strings(plan_page.get("reasons"))
+            if reason in PARTIAL_RENDER_REASONS and reason != "unchanged"
+        ]
+        reasons = _ordered_reasons([*classifier_reasons, *plan_reasons])
+        recommended_action = str(plan_page.get("recommended_action") or "")
+        page_report.update(
+            {
+                "classification": classification,
+                "reasons": reasons,
+                "recommended_action": recommended_action,
+            }
+        )
+
+        if recommended_action != "recompose_visual_only_future":
+            add_page_fallback("target_page_action_not_visual_only")
+        if not reasons:
+            add_page_fallback("target_page_unchanged")
+        if classification not in visual_reasons:
+            add_page_fallback("target_page_classification_not_visual_only")
+        non_visual_reasons = [reason for reason in reasons if reason not in visual_reasons]
+        if non_visual_reasons:
+            add_page_fallback("target_page_has_non_visual_reason")
+        missing_artifacts = _sequence_of_strings(classifier_page.get("missing_artifacts"))
+        if missing_artifacts or "missing_artifact" in reasons:
+            add_page_fallback("target_page_missing_artifact")
+        if bool(classifier_page.get("requires_full")):
+            add_page_fallback("target_page_requires_full")
+
+        page_report["eligible"] = not page_report["fallback_reasons"]
+        report["pages"][page_key] = page_report
+
+    report["eligible"] = not report["fallback_reasons"] and all(
+        bool(page.get("eligible")) for page in report["pages"].values()
+    )
+    return report
+
+
 def _empty_plan_summary() -> dict[str, int]:
     summary = {action: 0 for action in PARTIAL_RENDER_PLAN_ACTIONS}
     summary["unknown_requires_full"] = 0
