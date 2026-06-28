@@ -535,15 +535,131 @@ def test_finalize_adds_manifest_without_removing_playback_sidecar_fields(tmp_pat
     sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     manifest = sidecar["partial_render_manifest"]
+    analysis = sidecar["partial_render_analysis"]
     assert sidecar["mp4_rel_path"] == f"{project.id}/{project.id}.mp4"
     assert sidecar["srt_rel_path"] == f"{project.id}/{project.id}.srt"
     assert sidecar["vtt_rel_path"] == f"{project.id}/{project.id}.vtt"
     assert sidecar["final_segments"][0]["part_rel_path"] == f"{project.id}/parts/part_001.mp4"
     assert finalize_result["playback_assets"]["partial_render_manifest"] == manifest
+    assert finalize_result["playback_assets"]["partial_render_analysis"] == analysis
     assert manifest["job_id"] == job.id
     assert manifest["pages"]["s1-p1"]["artifacts"] == {
         "tts_audio": f"{project.id}/audio/slide_001.mp3",
         "avatar_clip": "",
         "composed_segment": f"{project.id}/parts/part_001.mp4",
         "slide_image": f"{project.id}/images/slide_001.png",
+    }
+    assert analysis["version"] == 1
+    assert analysis["mode"] == "report_only"
+    assert analysis["generated_from"] == "partial_render_manifest"
+    assert analysis["classifier"]["available"] is False
+    assert analysis["classifier"]["notes"] == [
+        "old_playback_assets_missing",
+        "old_manifest_missing_or_invalid",
+    ]
+    assert analysis["classifier"]["result"]["global_reasons"] == ["unknown_requires_full"]
+    assert analysis["classifier"]["result"]["pages"]["s1-p1"]["classification"] == "unknown_requires_full"
+
+
+@pytest.mark.django_db
+def test_finalize_adds_deterministic_partial_render_analysis_from_previous_manifest(tmp_path, monkeypatch):
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("partial_analysis_owner")
+    project = Project.objects.create(title="Partial analysis lesson", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    old_result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="Old visible text",
+        narration_text="Narration analysis text",
+        project_id=project.id,
+    )
+    old_sidecar = {
+        "partial_render_manifest": build_partial_render_manifest(
+            project_id=project.id,
+            job_id=job.id - 1,
+            ordered_results=[old_result],
+            playback_assets={},
+            avatar_options=None,
+        )
+    }
+    sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(old_sidecar), encoding="utf-8")
+
+    result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="New visible text",
+        narration_text="Narration analysis text",
+        project_id=project.id,
+    )
+    result["part_path"] = str(tmp_path / str(project.id) / "parts" / "part_001.mp4")
+    result["slide_path"] = str(tmp_path / str(project.id) / "images" / "slide_001.png")
+    result["tts_audio_path"] = str(tmp_path / str(project.id) / "audio" / "slide_001.mp3")
+
+    finalize_result = worker_tasks.concat_and_finalize.run([result], str(project.id), False, None, job.id)
+
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    analysis = sidecar["partial_render_analysis"]
+    rebuilt_analysis = worker_tasks._build_partial_render_analysis_report(
+        previous_playback_assets=old_sidecar,
+        current_playback_assets=sidecar,
+    )
+    classifier = analysis["classifier"]
+    page_report = classifier["result"]["pages"]["s1-p1"]
+    assert finalize_result["playback_assets"]["partial_render_analysis"] == analysis
+    assert analysis == rebuilt_analysis
+    assert analysis == worker_tasks._build_partial_render_analysis_report(
+        previous_playback_assets=old_sidecar,
+        current_playback_assets=sidecar,
+    )
+    assert classifier["available"] is True
+    assert classifier["notes"] == []
+    assert classifier["result"]["global_reasons"] == []
+    assert page_report["classification"] == "display_text_changed"
+    assert page_report["reasons"] == ["display_text_changed"]
+    assert page_report["requires_full"] is False
+
+
+@pytest.mark.django_db
+def test_partial_render_analysis_failure_does_not_fail_finalize(tmp_path, monkeypatch):
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("partial_analysis_failure_owner")
+    project = Project.objects.create(title="Partial analysis failure lesson", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="Visible failure text",
+        narration_text="Narration failure text",
+        project_id=project.id,
+    )
+    part_path = tmp_path / str(project.id) / "parts" / "part_001.mp4"
+    result["part_path"] = str(part_path)
+    result["slide_path"] = str(tmp_path / str(project.id) / "images" / "slide_001.png")
+    result["tts_audio_path"] = str(tmp_path / str(project.id) / "audio" / "slide_001.mp3")
+
+    def fail_analysis(**_kwargs):
+        raise RuntimeError("analysis failed")
+
+    monkeypatch.setattr(worker_tasks, "_build_partial_render_analysis_report", fail_analysis)
+
+    finalize_result = worker_tasks.concat_and_finalize.run([result], str(project.id), False, None, job.id)
+
+    sidecar = json.loads((tmp_path / str(project.id) / "playback_assets.json").read_text(encoding="utf-8"))
+    job.refresh_from_db()
+    assert job.status == "done"
+    assert finalize_result["result_url"] == f"{project.id}/{project.id}.mp4"
+    assert finalize_result["parts"] == [str(part_path)]
+    assert sidecar["partial_render_manifest"]["pages"]["s1-p1"]["artifacts"]["composed_segment"] == f"{project.id}/parts/part_001.mp4"
+    assert sidecar["partial_render_analysis"] == {
+        "version": 1,
+        "mode": "report_only",
+        "generated_from": "partial_render_manifest",
+        "classifier": {
+            "available": False,
+            "result": None,
+            "notes": ["classification_failed"],
+        },
     }
