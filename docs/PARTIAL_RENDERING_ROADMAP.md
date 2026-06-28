@@ -16,6 +16,7 @@ Implemented today:
 - A pure report-only classifier can compare an old manifest with a newly built expected manifest and label dependency changes without changing render behavior.
 - `playback_assets.json` now surfaces report-only `partial_render_analysis` metadata from the old sidecar manifest and the newly finalized manifest for debugging and future optimization.
 - `partial_render_analysis.plan` now maps classifier output to report-only future planning actions without changing render behavior.
+- Targeted rerenders can now use a narrow worker-only visual recomposition optimization when the runtime-recomputed plan says every target page is visual-only.
 - `RenderFollowUpIntent` supports targeted and full follow-up requests while another render is active.
 
 Current safety rule:
@@ -27,9 +28,10 @@ Current safety rule:
 ## Current Limitations
 
 - Targeted rerender is page-key based, not dependency-hash based.
-- `partial_render_analysis` is visibility metadata only; it is not used for `rerender_page_keys`, TTS, avatar, composition, publish, or moderation decisions.
-- `partial_render_analysis.plan` is diagnostic only; it recommends future actions but does not skip or select any current render work.
-- Visual scene changes, background changes, layout changes, TTS settings changes, and avatar setting changes are represented for reporting only; they do not yet drive render decisions.
+- Stored `partial_render_analysis` is visibility metadata only; it is not trusted as command state for render decisions.
+- Visual-only targeted recomposition recomputes the expected manifest, classifier, and plan at worker runtime before it can run.
+- Visual-only optimization is all-or-nothing for the targeted page set. If any target page is not eligible, all targets use the existing slide render path.
+- TTS settings changes and avatar setting changes are represented for reporting only and still fall back to the existing render behavior.
 - The final lesson asset is still finalized after targeted work; the system does not yet publish independent immutable slide packages.
 - Structural timeline changes are intentionally conservative and still full rerender.
 
@@ -136,8 +138,10 @@ Structural reorder/delete/split/merge:
 
 ### Phase 2: Visual-only Targeting
 
-- Support display/background/layout changes that do not alter narration or timeline.
-- Keep fallback to full rerender when manifest data is missing or stale.
+- Support display/background/layout changes that do not alter narration, TTS, avatar inputs, or timeline. Implemented for targeted rerenders through a conservative worker-only visual segment recomposition path.
+- Reuse existing TTS audio and existing avatar clip metadata only when required artifacts exist, dependency hashes remain unchanged, and avatar-enabled lessons have a reusable prior avatar overlay track.
+- Keep fallback to the existing targeted slide render path when manifest data is missing, stale, mixed, or non-visual.
+- Limitations: targeted rerenders only, all-or-nothing gate, visual-only classifications only, no narration/TTS/avatar optimization yet, no Studio UI or API contract changes.
 
 ### Phase 3: Audio-aware Targeting
 
