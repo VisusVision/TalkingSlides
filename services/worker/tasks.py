@@ -60,7 +60,11 @@ from celery.signals import worker_ready  # noqa: E402
 
 from .avatar_timeout_policy import resolve_preview_task_time_limits  # noqa: E402
 from .celery_app import app  # noqa: E402
-from .partial_render_manifest import build_partial_render_manifest  # noqa: E402
+from .partial_render_manifest import (  # noqa: E402
+    build_partial_render_manifest,
+    build_partial_render_plan,
+    classify_partial_render_changes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1552,6 +1556,65 @@ def _write_playback_sidecar(project_id: str | int, payload: dict[str, Any]) -> s
 
 def _read_playback_sidecar(project_id: str | int) -> dict[str, Any]:
     return _read_json_sidecar(project_id, "playback_assets.json")
+
+
+def _is_partial_render_manifest_available(value: Any) -> bool:
+    try:
+        version = int(value.get("version") or 0) if isinstance(value, dict) else 0
+    except (TypeError, ValueError):
+        version = 0
+    return isinstance(value, dict) and version == 1 and isinstance(value.get("pages"), dict)
+
+
+def _partial_render_plan_failed_report() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "mode": "report_only",
+        "summary": {},
+        "pages": {},
+        "notes": ["plan_failed"],
+    }
+
+
+def _build_partial_render_analysis_report(
+    *,
+    previous_playback_assets: dict[str, Any] | None,
+    current_playback_assets: dict[str, Any],
+) -> dict[str, Any]:
+    previous_sidecar = previous_playback_assets if isinstance(previous_playback_assets, dict) else {}
+    current_sidecar = current_playback_assets if isinstance(current_playback_assets, dict) else {}
+    old_manifest = previous_sidecar.get("partial_render_manifest")
+    current_manifest = current_sidecar.get("partial_render_manifest")
+    old_available = _is_partial_render_manifest_available(old_manifest)
+    current_available = _is_partial_render_manifest_available(current_manifest)
+    notes: list[str] = []
+    if not previous_sidecar:
+        notes.append("old_playback_assets_missing")
+    if not old_available:
+        notes.append("old_manifest_missing_or_invalid")
+    if not current_available:
+        notes.append("current_manifest_missing_or_invalid")
+
+    classifier_result = classify_partial_render_changes(
+        old_manifest=old_manifest if old_available else None,
+        expected_manifest=current_manifest if current_available else None,
+    )
+    analysis = {
+        "version": 1,
+        "mode": "report_only",
+        "generated_from": "partial_render_manifest",
+        "classifier": {
+            "available": old_available and current_available,
+            "result": classifier_result,
+            "notes": notes,
+        },
+    }
+    try:
+        analysis["plan"] = build_partial_render_plan(classifier_result)
+    except Exception:
+        logger.warning("Partial render plan report failed", exc_info=True)
+        analysis["plan"] = _partial_render_plan_failed_report()
+    return analysis
 
 
 def _mark_playback_sidecar_avatar_queued(
@@ -7661,6 +7724,7 @@ def concat_and_finalize(
         len(results),
     )
     _update_render_job(project_id, job_id, progress=90)
+    previous_playback_assets = _read_playback_sidecar(project_id)
 
     try:
         # Sort by index — Celery preserves group order since v4, but defensive
@@ -7910,6 +7974,29 @@ def concat_and_finalize(
             playback_assets=playback_assets,
             avatar_options=avatar_options,
         )
+        try:
+            playback_assets["partial_render_analysis"] = _build_partial_render_analysis_report(
+                previous_playback_assets=previous_playback_assets,
+                current_playback_assets=playback_assets,
+            )
+        except Exception:
+            logger.warning(
+                "Partial render analysis report failed project=%s job_id=%s",
+                project_id,
+                job_id,
+                exc_info=True,
+            )
+            playback_assets["partial_render_analysis"] = {
+                "version": 1,
+                "mode": "report_only",
+                "generated_from": "partial_render_manifest",
+                "classifier": {
+                    "available": False,
+                    "result": None,
+                    "notes": ["classification_failed"],
+                },
+                "plan": _partial_render_plan_failed_report(),
+            }
 
         if use_draft:
             try:

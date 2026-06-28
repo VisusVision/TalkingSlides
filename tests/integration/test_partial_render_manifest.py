@@ -1,5 +1,6 @@
 # pyright: reportMissingImports=false
 
+from copy import deepcopy
 import json
 import os
 import sys
@@ -24,7 +25,10 @@ from django.contrib.auth.models import User  # noqa: E402
 from core.models import Job, Project, UserProfile  # noqa: E402
 from worker import tasks as worker_tasks  # noqa: E402
 from worker.partial_render_manifest import (  # noqa: E402
+    build_expected_partial_render_manifest,
     build_partial_render_manifest,
+    build_partial_render_plan,
+    classify_partial_render_changes,
     canonical_json,
     normalize_text,
     stable_hash,
@@ -134,6 +138,50 @@ def _playback_assets(project_id: int = 42) -> dict:
     }
 
 
+def _two_page_manifest(project_id: int = 42) -> dict:
+    first = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
+    second = _render_result(index=1, page_key="s2-p1", display_text="Visible two", narration_text="Narration two")
+    return build_partial_render_manifest(
+        project_id=project_id,
+        job_id=77,
+        ordered_results=[first, second],
+        playback_assets=_playback_assets(project_id),
+        avatar_options={"enabled": True, "teacher_id": 9},
+    )
+
+
+def _classification_page(
+    *,
+    page_key: str = "s1-p1",
+    classification: str = "unchanged",
+    reasons: list[str] | None = None,
+    index: int = 0,
+) -> dict:
+    return {
+        "page_key": page_key,
+        "index": index,
+        "old_index": index,
+        "classification": classification,
+        "reasons": list(reasons if reasons is not None else ([] if classification == "unchanged" else [classification])),
+        "changed_hashes": [],
+        "missing_artifacts": ["tts_audio"] if classification == "missing_artifact" else [],
+        "requires_full": classification in {"unknown_requires_full", "structural_changed"},
+    }
+
+
+def _classification_result(*pages: dict, global_reasons: list[str] | None = None) -> dict:
+    return {
+        "version": 1,
+        "old_manifest_hash": "sha256:old",
+        "expected_manifest_hash": "sha256:expected",
+        "old_sequence_hash": "sha256:old-sequence",
+        "expected_sequence_hash": "sha256:expected-sequence",
+        "global_reasons": list(global_reasons or []),
+        "summary": {},
+        "pages": {str(page["page_key"]): page for page in pages},
+    }
+
+
 def test_hash_helpers_are_stable():
     left = {"b": [2, 1], "a": {"z": True, "m": None}}
     right = {"a": {"m": None, "z": True}, "b": [2, 1]}
@@ -230,6 +278,299 @@ def test_manifest_fallback_page_key_and_targeted_merge_artifact_stability():
     )
 
 
+def test_classifier_identical_manifests_are_unchanged_even_when_job_hash_changes():
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["job_id"] = 999
+    expected_manifest["manifest_hash"] = stable_hash(
+        {key: value for key, value in expected_manifest.items() if key != "manifest_hash"}
+    )
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+
+    assert report["summary"]["unchanged"] == 2
+    assert report["summary"]["unknown_requires_full"] == 0
+    assert report["pages"]["s1-p1"]["classification"] == "unchanged"
+    assert report["pages"]["s2-p1"]["classification"] == "unchanged"
+
+
+@pytest.mark.parametrize(
+    ("hash_key", "reason", "requires_full"),
+    [
+        ("display_text_hash", "display_text_changed", False),
+        ("narration_text_hash", "narration_text_changed", False),
+        ("subtitle_text_hash", "subtitle_text_changed", False),
+        ("tts_input_hash", "tts_input_changed", False),
+        ("tts_settings_hash", "tts_settings_changed", False),
+        ("avatar_input_hash", "avatar_input_changed", False),
+        ("avatar_display_hash", "avatar_display_changed", False),
+        ("background_hash", "background_changed", False),
+        ("layout_hash", "layout_changed", False),
+        ("structural_hash", "structural_changed", True),
+        ("source_render_hash", "structural_changed", True),
+    ],
+)
+def test_classifier_maps_hash_fields_to_reasons(hash_key, reason, requires_full):
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["pages"]["s1-p1"][hash_key] = stable_hash({"changed": hash_key})
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+    page = report["pages"]["s1-p1"]
+
+    assert page["classification"] == reason
+    assert page["reasons"] == [reason]
+    assert page["changed_hashes"] == [hash_key]
+    assert page["requires_full"] is requires_full
+
+
+@pytest.mark.parametrize("old_manifest", [None, {"version": "legacy", "pages": []}])
+def test_classifier_missing_or_invalid_old_manifest_requires_full(old_manifest):
+    expected_manifest = _two_page_manifest()
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+
+    assert report["global_reasons"] == ["unknown_requires_full"]
+    assert report["summary"]["unknown_requires_full"] == 2
+    assert all(page["requires_full"] for page in report["pages"].values())
+
+
+def test_classifier_page_membership_changes_are_structural():
+    first = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
+    second = _render_result(index=1, page_key="s2-p1", display_text="Visible two", narration_text="Narration two")
+    third = _render_result(index=2, page_key="s3-p1", display_text="Visible three", narration_text="Narration three")
+    old_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first, second],
+        playback_assets=_playback_assets(42),
+    )
+    added_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first, second, third],
+        playback_assets=_playback_assets(42),
+    )
+    deleted_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first],
+        playback_assets=_playback_assets(42),
+    )
+
+    added_report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=added_manifest,
+    )
+    deleted_report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=deleted_manifest,
+    )
+
+    assert added_report["pages"]["s3-p1"]["classification"] == "structural_changed"
+    assert added_report["pages"]["s3-p1"]["requires_full"] is True
+    assert deleted_report["pages"]["s2-p1"]["classification"] == "structural_changed"
+    assert deleted_report["pages"]["s2-p1"]["requires_full"] is True
+
+
+def test_classifier_reordered_pages_are_structural():
+    first = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
+    second = _render_result(index=1, page_key="s2-p1", display_text="Visible two", narration_text="Narration two")
+    old_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[first, second],
+        playback_assets=_playback_assets(42),
+    )
+    reordered_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[second, first],
+        playback_assets=_playback_assets(42),
+    )
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=reordered_manifest,
+    )
+
+    assert report["global_reasons"] == ["structural_changed"]
+    assert report["pages"]["s1-p1"]["classification"] == "structural_changed"
+    assert report["pages"]["s2-p1"]["classification"] == "structural_changed"
+
+
+def test_classifier_missing_artifacts_do_not_require_full_by_themselves():
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["pages"]["s1-p1"]["artifacts"]["tts_audio"] = ""
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+    page = report["pages"]["s1-p1"]
+
+    assert page["classification"] == "missing_artifact"
+    assert page["reasons"] == ["missing_artifact"]
+    assert page["missing_artifacts"] == ["tts_audio"]
+    assert page["requires_full"] is False
+
+
+def test_classifier_orders_multiple_reasons_counts_summary_and_does_not_mutate_inputs():
+    old_manifest = _two_page_manifest()
+    expected_manifest = deepcopy(old_manifest)
+    expected_manifest["pages"]["s1-p1"]["display_text_hash"] = stable_hash("display changed")
+    expected_manifest["pages"]["s1-p1"]["layout_hash"] = stable_hash("layout changed")
+    expected_manifest["pages"]["s1-p1"]["artifacts"]["slide_image"] = ""
+    old_before = deepcopy(old_manifest)
+    expected_before = deepcopy(expected_manifest)
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+    page = report["pages"]["s1-p1"]
+
+    assert page["classification"] == "display_text_changed"
+    assert page["reasons"] == ["display_text_changed", "layout_changed", "missing_artifact"]
+    assert page["changed_hashes"] == ["display_text_hash", "layout_hash"]
+    assert report["summary"]["display_text_changed"] == 1
+    assert report["summary"]["unchanged"] == 1
+    assert old_manifest == old_before
+    assert expected_manifest == expected_before
+
+
+@pytest.mark.parametrize(
+    ("classification", "reasons", "expected_action"),
+    [
+        ("unchanged", [], "reuse_all"),
+        ("display_text_changed", ["display_text_changed"], "recompose_visual_only_future"),
+        ("background_changed", ["background_changed"], "recompose_visual_only_future"),
+        ("layout_changed", ["layout_changed"], "recompose_visual_only_future"),
+        ("narration_text_changed", ["narration_text_changed"], "rerun_tts_avatar_future"),
+        ("subtitle_text_changed", ["subtitle_text_changed"], "rerun_tts_avatar_future"),
+        ("tts_input_changed", ["tts_input_changed"], "rerun_tts_avatar_future"),
+        ("tts_settings_changed", ["tts_settings_changed"], "rerun_tts_avatar_future"),
+        ("avatar_input_changed", ["avatar_input_changed"], "rerun_avatar_future"),
+        ("avatar_display_changed", ["avatar_display_changed"], "metadata_only_future"),
+        ("missing_artifact", ["missing_artifact"], "rerender_page_future"),
+        ("structural_changed", ["structural_changed"], "full_rerender_required_future"),
+        ("unknown_requires_full", ["unknown_requires_full"], "full_rerender_required_future"),
+    ],
+)
+def test_partial_render_plan_maps_classifications_to_report_only_future_actions(
+    classification,
+    reasons,
+    expected_action,
+):
+    plan = build_partial_render_plan(
+        _classification_result(
+            _classification_page(classification=classification, reasons=reasons),
+            global_reasons=["unknown_requires_full"] if classification == "unknown_requires_full" else [],
+        )
+    )
+    page = plan["pages"]["s1-p1"]
+
+    assert plan["version"] == 1
+    assert plan["mode"] == "report_only"
+    assert page["recommended_action"] == expected_action
+    assert page["future_only"] is True
+    assert page["actual_behavior_changed"] is False
+    assert plan["summary"][expected_action] == 1
+    assert plan["summary"]["unknown_requires_full"] == (1 if classification == "unknown_requires_full" else 0)
+
+
+def test_partial_render_plan_multiple_reasons_choose_safest_action_deterministically():
+    missing_over_tts = _classification_result(
+        _classification_page(
+            classification="display_text_changed",
+            reasons=[
+                "avatar_display_changed",
+                "display_text_changed",
+                "tts_input_changed",
+                "missing_artifact",
+            ],
+        )
+    )
+    full_over_missing = _classification_result(
+        _classification_page(
+            page_key="s2-p1",
+            classification="structural_changed",
+            reasons=["missing_artifact", "structural_changed", "display_text_changed"],
+            index=1,
+        )
+    )
+
+    missing_plan = build_partial_render_plan(missing_over_tts)
+    rebuilt_missing_plan = build_partial_render_plan(missing_over_tts)
+    full_plan = build_partial_render_plan(full_over_missing)
+
+    assert missing_plan == rebuilt_missing_plan
+    assert missing_plan["pages"]["s1-p1"]["recommended_action"] == "rerender_page_future"
+    assert missing_plan["summary"]["rerender_page_future"] == 1
+    assert full_plan["pages"]["s2-p1"]["recommended_action"] == "full_rerender_required_future"
+    assert full_plan["summary"]["full_rerender_required_future"] == 1
+
+
+def test_expected_manifest_builder_uses_new_slide_inputs_and_reuses_artifacts_by_page_key_only():
+    previous_playback_assets = {
+        "final_segments": [
+            {
+                "index": 0,
+                "page_key": "old-position-key",
+                "tts_audio": "42/audio/old-position.mp3",
+                "avatar_clip": "42/avatar_segments/old-position.mp4",
+                "part_rel_path": "42/parts/old-position.mp4",
+                "slide": "42/images/old-position.png",
+            },
+            {
+                "index": 1,
+                "page_key": "new-key",
+                "tts_audio": "42/audio/new-key.mp3",
+                "avatar_clip": "42/avatar_segments/new-key.mp4",
+                "part_rel_path": "42/parts/new-key.mp4",
+                "slide": "42/images/new-key.png",
+            },
+        ]
+    }
+
+    manifest = build_expected_partial_render_manifest(
+        project_id=42,
+        job_id=88,
+        slides=[
+            {
+                "index": 0,
+                "slide_num": 1,
+                "page_key": "new-key",
+                "page_id": 500,
+                "display_text": "New display",
+                "narration_text": "New narration",
+                "subtitle_chunks": ["New narration"],
+                "duration": 4.0,
+                "pause_seconds": 0.5,
+                "tts_settings": {"provider_preference": "gtts"},
+            }
+        ],
+        previous_playback_assets=previous_playback_assets,
+        avatar_options={"enabled": True, "teacher_id": 9, "default_position": "bottom-left"},
+    )
+
+    assert list(manifest["pages"]) == ["new-key"]
+    page = manifest["pages"]["new-key"]
+    assert page["display_text_hash"] == stable_hash("New display")
+    assert page["narration_text_hash"] == stable_hash("New narration")
+    assert page["artifacts"] == {
+        "tts_audio": "42/audio/new-key.mp3",
+        "avatar_clip": "42/avatar_segments/new-key.mp4",
+        "composed_segment": "42/parts/new-key.mp4",
+        "slide_image": "42/images/new-key.png",
+    }
+
+
 def _patch_finalize_side_effects(monkeypatch, tmp_path):
     from scripts import ffmpeg_helpers
 
@@ -299,15 +640,208 @@ def test_finalize_adds_manifest_without_removing_playback_sidecar_fields(tmp_pat
     sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
     manifest = sidecar["partial_render_manifest"]
+    analysis = sidecar["partial_render_analysis"]
     assert sidecar["mp4_rel_path"] == f"{project.id}/{project.id}.mp4"
     assert sidecar["srt_rel_path"] == f"{project.id}/{project.id}.srt"
     assert sidecar["vtt_rel_path"] == f"{project.id}/{project.id}.vtt"
     assert sidecar["final_segments"][0]["part_rel_path"] == f"{project.id}/parts/part_001.mp4"
     assert finalize_result["playback_assets"]["partial_render_manifest"] == manifest
+    assert finalize_result["playback_assets"]["partial_render_analysis"] == analysis
     assert manifest["job_id"] == job.id
     assert manifest["pages"]["s1-p1"]["artifacts"] == {
         "tts_audio": f"{project.id}/audio/slide_001.mp3",
         "avatar_clip": "",
         "composed_segment": f"{project.id}/parts/part_001.mp4",
         "slide_image": f"{project.id}/images/slide_001.png",
+    }
+    assert analysis["version"] == 1
+    assert analysis["mode"] == "report_only"
+    assert analysis["generated_from"] == "partial_render_manifest"
+    assert analysis["classifier"]["available"] is False
+    assert analysis["classifier"]["notes"] == [
+        "old_playback_assets_missing",
+        "old_manifest_missing_or_invalid",
+    ]
+    assert analysis["classifier"]["result"]["global_reasons"] == ["unknown_requires_full"]
+    assert analysis["classifier"]["result"]["pages"]["s1-p1"]["classification"] == "unknown_requires_full"
+    assert analysis["plan"]["pages"]["s1-p1"]["recommended_action"] == "full_rerender_required_future"
+    assert analysis["plan"]["pages"]["s1-p1"]["future_only"] is True
+    assert analysis["plan"]["pages"]["s1-p1"]["actual_behavior_changed"] is False
+    assert analysis["plan"]["summary"]["full_rerender_required_future"] == 1
+    assert analysis["plan"]["summary"]["unknown_requires_full"] == 1
+
+
+@pytest.mark.django_db
+def test_finalize_adds_deterministic_partial_render_analysis_from_previous_manifest(tmp_path, monkeypatch):
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("partial_analysis_owner")
+    project = Project.objects.create(title="Partial analysis lesson", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    old_result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="Old visible text",
+        narration_text="Narration analysis text",
+        project_id=project.id,
+    )
+    old_sidecar = {
+        "partial_render_manifest": build_partial_render_manifest(
+            project_id=project.id,
+            job_id=job.id - 1,
+            ordered_results=[old_result],
+            playback_assets={},
+            avatar_options=None,
+        )
+    }
+    sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(old_sidecar), encoding="utf-8")
+
+    result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="New visible text",
+        narration_text="Narration analysis text",
+        project_id=project.id,
+    )
+    result["part_path"] = str(tmp_path / str(project.id) / "parts" / "part_001.mp4")
+    result["slide_path"] = str(tmp_path / str(project.id) / "images" / "slide_001.png")
+    result["tts_audio_path"] = str(tmp_path / str(project.id) / "audio" / "slide_001.mp3")
+
+    finalize_result = worker_tasks.concat_and_finalize.run([result], str(project.id), False, None, job.id)
+
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    analysis = sidecar["partial_render_analysis"]
+    rebuilt_analysis = worker_tasks._build_partial_render_analysis_report(
+        previous_playback_assets=old_sidecar,
+        current_playback_assets=sidecar,
+    )
+    classifier = analysis["classifier"]
+    page_report = classifier["result"]["pages"]["s1-p1"]
+    assert finalize_result["playback_assets"]["partial_render_analysis"] == analysis
+    assert analysis == rebuilt_analysis
+    assert analysis == worker_tasks._build_partial_render_analysis_report(
+        previous_playback_assets=old_sidecar,
+        current_playback_assets=sidecar,
+    )
+    assert classifier["available"] is True
+    assert classifier["notes"] == []
+    assert classifier["result"]["global_reasons"] == []
+    assert page_report["classification"] == "display_text_changed"
+    assert page_report["reasons"] == ["display_text_changed"]
+    assert page_report["requires_full"] is False
+    assert analysis["plan"]["pages"]["s1-p1"]["recommended_action"] == "recompose_visual_only_future"
+    assert analysis["plan"]["pages"]["s1-p1"]["future_only"] is True
+    assert analysis["plan"]["pages"]["s1-p1"]["actual_behavior_changed"] is False
+    assert analysis["plan"]["summary"]["recompose_visual_only_future"] == 1
+
+
+@pytest.mark.django_db
+def test_partial_render_plan_failure_does_not_fail_finalize(tmp_path, monkeypatch):
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("partial_plan_failure_owner")
+    project = Project.objects.create(title="Partial plan failure lesson", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    old_result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="Old visible text",
+        narration_text="Narration plan text",
+        project_id=project.id,
+    )
+    old_sidecar = {
+        "partial_render_manifest": build_partial_render_manifest(
+            project_id=project.id,
+            job_id=job.id - 1,
+            ordered_results=[old_result],
+            playback_assets={},
+            avatar_options=None,
+        )
+    }
+    sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(old_sidecar), encoding="utf-8")
+
+    result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="New visible text",
+        narration_text="Narration plan text",
+        project_id=project.id,
+    )
+    part_path = tmp_path / str(project.id) / "parts" / "part_001.mp4"
+    result["part_path"] = str(part_path)
+    result["slide_path"] = str(tmp_path / str(project.id) / "images" / "slide_001.png")
+    result["tts_audio_path"] = str(tmp_path / str(project.id) / "audio" / "slide_001.mp3")
+
+    def fail_plan(_classifier_result):
+        raise RuntimeError("plan failed")
+
+    monkeypatch.setattr(worker_tasks, "build_partial_render_plan", fail_plan)
+
+    finalize_result = worker_tasks.concat_and_finalize.run([result], str(project.id), False, None, job.id)
+
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    job.refresh_from_db()
+    analysis = sidecar["partial_render_analysis"]
+    assert job.status == "done"
+    assert finalize_result["result_url"] == f"{project.id}/{project.id}.mp4"
+    assert finalize_result["parts"] == [str(part_path)]
+    assert analysis["classifier"]["result"]["pages"]["s1-p1"]["classification"] == "display_text_changed"
+    assert analysis["plan"] == {
+        "version": 1,
+        "mode": "report_only",
+        "summary": {},
+        "pages": {},
+        "notes": ["plan_failed"],
+    }
+
+
+@pytest.mark.django_db
+def test_partial_render_analysis_failure_does_not_fail_finalize(tmp_path, monkeypatch):
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("partial_analysis_failure_owner")
+    project = Project.objects.create(title="Partial analysis failure lesson", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="Visible failure text",
+        narration_text="Narration failure text",
+        project_id=project.id,
+    )
+    part_path = tmp_path / str(project.id) / "parts" / "part_001.mp4"
+    result["part_path"] = str(part_path)
+    result["slide_path"] = str(tmp_path / str(project.id) / "images" / "slide_001.png")
+    result["tts_audio_path"] = str(tmp_path / str(project.id) / "audio" / "slide_001.mp3")
+
+    def fail_analysis(**_kwargs):
+        raise RuntimeError("analysis failed")
+
+    monkeypatch.setattr(worker_tasks, "_build_partial_render_analysis_report", fail_analysis)
+
+    finalize_result = worker_tasks.concat_and_finalize.run([result], str(project.id), False, None, job.id)
+
+    sidecar = json.loads((tmp_path / str(project.id) / "playback_assets.json").read_text(encoding="utf-8"))
+    job.refresh_from_db()
+    assert job.status == "done"
+    assert finalize_result["result_url"] == f"{project.id}/{project.id}.mp4"
+    assert finalize_result["parts"] == [str(part_path)]
+    assert sidecar["partial_render_manifest"]["pages"]["s1-p1"]["artifacts"]["composed_segment"] == f"{project.id}/parts/part_001.mp4"
+    assert sidecar["partial_render_analysis"] == {
+        "version": 1,
+        "mode": "report_only",
+        "generated_from": "partial_render_manifest",
+        "classifier": {
+            "available": False,
+            "result": None,
+            "notes": ["classification_failed"],
+        },
+        "plan": {
+            "version": 1,
+            "mode": "report_only",
+            "summary": {},
+            "pages": {},
+            "notes": ["plan_failed"],
+        },
     }
