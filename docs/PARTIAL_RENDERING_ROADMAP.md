@@ -15,6 +15,7 @@ Implemented today:
 - `playback_assets.json` now includes report-only `partial_render_manifest` metadata with deterministic per-page dependency hashes.
 - A pure report-only classifier can compare an old manifest with a newly built expected manifest and label dependency changes without changing render behavior.
 - `playback_assets.json` now surfaces report-only `partial_render_analysis` metadata from the old sidecar manifest and the newly finalized manifest for debugging and future optimization.
+- `partial_render_analysis.plan` now maps classifier output to report-only future planning actions without changing render behavior.
 - `RenderFollowUpIntent` supports targeted and full follow-up requests while another render is active.
 
 Current safety rule:
@@ -27,6 +28,7 @@ Current safety rule:
 
 - Targeted rerender is page-key based, not dependency-hash based.
 - `partial_render_analysis` is visibility metadata only; it is not used for `rerender_page_keys`, TTS, avatar, composition, publish, or moderation decisions.
+- `partial_render_analysis.plan` is diagnostic only; it recommends future actions but does not skip or select any current render work.
 - Visual scene changes, background changes, layout changes, TTS settings changes, and avatar setting changes are represented for reporting only; they do not yet drive render decisions.
 - The final lesson asset is still finalized after targeted work; the system does not yet publish independent immutable slide packages.
 - Structural timeline changes are intentionally conservative and still full rerender.
@@ -129,6 +131,7 @@ Structural reorder/delete/split/merge:
 - Add manifest generation in report-only mode. Implemented for `playback_assets.json`.
 - Add report-only manifest change classification. Implemented as pure helper logic only.
 - Surface classifier visibility/reporting in `playback_assets.json` as `partial_render_analysis`. Implemented in report-only mode.
+- Add report-only future planning from classifier output. Implemented as `partial_render_analysis.plan`.
 - Compare manifest decisions against current rerender behavior without changing output.
 
 ### Phase 2: Visual-only Targeting

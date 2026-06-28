@@ -36,6 +36,16 @@ PARTIAL_RENDER_REASONS = (
     "unknown_requires_full",
 )
 
+PARTIAL_RENDER_PLAN_ACTIONS = (
+    "reuse_all",
+    "metadata_only_future",
+    "recompose_visual_only_future",
+    "rerun_avatar_future",
+    "rerun_tts_avatar_future",
+    "rerender_page_future",
+    "full_rerender_required_future",
+)
+
 CLASSIFICATION_REASON_PRIORITY = (
     "unknown_requires_full",
     "structural_changed",
@@ -63,6 +73,22 @@ HASH_REASON_MAP = {
     "layout_hash": "layout_changed",
     "structural_hash": "structural_changed",
     "source_render_hash": "structural_changed",
+}
+
+_PLAN_VISUAL_REASONS = {
+    "display_text_changed",
+    "background_changed",
+    "layout_changed",
+}
+_PLAN_TTS_REASONS = {
+    "narration_text_changed",
+    "subtitle_text_changed",
+    "tts_input_changed",
+    "tts_settings_changed",
+}
+_PLAN_FULL_REASONS = {
+    "unknown_requires_full",
+    "structural_changed",
 }
 
 
@@ -579,6 +605,120 @@ def classify_partial_render_changes(
         "summary": summary,
         "pages": pages,
     }
+
+
+def build_partial_render_plan(classification_result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Map report-only classifications to future recommended actions."""
+
+    summary = _empty_plan_summary()
+    pages: dict[str, dict[str, Any]] = {}
+    if not isinstance(classification_result, Mapping):
+        summary["full_rerender_required_future"] += 1
+        summary["unknown_requires_full"] += 1
+        return {
+            "version": 1,
+            "mode": "report_only",
+            "summary": summary,
+            "pages": pages,
+        }
+
+    report_pages = _classification_report_pages(classification_result)
+    for page_key, page in sorted(report_pages.items(), key=_plan_page_sort_key):
+        classification = _plan_classification(page)
+        reasons = _plan_reasons(page, classification)
+        recommended_action = _partial_render_plan_action(reasons)
+        summary[recommended_action] += 1
+        if "unknown_requires_full" in reasons:
+            summary["unknown_requires_full"] += 1
+        pages[page_key] = {
+            "page_key": page_key,
+            "classification": classification,
+            "reasons": reasons,
+            "recommended_action": recommended_action,
+            "future_only": True,
+            "actual_behavior_changed": False,
+        }
+
+    if not pages:
+        global_reasons = _ordered_reasons(_sequence_of_strings(classification_result.get("global_reasons")))
+        if "unknown_requires_full" in global_reasons:
+            summary["full_rerender_required_future"] += 1
+            summary["unknown_requires_full"] += 1
+        elif "structural_changed" in global_reasons:
+            summary["full_rerender_required_future"] += 1
+
+    return {
+        "version": 1,
+        "mode": "report_only",
+        "summary": summary,
+        "pages": pages,
+    }
+
+
+def _empty_plan_summary() -> dict[str, int]:
+    summary = {action: 0 for action in PARTIAL_RENDER_PLAN_ACTIONS}
+    summary["unknown_requires_full"] = 0
+    return summary
+
+
+def _classification_report_pages(classification_result: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    pages = classification_result.get("pages")
+    if not isinstance(pages, Mapping):
+        return {}
+    return {
+        str(key): dict(page)
+        for key, page in pages.items()
+        if isinstance(page, Mapping)
+    }
+
+
+def _plan_page_sort_key(item: tuple[str, Mapping[str, Any]]) -> tuple[bool, int, str]:
+    page_key, page = item
+    index = _page_index(page)
+    return (index is None, int(index or 0), str(page_key))
+
+
+def _plan_classification(page: Mapping[str, Any]) -> str:
+    classification = str(page.get("classification") or "").strip()
+    if classification in PARTIAL_RENDER_REASONS:
+        return classification
+    return "unknown_requires_full" if classification else "unchanged"
+
+
+def _plan_reasons(page: Mapping[str, Any], classification: str) -> list[str]:
+    reasons = [
+        reason
+        for reason in _sequence_of_strings(page.get("reasons"))
+        if reason in PARTIAL_RENDER_REASONS and reason != "unchanged"
+    ]
+    if classification != "unchanged" and classification in PARTIAL_RENDER_REASONS:
+        reasons.append(classification)
+    return _ordered_reasons(reasons)
+
+
+def _partial_render_plan_action(reasons: Iterable[str]) -> str:
+    reason_set = {str(reason) for reason in reasons if str(reason)}
+    if reason_set & _PLAN_FULL_REASONS:
+        return "full_rerender_required_future"
+    if "missing_artifact" in reason_set:
+        return "rerender_page_future"
+    if reason_set & _PLAN_TTS_REASONS:
+        return "rerun_tts_avatar_future"
+    if "avatar_input_changed" in reason_set:
+        return "rerun_avatar_future"
+    if reason_set & _PLAN_VISUAL_REASONS:
+        return "recompose_visual_only_future"
+    if "avatar_display_changed" in reason_set:
+        return "metadata_only_future"
+    return "reuse_all"
+
+
+def _sequence_of_strings(value: Any) -> list[str]:
+    if value is None or isinstance(value, (str, bytes, Mapping)):
+        return []
+    if not isinstance(value, Iterable):
+        return []
+    return [str(item) for item in value if str(item)]
 
 
 def _canonical_value(value: Any) -> Any:

@@ -62,6 +62,7 @@ from .avatar_timeout_policy import resolve_preview_task_time_limits  # noqa: E40
 from .celery_app import app  # noqa: E402
 from .partial_render_manifest import (  # noqa: E402
     build_partial_render_manifest,
+    build_partial_render_plan,
     classify_partial_render_changes,
 )
 
@@ -1565,6 +1566,16 @@ def _is_partial_render_manifest_available(value: Any) -> bool:
     return isinstance(value, dict) and version == 1 and isinstance(value.get("pages"), dict)
 
 
+def _partial_render_plan_failed_report() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "mode": "report_only",
+        "summary": {},
+        "pages": {},
+        "notes": ["plan_failed"],
+    }
+
+
 def _build_partial_render_analysis_report(
     *,
     previous_playback_assets: dict[str, Any] | None,
@@ -1584,19 +1595,26 @@ def _build_partial_render_analysis_report(
     if not current_available:
         notes.append("current_manifest_missing_or_invalid")
 
-    return {
+    classifier_result = classify_partial_render_changes(
+        old_manifest=old_manifest if old_available else None,
+        expected_manifest=current_manifest if current_available else None,
+    )
+    analysis = {
         "version": 1,
         "mode": "report_only",
         "generated_from": "partial_render_manifest",
         "classifier": {
             "available": old_available and current_available,
-            "result": classify_partial_render_changes(
-                old_manifest=old_manifest if old_available else None,
-                expected_manifest=current_manifest if current_available else None,
-            ),
+            "result": classifier_result,
             "notes": notes,
         },
     }
+    try:
+        analysis["plan"] = build_partial_render_plan(classifier_result)
+    except Exception:
+        logger.warning("Partial render plan report failed", exc_info=True)
+        analysis["plan"] = _partial_render_plan_failed_report()
+    return analysis
 
 
 def _mark_playback_sidecar_avatar_queued(
@@ -7977,6 +7995,7 @@ def concat_and_finalize(
                     "result": None,
                     "notes": ["classification_failed"],
                 },
+                "plan": _partial_render_plan_failed_report(),
             }
 
         if use_draft:
