@@ -1,6 +1,7 @@
 # pyright: reportMissingImports=false
 
 from io import BytesIO
+import json
 import os
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
 from core import views as core_views  # noqa: E402
-from core.models import Job, Project, TranscriptPage, UserProfile  # noqa: E402
+from core.models import Job, Project, RenderFollowUpIntent, TranscriptPage, UserProfile  # noqa: E402
 
 
 def _png_bytes() -> bytes:
@@ -186,3 +187,135 @@ def test_metadata_only_edit_does_not_render_video(tmp_path):
 
     assert response.status_code == 200
     assert Job.objects.filter(project=project, job_type="video_export").count() == before
+
+
+@pytest.mark.django_db
+def test_project_detail_exposes_sanitized_latest_render_analysis(tmp_path):
+    owner = _make_user("partial_analysis_detail_owner")
+    project = _make_project(owner, tmp_path)
+    before_jobs = Job.objects.filter(project=project, job_type="video_export").count()
+    before_intents = RenderFollowUpIntent.objects.filter(project=project).count()
+    sidecar_dir = tmp_path / str(project.id)
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "playback_assets.json").write_text(
+        json.dumps(
+            {
+                "partial_render_analysis": {
+                    "version": 1,
+                    "mode": "report_only",
+                    "generated_from": "partial_render_manifest",
+                    "old_manifest": {"artifacts": {"tts_audio": f"{project.id}/audio/private.mp3"}},
+                    "classifier": {
+                        "available": True,
+                        "notes": ["old_playback_assets_missing", f"{project.id}/audio/private.mp3"],
+                        "result": {
+                            "summary": {
+                                "display_text_changed": 1,
+                                "bad/key": 7,
+                            },
+                            "global_reasons": [],
+                            "pages": {
+                                "slide-1": {
+                                    "page_key": "slide-1",
+                                    "index": 0,
+                                    "classification": "display_text_changed",
+                                    "reasons": ["display_text_changed", f"{project.id}/parts/part_001.mp4"],
+                                    "requires_full": False,
+                                    "missing_artifacts": [
+                                        "tts_audio",
+                                        "slide_image",
+                                        f"{project.id}/audio/slide_001.mp3",
+                                        "C:/secret/audio.mp3",
+                                    ],
+                                    "artifacts": {"composed_segment": f"{project.id}/parts/part_001.mp4"},
+                                }
+                            },
+                        },
+                    },
+                    "plan": {
+                        "version": 1,
+                        "mode": "report_only",
+                        "summary": {"recompose_visual_only_future": 1},
+                        "pages": {
+                            "slide-1": {
+                                "page_key": "slide-1",
+                                "classification": "display_text_changed",
+                                "reasons": ["display_text_changed"],
+                                "recommended_action": "recompose_visual_only_future",
+                                "future_only": True,
+                                "actual_behavior_changed": False,
+                            }
+                        },
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = _client(owner).get(f"/api/v1/projects/{project.id}/")
+
+    assert response.status_code == 200
+    analysis = response.data["latest_render_analysis"]
+    assert analysis["mode"] == "report_only"
+    assert analysis["classifier"]["available"] is True
+    assert analysis["classifier"]["summary"] == {"display_text_changed": 1}
+    assert analysis["classifier"]["pages"]["slide-1"] == {
+        "page_key": "slide-1",
+        "index": 0,
+        "classification": "display_text_changed",
+        "reasons": ["display_text_changed"],
+        "requires_full": False,
+        "missing_artifacts": ["tts_audio", "slide_image"],
+        "missing_artifact_count": 2,
+    }
+    assert analysis["plan"]["summary"] == {"recompose_visual_only_future": 1}
+    assert analysis["plan"]["pages"]["slide-1"]["recommended_action"] == "recompose_visual_only_future"
+    serialized = json.dumps(analysis)
+    assert "audio/private.mp3" not in serialized
+    assert "parts/part_001.mp4" not in serialized
+    assert "C:/secret" not in serialized
+    assert Job.objects.filter(project=project, job_type="video_export").count() == before_jobs
+    assert RenderFollowUpIntent.objects.filter(project=project).count() == before_intents
+
+
+@pytest.mark.django_db
+def test_project_detail_latest_render_analysis_missing_or_invalid_sidecar_returns_null(tmp_path):
+    owner = _make_user("partial_analysis_missing_owner")
+    missing_project = _make_project(owner, tmp_path)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        missing_response = _client(owner).get(f"/api/v1/projects/{missing_project.id}/")
+
+    assert missing_response.status_code == 200
+    assert missing_response.data["latest_render_analysis"] is None
+
+    invalid_project = _make_project(owner, tmp_path)
+    sidecar_dir = tmp_path / str(invalid_project.id)
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "playback_assets.json").write_text("{", encoding="utf-8")
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        invalid_response = _client(owner).get(f"/api/v1/projects/{invalid_project.id}/")
+
+    assert invalid_response.status_code == 200
+    assert invalid_response.data["latest_render_analysis"] is None
+
+
+@pytest.mark.django_db
+def test_project_list_does_not_expose_or_read_latest_render_analysis(monkeypatch, tmp_path):
+    owner = _make_user("partial_analysis_list_owner")
+    project = _make_project(owner, tmp_path)
+
+    def fail_sidecar_read(*_args, **_kwargs):
+        raise AssertionError("project list must not read playback_assets.json")
+
+    monkeypatch.setattr(core_views, "_playback_sidecar_for_job", fail_sidecar_read)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = _client(owner).get("/api/v1/projects/")
+
+    assert response.status_code == 200
+    row = next(item for item in response.data if item["id"] == project.id)
+    assert "latest_render_analysis" not in row

@@ -17,6 +17,7 @@ Implemented today:
 - `playback_assets.json` now surfaces report-only `partial_render_analysis` metadata from the old sidecar manifest and the newly finalized manifest for debugging and future optimization.
 - `partial_render_analysis.plan` now maps classifier output to report-only future planning actions without changing render behavior.
 - Targeted rerenders can now use a narrow worker-only visual recomposition optimization when the runtime-recomputed plan says every target page is visual-only.
+- Project detail exposes sanitized last completed render analysis as `latest_render_analysis`, and Studio shows a diagnostic-only "Last render analysis" panel for the selected lesson.
 - `RenderFollowUpIntent` supports targeted and full follow-up requests while another render is active.
 
 Current safety rule:
@@ -29,6 +30,7 @@ Current safety rule:
 
 - Targeted rerender is page-key based, not dependency-hash based.
 - Stored `partial_render_analysis` is visibility metadata only; it is not trusted as command state for render decisions.
+- Studio/API visibility shows only the last completed render analysis. Predicted pre-rerender draft/current comparison is deferred.
 - Visual-only targeted recomposition recomputes the expected manifest, classifier, and plan at worker runtime before it can run.
 - Visual-only optimization is all-or-nothing for the targeted page set. If any target page is not eligible, all targets use the existing slide render path.
 - TTS settings changes and avatar setting changes are represented for reporting only and still fall back to the existing render behavior.
@@ -134,6 +136,7 @@ Structural reorder/delete/split/merge:
 - Add report-only manifest change classification. Implemented as pure helper logic only.
 - Surface classifier visibility/reporting in `playback_assets.json` as `partial_render_analysis`. Implemented in report-only mode.
 - Add report-only future planning from classifier output. Implemented as `partial_render_analysis.plan`.
+- Expose sanitized last completed render analysis in project detail and Studio. Implemented as diagnostic-only `latest_render_analysis`; it does not expose artifact paths.
 - Compare manifest decisions against current rerender behavior without changing output.
 
 ### Phase 2: Visual-only Targeting
@@ -141,7 +144,7 @@ Structural reorder/delete/split/merge:
 - Support display/background/layout changes that do not alter narration, TTS, avatar inputs, or timeline. Implemented for targeted rerenders through a conservative worker-only visual segment recomposition path.
 - Reuse existing TTS audio and existing avatar clip metadata only when required artifacts exist, dependency hashes remain unchanged, and avatar-enabled lessons have a reusable prior avatar overlay track.
 - Keep fallback to the existing targeted slide render path when manifest data is missing, stale, mixed, or non-visual.
-- Limitations: targeted rerenders only, all-or-nothing gate, visual-only classifications only, no narration/TTS/avatar optimization yet, no Studio UI or API contract changes.
+- Limitations: targeted rerenders only, all-or-nothing gate, visual-only classifications only, no narration/TTS/avatar optimization yet, and no predicted pre-rerender Studio/API plan.
 
 ### Phase 3: Audio-aware Targeting
 
