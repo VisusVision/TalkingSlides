@@ -174,6 +174,7 @@ docker compose -f infra\docker-compose.yml --profile avatar logs -f worker-avata
 
 When validating a built heavy worker image, import checks should run inside the container, not the Windows virtual environment.
 The avatar helper prints the online OpenMMLab build, local wheel/cache build, `MMCV_WHEEL_URL` build, prebuilt image tag path, model bundle paths under `storage_local\models`, and throwaway-queue smoke commands without executing any of them.
+`worker-avatar` keeps persistent model paths under `storage_local\models` and `/opt/liveportrait/pretrained_weights`, but routes volatile parser/runtime caches such as YAPF, Matplotlib, and Numba to `/tmp/visus-cache` so Windows bind-mounted cache files cannot block bootstrap.
 
 Known gaps:
 

@@ -651,6 +651,7 @@ For local Windows planning, print the strategy first:
 ```
 
 The helper is intentionally non-destructive. It prints the online build, local `local_wheels/` build, pinned wheel URL build, prebuilt image tag path, `storage_local\models` model bundle expectations, `windows-runtime.ps1 -Profile avatar` start command, and future smoke commands. It does not run Docker build/pull/up/run commands, install packages, download models, start `worker-avatar`, or consume the real `avatar` queue.
+`worker-avatar` uses `/tmp/visus-cache` for volatile parser/runtime caches (`XDG_CACHE_HOME`, `MPLCONFIGDIR`, and `NUMBA_CACHE_DIR`) while keeping model bundles and runtime artifacts on their existing persistent paths. Do not repair YAPF or OpenMMLab parser cache failures by installing packages into the Windows virtual environment or by broadly chmod/chowning `storage_local`.
 
 Use the OpenMMLab index when the network can reach it:
 
