@@ -8,7 +8,7 @@ Current reality:
 - `scripts/windows-dev-start.ps1` starts selected Compose services by name.
 - `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing, building, or starting services.
 - `scripts/windows-runtime-health.ps1` summarizes already-running services and HTTP endpoints without starting, rebuilding, or pulling anything.
-- `infra/docker-compose.yml` currently has one explicit Compose profile: `translation` for `libretranslate`.
+- `infra/docker-compose.yml` currently has explicit Compose profiles for optional services: `translation` for `libretranslate` and `avatar` for `worker-avatar`.
 - Ollama currently runs on the host unless a future Compose service is added.
 - Avatar worker dependencies belong in the Docker worker image, not the Windows virtual environment.
 - Docker smoke CI intentionally avoids the full heavy avatar runtime.
@@ -150,7 +150,7 @@ Services:
 - Core services.
 - `tts_service`.
 - `worker`.
-- `worker-avatar`.
+- `worker-avatar` behind the Compose `avatar` profile.
 
 Host requirements:
 
@@ -164,9 +164,9 @@ Expected health checks:
 
 ```powershell
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+.\scripts\windows-preflight.ps1 -Profile avatar
 .\scripts\windows-runtime.ps1 -Profile avatar
-docker compose -f infra\docker-compose.yml logs -f worker-avatar
-.\scripts\windows-preflight.ps1
+docker compose -f infra\docker-compose.yml --profile avatar logs -f worker-avatar
 ```
 
 When validating a built heavy worker image, import checks should run inside the container, not the Windows virtual environment.
@@ -176,6 +176,8 @@ Known gaps:
 - First avatar image build may be heavy.
 - `mmcv`/OpenMMLab dependencies must be installed in the Docker image or provided through a compatible local wheel/prebuilt image.
 - Installing `mmcv`, `mmpose`, LivePortrait, or MuseTalk into Windows Python does not fix `worker-avatar`.
+- A stale/light `ai_academy_worker:local` image built with `INSTALL_OPENMMLAB_DEPS=0` or `DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0` can still fail avatar bootstrap until a heavy avatar image is built or retagged.
+- `worker-avatar` should not consume the real `avatar` queue until model bundle checks and a throwaway-queue smoke path have passed.
 - Docker smoke CI intentionally sets heavy avatar dependency build args to skip full avatar runtime.
 
 ## Translation
@@ -220,7 +222,7 @@ Services:
 - Core services.
 - Optional `tts_service`.
 - Optional `worker`.
-- Optional `worker-avatar`.
+- Optional `worker-avatar` through the Compose `avatar` profile.
 - Optional `libretranslate`.
 - Host-side or future Compose-managed Ollama.
 

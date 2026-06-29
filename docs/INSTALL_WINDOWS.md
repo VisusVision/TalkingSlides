@@ -34,7 +34,7 @@ Add heavier services only when needed:
 .\scripts\windows-runtime.ps1 -Profile full
 ```
 
-`-Profile avatar` also starts TTS and the render worker. Use it only on a validated GPU host.
+`-Profile avatar` also starts TTS and the render worker, and it opts into the Compose `avatar` profile for `worker-avatar`. Use it only on a validated GPU host.
 
 ## Prerequisite Checklist
 
@@ -77,7 +77,7 @@ Run the read-only preflight and setup checks:
 .\scripts\windows-dev-setup.ps1 -CheckOnly
 ```
 
-`windows-preflight.ps1` does not install Docker, WSL2, Ollama, GPU drivers, models, or Python packages. It reports host prerequisites, ports, disk space, `infra\.env` state, Compose config, optional GPU hints, and optional Ollama reachability.
+`windows-preflight.ps1` does not install Docker, WSL2, Ollama, GPU drivers, models, or Python packages. It reports host prerequisites, ports, disk space, `infra\.env` state, Compose config, optional GPU hints, and optional Ollama reachability. When run for `-Profile avatar` or `-Profile full`, it also reports read-only avatar image/model warnings without starting containers.
 
 Status meanings:
 
@@ -95,7 +95,7 @@ The current scripts do not install Docker Desktop, WSL2, GPU drivers, or system 
 
 Avatar generation is optional and GPU-bound.
 
-Before using `-WithAvatar`, validate Docker GPU support:
+Before using `-Profile avatar`, validate Docker GPU support:
 
 ```powershell
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
@@ -105,6 +105,8 @@ Keep avatar runtime dependencies in Docker:
 
 - Do not install `mmcv`, `mmpose`, LivePortrait, or MuseTalk into the Windows virtual environment.
 - Use the Docker worker image, a compatible local `MMCV_LOCAL_WHEEL`, `MMCV_WHEEL_URL`, or a prebuilt heavy avatar worker image.
+- If `ai_academy_worker:local` was built as a smoke/light image with `INSTALL_OPENMMLAB_DEPS=0`, `worker-avatar` can fail with missing `mmcv` even if Windows Python has `mmcv` installed.
+- Provision the MuseTalk model bundle under `storage_local\models` before starting `worker-avatar`.
 - Expect the first avatar-capable worker image build to be heavy.
 
 ## Environment File
@@ -176,7 +178,7 @@ Common commands:
 .\scripts\windows-runtime.ps1 -Profile full
 ```
 
-The wrapper runs preflight before start unless `-SkipPreflight` is supplied. It runs the health summary after start unless `-NoHealth` is supplied. Starts use Compose with no build and no pull behavior; missing images fail instead of being built or downloaded by the wrapper.
+The wrapper runs preflight before start unless `-SkipPreflight` is supplied. It runs the health summary after start unless `-NoHealth` is supplied. Starts use Compose with no build and no pull behavior; missing images fail instead of being built or downloaded by the wrapper. `avatar` and `full` pass `--profile avatar`; `core`, `worker`, `tts`, and `translation` do not include `worker-avatar`.
 
 ## TTS and Worker Start
 
@@ -222,6 +224,7 @@ Important current reality:
 
 - Ollama currently runs host-side unless a future Compose service is added.
 - `windows-runtime.ps1 -Profile full` reports Ollama as host-side and does not install, start, or pull Ollama models.
+- `worker-avatar` is behind the Compose `avatar` profile; the core runtime does not start it.
 - Avatar heavy dependencies belong in the Docker worker image.
 - Full avatar runtime is not a normal CI path.
 - The one-click EXE/MSI installer is planned, not present.

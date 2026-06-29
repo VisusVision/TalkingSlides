@@ -233,6 +233,8 @@ services:
   # ----------------------------------------------------------
   worker-avatar:
     <<: *python-common
+    profiles:
+      - avatar
     build:
       context: ..
       dockerfile: infra/dockerfiles/Dockerfile.worker

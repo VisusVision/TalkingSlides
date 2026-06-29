@@ -89,13 +89,22 @@ function Test-UsesTranslationProfile {
     return $Services -contains "libretranslate"
 }
 
+function Test-UsesAvatarProfile {
+    param([string[]]$Services)
+    return $Services -contains "worker-avatar"
+}
+
 function Invoke-ChildScript {
     param(
         [string]$ScriptPath,
+        [string]$SelectedProfile,
         [switch]$PassJson
     )
 
     $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath)
+    if (-not [string]::IsNullOrWhiteSpace($SelectedProfile)) {
+        $args += @("-Profile", $SelectedProfile)
+    }
     if ($PassJson) {
         $args += "-Json"
     }
@@ -116,11 +125,17 @@ function Invoke-Compose {
 }
 
 function Get-ComposeBaseArgs {
-    param([bool]$WithTranslationProfile)
+    param(
+        [bool]$WithTranslationProfile,
+        [bool]$WithAvatarProfile
+    )
 
     $args = @("compose", "-f", $ComposeFile)
     if ($WithTranslationProfile) {
         $args += @("--profile", "translation")
+    }
+    if ($WithAvatarProfile) {
+        $args += @("--profile", "avatar")
     }
     return $args
 }
@@ -182,27 +197,37 @@ if (-not ($Json -and ($effectiveAction -in @("preflight", "health")))) {
 
 switch ($effectiveAction) {
     "preflight" {
+        $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
         if (-not $Json) {
+            Write-Host "Profile: $selectedProfile"
             Write-Section "Preflight"
         }
-        Invoke-ChildScript -ScriptPath $PreflightScript -PassJson:$Json
+        Invoke-ChildScript -ScriptPath $PreflightScript -SelectedProfile $selectedProfile -PassJson:$Json
         exit $script:LastChildExitCode
     }
     "health" {
+        $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
         if (-not $Json) {
+            Write-Host "Profile: $selectedProfile"
             Write-Section "Runtime health"
         }
-        Invoke-ChildScript -ScriptPath $HealthScript -PassJson:$Json
+        Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile -PassJson:$Json
         exit $script:LastChildExitCode
     }
     "status" {
+        $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
+        $services = @(Get-ProfileServices -SelectedProfile $selectedProfile)
+        $withTranslationProfile = Test-UsesTranslationProfile -Services $services
+        $withAvatarProfile = Test-UsesAvatarProfile -Services $services
+
+        Write-Host "Profile: $selectedProfile"
         Write-Section "Docker Compose status"
-        $composeArgs = Get-ComposeBaseArgs -WithTranslationProfile $true
+        $composeArgs = Get-ComposeBaseArgs -WithTranslationProfile $withTranslationProfile -WithAvatarProfile $withAvatarProfile
         $composeArgs += "ps"
         $psCode = Invoke-Compose -ComposeArgs $composeArgs
 
         Write-Section "Runtime health"
-        Invoke-ChildScript -ScriptPath $HealthScript
+        Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile
         $healthCode = $script:LastChildExitCode
         if ($healthCode -ne 0) {
             Write-Warning "Runtime health exited with code $healthCode."
@@ -213,6 +238,7 @@ switch ($effectiveAction) {
         $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
         $services = @(Get-ProfileServices -SelectedProfile $selectedProfile)
         $withTranslationProfile = Test-UsesTranslationProfile -Services $services
+        $withAvatarProfile = Test-UsesAvatarProfile -Services $services
 
         Write-Host "Profile: $selectedProfile"
         Write-Section "Stopping services"
@@ -221,7 +247,7 @@ switch ($effectiveAction) {
         }
         Write-Host "Using docker compose stop. Volumes, images, and runtime data are preserved."
 
-        $composeArgs = Get-ComposeBaseArgs -WithTranslationProfile $withTranslationProfile
+        $composeArgs = Get-ComposeBaseArgs -WithTranslationProfile $withTranslationProfile -WithAvatarProfile $withAvatarProfile
         $composeArgs += @("stop")
         $composeArgs += $services
         $code = Invoke-Compose -ComposeArgs $composeArgs
@@ -231,13 +257,14 @@ switch ($effectiveAction) {
         $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
         $services = @(Get-ProfileServices -SelectedProfile $selectedProfile)
         $withTranslationProfile = Test-UsesTranslationProfile -Services $services
+        $withAvatarProfile = Test-UsesAvatarProfile -Services $services
 
         Write-Host "Profile: $selectedProfile"
         Write-ProfileWarnings -SelectedProfile $selectedProfile
 
         if (-not $SkipPreflight) {
             Write-Section "Preflight"
-            Invoke-ChildScript -ScriptPath $PreflightScript
+            Invoke-ChildScript -ScriptPath $PreflightScript -SelectedProfile $selectedProfile
             $preflightCode = $script:LastChildExitCode
             if ($preflightCode -ne 0) {
                 Write-Host ""
@@ -254,7 +281,7 @@ switch ($effectiveAction) {
         }
         Write-Host "Compose will use --no-build and --pull never; missing images fail instead of building or pulling."
 
-        $composeArgs = Get-ComposeBaseArgs -WithTranslationProfile $withTranslationProfile
+        $composeArgs = Get-ComposeBaseArgs -WithTranslationProfile $withTranslationProfile -WithAvatarProfile $withAvatarProfile
         $composeArgs += @("up", "-d", "--no-build", "--pull", "never")
         $composeArgs += $services
         $startCode = Invoke-Compose -ComposeArgs $composeArgs
@@ -266,7 +293,7 @@ switch ($effectiveAction) {
 
         if (-not $NoHealth) {
             Write-Section "Runtime health"
-            Invoke-ChildScript -ScriptPath $HealthScript
+            Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile
             $healthCode = $script:LastChildExitCode
             exit $healthCode
         }

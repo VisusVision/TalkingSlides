@@ -1,7 +1,18 @@
 from pathlib import Path
+import re
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _compose_service_block(service_name: str) -> str:
+    compose = (REPO_ROOT / "infra" / "docker-compose.yml").read_text(encoding="utf-8")
+    match = re.search(
+        rf"(?ms)^  {re.escape(service_name)}:\n(?P<body>.*?)(?=^  [A-Za-z0-9_-]+:|\Z)",
+        compose,
+    )
+    assert match, f"service block not found: {service_name}"
+    return match.group("body")
 
 
 def test_docker_smoke_skips_live_avatar_dependency_downloads() -> None:
@@ -56,6 +67,48 @@ def test_local_compose_builds_avatar_worker_with_heavy_deps_by_default() -> None
     assert compose.count('MMCV_LOCAL_WHEEL: "${MMCV_LOCAL_WHEEL:-local_wheels/mmcv.whl}"') >= 2
 
 
+def test_worker_avatar_is_behind_explicit_compose_avatar_profile() -> None:
+    worker_avatar = _compose_service_block("worker-avatar")
+    worker = _compose_service_block("worker")
+
+    assert "profiles:" in worker_avatar
+    assert "- avatar" in worker_avatar
+    assert "profiles:" not in worker
+    assert 'AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "1"' in worker_avatar
+    assert 'AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"' in worker
+
+
+def test_windows_runtime_passes_avatar_profile_only_for_avatar_services() -> None:
+    script = (REPO_ROOT / "scripts" / "windows-runtime.ps1").read_text(encoding="utf-8")
+
+    assert 'function Test-UsesAvatarProfile' in script
+    assert 'return $Services -contains "worker-avatar"' in script
+    assert '$args += @("--profile", "avatar")' in script
+    assert '"core" { return $core }' in script
+    assert '"avatar" { return $core + @("tts_service", "worker", "worker-avatar") }' in script
+    assert '"full" { return $core + @("tts_service", "worker", "worker-avatar", "libretranslate") }' in script
+    assert '$composeArgs += @("up", "-d", "--no-build", "--pull", "never")' in script
+    assert "Remove-Item" not in script
+    assert "docker pull" not in script
+
+
+def test_windows_preflight_and_health_avatar_checks_are_profile_aware_and_read_only() -> None:
+    preflight = (REPO_ROOT / "scripts" / "windows-preflight.ps1").read_text(encoding="utf-8")
+    health = (REPO_ROOT / "scripts" / "windows-runtime-health.ps1").read_text(encoding="utf-8")
+
+    for script in (preflight, health):
+        assert '[string]$Profile = ""' in script
+        assert "Add-AvatarRuntimeReadinessChecks" in script
+        assert "INSTALL_OPENMMLAB_DEPS=0" in script
+        assert "DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0" in script
+        assert "mmcv/mmpose/mmdet imports were not run" in script
+        assert "storage_local\\models" in script
+        assert "docker run" not in script
+        assert "docker build" not in script
+        assert "docker pull" not in script
+        assert "compose\", \"up" not in script
+
+
 def test_avatar_local_wheels_are_ignored_but_not_dockerignored() -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
@@ -74,3 +127,16 @@ def test_avatar_offline_wheel_and_prebuilt_image_docs_exist() -> None:
     assert "MMCV_WHEEL_URL" in runbook
     assert "prebuilt heavy avatar worker image" in runbook
     assert "Installing `mmcv` into `.venv` does not help `worker-avatar`" in runbook
+    assert "--profile avatar" in runbook
+
+
+def test_docs_separate_core_from_avatar_profile_runtime() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    install = (REPO_ROOT / "docs" / "INSTALL_WINDOWS.md").read_text(encoding="utf-8")
+    runtime = (REPO_ROOT / "docs" / "FULL_STACK_LOCAL_RUNTIME.md").read_text(encoding="utf-8")
+
+    combined = "\n".join([readme, install, runtime])
+    assert "Compose `avatar` profile" in combined
+    assert "core runtime does not start it" in combined
+    assert "stale/light" in combined
+    assert "Do not install `mmcv`, `mmpose`, LivePortrait, or MuseTalk into the Windows virtual environment" in combined
