@@ -258,10 +258,13 @@ Studio Intelligence is the detailed lesson analyzer. Analytics Intelligence shou
 
 ## Avatar and GPU
 
+Use `scripts/windows-avatar-runtime.ps1` to print the avatar image preparation and smoke strategy before changing these values. The helper is dry-run only: it shows the online OpenMMLab build, local `local_wheels/` `MMCV_LOCAL_WHEEL` build, pinned `MMCV_WHEEL_URL` build, prebuilt image tag flow for `ai_academy_worker:local`, expected `storage_local\models` model bundle paths, and the `windows-runtime.ps1 -Profile avatar` start command without executing Docker build/pull/up/run commands.
+
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | `ENABLE_AVATAR` | API/frontend/worker-avatar | Optional | Optional | `0` | Master deployment flag for avatar profile, preview, overlay, and render scheduling. When disabled, avatar endpoints return disabled responses, render jobs ignore avatar options, worker avatar scheduling is skipped, and frontend avatar UI is hidden. Existing avatar engine env vars still imply enabled when this is unset. |
 | `AVATAR_ENGINE` | API/worker-avatar | Optional | If avatar | `liveportrait+musetalk` | Selected avatar engine chain. |
+| Compose `avatar` profile | worker-avatar | Optional | If avatar | off by default | `worker-avatar` is excluded from default Compose commands and is included by `windows-runtime.ps1 -Profile avatar` or `-Profile full`. |
 | `INSTALL_AVATAR_RUNTIME_DEPS`, `INSTALL_OPENMMLAB_DEPS`, `DOWNLOAD_LIVEPORTRAIT_WEIGHTS` | worker-avatar build | Optional | If avatar | `1`, `1`, `1` | Heavy build toggles. CI smoke may override these to `0`; live avatar images need avatar runtime and OpenMMLab dependencies in Docker. |
 | `MMCV_FIND_LINKS`, `MMCV_WHEEL_URL`, `MMCV_LOCAL_WHEEL` | worker-avatar build | Optional | If avatar | OpenMMLab index, blank, `local_wheels/mmcv.whl` | Prebuilt `mmcv` install sources. A local wheel under `local_wheels/` is used before the remote URL/index and must not be committed. |
 | `AVATAR_BOOTSTRAP_ON_WORKER_STARTUP` | worker-avatar | Optional | Recommended | `0` local template | Controls runtime bootstrap. |

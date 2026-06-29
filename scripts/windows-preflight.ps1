@@ -1,5 +1,7 @@
 [CmdletBinding()]
 param(
+    [string]$Profile = "",
+    [switch]$AvatarChecks,
     [switch]$Json
 )
 
@@ -9,6 +11,9 @@ $ComposeFile = Join-Path $RepoRoot "infra\docker-compose.yml"
 $EnvFile = Join-Path $RepoRoot "infra\.env"
 $EnvExampleFile = Join-Path $RepoRoot "infra\.env.example"
 $VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$AvatarModelRoot = Join-Path $RepoRoot "storage_local\models"
+$WorkerImageName = "ai_academy_worker:local"
+$ValidProfiles = @("core", "worker", "tts", "avatar", "translation", "full")
 $Results = New-Object System.Collections.Generic.List[object]
 
 function Add-Result {
@@ -134,7 +139,99 @@ function Test-ResultPassed {
     return [bool]($Results | Where-Object { $_.name -eq $Name -and $_.status -eq "PASS" })
 }
 
+function Resolve-Profile {
+    param([string]$RequestedProfile)
+
+    if ([string]::IsNullOrWhiteSpace($RequestedProfile)) {
+        Add-Result "Runtime profile" "selected profile" "PASS" "core"
+        return "core"
+    }
+
+    $normalized = $RequestedProfile.ToLowerInvariant()
+    if ($ValidProfiles -notcontains $normalized) {
+        Add-Result "Runtime profile" "selected profile" "FAIL" "Unsupported profile '$RequestedProfile'." "Choose one of: $($ValidProfiles -join ', ')."
+        return "core"
+    }
+    Add-Result "Runtime profile" "selected profile" "PASS" $normalized
+    return $normalized
+}
+
+function Add-AvatarRuntimeReadinessChecks {
+    param(
+        [bool]$DockerAvailable,
+        [bool]$AvatarRequested
+    )
+
+    if (-not $AvatarRequested) {
+        Add-Result "Avatar runtime" "avatar checks" "PASS" "Skipped because profile '$SelectedProfile' does not request avatar."
+        return
+    }
+
+    Add-Result "Avatar runtime" "avatar checks" "PASS" "Avatar profile requested; checks are read-only and do not start containers."
+
+    if ($DockerAvailable) {
+        $imageInspect = Invoke-External "docker" @("image", "inspect", $WorkerImageName, "--format", "{{.Id}} {{.Created}}")
+        if ($imageInspect.exit_code -eq 0) {
+            Add-Result "Avatar runtime" "worker image" "PASS" "$WorkerImageName exists."
+
+            $history = Invoke-External "docker" @("history", "--no-trunc", $WorkerImageName)
+            if ($history.exit_code -eq 0) {
+                $historyText = ($history.output | Where-Object { $_ }) -join " "
+                if ($historyText -match "INSTALL_OPENMMLAB_DEPS=0|DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0|Skipping OpenMMLab/mmcv|Skipping LivePortrait pretrained weights") {
+                    Add-Result "Avatar runtime" "worker image heavy deps" "WARN" "Image history contains smoke/light markers such as INSTALL_OPENMMLAB_DEPS=0 or DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0." "Rebuild or retag a heavy avatar image later; this preflight does not build images."
+                } elseif ($historyText -match "INSTALL_OPENMMLAB_DEPS=1|DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1") {
+                    Add-Result "Avatar runtime" "worker image heavy deps" "PASS" "Image history does not show known smoke/light skip markers."
+                } else {
+                    Add-Result "Avatar runtime" "worker image heavy deps" "WARN" "Image history did not prove whether OpenMMLab and LivePortrait weights were included." "Use a heavy avatar image, local mmcv wheel, or prebuilt image before starting worker-avatar."
+                }
+            } else {
+                Add-Result "Avatar runtime" "worker image heavy deps" "WARN" (Format-OutputLine $history) "Could not inspect image history."
+            }
+
+            Add-Result "Avatar runtime" "OpenMMLab import proof" "WARN" "mmcv/mmpose/mmdet imports were not run because preflight does not start containers or heavy runtime checks."
+        } else {
+            Add-Result "Avatar runtime" "worker image" "WARN" "$WorkerImageName was not found locally." "Build or pull/tag an avatar-capable worker image later; this preflight does not build or pull."
+        }
+    } else {
+        Add-Result "Avatar runtime" "worker image" "WARN" "Docker is unavailable, so the local worker image could not be checked."
+    }
+
+    $requiredMuseTalkFiles = @(
+        "musetalk\musetalk.json",
+        "sd-vae\config.json",
+        "sd-vae\diffusion_pytorch_model.bin",
+        "musetalkV15\unet.pth",
+        "whisper\config.json",
+        "whisper\pytorch_model.bin",
+        "whisper\preprocessor_config.json",
+        "dwpose\dw-ll_ucoco_384.pth",
+        "face-parse-bisent\79999_iter.pth",
+        "face-parse-bisent\resnet18-5c106cde.pth"
+    )
+    $missingMuseTalk = @()
+    foreach ($relativePath in $requiredMuseTalkFiles) {
+        if (-not (Test-Path (Join-Path $AvatarModelRoot $relativePath))) {
+            $missingMuseTalk += $relativePath
+        }
+    }
+    if ($missingMuseTalk.Count -eq 0) {
+        Add-Result "Avatar runtime" "MuseTalk model bundle" "PASS" "Required files were found under storage_local\models."
+    } else {
+        Add-Result "Avatar runtime" "MuseTalk model bundle" "WARN" "Missing required files under storage_local\models count=$($missingMuseTalk.Count)." "Provision the MuseTalk model bundle before starting worker-avatar."
+    }
+
+    $livePortraitModelRoot = Join-Path $AvatarModelRoot "liveportrait"
+    if (Test-Path $livePortraitModelRoot) {
+        Add-Result "Avatar runtime" "LivePortrait local model bundle" "PASS" "storage_local\models\liveportrait exists."
+    } else {
+        Add-Result "Avatar runtime" "LivePortrait local model bundle" "WARN" "storage_local\models\liveportrait was not found. Build-time /opt/liveportrait weights may still satisfy the runtime if the image was built with DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1."
+    }
+}
+
 Set-Location $RepoRoot
+
+$SelectedProfile = Resolve-Profile -RequestedProfile $Profile
+$AvatarRequested = $AvatarChecks.IsPresent -or ($SelectedProfile -in @("avatar", "full"))
 
 $isWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 if ($isWindows) {
@@ -202,13 +299,22 @@ if ($dockerCommandAvailable) {
         Add-Result "Docker" "Compose config" "FAIL" (Format-OutputLine $composeConfig) "Fix Docker Compose configuration or required env-file values."
     }
 
-    $composeServices = Invoke-External "docker" @("compose", "-f", $ComposeFile, "--profile", "translation", "config", "--services")
+    $defaultComposeServices = Invoke-External "docker" @("compose", "-f", $ComposeFile, "config", "--services")
+    if ($defaultComposeServices.exit_code -eq 0) {
+        $defaultServices = @($defaultComposeServices.output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        Add-Result "Docker profiles/services" "Default Compose services" "PASS" ($defaultServices -join ", ")
+    } else {
+        $defaultServices = @()
+        Add-Result "Docker profiles/services" "Default Compose services" "WARN" (Format-OutputLine $defaultComposeServices) "Run docker compose config after Docker is ready."
+    }
+
+    $composeServices = Invoke-External "docker" @("compose", "-f", $ComposeFile, "--profile", "translation", "--profile", "avatar", "config", "--services")
     if ($composeServices.exit_code -eq 0) {
         $services = @($composeServices.output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        Add-Result "Docker profiles/services" "Compose services" "PASS" ($services -join ", ")
+        Add-Result "Docker profiles/services" "All profiled Compose services" "PASS" ($services -join ", ")
     } else {
         $services = @()
-        Add-Result "Docker profiles/services" "Compose services" "WARN" (Format-OutputLine $composeServices) "Run docker compose config after Docker is ready."
+        Add-Result "Docker profiles/services" "All profiled Compose services" "WARN" (Format-OutputLine $composeServices) "Run docker compose config after Docker is ready."
     }
 
     $dockerInfo = Invoke-External "docker" @("info", "--format", "{{json .Runtimes}}")
@@ -224,6 +330,7 @@ if ($dockerCommandAvailable) {
     }
 } else {
     $services = @()
+    $defaultServices = @()
     Add-Result "Docker" "docker command" "FAIL" "docker was not found." "Install Docker Desktop and enable WSL2 integration."
     Add-Result "Docker" "docker compose" "FAIL" "docker compose could not be checked because docker is missing." "Install Docker Desktop with Compose v2."
     Add-Result "Docker" "Docker daemon" "FAIL" "Docker daemon could not be checked because docker is missing." "Install/start Docker Desktop."
@@ -344,8 +451,18 @@ if ($services.Count -gt 0) {
 
     foreach ($service in $avatarServices) {
         $status = if ($services -contains $service) { "PASS" } else { "WARN" }
-        $detail = if ($status -eq "PASS") { "Defined in Compose config." } else { "Not found in Compose config." }
+        $detail = if ($status -eq "PASS") { "Defined in Compose config behind the avatar profile." } else { "Not found in Compose config." }
         Add-Result "Docker profiles/services" "avatar-gpu service: $service" $status $detail
+    }
+
+    if ($defaultServices.Count -gt 0) {
+        if ($defaultServices -contains "worker-avatar") {
+            Add-Result "Docker profiles/services" "avatar profile isolation" "FAIL" "worker-avatar appears in default Compose services." "Keep worker-avatar behind the avatar Compose profile."
+        } elseif ($services -contains "worker-avatar") {
+            Add-Result "Docker profiles/services" "avatar profile isolation" "PASS" "worker-avatar is excluded by default and available with --profile avatar."
+        } else {
+            Add-Result "Docker profiles/services" "avatar profile isolation" "WARN" "worker-avatar was not found in profiled Compose services."
+        }
     }
 
     foreach ($service in $translationServices) {
@@ -359,6 +476,8 @@ if ($services.Count -gt 0) {
 
 Add-Result "Docker profiles/services" "supported runtime tiers" "PASS" "core, tts, worker, avatar-gpu, translation, and intelligence via host Ollama."
 
+Add-AvatarRuntimeReadinessChecks -DockerAvailable $dockerCommandAvailable -AvatarRequested $AvatarRequested
+
 $ollamaLocal = Test-HttpReachable "http://localhost:11434/api/tags"
 $ollamaHost = Test-HttpReachable "http://host.docker.internal:11434/api/tags"
 if ($ollamaLocal.ok -or $ollamaHost.ok) {
@@ -370,16 +489,18 @@ if ($ollamaLocal.ok -or $ollamaHost.ok) {
     Add-Result "Ollama optional" "Ollama reachability" "WARN" "Ollama did not respond on localhost:11434 or host.docker.internal:11434. Intelligence will use heuristic/fallback behavior unless Ollama is configured." "Install/start Ollama and pull models only when local LLM enhancement is needed."
 }
 
+$avatarReadinessStatus = if (-not $AvatarRequested) { "PASS" } else { Get-ResultStatus @("Avatar runtime", "NVIDIA / GPU optional") }
+
 $summary = @(
     [pscustomobject]@{ name = "Core stack readiness"; status = Get-ResultStatus @("Windows / PowerShell", "WSL2", "Docker", "Git", "Env file") },
     [pscustomobject]@{ name = "TTS readiness"; status = if (Test-ResultPassed "tts service: tts_service") { "PASS" } else { "WARN" } },
-    [pscustomobject]@{ name = "Avatar GPU readiness"; status = if ((Test-ResultPassed "avatar-gpu service: worker-avatar") -and (Test-ResultPassed "nvidia-smi")) { "PASS" } else { "WARN" } },
+    [pscustomobject]@{ name = "Avatar GPU readiness"; status = $avatarReadinessStatus },
     [pscustomobject]@{ name = "Intelligence/Ollama readiness"; status = Get-ResultStatus @("Ollama optional") },
     [pscustomobject]@{ name = "Translation readiness"; status = if (Test-ResultPassed "translation service: libretranslate") { "PASS" } else { "WARN" } }
 )
 
 $hasCoreFailure = [bool]($Results | Where-Object {
-    $_.status -eq "FAIL" -and @("Windows / PowerShell", "WSL2", "Docker", "Git", "Env file", "Docker profiles/services") -contains $_.category
+    $_.status -eq "FAIL" -and @("Runtime profile", "Windows / PowerShell", "WSL2", "Docker", "Git", "Env file", "Docker profiles/services") -contains $_.category
 })
 $exitCode = if ($hasCoreFailure) { 1 } else { 0 }
 
@@ -387,6 +508,8 @@ if ($Json) {
     [pscustomobject]@{
         generated_at = (Get-Date).ToString("o")
         repo_root = $RepoRoot
+        selected_profile = $SelectedProfile
+        avatar_checks_enabled = [bool]$AvatarRequested
         results = @($Results.ToArray())
         summary = @($summary)
         exit_code = $exitCode
@@ -396,6 +519,7 @@ if ($Json) {
 
 Write-Host "VISUS VidLab Windows preflight"
 Write-Host "Repo root: $RepoRoot"
+Write-Host "Profile: $SelectedProfile"
 Write-Host ""
 
 foreach ($group in ($Results | Group-Object category)) {

@@ -22,7 +22,7 @@ The active integration branch for contribution work is `developer`.
 | TTS | Implemented as a FastAPI service with XTTS support and development fallbacks. Start it only when needed for local work. |
 | Intelligence | Heuristic lesson and analytics intelligence are implemented. Local Ollama enhancement is optional and currently host-side unless a future Compose service is added. |
 | Translation | Subtitle translation has an optional provider chain. Compose includes `libretranslate` behind the `translation` profile. |
-| Avatar | Optional and non-blocking. LivePortrait/MuseTalk/OpenMMLab dependencies belong in the Docker worker image, not in Windows Python. First heavy avatar image builds can be large. |
+| Avatar | Optional and non-blocking. `worker-avatar` is behind the Compose `avatar` profile. LivePortrait/MuseTalk/OpenMMLab dependencies belong in the Docker worker image, not in Windows Python. First heavy avatar image builds can be large. |
 | CI Docker smoke | CI validates Docker build contracts but intentionally skips full heavy avatar runtime dependencies. |
 
 ## Quick Start
@@ -55,16 +55,16 @@ Add services only when they are needed:
 .\scripts\windows-runtime.ps1 -Profile full
 ```
 
-`-Profile avatar` implies TTS and worker services and should be used only on a validated GPU host with avatar models and Docker GPU support ready.
+`-Profile avatar` implies TTS and worker services and passes `--profile avatar` to Compose. Use it only on a validated GPU host with avatar models and Docker GPU support ready.
 
 ## Runtime Profiles
 
-The planned installer/runtime profiles are documented in [docs/FULL_STACK_LOCAL_RUNTIME.md](docs/FULL_STACK_LOCAL_RUNTIME.md). Today they map to a mix of Windows script service selection and one Compose profile:
+The planned installer/runtime profiles are documented in [docs/FULL_STACK_LOCAL_RUNTIME.md](docs/FULL_STACK_LOCAL_RUNTIME.md). Today they map to Windows script service selection plus explicit Compose profiles for optional services:
 
 - `core`: API, frontend, Postgres, Redis, MinIO.
 - `tts`: adds the TTS service.
 - `intelligence`: enables backend intelligence; Ollama currently runs on the host.
-- `avatar-gpu`: adds the GPU avatar worker path.
+- `avatar-gpu`: adds the GPU avatar worker path through the Compose `avatar` profile.
 - `translation`: enables the Compose `translation` profile for LibreTranslate.
 - `full-stack`: planned combination after preflight checks pass.
 
@@ -88,6 +88,9 @@ The local AI path is intentionally profile-driven. Heavy dependencies should sta
 
 - Do not install `mmcv`, `mmpose`, LivePortrait, or MuseTalk into the Windows virtual environment.
 - Use Docker image build arguments or a prebuilt avatar worker image for avatar dependencies.
+- A stale/light `ai_academy_worker:local` image built with `INSTALL_OPENMMLAB_DEPS=0` can still fail inside `worker-avatar` with missing `mmcv`; fix the Docker image, not the host `.venv`.
+- Provision the MuseTalk/LivePortrait model bundle before starting `worker-avatar`.
+- Use `.\scripts\windows-avatar-runtime.ps1` to print the avatar image build plan, local wheel/prebuilt image options, expected model bundle paths, and future smoke commands without building, pulling, starting services, or downloading models.
 - Use host-side Ollama for now with `http://host.docker.internal:11434` from containers.
 - Keep Docker smoke CI separate from hardware/model-dependent avatar validation.
 
