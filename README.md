@@ -90,6 +90,7 @@ The local AI path is intentionally profile-driven. Heavy dependencies should sta
 - Use Docker image build arguments or a prebuilt avatar worker image for avatar dependencies.
 - A stale/light `ai_academy_worker:local` image built with `INSTALL_OPENMMLAB_DEPS=0` can still fail inside `worker-avatar` with missing `mmcv`; fix the Docker image, not the host `.venv`.
 - Provision the MuseTalk/LivePortrait model bundle before starting `worker-avatar`.
+- Use `.\scripts\windows-avatar-runtime.ps1` to print the avatar image build plan, local wheel/prebuilt image options, expected model bundle paths, and future smoke commands without building, pulling, starting services, or downloading models.
 - Use host-side Ollama for now with `http://host.docker.internal:11434` from containers.
 - Keep Docker smoke CI separate from hardware/model-dependent avatar validation.
 

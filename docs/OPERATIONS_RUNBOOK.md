@@ -641,6 +641,17 @@ Treat the build as a likely real failure when the same package, clone, or snapsh
 
 Avatar-capable worker images must install `mmcv`/`mmpose` in Docker, not in the Windows or host Python environment. Installing `mmcv` into `.venv` does not help `worker-avatar`. The worker Dockerfile installs `mmcv` from prebuilt wheels only and never falls back to a source build.
 
+For local Windows planning, print the strategy first:
+
+```powershell
+.\scripts\windows-avatar-runtime.ps1
+.\scripts\windows-avatar-runtime.ps1 -Action Check
+.\scripts\windows-avatar-runtime.ps1 -Action PrintBuildCommand
+.\scripts\windows-avatar-runtime.ps1 -Action PrintSmokeCommand
+```
+
+The helper is intentionally non-destructive. It prints the online build, local `local_wheels/` build, pinned wheel URL build, prebuilt image tag path, `storage_local\models` model bundle expectations, `windows-runtime.ps1 -Profile avatar` start command, and future smoke commands. It does not run Docker build/pull/up/run commands, install packages, download models, start `worker-avatar`, or consume the real `avatar` queue.
+
 Use the OpenMMLab index when the network can reach it:
 
 ```powershell
@@ -678,6 +689,7 @@ docker compose -f infra\docker-compose.yml --profile avatar run --rm --no-deps w
 If no local wheel exists and `MMCV_WHEEL_URL` is empty, the build checks `MMCV_FIND_LINKS` and installs `mmcv==${MMCV_VERSION}` with `--only-binary=:all:`. An unreachable OpenMMLab wheel index fails fast with instructions instead of attempting a source build.
 
 `worker-avatar` is behind the Compose `avatar` profile. The Windows runtime wrapper passes that profile only for `-Profile avatar` and `-Profile full`, while preserving `--no-build` and `--pull never`.
+Before `worker-avatar` consumes the normal `avatar` queue, run `python .\scripts\check_avatar_models.py`, then use the helper's printed import and throwaway-queue smoke commands.
 
 ## Common Emergency Actions
 

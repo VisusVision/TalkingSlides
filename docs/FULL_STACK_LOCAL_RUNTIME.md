@@ -164,12 +164,16 @@ Expected health checks:
 
 ```powershell
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+.\scripts\windows-avatar-runtime.ps1 -Action Check
+.\scripts\windows-avatar-runtime.ps1 -Action PrintBuildCommand
+.\scripts\windows-avatar-runtime.ps1 -Action PrintSmokeCommand
 .\scripts\windows-preflight.ps1 -Profile avatar
 .\scripts\windows-runtime.ps1 -Profile avatar
 docker compose -f infra\docker-compose.yml --profile avatar logs -f worker-avatar
 ```
 
 When validating a built heavy worker image, import checks should run inside the container, not the Windows virtual environment.
+The avatar helper prints the online OpenMMLab build, local wheel/cache build, `MMCV_WHEEL_URL` build, prebuilt image tag path, model bundle paths under `storage_local\models`, and throwaway-queue smoke commands without executing any of them.
 
 Known gaps:
 

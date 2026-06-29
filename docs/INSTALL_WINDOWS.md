@@ -109,6 +109,17 @@ Keep avatar runtime dependencies in Docker:
 - Provision the MuseTalk model bundle under `storage_local\models` before starting `worker-avatar`.
 - Expect the first avatar-capable worker image build to be heavy.
 
+Print the avatar image and smoke strategy without running it:
+
+```powershell
+.\scripts\windows-avatar-runtime.ps1
+.\scripts\windows-avatar-runtime.ps1 -Action Check
+.\scripts\windows-avatar-runtime.ps1 -Action PrintBuildCommand
+.\scripts\windows-avatar-runtime.ps1 -Action PrintSmokeCommand
+```
+
+`windows-avatar-runtime.ps1` is a dry-run helper. It does not build or pull images, start containers, install Python packages, download model files, delete Docker volumes/images, or run avatar jobs. Use it to choose between an online OpenMMLab build, a local `local_wheels/` `MMCV_LOCAL_WHEEL` build, a pinned `MMCV_WHEEL_URL` build, or a prebuilt image tagged to `ai_academy_worker:local`.
+
 ## Environment File
 
 Create a local env file from the template:

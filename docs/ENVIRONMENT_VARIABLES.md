@@ -258,6 +258,8 @@ Studio Intelligence is the detailed lesson analyzer. Analytics Intelligence shou
 
 ## Avatar and GPU
 
+Use `scripts/windows-avatar-runtime.ps1` to print the avatar image preparation and smoke strategy before changing these values. The helper is dry-run only: it shows the online OpenMMLab build, local `local_wheels/` `MMCV_LOCAL_WHEEL` build, pinned `MMCV_WHEEL_URL` build, prebuilt image tag flow for `ai_academy_worker:local`, expected `storage_local\models` model bundle paths, and the `windows-runtime.ps1 -Profile avatar` start command without executing Docker build/pull/up/run commands.
+
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | `ENABLE_AVATAR` | API/frontend/worker-avatar | Optional | Optional | `0` | Master deployment flag for avatar profile, preview, overlay, and render scheduling. When disabled, avatar endpoints return disabled responses, render jobs ignore avatar options, worker avatar scheduling is skipped, and frontend avatar UI is hidden. Existing avatar engine env vars still imply enabled when this is unset. |

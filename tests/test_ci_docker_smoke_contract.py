@@ -130,6 +130,59 @@ def test_avatar_offline_wheel_and_prebuilt_image_docs_exist() -> None:
     assert "--profile avatar" in runbook
 
 
+def test_windows_avatar_runtime_helper_is_dry_run_command_printer() -> None:
+    script_path = REPO_ROOT / "scripts" / "windows-avatar-runtime.ps1"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert script_path.exists()
+    assert 'ValidateSet("Plan", "Check", "PrintBuildCommand", "PrintSmokeCommand")' in script
+    assert '[string]$Action = "Plan"' in script
+    assert "This script is non-destructive. It prints plans and commands only." in script
+    assert "It does not build images, pull images, start services, install packages, download models, delete volumes, or run avatar jobs." in script
+    assert '"Plan" { Write-Plan }' in script
+    assert '"Check" { Invoke-LocalCheck }' in script
+
+    forbidden_execution_tokens = [
+        "Invoke-Expression",
+        "Start-Process",
+        "Remove-Item",
+        "Install-Module",
+        "Install-Package",
+        "pip install",
+    ]
+    for token in forbidden_execution_tokens:
+        assert token not in script
+
+    forbidden_invocations = [
+        r"(?m)^\s*&\s+docker\b",
+        r"(?m)^\s*docker\s+",
+        r"(?m)^\s*&\s+powershell\b",
+        r"(?m)^\s*&\s+pwsh\b",
+    ]
+    for pattern in forbidden_invocations:
+        assert not re.search(pattern, script)
+
+
+def test_windows_avatar_runtime_helper_prints_explicit_later_commands() -> None:
+    script = (REPO_ROOT / "scripts" / "windows-avatar-runtime.ps1").read_text(encoding="utf-8")
+
+    assert "Review first, then copy/paste manually when you intend to run it later:" in script
+    assert "docker compose -f infra\\docker-compose.yml --profile avatar build --progress=plain" in script
+    assert "--build-arg INSTALL_AVATAR_RUNTIME_DEPS=1" in script
+    assert "--build-arg INSTALL_OPENMMLAB_DEPS=1" in script
+    assert "--build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1" in script
+    assert "--build-arg MMCV_LOCAL_WHEEL=" in script
+    assert "--build-arg MMCV_WHEEL_URL=" in script
+    assert "docker pull $env:AVATAR_WORKER_PREBUILT_IMAGE" in script
+    assert "docker tag $env:AVATAR_WORKER_PREBUILT_IMAGE ai_academy_worker:local" in script
+    assert ".\\scripts\\windows-runtime.ps1 -Profile avatar" in script
+    assert "python .\\scripts\\check_avatar_models.py" in script
+    assert "--entrypoint python worker-avatar -c" in script
+    assert "CELERY_AVATAR_QUEUE=avatar-smoke" in script
+    assert "storage_local\\models" in script
+    assert "musetalk\\musetalk.json" in script
+
+
 def test_docs_separate_core_from_avatar_profile_runtime() -> None:
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     install = (REPO_ROOT / "docs" / "INSTALL_WINDOWS.md").read_text(encoding="utf-8")
@@ -140,3 +193,30 @@ def test_docs_separate_core_from_avatar_profile_runtime() -> None:
     assert "core runtime does not start it" in combined
     assert "stale/light" in combined
     assert "Do not install `mmcv`, `mmpose`, LivePortrait, or MuseTalk into the Windows virtual environment" in combined
+
+
+def test_avatar_runtime_strategy_docs_cover_safe_build_and_smoke_paths() -> None:
+    docs = "\n".join(
+        [
+            (REPO_ROOT / "README.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "INSTALL_WINDOWS.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "FULL_STACK_LOCAL_RUNTIME.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "OPERATIONS_RUNBOOK.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "ENVIRONMENT_VARIABLES.md").read_text(encoding="utf-8"),
+        ]
+    )
+
+    assert "windows-avatar-runtime.ps1" in docs
+    assert "online OpenMMLab build" in docs
+    assert "local `local_wheels/`" in docs
+    assert "prebuilt image" in docs
+    assert "ai_academy_worker:local" in docs
+    assert "storage_local\\models" in docs
+    assert "stale/light" in docs
+    assert "avatar profile" in docs
+    assert "does not run Docker build/pull/up/run commands" in docs
+
+    lower_docs = docs.lower()
+    assert "pip install mmcv" not in lower_docs
+    assert "python -m pip install mmcv" not in lower_docs
+    assert ".venv\\scripts\\python.exe -m pip install" not in lower_docs
