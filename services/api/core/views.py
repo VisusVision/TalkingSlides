@@ -40,12 +40,14 @@ import hashlib
 import hmac as _hmac
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
 import secrets
 import sys
 import time
+from collections.abc import Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -1077,6 +1079,157 @@ def _playback_sidecar_for_job(storage_root: str, project_id: int) -> dict:
         return json.loads(raw)
     except Exception:
         return {}
+
+
+_PARTIAL_RENDER_ARTIFACT_NAMES = frozenset({"tts_audio", "avatar_clip", "composed_segment", "slide_image"})
+
+
+def _safe_analysis_token(value: Any, *, max_length: int = 128) -> str:
+    text = str(value or "").strip()
+    if not text or len(text) > max_length:
+        return ""
+    if any(marker in text for marker in ("\\", "/", ":", "\x00")):
+        return ""
+    return text
+
+
+def _safe_analysis_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_analysis_bool(value: Any) -> bool:
+    return bool(value)
+
+
+def _safe_analysis_tokens(value: Any, *, allowed: set[str] | frozenset[str] | None = None) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    tokens: list[str] = []
+    for item in value:
+        token = _safe_analysis_token(item)
+        if not token:
+            continue
+        if allowed is not None and token not in allowed:
+            continue
+        if token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _sanitize_partial_render_summary(value: Any) -> dict[str, int | float | bool | str]:
+    if not isinstance(value, Mapping):
+        return {}
+    summary: dict[str, int | float | bool | str] = {}
+    for key, raw_value in value.items():
+        safe_key = _safe_analysis_token(key)
+        if not safe_key:
+            continue
+        if isinstance(raw_value, bool):
+            summary[safe_key] = raw_value
+        elif isinstance(raw_value, int):
+            summary[safe_key] = raw_value
+        elif isinstance(raw_value, float) and math.isfinite(raw_value):
+            summary[safe_key] = raw_value
+        elif isinstance(raw_value, str):
+            safe_value = _safe_analysis_token(raw_value)
+            if safe_value:
+                summary[safe_key] = safe_value
+    return summary
+
+
+def _sanitize_partial_render_classifier_pages(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return {}
+    pages: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_page in value.items():
+        if not isinstance(raw_page, Mapping):
+            continue
+        page_key = _safe_analysis_token(raw_page.get("page_key") or raw_key)
+        if not page_key:
+            continue
+        page: dict[str, Any] = {
+            "page_key": page_key,
+            "classification": _safe_analysis_token(raw_page.get("classification")),
+            "reasons": _safe_analysis_tokens(raw_page.get("reasons")),
+            "requires_full": _safe_analysis_bool(raw_page.get("requires_full")),
+        }
+        index = _safe_analysis_int(raw_page.get("index"))
+        if index is not None:
+            page["index"] = index
+        missing_artifacts = _safe_analysis_tokens(
+            raw_page.get("missing_artifacts"),
+            allowed=_PARTIAL_RENDER_ARTIFACT_NAMES,
+        )
+        page["missing_artifacts"] = missing_artifacts
+        page["missing_artifact_count"] = len(missing_artifacts)
+        pages[page_key] = page
+    return pages
+
+
+def _sanitize_partial_render_plan_pages(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, Mapping):
+        return {}
+    pages: dict[str, dict[str, Any]] = {}
+    for raw_key, raw_page in value.items():
+        if not isinstance(raw_page, Mapping):
+            continue
+        page_key = _safe_analysis_token(raw_page.get("page_key") or raw_key)
+        if not page_key:
+            continue
+        pages[page_key] = {
+            "page_key": page_key,
+            "classification": _safe_analysis_token(raw_page.get("classification")),
+            "reasons": _safe_analysis_tokens(raw_page.get("reasons")),
+            "recommended_action": _safe_analysis_token(raw_page.get("recommended_action")),
+            "future_only": _safe_analysis_bool(raw_page.get("future_only")),
+            "actual_behavior_changed": _safe_analysis_bool(raw_page.get("actual_behavior_changed")),
+        }
+    return pages
+
+
+def _sanitize_partial_render_analysis(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+
+    classifier = value.get("classifier") if isinstance(value.get("classifier"), Mapping) else {}
+    classifier_result = classifier.get("result") if isinstance(classifier.get("result"), Mapping) else {}
+    plan = value.get("plan") if isinstance(value.get("plan"), Mapping) else {}
+
+    sanitized: dict[str, Any] = {
+        "version": _safe_analysis_int(value.get("version")),
+        "mode": _safe_analysis_token(value.get("mode")),
+        "generated_from": _safe_analysis_token(value.get("generated_from")),
+        "classifier": {
+            "available": _safe_analysis_bool(classifier.get("available")),
+            "notes": _safe_analysis_tokens(classifier.get("notes")),
+            "summary": _sanitize_partial_render_summary(classifier_result.get("summary")),
+            "global_reasons": _safe_analysis_tokens(classifier_result.get("global_reasons")),
+            "pages": _sanitize_partial_render_classifier_pages(classifier_result.get("pages")),
+        },
+        "plan": {
+            "version": _safe_analysis_int(plan.get("version")),
+            "mode": _safe_analysis_token(plan.get("mode")),
+            "notes": _safe_analysis_tokens(plan.get("notes")),
+            "summary": _sanitize_partial_render_summary(plan.get("summary")),
+            "pages": _sanitize_partial_render_plan_pages(plan.get("pages")),
+        },
+    }
+    if sanitized["version"] is None:
+        sanitized.pop("version", None)
+    if sanitized["plan"]["version"] is None:
+        sanitized["plan"].pop("version", None)
+    return sanitized
+
+
+def _latest_render_analysis_for_project(project: Project) -> dict[str, Any] | None:
+    storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+    sidecar = _playback_sidecar_for_job(storage_root, int(project.id))
+    if not isinstance(sidecar, Mapping):
+        return None
+    return _sanitize_partial_render_analysis(sidecar.get("partial_render_analysis"))
 
 
 def _resolve_effective_protection_mode(sidecar: dict | None) -> tuple[str, dict]:
@@ -5993,7 +6146,9 @@ class ProjectDetailView(APIView):
             return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
         if not _can_review_project(request.user, project):
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        return Response(ProjectSerializer(project, context={"request": request}).data)
+        data = ProjectSerializer(project, context={"request": request}).data
+        data["latest_render_analysis"] = _latest_render_analysis_for_project(project)
+        return Response(data)
 
     def delete(self, request, project_id):
         try:

@@ -341,6 +341,137 @@ function plainObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
+const RENDER_ANALYSIS_ACTION_LABELS = {
+  reuse_all: 'Reuse existing output',
+  metadata_only_future: 'Metadata-only update',
+  recompose_visual_only_future: 'Visual-only recompose',
+  rerun_avatar_future: 'Rerun avatar',
+  rerun_tts_avatar_future: 'Rerun TTS and avatar',
+  rerender_page_future: 'Rerender page',
+  full_rerender_required_future: 'Full rerender required',
+};
+
+export function renderAnalysisActionLabel(action) {
+  const key = String(action || '').trim();
+  if (RENDER_ANALYSIS_ACTION_LABELS[key]) return RENDER_ANALYSIS_ACTION_LABELS[key];
+  return key
+    ? key.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+    : 'No action reported';
+}
+
+function renderAnalysisCount(summary, key) {
+  const value = Number(summary?.[key] || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function renderAnalysisSummaryItems(analysis) {
+  const summary = plainObject(analysis?.plan?.summary) || {};
+  const items = [
+    {
+      key: 'recompose_visual_only_future',
+      label: 'Visual-only recompose',
+      value: renderAnalysisCount(summary, 'recompose_visual_only_future'),
+    },
+    {
+      key: 'full_rerender_required_future',
+      label: 'Full rerender required',
+      value: renderAnalysisCount(summary, 'full_rerender_required_future'),
+    },
+    {
+      key: 'unknown_requires_full',
+      label: 'Unknown/full fallback',
+      value: renderAnalysisCount(summary, 'unknown_requires_full'),
+    },
+  ];
+  const pageRerenderCount = renderAnalysisCount(summary, 'rerender_page_future');
+  if (pageRerenderCount > 0) {
+    items.push({
+      key: 'rerender_page_future',
+      label: 'Page rerender',
+      value: pageRerenderCount,
+    });
+  }
+  return items;
+}
+
+export function renderAnalysisPageRows(analysis, limit = 6) {
+  const planPages = plainObject(analysis?.plan?.pages) || {};
+  const classifierPages = plainObject(analysis?.classifier?.pages) || {};
+  return Object.entries(planPages)
+    .map(([pageKey, page], index) => {
+      const safePage = plainObject(page) || {};
+      const classifierPage = plainObject(classifierPages[pageKey]) || {};
+      return {
+        pageKey: String(safePage.page_key || pageKey || ''),
+        index: Number.isFinite(Number(classifierPage.index)) ? Number(classifierPage.index) : index,
+        classification: String(safePage.classification || classifierPage.classification || ''),
+        recommendedAction: String(safePage.recommended_action || ''),
+        recommendedLabel: renderAnalysisActionLabel(safePage.recommended_action),
+        reasons: Array.isArray(safePage.reasons) ? safePage.reasons.map((item) => String(item)) : [],
+      };
+    })
+    .filter((row) => row.pageKey)
+    .sort((left, right) => left.index - right.index || left.pageKey.localeCompare(right.pageKey))
+    .slice(0, Math.max(0, limit));
+}
+
+export function RenderAnalysisPanel({ analysis }) {
+  if (!plainObject(analysis)) return null;
+  const summaryItems = renderAnalysisSummaryItems(analysis);
+  const pageRows = renderAnalysisPageRows(analysis);
+  const classifierAvailable = Boolean(analysis?.classifier?.available);
+  const hiddenPageCount = Math.max(0, Object.keys(plainObject(analysis?.plan?.pages) || {}).length - pageRows.length);
+
+  return (
+    <section
+      data-testid="render-analysis-panel"
+      className="shrink-0 border-y border-[var(--border-subtle)] bg-[var(--surface-container-low)] px-3 py-3"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Last render analysis</p>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">
+            These are diagnostic recommendations from the last completed render. Actual rendering may safely fall back.
+          </p>
+        </div>
+        <span className="shrink-0 rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+          Diagnostic only
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        {summaryItems.map((item) => (
+          <div key={item.key} className="border-l border-[var(--border-subtle)] pl-3">
+            <p className="text-lg font-semibold text-[var(--text-primary)]">{item.value}</p>
+            <p className="text-xs text-[var(--text-secondary)]">{item.label}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--text-secondary)]">
+        <span>Classifier {classifierAvailable ? 'available' : 'unavailable'}</span>
+        <span>Plan mode: {textValue(analysis?.plan?.mode || analysis?.mode || 'report_only')}</span>
+      </div>
+
+      {pageRows.length > 0 && (
+        <div className="mt-3 space-y-2">
+          {pageRows.map((row) => (
+            <div key={row.pageKey} className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-2 text-xs">
+              <span className="font-semibold text-[var(--text-primary)]">{row.pageKey}</span>
+              <span className="text-[var(--text-secondary)]">
+                Recommended future action: {row.recommendedLabel}
+              </span>
+            </div>
+          ))}
+          {hiddenPageCount > 0 && (
+            <p className="text-xs text-[var(--text-secondary)]">+{hiddenPageCount} more pages in the analysis</p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function projectModerationSummary(project, moderation = null) {
   if (moderation && Object.prototype.hasOwnProperty.call(moderation, 'moderation_summary')) {
     return plainObject(moderation.moderation_summary) || {};
@@ -3040,6 +3171,26 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
     return projects[0];
   }, [projects, selectedLessonId]);
+
+  useEffect(() => {
+    if (!selectedLesson?.id || Object.prototype.hasOwnProperty.call(selectedLesson, 'latest_render_analysis')) {
+      return undefined;
+    }
+
+    let active = true;
+    fetchProject(selectedLesson.id)
+      .then((project) => {
+        if (!active) return;
+        writeProjectDetailCache(projectDetailCacheRef.current, project);
+        setProjects((previous) => mergeProjectsPreservingLocalModeration(previous, [project], { append: true }));
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+    };
+  }, [selectedLesson?.id, selectedLesson?.latest_render_analysis]);
+
   const readOnlyReview = Boolean(isReviewMode && selectedLesson);
 
   useEffect(() => {
@@ -6314,6 +6465,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     {globalEditorError || selectedLessonDirtyScope.moderationMessage || globalEditorMessage || editorSavedAtLabel}
                   </p>
                 )}
+
+                <RenderAnalysisPanel analysis={selectedLesson?.latest_render_analysis} />
 
                 <div className="rail-scroll relative z-10 -mx-1 flex max-w-full shrink-0 gap-2 overflow-x-auto bg-[var(--bg-elevated)] px-1 py-1">
                   {visibleEditorPanels.map((panel) => {
