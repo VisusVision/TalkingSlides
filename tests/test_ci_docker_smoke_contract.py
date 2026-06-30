@@ -120,6 +120,80 @@ def test_windows_preflight_and_health_avatar_checks_are_profile_aware_and_read_o
         assert "compose\", \"up" not in script
 
 
+def test_windows_doctor_report_script_contract() -> None:
+    script_path = REPO_ROOT / "scripts" / "windows-doctor.ps1"
+    script = script_path.read_text(encoding="utf-8")
+
+    assert script_path.exists()
+    assert "[switch]$Json" in script
+    assert '[string]$OutputPath = ""' in script
+    assert "if (-not [string]::IsNullOrWhiteSpace($OutputPath))" in script
+    assert "VISUS VidLab Windows doctor" in script
+    assert "Read-only: no builds, pulls, installs, service starts, model downloads, volume/image deletes, or avatar jobs." in script
+    assert "Secret-like values are reported by variable name only. Values are never printed." in script
+    assert "Values were not printed." in script
+    assert "secret_values_printed = $false" in script
+
+    for required_name in [
+        "DJANGO_SETTINGS_MODULE",
+        "SECRET_KEY",
+        "POSTGRES_HOST",
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "REDIS_URL",
+        "CELERY_BROKER_URL",
+        "CELERY_RESULT_BACKEND",
+        "STORAGE_BACKEND",
+        "STORAGE_ROOT",
+        "MEDIA_TOKEN_SECRET",
+        "VITE_API_BASE_URL",
+    ]:
+        assert required_name in script
+
+    for warning_text in [
+        "Google sign-in disabled. Create OAuth credentials in Google Cloud Console if needed.",
+        "Email sending disabled. Configure SMTP/Brevo/Mailjet.",
+        "Cloud AI disabled. Use Ollama/local fallback if configured.",
+        "Local AI disabled.",
+        "Translation disabled unless profile configured.",
+        "Avatar rendering disabled until avatar profile/image/models are ready.",
+        "STORAGE_BACKEND=s3 requires S3 credentials.",
+        "DRM is enabled but provider metadata may be incomplete.",
+        "Payment/EZDRM-like variables are present, but no runtime payment path was validated.",
+    ]:
+        assert warning_text in script
+
+    assert '"S3 storage adapter" $EnvMap @("S3_BUCKET_NAME", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY") "WARN" "WARN"' in script
+
+    forbidden_execution_tokens = [
+        "Invoke-Expression",
+        "Start-Process",
+        "Remove-Item",
+        "Install-Module",
+        "Install-Package",
+        "pip install",
+    ]
+    for token in forbidden_execution_tokens:
+        assert token not in script
+
+    forbidden_compose_args = [
+        '@("build"',
+        '@("pull"',
+        '@("up"',
+        '@("run"',
+        '@("down"',
+        '@("stop"',
+        '@("rm"',
+        '"compose", "build"',
+        '"compose", "pull"',
+        '"compose", "up"',
+        '"compose", "run"',
+    ]
+    for token in forbidden_compose_args:
+        assert token not in script
+
+
 def test_avatar_local_wheels_are_ignored_but_not_dockerignored() -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
@@ -247,3 +321,16 @@ def test_avatar_runtime_strategy_docs_cover_safe_build_and_smoke_paths() -> None
     assert "pip install mmcv" not in lower_docs
     assert "python -m pip install mmcv" not in lower_docs
     assert ".venv\\scripts\\python.exe -m pip install" not in lower_docs
+
+
+def test_windows_doctor_docs_are_onboarding_entry_point() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    install = (REPO_ROOT / "docs" / "INSTALL_WINDOWS.md").read_text(encoding="utf-8")
+    docs = "\n".join([readme, install])
+
+    assert ".\\scripts\\windows-doctor.ps1" in docs
+    assert ".\\scripts\\windows-doctor.ps1 -Json" in docs
+    assert ".\\scripts\\windows-doctor.ps1 -OutputPath scratch\\doctor-report.json" in install
+    assert "one-command installer readiness report" in docs
+    assert "Secret-like values are never printed" in install
+    assert "does not build, pull, start services, install packages, download models, delete Docker data, or run avatar jobs" in readme

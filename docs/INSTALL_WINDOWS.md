@@ -9,6 +9,7 @@ Use this flow for normal local development:
 ```powershell
 git clone <repo-url> AI_ACADEMY
 cd AI_ACADEMY
+.\scripts\windows-doctor.ps1
 .\scripts\windows-preflight.ps1
 Copy-Item infra\.env.example infra\.env
 .\scripts\windows-dev-setup.ps1 -CheckOnly
@@ -72,10 +73,17 @@ npm --version
 Run the read-only preflight and setup checks:
 
 ```powershell
+.\scripts\windows-doctor.ps1
+.\scripts\windows-doctor.ps1 -Json
+.\scripts\windows-doctor.ps1 -OutputPath scratch\doctor-report.json
 .\scripts\windows-preflight.ps1
 .\scripts\windows-preflight.ps1 -Json
 .\scripts\windows-dev-setup.ps1 -CheckOnly
 ```
+
+`windows-doctor.ps1` is the first one-command readiness report for a new Windows developer or company checkout. It is read-only by default: it does not build images, pull images, start services, install packages, download models, delete Docker volumes/images, or run avatar jobs. It checks host prerequisites, Docker/Compose shape, `infra\.env` presence, required core variable names, optional provider groups, and model/cache paths. Secret-like values are never printed; the report shows only variable names as present, missing, blank, or placeholder-like.
+
+Optional providers are warnings, not core startup failures, unless the selected env state makes them required. Missing Google OAuth, SMTP/Brevo/Mailjet, OpenAI, Ollama, LibreTranslate, and avatar credentials/assets are reported as `WARN` with the disabled capability explained.
 
 `windows-preflight.ps1` does not install Docker, WSL2, Ollama, GPU drivers, models, or Python packages. It reports host prerequisites, ports, disk space, `infra\.env` state, Compose config, optional GPU hints, and optional Ollama reachability. When run for `-Profile avatar` or `-Profile full`, it also reports read-only avatar image/model warnings without starting containers.
 

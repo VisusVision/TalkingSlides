@@ -31,6 +31,7 @@ From the repository root:
 
 ```powershell
 Copy-Item .\infra\.env.example .\infra\.env
+.\scripts\windows-doctor.ps1
 .\scripts\windows-preflight.ps1
 .\scripts\windows-dev-setup.ps1 -CheckOnly
 .\scripts\windows-runtime.ps1 -Profile core
@@ -71,12 +72,16 @@ The planned installer/runtime profiles are documented in [docs/FULL_STACK_LOCAL_
 Use the read-only Windows checks before and after startup:
 
 ```powershell
+.\scripts\windows-doctor.ps1
+.\scripts\windows-doctor.ps1 -Json
 .\scripts\windows-preflight.ps1
 .\scripts\windows-preflight.ps1 -Json
 .\scripts\windows-runtime-health.ps1
 .\scripts\windows-runtime-health.ps1 -Json
 .\scripts\windows-runtime.ps1 -Status
 ```
+
+`windows-doctor.ps1` is the one-command installer readiness report. It checks host prerequisites, Docker/Compose shape, env-file presence, required core variable names, optional provider groups, and model/cache paths without printing secret values. It does not build, pull, start services, install packages, download models, delete Docker data, or run avatar jobs.
 
 `PASS` means the check is ready, `WARN` means optional or degraded behavior needs attention, and `FAIL` means a core blocker must be fixed before the core app should be considered ready.
 `windows-runtime-health.ps1` may exit with code `1` when the core stack is stopped because it only checks already-running services.
