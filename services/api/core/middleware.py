@@ -56,7 +56,7 @@ class PlaybackSecurityHeadersMiddleware:
         is_stream_response = request.path.startswith("/api/v1/stream/")
         response.setdefault(
             "Permissions-Policy",
-            "display-capture=(), camera=(), microphone=(), geolocation=(), payment=(), usb=(), picture-in-picture=()",
+            "display-capture=(), camera=(), microphone=(self), geolocation=(), payment=(), usb=(), picture-in-picture=()",
         )
         response.setdefault("X-Frame-Options", "DENY")
         response.setdefault("X-Content-Type-Options", "nosniff")

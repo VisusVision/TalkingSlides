@@ -8,7 +8,7 @@ export default defineConfig({
     port: 3000,
     host: '0.0.0.0',
     headers: {
-      'Permissions-Policy': 'display-capture=(), camera=(), microphone=(), geolocation=(), payment=(), usb=(), picture-in-picture=()',
+      'Permissions-Policy': 'display-capture=(), camera=(), microphone=(self), geolocation=(), payment=(), usb=(), picture-in-picture=()',
       'X-Frame-Options': 'DENY',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'same-origin'

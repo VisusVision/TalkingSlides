@@ -93,7 +93,17 @@ const AVATAR_PROFILE_PAYLOAD = {
   },
 };
 
-async function mockSettingsAvatarApi(page) {
+test.use({
+  permissions: ['microphone'],
+  launchOptions: {
+    args: [
+      '--use-fake-device-for-media-stream',
+      '--use-fake-ui-for-media-stream',
+    ],
+  },
+});
+
+async function mockSettingsAvatarApi(page, { allowVoiceUpload = false, onVoiceUpload = null } = {}) {
   await mockCommonAppChromeApi(page, {
     user: AUTH_USER,
     capabilities: CAPABILITIES_PAYLOAD,
@@ -114,14 +124,28 @@ async function mockSettingsAvatarApi(page) {
   });
 
   await page.route('**/api/v1/users/42/voice/**', (route) => {
+    if (allowVoiceUpload) {
+      onVoiceUpload?.(route.request());
+      return route.fulfill(jsonResponse({
+        status: 'ready',
+        voice_id: 'voice_recorded_smoke',
+        audio: {
+          format: 'wav',
+          codec: 'pcm_s16le',
+          sample_rate: 24000,
+          channels: 1,
+          duration_seconds: 11,
+        },
+      }));
+    }
     throw new Error(`Unexpected voice sample request: ${route.request().method()} ${route.request().url()}`);
   });
 }
 
-async function setupAuthenticatedSettingsSmoke(page) {
+async function setupAuthenticatedSettingsSmoke(page, apiOptions = {}) {
   const expectNoBrowserErrors = collectBrowserErrors(page);
 
-  await mockSettingsAvatarApi(page);
+  await mockSettingsAvatarApi(page, apiOptions);
   await seedAuthenticatedSession(page, {
     token: 'settings-avatar-token',
     user: AUTH_USER,
@@ -157,4 +181,50 @@ test('authenticated Settings renders mocked avatar status and voice modal', asyn
   await expect(page.getByRole('button', { name: 'Upload Voice Sample' })).toBeVisible();
 
   expectNoBrowserErrors();
+});
+
+test.describe('microphone voice sample recording', () => {
+  test('records, previews, uses, and uploads a browser microphone sample', async ({ page }) => {
+    let voiceUploadSeen = false;
+    const expectNoBrowserErrors = await setupAuthenticatedSettingsSmoke(page, {
+      allowVoiceUpload: true,
+      onVoiceUpload: (request) => {
+        expect(request.method()).toBe('POST');
+        expect(request.headers()['content-type']).toContain('multipart/form-data');
+        expect(request.postData() || '').toContain('voice-sample-recording.webm');
+        voiceUploadSeen = true;
+      },
+    });
+
+    await page.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = async () => {
+        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+        const audioContext = new AudioContextCtor();
+        const oscillator = audioContext.createOscillator();
+        const destination = audioContext.createMediaStreamDestination();
+        oscillator.connect(destination);
+        oscillator.start();
+        return destination.stream;
+      };
+    });
+
+    await page.goto('/settings');
+    await page.getByRole('button', { name: /Voice and avatar samples/ }).click();
+    await page.getByRole('button', { name: /Voice Sample/ }).click();
+
+    await expect(page.getByText('Record from microphone')).toBeVisible();
+    await page.getByRole('button', { name: 'Start recording' }).click();
+    await expect(page.getByText(/Status: recording/)).toBeVisible();
+    await page.waitForTimeout(1200);
+    await page.getByRole('button', { name: 'Stop recording' }).click();
+    await expect(page.getByText(/Status: recorded/)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Play preview' }).click();
+    await page.getByRole('button', { name: 'Use recording' }).click();
+    await page.getByRole('button', { name: 'Upload Voice Sample' }).click();
+
+    await expect.poll(() => voiceUploadSeen).toBe(true);
+    await expect(page.getByText('Voice sample uploaded.')).toBeVisible();
+    expectNoBrowserErrors();
+  });
 });
