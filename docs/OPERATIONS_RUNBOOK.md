@@ -641,10 +641,22 @@ Treat the build as a likely real failure when the same package, clone, or snapsh
 
 Avatar-capable worker images must install `mmcv`/`mmpose` in Docker, not in the Windows or host Python environment. Installing `mmcv` into `.venv` does not help `worker-avatar`. The worker Dockerfile installs `mmcv` from prebuilt wheels only and never falls back to a source build.
 
+For local Windows planning, print the strategy first:
+
+```powershell
+.\scripts\windows-avatar-runtime.ps1
+.\scripts\windows-avatar-runtime.ps1 -Action Check
+.\scripts\windows-avatar-runtime.ps1 -Action PrintBuildCommand
+.\scripts\windows-avatar-runtime.ps1 -Action PrintSmokeCommand
+```
+
+The helper is intentionally non-destructive. It prints the online build, local `local_wheels/` build, pinned wheel URL build, prebuilt image tag path, `storage_local\models` model bundle expectations, `windows-runtime.ps1 -Profile avatar` start command, and future smoke commands. It does not run Docker build/pull/up/run commands, install packages, download models, start `worker-avatar`, or consume the real `avatar` queue.
+`worker-avatar` uses `/tmp/visus-cache` for volatile parser/runtime caches (`XDG_CACHE_HOME`, `MPLCONFIGDIR`, and `NUMBA_CACHE_DIR`) while keeping model bundles and runtime artifacts on their existing persistent paths. Do not repair YAPF or OpenMMLab parser cache failures by installing packages into the Windows virtual environment or by broadly chmod/chowning `storage_local`.
+
 Use the OpenMMLab index when the network can reach it:
 
 ```powershell
-docker compose -f infra\docker-compose.yml build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 worker-avatar
+docker compose -f infra\docker-compose.yml --profile avatar build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 worker-avatar
 ```
 
 Use a local/offline wheel when `download.openmmlab.com` is blocked. Get a compatible `mmcv` wheel on another machine or network, then save it outside git:
@@ -654,8 +666,8 @@ New-Item -ItemType Directory -Force local_wheels
 # Put the downloaded wheel here, for example:
 # local_wheels\mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl
 
-docker compose -f infra\docker-compose.yml build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 --build-arg MMCV_LOCAL_WHEEL=local_wheels/mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl worker-avatar
-docker compose -f infra\docker-compose.yml run --rm --no-deps worker-avatar python -c "import mmcv, mmpose; print(mmcv.__version__)"
+docker compose -f infra\docker-compose.yml --profile avatar build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 --build-arg MMCV_LOCAL_WHEEL=local_wheels/mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl worker-avatar
+docker compose -f infra\docker-compose.yml --profile avatar run --rm --no-deps worker-avatar python -c "import mmcv, mmpose; print(mmcv.__version__)"
 ```
 
 `local_wheels/` and `*.whl` are ignored by git. Do not put downloaded wheels under a tracked path.
@@ -663,7 +675,7 @@ docker compose -f infra\docker-compose.yml run --rm --no-deps worker-avatar pyth
 Use `MMCV_WHEEL_URL` when you have an internal artifact URL:
 
 ```powershell
-docker compose -f infra\docker-compose.yml build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 --build-arg MMCV_WHEEL_URL=https://example.internal/mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl worker-avatar
+docker compose -f infra\docker-compose.yml --profile avatar build --no-cache --build-arg INSTALL_OPENMMLAB_DEPS=1 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1 --build-arg MMCV_WHEEL_URL=https://example.internal/mmcv-2.0.1-cp310-cp310-manylinux1_x86_64.whl worker-avatar
 ```
 
 Use a prebuilt heavy avatar worker image when local heavy builds are not practical:
@@ -671,11 +683,14 @@ Use a prebuilt heavy avatar worker image when local heavy builds are not practic
 ```powershell
 docker pull registry.example.internal/ai-academy-worker-avatar:cuda118-mmcv201
 docker tag registry.example.internal/ai-academy-worker-avatar:cuda118-mmcv201 ai_academy_worker:local
-docker compose -f infra\docker-compose.yml up -d --no-build --force-recreate worker-avatar
-docker compose -f infra\docker-compose.yml run --rm --no-deps worker-avatar python -c "import mmcv, mmpose; print(mmcv.__version__)"
+docker compose -f infra\docker-compose.yml --profile avatar up -d --no-build --force-recreate worker-avatar
+docker compose -f infra\docker-compose.yml --profile avatar run --rm --no-deps worker-avatar python -c "import mmcv, mmpose; print(mmcv.__version__)"
 ```
 
 If no local wheel exists and `MMCV_WHEEL_URL` is empty, the build checks `MMCV_FIND_LINKS` and installs `mmcv==${MMCV_VERSION}` with `--only-binary=:all:`. An unreachable OpenMMLab wheel index fails fast with instructions instead of attempting a source build.
+
+`worker-avatar` is behind the Compose `avatar` profile. The Windows runtime wrapper passes that profile only for `-Profile avatar` and `-Profile full`, while preserving `--no-build` and `--pull never`.
+Before `worker-avatar` consumes the normal `avatar` queue, run `python .\scripts\check_avatar_models.py`, then use the helper's printed import and throwaway-queue smoke commands.
 
 ## Common Emergency Actions
 

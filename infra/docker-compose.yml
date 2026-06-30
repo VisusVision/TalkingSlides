@@ -233,6 +233,8 @@ services:
   # ----------------------------------------------------------
   worker-avatar:
     <<: *python-common
+    profiles:
+      - avatar
     build:
       context: ..
       dockerfile: infra/dockerfiles/Dockerfile.worker
@@ -253,6 +255,7 @@ services:
     gpus: all
     command: >
       sh -lc 'export LD_LIBRARY_PATH="$${AI_ACADEMY_LD_LIBRARY_PATH}:$${LD_LIBRARY_PATH}";
+      mkdir -p "$${XDG_CACHE_HOME:-/tmp/visus-cache}" "$${MPLCONFIGDIR:-/tmp/visus-cache/matplotlib}" "$${NUMBA_CACHE_DIR:-/tmp/visus-cache/numba}" &&
       if [ "$${AVATAR_BOOTSTRAP_ON_WORKER_STARTUP:-1}" = "1" ]; then
         python /app/worker/bootstrap_musetalk.py;
       else
@@ -290,7 +293,9 @@ services:
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       TORCH_HOME: /app/storage_local/models/torch
-      XDG_CACHE_HOME: /app/storage_local/cache
+      XDG_CACHE_HOME: /tmp/visus-cache
+      MPLCONFIGDIR: /tmp/visus-cache/matplotlib
+      NUMBA_CACHE_DIR: /tmp/visus-cache/numba
       CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
       CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
       CELERY_WORKER_QUEUES: "${CELERY_AVATAR_QUEUE:-avatar}"

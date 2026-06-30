@@ -23,22 +23,35 @@ The default local storage path is repo-root `storage_local/`. Docker mounts that
 
 Keep `STORAGE_BACKEND=filesystem` for normal coworker setup. Existing local env files that still use `STORAGE_BACKEND=local` remain compatible, but `filesystem` is the canonical value. Compose MinIO is available for optional S3 adapter readiness checks only; it does not serve runtime media by default.
 
-## 2. Start Docker Services
+## 2. Start Core Docker Services
 
 From the repo root:
 
-```bash
-docker compose -f infra/docker-compose.yml up --build
+```powershell
+.\scripts\windows-dev-start.ps1
 ```
 
-This starts Postgres, Redis, MinIO, API, TTS, worker, avatar worker, and frontend. The avatar worker needs GPU/runtime assets for the full avatar path; if you only need API/frontend work, use the local API/frontend commands below and treat avatar startup as optional.
+This starts the core services: Postgres, Redis, MinIO, API, and frontend. It avoids starting TTS, the render worker, and the GPU avatar worker until they are needed.
 
 Useful local URLs:
 
 - API: `http://localhost:8000`
-- TTS service: `http://localhost:8001`
 - Frontend: `http://localhost:3000`
 - MinIO console: `http://localhost:9001`
+
+For render/TTS work:
+
+```powershell
+.\scripts\windows-dev-start.ps1 -WithTts -WithWorker
+```
+
+For avatar work on a validated GPU host:
+
+```powershell
+.\scripts\windows-dev-start.ps1 -WithAvatar
+```
+
+The broad Compose command still exists, but it starts every unprofiled service and can enter the heavy avatar path. Prefer the scripts for normal onboarding.
 
 ## 3. Seed the Local Demo Account
 
@@ -133,4 +146,4 @@ On Linux/macOS/WSL, use `:` instead of `;` in `PYTHONPATH`.
 - Migrations not run: run `python services/api/manage.py migrate` locally or `docker compose -f infra/docker-compose.yml exec api python manage.py migrate`.
 - Demo login returns `401`: run `docker compose -f infra/docker-compose.yml exec api python manage.py seed_demo_data`, then use `demo.tech.teacher@example.com` / `visus-demo-local`.
 - Frontend dependencies missing: run `cd services/frontend && npm install`.
-- GPU/avatar runtime unavailable: MuseTalk/LivePortrait/avatar preview is optional and heavy. Basic API, frontend, storage, and lightweight TTS startup do not require avatar models or GPU setup.
+- GPU/avatar runtime unavailable: MuseTalk/LivePortrait/avatar preview is optional and heavy. Basic API, frontend, storage, and lightweight TTS startup do not require avatar models or GPU setup. Do not install `mmcv`, `mmpose`, LivePortrait, or MuseTalk into Windows Python to fix Docker avatar worker issues; those dependencies belong in the worker image.

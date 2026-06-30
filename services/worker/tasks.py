@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import copy
 import html
 import hashlib
 import json
@@ -60,6 +61,13 @@ from celery.signals import worker_ready  # noqa: E402
 
 from .avatar_timeout_policy import resolve_preview_task_time_limits  # noqa: E402
 from .celery_app import app  # noqa: E402
+from .partial_render_manifest import (  # noqa: E402
+    build_expected_partial_render_manifest,
+    build_partial_render_manifest,
+    build_partial_render_plan,
+    classify_partial_render_changes,
+    get_visual_only_recompose_eligibility,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1551,6 +1559,314 @@ def _write_playback_sidecar(project_id: str | int, payload: dict[str, Any]) -> s
 
 def _read_playback_sidecar(project_id: str | int) -> dict[str, Any]:
     return _read_json_sidecar(project_id, "playback_assets.json")
+
+
+def _is_partial_render_manifest_available(value: Any) -> bool:
+    try:
+        version = int(value.get("version") or 0) if isinstance(value, dict) else 0
+    except (TypeError, ValueError):
+        version = 0
+    return isinstance(value, dict) and version == 1 and isinstance(value.get("pages"), dict)
+
+
+def _partial_render_plan_failed_report() -> dict[str, Any]:
+    return {
+        "version": 1,
+        "mode": "report_only",
+        "summary": {},
+        "pages": {},
+        "notes": ["plan_failed"],
+    }
+
+
+def _build_partial_render_analysis_report(
+    *,
+    previous_playback_assets: dict[str, Any] | None,
+    current_playback_assets: dict[str, Any],
+) -> dict[str, Any]:
+    previous_sidecar = previous_playback_assets if isinstance(previous_playback_assets, dict) else {}
+    current_sidecar = current_playback_assets if isinstance(current_playback_assets, dict) else {}
+    old_manifest = previous_sidecar.get("partial_render_manifest")
+    current_manifest = current_sidecar.get("partial_render_manifest")
+    old_available = _is_partial_render_manifest_available(old_manifest)
+    current_available = _is_partial_render_manifest_available(current_manifest)
+    notes: list[str] = []
+    if not previous_sidecar:
+        notes.append("old_playback_assets_missing")
+    if not old_available:
+        notes.append("old_manifest_missing_or_invalid")
+    if not current_available:
+        notes.append("current_manifest_missing_or_invalid")
+
+    classifier_result = classify_partial_render_changes(
+        old_manifest=old_manifest if old_available else None,
+        expected_manifest=current_manifest if current_available else None,
+    )
+    analysis = {
+        "version": 1,
+        "mode": "report_only",
+        "generated_from": "partial_render_manifest",
+        "classifier": {
+            "available": old_available and current_available,
+            "result": classifier_result,
+            "notes": notes,
+        },
+    }
+    try:
+        analysis["plan"] = build_partial_render_plan(classifier_result)
+    except Exception:
+        logger.warning("Partial render plan report failed", exc_info=True)
+        analysis["plan"] = _partial_render_plan_failed_report()
+    return analysis
+
+
+def _playback_artifacts_by_page_key(playback_assets: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    if not isinstance(playback_assets, dict):
+        return {}
+
+    artifacts_by_key: dict[str, dict[str, str]] = {}
+    manifest = playback_assets.get("partial_render_manifest")
+    pages = manifest.get("pages") if _is_partial_render_manifest_available(manifest) else {}
+    if isinstance(pages, dict):
+        for page_key, page in pages.items():
+            if not isinstance(page, dict):
+                continue
+            artifacts = page.get("artifacts") if isinstance(page.get("artifacts"), dict) else {}
+            cleaned = {
+                "tts_audio": str(artifacts.get("tts_audio") or "").strip(),
+                "avatar_clip": str(artifacts.get("avatar_clip") or "").strip(),
+                "composed_segment": str(artifacts.get("composed_segment") or "").strip(),
+                "slide_image": str(artifacts.get("slide_image") or "").strip(),
+            }
+            if any(cleaned.values()):
+                artifacts_by_key[str(page_key)] = cleaned
+
+    final_segments = playback_assets.get("final_segments")
+    if isinstance(final_segments, list):
+        for segment in final_segments:
+            if not isinstance(segment, dict):
+                continue
+            page_key = str(segment.get("page_key") or "").strip()
+            if not page_key:
+                continue
+            artifacts_by_key.setdefault(page_key, {})
+            for key, value in {
+                "tts_audio": segment.get("tts_audio"),
+                "avatar_clip": segment.get("avatar_clip"),
+                "composed_segment": segment.get("part_rel_path"),
+                "slide_image": segment.get("slide"),
+            }.items():
+                text = str(value or "").strip()
+                if text:
+                    artifacts_by_key[page_key][key] = text
+    return artifacts_by_key
+
+
+def _resolve_existing_artifact_path(value: Any, *, storage_root: str | Path | None = None) -> Path | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = Path(storage_root or STORAGE_ROOT) / raw.lstrip("/\\")
+    try:
+        candidate = candidate.resolve()
+    except Exception:
+        candidate = candidate.absolute()
+    return candidate if candidate.is_file() else None
+
+
+def _existing_avatar_track_payload_for_visual_recompose(playback_assets: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(playback_assets, dict):
+        return {}
+    avatar_payload = playback_assets.get("avatar")
+    if not isinstance(avatar_payload, dict):
+        return {}
+    for key in ("track_restored_rel_path", "track_rel_path", "track_fast_rel_path"):
+        rel_path = str(avatar_payload.get(key) or "").strip()
+        if not rel_path:
+            continue
+        if (
+            _resolve_existing_artifact_path(rel_path, storage_root=_avatar_storage_root()) is not None
+            or _resolve_existing_artifact_path(rel_path, storage_root=STORAGE_ROOT) is not None
+        ):
+            return copy.deepcopy(avatar_payload)
+    return {}
+
+
+def _copy_reused_avatar_sidecar_state(
+    playback_assets: dict[str, Any],
+    previous_playback_assets: dict[str, Any] | None,
+) -> dict[str, Any]:
+    avatar_payload = _existing_avatar_track_payload_for_visual_recompose(previous_playback_assets)
+    if not avatar_payload:
+        return {}
+    playback_assets["avatar"] = avatar_payload
+    for key in (
+        "avatar_status",
+        "avatar_processing_status",
+        "avatar_restoration_status",
+        "avatar_engine_selected",
+        "normalized_engine",
+        "final_avatar_engine_chain",
+        "avatar_runtime_settings",
+        "avatar_failures",
+        "avatar_restoration_failures",
+        "avatar_clips",
+        "avatar_clips_fast",
+        "avatar_clips_restored",
+    ):
+        if isinstance(previous_playback_assets, dict) and key in previous_playback_assets:
+            playback_assets[key] = copy.deepcopy(previous_playback_assets.get(key))
+    return avatar_payload
+
+
+def _target_part_path_exists(slide: dict[str, Any]) -> bool:
+    part_out = str(slide.get("part_out") or "").strip()
+    return bool(part_out and Path(part_out).is_file())
+
+
+def _current_visual_inputs_available(slide: dict[str, Any]) -> bool:
+    if bool(slide.get("whiteboard_mode")):
+        return True
+    image_path = str(slide.get("image_path") or "").strip()
+    return bool(image_path and Path(image_path).is_file())
+
+
+def _avatar_artifact_required_for_visual_recompose(avatar_options: dict[str, Any] | None) -> bool:
+    cfg = dict(avatar_options or {})
+    return bool(cfg.get("requested", cfg.get("enabled", False)))
+
+
+def _build_visual_only_recompose_runtime_decision(
+    *,
+    project_id: str | int,
+    job_id: int | str | None,
+    slides: list[dict[str, Any]],
+    rerender_page_keys: set[str],
+    previous_playback_assets: dict[str, Any] | None,
+    tts_settings: dict[str, Any] | None,
+    avatar_options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    target_keys = sorted({str(key) for key in rerender_page_keys if str(key)})
+    decision: dict[str, Any] = {
+        "eligible": False,
+        "mode": "visual_only_recompose",
+        "target_page_keys": target_keys,
+        "fallback_reasons": [],
+        "pages": {},
+        "artifacts_by_page_key": {},
+        "classification": None,
+        "plan": None,
+    }
+
+    def add_fallback(reason: str) -> None:
+        reasons = decision["fallback_reasons"]
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if not target_keys:
+        add_fallback("target_page_keys_empty")
+        return decision
+    if not previous_playback_assets:
+        add_fallback("old_playback_assets_missing")
+        return decision
+
+    old_manifest = previous_playback_assets.get("partial_render_manifest")
+    try:
+        expected_manifest = build_expected_partial_render_manifest(
+            project_id=project_id,
+            job_id=job_id,
+            slides=slides,
+            previous_playback_assets=previous_playback_assets,
+            tts_settings=tts_settings,
+            avatar_options=avatar_options,
+        )
+        classification = classify_partial_render_changes(
+            old_manifest=old_manifest if _is_partial_render_manifest_available(old_manifest) else None,
+            expected_manifest=expected_manifest,
+        )
+        plan = build_partial_render_plan(classification)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Visual-only partial render planning failed project=%s", project_id, exc_info=True)
+        add_fallback(f"visual_only_plan_failed:{exc.__class__.__name__}")
+        return decision
+
+    eligibility = get_visual_only_recompose_eligibility(
+        classification_result=classification,
+        plan=plan,
+        target_page_keys=target_keys,
+    )
+    decision.update(
+        {
+            "eligible": bool(eligibility.get("eligible")),
+            "fallback_reasons": list(eligibility.get("fallback_reasons") or []),
+            "pages": dict(eligibility.get("pages") or {}),
+            "classification": classification,
+            "plan": plan,
+        }
+    )
+    if not decision["eligible"]:
+        return decision
+
+    artifacts_by_key = _playback_artifacts_by_page_key(previous_playback_assets)
+    slides_by_key = {str(slide.get("page_key") or ""): slide for slide in slides if isinstance(slide, dict)}
+    avatar_required = _avatar_artifact_required_for_visual_recompose(avatar_options)
+    old_avatar_track_payload = (
+        _existing_avatar_track_payload_for_visual_recompose(previous_playback_assets)
+        if avatar_required
+        else {}
+    )
+    checked_artifacts: dict[str, dict[str, str]] = {}
+    for page_key in target_keys:
+        slide = slides_by_key.get(page_key)
+        page_report = dict(decision["pages"].get(page_key) or {})
+        page_fallbacks = list(page_report.get("fallback_reasons") or [])
+
+        def add_page_fallback(reason: str) -> None:
+            if reason not in page_fallbacks:
+                page_fallbacks.append(reason)
+            add_fallback(reason)
+
+        if slide is None:
+            add_page_fallback("target_slide_missing")
+        elif not _current_visual_inputs_available(slide):
+            add_page_fallback("current_visual_inputs_missing")
+
+        artifacts = dict(artifacts_by_key.get(page_key) or {})
+        audio_abs = _resolve_existing_artifact_path(artifacts.get("tts_audio"), storage_root=STORAGE_ROOT)
+        old_part_abs = _resolve_existing_artifact_path(artifacts.get("composed_segment"), storage_root=STORAGE_ROOT)
+        deterministic_part_exists = _target_part_path_exists(slide or {})
+        if audio_abs is None:
+            add_page_fallback("old_tts_audio_missing")
+        if old_part_abs is None and not deterministic_part_exists:
+            add_page_fallback("old_composed_segment_missing")
+
+        avatar_abs = None
+        if avatar_required:
+            avatar_abs = _resolve_existing_artifact_path(artifacts.get("avatar_clip"), storage_root=_avatar_storage_root())
+            if avatar_abs is None:
+                avatar_abs = _resolve_existing_artifact_path(artifacts.get("avatar_clip"), storage_root=STORAGE_ROOT)
+            if avatar_abs is None:
+                add_page_fallback("old_avatar_clip_missing")
+            if not old_avatar_track_payload:
+                add_page_fallback("old_avatar_overlay_missing")
+
+        page_report["fallback_reasons"] = page_fallbacks
+        page_report["eligible"] = not page_fallbacks
+        decision["pages"][page_key] = page_report
+        checked_artifacts[page_key] = {
+            **artifacts,
+            "tts_audio_abs_path": str(audio_abs or ""),
+            "composed_segment_abs_path": str(old_part_abs or ""),
+            "avatar_clip_abs_path": str(avatar_abs or ""),
+        }
+
+    decision["artifacts_by_page_key"] = checked_artifacts
+    decision["eligible"] = not decision["fallback_reasons"] and all(
+        bool(page.get("eligible")) for page in decision["pages"].values()
+    )
+    return decision
 
 
 def _mark_playback_sidecar_avatar_queued(
@@ -7166,6 +7482,236 @@ def export_project(
 # Pipeline step 2: Per-slide TTS + render (parallel via Celery group)
 # ---------------------------------------------------------------------------
 
+def _render_visual_only_slide_image(slide_meta: dict[str, Any], *, part_out: str) -> dict[str, Any]:
+    image_path = str(slide_meta.get("image_path") or "")
+    notes_text = str(slide_meta.get("notes_text") or "")
+    narration_text = str(slide_meta.get("narration_text") or notes_text)
+    raw_original_text = slide_meta.get("original_text") or notes_text
+    display_text = _split_consistent_display_text(slide_meta.get("display_text") or raw_original_text, narration_text)
+    original_text = display_text
+    subtitle_chunks = _subtitle_chunks_for_render(slide_meta.get("subtitle_chunks"), narration_text)
+    whiteboard_mode = bool(slide_meta.get("whiteboard_mode"))
+    editor_document = slide_meta.get("editor_document") if isinstance(slide_meta.get("editor_document"), dict) else {}
+    editor_scene = editor_document.get("scene") if isinstance(editor_document.get("scene"), dict) else {}
+    scene_background_mode = _scene_mode_from_value(
+        slide_meta.get("scene_background_mode") or editor_scene.get("background_mode"),
+        fallback="whiteboard" if whiteboard_mode else "original",
+    )
+    source_type = _source_type_from_value(slide_meta.get("source_type") or editor_scene.get("source_type"))
+    source_background_warnings = _warning_list_from_value(
+        slide_meta.get("source_background_warnings") or editor_scene.get("source_background_warnings")
+    )
+    source_background_details = _details_list_from_value(slide_meta.get("source_background_details"))
+    has_custom_background = bool(str(
+        slide_meta.get("custom_background_path") or editor_scene.get("custom_background_path") or ""
+    ).strip())
+    if scene_background_mode == "custom" and not has_custom_background:
+        image_path = ""
+    scene_background_mode, source_background_warnings, effective_whiteboard_mode = _normalize_scene_mode_for_render(
+        scene_background_mode,
+        source_type=source_type,
+        render_image_path=image_path,
+        warnings=source_background_warnings,
+    )
+    scene_background_fit = _scene_fit_from_value(
+        slide_meta.get("scene_background_fit") or editor_scene.get("background_fit")
+    )
+    raw_scene_text_scale = slide_meta.get("scene_text_scale")
+    if raw_scene_text_scale is None or raw_scene_text_scale == "":
+        raw_scene_text_scale = editor_scene.get("text_scale")
+    scene_text_scale = _scene_text_scale_from_value(raw_scene_text_scale, fallback=1.0)
+    rich_text_html = str(slide_meta.get("rich_text_html") or "")
+    if isinstance(editor_document, dict) and not narration_text:
+        para_lines = [str(p.get("text") or "") for p in editor_document.get("paragraphs", []) if isinstance(p, dict)]
+        if para_lines:
+            narration_text = "\n".join(para_lines)
+    if isinstance(editor_document, dict) and not rich_text_html:
+        rich_text_html = str(editor_document.get("html") or "")
+    rich_text_html = _split_consistent_rich_text_html(display_text, rich_text_html)
+    notes_text_prepared = str(narration_text or "").strip() or f"Slide {int(slide_meta.get('slide_num') or 0)}."
+
+    render_image_path = image_path
+    if effective_whiteboard_mode:
+        render_image_path = _make_whiteboard_image(
+            display_text or original_text,
+            str(Path(part_out).with_suffix(".whiteboard.png")),
+            text_scale=scene_text_scale,
+        )
+    elif scene_background_mode in {"custom", "source_background"}:
+        if scene_background_mode == "source_background":
+            source_background_warnings = list(
+                dict.fromkeys(
+                    [
+                        *source_background_warnings,
+                        *_source_background_overflow_warnings(
+                            image_path,
+                            display_text,
+                            rich_text_html,
+                            text_scale=scene_text_scale,
+                            background_fit=scene_background_fit,
+                        ),
+                    ]
+                )
+            )
+        render_image_path = _render_transcript_overlay_image(
+            image_path,
+            display_text,
+            rich_text_html,
+            str(Path(part_out).with_suffix(".overlay.png")),
+            text_scale=scene_text_scale,
+            background_fit=scene_background_fit,
+        )
+
+    combined_source_render_warnings = list(
+        dict.fromkeys(
+            [
+                *_warning_list_from_value(slide_meta.get("source_render_warnings")),
+                *source_background_warnings,
+            ]
+        )
+    )
+    combined_source_render_details = _details_list_from_value(
+        [
+            *_details_list_from_value(slide_meta.get("source_render_details")),
+            *source_background_details,
+        ]
+    )
+    return {
+        "render_image_path": render_image_path,
+        "notes_text_prepared": notes_text_prepared,
+        "original_text": original_text,
+        "display_text": display_text,
+        "subtitle_chunks": subtitle_chunks or [notes_text_prepared],
+        "whiteboard_mode": effective_whiteboard_mode,
+        "scene_background_mode": scene_background_mode,
+        "source_render_warnings": combined_source_render_warnings,
+        "source_render_details": combined_source_render_details,
+    }
+
+
+@app.task(
+    bind=True,
+    name="worker.tasks.recompose_visual_only_slide_segment",
+    max_retries=0,
+)
+def recompose_visual_only_slide_segment(
+    self,
+    slide_meta: dict[str, Any],
+    project_id: str,
+    voice_id: str,
+    pause_sec: float,
+    lang_hint: str,
+    tts_mode: str = "service",
+    avatar_options: dict[str, Any] | None = None,
+    tts_settings: dict[str, Any] | None = None,
+    visual_recompose_artifacts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        from scripts.ffmpeg_helpers import create_slide_video, get_audio_duration
+    except ImportError as exc:
+        raise RuntimeError(f"ffmpeg_helpers not importable — check PYTHONPATH. Error: {exc}") from exc
+
+    artifacts = dict(visual_recompose_artifacts or {})
+    slide_num = int(slide_meta.get("slide_num") or 0)
+    index = int(slide_meta.get("index") or 0)
+    part_out = str(slide_meta.get("part_out") or "")
+    audio_path = str(artifacts.get("tts_audio_abs_path") or "")
+
+    try:
+        if not part_out:
+            raise RuntimeError("visual_recompose_part_out_missing")
+        if not audio_path or not Path(audio_path).is_file():
+            raise RuntimeError("visual_recompose_audio_missing")
+        visual = _render_visual_only_slide_image(slide_meta, part_out=part_out)
+        audio_duration = get_audio_duration(audio_path)
+        total_duration = audio_duration + max(float(pause_sec), 0.0)
+        part_path = Path(part_out)
+        part_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = part_path.with_name(f".{part_path.stem}.visual-recompose.{os.getpid()}.{time.time_ns()}{part_path.suffix}")
+        try:
+            create_slide_video(
+                str(visual["render_image_path"]),
+                audio_path,
+                str(temp_path),
+                duration_sec=total_duration,
+            )
+            if not temp_path.is_file():
+                raise RuntimeError("visual_recompose_temp_output_missing")
+            temp_path.replace(part_path)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                temp_path.unlink()
+
+        avatar_rel_path = str(artifacts.get("avatar_clip") or "").strip()
+        avatar_applied = bool(avatar_rel_path)
+        tts_settings_summary = _summarize_tts_settings(tts_settings)
+        logger.info("Visual-only slide recomposed project=%s slide=%s part=%s", project_id, slide_num, part_out)
+        return {
+            "index": index,
+            "slide_num": slide_num,
+            "page_key": slide_meta.get("page_key"),
+            "visual_only_recomposed": True,
+            "source_slide_index": slide_meta.get("source_slide_index", index),
+            "split_index": slide_meta.get("split_index", 0),
+            "part_path": part_out,
+            "duration": total_duration,
+            "pause_seconds": max(float(pause_sec), 0.0),
+            "text": visual["notes_text_prepared"],
+            "original_text": visual["original_text"],
+            "display_text": visual["display_text"],
+            "spoken_text": visual["notes_text_prepared"],
+            "tts_normalization_language": str(lang_hint or ""),
+            "tts_normalization_rules_applied": [],
+            "tts_provider": "cached",
+            "tts_provider_preference": str(tts_settings_summary.get("provider_preference") or ""),
+            "tts_normalization_enabled": tts_settings_summary.get("normalization_enabled"),
+            "tts_normalization_mode": str(tts_settings_summary.get("normalization_mode") or ""),
+            "tts_unknown_word_strategy": str(tts_settings_summary.get("unknown_word_strategy") or ""),
+            "tts_applied_overrides": dict(tts_settings_summary.get("applied_overrides") or {}),
+            "tts_fallback_used": False,
+            "tts_fallback_reason": "",
+            "tts_settings": tts_settings_summary,
+            "tts_preprocessing_warnings": [],
+            "slide_path": str(visual["render_image_path"]),
+            "tts_audio_path": audio_path,
+            "subtitle_chunks": list(visual["subtitle_chunks"] or []),
+            "whiteboard_mode": bool(visual["whiteboard_mode"]),
+            "scene_background_mode": str(visual["scene_background_mode"] or ""),
+            "source_render_method": str(slide_meta.get("source_render_method") or ""),
+            "source_render_warnings": list(visual["source_render_warnings"] or []),
+            "source_render_details": _details_list_from_value(visual.get("source_render_details")),
+            "source_render_dependency_report": dict(slide_meta.get("source_render_dependency_report") or {}),
+            "source_background_warnings": _warning_list_from_value(slide_meta.get("source_background_warnings")),
+            "source_background_details": _details_list_from_value(slide_meta.get("source_background_details")),
+            "avatar_applied": avatar_applied,
+            "avatar_engine_used": "cached" if avatar_applied else "none",
+            "avatar_fallback_chain": [],
+            "avatar_segment_rel_path": avatar_rel_path,
+            "avatar_attempted": avatar_applied,
+            "avatar_skipped": False,
+            "avatar_failed": False,
+            "avatar_status": "ready" if avatar_applied else "none",
+            "avatar_error": "",
+            "avatar_warning": "",
+            "avatar_failure_reason": "",
+            "avatar_motion_validation": {},
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Visual-only recomposition failed; falling back to slide render project=%s slide=%s error=%s",
+            project_id,
+            slide_num,
+            _concise_error_text(exc, fallback="visual_recompose_failed"),
+            exc_info=True,
+        )
+        fallback_result = synthesize_and_render_slide.apply(
+            args=[slide_meta, project_id, voice_id, pause_sec, lang_hint, tts_mode, avatar_options, tts_settings]
+        )
+        if fallback_result.failed():
+            raise RuntimeError(_concise_error_text(fallback_result.result, fallback="visual_recompose_fallback_failed"))
+        return fallback_result.result
+
+
 @app.task(
     bind=True,
     name="worker.tasks.synthesize_and_render_slide",
@@ -7600,6 +8146,7 @@ def concat_and_finalize(
     use_draft: bool = False,
     avatar_options: dict[str, Any] | None = None,
     job_id: int | str | None = None,
+    skip_background_avatar_overlay: bool = False,
 ) -> dict[str, Any]:
     """
     Chord callback: concatenate all per-slide part MP4s into the final video
@@ -7660,6 +8207,7 @@ def concat_and_finalize(
         len(results),
     )
     _update_render_job(project_id, job_id, progress=90)
+    previous_playback_assets = _read_playback_sidecar(project_id)
 
     try:
         # Sort by index — Celery preserves group order since v4, but defensive
@@ -7902,6 +8450,36 @@ def concat_and_finalize(
             protection_mode=protection_mode,
             package_hls_stream_func=package_hls_stream,
         )
+        playback_assets["partial_render_manifest"] = build_partial_render_manifest(
+            project_id=project_id,
+            job_id=job_id,
+            ordered_results=ordered,
+            playback_assets=playback_assets,
+            avatar_options=avatar_options,
+        )
+        try:
+            playback_assets["partial_render_analysis"] = _build_partial_render_analysis_report(
+                previous_playback_assets=previous_playback_assets,
+                current_playback_assets=playback_assets,
+            )
+        except Exception:
+            logger.warning(
+                "Partial render analysis report failed project=%s job_id=%s",
+                project_id,
+                job_id,
+                exc_info=True,
+            )
+            playback_assets["partial_render_analysis"] = {
+                "version": 1,
+                "mode": "report_only",
+                "generated_from": "partial_render_manifest",
+                "classifier": {
+                    "available": False,
+                    "result": None,
+                    "notes": ["classification_failed"],
+                },
+                "plan": _partial_render_plan_failed_report(),
+            }
 
         if use_draft:
             try:
@@ -7923,9 +8501,15 @@ def concat_and_finalize(
                 _update_render_job(project_id, job_id, status="failed", progress=100, error_message="Draft promotion failed after render.")
                 raise
 
+        reused_avatar_payload: dict[str, Any] = {}
+        if skip_background_avatar_overlay:
+            reused_avatar_payload = _copy_reused_avatar_sidecar_state(playback_assets, previous_playback_assets)
+
         _write_playback_sidecar(project_id, playback_assets)
         background_avatar = {"status": "none", "queued": False}
-        if avatar_options is not None:
+        if skip_background_avatar_overlay and reused_avatar_payload:
+            background_avatar = {"status": "reused", "queued": False}
+        elif avatar_options is not None:
             background_avatar = _queue_lesson_avatar_overlay_after_base_render(
                 project_id=project_id,
                 ordered_results=ordered,
@@ -8060,6 +8644,7 @@ def merge_and_finalize_segments(
     rerender_page_keys: list[str] | None = None,
     avatar_options: dict[str, Any] | None = None,
     job_id: int | str | None = None,
+    skip_background_avatar_overlay: bool = False,
 ) -> dict[str, Any]:
     """Merge rerendered segment outputs with unchanged artifacts, then finalize full lesson."""
     try:
@@ -8137,7 +8722,17 @@ def merge_and_finalize_segments(
 
     # Defensive sort keeps deterministic segment order for concatenation.
     full_results = sorted(full_results, key=lambda item: int(item.get("index") or 0))
-    return concat_and_finalize.apply(args=[full_results, project_id, False, avatar_options, job_id]).result
+    effective_skip_background_avatar_overlay = bool(
+        skip_background_avatar_overlay
+        and changed_results
+        and all(
+            isinstance(result, dict) and result.get("visual_only_recomposed")
+            for result in changed_results
+        )
+    )
+    return concat_and_finalize.apply(
+        args=[full_results, project_id, False, avatar_options, job_id, effective_skip_background_avatar_overlay]
+    ).result
 
 
 # ---------------------------------------------------------------------------
@@ -8443,9 +9038,50 @@ def process_pptx_to_video(
         pipeline_queue = _render_queue_name()
         base_avatar_cfg = dict(avatar_cfg)
         base_avatar_cfg["enabled"] = False
+        visual_only_recompose_decision: dict[str, Any] = {"eligible": False, "fallback_reasons": []}
+        if rerender_set:
+            previous_playback_assets = _read_playback_sidecar(project_id)
+            visual_only_recompose_decision = _build_visual_only_recompose_runtime_decision(
+                project_id=project_id,
+                job_id=render_job_id,
+                slides=slides,
+                rerender_page_keys=rerender_set,
+                previous_playback_assets=previous_playback_assets,
+                tts_settings=tts_settings,
+                avatar_options=avatar_cfg,
+            )
+            if visual_only_recompose_decision.get("eligible"):
+                logger.info(
+                    "Visual-only partial recomposition enabled project=%s job_id=%s targets=%s",
+                    project_id,
+                    render_job_id,
+                    ",".join(list(visual_only_recompose_decision.get("target_page_keys") or [])),
+                )
+            else:
+                logger.info(
+                    "Visual-only partial recomposition skipped project=%s job_id=%s reasons=%s",
+                    project_id,
+                    render_job_id,
+                    ",".join(list(visual_only_recompose_decision.get("fallback_reasons") or [])),
+                )
 
         def _slide_render_signature(slide: dict[str, Any]):
             errback = mark_project_render_failed.s(project_id, render_job_id).set(queue=pipeline_queue)
+            if visual_only_recompose_decision.get("eligible"):
+                page_key = str(slide.get("page_key") or "")
+                artifacts_by_key = visual_only_recompose_decision.get("artifacts_by_page_key")
+                artifacts = dict(artifacts_by_key.get(page_key) or {}) if isinstance(artifacts_by_key, dict) else {}
+                return recompose_visual_only_slide_segment.s(
+                    slide,
+                    project_id,
+                    voice_id,
+                    pause_sec,
+                    resolved_lang,
+                    tts_mode,
+                    base_avatar_cfg,
+                    tts_settings,
+                    artifacts,
+                ).set(queue=pipeline_queue, link_error=errback)
             return synthesize_and_render_slide.s(
                 slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, base_avatar_cfg, tts_settings
             ).set(queue=pipeline_queue, link_error=errback)
@@ -8455,7 +9091,14 @@ def process_pptx_to_video(
             for slide in target_slides
         )
         if rerender_set:
-            callback = merge_and_finalize_segments.s(project_id, slides, list(rerender_set), avatar_cfg, render_job_id).set(queue=pipeline_queue)
+            callback = merge_and_finalize_segments.s(
+                project_id,
+                slides,
+                list(rerender_set),
+                avatar_cfg,
+                render_job_id,
+                bool(visual_only_recompose_decision.get("eligible")),
+            ).set(queue=pipeline_queue)
         else:
             callback = concat_and_finalize.s(project_id, bool(use_draft), avatar_cfg, render_job_id).set(queue=pipeline_queue)
 
