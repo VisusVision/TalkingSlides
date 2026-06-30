@@ -7,6 +7,20 @@ This guide sets up VISUS VidLab for local development on Windows. The current pa
 Use this flow for normal local development:
 
 ```powershell
+VISUS-VidLab.bat
+```
+
+You can also run the same launcher directly:
+
+```powershell
+.\scripts\visus-launcher.ps1
+```
+
+The launcher is a convenience wrapper, not an EXE/MSI installer. It provides menu options for Doctor, core runtime start, avatar runtime start, health checks, quick tests, safe stop, local URLs, and saving Doctor reports. Doctor remains read-only. Runtime start and stop actions delegate to `scripts/windows-runtime.ps1`, preserving the existing no-build/no-pull start behavior and safe stop behavior. Start avatar runtime only when you intentionally want avatar work to be processed.
+
+Manual script flow:
+
+```powershell
 git clone <repo-url> AI_ACADEMY
 cd AI_ACADEMY
 .\scripts\windows-doctor.ps1
@@ -181,6 +195,7 @@ The older development stop script still has an explicit destructive volume-remov
 ## Runtime Wrapper
 
 `scripts/windows-runtime.ps1` is the current profile selector/start wrapper. It is still a PowerShell script, not an EXE/MSI installer.
+`VISUS-VidLab.bat` and `scripts/visus-launcher.ps1` are the installer-like console menu on top of this wrapper. Use them when you want one place to run Doctor, start or stop a selected runtime profile, check health, open local URLs, or save a timestamped Doctor report under `scratch\doctor-reports\`.
 
 Common commands:
 

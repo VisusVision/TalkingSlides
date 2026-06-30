@@ -29,6 +29,16 @@ The active integration branch for contribution work is `developer`.
 
 From the repository root:
 
+For the local launcher menu, double-click `VISUS-VidLab.bat` or run:
+
+```powershell
+.\scripts\visus-launcher.ps1
+```
+
+The launcher is a convenience wrapper around the existing Windows scripts. Doctor remains read-only, runtime start/stop uses the safe runtime wrapper, and avatar runtime should only be started intentionally because it can process real queued avatar work.
+
+Manual script flow:
+
 ```powershell
 Copy-Item .\infra\.env.example .\infra\.env
 .\scripts\windows-doctor.ps1
@@ -86,6 +96,7 @@ Use the read-only Windows checks before and after startup:
 `PASS` means the check is ready, `WARN` means optional or degraded behavior needs attention, and `FAIL` means a core blocker must be fixed before the core app should be considered ready.
 `windows-runtime-health.ps1` may exit with code `1` when the core stack is stopped because it only checks already-running services.
 `windows-runtime.ps1 -Stop` uses `docker compose stop` and preserves volumes, images, and runtime data.
+`VISUS-VidLab.bat` and `scripts/visus-launcher.ps1` expose these checks, runtime actions, quick tests, local URLs, and doctor report saving from one console menu.
 
 ## Full Local AI Runtime
 
