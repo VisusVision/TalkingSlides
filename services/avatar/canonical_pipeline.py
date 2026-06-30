@@ -1884,10 +1884,14 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     }
 
 
-def _request_contract_duration_seconds(request: Any) -> float:
+def _request_contract_duration_seconds(request: Any, audio_contract: dict[str, Any] | None = None) -> float:
     target_duration_seconds = float(getattr(request, "target_duration_seconds", 0.0) or 0.0)
     if target_duration_seconds > 0.0:
         return target_duration_seconds
+    if audio_contract:
+        contract_duration_seconds = float(audio_contract.get("duration_seconds") or 0.0)
+        if contract_duration_seconds > 0.0:
+            return contract_duration_seconds
     audio_path = str(getattr(request, "audio_path", "") or "")
     if audio_path and Path(audio_path).exists():
         return float(legacy_pipeline._probe_audio_duration_seconds(audio_path) or 0.0)
@@ -3241,7 +3245,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         stage_name=("preview_audio" if is_preview_request else "render_audio"),
     )
     expected_audio_hash = sha256_file(str(getattr(request, "audio_path", "") or ""))
-    contract_duration_seconds = _request_contract_duration_seconds(request)
+    contract_duration_seconds = _request_contract_duration_seconds(request, audio_contract)
     if contract_duration_seconds <= 0.0:
         contract_duration_seconds = float(audio_contract.get("duration_seconds") or 0.0)
     runtime_resources_start = probe_runtime_resources()

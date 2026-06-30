@@ -323,29 +323,35 @@ def _probe_duration_seconds(path: Path, *, stream_selector: str = "") -> float:
     else:
         cmd.extend(["-show_entries", "format=duration"])
     cmd.extend(["-of", "default=noprint_wrappers=1:nokey=1", str(path)])
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=12)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=12)
+    except FileNotFoundError:
+        return 0.0
     if proc.returncode == 0:
         try:
             return max(float(str(proc.stdout or "0").strip() or "0"), 0.0)
         except Exception:
             pass
     if stream_selector:
-        fallback = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(path),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=12,
-        )
+        try:
+            fallback = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=12,
+            )
+        except FileNotFoundError:
+            return 0.0
         if fallback.returncode == 0:
             try:
                 return max(float(str(fallback.stdout or "0").strip() or "0"), 0.0)

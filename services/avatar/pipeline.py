@@ -116,7 +116,10 @@ def _probe_media_duration_seconds(path: str, *, stream_selector: str) -> float:
         "default=noprint_wrappers=1:nokey=1",
         path,
     ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    except FileNotFoundError:
+        return 0.0
     if proc.returncode == 0:
         try:
             raw = (proc.stdout or "").strip()
@@ -135,7 +138,10 @@ def _probe_media_duration_seconds(path: str, *, stream_selector: str) -> float:
         "default=noprint_wrappers=1:nokey=1",
         path,
     ]
-    fallback_proc = subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    try:
+        fallback_proc = subprocess.run(fallback_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    except FileNotFoundError:
+        return 0.0
     if fallback_proc.returncode != 0:
         return 0.0
     try:
