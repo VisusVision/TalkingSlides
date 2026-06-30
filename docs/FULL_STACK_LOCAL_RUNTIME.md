@@ -4,6 +4,7 @@ This document describes the local runtime profiles VISUS VidLab should expose th
 
 Current reality:
 
+- `VISUS-VidLab.bat` and `scripts/visus-launcher.ps1` provide the local console launcher menu for Doctor, runtime actions, health checks, quick tests, local URLs, and Doctor report saving.
 - `scripts/windows-runtime.ps1` is the profile selector/start wrapper that a future EXE/MSI can wrap.
 - `scripts/windows-dev-start.ps1` starts selected Compose services by name.
 - `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing, building, or starting services.
@@ -24,6 +25,22 @@ Current reality:
 | `avatar` | Add GPU avatar worker for LivePortrait/MuseTalk work. | `.\scripts\windows-runtime.ps1 -Profile avatar` |
 | `translation` | Add local LibreTranslate service for translation fallback checks. | `.\scripts\windows-runtime.ps1 -Profile translation` |
 | `full` | Combine core, worker, TTS, avatar worker, and LibreTranslate after preflight passes. | `.\scripts\windows-runtime.ps1 -Profile full` |
+
+## Local Launcher
+
+Run the installer-like console launcher from the repository root:
+
+```powershell
+VISUS-VidLab.bat
+```
+
+or:
+
+```powershell
+.\scripts\visus-launcher.ps1
+```
+
+The launcher is a convenience wrapper around the existing scripts. Doctor remains read-only and does not print secret values. Runtime start uses `scripts/windows-runtime.ps1`, which preserves the current safe start behavior. Runtime stop uses `scripts/windows-runtime.ps1 -Stop`, which preserves volumes, images, and runtime data. Avatar runtime should only be started intentionally because `worker-avatar` can consume real queued avatar work.
 
 ## Core
 

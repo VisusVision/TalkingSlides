@@ -194,6 +194,88 @@ def test_windows_doctor_report_script_contract() -> None:
         assert token not in script
 
 
+def test_visus_launcher_entry_points_and_safety_contract() -> None:
+    bat_path = REPO_ROOT / "VISUS-VidLab.bat"
+    launcher_path = REPO_ROOT / "scripts" / "visus-launcher.ps1"
+
+    assert bat_path.exists()
+    assert launcher_path.exists()
+
+    bat = bat_path.read_text(encoding="utf-8")
+    launcher = launcher_path.read_text(encoding="utf-8")
+
+    assert "powershell" in bat.lower()
+    assert "ExecutionPolicy Bypass" in bat
+    assert "scripts\\visus-launcher.ps1" in bat
+
+    for menu_item in [
+        "[1] Run Doctor",
+        "[2] Start Core Runtime",
+        "[3] Start Avatar Runtime",
+        "[4] Health Check",
+        "[5] Run Quick Tests",
+        "[6] Run Full Tests",
+        "[7] Stop Runtime",
+        "[8] Open Local URLs",
+        "[9] Save Doctor Report",
+        "[0] Exit",
+    ]:
+        assert menu_item in launcher
+
+    assert "windows-doctor.ps1" in launcher
+    assert "windows-runtime.ps1" in launcher
+    assert "windows-runtime-health.ps1" in launcher
+    assert '@("-Profile", $selectedProfile, "-Stop")' in launcher
+    assert ".\\.venv\\Scripts\\python.exe -m pytest tests\\test_ci_docker_smoke_contract.py -q" in launcher
+    assert "scratch\\doctor-reports" in launcher
+    assert "Secret values are never printed" in launcher
+
+    forbidden_direct_commands = [
+        r"(?i)\bdocker\s+build\b",
+        r"(?i)\bdocker\s+pull\b",
+        r"(?i)\bdocker\s+compose\s+up\b",
+        r"(?i)\bdocker\s+compose\s+down\b",
+        r"(?i)\bdown\s+-v\b",
+        r"(?i)\bprune\b",
+        r"(?i)\bpip\s+install\b",
+        r"(?i)\bnpm\s+install\b",
+        r"(?i)\bmodel\s+download\b",
+    ]
+    for pattern in forbidden_direct_commands:
+        assert not re.search(pattern, launcher)
+
+    forbidden_direct_invocations = [
+        r"(?m)^\s*&\s+docker\b",
+        r"(?m)^\s*docker\s+",
+        r"(?m)^\s*&\s+pip\b",
+        r"(?m)^\s*pip\s+",
+        r"(?m)^\s*&\s+npm\s+install\b",
+        r"(?m)^\s*npm\s+install\b",
+    ]
+    for pattern in forbidden_direct_invocations:
+        assert not re.search(pattern, launcher)
+
+    assert "Get-Content" not in launcher
+    assert "infra\\.env" not in launcher
+    assert "$env:" not in launcher
+
+
+def test_visus_launcher_docs_are_linked_from_windows_docs() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    install = (REPO_ROOT / "docs" / "INSTALL_WINDOWS.md").read_text(encoding="utf-8")
+    runtime = (REPO_ROOT / "docs" / "FULL_STACK_LOCAL_RUNTIME.md").read_text(encoding="utf-8")
+
+    for doc in (readme, install, runtime):
+        assert "VISUS-VidLab.bat" in doc
+        assert ".\\scripts\\visus-launcher.ps1" in doc
+
+    combined = "\n".join([readme, install, runtime])
+    assert "convenience wrapper" in combined
+    assert "Doctor remains read-only" in combined
+    assert "scripts/windows-runtime.ps1" in combined
+    assert "avatar runtime should only be started intentionally" in combined.lower()
+
+
 def test_avatar_local_wheels_are_ignored_but_not_dockerignored() -> None:
     gitignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
