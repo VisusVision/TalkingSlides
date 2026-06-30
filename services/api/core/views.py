@@ -4690,6 +4690,14 @@ def _is_staff_user(user) -> bool:
     return bool(user and (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)))
 
 
+def _can_use_avatar_preferences(user: User | None) -> bool:
+    return bool(_is_staff_user(user) or _is_verified_teacher(user))
+
+
+def _avatar_profile_defaults(user: User) -> dict[str, str]:
+    return {"role": "student"} if _is_staff_user(user) else {"role": "teacher"}
+
+
 def _studio_superuser_editor_override_enabled() -> bool:
     return bool(getattr(settings, "STUDIO_SUPERUSER_EDITOR_OVERRIDE_ENABLED", False))
 
@@ -10397,8 +10405,8 @@ class VoiceUploadView(APIView):
         user = User.objects.filter(pk=int(user_id)).first()
         if user is None:
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can upload voices."}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can upload voices."}, status=status.HTTP_403_FORBIDDEN)
 
         audio_file = request.FILES.get("voice_file")
         if not audio_file:
@@ -10441,7 +10449,7 @@ class VoiceUploadView(APIView):
             )
             raise
 
-        user_profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        user_profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
         setup_status = _avatar_setup_status(
             user_profile,
             profile,
@@ -10487,10 +10495,10 @@ class AvatarProfileView(APIView):
         user = self._resolve_user(request, user_id)
         if user is None:
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
 
-        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
         if profile.avatar_image_processed or profile.avatar_image_original or profile.avatar_video_original:
             try:
@@ -10559,10 +10567,10 @@ class AvatarProfileView(APIView):
         user = self._resolve_user(request, user_id)
         if user is None:
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
 
-        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
         avatar_file = request.FILES.get("avatar_file")
         avatar_video_file = request.FILES.get("avatar_video_file")
         if avatar_file is None and avatar_video_file is None:
@@ -10818,10 +10826,10 @@ class AvatarProfileView(APIView):
         user = self._resolve_user(request, user_id)
         if user is None:
             return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
 
-        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
         content_type = str(request.content_type or "").split(";", 1)[0].strip().lower()
         raw_body = (request.body or b"").decode("utf-8", errors="ignore").strip()
         if raw_body and content_type in {"", "text/plain", "application/octet-stream"}:
@@ -10996,10 +11004,10 @@ class AvatarPreviewRegenerateView(APIView):
         user = User.objects.filter(pk=int(user_id)).first()
         if user is None:
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
 
-        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
         voice_profile = VoiceProfile.objects.filter(user=user).first()
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
         if profile.avatar_image_processed or profile.avatar_image_original or profile.avatar_video_original:
@@ -11097,10 +11105,10 @@ class AvatarPrepareView(APIView):
         user = User.objects.filter(pk=int(user_id)).first()
         if user is None:
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
 
-        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
         voice_profile = VoiceProfile.objects.filter(user=user).first()
         actions: list[str] = []
@@ -11298,9 +11306,9 @@ class AvatarPreviewStatusView(APIView):
         user = User.objects.filter(pk=int(user_id)).first()
         if user is None:
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
-        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
         try:
             job = Job.objects.get(id=int(job_id), job_type="avatar_render")
         except Job.DoesNotExist:
@@ -11417,9 +11425,9 @@ class AvatarPreviewDeleteView(APIView):
         user = User.objects.filter(pk=int(user_id)).first()
         if user is None:
             return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
-        if not _is_verified_teacher(user):
-            return Response({"error": "Only verified teacher accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
-        profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"role": "teacher"})
+        if not _can_use_avatar_preferences(user):
+            return Response({"error": "Only teacher, publisher, or staff accounts can use avatars."}, status=status.HTTP_403_FORBIDDEN)
+        profile, _ = UserProfile.objects.get_or_create(user=user, defaults=_avatar_profile_defaults(user))
 
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
         preview_rel = profile.avatar_last_preview_path or profile.avatar_preview_video

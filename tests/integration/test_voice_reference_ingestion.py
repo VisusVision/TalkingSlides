@@ -22,6 +22,16 @@ def _make_teacher(prefix: str = "voice_ingestion"):
     return user
 
 
+def _make_user(prefix: str, *, role: str = "student", is_staff: bool = False):
+    user = User.objects.create_user(
+        username=f"{prefix}_{uuid.uuid4().hex[:8]}",
+        password="pass",
+        is_staff=is_staff,
+    )
+    UserProfile.objects.create(user=user, role=role)
+    return user
+
+
 def _install_fake_audio_tools(monkeypatch, *, duration_seconds: float = 11.0, fail_transcode: bool = False):
     commands = []
 
@@ -162,6 +172,33 @@ def test_browser_audio_upload_is_transcoded_to_canonical_wav(tmp_path, monkeypat
     canonical_path = tmp_path / "voices" / f"{profile.voice_id}.wav"
     _assert_canonical_wav(canonical_path)
     assert response.data["audio"]["duration_seconds"] == pytest.approx(10.5, abs=0.1)
+
+
+@pytest.mark.django_db
+def test_staff_can_upload_own_avatar_voice_sample(tmp_path, monkeypatch):
+    staff = _make_user("voice_staff", role="student", is_staff=True)
+    _install_fake_audio_tools(monkeypatch)
+    monkeypatch.setattr(views, "avatar_enabled", lambda: True)
+
+    response = _upload_voice(staff, tmp_path, name="staff.webm", content=b"browser-audio")
+
+    assert response.status_code == 200
+    assert response.data["status"] == "ready"
+    profile = VoiceProfile.objects.get(user=staff)
+    assert (tmp_path / "voices" / f"{profile.voice_id}.wav").exists()
+    staff.profile.refresh_from_db()
+    assert staff.profile.role == "student"
+
+
+@pytest.mark.django_db
+def test_student_cannot_upload_avatar_voice_sample(tmp_path, monkeypatch):
+    student = _make_user("voice_student", role="student")
+    monkeypatch.setattr(views, "avatar_enabled", lambda: True)
+
+    response = _upload_voice(student, tmp_path, name="student.webm", content=b"browser-audio")
+
+    assert response.status_code == 403
+    assert not VoiceProfile.objects.filter(user=student).exists()
 
 
 @pytest.mark.django_db
