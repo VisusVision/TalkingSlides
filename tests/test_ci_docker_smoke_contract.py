@@ -78,6 +78,17 @@ def test_worker_avatar_is_behind_explicit_compose_avatar_profile() -> None:
     assert 'AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"' in worker
 
 
+def test_worker_avatar_uses_volatile_runtime_cache_dirs() -> None:
+    worker_avatar = _compose_service_block("worker-avatar")
+
+    assert "XDG_CACHE_HOME: /tmp/visus-cache" in worker_avatar
+    assert "MPLCONFIGDIR: /tmp/visus-cache/matplotlib" in worker_avatar
+    assert "NUMBA_CACHE_DIR: /tmp/visus-cache/numba" in worker_avatar
+    assert 'mkdir -p "$${XDG_CACHE_HOME:-/tmp/visus-cache}"' in worker_avatar
+    assert "chown -R" not in worker_avatar
+    assert "chmod -R" not in worker_avatar
+
+
 def test_windows_runtime_passes_avatar_profile_only_for_avatar_services() -> None:
     script = (REPO_ROOT / "scripts" / "windows-runtime.ps1").read_text(encoding="utf-8")
 
@@ -179,6 +190,9 @@ def test_windows_avatar_runtime_helper_prints_explicit_later_commands() -> None:
     assert "python .\\scripts\\check_avatar_models.py" in script
     assert "--entrypoint python worker-avatar -c" in script
     assert "CELERY_AVATAR_QUEUE=avatar-smoke" in script
+    assert "XDG_CACHE_HOME=/tmp/visus-cache" in script
+    assert "MPLCONFIGDIR=/tmp/visus-cache/matplotlib" in script
+    assert "NUMBA_CACHE_DIR=/tmp/visus-cache/numba" in script
     assert "storage_local\\models" in script
     assert "musetalk\\musetalk.json" in script
 
@@ -193,6 +207,19 @@ def test_docs_separate_core_from_avatar_profile_runtime() -> None:
     assert "core runtime does not start it" in combined
     assert "stale/light" in combined
     assert "Do not install `mmcv`, `mmpose`, LivePortrait, or MuseTalk into the Windows virtual environment" in combined
+
+
+def test_avatar_runtime_docs_keep_parser_caches_off_storage_mount() -> None:
+    docs = "\n".join(
+        [
+            (REPO_ROOT / "docs" / "FULL_STACK_LOCAL_RUNTIME.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "OPERATIONS_RUNBOOK.md").read_text(encoding="utf-8"),
+        ]
+    )
+
+    assert "/tmp/visus-cache" in docs
+    assert "volatile parser/runtime caches" in docs
+    assert "broadly chmod/chowning `storage_local`" in docs
 
 
 def test_avatar_runtime_strategy_docs_cover_safe_build_and_smoke_paths() -> None:

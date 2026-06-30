@@ -114,7 +114,7 @@ function Write-SmokeCommands {
     )
 
     Write-CommandBlock "Throwaway-queue startup smoke" @(
-        'docker compose -f infra\docker-compose.yml --profile avatar run -d --name visus-avatar-startup-smoke --no-deps -e CELERY_AVATAR_QUEUE=avatar-smoke -e CELERY_WORKER_QUEUES=avatar-smoke worker-avatar',
+        'docker compose -f infra\docker-compose.yml --profile avatar run -d --name visus-avatar-startup-smoke --no-deps -e CELERY_AVATAR_QUEUE=avatar-smoke -e CELERY_WORKER_QUEUES=avatar-smoke -e XDG_CACHE_HOME=/tmp/visus-cache -e MPLCONFIGDIR=/tmp/visus-cache/matplotlib -e NUMBA_CACHE_DIR=/tmp/visus-cache/numba worker-avatar',
         'docker logs --tail 300 visus-avatar-startup-smoke',
         'docker exec visus-avatar-startup-smoke python -c "import json,urllib.request; d=json.load(urllib.request.urlopen(''http://127.0.0.1:17860/health'')); print(d); assert d.get(''status'') == ''ready''"',
         'docker exec visus-avatar-startup-smoke celery -A worker inspect ping',
