@@ -86,16 +86,28 @@ async function openVoiceSampleModal(host) {
   });
 }
 
+async function clickSettingsButton(label) {
+  await act(async () => {
+    findButton(document.body, label).dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 function installMediaRecorderMock({ withAudio = true, constructorError = null, startError = null } = {}) {
   const instances = [];
   class FakeMediaRecorder {
     static isTypeSupported = vi.fn(() => true);
 
-    constructor(_stream, options = {}) {
+    constructor(_stream, options) {
       if (constructorError) {
         throw constructorError;
       }
-      this.mimeType = options.mimeType || 'audio/webm';
+      this.requestedOptions = options;
+      this.mimeType = options?.mimeType || 'audio/webm';
       this.state = 'inactive';
       instances.push(this);
     }
@@ -225,10 +237,24 @@ describe('Settings theme controls', () => {
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
       value: {
+        enumerateDevices: vi.fn().mockResolvedValue([
+          {
+            kind: 'audioinput',
+            label: 'Test microphone',
+            deviceId: 'default',
+            groupId: 'test-group',
+          },
+        ]),
         getUserMedia: vi.fn().mockResolvedValue({
           getTracks: () => [microphoneTrack],
           getAudioTracks: () => [microphoneTrack],
         }),
+      },
+    });
+    Object.defineProperty(navigator, 'permissions', {
+      configurable: true,
+      value: {
+        query: vi.fn().mockResolvedValue({ state: 'granted' }),
       },
     });
     Object.defineProperty(window, 'MediaRecorder', {
@@ -342,9 +368,7 @@ describe('Settings theme controls', () => {
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
 
     expect(document.body.textContent).toContain('This browser does not support microphone recording.');
     expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
@@ -355,6 +379,7 @@ describe('Settings theme controls', () => {
 
   it('shows an error when microphone permission is denied', async () => {
     capabilityMockState.avatarEnabled = true;
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     installMediaRecorderMock();
     navigator.mediaDevices.getUserMedia.mockRejectedValue(Object.assign(new Error('denied'), {
       name: 'NotAllowedError',
@@ -362,12 +387,39 @@ describe('Settings theme controls', () => {
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
 
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     expect(document.body.textContent).toContain('Microphone permission was denied by the browser or operating system.');
+    expect(consoleWarn).toHaveBeenCalledWith('voice_recording_error', expect.objectContaining({
+      phase: 'getUserMedia',
+      name: 'NotAllowedError',
+    }));
+
+    await act(async () => root.unmount());
+    host.remove();
+    consoleWarn.mockRestore();
+  });
+
+  it('clears a stale microphone permission error before a successful retry', async () => {
+    capabilityMockState.avatarEnabled = true;
+    const instances = installMediaRecorderMock();
+    navigator.mediaDevices.getUserMedia.mockRejectedValueOnce(Object.assign(new Error('denied'), {
+      name: 'NotAllowedError',
+    }));
+    const { host, root } = await renderSettings({ user: teacherUser });
+    await openVoiceSampleModal(host);
+
+    await clickSettingsButton('Start recording');
+
+    expect(document.body.textContent).toContain('Microphone permission was denied by the browser or operating system.');
+
+    await clickSettingsButton('Start recording');
+
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(2);
+    expect(document.body.textContent).toContain('Status: recording');
+    expect(document.body.textContent).not.toContain('Microphone permission was denied by the browser or operating system.');
+    expect(instances).toHaveLength(1);
 
     await act(async () => root.unmount());
     host.remove();
@@ -382,9 +434,7 @@ describe('Settings theme controls', () => {
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
 
     expect(document.body.textContent).toContain('No microphone was found.');
 
@@ -401,9 +451,7 @@ describe('Settings theme controls', () => {
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
 
     expect(document.body.textContent).toContain('The microphone is busy or unavailable.');
 
@@ -421,9 +469,7 @@ describe('Settings theme controls', () => {
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
 
     expect(document.body.textContent).toContain('Microphone recording requires a secure context.');
     expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
@@ -442,9 +488,7 @@ describe('Settings theme controls', () => {
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
 
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     expect(document.body.textContent).toContain('allowed microphone capture but blocked recording');
@@ -460,27 +504,20 @@ describe('Settings theme controls', () => {
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
 
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
     expect(document.body.textContent).toContain('Status: recording');
+    expect(document.body.textContent).not.toContain('Microphone permission was denied by the browser or operating system.');
 
-    await act(async () => {
-      findButton(document.body, 'Stop recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Stop recording');
 
     expect(document.body.textContent).toContain('Status: recorded');
     expect(URL.createObjectURL).toHaveBeenCalled();
 
-    await act(async () => {
-      findButton(document.body, 'Use recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Use recording');
 
-    await act(async () => {
-      findButton(document.body, 'Upload Voice Sample').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Upload Voice Sample');
 
     expect(apiMocks.uploadVoiceSample).toHaveBeenCalledTimes(1);
     expect(apiMocks.uploadVoiceSample.mock.calls[0][0]).toBe(teacherUser.id);
@@ -493,18 +530,32 @@ describe('Settings theme controls', () => {
     host.remove();
   });
 
+  it('falls back to the browser default MediaRecorder MIME type when no candidate type is supported', async () => {
+    capabilityMockState.avatarEnabled = true;
+    const instances = installMediaRecorderMock();
+    window.MediaRecorder.isTypeSupported.mockReturnValue(false);
+    const { host, root } = await renderSettings({ user: teacherUser });
+    await openVoiceSampleModal(host);
+
+    await clickSettingsButton('Start recording');
+
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true });
+    expect(instances).toHaveLength(1);
+    expect(instances[0].requestedOptions).toBeUndefined();
+    expect(document.body.textContent).toContain('Status: recording');
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
   it('shows an error when a stopped recording captures no audio', async () => {
     capabilityMockState.avatarEnabled = true;
     installMediaRecorderMock({ withAudio: false });
     const { host, root } = await renderSettings({ user: teacherUser });
     await openVoiceSampleModal(host);
 
-    await act(async () => {
-      findButton(document.body, 'Start recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
-    await act(async () => {
-      findButton(document.body, 'Stop recording').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Start recording');
+    await clickSettingsButton('Stop recording');
 
     expect(document.body.textContent).toContain('No audio was captured.');
     expect(findButton(document.body, 'Use recording').disabled).toBe(true);
@@ -527,9 +578,7 @@ describe('Settings theme controls', () => {
     await act(async () => {
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    await act(async () => {
-      findButton(document.body, 'Upload Voice Sample').dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickSettingsButton('Upload Voice Sample');
 
     expect(apiMocks.uploadVoiceSample).toHaveBeenCalledWith(teacherUser.id, file);
 

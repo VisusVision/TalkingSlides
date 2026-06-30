@@ -31,6 +31,7 @@ def test_existing_security_headers_are_preserved_with_csp_report_only():
     assert response["X-Content-Type-Options"] == "nosniff"
     assert response["Referrer-Policy"] == "same-origin"
     assert response["Permissions-Policy"]
+    assert "microphone=(self)" in response["Permissions-Policy"]
     assert response["Cross-Origin-Resource-Policy"] == "same-site"
     assert CSP_HEADER in response
     assert "Content-Security-Policy" not in response

@@ -162,18 +162,13 @@ async function voiceRecordingDiagnostics(phase, error = null) {
   };
 }
 
-function logVoiceRecordingDiagnostics(phase, diagnostics, error = null) {
-  // Keep this intentionally verbose: browser microphone failures are policy- and device-dependent.
-  console.info('voice_recording_diagnostics', diagnostics);
-  if (error) {
-    console.warn('voice_recording_exception', {
-      phase,
-      error,
-      name: error?.name,
-      message: error?.message,
-      diagnostics,
-    });
-  }
+function logVoiceRecordingError(phase, diagnostics, error) {
+  console.warn('voice_recording_error', {
+    phase,
+    name: error?.name,
+    message: error?.message,
+    diagnostics,
+  });
 }
 
 function voiceRecordingErrorMessage(error, phase, diagnostics = {}) {
@@ -218,17 +213,7 @@ function voiceRecordingErrorMessage(error, phase, diagnostics = {}) {
       : 'The browser rejected the microphone capture request.';
   }
 
-  return 'Unable to start microphone recording. Check browser console diagnostics for details.';
-}
-
-function voiceTrackDiagnostics(stream) {
-  return stream?.getTracks?.().map((track) => ({
-    kind: track.kind,
-    label: track.label,
-    enabled: track.enabled,
-    muted: track.muted,
-    readyState: track.readyState,
-  })) || [];
+  return 'Unable to start microphone recording. Check browser permissions and try again.';
 }
 
 function toAbsoluteMediaUrl(value) {
@@ -1036,7 +1021,6 @@ export default function Settings({ user, onUserRefresh }) {
 
   const handleStartVoiceRecording = async () => {
     const preflightDiagnostics = await voiceRecordingDiagnostics('preflight');
-    logVoiceRecordingDiagnostics('preflight', preflightDiagnostics);
     if (
       !preflightDiagnostics.isSecureContext
       || !preflightDiagnostics.hasMediaDevices
@@ -1059,31 +1043,18 @@ export default function Settings({ user, onUserRefresh }) {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (error) {
       const diagnostics = await voiceRecordingDiagnostics('getUserMedia', error);
-      logVoiceRecordingDiagnostics('getUserMedia', diagnostics, error);
+      logVoiceRecordingError('getUserMedia', diagnostics, error);
       setVoiceRecorderStatus('error');
       setVoiceRecorderError(voiceRecordingErrorMessage(error, 'getUserMedia', diagnostics));
       return;
     }
 
-    console.info('voice_recording_stream_received', {
-      origin: window.location.origin,
-      tracks: voiceTrackDiagnostics(stream),
-    });
     if (!stream.getAudioTracks?.().length) {
       stream.getTracks?.().forEach((track) => track.stop());
       setVoiceRecorderStatus('error');
       setVoiceRecorderError('No microphone audio track was captured.');
       return;
     }
-    stream.getTracks?.().forEach((track) => {
-      track.addEventListener?.('ended', () => {
-        console.info('voice_recording_track_ended', {
-          kind: track.kind,
-          label: track.label,
-          readyState: track.readyState,
-        });
-      });
-    });
 
     const mimeType = preferredVoiceRecordingMimeType();
     let recorder = null;
@@ -1092,7 +1063,7 @@ export default function Settings({ user, onUserRefresh }) {
     } catch (error) {
       stream.getTracks?.().forEach((track) => track.stop());
       const diagnostics = await voiceRecordingDiagnostics('MediaRecorder', error);
-      logVoiceRecordingDiagnostics('MediaRecorder', diagnostics, error);
+      logVoiceRecordingError('MediaRecorder', diagnostics, error);
       setVoiceRecorderStatus('error');
       setVoiceRecorderError(voiceRecordingErrorMessage(error, 'MediaRecorder', diagnostics));
       return;
@@ -1111,7 +1082,7 @@ export default function Settings({ user, onUserRefresh }) {
       stopVoiceRecordingStream();
       const error = event.error || event;
       const diagnostics = await voiceRecordingDiagnostics('MediaRecorder.onerror', error);
-      logVoiceRecordingDiagnostics('MediaRecorder.onerror', diagnostics, error);
+      logVoiceRecordingError('MediaRecorder.onerror', diagnostics, error);
       setVoiceRecorderStatus('error');
       setVoiceRecorderError(voiceRecordingErrorMessage(error, 'MediaRecorder.onerror', diagnostics));
     };
@@ -1139,18 +1110,12 @@ export default function Settings({ user, onUserRefresh }) {
       clearVoiceRecordingTimer();
       stopVoiceRecordingStream();
       const diagnostics = await voiceRecordingDiagnostics('MediaRecorder.start', error);
-      logVoiceRecordingDiagnostics('MediaRecorder.start', diagnostics, error);
+      logVoiceRecordingError('MediaRecorder.start', diagnostics, error);
       setVoiceRecorderStatus('error');
       setVoiceRecorderError(voiceRecordingErrorMessage(error, 'MediaRecorder.start', diagnostics));
       return;
     }
 
-    console.info('voice_recording_started', {
-      origin: window.location.origin,
-      recorderState: recorder.state,
-      mimeType: recorder.mimeType,
-      tracks: voiceTrackDiagnostics(stream),
-    });
     voiceRecordingStartedAtRef.current = Date.now();
     setVoiceRecorderStatus('recording');
     voiceRecordingTimerRef.current = window.setInterval(() => {
