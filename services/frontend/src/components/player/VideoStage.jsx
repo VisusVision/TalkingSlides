@@ -207,11 +207,7 @@ export default function VideoStage({
 
   const availableTracks = useMemo(() => {
     const byKey = new Map();
-    for (const rawTrack of subtitleTracks || []) {
-      const track = normalizeTrack(rawTrack);
-      if (track) byKey.set(track.key, track);
-    }
-    if (!byKey.has('original') && originalVttUrl) {
+    if (originalVttUrl) {
       byKey.set('original', {
         key: 'original',
         language_code: 'original',
@@ -221,6 +217,10 @@ export default function VideoStage({
         is_original: true,
         vtt_url: originalVttUrl,
       });
+    }
+    for (const rawTrack of subtitleTracks || []) {
+      const track = normalizeTrack(rawTrack);
+      if (track && track.key !== 'original') byKey.set(track.key, track);
     }
     const original = byKey.get('original');
     const translated = Array.from(byKey.values())

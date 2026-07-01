@@ -5,6 +5,7 @@ import {
   fetchLesson,
   fetchSharedLesson,
   fetchStudioPreviewToken,
+  fetchSubtitleTrackBundle,
   createProjectShareLink,
   heartbeatPlaybackSession,
   setToken,
@@ -47,6 +48,24 @@ describe('playback session API credentials', () => {
 
     expect(global.fetch).toHaveBeenCalledWith(
       expect.stringContaining('/catalog/42/'),
+      expect.objectContaining({
+        credentials: 'include',
+        headers: expect.objectContaining({ Authorization: 'Token token-123' }),
+      }),
+    );
+  });
+
+  it('includes browser credentials when fetching subtitle tracks because they carry VTT tokens', async () => {
+    setToken('token-123');
+    global.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ tracks: [] }),
+    });
+
+    await fetchSubtitleTrackBundle(42);
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/projects/42/subtitle-tracks/'),
       expect.objectContaining({
         credentials: 'include',
         headers: expect.objectContaining({ Authorization: 'Token token-123' }),
