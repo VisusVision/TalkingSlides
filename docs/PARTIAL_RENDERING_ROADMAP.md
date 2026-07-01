@@ -17,6 +17,7 @@ Implemented today:
 - `playback_assets.json` now surfaces report-only `partial_render_analysis` metadata from the old sidecar manifest and the newly finalized manifest for debugging and future optimization.
 - `partial_render_analysis.plan` now maps classifier output to report-only future planning actions without changing render behavior.
 - Targeted rerenders can now use a narrow worker-only visual recomposition optimization when the runtime-recomputed plan says every target page is visual-only.
+- Avatar-disabled targeted rerenders can now use a narrow worker-only narration recomposition optimization when runtime classification says selected targets only need narration/TTS regeneration and every non-target page is unchanged.
 - Project detail exposes sanitized last completed render analysis as `latest_render_analysis`, and Studio shows a diagnostic-only "Last render analysis" panel for the selected lesson.
 - Studio can request a read-only predicted rerender impact preview before Save & Rerender. The preview compares the latest saved `partial_render_manifest` with the current editor request payload, saved dirty draft, or active project state and returns sanitized prediction-only plan data.
 - `RenderFollowUpIntent` supports targeted and full follow-up requests while another render is active.
@@ -35,8 +36,10 @@ Current safety rule:
 - Unsaved transcript editor changes are included when Studio sends the current request payload. Otherwise the preview uses the saved dirty draft if one exists, then the active project state.
 - Visual-only targeted recomposition recomputes the expected manifest, classifier, and plan at worker runtime before it can run.
 - Visual-only optimization is all-or-nothing for the targeted page set. If any target page is not eligible, all targets use the existing slide render path.
-- TTS settings changes and avatar setting changes are represented for reporting only and still fall back to the existing render behavior.
+- Narration-only targeted recomposition is avatar-disabled only, all-or-nothing, and requires an old manifest plus required old visual/segment/audio artifacts. Any uncertainty falls back to the existing slide render path.
+- Avatar-enabled narration/TTS changes are still deferred and fall back to the existing render behavior.
 - The final lesson asset is still finalized after targeted work; the system does not yet publish independent immutable slide packages.
+- Final MP4, HLS sidecar, SRT, VTT, playback sidecar, manifest, and analysis are still regenerated because narration duration, timeline, and subtitles can shift.
 - Structural timeline changes are intentionally conservative and still full rerender.
 
 ## Future Content-hash Manifest
@@ -147,12 +150,13 @@ Structural reorder/delete/split/merge:
 - Support display/background/layout changes that do not alter narration, TTS, avatar inputs, or timeline. Implemented for targeted rerenders through a conservative worker-only visual segment recomposition path.
 - Reuse existing TTS audio and existing avatar clip metadata only when required artifacts exist, dependency hashes remain unchanged, and avatar-enabled lessons have a reusable prior avatar overlay track.
 - Keep fallback to the existing targeted slide render path when manifest data is missing, stale, mixed, or non-visual.
-- Limitations: targeted rerenders only, all-or-nothing gate, visual-only classifications only, no narration/TTS/avatar optimization yet, and no predicted pre-rerender Studio/API plan.
+- Limitations: targeted rerenders only, all-or-nothing gate, visual-only classifications only, avatar-enabled narration/TTS optimization deferred.
 
 ### Phase 3: Audio-aware Targeting
 
-- Support narration and TTS settings changes per slide.
-- Rebuild subtitle cues and duration metadata from the changed slide set.
+- Support avatar-disabled narration/TTS-only changes per targeted slide. Implemented through conservative worker-only narration recomposition when runtime planning proves only requested targets need TTS/audio regeneration and cached visuals/segments are available.
+- Rebuild subtitle cues and duration metadata from the changed slide set. Implemented as part of finalization for optimized targeted narration rerenders.
+- Avatar-enabled narration/TTS changes remain future/deferred and use the existing render path.
 
 ### Phase 4: Avatar-aware Targeting
 
