@@ -1497,6 +1497,19 @@ export async function analyzeProjectLessonIntelligence(projectId, options = {}) 
   return data;
 }
 
+export async function previewPartialRenderImpact(projectId, payload = {}) {
+  const res = await fetch(`${API_BASE_URL}/projects/${projectId}/partial-render-preview/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(apiErrorMessage(data, 'Failed to preview rerender impact'));
+  }
+  return data;
+}
+
 export async function updateProjectTranscript(projectId, pages, options = {}) {
   const body = {
     pages,
