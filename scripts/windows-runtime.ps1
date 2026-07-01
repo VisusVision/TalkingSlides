@@ -9,6 +9,7 @@ param(
     [switch]$Stop,
     [switch]$NoHealth,
     [switch]$SkipPreflight,
+    [switch]$NoFrontend,
     [switch]$Json
 )
 
@@ -71,9 +72,15 @@ function Resolve-Profile {
 }
 
 function Get-ProfileServices {
-    param([string]$SelectedProfile)
+    param(
+        [string]$SelectedProfile,
+        [bool]$ExcludeFrontend = $false
+    )
 
-    $core = @("postgres", "redis", "minio", "api", "frontend")
+    $core = @("postgres", "redis", "minio", "api")
+    if (-not $ExcludeFrontend) {
+        $core += "frontend"
+    }
     switch ($SelectedProfile) {
         "core" { return $core }
         "worker" { return $core + @("worker") }
@@ -98,12 +105,16 @@ function Invoke-ChildScript {
     param(
         [string]$ScriptPath,
         [string]$SelectedProfile,
+        [switch]$PassNoFrontend,
         [switch]$PassJson
     )
 
     $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath)
     if (-not [string]::IsNullOrWhiteSpace($SelectedProfile)) {
         $args += @("-Profile", $SelectedProfile)
+    }
+    if ($PassNoFrontend) {
+        $args += "-NoFrontend"
     }
     if ($PassJson) {
         $args += "-Json"
@@ -200,34 +211,43 @@ switch ($effectiveAction) {
         $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
         if (-not $Json) {
             Write-Host "Profile: $selectedProfile"
+            if ($NoFrontend) {
+                Write-Host "Frontend: excluded by -NoFrontend"
+            }
             Write-Section "Preflight"
         }
-        Invoke-ChildScript -ScriptPath $PreflightScript -SelectedProfile $selectedProfile -PassJson:$Json
+        Invoke-ChildScript -ScriptPath $PreflightScript -SelectedProfile $selectedProfile -PassNoFrontend:$NoFrontend -PassJson:$Json
         exit $script:LastChildExitCode
     }
     "health" {
         $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
         if (-not $Json) {
             Write-Host "Profile: $selectedProfile"
+            if ($NoFrontend) {
+                Write-Host "Frontend: excluded by -NoFrontend"
+            }
             Write-Section "Runtime health"
         }
-        Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile -PassJson:$Json
+        Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile -PassNoFrontend:$NoFrontend -PassJson:$Json
         exit $script:LastChildExitCode
     }
     "status" {
         $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
-        $services = @(Get-ProfileServices -SelectedProfile $selectedProfile)
+        $services = @(Get-ProfileServices -SelectedProfile $selectedProfile -ExcludeFrontend:$NoFrontend)
         $withTranslationProfile = Test-UsesTranslationProfile -Services $services
         $withAvatarProfile = Test-UsesAvatarProfile -Services $services
 
         Write-Host "Profile: $selectedProfile"
+        if ($NoFrontend) {
+            Write-Host "Frontend: excluded by -NoFrontend"
+        }
         Write-Section "Docker Compose status"
         $composeArgs = Get-ComposeBaseArgs -WithTranslationProfile $withTranslationProfile -WithAvatarProfile $withAvatarProfile
         $composeArgs += "ps"
         $psCode = Invoke-Compose -ComposeArgs $composeArgs
 
         Write-Section "Runtime health"
-        Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile
+        Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile -PassNoFrontend:$NoFrontend
         $healthCode = $script:LastChildExitCode
         if ($healthCode -ne 0) {
             Write-Warning "Runtime health exited with code $healthCode."
@@ -236,11 +256,14 @@ switch ($effectiveAction) {
     }
     "stop" {
         $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
-        $services = @(Get-ProfileServices -SelectedProfile $selectedProfile)
+        $services = @(Get-ProfileServices -SelectedProfile $selectedProfile -ExcludeFrontend:$NoFrontend)
         $withTranslationProfile = Test-UsesTranslationProfile -Services $services
         $withAvatarProfile = Test-UsesAvatarProfile -Services $services
 
         Write-Host "Profile: $selectedProfile"
+        if ($NoFrontend) {
+            Write-Host "Frontend: excluded by -NoFrontend"
+        }
         Write-Section "Stopping services"
         foreach ($service in $services) {
             Write-Host "- $service"
@@ -255,16 +278,19 @@ switch ($effectiveAction) {
     }
     "start" {
         $selectedProfile = Resolve-Profile -RequestedProfile $Profile -EffectiveAction $effectiveAction
-        $services = @(Get-ProfileServices -SelectedProfile $selectedProfile)
+        $services = @(Get-ProfileServices -SelectedProfile $selectedProfile -ExcludeFrontend:$NoFrontend)
         $withTranslationProfile = Test-UsesTranslationProfile -Services $services
         $withAvatarProfile = Test-UsesAvatarProfile -Services $services
 
         Write-Host "Profile: $selectedProfile"
+        if ($NoFrontend) {
+            Write-Host "Frontend: excluded by -NoFrontend"
+        }
         Write-ProfileWarnings -SelectedProfile $selectedProfile
 
         if (-not $SkipPreflight) {
             Write-Section "Preflight"
-            Invoke-ChildScript -ScriptPath $PreflightScript -SelectedProfile $selectedProfile
+            Invoke-ChildScript -ScriptPath $PreflightScript -SelectedProfile $selectedProfile -PassNoFrontend:$NoFrontend
             $preflightCode = $script:LastChildExitCode
             if ($preflightCode -ne 0) {
                 Write-Host ""
@@ -293,7 +319,7 @@ switch ($effectiveAction) {
 
         if (-not $NoHealth) {
             Write-Section "Runtime health"
-            Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile
+            Invoke-ChildScript -ScriptPath $HealthScript -SelectedProfile $selectedProfile -PassNoFrontend:$NoFrontend
             $healthCode = $script:LastChildExitCode
             exit $healthCode
         }

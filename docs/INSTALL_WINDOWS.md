@@ -222,6 +222,16 @@ For render/TTS work:
 .\scripts\windows-runtime.ps1 -Profile tts
 ```
 
+For backend-only API smoke tests that do not need the Vite frontend, exclude it explicitly:
+
+```powershell
+.\scripts\windows-runtime.ps1 -Profile tts -NoFrontend
+.\scripts\windows-runtime-health.ps1 -Profile tts -NoFrontend
+.\scripts\windows-runtime.ps1 -Profile tts -NoFrontend -Stop
+```
+
+`-NoFrontend` skips frontend startup, frontend health expectations, and frontend port checks. This avoids the Compose frontend command path that runs `npm install && npm run dev`; API, worker, TTS, database, Redis, and MinIO remain selected. It does not opt into `worker-avatar`.
+
 Access:
 
 - TTS readiness: `http://localhost:8001/ready`

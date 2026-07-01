@@ -1,8 +1,11 @@
 [CmdletBinding()]
 param(
     [string]$Profile = "",
+    [switch]$NoFrontend,
     [switch]$Json,
-    [int]$TimeoutSeconds = 3
+    [int]$TimeoutSeconds = 3,
+    [int]$StartupWaitSeconds = 90,
+    [int]$RetryIntervalSeconds = 3
 )
 
 $ErrorActionPreference = "Continue"
@@ -121,6 +124,47 @@ function Test-HttpEndpoint {
     }
 }
 
+function Test-HttpEndpointWithRetry {
+    param(
+        [string]$Url,
+        [int]$TimeoutSeconds = 3,
+        [int]$WaitSeconds = 0,
+        [int]$RetryIntervalSeconds = 3
+    )
+
+    $attempts = 0
+    $startedAt = Get-Date
+    $deadline = $startedAt.AddSeconds([Math]::Max(0, $WaitSeconds))
+    $lastCheck = $null
+
+    do {
+        $attempts += 1
+        $lastCheck = Test-HttpEndpoint -Url $Url -TimeoutSeconds $TimeoutSeconds
+        if ($lastCheck.ok) {
+            break
+        }
+        if ((Get-Date) -ge $deadline) {
+            break
+        }
+        Start-Sleep -Seconds ([Math]::Max(1, $RetryIntervalSeconds))
+    } while ($true)
+
+    $elapsed = [Math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
+    return [pscustomobject]@{
+        ok = [bool]$lastCheck.ok
+        status_code = $lastCheck.status_code
+        error = $lastCheck.error
+        attempts = $attempts
+        elapsed_seconds = $elapsed
+    }
+}
+
+function Get-RemainingWaitSeconds {
+    param([datetime]$Deadline)
+
+    return [Math]::Max(0, [int][Math]::Ceiling(($Deadline - (Get-Date)).TotalSeconds))
+}
+
 function ConvertFrom-ComposePsJson {
     param([string[]]$Lines)
 
@@ -178,9 +222,16 @@ function Get-ResultStatus {
 }
 
 function Get-CoreHealthStatus {
+    $requiredHttpNames = @("API health", "API readiness", "capabilities")
+    $requiredServiceNames = @("docker command", "docker compose ps", "api", "postgres", "redis", "minio")
+    if (-not $NoFrontend) {
+        $requiredHttpNames += "frontend"
+        $requiredServiceNames += "frontend"
+    }
+
     $coreMatches = @($Results | Where-Object {
-        ($_.category -eq "HTTP endpoints" -and @("frontend", "API health", "API readiness", "capabilities") -contains $_.name) -or
-        ($_.category -eq "Docker services" -and @("docker command", "docker compose ps", "api", "frontend", "postgres", "redis", "minio") -contains $_.name)
+        ($_.category -eq "HTTP endpoints" -and $requiredHttpNames -contains $_.name) -or
+        ($_.category -eq "Docker services" -and $requiredServiceNames -contains $_.name)
     })
 
     if ($coreMatches | Where-Object { $_.status -eq "FAIL" }) {
@@ -306,27 +357,45 @@ Set-Location $RepoRoot
 
 $SelectedProfile = Resolve-Profile -RequestedProfile $Profile
 $AvatarRequested = Test-UsesAvatarProfile -SelectedProfile $SelectedProfile
+$TtsSelected = $SelectedProfile -in @("tts", "avatar", "full")
+$startupDeadline = (Get-Date).AddSeconds([Math]::Max(0, $StartupWaitSeconds))
 
-$endpoints = @(
-    @{ category = "HTTP endpoints"; name = "frontend"; url = "http://localhost:3000"; required = $true; next = ".\scripts\windows-dev-start.ps1" },
-    @{ category = "HTTP endpoints"; name = "API health"; url = "http://localhost:8000/health/"; required = $true; next = ".\scripts\windows-dev-start.ps1" },
-    @{ category = "HTTP endpoints"; name = "API readiness"; url = "http://localhost:8000/api/v1/ready/"; required = $true; next = ".\scripts\windows-dev-start.ps1" },
-    @{ category = "HTTP endpoints"; name = "capabilities"; url = "http://localhost:8000/api/v1/capabilities/"; required = $true; next = ".\scripts\windows-dev-start.ps1" },
-    @{ category = "HTTP endpoints"; name = "TTS"; url = "http://localhost:8001/ready"; required = $false; next = ".\scripts\windows-dev-start.ps1 -WithTts" },
-    @{ category = "HTTP endpoints"; name = "LibreTranslate"; url = "http://localhost:5000/languages"; required = $false; next = "docker compose -f infra\docker-compose.yml --profile translation up -d libretranslate" },
-    @{ category = "HTTP endpoints"; name = "Ollama"; url = "http://localhost:11434/api/tags"; required = $false; next = "Start host-side Ollama only if local LLM enhancement is needed." }
+$endpoints = @()
+if (-not $NoFrontend) {
+    $endpoints += @{ category = "HTTP endpoints"; name = "frontend"; url = "http://localhost:3000"; required = $true; use_startup_budget = $false; next = ".\scripts\windows-dev-start.ps1" }
+}
+$endpoints += @(
+    @{ category = "HTTP endpoints"; name = "API health"; url = "http://localhost:8000/health/"; required = $true; use_startup_budget = $true; next = ".\scripts\windows-dev-start.ps1" },
+    @{ category = "HTTP endpoints"; name = "API readiness"; url = "http://localhost:8000/api/v1/ready/"; required = $true; use_startup_budget = $true; next = ".\scripts\windows-dev-start.ps1" },
+    @{ category = "HTTP endpoints"; name = "capabilities"; url = "http://localhost:8000/api/v1/capabilities/"; required = $true; use_startup_budget = $true; next = ".\scripts\windows-dev-start.ps1" },
+    @{ category = "HTTP endpoints"; name = "TTS"; url = "http://localhost:8001/ready"; required = $TtsSelected; use_startup_budget = $TtsSelected; next = ".\scripts\windows-dev-start.ps1 -WithTts" },
+    @{ category = "HTTP endpoints"; name = "LibreTranslate"; url = "http://localhost:5000/languages"; required = $false; use_startup_budget = $false; next = "docker compose -f infra\docker-compose.yml --profile translation up -d libretranslate" },
+    @{ category = "HTTP endpoints"; name = "Ollama"; url = "http://localhost:11434/api/tags"; required = $false; use_startup_budget = $false; next = "Start host-side Ollama only if local LLM enhancement is needed." }
 )
 
 foreach ($endpoint in $endpoints) {
-    $check = Test-HttpEndpoint -Url $endpoint.url -TimeoutSeconds $TimeoutSeconds
+    $waitSeconds = if ($endpoint.use_startup_budget) {
+        Get-RemainingWaitSeconds -Deadline $startupDeadline
+    } else {
+        0
+    }
+    $check = Test-HttpEndpointWithRetry `
+        -Url $endpoint.url `
+        -TimeoutSeconds $TimeoutSeconds `
+        -WaitSeconds $waitSeconds `
+        -RetryIntervalSeconds $RetryIntervalSeconds
     if ($check.ok) {
-        Add-Result $endpoint.category $endpoint.name "PASS" "$($endpoint.url) returned HTTP $($check.status_code)."
+        $attemptText = if ($check.attempts -gt 1) { " after $($check.attempts) attempts over $($check.elapsed_seconds)s" } else { "" }
+        Add-Result $endpoint.category $endpoint.name "PASS" "$($endpoint.url) returned HTTP $($check.status_code)$attemptText."
     } else {
         $status = if ($endpoint.required) { "FAIL" } else { "WARN" }
-        $detail = if ($null -ne $check.status_code) {
-            "$($endpoint.url) returned HTTP $($check.status_code)."
+        $attemptText = if ($check.attempts -gt 1) { " after $($check.attempts) attempts over $($check.elapsed_seconds)s" } else { "" }
+        $detail = if ($endpoint.name -eq "TTS" -and $check.status_code -eq 503) {
+            "$($endpoint.url) returned HTTP 503$attemptText; TTS is still warming or not ready."
+        } elseif ($null -ne $check.status_code) {
+            "$($endpoint.url) returned HTTP $($check.status_code)$attemptText."
         } else {
-            "$($endpoint.url) did not respond: $($check.error)"
+            "$($endpoint.url) did not respond${attemptText}: $($check.error)"
         }
         Add-Result $endpoint.category $endpoint.name $status $detail $endpoint.next
     }
@@ -357,11 +426,13 @@ if ($dockerCommandAvailable) {
 
 $expectedServices = @(
     @{ name = "api"; required = $true },
-    @{ name = "frontend"; required = $true },
     @{ name = "postgres"; required = $true },
     @{ name = "redis"; required = $true },
     @{ name = "minio"; required = $true }
 )
+if (-not $NoFrontend) {
+    $expectedServices += @{ name = "frontend"; required = $true }
+}
 if ($SelectedProfile -in @("worker", "tts", "avatar", "full")) {
     $expectedServices += @{ name = "worker"; required = $false }
 }
@@ -412,23 +483,34 @@ foreach ($expected in $expectedServices) {
 Add-AvatarRuntimeReadinessChecks -DockerAvailable $dockerCommandAvailable -AvatarRequested $AvatarRequested
 
 $avatarReadinessStatus = if (-not $AvatarRequested) { "PASS" } else { Get-ResultStatus @("Avatar runtime") }
+$ttsEndpointResult = $Results | Where-Object { $_.name -eq "TTS" } | Select-Object -First 1
+$ttsServicePassed = [bool]($Results | Where-Object { $_.name -eq "tts_service" -and $_.status -eq "PASS" })
+$ttsReadinessStatus = if ($TtsSelected) {
+    if ($ttsEndpointResult.status -eq "PASS") { "PASS" } else { "FAIL" }
+} elseif ($ttsEndpointResult.status -eq "PASS" -or $ttsServicePassed) {
+    "PASS"
+} else {
+    "WARN"
+}
 
 $summary = @(
     [pscustomobject]@{ name = "Core stack readiness"; status = Get-CoreHealthStatus },
-    [pscustomobject]@{ name = "TTS readiness"; status = if (($Results | Where-Object { $_.name -eq "TTS" -and $_.status -eq "PASS" }) -or ($Results | Where-Object { $_.name -eq "tts_service" -and $_.status -eq "PASS" })) { "PASS" } else { "WARN" } },
+    [pscustomobject]@{ name = "TTS readiness"; status = $ttsReadinessStatus },
     [pscustomobject]@{ name = "Avatar GPU readiness"; status = $avatarReadinessStatus },
     [pscustomobject]@{ name = "Intelligence/Ollama readiness"; status = if ($Results | Where-Object { $_.name -eq "Ollama" -and $_.status -eq "PASS" }) { "PASS" } else { "WARN" } },
     [pscustomobject]@{ name = "Translation readiness"; status = if (($Results | Where-Object { $_.name -eq "LibreTranslate" -and $_.status -eq "PASS" }) -or ($Results | Where-Object { $_.name -eq "libretranslate" -and $_.status -eq "PASS" })) { "PASS" } else { "WARN" } }
 )
 
 $hasCoreFailure = ((Get-CoreHealthStatus) -eq "FAIL") -or [bool]($Results | Where-Object { $_.category -eq "Runtime profile" -and $_.status -eq "FAIL" })
-$exitCode = if ($hasCoreFailure) { 1 } else { 0 }
+$hasRequiredEndpointFailure = [bool]($Results | Where-Object { $_.category -eq "HTTP endpoints" -and $_.status -eq "FAIL" })
+$exitCode = if ($hasCoreFailure -or $hasRequiredEndpointFailure) { 1 } else { 0 }
 
 if ($Json) {
     [pscustomobject]@{
         generated_at = (Get-Date).ToString("o")
         repo_root = $RepoRoot
         selected_profile = $SelectedProfile
+        frontend_excluded = [bool]$NoFrontend
         avatar_checks_enabled = [bool]$AvatarRequested
         results = @($Results.ToArray())
         summary = @($summary)
@@ -440,6 +522,9 @@ if ($Json) {
 Write-Host "VISUS VidLab runtime health"
 Write-Host "Repo root: $RepoRoot"
 Write-Host "Profile: $SelectedProfile"
+if ($NoFrontend) {
+    Write-Host "Frontend: excluded by -NoFrontend"
+}
 Write-Host "No services were started, rebuilt, or pulled."
 Write-Host ""
 
@@ -461,7 +546,11 @@ foreach ($item in $summary) {
 
 if ($exitCode -ne 0) {
     Write-Host ""
-    Write-Host "Core runtime health failed. Start or repair the core stack before using the full app."
+    if ($NoFrontend) {
+        Write-Host "Backend runtime health failed. Start or repair the backend stack before running API smoke tests."
+    } else {
+        Write-Host "Core runtime health failed. Start or repair the core stack before using the full app."
+    }
 }
 
 exit $exitCode

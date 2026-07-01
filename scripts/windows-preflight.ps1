@@ -2,6 +2,7 @@
 param(
     [string]$Profile = "",
     [switch]$AvatarChecks,
+    [switch]$NoFrontend,
     [switch]$Json
 )
 
@@ -346,18 +347,22 @@ if (Test-CommandAvailable "git") {
     Add-Result "Git" "git command" "FAIL" "git was not found." "Install Git for Windows and reopen PowerShell."
 }
 
-if (Test-CommandAvailable "node") {
-    $nodeVersion = Invoke-External "node" @("--version")
-    Add-Result "Node / npm" "node command" "PASS" (Format-OutputLine $nodeVersion)
+if ($NoFrontend) {
+    Add-Result "Node / npm" "frontend tooling" "PASS" "Skipped because -NoFrontend requests a backend-only runtime."
 } else {
-    Add-Result "Node / npm" "node command" "WARN" "node was not found." "Install Node.js 20+ for frontend development and tests."
-}
+    if (Test-CommandAvailable "node") {
+        $nodeVersion = Invoke-External "node" @("--version")
+        Add-Result "Node / npm" "node command" "PASS" (Format-OutputLine $nodeVersion)
+    } else {
+        Add-Result "Node / npm" "node command" "WARN" "node was not found." "Install Node.js 20+ for frontend development and tests."
+    }
 
-if (Test-CommandAvailable "npm") {
-    $npmVersion = Invoke-External "npm" @("--version")
-    Add-Result "Node / npm" "npm command" "PASS" (Format-OutputLine $npmVersion)
-} else {
-    Add-Result "Node / npm" "npm command" "WARN" "npm was not found." "Install Node.js 20+ for frontend development and tests."
+    if (Test-CommandAvailable "npm") {
+        $npmVersion = Invoke-External "npm" @("--version")
+        Add-Result "Node / npm" "npm command" "PASS" (Format-OutputLine $npmVersion)
+    } else {
+        Add-Result "Node / npm" "npm command" "WARN" "npm was not found." "Install Node.js 20+ for frontend development and tests."
+    }
 }
 
 if (Test-Path $VenvPython) {
@@ -393,7 +398,6 @@ if ($null -eq $freeGb) {
 }
 
 $ports = @(
-    @{ port = 3000; name = "frontend"; tier = "core" },
     @{ port = 8000; name = "API"; tier = "core" },
     @{ port = 8001; name = "TTS"; tier = "tts" },
     @{ port = 5432; name = "Postgres"; tier = "core" },
@@ -403,6 +407,9 @@ $ports = @(
     @{ port = 11434; name = "Ollama"; tier = "intelligence" },
     @{ port = 5000; name = "LibreTranslate"; tier = "translation" }
 )
+if (-not $NoFrontend) {
+    $ports = @(@{ port = 3000; name = "frontend"; tier = "core" }) + $ports
+}
 
 foreach ($item in $ports) {
     if (Test-TcpPortOpen -Port $item.port) {
@@ -424,7 +431,10 @@ if (Test-Path $EnvFile) {
     Add-Result "Env file" "infra\.env" "WARN" "Local env file is missing." "Create it with: Copy-Item infra\.env.example infra\.env"
 }
 
-$coreServices = @("postgres", "redis", "minio", "api", "frontend")
+$coreServices = @("postgres", "redis", "minio", "api")
+if (-not $NoFrontend) {
+    $coreServices += "frontend"
+}
 $ttsServices = @("tts_service")
 $workerServices = @("worker")
 $avatarServices = @("worker-avatar")
@@ -509,6 +519,7 @@ if ($Json) {
         generated_at = (Get-Date).ToString("o")
         repo_root = $RepoRoot
         selected_profile = $SelectedProfile
+        frontend_excluded = [bool]$NoFrontend
         avatar_checks_enabled = [bool]$AvatarRequested
         results = @($Results.ToArray())
         summary = @($summary)
@@ -520,6 +531,9 @@ if ($Json) {
 Write-Host "VISUS VidLab Windows preflight"
 Write-Host "Repo root: $RepoRoot"
 Write-Host "Profile: $SelectedProfile"
+if ($NoFrontend) {
+    Write-Host "Frontend: excluded by -NoFrontend"
+}
 Write-Host ""
 
 foreach ($group in ($Results | Group-Object category)) {
