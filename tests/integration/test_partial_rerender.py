@@ -12,8 +12,11 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 API_ROOT = REPO_ROOT / "services" / "api"
+SERVICES_ROOT = REPO_ROOT / "services"
 if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
+if str(SERVICES_ROOT) not in sys.path:
+    sys.path.insert(0, str(SERVICES_ROOT))
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings")
 django.setup()
@@ -24,7 +27,9 @@ from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIClient  # noqa: E402
 
 from core import views as core_views  # noqa: E402
+from core.avatar_runtime_settings import project_avatar_runtime_settings  # noqa: E402
 from core.models import Job, Project, RenderFollowUpIntent, TranscriptPage, UserProfile  # noqa: E402
+from worker.partial_render_manifest import build_expected_partial_render_manifest  # noqa: E402
 
 
 def _png_bytes() -> bytes:
@@ -81,6 +86,114 @@ def _make_page(project: Project) -> TranscriptPage:
         subtitle_chunks=["Original text"],
         editor_document={"version": 1, "paragraphs": [{"text": "Original text"}]},
     )
+
+
+def _preview_slide(
+    page: TranscriptPage,
+    *,
+    display_text: str | None = None,
+    narration_text: str | None = None,
+    index: int | None = None,
+) -> dict:
+    row_index = page.order if index is None else index
+    narration = narration_text if narration_text is not None else page.narration_text
+    display = display_text if display_text is not None else page.original_text
+    return {
+        "index": row_index,
+        "slide_num": row_index + 1,
+        "page_key": page.page_key,
+        "page_id": page.id,
+        "source_slide_index": page.source_slide_index,
+        "split_index": page.split_index,
+        "display_text": display,
+        "original_text": display,
+        "narration_text": narration,
+        "text": narration,
+        "spoken_text": narration,
+        "subtitle_chunks": [narration],
+        "whiteboard_mode": bool(page.whiteboard_mode),
+        "editor_document": page.editor_document or {},
+        "duration": 2.0,
+        "pause_seconds": 0.25,
+        "source_render_method": "pptx_source",
+        "source_render_warnings": [],
+        "source_render_details": [],
+        "source_render_dependency_report": {"renderer": "libreoffice"},
+    }
+
+
+def _preview_sidecar(project: Project, slides: list[dict]) -> dict:
+    final_segments = []
+    source_render_metadata = []
+    for index, slide in enumerate(slides):
+        page_key = slide["page_key"]
+        final_segments.append(
+            {
+                "index": index,
+                "page_key": page_key,
+                "transcript": slide["narration_text"],
+                "tts_audio": f"{project.id}/audio/{page_key}.mp3",
+                "slide": f"{project.id}/images/{page_key}.png",
+                "part_rel_path": f"{project.id}/parts/{page_key}.mp4",
+                "duration": slide.get("duration", 2.0),
+                "pause_seconds": slide.get("pause_seconds", 0.25),
+                "source_render_method": slide.get("source_render_method", "pptx_source"),
+                "source_render_dependency_report": slide.get("source_render_dependency_report", {}),
+            }
+        )
+        source_render_metadata.append(
+            {
+                "index": index,
+                "page_key": page_key,
+                "method": slide.get("source_render_method", "pptx_source"),
+                "warnings": slide.get("source_render_warnings", []),
+                "details": slide.get("source_render_details", []),
+                "dependency_report": slide.get("source_render_dependency_report", {}),
+            }
+        )
+    sidecar = {
+        "final_segments": final_segments,
+        "source_render_metadata": source_render_metadata,
+    }
+    sidecar["partial_render_manifest"] = build_expected_partial_render_manifest(
+        project_id=project.id,
+        slides=slides,
+        previous_playback_assets=sidecar,
+        tts_settings=core_views._project_tts_settings(project),
+        avatar_options={
+            "requested": False,
+            "enabled": False,
+            "teacher_id": project.user_id,
+            "avatar_visible": True,
+            "avatar_runtime_settings": project_avatar_runtime_settings(project),
+        },
+    )
+    return sidecar
+
+
+def _write_preview_sidecar(tmp_path: Path, project: Project, sidecar: dict) -> None:
+    sidecar_dir = tmp_path / str(project.id)
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "playback_assets.json").write_text(json.dumps(sidecar), encoding="utf-8")
+
+
+def _preview_payload_page(page: TranscriptPage, **overrides) -> dict:
+    payload = {
+        "id": page.id,
+        "page_key": page.page_key,
+        "order": page.order,
+        "source_slide_index": page.source_slide_index,
+        "split_index": page.split_index,
+        "original_text": page.original_text,
+        "display_text": page.original_text,
+        "narration_text": page.narration_text,
+        "rich_text_html": page.rich_text_html,
+        "subtitle_chunks": list(page.subtitle_chunks or []),
+        "whiteboard_mode": bool(page.whiteboard_mode),
+        "editor_document": page.editor_document or {},
+    }
+    payload.update(overrides)
+    return payload
 
 
 @pytest.mark.django_db
@@ -276,6 +389,229 @@ def test_project_detail_exposes_sanitized_latest_render_analysis(tmp_path):
     assert "audio/private.mp3" not in serialized
     assert "parts/part_001.mp4" not in serialized
     assert "C:/secret" not in serialized
+    assert Job.objects.filter(project=project, job_type="video_export").count() == before_jobs
+    assert RenderFollowUpIntent.objects.filter(project=project).count() == before_intents
+
+
+@pytest.mark.django_db
+def test_partial_render_preview_returns_prediction_only_without_mutation(tmp_path):
+    owner = _make_user("partial_preview_owner")
+    project = _make_project(owner, tmp_path)
+    page = _make_page(project)
+    _write_preview_sidecar(tmp_path, project, _preview_sidecar(project, [_preview_slide(page)]))
+    before_jobs = Job.objects.filter(project=project, job_type="video_export").count()
+    before_intents = RenderFollowUpIntent.objects.filter(project=project).count()
+    before_project = {
+        "status": project.status,
+        "is_published": project.is_published,
+        "moderation_status": project.moderation_status,
+        "moderation_summary": project.moderation_summary,
+        "draft_data": project.draft_data,
+    }
+    before_page = {
+        "original_text": page.original_text,
+        "narration_text": page.narration_text,
+        "editor_document": page.editor_document,
+        "subtitle_chunks": page.subtitle_chunks,
+    }
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = _client(owner).post(
+            f"/api/v1/projects/{project.id}/partial-render-preview/",
+            {
+                "pages": [
+                    _preview_payload_page(
+                        page,
+                        original_text="Visible text changed",
+                        display_text="Visible text changed",
+                    )
+                ]
+            },
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["mode"] == "prediction_only"
+    assert response.data["source"] == "request_payload"
+    assert response.data["available"] is True
+    assert response.data["summary"]["recompose_visual_only_future"] == 1
+    assert response.data["pages"][0]["recommended_action"] == "recompose_visual_only_future"
+    assert response.data["pages"][0]["future_only"] is True
+    assert response.data["pages"][0]["actual_behavior_changed"] is False
+    assert Job.objects.filter(project=project, job_type="video_export").count() == before_jobs
+    assert RenderFollowUpIntent.objects.filter(project=project).count() == before_intents
+
+    project.refresh_from_db()
+    page.refresh_from_db()
+    assert {
+        "status": project.status,
+        "is_published": project.is_published,
+        "moderation_status": project.moderation_status,
+        "moderation_summary": project.moderation_summary,
+        "draft_data": project.draft_data,
+    } == before_project
+    assert {
+        "original_text": page.original_text,
+        "narration_text": page.narration_text,
+        "editor_document": page.editor_document,
+        "subtitle_chunks": page.subtitle_chunks,
+    } == before_page
+
+
+@pytest.mark.django_db
+def test_partial_render_preview_maps_narration_and_structural_changes(tmp_path):
+    owner = _make_user("partial_preview_actions")
+    project = _make_project(owner, tmp_path)
+    first = _make_page(project)
+    second = TranscriptPage.objects.create(
+        project=project,
+        order=1,
+        source_slide_index=1,
+        split_index=0,
+        page_key="slide-2",
+        original_text="Second text",
+        narration_text="Second text",
+        rich_text_html="Second text",
+        subtitle_chunks=["Second text"],
+        editor_document={"version": 1, "paragraphs": [{"text": "Second text"}]},
+    )
+    _write_preview_sidecar(
+        tmp_path,
+        project,
+        _preview_sidecar(project, [_preview_slide(first), _preview_slide(second)]),
+    )
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        narration_response = _client(owner).post(
+            f"/api/v1/projects/{project.id}/partial-render-preview/",
+            {
+                "pages": [
+                    _preview_payload_page(first, narration_text="Narration changed", subtitle_chunks=["Narration changed"]),
+                    _preview_payload_page(second),
+                ]
+            },
+            format="json",
+        )
+        structural_response = _client(owner).post(
+            f"/api/v1/projects/{project.id}/partial-render-preview/",
+            {
+                "pages": [
+                    _preview_payload_page(second, order=0, source_slide_index=1),
+                    _preview_payload_page(first, order=1, source_slide_index=0),
+                ]
+            },
+            format="json",
+        )
+
+    assert narration_response.status_code == 200
+    narration_page = next(item for item in narration_response.data["pages"] if item["page_key"] == first.page_key)
+    assert narration_page["recommended_action"] == "rerun_tts_avatar_future"
+    assert narration_page["actual_behavior_changed"] is False
+    assert structural_response.status_code == 200
+    assert structural_response.data["summary"]["full_rerender_required_future"] >= 1
+    assert any(
+        page["recommended_action"] == "full_rerender_required_future"
+        for page in structural_response.data["pages"]
+    )
+
+
+@pytest.mark.django_db
+def test_partial_render_preview_missing_or_invalid_sidecar_returns_safe_fallback(tmp_path):
+    owner = _make_user("partial_preview_missing")
+    missing_project = _make_project(owner, tmp_path)
+    missing_page = _make_page(missing_project)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        missing_response = _client(owner).post(
+            f"/api/v1/projects/{missing_project.id}/partial-render-preview/",
+            {"pages": [_preview_payload_page(missing_page)]},
+            format="json",
+        )
+
+    assert missing_response.status_code == 200
+    assert missing_response.data["mode"] == "prediction_only"
+    assert missing_response.data["available"] is False
+    assert missing_response.data["summary"]["full_rerender_required_future"] >= 1
+    assert "old_manifest_missing_or_invalid" in missing_response.data["notes"]
+
+    invalid_project = _make_project(owner, tmp_path)
+    invalid_page = _make_page(invalid_project)
+    sidecar_dir = tmp_path / str(invalid_project.id)
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "playback_assets.json").write_text("{", encoding="utf-8")
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        invalid_response = _client(owner).post(
+            f"/api/v1/projects/{invalid_project.id}/partial-render-preview/",
+            {"pages": [_preview_payload_page(invalid_page)]},
+            format="json",
+        )
+
+    assert invalid_response.status_code == 200
+    assert invalid_response.data["available"] is False
+    assert invalid_response.data["summary"]["unknown_requires_full"] >= 1
+
+
+@pytest.mark.django_db
+def test_partial_render_preview_uses_dirty_draft_and_sanitizes_paths(tmp_path):
+    owner = _make_user("partial_preview_draft")
+    project = _make_project(owner, tmp_path)
+    page = _make_page(project)
+    sidecar = _preview_sidecar(project, [_preview_slide(page)])
+    sidecar["final_segments"][0]["tts_audio"] = f"{project.id}/audio/private.mp3"
+    sidecar["final_segments"][0]["part_rel_path"] = f"{project.id}/parts/private.mp4"
+    sidecar["partial_render_manifest"] = build_expected_partial_render_manifest(
+        project_id=project.id,
+        slides=[_preview_slide(page)],
+        previous_playback_assets=sidecar,
+        tts_settings=core_views._project_tts_settings(project),
+        avatar_options={
+            "requested": False,
+            "enabled": False,
+            "teacher_id": project.user_id,
+            "avatar_visible": True,
+            "avatar_runtime_settings": project_avatar_runtime_settings(project),
+        },
+    )
+    _write_preview_sidecar(tmp_path, project, sidecar)
+
+    project.draft_data = {
+        "metadata": {"dirty": True, "transcript_dirty": True, "render_required": True},
+        "project": {"tts_settings": core_views._project_tts_settings(project)},
+        "transcript_pages": [
+            {
+                "id": page.id,
+                "order": page.order,
+                "source_slide_index": page.source_slide_index,
+                "split_index": page.split_index,
+                "page_key": page.page_key,
+                "original_text": "Draft visible text",
+                "narration_text": page.narration_text,
+                "rich_text_html": "Draft visible text",
+                "editor_document": page.editor_document,
+                "subtitle_chunks": page.subtitle_chunks,
+                "whiteboard_mode": page.whiteboard_mode,
+            }
+        ],
+    }
+    project.save(update_fields=["draft_data", "updated_at"])
+    before_jobs = Job.objects.filter(project=project, job_type="video_export").count()
+    before_intents = RenderFollowUpIntent.objects.filter(project=project).count()
+
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        response = _client(owner).post(
+            f"/api/v1/projects/{project.id}/partial-render-preview/",
+            {},
+            format="json",
+        )
+
+    assert response.status_code == 200
+    assert response.data["source"] == "dirty_draft"
+    assert response.data["summary"]["recompose_visual_only_future"] == 1
+    serialized = json.dumps(response.data)
+    assert "audio/private.mp3" not in serialized
+    assert "parts/private.mp4" not in serialized
+    assert f"{project.id}/audio" not in serialized
     assert Job.objects.filter(project=project, job_type="video_export").count() == before_jobs
     assert RenderFollowUpIntent.objects.filter(project=project).count() == before_intents
 

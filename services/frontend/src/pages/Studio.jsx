@@ -34,6 +34,7 @@ import {
   fetchProjectLessonIntelligence,
   fetchProject,
   fetchProjects,
+  previewPartialRenderImpact,
   getModerationReviewRequest,
   getProjectModeration,
   generateSubtitleTrack,
@@ -342,13 +343,32 @@ function plainObject(value) {
 }
 
 const RENDER_ANALYSIS_ACTION_LABELS = {
-  reuse_all: 'Reuse existing output',
+  reuse_all: 'Reuse existing assets',
   metadata_only_future: 'Metadata-only update',
-  recompose_visual_only_future: 'Visual-only recompose',
+  recompose_visual_only_future: 'Visual-only recomposition',
   rerun_avatar_future: 'Rerun avatar',
-  rerun_tts_avatar_future: 'Rerun TTS and avatar',
+  rerun_tts_avatar_future: 'Rerun narration/avatar',
   rerender_page_future: 'Rerender page',
   full_rerender_required_future: 'Full rerender required',
+  unknown_requires_full: 'Unknown, safest full rerender',
+};
+
+const PARTIAL_RENDER_PREVIEW_SUMMARY_KEYS = [
+  'reuse_all',
+  'recompose_visual_only_future',
+  'rerun_tts_avatar_future',
+  'rerun_avatar_future',
+  'metadata_only_future',
+  'rerender_page_future',
+  'full_rerender_required_future',
+  'unknown_requires_full',
+];
+
+const PARTIAL_RENDER_PREVIEW_SOURCE_LABELS = {
+  request_payload: 'Current editor payload',
+  dirty_draft: 'Saved draft',
+  active_project: 'Active project',
+  unavailable: 'Unavailable',
 };
 
 export function renderAnalysisActionLabel(action) {
@@ -357,6 +377,11 @@ export function renderAnalysisActionLabel(action) {
   return key
     ? key.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
     : 'No action reported';
+}
+
+export function partialRenderPreviewSourceLabel(source) {
+  const key = String(source || '').trim();
+  return PARTIAL_RENDER_PREVIEW_SOURCE_LABELS[key] || 'Saved draft/current project';
 }
 
 function renderAnalysisCount(summary, key) {
@@ -470,6 +495,180 @@ export function RenderAnalysisPanel({ analysis }) {
       )}
     </section>
   );
+}
+
+export function partialRenderPreviewSummaryItems(prediction) {
+  const summary = plainObject(prediction?.summary) || {};
+  return PARTIAL_RENDER_PREVIEW_SUMMARY_KEYS.map((key) => ({
+    key,
+    label: renderAnalysisActionLabel(key),
+    value: renderAnalysisCount(summary, key),
+  }));
+}
+
+export function partialRenderPreviewPageRows(prediction, limit = 6) {
+  const pages = Array.isArray(prediction?.pages) ? prediction.pages : [];
+  return pages
+    .map((page, index) => {
+      const safePage = plainObject(page) || {};
+      return {
+        pageKey: String(safePage.page_key || ''),
+        index: Number.isFinite(Number(safePage.index)) ? Number(safePage.index) : index,
+        classification: String(safePage.classification || ''),
+        recommendedAction: String(safePage.recommended_action || ''),
+        recommendedLabel: renderAnalysisActionLabel(safePage.recommended_action),
+        requiresFull: Boolean(safePage.requires_full),
+      };
+    })
+    .filter((row) => row.pageKey)
+    .sort((left, right) => left.index - right.index || left.pageKey.localeCompare(right.pageKey))
+    .slice(0, Math.max(0, limit));
+}
+
+export function PreviewRerenderImpactButton({ busy = false, disabled = false, onClick }) {
+  return (
+    <Button
+      size="sm"
+      variant="secondary"
+      onClick={onClick}
+      disabled={disabled || busy}
+      title="Preview which pages are expected to need rerender work."
+      data-testid="partial-render-preview-button"
+    >
+      <Eye size={14} />
+      <span>{busy ? 'Previewing...' : 'Preview rerender impact'}</span>
+    </Button>
+  );
+}
+
+export function PredictedRerenderImpactPanel({ prediction, error = '' }) {
+  if (!plainObject(prediction) && !error) return null;
+  const summaryItems = partialRenderPreviewSummaryItems(prediction);
+  const pageRows = partialRenderPreviewPageRows(prediction);
+  const hiddenPageCount = Math.max(0, (Array.isArray(prediction?.pages) ? prediction.pages.length : 0) - pageRows.length);
+  const source = String(prediction?.source || 'unavailable');
+  const sourceLabel = partialRenderPreviewSourceLabel(source);
+  const sourceCopy = source === 'request_payload'
+    ? 'Prediction uses the current editor transcript payload and saved project settings.'
+    : 'Prediction uses the saved draft/current project state.';
+
+  return (
+    <section
+      data-testid="partial-render-preview-panel"
+      className="shrink-0 border-y border-[var(--border-subtle)] bg-[var(--surface-container-low)] px-3 py-3"
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">Predicted rerender impact</p>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">
+            Prediction only. Actual rendering may safely fall back.
+          </p>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">{sourceCopy}</p>
+        </div>
+        <span className="shrink-0 rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">
+          Prediction only
+        </span>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--text-secondary)]">
+        <span>Source: {sourceLabel}</span>
+        {plainObject(prediction) && (
+          <span>Classifier {prediction.available ? 'available' : 'unavailable'}</span>
+        )}
+      </div>
+
+      {error && (
+        <p className="mt-3 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-semibold text-[color:var(--status-warning-fg)]">
+          {error}
+        </p>
+      )}
+
+      {plainObject(prediction) && (
+        <>
+          <div className="mt-3 grid gap-2 sm:grid-cols-4">
+            {summaryItems.map((item) => (
+              <div key={item.key} className="border-l border-[var(--border-subtle)] pl-3">
+                <p className="text-lg font-semibold text-[var(--text-primary)]">{item.value}</p>
+                <p className="text-xs text-[var(--text-secondary)]">{item.label}</p>
+              </div>
+            ))}
+          </div>
+
+          {pageRows.length > 0 && (
+            <div className="mt-3 space-y-2">
+              {pageRows.map((row) => (
+                <div key={row.pageKey} className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--border-subtle)] pt-2 text-xs">
+                  <span className="font-semibold text-[var(--text-primary)]">{row.pageKey}</span>
+                  <span className="text-[var(--text-secondary)]">{row.recommendedLabel}</span>
+                </div>
+              ))}
+              {hiddenPageCount > 0 && (
+                <p className="text-xs text-[var(--text-secondary)]">+{hiddenPageCount} more pages in the prediction</p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function partialRenderPreviewEditorDocument(document) {
+  if (!plainObject(document)) return {};
+  const next = { ...document };
+  const scene = plainObject(document.scene);
+  if (scene) {
+    const safeScene = {};
+    [
+      'background_mode',
+      'background_fit',
+      'text_scale',
+      'highlight_enabled',
+      'highlight_style',
+      'highlight_detector',
+      'overlay_layout',
+      'font',
+    ].forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(scene, key)) {
+        safeScene[key] = scene[key];
+      }
+    });
+    next.scene = safeScene;
+  }
+  return next;
+}
+
+function partialRenderPreviewPagePayload(page, index) {
+  return {
+    id: page?.id,
+    page_key: page?.page_key,
+    order: page?.order ?? index,
+    source_slide_index: page?.source_slide_index ?? index,
+    split_index: page?.split_index ?? 0,
+    original_text: textValue(page?.original_text ?? page?.display_text),
+    display_text: textValue(page?.display_text ?? page?.original_text),
+    narration_text: textValue(page?.narration_text ?? page?.original_text ?? page?.display_text),
+    rich_text_html: textValue(page?.rich_text_html),
+    editor_document: partialRenderPreviewEditorDocument(page?.editor_document),
+    subtitle_chunks: Array.isArray(page?.subtitle_chunks) ? page.subtitle_chunks.map((item) => textValue(item)) : [],
+    whiteboard_mode: Boolean(page?.whiteboard_mode),
+  };
+}
+
+function partialRenderPreviewPayload({ transcriptPages, avatarFeatureEnabled, avatarEnabled, selectedLesson }) {
+  const payload = {
+    pages: Array.isArray(transcriptPages)
+      ? transcriptPages.map((page, index) => partialRenderPreviewPagePayload(page, index))
+      : [],
+  };
+  if (avatarFeatureEnabled) {
+    payload.avatar_enabled = avatarEnabled ? '1' : '0';
+    payload.render_with_avatar = Boolean(avatarEnabled);
+  }
+  if (plainObject(selectedLesson?.tts_settings)) {
+    payload.tts_settings = selectedLesson.tts_settings;
+  }
+  return payload;
 }
 
 function projectModerationSummary(project, moderation = null) {
@@ -2939,6 +3138,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [globalEditorActionBusy, setGlobalEditorActionBusy] = useState('');
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
+  const [partialRenderPreview, setPartialRenderPreview] = useState(null);
+  const [partialRenderPreviewBusy, setPartialRenderPreviewBusy] = useState(false);
+  const [partialRenderPreviewError, setPartialRenderPreviewError] = useState('');
   const [transcriptDirty, setTranscriptDirty] = useState(false);
   const [ttsDirty, setTtsDirty] = useState(false);
   const [editorResetNonce, setEditorResetNonce] = useState(0);
@@ -3196,6 +3398,17 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   useEffect(() => {
     selectedLessonIdRef.current = selectedLesson?.id || null;
   }, [selectedLesson?.id]);
+
+  useEffect(() => {
+    setPartialRenderPreview(null);
+    setPartialRenderPreviewError('');
+    setPartialRenderPreviewBusy(false);
+  }, [selectedLesson?.id]);
+
+  useEffect(() => {
+    setPartialRenderPreview(null);
+    setPartialRenderPreviewError('');
+  }, [avatarEnabled, transcriptPages]);
 
   useEffect(() => {
     setAdminReviewResponse('');
@@ -5107,6 +5320,33 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     });
   }, []);
 
+  const handlePreviewRerenderImpact = useCallback(async () => {
+    if (readOnlyReview || !selectedLesson?.id || partialRenderPreviewBusy) return;
+    setPartialRenderPreviewBusy(true);
+    setPartialRenderPreviewError('');
+    try {
+      const payload = partialRenderPreviewPayload({
+        transcriptPages,
+        avatarFeatureEnabled,
+        avatarEnabled,
+        selectedLesson,
+      });
+      const prediction = await previewPartialRenderImpact(selectedLesson.id, payload);
+      setPartialRenderPreview(prediction);
+    } catch (err) {
+      setPartialRenderPreviewError(err.message || 'Rerender impact preview is unavailable.');
+    } finally {
+      setPartialRenderPreviewBusy(false);
+    }
+  }, [
+    avatarEnabled,
+    avatarFeatureEnabled,
+    partialRenderPreviewBusy,
+    readOnlyReview,
+    selectedLesson,
+    transcriptPages,
+  ]);
+
   const handleGlobalEditorSave = useCallback(async ({ triggerRerender = false } = {}) => {
     if (readOnlyReview) return;
     if (!selectedLesson?.id) {
@@ -6417,6 +6657,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             </span>
                           </label>
                         )}
+                        <PreviewRerenderImpactButton
+                          busy={partialRenderPreviewBusy}
+                          disabled={Boolean(globalEditorActionBusy)}
+                          onClick={handlePreviewRerenderImpact}
+                        />
                         <Button
                           size="sm"
                           variant={selectedLessonDirtyScope.canSaveRerender ? 'primary' : 'secondary'}
@@ -6465,6 +6710,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     {globalEditorError || selectedLessonDirtyScope.moderationMessage || globalEditorMessage || editorSavedAtLabel}
                   </p>
                 )}
+
+                <PredictedRerenderImpactPanel prediction={partialRenderPreview} error={partialRenderPreviewError} />
 
                 <RenderAnalysisPanel analysis={selectedLesson?.latest_render_analysis} />
 

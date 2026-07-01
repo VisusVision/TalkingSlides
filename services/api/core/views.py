@@ -1232,6 +1232,390 @@ def _latest_render_analysis_for_project(project: Project) -> dict[str, Any] | No
     return _sanitize_partial_render_analysis(sidecar.get("partial_render_analysis"))
 
 
+_PARTIAL_RENDER_PREVIEW_ACTIONS = (
+    "reuse_all",
+    "metadata_only_future",
+    "recompose_visual_only_future",
+    "rerun_avatar_future",
+    "rerun_tts_avatar_future",
+    "rerender_page_future",
+    "full_rerender_required_future",
+    "unknown_requires_full",
+)
+
+
+def _partial_render_manifest_available(value: Any) -> bool:
+    try:
+        version = int(value.get("version") or 0) if isinstance(value, Mapping) else 0
+    except (TypeError, ValueError):
+        version = 0
+    return isinstance(value, Mapping) and version == 1 and isinstance(value.get("pages"), Mapping)
+
+
+def _partial_render_preview_empty_summary() -> dict[str, int]:
+    return {key: 0 for key in _PARTIAL_RENDER_PREVIEW_ACTIONS}
+
+
+def _partial_render_preview_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _partial_render_preview_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _partial_render_preview_text(value: Any, *, max_length: int = 10000) -> str:
+    text = "" if value is None else str(value)
+    return text[:max_length]
+
+
+def _partial_render_preview_subtitles(value: Any, narration_text: str) -> list[str]:
+    if isinstance(value, list):
+        chunks = [_partial_render_preview_text(item, max_length=2000) for item in value]
+        return [chunk for chunk in chunks if chunk.strip()]
+    return [narration_text] if narration_text.strip() else []
+
+
+def _partial_render_preview_editor_document(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    document = deepcopy(dict(value))
+    scene = document.get("scene")
+    if isinstance(scene, Mapping):
+        safe_scene: dict[str, Any] = {}
+        for key in (
+            "background_mode",
+            "background_fit",
+            "text_scale",
+            "highlight_enabled",
+            "highlight_style",
+            "highlight_detector",
+            "overlay_layout",
+            "font",
+        ):
+            if key in scene:
+                safe_scene[key] = deepcopy(scene.get(key))
+        document["scene"] = safe_scene
+    return document
+
+
+def _partial_render_preview_context_by_page(sidecar: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(sidecar, Mapping):
+        return {}
+
+    context: dict[str, dict[str, Any]] = {}
+    for collection_key in ("final_segments", "source_render_metadata", "avatar_slide_metadata"):
+        rows = sidecar.get(collection_key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            page_key = str(row.get("page_key") or "").strip()
+            if not page_key:
+                continue
+            bucket = context.setdefault(page_key, {})
+            if collection_key == "final_segments":
+                bucket["segment"] = row
+            elif collection_key == "source_render_metadata":
+                bucket["source"] = row
+            else:
+                bucket["avatar"] = row
+    return context
+
+
+def _partial_render_preview_source_meta(context: Mapping[str, Any], key: str, fallback: Any = "") -> Any:
+    source = context.get("source") if isinstance(context.get("source"), Mapping) else {}
+    segment = context.get("segment") if isinstance(context.get("segment"), Mapping) else {}
+    if key == "method":
+        return source.get("method", segment.get("source_render_method", fallback))
+    if key == "warnings":
+        return source.get("warnings", segment.get("source_render_warnings", fallback if fallback != "" else []))
+    if key == "details":
+        return source.get("details", segment.get("source_render_details", fallback if fallback != "" else []))
+    if key == "dependency_report":
+        return source.get("dependency_report", segment.get("source_render_dependency_report", fallback if fallback != "" else {}))
+    return fallback
+
+
+def _partial_render_preview_slide_from_page(
+    page: Mapping[str, Any],
+    *,
+    index: int,
+    context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    context = context if isinstance(context, Mapping) else {}
+    segment = context.get("segment") if isinstance(context.get("segment"), Mapping) else {}
+    avatar_meta = context.get("avatar") if isinstance(context.get("avatar"), Mapping) else {}
+    editor_document = _partial_render_preview_editor_document(page.get("editor_document"))
+    scene = editor_document.get("scene") if isinstance(editor_document.get("scene"), Mapping) else {}
+    narration_text = _partial_render_preview_text(
+        page.get("narration_text", page.get("text", page.get("notes_text", "")))
+    )
+    display_text = _partial_render_preview_text(
+        page.get("display_text", page.get("original_text", page.get("notes_text", narration_text)))
+    )
+    source_slide_index = _partial_render_preview_int(
+        page.get("source_slide_index", page.get("index", index)),
+        index,
+    )
+    whiteboard_mode = _partial_render_preview_bool(page.get("whiteboard_mode"))
+    scene_mode = str(scene.get("background_mode") or ("whiteboard" if whiteboard_mode else "original")).strip()
+    page_key = str(page.get("page_key") or page.get("id") or f"page-{index + 1}").strip()
+    return {
+        "index": index,
+        "slide_num": index + 1,
+        "page_key": page_key,
+        "page_id": page.get("id"),
+        "source_slide_index": source_slide_index,
+        "source_slide_num": source_slide_index + 1,
+        "split_index": _partial_render_preview_int(page.get("split_index"), 0),
+        "notes_text": narration_text,
+        "text": narration_text,
+        "narration_text": narration_text,
+        "spoken_text": narration_text,
+        "original_text": display_text,
+        "display_text": display_text,
+        "rich_text_html": _partial_render_preview_text(page.get("rich_text_html")),
+        "editor_document": editor_document,
+        "subtitle_chunks": _partial_render_preview_subtitles(page.get("subtitle_chunks"), narration_text),
+        "whiteboard_mode": whiteboard_mode,
+        "scene_background_mode": scene_mode,
+        "scene_background_fit": str(scene.get("background_fit") or "").strip(),
+        "scene_text_scale": scene.get("text_scale", ""),
+        "duration": segment.get("duration", ""),
+        "pause_seconds": segment.get("pause_seconds", ""),
+        "source_render_method": _partial_render_preview_source_meta(context, "method"),
+        "source_render_warnings": _partial_render_preview_source_meta(context, "warnings"),
+        "source_render_details": _partial_render_preview_source_meta(context, "details"),
+        "source_render_dependency_report": _partial_render_preview_source_meta(context, "dependency_report"),
+        "avatar_attempted": avatar_meta.get("avatar_attempted", segment.get("avatar_attempted", False)),
+        "avatar_applied": avatar_meta.get("avatar_applied", segment.get("avatar_applied", False)),
+        "avatar_status": avatar_meta.get("avatar_status", segment.get("avatar_status", "none")),
+        "avatar_engine_selected": avatar_meta.get(
+            "avatar_engine_selected",
+            segment.get("avatar_engine_selected", ""),
+        ),
+    }
+
+
+def _partial_render_preview_request_pages(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, list):
+        return []
+    pages: list[dict[str, Any]] = []
+    for raw_page in payload[:500]:
+        if not isinstance(raw_page, Mapping):
+            continue
+        page: dict[str, Any] = {}
+        for key in (
+            "id",
+            "page_key",
+            "order",
+            "source_slide_index",
+            "split_index",
+            "original_text",
+            "display_text",
+            "narration_text",
+            "rich_text_html",
+            "editor_document",
+            "subtitle_chunks",
+            "whiteboard_mode",
+        ):
+            if key in raw_page:
+                page[key] = deepcopy(raw_page.get(key))
+        pages.append(page)
+    return pages
+
+
+def _partial_render_preview_pages(project: Project, request) -> tuple[str, list[dict[str, Any]], list[str]]:
+    request_pages = _partial_render_preview_request_pages(request.data.get("pages"))
+    if request_pages:
+        return "request_payload", request_pages, ["request_payload_transcript_pages"]
+
+    pages = get_studio_transcript_pages(project)
+    if pages:
+        if has_dirty_draft(project):
+            return "dirty_draft", pages, ["saved_dirty_draft"]
+        return "active_project", pages, ["active_project_state"]
+
+    return "unavailable", [], ["transcript_pages_unavailable"]
+
+
+def _partial_render_preview_avatar_options(project: Project, request) -> dict[str, Any]:
+    teacher = getattr(project, "user", None)
+    profile = getattr(teacher, "profile", None) if teacher is not None else None
+    if not avatar_enabled():
+        requested = False
+    elif "avatar_enabled" in request.data or "render_with_avatar" in request.data:
+        requested = _partial_render_preview_bool(request.data.get("avatar_enabled", request.data.get("render_with_avatar")))
+    elif getattr(project, "avatar_enabled_override", None) is None:
+        requested = bool(getattr(profile, "avatar_enabled", False))
+    else:
+        requested = bool(getattr(project, "avatar_enabled_override", False))
+
+    return {
+        "requested": bool(requested),
+        "enabled": bool(requested),
+        "teacher_id": int(getattr(teacher, "id", 0) or 0),
+        "avatar_visible": bool(getattr(project, "avatar_visible", True)),
+        "avatar_runtime_settings": project_avatar_runtime_settings(project),
+    }
+
+
+def _partial_render_preview_tts_settings(project: Project, request, *, source: str) -> dict[str, Any]:
+    requested = request.data.get("tts_settings") if isinstance(request.data, Mapping) else None
+    if isinstance(requested, Mapping):
+        return canonical_project_tts_settings(requested)
+    return _project_render_tts_settings(project, use_draft=(source == "dirty_draft"))
+
+
+def _partial_render_preview_analysis(
+    *,
+    project: Project,
+    sidecar: Mapping[str, Any],
+    source: str,
+    pages: list[dict[str, Any]],
+    request,
+) -> tuple[dict[str, Any], list[str]]:
+    from worker.partial_render_manifest import (  # noqa: PLC0415
+        build_expected_partial_render_manifest,
+        build_partial_render_plan,
+        classify_partial_render_changes,
+    )
+
+    notes: list[str] = []
+    old_manifest = sidecar.get("partial_render_manifest") if isinstance(sidecar, Mapping) else None
+    old_available = _partial_render_manifest_available(old_manifest)
+    if not sidecar:
+        notes.append("old_playback_assets_missing")
+    if not old_available:
+        notes.append("old_manifest_missing_or_invalid")
+
+    context_by_page = _partial_render_preview_context_by_page(sidecar)
+    slides = [
+        _partial_render_preview_slide_from_page(
+            page,
+            index=index,
+            context=context_by_page.get(str(page.get("page_key") or page.get("id") or f"page-{index + 1}").strip(), {}),
+        )
+        for index, page in enumerate(pages)
+    ]
+    expected_manifest = build_expected_partial_render_manifest(
+        project_id=project.id,
+        job_id=None,
+        slides=slides,
+        previous_playback_assets=sidecar,
+        tts_settings=_partial_render_preview_tts_settings(project, request, source=source),
+        avatar_options=_partial_render_preview_avatar_options(project, request),
+    )
+    expected_available = _partial_render_manifest_available(expected_manifest)
+    if not expected_available:
+        notes.append("expected_manifest_missing_or_invalid")
+
+    classifier_result = classify_partial_render_changes(
+        old_manifest=old_manifest if old_available else None,
+        expected_manifest=expected_manifest if expected_available else None,
+    )
+    plan = build_partial_render_plan(classifier_result)
+    return {
+        "version": 1,
+        "mode": "prediction_only",
+        "generated_from": "partial_render_preview",
+        "classifier": {
+            "available": bool(old_available and expected_available),
+            "notes": notes,
+            "result": classifier_result,
+        },
+        "plan": plan,
+    }, notes
+
+
+def _partial_render_preview_unavailable(source: str, notes: list[str]) -> dict[str, Any]:
+    safe_notes = _safe_analysis_tokens(notes)
+    return {
+        "mode": "prediction_only",
+        "source": _safe_analysis_token(source) or "unavailable",
+        "available": False,
+        "notes": safe_notes,
+        "summary": _partial_render_preview_empty_summary(),
+        "classifier": {
+            "available": False,
+            "global_reasons": ["unknown_requires_full"],
+            "summary": {"unknown_requires_full": 1},
+        },
+        "pages": [],
+    }
+
+
+def _partial_render_preview_response(source: str, analysis: Mapping[str, Any], notes: list[str]) -> dict[str, Any]:
+    sanitized = _sanitize_partial_render_analysis(analysis)
+    if sanitized is None:
+        return _partial_render_preview_unavailable(source, [*notes, "analysis_unavailable"])
+
+    classifier = sanitized.get("classifier") if isinstance(sanitized.get("classifier"), Mapping) else {}
+    plan = sanitized.get("plan") if isinstance(sanitized.get("plan"), Mapping) else {}
+    classifier_pages = classifier.get("pages") if isinstance(classifier.get("pages"), Mapping) else {}
+    plan_pages = plan.get("pages") if isinstance(plan.get("pages"), Mapping) else {}
+    summary = _partial_render_preview_empty_summary()
+    summary.update(
+        {
+            key: int(value)
+            for key, value in (plan.get("summary") if isinstance(plan.get("summary"), Mapping) else {}).items()
+            if key in summary and isinstance(value, int)
+        }
+    )
+
+    rows: list[dict[str, Any]] = []
+    page_keys = sorted({str(key) for key in [*classifier_pages.keys(), *plan_pages.keys()] if str(key)})
+    for fallback_index, page_key in enumerate(page_keys):
+        classifier_page = classifier_pages.get(page_key) if isinstance(classifier_pages.get(page_key), Mapping) else {}
+        plan_page = plan_pages.get(page_key) if isinstance(plan_pages.get(page_key), Mapping) else {}
+        safe_key = _safe_analysis_token(classifier_page.get("page_key") or plan_page.get("page_key") or page_key)
+        if not safe_key:
+            continue
+        row = {
+            "page_key": safe_key,
+            "index": _safe_analysis_int(classifier_page.get("index")) if classifier_page else fallback_index,
+            "classification": _safe_analysis_token(plan_page.get("classification") or classifier_page.get("classification")),
+            "reasons": _safe_analysis_tokens(plan_page.get("reasons") or classifier_page.get("reasons")),
+            "requires_full": _safe_analysis_bool(classifier_page.get("requires_full")),
+            "recommended_action": _safe_analysis_token(plan_page.get("recommended_action")),
+            "future_only": _safe_analysis_bool(plan_page.get("future_only")),
+            "actual_behavior_changed": _safe_analysis_bool(plan_page.get("actual_behavior_changed")),
+        }
+        missing_artifacts = _safe_analysis_tokens(
+            classifier_page.get("missing_artifacts"),
+            allowed=_PARTIAL_RENDER_ARTIFACT_NAMES,
+        )
+        if missing_artifacts:
+            row["missing_artifacts"] = missing_artifacts
+            row["missing_artifact_count"] = len(missing_artifacts)
+        rows.append(row)
+    rows.sort(key=lambda row: (
+        row.get("index") if isinstance(row.get("index"), int) else 999999,
+        row.get("page_key") or "",
+    ))
+
+    return {
+        "mode": "prediction_only",
+        "source": _safe_analysis_token(source) or "unavailable",
+        "available": bool(classifier.get("available")),
+        "notes": _safe_analysis_tokens([*notes, *(classifier.get("notes") or [])]),
+        "summary": summary,
+        "classifier": {
+            "available": bool(classifier.get("available")),
+            "global_reasons": _safe_analysis_tokens(classifier.get("global_reasons")),
+            "summary": _sanitize_partial_render_summary(classifier.get("summary")),
+        },
+        "pages": rows,
+    }
+
+
 def _resolve_effective_protection_mode(sidecar: dict | None) -> tuple[str, dict]:
     allowed = {"public", "secure_stream", "drm_protected"}
     env_mode = _protection_mode_default()
@@ -6309,6 +6693,44 @@ class ProjectDetailView(APIView):
                 force=False,
             )
         return Response(ProjectSerializer(project, context={"request": request}).data)
+
+
+class ProjectPartialRenderPreviewView(APIView):
+    """POST /api/v1/projects/<project_id>/partial-render-preview/"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, project_id):
+        try:
+            project = Project.objects.get(pk=project_id)
+        except Project.DoesNotExist:
+            return Response({"error": "Project not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_review_project(request.user, project):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        source, pages, source_notes = _partial_render_preview_pages(project, request)
+        if not pages:
+            return Response(_partial_render_preview_unavailable(source, source_notes))
+
+        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+        sidecar = _playback_sidecar_for_job(storage_root, int(project.id))
+        try:
+            analysis, analysis_notes = _partial_render_preview_analysis(
+                project=project,
+                sidecar=sidecar,
+                source=source,
+                pages=pages,
+                request=request,
+            )
+        except Exception:
+            logger.warning("Partial render preview failed for project=%s", project.id, exc_info=True)
+            return Response(
+                _partial_render_preview_unavailable(
+                    source,
+                    [*source_notes, "preview_failed", "unknown_requires_full"],
+                )
+            )
+
+        return Response(_partial_render_preview_response(source, analysis, [*source_notes, *analysis_notes]))
 
 
 def _queue_transcript_rerender(

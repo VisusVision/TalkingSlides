@@ -18,6 +18,7 @@ Implemented today:
 - `partial_render_analysis.plan` now maps classifier output to report-only future planning actions without changing render behavior.
 - Targeted rerenders can now use a narrow worker-only visual recomposition optimization when the runtime-recomputed plan says every target page is visual-only.
 - Project detail exposes sanitized last completed render analysis as `latest_render_analysis`, and Studio shows a diagnostic-only "Last render analysis" panel for the selected lesson.
+- Studio can request a read-only predicted rerender impact preview before Save & Rerender. The preview compares the latest saved `partial_render_manifest` with the current editor request payload, saved dirty draft, or active project state and returns sanitized prediction-only plan data.
 - `RenderFollowUpIntent` supports targeted and full follow-up requests while another render is active.
 
 Current safety rule:
@@ -30,7 +31,8 @@ Current safety rule:
 
 - Targeted rerender is page-key based, not dependency-hash based.
 - Stored `partial_render_analysis` is visibility metadata only; it is not trusted as command state for render decisions.
-- Studio/API visibility shows only the last completed render analysis. Predicted pre-rerender draft/current comparison is deferred.
+- Studio/API visibility shows the last completed render analysis plus a prediction-only pre-rerender preview. The preview is diagnostic; actual rendering may safely fall back.
+- Unsaved transcript editor changes are included when Studio sends the current request payload. Otherwise the preview uses the saved dirty draft if one exists, then the active project state.
 - Visual-only targeted recomposition recomputes the expected manifest, classifier, and plan at worker runtime before it can run.
 - Visual-only optimization is all-or-nothing for the targeted page set. If any target page is not eligible, all targets use the existing slide render path.
 - TTS settings changes and avatar setting changes are represented for reporting only and still fall back to the existing render behavior.
@@ -137,6 +139,7 @@ Structural reorder/delete/split/merge:
 - Surface classifier visibility/reporting in `playback_assets.json` as `partial_render_analysis`. Implemented in report-only mode.
 - Add report-only future planning from classifier output. Implemented as `partial_render_analysis.plan`.
 - Expose sanitized last completed render analysis in project detail and Studio. Implemented as diagnostic-only `latest_render_analysis`; it does not expose artifact paths.
+- Expose sanitized predicted rerender impact in Studio before Save & Rerender. Implemented as a read-only API preview and diagnostic-only Studio panel; it creates no jobs or follow-up intents and does not mutate draft, project, moderation, publish, or render state.
 - Compare manifest decisions against current rerender behavior without changing output.
 
 ### Phase 2: Visual-only Targeting
