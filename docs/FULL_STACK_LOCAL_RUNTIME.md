@@ -110,6 +110,16 @@ docker compose -f infra\docker-compose.yml logs -f tts_service
 .\scripts\windows-runtime-health.ps1
 ```
 
+Backend-only/API smoke checks can exclude the frontend so the Vite container does not run `npm install`:
+
+```powershell
+.\scripts\windows-runtime.ps1 -Profile tts -NoFrontend
+.\scripts\windows-runtime-health.ps1 -Profile tts -NoFrontend
+.\scripts\windows-runtime.ps1 -Profile tts -NoFrontend -Stop
+```
+
+This keeps API, Postgres, Redis, MinIO, worker, and TTS selected while excluding `frontend`; it still does not select `worker-avatar` unless the `avatar` or `full` profile is requested.
+
 Known gaps:
 
 - The current Compose TTS service is oriented toward XTTS-capable startup.

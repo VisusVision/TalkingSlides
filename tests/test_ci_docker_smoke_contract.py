@@ -103,6 +103,62 @@ def test_windows_runtime_passes_avatar_profile_only_for_avatar_services() -> Non
     assert "docker pull" not in script
 
 
+def test_windows_runtime_supports_backend_only_no_frontend_tts_mode() -> None:
+    runtime = (REPO_ROOT / "scripts" / "windows-runtime.ps1").read_text(encoding="utf-8")
+    health = (REPO_ROOT / "scripts" / "windows-runtime-health.ps1").read_text(encoding="utf-8")
+    preflight = (REPO_ROOT / "scripts" / "windows-preflight.ps1").read_text(encoding="utf-8")
+
+    assert "[switch]$NoFrontend" in runtime
+    assert "[switch]$NoFrontend" in health
+    assert "[switch]$NoFrontend" in preflight
+    assert '[bool]$ExcludeFrontend = $false' in runtime
+    assert 'if (-not $ExcludeFrontend)' in runtime
+    service_selection = '$services = @(Get-ProfileServices -SelectedProfile $selectedProfile -ExcludeFrontend:$NoFrontend)'
+    assert runtime.count(service_selection) == 3
+    assert runtime.count("-PassNoFrontend:$NoFrontend") == 5
+    assert '"tts" { return $core + @("tts_service", "worker") }' in runtime
+    assert '"tts" { return $core + @("tts_service", "worker", "worker-avatar") }' not in runtime
+    assert '"worker-avatar"' in runtime
+    assert 'return $Services -contains "worker-avatar"' in runtime
+    assert '$composeArgs += @("up", "-d", "--no-build", "--pull", "never")' in runtime
+    assert '@("build"' not in runtime
+    assert '@("pull"' not in runtime
+    assert "down -v" not in runtime.lower()
+    assert "prune" not in runtime.lower()
+
+    assert "Frontend: excluded by -NoFrontend" in health
+    assert '$requiredHttpNames = @("API health", "API readiness", "capabilities")' in health
+    assert 'if (-not $NoFrontend)' in health
+    assert "Test-HttpEndpointWithRetry" in health
+    assert "[int]$StartupWaitSeconds = 90" in health
+    assert "$startupDeadline = (Get-Date).AddSeconds([Math]::Max(0, $StartupWaitSeconds))" in health
+    assert "Get-RemainingWaitSeconds -Deadline $startupDeadline" in health
+    assert "use_startup_budget = $TtsSelected" in health
+    assert "TTS is still warming or not ready" in health
+    assert '$hasRequiredEndpointFailure = [bool]($Results | Where-Object { $_.category -eq "HTTP endpoints" -and $_.status -eq "FAIL" })' in health
+    assert '$exitCode = if ($hasCoreFailure -or $hasRequiredEndpointFailure) { 1 } else { 0 }' in health
+    assert '[pscustomobject]@{ name = "TTS readiness"; status = $ttsReadinessStatus }' in health
+
+    assert "Skipped because -NoFrontend requests a backend-only runtime." in preflight
+    assert 'if (-not $NoFrontend)' in preflight
+
+
+def test_docs_cover_backend_only_no_frontend_smoke_mode() -> None:
+    docs = "\n".join(
+        [
+            (REPO_ROOT / "docs" / "FULL_STACK_LOCAL_RUNTIME.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "INSTALL_WINDOWS.md").read_text(encoding="utf-8"),
+            (REPO_ROOT / "docs" / "OPERATIONS_RUNBOOK.md").read_text(encoding="utf-8"),
+        ]
+    )
+
+    assert ".\\scripts\\windows-runtime.ps1 -Profile tts -NoFrontend" in docs
+    assert ".\\scripts\\windows-runtime-health.ps1 -Profile tts -NoFrontend" in docs
+    assert ".\\scripts\\windows-runtime.ps1 -Profile tts -NoFrontend -Stop" in docs
+    assert "backend-only" in docs
+    assert "frontend" in docs
+
+
 def test_windows_preflight_and_health_avatar_checks_are_profile_aware_and_read_only() -> None:
     preflight = (REPO_ROOT / "scripts" / "windows-preflight.ps1").read_text(encoding="utf-8")
     health = (REPO_ROOT / "scripts" / "windows-runtime-health.ps1").read_text(encoding="utf-8")

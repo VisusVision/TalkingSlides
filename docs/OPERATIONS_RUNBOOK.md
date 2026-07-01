@@ -11,6 +11,16 @@ This is a short operating guide for staging and production. It complements [PROD
 
 The API readiness endpoint is lightweight and does not check Redis, Postgres, GPU, or TTS. Use deeper smoke checks for dependencies.
 
+For local backend-only render or rerender smoke tests that do not need the frontend, use the no-frontend TTS profile:
+
+```powershell
+.\scripts\windows-runtime.ps1 -Profile tts -NoFrontend
+.\scripts\windows-runtime-health.ps1 -Profile tts -NoFrontend
+.\scripts\windows-runtime.ps1 -Profile tts -NoFrontend -Stop
+```
+
+This starts and checks the API-side runtime without the Vite frontend container, so it avoids the local frontend `npm install && npm run dev` path. It also keeps `worker-avatar` excluded unless `avatar` or `full` is requested.
+
 ## Logs
 
 Docker Compose local examples:
