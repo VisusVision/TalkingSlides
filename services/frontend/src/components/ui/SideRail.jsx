@@ -16,13 +16,14 @@ import {
   isSignedIn,
 } from '../../lib/auth';
 import { requestRouteReset, routeIdForPath } from '../../utils/routeSession';
+import { useI18n } from '../../i18n/I18nProvider';
 
 const PRIMARY_ITEMS = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
-  { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
-  { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
-  { to: '/analytics', label: 'Analytics', icon: BarChart3, analyticsOnly: true },
-  { to: '/moderation', label: 'Moderation', icon: ShieldCheck, moderationOnly: true },
+  { to: '/', labelKey: 'navigation.dashboard', icon: LayoutDashboard, end: true },
+  { to: '/library', labelKey: 'navigation.library', icon: BookOpenText, signedInOnly: true },
+  { to: '/studio', labelKey: 'navigation.studio', icon: SlidersHorizontal, studioOnly: true },
+  { to: '/analytics', labelKey: 'navigation.analytics', icon: BarChart3, analyticsOnly: true },
+  { to: '/moderation', labelKey: 'navigation.moderation', icon: ShieldCheck, moderationOnly: true },
 ];
 
 function railItemClass(isActive, expanded) {
@@ -134,6 +135,7 @@ export default function SideRail({
   onToggleCollapse,
 }) {
   const location = useLocation();
+  const { t } = useI18n();
   const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
   const analyticsAllowed = canAccessAnalytics(user);
@@ -164,10 +166,10 @@ export default function SideRail({
           <div className={`flex items-center gap-2 ${expanded ? 'justify-between' : 'justify-center'}`}>
             {expanded ? (
               <div className="hidden md:block">
-                <p className="text-[0.7rem] font-semibold uppercase tracking-[0.19em] text-[var(--text-secondary)]">VISUS Workspace</p>
+                <p className="text-[0.7rem] font-semibold uppercase tracking-[0.19em] text-[var(--text-secondary)]">{t('navigation.workspace')}</p>
                 <div className="mt-1 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--text-primary)]">
                   <span className="material-symbols-outlined text-base leading-none text-[var(--accent-primary)]">auto_awesome</span>
-                  <span>AI-Powered Learning</span>
+                  <span>{t('navigation.aiLearning')}</span>
                 </div>
               </div>
             ) : null}
@@ -176,21 +178,21 @@ export default function SideRail({
               type="button"
               onClick={onToggleCollapse}
               className="focus-ring inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--surface-container-high)] text-[#9ca3af] transition hover:bg-[var(--surface-container-highest)] hover:text-[var(--text-primary)]"
-              title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              title={collapsed ? t('navigation.expandSidebar') : t('navigation.collapseSidebar')}
+              aria-label={collapsed ? t('navigation.expandSidebar') : t('navigation.collapseSidebar')}
             >
               <span className="material-symbols-outlined text-[20px] leading-none">{collapsed ? 'left_panel_open' : 'left_panel_close'}</span>
             </button>
           </div>
         </div>
 
-        <nav className="flex h-full w-full flex-col justify-between" aria-label="Primary sidebar navigation">
+        <nav className="flex h-full w-full flex-col justify-between" aria-label={t('navigation.primarySidebar')}>
           <div className="space-y-1">
             {primaryItems.map((item) => (
               <RailNavItem
                 key={item.to}
                 to={item.to}
-                label={item.label}
+                label={t(item.labelKey)}
                 icon={item.icon}
                 end={item.end}
                 expanded={expanded}
@@ -211,13 +213,13 @@ export default function SideRail({
                 }`}
               >
                 <Plus size={16} strokeWidth={2} />
-                <span className={`hidden text-[0.68rem] font-bold uppercase tracking-[0.12em] ${expanded ? 'md:inline' : 'md:hidden'}`}>Create New Lesson</span>
-                {!expanded ? <RailTooltip label="Create New Lesson" /> : null}
+                <span className={`hidden text-[0.68rem] font-bold uppercase tracking-[0.12em] ${expanded ? 'md:inline' : 'md:hidden'}`}>{t('navigation.createLesson')}</span>
+                {!expanded ? <RailTooltip label={t('navigation.createLesson')} /> : null}
               </button>
             ) : null}
 
-            <RailNavItem to="/settings" label="Settings" icon={Settings} expanded={expanded} user={user} />
-            <RailHelpItem to="/help" label="Help" icon={CircleHelp} expanded={expanded} user={user} />
+            <RailNavItem to="/settings" label={t('navigation.settings')} icon={Settings} expanded={expanded} user={user} />
+            <RailHelpItem to="/help" label={t('navigation.help')} icon={CircleHelp} expanded={expanded} user={user} />
           </div>
         </nav>
       </div>

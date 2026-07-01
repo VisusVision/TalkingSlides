@@ -10,6 +10,7 @@ export default defineConfig({
   reporter: [['list'], ['html', { open: 'never' }]],
   use: {
     baseURL: devServerUrl,
+    locale: 'en-US',
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',
   },

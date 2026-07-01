@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useI18n } from '../../i18n/I18nProvider';
 
 const PageLoadingContext = createContext({
   setPageLoading: () => {},
@@ -84,13 +85,14 @@ export function usePageLoading(loading, sourceId = '') {
 }
 
 export function RouteLoadingFallback() {
+  const { t } = useI18n();
   usePageLoading(true, 'route-chunk');
   const visible = useDelayedVisible(true);
 
   if (!visible) return null;
 
   return (
-    <div className="space-y-4 pt-4" role="status" aria-live="polite" aria-label="Loading page">
+    <div className="space-y-4 pt-4" role="status" aria-live="polite" aria-label={t('common.loading')}>
       <div className="rounded-3xl token-surface-elevated p-5">
         <div className="visus-loading-sheen h-4 w-36 rounded-full bg-[color:var(--surface-container-high)]" />
         <div className="visus-loading-sheen mt-4 h-8 max-w-md rounded-full bg-[color:var(--surface-container-high)]" />

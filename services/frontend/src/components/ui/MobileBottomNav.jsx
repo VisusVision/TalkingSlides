@@ -7,13 +7,14 @@ import {
   isSignedIn,
 } from '../../lib/auth';
 import { requestRouteReset, routeIdForPath } from '../../utils/routeSession';
+import { useI18n } from '../../i18n/I18nProvider';
 
 const MOBILE_ITEMS = [
-  { to: '/', label: 'Home', icon: LayoutDashboard, end: true },
-  { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
-  { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
-  { to: '/analytics', label: 'Insights', icon: BarChart3, analyticsOnly: true },
-  { to: '/moderation', label: 'Review', icon: ShieldCheck, moderationOnly: true },
+  { to: '/', labelKey: 'navigation.home', icon: LayoutDashboard, end: true },
+  { to: '/library', labelKey: 'navigation.library', icon: BookOpenText, signedInOnly: true },
+  { to: '/studio', labelKey: 'navigation.studio', icon: SlidersHorizontal, studioOnly: true },
+  { to: '/analytics', labelKey: 'navigation.insights', icon: BarChart3, analyticsOnly: true },
+  { to: '/moderation', labelKey: 'navigation.review', icon: ShieldCheck, moderationOnly: true },
 ];
 
 function mobileItemClass(isActive) {
@@ -26,6 +27,7 @@ function mobileItemClass(isActive) {
 
 export default function MobileBottomNav({ user }) {
   const location = useLocation();
+  const { t } = useI18n();
   const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
   const analyticsAllowed = canAccessAnalytics(user);
@@ -41,10 +43,11 @@ export default function MobileBottomNav({ user }) {
   return (
     <nav
       className="fixed bottom-0 left-0 z-50 flex w-full items-center justify-around gap-1 rounded-t-[2rem] border-t border-[color:var(--border-subtle)] bg-[color:rgba(255,255,255,0.9)] px-2 pb-5 pt-2 backdrop-blur-2xl dark:bg-[color:rgba(15,17,21,0.9)] md:hidden"
-      aria-label="Mobile primary navigation"
+      aria-label={t('navigation.mobilePrimary')}
     >
       {mobileItems.map((item) => {
         const Icon = item.icon;
+        const label = t(item.labelKey);
         const routeId = routeIdForPath(item.to);
         const activeRouteId = routeIdForPath(location.pathname);
         const activeForReset = routeId && activeRouteId === routeId && (!item.end || location.pathname === item.to);
@@ -60,10 +63,10 @@ export default function MobileBottomNav({ user }) {
               }
             }}
             className={({ isActive }) => mobileItemClass(isActive)}
-            aria-label={item.label}
+            aria-label={label}
           >
             <Icon size={18} strokeWidth={2} />
-            <span>{item.label}</span>
+            <span>{label}</span>
           </NavLink>
         );
       })}

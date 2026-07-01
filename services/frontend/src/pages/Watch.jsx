@@ -28,6 +28,7 @@ import LessonActionButton from '../components/moderation/LessonActionButton';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { useI18n } from '../i18n/I18nProvider';
 import { formatDuration, normalizeLesson } from '../lib/content';
 import { buildChapters, buildTranscriptLines, resolveTranscriptSeekTarget } from '../lib/watch';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
@@ -39,6 +40,7 @@ const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
 const PLAYLIST_COLLAPSED_KEY = 'visus-watch-playlist-collapsed';
 const PUBLISHER_CONTEXT_COLLAPSED_KEY_PREFIX = 'visus-watch-publisher-context-collapsed';
 const AUTOPLAY_COUNTDOWN_SECONDS = 5;
+const FOCUS_MODE_SOURCE_LABEL = 'Focus Mode';
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
 function normalizeCatalogList(payload) {
@@ -218,7 +220,8 @@ function contextRowsFromPayload(context, currentLessonId) {
     return `${PUBLISHER_CONTEXT_COLLAPSED_KEY_PREFIX}:${currentLessonId || 'none'}`;
   }
 
-  export function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+export function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
+    const { t } = useI18n();
     const isPlaylistMode = context?.mode === 'playlist';
     const collapsedStorageKey = isPlaylistMode ? PLAYLIST_COLLAPSED_KEY : publisherContextCollapsedKey(currentLessonId);
     const [contextCollapsed, setContextCollapsed] = useState(() => {
@@ -247,12 +250,12 @@ function contextRowsFromPayload(context, currentLessonId) {
 
     if (!rows.length) return null;
 
-    const title = isPlaylistMode ? 'More from this playlist' : 'More from this publisher';
+    const title = isPlaylistMode ? t('watch.moreFromPlaylist') : t('watch.moreFromPublisher');
     const subtitle = isPlaylistMode ? context?.playlist?.title || '' : rows[0]?.lesson?.teacherName || '';
     const nextLesson = nextLessonFromContext(context, currentLessonId);
     const collapsedSummary = isPlaylistMode
-      ? `Next: ${nextLesson?.title || 'End of playlist'}`
-      : `${Math.max(0, rows.length - 1)} more lesson${rows.length - 1 === 1 ? '' : 's'}`;
+      ? t('watch.next', { title: nextLesson?.title || t('watch.endOfPlaylist') })
+      : t('watch.moreLessons', { count: Math.max(0, rows.length - 1), plural: rows.length - 1 === 1 ? '' : 's' });
 
     if (contextCollapsed) {
       return (
@@ -273,7 +276,7 @@ function contextRowsFromPayload(context, currentLessonId) {
               ) : null}
             </span>
             <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)]">
-              Show
+              {t('watch.show')}
               <ChevronDown size={14} />
             </span>
           </button>
@@ -296,7 +299,7 @@ function contextRowsFromPayload(context, currentLessonId) {
             className="focus-ring inline-flex shrink-0 items-center gap-1 rounded-full bg-[var(--surface-container-highest)] px-3 py-1.5 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-surface-strong)]"
             aria-expanded="true"
           >
-            Hide
+            {t('watch.hide')}
             <ChevronDown size={14} className="rotate-180" />
           </button>
         </div>
@@ -332,7 +335,7 @@ function contextRowsFromPayload(context, currentLessonId) {
                     {contextLesson.title}
                   </span>
                   <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">
-                    {isCurrent ? 'Now playing' : `${contextLesson.categoryName || 'Lesson'} - ${formatDuration(contextLesson.durationMinutes || 8)}`}
+                    {isCurrent ? t('watch.nowPlaying') : `${contextLesson.categoryName || t('watch.lesson')} - ${formatDuration(contextLesson.durationMinutes || 8)}`}
                   </span>
                 </span>
               </button>
@@ -355,6 +358,7 @@ function WatchStudyPanel({
   saveActionLabel,
   saveHint,
 }) {
+  const { t } = useI18n();
   const avatar = avatarOverlayDataForLesson(lesson);
 
   return (
@@ -372,26 +376,26 @@ function WatchStudyPanel({
           />
         ) : (
           <div className="flex min-h-[8rem] items-center justify-center rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-container-high)] px-3 text-center text-xs text-[var(--text-secondary)]">
-            {avatar.processing ? (avatar.message || 'Avatar is being prepared.') : 'Avatar is not available for this lesson.'}
+            {avatar.processing ? (avatar.message || t('watch.avatarPreparing')) : t('watch.avatarUnavailable')}
           </div>
         )}
       </div>
       )}
 
       <label className="block text-xs font-medium text-[var(--text-secondary)]">
-        Notes
+        {t('watch.notes')}
         <textarea
           data-testid="study-mode-notes"
           value={notes}
           onChange={(event) => onNotesChange(event.target.value)}
-          placeholder="Capture ideas, definitions, and questions while watching..."
+          placeholder={t('watch.notesPlaceholder')}
           className="focus-ring mt-1 min-h-[260px] w-full resize-y rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm leading-relaxed text-[var(--text-primary)]"
         />
       </label>
 
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <p className="text-xs text-[var(--text-secondary)]">
-          {savedAtLabel || 'Auto-saved locally'}{unsaved ? ' - unsaved changes' : ''}
+          {savedAtLabel || t('watch.autoSavedLocally')}{unsaved ? ` - ${t('watch.unsavedChanges')}` : ''}
         </p>
         <Button size="sm" onClick={onSave}>
           {saveActionLabel}
@@ -408,6 +412,7 @@ function WatchStudyPanel({
 }
 
 function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, publisherInitials, followerCount }) {
+  const { t } = useI18n();
   const initial = String(publisherInitials || publisherName || 'V').trim().slice(0, 2).toUpperCase() || 'V';
   const avatar = publisherAvatarUrl ? (
     <img
@@ -427,7 +432,7 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, pub
       <span className="min-w-0">
         <span className="block truncate font-semibold text-[var(--text-primary)]">{publisherName}</span>
         {followerCount > 0 ? (
-          <span className="block text-xs text-[var(--text-secondary)]">{compactCount(followerCount, 'follower')}</span>
+          <span className="block text-xs text-[var(--text-secondary)]">{t('watch.followerCount', { count: followerCount, plural: followerCount === 1 ? '' : 's' })}</span>
         ) : null}
       </span>
     </>
@@ -451,6 +456,7 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, pub
 
 export default function Watch({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const videoRef = useRef(null);
@@ -479,7 +485,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const [chaptersCollapsed, setChaptersCollapsed] = useState(false);
   const [notes, setNotes] = useState('');
   const [savedNotes, setSavedNotes] = useState('');
-  const [savedAtLabel, setSavedAtLabel] = useState('Auto-saved locally');
+  const [savedAtLabel, setSavedAtLabel] = useState('');
   const [saveHint, setSaveHint] = useState('');
   const [comments, setComments] = useState([]);
   const [commentsLoading, setCommentsLoading] = useState(false);
@@ -680,14 +686,14 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     setSavedNotes(persisted || '');
 
     if (draft !== null && draft !== persisted) {
-      setSavedAtLabel('Loaded local draft');
-      setSaveHint('Unsaved note draft restored from this browser cache.');
+      setSavedAtLabel(t('watch.loadedLocalDraft'));
+      setSaveHint(t('watch.restoredDraft'));
       return;
     }
 
-    setSavedAtLabel(persisted ? 'Loaded saved note' : 'Drafting locally');
+    setSavedAtLabel(persisted ? t('watch.loadedSavedNote') : t('watch.draftingLocally'));
     setSaveHint('');
-  }, [activeLessonId]);
+  }, [activeLessonId, t]);
 
   useEffect(() => {
     const draftKey = draftNoteKey(activeLessonId);
@@ -716,8 +722,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const saveNotes = () => {
     if (!user) {
       window.localStorage.setItem(draftNoteKey(activeLessonId), notes);
-      setSavedAtLabel('Draft kept locally');
-      setSaveHint('Sign in to save this note to your account session.');
+      setSavedAtLabel(t('watch.draftKeptLocally'));
+      setSaveHint(t('watch.signInSaveHint'));
 
       if (typeof onLoginRequest === 'function') {
         onLoginRequest(activeLessonId ? `/watch?lesson=${activeLessonId}` : '/watch');
@@ -729,7 +735,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     window.localStorage.removeItem(draftNoteKey(activeLessonId));
     setSavedNotes(notes);
     setSaveHint('');
-    setSavedAtLabel(`Saved at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
+    setSavedAtLabel(t('watch.savedAt', { time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }));
   };
 
   const visibleLessons = useMemo(
@@ -1144,7 +1150,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const handleToggleLike = async () => {
     if (!activeLessonId || likeBusy) return;
     if (!user) {
-      setLikeError('Sign in to like this lesson.');
+      setLikeError(t('watch.signInToLike'));
       if (typeof onLoginRequest === 'function') {
         onLoginRequest(loginRedirectPath);
       }
@@ -1161,7 +1167,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         like_count: Number(payload?.like_count ?? current.like_count ?? 0),
       } : current);
     } catch (err) {
-      setLikeError(err.message || 'Could not update like.');
+      setLikeError(err.message || t('watch.couldNotUpdateLike'));
     } finally {
       setLikeBusy(false);
     }
@@ -1170,7 +1176,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   const handleToggleFollow = async () => {
     if (!publisherId || followBusy || isOwnPublisher) return;
     if (!user) {
-      setFollowError('Sign in to follow this publisher.');
+      setFollowError(t('watch.signInToFollow'));
       if (typeof onLoginRequest === 'function') {
         onLoginRequest(loginRedirectPath);
       }
@@ -1188,7 +1194,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         follower_count: Number(payload?.follower_count ?? current.follower_count ?? 0),
       } : current);
     } catch (err) {
-      setFollowError(err.message || 'Could not update follow.');
+      setFollowError(err.message || t('watch.couldNotUpdateFollow'));
     } finally {
       setFollowBusy(false);
     }
@@ -1203,7 +1209,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       const payload = await createProjectShareLink(activeLessonId);
       setShareLink(payload);
     } catch (err) {
-      setShareError(err.message || 'Could not create share link.');
+      setShareError(err.message || t('share.couldNotCreate'));
     } finally {
       setShareBusy(false);
     }
@@ -1217,7 +1223,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       setShareCopied(true);
       window.setTimeout(() => setShareCopied(false), 1800);
     } catch {
-      setShareError('Could not copy link.');
+      setShareError(t('share.couldNotCopy'));
     }
   };
 
@@ -1234,7 +1240,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     event.preventDefault();
     if (!activeLessonId || commentSubmitting) return;
     if (!user) {
-      setCommentError('Sign in to post a comment.');
+      setCommentError(t('watch.signInCommentPlaceholder'));
       if (typeof onLoginRequest === 'function') {
         onLoginRequest(loginRedirectPath);
       }
@@ -1242,7 +1248,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     }
     const trimmed = commentText.trim();
     if (!trimmed) {
-      setCommentError('Comment text is required.');
+      setCommentError(t('watch.commentRequired'));
       return;
     }
     setCommentSubmitting(true);
@@ -1256,7 +1262,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       } : current);
       setCommentText('');
     } catch (err) {
-      setCommentError(err.message || 'Could not post comment.');
+      setCommentError(err.message || t('watch.couldNotPostComment'));
     } finally {
       setCommentSubmitting(false);
     }
@@ -1314,7 +1320,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         <Suspense
           fallback={(
             <SurfaceCard elevated className="p-4 sm:p-5">
-              <p className="body-md">Loading secure player...</p>
+              <p className="body-md">{t('watch.loadingSecurePlayer')}</p>
             </SurfaceCard>
           )}
         >
@@ -1361,13 +1367,13 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
         <Button variant={focusMode ? 'primary' : 'secondary'} onClick={handleFocusModeToggle} disabled={!activeLessonId}>
           <Focus size={15} />
-          <span>{focusMode ? 'Exit Focus' : 'Focus Mode'}</span>
+          <span>{focusMode ? t('watch.exitFocus') : t('watch.focusMode')}</span>
         </Button>
       </SurfaceCard>
 
       {loadingCatalog && (
         <SurfaceCard elevated>
-          <p className="body-md">Loading lesson catalog...</p>
+          <p className="body-md">{t('watch.loadingCatalog')}</p>
         </SurfaceCard>
       )}
 
@@ -1379,9 +1385,9 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
       {!loadingCatalog && !activeLessonId && (
         <SurfaceCard elevated className="space-y-3">
-          <p className="title-lg text-[var(--text-primary)]">No lesson selected</p>
+          <p className="title-lg text-[var(--text-primary)]">{t('watch.noLessonSelected')}</p>
           <Button onClick={() => navigate('/')}>
-            <span>Go To Dashboard</span>
+            <span>{t('watch.goToDashboard')}</span>
           </Button>
         </SurfaceCard>
       )}
@@ -1394,7 +1400,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           <div data-testid="watch-video-column" className={focusMode ? 'space-y-5' : 'lg:col-span-8 space-y-5'}>
             {loadingLesson ? (
               <SurfaceCard elevated>
-                <p className="body-md">Loading lesson player...</p>
+                <p className="body-md">{t('watch.loadingPlayer')}</p>
               </SurfaceCard>
             ) : (
               <>
@@ -1405,7 +1411,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                     <div className="min-w-0 space-y-2">
                       <div>
                         <h1 className="text-xl font-semibold leading-tight text-[var(--text-primary)]">
-                          {lesson?.title || 'Untitled lesson'}
+                          {lesson?.title || t('watch.untitledLesson')}
                         </h1>
                         <div className="mt-3">
                           <PublisherIdentity
@@ -1418,15 +1424,15 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-                        <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || lesson?.categoryName || 'General'}</span>
+                        <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || lesson?.categoryName || t('watch.general')}</span>
                         <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatDuration(lesson?.duration_minutes || lesson?.durationMinutes || 8)}</span>
                         <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
                           <ShieldCheck size={12} />
-                          Secure stream
+                          {t('watch.secureStream')}
                         </span>
                         {progressLabel && userProgressPct < 95 && (
                           <span className="rounded-full bg-[var(--surface-container-highest)] px-2.5 py-1 font-semibold text-[var(--accent-primary)]">
-                            Continue from {progressLabel}
+                            {t('watch.continueFrom', { progress: progressLabel })}
                           </span>
                         )}
                       </div>
@@ -1442,7 +1448,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         disabled={likeBusy}
                       >
                         <Heart size={14} className={likedByMe ? 'fill-current' : ''} />
-                        <span>{likeBusy ? 'Saving...' : likedByMe ? 'Liked' : 'Like'}</span>
+                        <span>{likeBusy ? t('common.saving') : likedByMe ? t('watch.liked') : t('watch.like')}</span>
                         <span className="text-xs opacity-80">{likeCount}</span>
                       </Button>
                       <Button
@@ -1453,7 +1459,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                       >
                         <MessageSquare size={14} />
                         <span>{commentCount}</span>
-                        <span>Comments</span>
+                        <span>{t('watch.commentsTitle')}</span>
                       </Button>
                       {canShareLesson && (
                         <Button
@@ -1464,7 +1470,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           disabled={shareBusy}
                         >
                           <Share2 size={14} />
-                          <span>{shareBusy ? 'Creating...' : 'Share'}</span>
+                          <span>{shareBusy ? t('share.creating') : t('share.share')}</span>
                         </Button>
                       )}
                       {publisherId && !isOwnPublisher && (
@@ -1476,7 +1482,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           disabled={followBusy}
                         >
                           {isFollowingPublisher ? <Check size={14} /> : <UserPlus size={14} />}
-                          <span>{followBusy ? 'Saving...' : isFollowingPublisher ? 'Following' : 'Follow'}</span>
+                          <span>{followBusy ? t('common.saving') : isFollowingPublisher ? t('watch.following') : t('watch.follow')}</span>
                         </Button>
                       )}
                       <LessonActionButton
@@ -1499,15 +1505,15 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                   {shareLink?.share_url && (
                     <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-[var(--text-primary)]">Share link</p>
+                        <p className="text-xs font-semibold text-[var(--text-primary)]">{t('share.shareLink')}</p>
                         <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{shareLink.share_url}</p>
                         {shareExpiresLabel && (
-                          <p className="mt-1 text-xs text-[var(--text-secondary)]">Expires {shareExpiresLabel}</p>
+                          <p className="mt-1 text-xs text-[var(--text-secondary)]">{t('share.expires', { date: shareExpiresLabel })}</p>
                         )}
                       </div>
                       <Button size="sm" variant="secondary" type="button" onClick={handleCopyShareLink}>
                         <Copy size={14} />
-                        <span>{shareCopied ? 'Copied' : 'Copy'}</span>
+                        <span>{shareCopied ? t('common.copied') : t('common.copy')}</span>
                       </Button>
                     </div>
                   )}
@@ -1518,7 +1524,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-[var(--text-primary)]">CC</p>
                       <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                        <label className="sr-only" htmlFor="watch-subtitle-track">Subtitle track</label>
+                        <label className="sr-only" htmlFor="watch-subtitle-track">{t('watch.subtitleTrack')}</label>
                         <select
                           id="watch-subtitle-track"
                           value={selectedSubtitleKey}
@@ -1530,25 +1536,25 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           disabled={subtitleOptions.length === 0}
                           className="focus-ring h-10 min-w-[12rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
                         >
-                          <option value="off">Off</option>
+                          <option value="off">{t('watch.off')}</option>
                           {subtitleOptions.map((option) => (
                             <option key={option.key} value={option.key}>{option.label}</option>
                           ))}
                         </select>
                         {selectedSubtitleOption && (
                           <span className="text-xs text-[var(--text-secondary)]">
-                            Showing {selectedSubtitleOption.label}
+                            {t('watch.showingSubtitle', { label: selectedSubtitleOption.label })}
                           </span>
                         )}
                         {!selectedSubtitleOption && subtitleOptions.length === 0 && (
-                          <span className="text-xs text-[var(--text-secondary)]">No subtitle tracks available yet.</span>
+                          <span className="text-xs text-[var(--text-secondary)]">{t('watch.noSubtitles')}</span>
                         )}
                       </div>
                     </div>
                     <div className="flex flex-col gap-2 lg:min-w-[22rem]">
-                      <span className="text-xs font-medium text-[var(--text-secondary)]">Need another subtitle?</span>
+                      <span className="text-xs font-medium text-[var(--text-secondary)]">{t('watch.needAnotherSubtitle')}</span>
                       <div className="flex flex-col gap-2 sm:flex-row">
-                        <label className="sr-only" htmlFor="watch-subtitle-language">Language</label>
+                        <label className="sr-only" htmlFor="watch-subtitle-language">{t('watch.language')}</label>
                         <select
                           id="watch-subtitle-language"
                           value={selectedRequestLanguage?.code || ''}
@@ -1563,7 +1569,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                               </option>
                             ))
                           ) : (
-                            <option value="">All listed languages available</option>
+                            <option value="">{t('watch.allLanguagesAvailable')}</option>
                           )}
                         </select>
                         <Button
@@ -1573,7 +1579,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           className="shrink-0"
                         >
                           <Sparkles size={14} />
-                          <span>{requestingSubtitleLanguage ? 'Generating...' : 'Generate CC with AI'}</span>
+                          <span>{requestingSubtitleLanguage ? t('common.generating') : t('watch.generateCc')}</span>
                         </Button>
                       </div>
                     </div>
@@ -1587,34 +1593,34 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                   <SurfaceCard className="space-y-3 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">Comments</p>
-                        <p className="mt-1 text-xs text-[var(--text-secondary)]">Share a note about this lesson.</p>
+                        <p className="text-sm font-semibold text-[var(--text-primary)]">{t('watch.commentsTitle')}</p>
+                        <p className="mt-1 text-xs text-[var(--text-secondary)]">{t('watch.commentsIntro')}</p>
                       </div>
                       <span className="rounded-full bg-[var(--surface-container-highest)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-                        {commentCount} comment{commentCount === 1 ? '' : 's'}
+                        {t('watch.commentCount', { count: commentCount, plural: commentCount === 1 ? '' : 's' })}
                       </span>
                     </div>
 
                     <form className="space-y-2" onSubmit={handleSubmitComment}>
                     <label className="block text-xs font-medium text-[var(--text-secondary)]">
-                      Add comment
+                      {t('watch.addComment')}
                       <textarea
                         value={commentText}
                         onChange={(event) => setCommentText(event.target.value)}
                         maxLength={2000}
-                        placeholder={user ? 'Write a comment...' : 'Sign in to post a comment.'}
+                        placeholder={user ? t('watch.writeComment') : t('watch.signInCommentPlaceholder')}
                         disabled={!user || commentSubmitting}
                         className="focus-ring mt-1 min-h-[72px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-65"
                       />
                     </label>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-xs text-[var(--text-secondary)]">
-                        {user ? `${commentText.length}/2000` : 'You can read comments without signing in.'}
+                        {user ? `${commentText.length}/2000` : t('watch.readCommentsSignedOut')}
                       </p>
                       {user ? (
                         <Button size="sm" type="submit" disabled={commentSubmitting || !commentText.trim()}>
                           <Send size={14} />
-                          <span>{commentSubmitting ? 'Posting...' : 'Post comment'}</span>
+                          <span>{commentSubmitting ? t('watch.posting') : t('watch.postComment')}</span>
                         </Button>
                       ) : (
                         <Button
@@ -1625,7 +1631,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                             if (typeof onLoginRequest === 'function') onLoginRequest(loginRedirectPath);
                           }}
                         >
-                          Sign in to comment
+                          {t('watch.signInToComment')}
                         </Button>
                       )}
                     </div>
@@ -1639,14 +1645,14 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
                   <div className="space-y-2">
                     {commentsLoading ? (
-                      <p className="text-sm text-[var(--text-secondary)]">Loading comments...</p>
+                      <p className="text-sm text-[var(--text-secondary)]">{t('watch.loadingComments')}</p>
                     ) : comments.length === 0 ? (
-                      <p className="text-sm text-[var(--text-secondary)]">No comments yet.</p>
+                      <p className="text-sm text-[var(--text-secondary)]">{t('watch.noComments')}</p>
                     ) : (
                       visibleComments.map((comment) => (
                         <article key={comment.id} className="rounded-xl bg-[var(--surface-container-high)] p-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="text-sm font-semibold text-[var(--text-primary)]">{comment.display_name || comment.username || 'Viewer'}</p>
+                            <p className="text-sm font-semibold text-[var(--text-primary)]">{comment.display_name || comment.username || t('watch.viewer')}</p>
                             {comment.created_at && (
                               <span className="text-xs text-[var(--text-secondary)]">{formatCommentDate(comment.created_at)}</span>
                             )}
@@ -1665,7 +1671,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           type="button"
                           onClick={() => setCommentsExpanded((previous) => !previous)}
                         >
-                          {commentsExpanded ? 'Show fewer comments' : `Show ${hiddenCommentCount} more comment${hiddenCommentCount === 1 ? '' : 's'}`}
+                          {commentsExpanded ? t('watch.showFewerComments') : t('watch.showMoreComments', { count: hiddenCommentCount, plural: hiddenCommentCount === 1 ? '' : 's' })}
                         </Button>
                       </div>
                     )}
@@ -1693,8 +1699,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                 onSave={saveNotes}
                 savedAtLabel={savedAtLabel}
                 unsaved={hasUnsavedNotes}
-                saveActionLabel={user ? 'Save Note' : 'Sign In To Save'}
-                saveHint={saveHint || (!user ? 'Drafts remain cached locally while you sign in.' : '')}
+                saveActionLabel={user ? t('watch.saveNote') : t('watch.signInToSave')}
+                saveHint={saveHint || (!user ? t('watch.draftCached') : '')}
               />
             ) : (
               <>
@@ -1704,8 +1710,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                   onSave={saveNotes}
                   savedAtLabel={savedAtLabel}
                   unsaved={hasUnsavedNotes}
-                  saveActionLabel={user ? 'Save Note' : 'Sign In To Save'}
-                  saveHint={saveHint || (!user ? 'Drafts remain cached locally while you sign in.' : '')}
+                  saveActionLabel={user ? t('watch.saveNote') : t('watch.signInToSave')}
+                  saveHint={saveHint || (!user ? t('watch.draftCached') : '')}
                   collapsed={notesCollapsed}
                   onToggle={() => setNotesCollapsed((prev) => !prev)}
                 />
