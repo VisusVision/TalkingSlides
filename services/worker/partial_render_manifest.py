@@ -10,9 +10,12 @@ from typing import Any
 
 
 VOLATILE_KEYS = {
+    "avatar_job_id",
+    "base_job_id",
     "completed_at",
     "created_at",
     "generated_at",
+    "job_id",
     "started_at",
     "time_ns",
     "timestamp",
@@ -755,6 +758,123 @@ def get_visual_only_recompose_eligibility(
             add_page_fallback("target_page_missing_artifact")
         if bool(classifier_page.get("requires_full")):
             add_page_fallback("target_page_requires_full")
+
+        page_report["eligible"] = not page_report["fallback_reasons"]
+        report["pages"][page_key] = page_report
+
+    report["eligible"] = not report["fallback_reasons"] and all(
+        bool(page.get("eligible")) for page in report["pages"].values()
+    )
+    return report
+
+
+def get_narration_only_recompose_eligibility(
+    *,
+    classification_result: Mapping[str, Any] | None,
+    plan: Mapping[str, Any] | None,
+    target_page_keys: Iterable[str],
+) -> dict[str, Any]:
+    """Return an all-or-nothing report for avatar-disabled narration-only optimization."""
+
+    targets = sorted({str(key) for key in (target_page_keys or []) if str(key)})
+    target_set = set(targets)
+    report: dict[str, Any] = {
+        "eligible": False,
+        "mode": "narration_only_recompose",
+        "target_page_keys": targets,
+        "fallback_reasons": [],
+        "pages": {},
+    }
+
+    def add_fallback(reason: str) -> None:
+        reasons = report["fallback_reasons"]
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if not targets:
+        add_fallback("target_page_keys_empty")
+        return report
+    if not isinstance(classification_result, Mapping):
+        add_fallback("classification_result_missing")
+        return report
+    if not isinstance(plan, Mapping):
+        add_fallback("partial_render_plan_missing")
+        return report
+
+    global_reasons = _ordered_reasons(_sequence_of_strings(classification_result.get("global_reasons")))
+    if global_reasons:
+        add_fallback("global_reasons_present")
+        if set(global_reasons) & _PLAN_FULL_REASONS:
+            add_fallback("global_full_rerender_required")
+
+    classifier_pages = _classification_report_pages(classification_result)
+    plan_pages = _classification_report_pages(plan)
+    page_keys = sorted({*classifier_pages.keys(), *plan_pages.keys(), *target_set})
+    tts_reasons = set(_PLAN_TTS_REASONS)
+    narration_only_target_reasons = {*tts_reasons, "avatar_input_changed"}
+
+    for page_key in page_keys:
+        classifier_page = classifier_pages.get(page_key)
+        plan_page = plan_pages.get(page_key)
+        page_report: dict[str, Any] = {
+            "page_key": page_key,
+            "eligible": False,
+            "classification": "",
+            "reasons": [],
+            "recommended_action": "",
+            "fallback_reasons": [],
+        }
+
+        def add_page_fallback(reason: str) -> None:
+            page_reasons = page_report["fallback_reasons"]
+            if reason not in page_reasons:
+                page_reasons.append(reason)
+            add_fallback(reason)
+
+        if not isinstance(classifier_page, Mapping):
+            add_page_fallback("page_missing_from_classifier")
+            report["pages"][page_key] = page_report
+            continue
+        if not isinstance(plan_page, Mapping):
+            add_page_fallback("page_missing_from_plan")
+            report["pages"][page_key] = page_report
+            continue
+
+        classification = _plan_classification(classifier_page)
+        classifier_reasons = _plan_reasons(classifier_page, classification)
+        plan_reasons = [
+            reason
+            for reason in _sequence_of_strings(plan_page.get("reasons"))
+            if reason in PARTIAL_RENDER_REASONS and reason != "unchanged"
+        ]
+        reasons = _ordered_reasons([*classifier_reasons, *plan_reasons])
+        recommended_action = str(plan_page.get("recommended_action") or "")
+        page_report.update(
+            {
+                "classification": classification,
+                "reasons": reasons,
+                "recommended_action": recommended_action,
+            }
+        )
+
+        if page_key in target_set:
+            if recommended_action != "rerun_tts_avatar_future":
+                add_page_fallback("target_page_action_not_narration_only")
+            if not reasons:
+                add_page_fallback("target_page_unchanged")
+            if classification not in tts_reasons:
+                add_page_fallback("target_page_classification_not_narration_only")
+            non_tts_reasons = [reason for reason in reasons if reason not in narration_only_target_reasons]
+            if non_tts_reasons:
+                add_page_fallback("target_page_has_non_narration_reason")
+            missing_artifacts = _sequence_of_strings(classifier_page.get("missing_artifacts"))
+            if missing_artifacts or "missing_artifact" in reasons:
+                add_page_fallback("target_page_missing_artifact")
+            if bool(classifier_page.get("requires_full")):
+                add_page_fallback("target_page_requires_full")
+        else:
+            if recommended_action != "reuse_all" or classification != "unchanged" or reasons:
+                add_page_fallback("non_target_page_changed")
 
         page_report["eligible"] = not page_report["fallback_reasons"]
         report["pages"][page_key] = page_report

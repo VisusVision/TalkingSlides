@@ -66,6 +66,7 @@ from .partial_render_manifest import (  # noqa: E402
     build_partial_render_manifest,
     build_partial_render_plan,
     classify_partial_render_changes,
+    get_narration_only_recompose_eligibility,
     get_visual_only_recompose_eligibility,
 )
 
@@ -1662,6 +1663,39 @@ def _playback_artifacts_by_page_key(playback_assets: dict[str, Any] | None) -> d
     return artifacts_by_key
 
 
+def _playback_final_segments_by_page_key(playback_assets: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(playback_assets, dict):
+        return {}
+    final_segments = playback_assets.get("final_segments")
+    if not isinstance(final_segments, list):
+        return {}
+    segments: dict[str, dict[str, Any]] = {}
+    for segment in final_segments:
+        if not isinstance(segment, dict):
+            continue
+        page_key = str(segment.get("page_key") or "").strip()
+        if page_key:
+            segments[page_key] = dict(segment)
+    return segments
+
+
+def _slides_with_previous_segment_timing(
+    slides: list[dict[str, Any]],
+    previous_playback_assets: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    previous_segments = _playback_final_segments_by_page_key(previous_playback_assets)
+    enriched: list[dict[str, Any]] = []
+    for slide in slides or []:
+        row = dict(slide or {})
+        page_key = str(row.get("page_key") or "").strip()
+        segment = previous_segments.get(page_key, {})
+        for key in ("duration", "pause_seconds"):
+            if row.get(key) in (None, "") and segment.get(key) not in (None, ""):
+                row[key] = segment.get(key)
+        enriched.append(row)
+    return enriched
+
+
 def _resolve_existing_artifact_path(value: Any, *, storage_root: str | Path | None = None) -> Path | None:
     raw = str(value or "").strip()
     if not raw:
@@ -1861,6 +1895,170 @@ def _build_visual_only_recompose_runtime_decision(
             "composed_segment_abs_path": str(old_part_abs or ""),
             "avatar_clip_abs_path": str(avatar_abs or ""),
         }
+
+    decision["artifacts_by_page_key"] = checked_artifacts
+    decision["eligible"] = not decision["fallback_reasons"] and all(
+        bool(page.get("eligible")) for page in decision["pages"].values()
+    )
+    return decision
+
+
+def _build_narration_only_recompose_runtime_decision(
+    *,
+    project_id: str | int,
+    job_id: int | str | None,
+    slides: list[dict[str, Any]],
+    rerender_page_keys: set[str],
+    previous_playback_assets: dict[str, Any] | None,
+    tts_settings: dict[str, Any] | None,
+    avatar_options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    target_keys = sorted({str(key) for key in rerender_page_keys if str(key)})
+    decision: dict[str, Any] = {
+        "eligible": False,
+        "mode": "narration_only_recompose",
+        "target_page_keys": target_keys,
+        "fallback_reasons": [],
+        "pages": {},
+        "artifacts_by_page_key": {},
+        "classification": None,
+        "plan": None,
+    }
+
+    def add_fallback(reason: str) -> None:
+        reasons = decision["fallback_reasons"]
+        if reason not in reasons:
+            reasons.append(reason)
+
+    if not target_keys:
+        add_fallback("target_page_keys_empty")
+        return decision
+    if not previous_playback_assets:
+        add_fallback("old_playback_assets_missing")
+        return decision
+
+    old_manifest = previous_playback_assets.get("partial_render_manifest")
+    if not _is_partial_render_manifest_available(old_manifest):
+        add_fallback("old_manifest_missing_or_invalid")
+        return decision
+
+    if _avatar_artifact_required_for_visual_recompose(avatar_options):
+        add_fallback("avatar_enabled_narration_only_deferred")
+
+    try:
+        expected_manifest = build_expected_partial_render_manifest(
+            project_id=project_id,
+            job_id=job_id,
+            slides=_slides_with_previous_segment_timing(slides, previous_playback_assets),
+            previous_playback_assets=previous_playback_assets,
+            tts_settings=tts_settings,
+            avatar_options=avatar_options,
+        )
+        classification = classify_partial_render_changes(
+            old_manifest=old_manifest,
+            expected_manifest=expected_manifest,
+            required_artifacts=(),
+        )
+        plan = build_partial_render_plan(classification)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Narration-only partial render planning failed project=%s", project_id, exc_info=True)
+        add_fallback(f"narration_only_plan_failed:{exc.__class__.__name__}")
+        return decision
+
+    eligibility = get_narration_only_recompose_eligibility(
+        classification_result=classification,
+        plan=plan,
+        target_page_keys=target_keys,
+    )
+    decision.update(
+        {
+            "eligible": bool(eligibility.get("eligible")),
+            "fallback_reasons": list(dict.fromkeys([*decision["fallback_reasons"], *list(eligibility.get("fallback_reasons") or [])])),
+            "pages": dict(eligibility.get("pages") or {}),
+            "classification": classification,
+            "plan": plan,
+        }
+    )
+    if not decision["eligible"]:
+        return decision
+
+    artifacts_by_key = _playback_artifacts_by_page_key(previous_playback_assets)
+    slides_by_key = {str(slide.get("page_key") or ""): slide for slide in slides if isinstance(slide, dict)}
+    checked_artifacts: dict[str, dict[str, str]] = {}
+    try:
+        from scripts.ffmpeg_helpers import get_audio_duration
+    except ImportError as exc:
+        add_fallback(f"duration_probe_unavailable:{exc.__class__.__name__}")
+        get_audio_duration = None
+
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        page_key = str(slide.get("page_key") or "")
+        if not page_key:
+            add_fallback("slide_page_key_missing")
+            continue
+        artifacts = dict(artifacts_by_key.get(page_key) or {})
+        page_report = dict(decision["pages"].get(page_key) or {})
+        page_fallbacks = list(page_report.get("fallback_reasons") or [])
+
+        def add_page_fallback(reason: str) -> None:
+            if reason not in page_fallbacks:
+                page_fallbacks.append(reason)
+            add_fallback(reason)
+
+        slide_image_abs = _resolve_existing_artifact_path(artifacts.get("slide_image"), storage_root=STORAGE_ROOT)
+        composed_abs = _resolve_existing_artifact_path(artifacts.get("composed_segment"), storage_root=STORAGE_ROOT)
+        audio_abs = _resolve_existing_artifact_path(artifacts.get("tts_audio"), storage_root=STORAGE_ROOT)
+        current_part_abs = _resolve_existing_artifact_path(slide.get("part_out"), storage_root=STORAGE_ROOT)
+        current_audio_abs = _resolve_existing_artifact_path(slide.get("audio_out"), storage_root=STORAGE_ROOT)
+        current_slide_abs = _resolve_existing_artifact_path(slide.get("image_path"), storage_root=STORAGE_ROOT)
+
+        if page_key in target_keys:
+            if slide_image_abs is None:
+                add_page_fallback("old_slide_image_missing")
+            if not str(slide.get("audio_out") or "").strip():
+                add_page_fallback("target_audio_out_missing")
+            if not str(slide.get("part_out") or "").strip():
+                add_page_fallback("target_part_out_missing")
+            checked_artifacts[page_key] = {
+                **artifacts,
+                "slide_image_abs_path": str(slide_image_abs or ""),
+            }
+        else:
+            if composed_abs is None:
+                add_page_fallback("old_composed_segment_missing")
+            if audio_abs is None:
+                add_page_fallback("old_tts_audio_missing")
+            if slide_image_abs is None:
+                add_page_fallback("old_slide_image_missing")
+            if current_part_abs is None:
+                add_page_fallback("unchanged_composed_segment_missing")
+            if current_audio_abs is None:
+                add_page_fallback("unchanged_tts_audio_missing")
+            if current_slide_abs is None:
+                add_page_fallback("unchanged_slide_image_missing")
+            if get_audio_duration is not None and current_audio_abs is not None:
+                try:
+                    duration = float(get_audio_duration(str(current_audio_abs)))
+                    if not _is_finite_number(duration) or duration <= 0:
+                        add_page_fallback("unchanged_duration_probe_failed")
+                except Exception:
+                    logger.warning(
+                        "Narration-only duration probe failed project=%s page_key=%s",
+                        project_id,
+                        page_key,
+                        exc_info=True,
+                    )
+                    add_page_fallback("unchanged_duration_probe_failed")
+
+        page_report["fallback_reasons"] = page_fallbacks
+        page_report["eligible"] = not page_fallbacks
+        decision["pages"][page_key] = page_report
+
+    for page_key in target_keys:
+        if page_key not in slides_by_key:
+            add_fallback("target_slide_missing")
 
     decision["artifacts_by_page_key"] = checked_artifacts
     decision["eligible"] = not decision["fallback_reasons"] and all(
@@ -7714,6 +7912,217 @@ def recompose_visual_only_slide_segment(
 
 @app.task(
     bind=True,
+    name="worker.tasks.recompose_narration_only_slide_segment",
+    max_retries=0,
+)
+def recompose_narration_only_slide_segment(
+    self,
+    slide_meta: dict[str, Any],
+    project_id: str,
+    voice_id: str,
+    pause_sec: float,
+    lang_hint: str,
+    tts_mode: str = "service",
+    avatar_options: dict[str, Any] | None = None,
+    tts_settings: dict[str, Any] | None = None,
+    narration_recompose_artifacts: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        from scripts.tts_client import synthesize_text_with_metadata
+        from scripts.ffmpeg_helpers import create_slide_video, get_audio_duration, trim_trailing_silence
+    except ImportError as exc:
+        raise RuntimeError(f"Pipeline scripts not importable - check PYTHONPATH. Error: {exc}") from exc
+
+    artifacts = dict(narration_recompose_artifacts or {})
+    slide_num = int(slide_meta.get("slide_num") or 0)
+    index = int(slide_meta.get("index") or 0)
+    audio_out = str(slide_meta.get("audio_out") or "")
+    part_out = str(slide_meta.get("part_out") or "")
+    cached_slide_image = str(artifacts.get("slide_image_abs_path") or "")
+    notes_text = str(slide_meta.get("notes_text") or "")
+    narration_text = str(slide_meta.get("narration_text") or notes_text)
+    raw_original_text = slide_meta.get("original_text") or notes_text
+    display_text = _split_consistent_display_text(slide_meta.get("display_text") or raw_original_text, narration_text)
+    original_text = display_text
+    subtitle_chunks = _subtitle_chunks_for_render(slide_meta.get("subtitle_chunks"), narration_text)
+    notes_text_prepared = str(narration_text or "").strip() or f"Slide {slide_num}."
+    audio_path = Path(audio_out) if audio_out else Path("")
+    part_path = Path(part_out) if part_out else Path("")
+    temp_audio_path = None
+    temp_part_path = None
+    backup_audio_path = None
+    backup_part_path = None
+
+    def update_progress(step: str) -> None:
+        try:
+            self.update_state(
+                state="PROGRESS",
+                meta={"step": step, "slide": slide_num, "project_id": project_id},
+            )
+        except ValueError:
+            logger.debug("Narration-only progress update skipped outside task request", exc_info=True)
+
+    try:
+        if not audio_out:
+            raise RuntimeError("narration_recompose_audio_out_missing")
+        if not part_out:
+            raise RuntimeError("narration_recompose_part_out_missing")
+        if not cached_slide_image or not Path(cached_slide_image).is_file():
+            raise RuntimeError("narration_recompose_slide_image_missing")
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        part_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_audio_path = audio_path.with_name(
+            f".{audio_path.stem}.narration-recompose.{os.getpid()}.{time.time_ns()}{audio_path.suffix}"
+        )
+        temp_part_path = part_path.with_name(
+            f".{part_path.stem}.narration-recompose.{os.getpid()}.{time.time_ns()}{part_path.suffix}"
+        )
+
+        update_progress("tts")
+        tts_meta = synthesize_text_with_metadata(
+            voice_id,
+            notes_text_prepared,
+            str(temp_audio_path),
+            mode=tts_mode,
+            lang=lang_hint,
+            tts_settings=tts_settings,
+        )
+        if WORKER_TRIM_TRAILING_SILENCE:
+            try:
+                trim_trailing_silence(str(temp_audio_path))
+            except Exception:
+                logger.warning(
+                    "Slide %d: narration-only trailing-silence trim failed, using original audio",
+                    slide_num,
+                    exc_info=True,
+                )
+
+        audio_duration = get_audio_duration(str(temp_audio_path))
+        total_duration = audio_duration + max(float(pause_sec), 0.0)
+        update_progress("render")
+        create_slide_video(cached_slide_image, str(temp_audio_path), str(temp_part_path), duration_sec=total_duration)
+        if not temp_part_path.is_file():
+            raise RuntimeError("narration_recompose_temp_output_missing")
+        if not temp_audio_path.is_file():
+            raise RuntimeError("narration_recompose_temp_audio_missing")
+
+        backup_audio_path = audio_path.with_name(
+            f".{audio_path.stem}.narration-recompose-backup.{os.getpid()}.{time.time_ns()}{audio_path.suffix}"
+        )
+        backup_part_path = part_path.with_name(
+            f".{part_path.stem}.narration-recompose-backup.{os.getpid()}.{time.time_ns()}{part_path.suffix}"
+        )
+        try:
+            if audio_path.exists():
+                audio_path.replace(backup_audio_path)
+            if part_path.exists():
+                part_path.replace(backup_part_path)
+            temp_audio_path.replace(audio_path)
+            temp_audio_path = None
+            temp_part_path.replace(part_path)
+            temp_part_path = None
+        except Exception:
+            for final_path in (audio_path, part_path):
+                with contextlib.suppress(FileNotFoundError):
+                    final_path.unlink()
+            if backup_audio_path is not None and backup_audio_path.exists():
+                backup_audio_path.replace(audio_path)
+            if backup_part_path is not None and backup_part_path.exists():
+                backup_part_path.replace(part_path)
+            raise
+        finally:
+            for backup_path in (backup_audio_path, backup_part_path):
+                if backup_path is not None:
+                    with contextlib.suppress(FileNotFoundError):
+                        backup_path.unlink()
+            backup_audio_path = None
+            backup_part_path = None
+
+        spoken_text = str(tts_meta.get("spoken_text") or notes_text_prepared)
+        tts_rules_applied = list(tts_meta.get("tts_normalization_rules_applied") or [])
+        tts_settings_summary = _summarize_tts_settings(tts_settings)
+        tts_applied_overrides = dict(
+            tts_meta.get("applied_overrides")
+            or tts_settings_summary.get("applied_overrides")
+            or {}
+        )
+        logger.info("Narration-only slide recomposed project=%s slide=%s part=%s", project_id, slide_num, part_out)
+        return {
+            "index": index,
+            "slide_num": slide_num,
+            "page_key": slide_meta.get("page_key"),
+            "narration_only_recomposed": True,
+            "source_slide_index": slide_meta.get("source_slide_index", index),
+            "split_index": slide_meta.get("split_index", 0),
+            "part_path": part_out,
+            "duration": total_duration,
+            "pause_seconds": max(float(pause_sec), 0.0),
+            "text": notes_text_prepared,
+            "original_text": original_text,
+            "display_text": display_text,
+            "spoken_text": spoken_text,
+            "tts_normalization_language": str(tts_meta.get("tts_normalization_language") or lang_hint),
+            "tts_normalization_rules_applied": tts_rules_applied,
+            "tts_provider": str(tts_meta.get("provider") or ""),
+            "tts_provider_preference": str(tts_meta.get("provider_preference") or tts_settings_summary.get("provider_preference") or "auto"),
+            "tts_normalization_enabled": tts_meta.get("normalization_enabled", tts_settings_summary.get("normalization_enabled")),
+            "tts_normalization_mode": str(tts_meta.get("normalization_mode") or tts_settings_summary.get("normalization_mode") or ""),
+            "tts_unknown_word_strategy": str(tts_meta.get("unknown_word_strategy") or tts_settings_summary.get("unknown_word_strategy") or ""),
+            "tts_applied_overrides": tts_applied_overrides,
+            "tts_fallback_used": bool(tts_meta.get("fallback_used", str(tts_meta.get("provider") or "").lower() in {"fallback", "local_fallback"})),
+            "tts_fallback_reason": str(tts_meta.get("fallback_reason") or tts_meta.get("message") or ""),
+            "tts_settings": tts_settings_summary,
+            "tts_preprocessing_warnings": list(tts_meta.get("preprocessing_warnings") or []),
+            "slide_path": cached_slide_image,
+            "tts_audio_path": audio_out,
+            "subtitle_chunks": subtitle_chunks or [notes_text_prepared],
+            "whiteboard_mode": bool(slide_meta.get("whiteboard_mode")),
+            "scene_background_mode": str(slide_meta.get("scene_background_mode") or ""),
+            "source_render_method": str(slide_meta.get("source_render_method") or ""),
+            "source_render_warnings": _warning_list_from_value(slide_meta.get("source_render_warnings")),
+            "source_render_details": _details_list_from_value(slide_meta.get("source_render_details")),
+            "source_render_dependency_report": dict(slide_meta.get("source_render_dependency_report") or {}),
+            "source_background_warnings": _warning_list_from_value(slide_meta.get("source_background_warnings")),
+            "source_background_details": _details_list_from_value(slide_meta.get("source_background_details")),
+            "avatar_applied": False,
+            "avatar_engine_used": "none",
+            "avatar_fallback_chain": [],
+            "avatar_segment_rel_path": "",
+            "avatar_attempted": False,
+            "avatar_skipped": False,
+            "avatar_failed": False,
+            "avatar_status": "none",
+            "avatar_error": "",
+            "avatar_warning": "",
+            "avatar_failure_reason": "",
+            "avatar_motion_validation": {},
+        }
+    except Exception as exc:  # noqa: BLE001
+        for candidate in (temp_audio_path, temp_part_path):
+            if candidate is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    candidate.unlink()
+        for backup_path in (backup_audio_path, backup_part_path):
+            if backup_path is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    backup_path.unlink()
+        logger.warning(
+            "Narration-only recomposition failed; falling back to slide render project=%s slide=%s error=%s",
+            project_id,
+            slide_num,
+            _concise_error_text(exc, fallback="narration_recompose_failed"),
+            exc_info=True,
+        )
+        fallback_result = synthesize_and_render_slide.apply(
+            args=[slide_meta, project_id, voice_id, pause_sec, lang_hint, tts_mode, avatar_options, tts_settings]
+        )
+        if fallback_result.failed():
+            raise RuntimeError(_concise_error_text(fallback_result.result, fallback="narration_recompose_fallback_failed"))
+        return fallback_result.result
+
+
+@app.task(
+    bind=True,
     name="worker.tasks.synthesize_and_render_slide",
     max_retries=2,
     default_retry_delay=10,
@@ -8481,6 +8890,22 @@ def concat_and_finalize(
                 "plan": _partial_render_plan_failed_report(),
             }
 
+        narration_only_recomposed_pages = [
+            str(item.get("page_key") or "")
+            for item in ordered
+            if item.get("narration_only_recomposed") and str(item.get("page_key") or "")
+        ]
+        if narration_only_recomposed_pages:
+            playback_assets["narration_only_recomposed_count"] = len(narration_only_recomposed_pages)
+            playback_assets["narration_only_recomposed_pages"] = narration_only_recomposed_pages
+            if isinstance(playback_assets.get("partial_render_analysis"), dict):
+                playback_assets["partial_render_analysis"]["narration_only_recomposed_count"] = len(
+                    narration_only_recomposed_pages
+                )
+                playback_assets["partial_render_analysis"]["narration_only_recomposed_pages"] = list(
+                    narration_only_recomposed_pages
+                )
+
         if use_draft:
             try:
                 from core.models import Project
@@ -9039,6 +9464,7 @@ def process_pptx_to_video(
         base_avatar_cfg = dict(avatar_cfg)
         base_avatar_cfg["enabled"] = False
         visual_only_recompose_decision: dict[str, Any] = {"eligible": False, "fallback_reasons": []}
+        narration_only_recompose_decision: dict[str, Any] = {"eligible": False, "fallback_reasons": []}
         if rerender_set:
             previous_playback_assets = _read_playback_sidecar(project_id)
             visual_only_recompose_decision = _build_visual_only_recompose_runtime_decision(
@@ -9064,6 +9490,29 @@ def process_pptx_to_video(
                     render_job_id,
                     ",".join(list(visual_only_recompose_decision.get("fallback_reasons") or [])),
                 )
+                narration_only_recompose_decision = _build_narration_only_recompose_runtime_decision(
+                    project_id=project_id,
+                    job_id=render_job_id,
+                    slides=slides,
+                    rerender_page_keys=rerender_set,
+                    previous_playback_assets=previous_playback_assets,
+                    tts_settings=tts_settings,
+                    avatar_options=avatar_cfg,
+                )
+                if narration_only_recompose_decision.get("eligible"):
+                    logger.info(
+                        "Narration-only partial recomposition enabled project=%s job_id=%s targets=%s",
+                        project_id,
+                        render_job_id,
+                        ",".join(list(narration_only_recompose_decision.get("target_page_keys") or [])),
+                    )
+                else:
+                    logger.info(
+                        "Narration-only partial recomposition skipped project=%s job_id=%s reasons=%s",
+                        project_id,
+                        render_job_id,
+                        ",".join(list(narration_only_recompose_decision.get("fallback_reasons") or [])),
+                    )
 
         def _slide_render_signature(slide: dict[str, Any]):
             errback = mark_project_render_failed.s(project_id, render_job_id).set(queue=pipeline_queue)
@@ -9072,6 +9521,21 @@ def process_pptx_to_video(
                 artifacts_by_key = visual_only_recompose_decision.get("artifacts_by_page_key")
                 artifacts = dict(artifacts_by_key.get(page_key) or {}) if isinstance(artifacts_by_key, dict) else {}
                 return recompose_visual_only_slide_segment.s(
+                    slide,
+                    project_id,
+                    voice_id,
+                    pause_sec,
+                    resolved_lang,
+                    tts_mode,
+                    base_avatar_cfg,
+                    tts_settings,
+                    artifacts,
+                ).set(queue=pipeline_queue, link_error=errback)
+            if narration_only_recompose_decision.get("eligible"):
+                page_key = str(slide.get("page_key") or "")
+                artifacts_by_key = narration_only_recompose_decision.get("artifacts_by_page_key")
+                artifacts = dict(artifacts_by_key.get(page_key) or {}) if isinstance(artifacts_by_key, dict) else {}
+                return recompose_narration_only_slide_segment.s(
                     slide,
                     project_id,
                     voice_id,

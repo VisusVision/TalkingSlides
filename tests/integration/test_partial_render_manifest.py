@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import django
 import pytest
@@ -31,6 +32,7 @@ from worker.partial_render_manifest import (  # noqa: E402
     build_partial_render_plan,
     classify_partial_render_changes,
     canonical_json,
+    get_narration_only_recompose_eligibility,
     get_visual_only_recompose_eligibility,
     normalize_text,
     stable_hash,
@@ -609,6 +611,52 @@ def test_visual_only_recompose_eligibility_rejects_non_visual_classifications(cl
     assert "target_page_action_not_visual_only" in report["fallback_reasons"]
 
 
+def test_narration_only_recompose_eligibility_allows_target_tts_only_with_unchanged_non_targets():
+    classification = _classification_result(
+        _classification_page(
+            page_key="s1-p1",
+            classification="narration_text_changed",
+            reasons=["narration_text_changed", "subtitle_text_changed", "tts_input_changed", "avatar_input_changed"],
+        ),
+        _classification_page(
+            page_key="s2-p1",
+            classification="unchanged",
+            reasons=[],
+            index=1,
+        ),
+    )
+    plan = build_partial_render_plan(classification)
+
+    report = get_narration_only_recompose_eligibility(
+        classification_result=classification,
+        plan=plan,
+        target_page_keys={"s1-p1"},
+    )
+
+    assert report["eligible"] is True
+    assert report["mode"] == "narration_only_recompose"
+    assert report["fallback_reasons"] == []
+    assert report["pages"]["s1-p1"]["recommended_action"] == "rerun_tts_avatar_future"
+    assert report["pages"]["s2-p1"]["recommended_action"] == "reuse_all"
+
+    mixed_non_target = deepcopy(classification)
+    mixed_non_target["pages"]["s2-p1"] = _classification_page(
+        page_key="s2-p1",
+        classification="tts_settings_changed",
+        reasons=["tts_settings_changed"],
+        index=1,
+    )
+    mixed_report = get_narration_only_recompose_eligibility(
+        classification_result=mixed_non_target,
+        plan=build_partial_render_plan(mixed_non_target),
+        target_page_keys={"s1-p1"},
+    )
+
+    assert mixed_report["eligible"] is False
+    assert mixed_report["pages"]["s2-p1"]["eligible"] is False
+    assert "non_target_page_changed" in mixed_report["fallback_reasons"]
+
+
 def test_expected_manifest_builder_uses_new_slide_inputs_and_reuses_artifacts_by_page_key_only():
     previous_playback_assets = {
         "final_segments": [
@@ -842,6 +890,243 @@ def test_visual_only_recompose_missing_audio_falls_back_without_success_marker(t
     assert calls["args"][1] == "42"
 
 
+def test_narration_only_recompose_regenerates_tts_and_reuses_cached_slide_image(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers, tts_client
+
+    project_dir = tmp_path / "42"
+    image_path = project_dir / "images" / "slide_001.png"
+    audio_path = project_dir / "audio" / "slide_001.mp3"
+    part_path = project_dir / "parts" / "part_001.mp4"
+    for path, payload in (
+        (image_path, b"cached-image"),
+        (audio_path, b"old-audio"),
+        (part_path, b"old-part"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    calls: dict[str, Any] = {}
+
+    def fail_fallback(*_args, **_kwargs):
+        raise AssertionError("narration-only recomposition must not call full slide render")
+
+    def fail_visual_render(*_args, **_kwargs):
+        raise AssertionError("narration-only recomposition must not render visuals")
+
+    def fake_synthesize(_voice_id, text, output_path, **kwargs):
+        calls["tts_text"] = text
+        calls["tts_output"] = output_path
+        calls["tts_settings"] = kwargs.get("tts_settings")
+        Path(output_path).write_bytes(b"new-audio")
+        return {
+            "spoken_text": text,
+            "provider": "fake",
+            "provider_preference": "gtts",
+            "tts_normalization_language": "en",
+        }
+
+    def fake_create_slide_video(image_arg, audio_arg, output_arg, **kwargs):
+        calls["image"] = image_arg
+        calls["audio"] = audio_arg
+        calls["output"] = output_arg
+        calls["duration_sec"] = kwargs.get("duration_sec")
+        assert Path(audio_arg).read_bytes() == b"new-audio"
+        Path(output_arg).write_bytes(b"new-part")
+
+    monkeypatch.setattr(worker_tasks.synthesize_and_render_slide, "apply", fail_fallback)
+    monkeypatch.setattr(worker_tasks, "_render_visual_only_slide_image", fail_visual_render)
+    monkeypatch.setattr(tts_client, "synthesize_text_with_metadata", fake_synthesize)
+    monkeypatch.setattr(ffmpeg_helpers, "create_slide_video", fake_create_slide_video)
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 4.0)
+    monkeypatch.setattr(ffmpeg_helpers, "trim_trailing_silence", lambda _path: None)
+    monkeypatch.setattr(worker_tasks, "WORKER_TRIM_TRAILING_SILENCE", True)
+
+    result = worker_tasks.recompose_narration_only_slide_segment.run(
+        {
+            "index": 0,
+            "slide_num": 1,
+            "page_key": "s1-p1",
+            "part_out": str(part_path),
+            "audio_out": str(audio_path),
+            "source_slide_index": 0,
+            "split_index": 0,
+            "narration_text": "New narration",
+            "display_text": "Visible unchanged",
+            "subtitle_chunks": ["New narration"],
+        },
+        "42",
+        "voice",
+        0.5,
+        "en",
+        "service",
+        {"enabled": False},
+        {"provider_preference": "gtts"},
+        {"slide_image_abs_path": str(image_path)},
+    )
+
+    assert calls["tts_text"] == "New narration"
+    assert calls["image"] == str(image_path)
+    assert calls["duration_sec"] == 4.5
+    assert audio_path.read_bytes() == b"new-audio"
+    assert part_path.read_bytes() == b"new-part"
+    assert result["narration_only_recomposed"] is True
+    assert result["slide_path"] == str(image_path)
+    assert result["tts_audio_path"] == str(audio_path)
+    assert result["duration"] == 4.5
+    assert result["avatar_status"] == "none"
+    assert list(audio_path.parent.glob("*.narration-recompose.*")) == []
+    assert list(part_path.parent.glob("*.narration-recompose.*")) == []
+
+
+def test_narration_only_recompose_failure_keeps_outputs_and_falls_back(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers, tts_client
+
+    project_dir = tmp_path / "42"
+    image_path = project_dir / "images" / "slide_001.png"
+    audio_path = project_dir / "audio" / "slide_001.mp3"
+    part_path = project_dir / "parts" / "part_001.mp4"
+    for path, payload in (
+        (image_path, b"cached-image"),
+        (audio_path, b"old-audio"),
+        (part_path, b"old-part"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    class FakeFallbackResult:
+        result = {
+            "index": 0,
+            "page_key": "s1-p1",
+            "part_path": str(part_path),
+            "tts_provider": "gtts",
+        }
+
+        def failed(self):
+            return False
+
+    calls: dict[str, Any] = {}
+
+    def fake_synthesize(_voice_id, _text, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"temp-audio")
+        return {"provider": "fake"}
+
+    def fail_create_slide_video(*_args, **_kwargs):
+        raise RuntimeError("compose failed")
+
+    def fake_fallback_apply(*, args):
+        calls["fallback_args"] = args
+        return FakeFallbackResult()
+
+    monkeypatch.setattr(tts_client, "synthesize_text_with_metadata", fake_synthesize)
+    monkeypatch.setattr(ffmpeg_helpers, "create_slide_video", fail_create_slide_video)
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 4.0)
+    monkeypatch.setattr(ffmpeg_helpers, "trim_trailing_silence", lambda _path: None)
+    monkeypatch.setattr(worker_tasks.synthesize_and_render_slide, "apply", fake_fallback_apply)
+
+    result = worker_tasks.recompose_narration_only_slide_segment.run(
+        {
+            "index": 0,
+            "slide_num": 1,
+            "page_key": "s1-p1",
+            "part_out": str(part_path),
+            "audio_out": str(audio_path),
+            "narration_text": "New narration",
+            "display_text": "Visible unchanged",
+        },
+        "42",
+        "voice",
+        0.5,
+        "en",
+        "service",
+        {"enabled": False},
+        {"provider_preference": "gtts"},
+        {"slide_image_abs_path": str(image_path)},
+    )
+
+    assert result["tts_provider"] == "gtts"
+    assert "narration_only_recomposed" not in result
+    assert calls["fallback_args"][1] == "42"
+    assert audio_path.read_bytes() == b"old-audio"
+    assert part_path.read_bytes() == b"old-part"
+    assert list(audio_path.parent.glob("*.narration-recompose.*")) == []
+    assert list(part_path.parent.glob("*.narration-recompose.*")) == []
+
+
+def test_narration_only_recompose_promotion_failure_restores_outputs_and_falls_back(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers, tts_client
+
+    project_dir = tmp_path / "42"
+    image_path = project_dir / "images" / "slide_001.png"
+    audio_path = project_dir / "audio" / "slide_001.mp3"
+    part_path = project_dir / "parts" / "part_001.mp4"
+    for path, payload in (
+        (image_path, b"cached-image"),
+        (audio_path, b"old-audio"),
+        (part_path, b"old-part"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+    class FakeFallbackResult:
+        result = {
+            "index": 0,
+            "page_key": "s1-p1",
+            "part_path": str(part_path),
+            "tts_provider": "gtts",
+        }
+
+        def failed(self):
+            return False
+
+    def fake_synthesize(_voice_id, _text, output_path, **_kwargs):
+        Path(output_path).write_bytes(b"new-audio")
+        return {"provider": "fake"}
+
+    def fake_create_slide_video(_image_arg, _audio_arg, output_arg, **_kwargs):
+        Path(output_arg).write_bytes(b"new-part")
+
+    original_replace = Path.replace
+
+    def fail_part_promotion(self, target):
+        if self.name.startswith(".part_001.narration-recompose."):
+            raise OSError("part promotion failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(tts_client, "synthesize_text_with_metadata", fake_synthesize)
+    monkeypatch.setattr(ffmpeg_helpers, "create_slide_video", fake_create_slide_video)
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 4.0)
+    monkeypatch.setattr(ffmpeg_helpers, "trim_trailing_silence", lambda _path: None)
+    monkeypatch.setattr(Path, "replace", fail_part_promotion)
+    monkeypatch.setattr(worker_tasks.synthesize_and_render_slide, "apply", lambda *, args: FakeFallbackResult())
+
+    result = worker_tasks.recompose_narration_only_slide_segment.run(
+        {
+            "index": 0,
+            "slide_num": 1,
+            "page_key": "s1-p1",
+            "part_out": str(part_path),
+            "audio_out": str(audio_path),
+            "narration_text": "New narration",
+            "display_text": "Visible unchanged",
+        },
+        "42",
+        "voice",
+        0.5,
+        "en",
+        "service",
+        {"enabled": False},
+        {"provider_preference": "gtts"},
+        {"slide_image_abs_path": str(image_path)},
+    )
+
+    assert result["tts_provider"] == "gtts"
+    assert "narration_only_recomposed" not in result
+    assert audio_path.read_bytes() == b"old-audio"
+    assert part_path.read_bytes() == b"old-part"
+    assert list(audio_path.parent.glob("*.narration-recompose*")) == []
+    assert list(part_path.parent.glob("*.narration-recompose*")) == []
+
+
 @pytest.mark.parametrize(
     ("changed_result_extra", "expected_skip"),
     [
@@ -983,6 +1268,67 @@ def _old_sidecar_for_visual_recompose(
     return playback_assets
 
 
+def _old_sidecar_for_results(
+    project_id: int,
+    old_results: list[dict],
+    *,
+    avatar_options: dict | None = None,
+) -> dict:
+    final_segments = []
+    tts_normalization = []
+    for old_result in old_results:
+        final_segments.append(
+            {
+                "index": int(old_result.get("index") or 0),
+                "page_key": str(old_result.get("page_key") or ""),
+                "transcript": str(old_result.get("text") or ""),
+                "tts_audio": str(old_result.get("tts_audio_path") or ""),
+                "avatar_clip": str(old_result.get("avatar_segment_rel_path") or ""),
+                "slide": str(old_result.get("slide_path") or ""),
+                "part_rel_path": str(old_result.get("part_path") or ""),
+                "duration": float(old_result.get("duration") or 0.0),
+                "pause_seconds": float(old_result.get("pause_seconds") or 0.0),
+                "source_render_method": str(old_result.get("source_render_method") or ""),
+                "source_render_dependency_report": dict(old_result.get("source_render_dependency_report") or {}),
+            }
+        )
+        tts_normalization.append(
+            {
+                "index": int(old_result.get("index") or 0),
+                "page_key": str(old_result.get("page_key") or ""),
+                "project_tts_settings": dict(old_result.get("tts_settings") or {}),
+            }
+        )
+    playback_assets = {
+        "final_segments": final_segments,
+        "tts_normalization": tts_normalization,
+        "slides": [str(result.get("slide_path") or "") for result in old_results],
+        "tts_audio": [str(result.get("tts_audio_path") or "") for result in old_results],
+        "avatar_clips": [str(result.get("avatar_segment_rel_path") or "") for result in old_results],
+    }
+    playback_assets["partial_render_manifest"] = build_partial_render_manifest(
+        project_id=project_id,
+        job_id=1,
+        ordered_results=old_results,
+        playback_assets=playback_assets,
+        avatar_options=avatar_options,
+    )
+    return playback_assets
+
+
+def _without_avatar(result: dict) -> dict:
+    result.update(
+        {
+            "avatar_segment_rel_path": "",
+            "avatar_attempted": False,
+            "avatar_applied": False,
+            "avatar_status": "none",
+            "avatar_engine_used": "none",
+        }
+    )
+    return result
+
+
 @pytest.mark.django_db
 def test_process_targeted_visual_only_dispatches_recompose_and_merge_callback(tmp_path, monkeypatch):
     owner = _make_user("visual_dispatch_owner")
@@ -1109,6 +1455,277 @@ def test_process_targeted_visual_only_avatar_requires_old_overlay_track(tmp_path
         "service",
         False,
         {"enabled": True, "requested": True, "teacher_id": owner.id},
+        ["s1-p1"],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+    )
+
+    assert result["status"] == "dispatched"
+    assert captured["header"][0].task == "worker.tasks.synthesize_and_render_slide"
+    assert captured["callback"].task == "worker.tasks.merge_and_finalize_segments"
+    assert captured["callback"].args[-1] is False
+
+
+@pytest.mark.django_db
+def test_process_targeted_narration_only_dispatches_recompose_and_merge_callback(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers
+
+    owner = _make_user("narration_dispatch_owner")
+    project = Project.objects.create(title="Narration dispatch", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    project_root = tmp_path / str(project.id)
+    audio_one = project_root / "audio" / "slide_001.mp3"
+    audio_two = project_root / "audio" / "slide_002.mp3"
+    part_one = project_root / "parts" / "part_001.mp4"
+    part_two = project_root / "parts" / "part_002.mp4"
+    image_one = project_root / "images" / "slide_001.png"
+    image_two = project_root / "images" / "slide_002.png"
+    for path in (audio_one, audio_two, part_one, part_two, image_one, image_two):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"artifact")
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 2.0)
+
+    old_first = _without_avatar(
+        _render_result(
+            index=0,
+            page_key="s1-p1",
+            display_text="Visible one",
+            narration_text="Narration one",
+            project_id=project.id,
+        )
+    )
+    old_second = _without_avatar(
+        _render_result(
+            index=1,
+            page_key="s2-p1",
+            display_text="Visible two",
+            narration_text="Narration two",
+            project_id=project.id,
+        )
+    )
+    old_first.update(
+        {
+            "part_path": f"{project.id}/parts/part_001.mp4",
+            "slide_path": f"{project.id}/images/slide_001.png",
+            "tts_audio_path": f"{project.id}/audio/slide_001.mp3",
+            "tts_settings": {"provider_preference": "gtts"},
+        }
+    )
+    old_second.update(
+        {
+            "part_path": f"{project.id}/parts/part_002.mp4",
+            "slide_path": f"{project.id}/images/slide_002.png",
+            "tts_audio_path": f"{project.id}/audio/slide_002.mp3",
+            "tts_settings": {"provider_preference": "gtts"},
+        }
+    )
+    current_first = {
+        **old_first,
+        "text": "Narration one updated",
+        "narration_text": "Narration one updated",
+        "notes_text": "Narration one updated",
+        "spoken_text": "Narration one updated",
+        "subtitle_chunks": ["Narration one updated"],
+        "audio_out": str(audio_one),
+        "part_out": str(part_one),
+        "image_path": str(image_one),
+    }
+    current_second = {
+        **old_second,
+        "audio_out": str(audio_two),
+        "part_out": str(part_two),
+        "image_path": str(image_two),
+    }
+    old_sidecar = _old_sidecar_for_results(
+        project.id,
+        [old_first, old_second],
+        avatar_options={"enabled": False, "requested": False, "composite_fallback_allowed": False},
+    )
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, [current_first, current_second], old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        ["s1-p1"],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+    )
+
+    assert result["status"] == "dispatched"
+    assert len(captured["header"]) == 1
+    assert captured["header"][0].task == "worker.tasks.recompose_narration_only_slide_segment"
+    assert captured["callback"].task == "worker.tasks.merge_and_finalize_segments"
+    assert captured["callback"].args[-1] is False
+    assert captured["header"][0].args[-1]["slide_image_abs_path"] == str(image_one.resolve())
+
+
+@pytest.mark.django_db
+def test_process_targeted_narration_only_missing_old_artifact_falls_back(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers
+
+    owner = _make_user("narration_missing_artifact_owner")
+    project = Project.objects.create(title="Narration missing artifact", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    project_root = tmp_path / str(project.id)
+    audio_path = project_root / "audio" / "slide_001.mp3"
+    part_path = project_root / "parts" / "part_001.mp4"
+    image_path = project_root / "images" / "slide_001.png"
+    for path in (audio_path, part_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"artifact")
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 2.0)
+
+    old_result = _without_avatar(
+        _render_result(
+            index=0,
+            page_key="s1-p1",
+            display_text="Visible",
+            narration_text="Narration",
+            project_id=project.id,
+        )
+    )
+    old_result.update(
+        {
+            "part_path": f"{project.id}/parts/part_001.mp4",
+            "slide_path": f"{project.id}/images/slide_001.png",
+            "tts_audio_path": f"{project.id}/audio/slide_001.mp3",
+            "tts_settings": {"provider_preference": "gtts"},
+        }
+    )
+    current_slide = {
+        **old_result,
+        "text": "Narration updated",
+        "narration_text": "Narration updated",
+        "spoken_text": "Narration updated",
+        "subtitle_chunks": ["Narration updated"],
+        "audio_out": str(audio_path),
+        "part_out": str(part_path),
+        "image_path": str(image_path),
+    }
+    old_sidecar = _old_sidecar_for_results(
+        project.id,
+        [old_result],
+        avatar_options={"enabled": False, "requested": False},
+    )
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, [current_slide], old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        ["s1-p1"],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+    )
+
+    assert result["status"] == "dispatched"
+    assert captured["header"][0].task == "worker.tasks.synthesize_and_render_slide"
+    assert captured["callback"].task == "worker.tasks.merge_and_finalize_segments"
+    assert captured["callback"].args[-1] is False
+
+
+@pytest.mark.parametrize(
+    ("username", "current_extra", "avatar_options"),
+    [
+        (
+            "narration_mixed_visual_owner",
+            {"display_text": "Visible updated", "original_text": "Visible updated"},
+            {"enabled": False, "requested": False},
+        ),
+        (
+            "narration_structural_owner",
+            {"page_id": 99999},
+            {"enabled": False, "requested": False},
+        ),
+        (
+            "narration_avatar_deferred_owner",
+            {},
+            {"enabled": True, "requested": True, "teacher_id": 123},
+        ),
+    ],
+)
+@pytest.mark.django_db
+def test_process_targeted_narration_only_unsafe_cases_use_existing_render_path(
+    tmp_path,
+    monkeypatch,
+    username,
+    current_extra,
+    avatar_options,
+):
+    from scripts import ffmpeg_helpers
+
+    owner = _make_user(username)
+    if avatar_options.get("teacher_id") == 123:
+        avatar_options = {**avatar_options, "teacher_id": owner.id}
+    project = Project.objects.create(title="Narration fallback", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    project_root = tmp_path / str(project.id)
+    audio_path = project_root / "audio" / "slide_001.mp3"
+    part_path = project_root / "parts" / "part_001.mp4"
+    image_path = project_root / "images" / "slide_001.png"
+    for path in (audio_path, part_path, image_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"artifact")
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 2.0)
+
+    old_result = _without_avatar(
+        _render_result(
+            index=0,
+            page_key="s1-p1",
+            display_text="Visible",
+            narration_text="Narration",
+            project_id=project.id,
+        )
+    )
+    old_result.update(
+        {
+            "part_path": f"{project.id}/parts/part_001.mp4",
+            "slide_path": f"{project.id}/images/slide_001.png",
+            "tts_audio_path": f"{project.id}/audio/slide_001.mp3",
+            "tts_settings": {"provider_preference": "gtts"},
+        }
+    )
+    current_slide = {
+        **old_result,
+        "text": "Narration updated",
+        "narration_text": "Narration updated",
+        "notes_text": "Narration updated",
+        "spoken_text": "Narration updated",
+        "subtitle_chunks": ["Narration updated"],
+        "audio_out": str(audio_path),
+        "part_out": str(part_path),
+        "image_path": str(image_path),
+        **current_extra,
+    }
+    old_sidecar = _old_sidecar_for_results(project.id, [old_result], avatar_options=avatar_options)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, [current_slide], old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        avatar_options,
         ["s1-p1"],
         {"provider_preference": "gtts"},
         job_id=job.id,
@@ -1381,6 +1998,136 @@ def test_finalize_adds_deterministic_partial_render_analysis_from_previous_manif
     assert analysis["plan"]["pages"]["s1-p1"]["future_only"] is True
     assert analysis["plan"]["pages"]["s1-p1"]["actual_behavior_changed"] is False
     assert analysis["plan"]["summary"]["recompose_visual_only_future"] == 1
+
+
+@pytest.mark.django_db
+def test_finalize_records_narration_only_recompose_and_shifts_later_subtitle_timestamps(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers
+
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("narration_finalize_owner")
+    project = Project.objects.create(title="Narration finalize lesson", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    project_root = tmp_path / str(project.id)
+    captured: dict[str, Any] = {"srt_cues": [], "vtt_cues": [], "hls": []}
+
+    def fake_generate_srt_from_cues(cues, output_path):
+        captured["srt_cues"] = list(cues)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("srt", encoding="utf-8")
+
+    def fake_generate_vtt_from_cues(cues, output_path):
+        captured["vtt_cues"] = list(cues)
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("vtt", encoding="utf-8")
+
+    def fake_package_hls_assets_for_playback(**kwargs):
+        captured["hls"].append(kwargs["final_video"])
+        return worker_tasks._hls_sidecar_payload(enabled=False, packaging_status="test_regenerated")
+
+    monkeypatch.setattr(ffmpeg_helpers, "generate_srt_from_cues", fake_generate_srt_from_cues)
+    monkeypatch.setattr(ffmpeg_helpers, "generate_vtt_from_cues", fake_generate_vtt_from_cues)
+    monkeypatch.setattr(worker_tasks, "_package_hls_assets_for_playback", fake_package_hls_assets_for_playback)
+
+    old_first = _without_avatar(
+        _render_result(
+            index=0,
+            page_key="s1-p1",
+            display_text="Visible one",
+            narration_text="Narration one",
+            project_id=project.id,
+        )
+    )
+    old_second = _without_avatar(
+        _render_result(
+            index=1,
+            page_key="s2-p1",
+            display_text="Visible two",
+            narration_text="Narration two",
+            project_id=project.id,
+        )
+    )
+    old_first.update(
+        {
+            "duration": 2.0,
+            "part_path": f"{project.id}/parts/part_001.mp4",
+            "slide_path": f"{project.id}/images/slide_001.png",
+            "tts_audio_path": f"{project.id}/audio/slide_001.mp3",
+        }
+    )
+    old_second.update(
+        {
+            "duration": 3.0,
+            "part_path": f"{project.id}/parts/part_002.mp4",
+            "slide_path": f"{project.id}/images/slide_002.png",
+            "tts_audio_path": f"{project.id}/audio/slide_002.mp3",
+        }
+    )
+    old_sidecar = _old_sidecar_for_results(
+        project.id,
+        [old_first, old_second],
+        avatar_options={"enabled": False, "requested": False},
+    )
+    sidecar_path = project_root / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(old_sidecar), encoding="utf-8")
+
+    for rel_path in (
+        "audio/slide_001.mp3",
+        "audio/slide_002.mp3",
+        "parts/part_001.mp4",
+        "parts/part_002.mp4",
+        "images/slide_001.png",
+        "images/slide_002.png",
+    ):
+        path = project_root / rel_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"artifact")
+
+    first_result = {
+        **old_first,
+        "text": "Narration one updated",
+        "narration_text": "Narration one updated",
+        "spoken_text": "Narration one updated",
+        "subtitle_chunks": ["Narration one updated"],
+        "duration": 5.0,
+        "narration_only_recomposed": True,
+        "part_path": str(project_root / "parts" / "part_001.mp4"),
+        "slide_path": str(project_root / "images" / "slide_001.png"),
+        "tts_audio_path": str(project_root / "audio" / "slide_001.mp3"),
+    }
+    second_result = {
+        **old_second,
+        "duration": 3.0,
+        "part_path": str(project_root / "parts" / "part_002.mp4"),
+        "slide_path": str(project_root / "images" / "slide_002.png"),
+        "tts_audio_path": str(project_root / "audio" / "slide_002.mp3"),
+    }
+
+    finalize_result = worker_tasks.concat_and_finalize.run(
+        [first_result, second_result],
+        str(project.id),
+        False,
+        {"enabled": False, "requested": False},
+        job.id,
+    )
+
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    second_cue = next(cue for cue in captured["srt_cues"] if cue["text"] == "Narration two")
+    assert finalize_result["result_url"] == f"{project.id}/{project.id}.mp4"
+    assert (project_root / f"{project.id}.mp4").is_file()
+    assert (project_root / f"{project.id}.srt").is_file()
+    assert (project_root / f"{project.id}.vtt").is_file()
+    assert captured["hls"] == [str(project_root / f"{project.id}.mp4")]
+    assert sidecar["hls"]["packaging_status"] == "test_regenerated"
+    assert sidecar["narration_only_recomposed_count"] == 1
+    assert sidecar["narration_only_recomposed_pages"] == ["s1-p1"]
+    assert sidecar["partial_render_analysis"]["narration_only_recomposed_count"] == 1
+    assert sidecar["partial_render_analysis"]["narration_only_recomposed_pages"] == ["s1-p1"]
+    assert sidecar["timeline"][0]["duration"] == 5.0
+    assert sidecar["timeline"][1]["start"] == 5.0
+    assert float(second_cue["start"]) >= 5.0
+    assert captured["vtt_cues"] == captured["srt_cues"]
 
 
 @pytest.mark.django_db
