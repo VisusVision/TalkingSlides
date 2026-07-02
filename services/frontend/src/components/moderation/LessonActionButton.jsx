@@ -11,13 +11,14 @@ import { isStaffOrAdmin } from '../../lib/auth';
 import { safeInternalReturnTo } from '../../utils/routeSession';
 import Button from '../ui/Button';
 import ModalShell from '../ui/ModalShell';
+import { useI18n } from '../../i18n/I18nProvider';
 
 const REPORT_CATEGORIES = [
-  { value: 'inappropriate_content', label: 'Inappropriate content' },
-  { value: 'wrong_information', label: 'Wrong information' },
-  { value: 'copyright', label: 'Copyright / ownership concern' },
-  { value: 'technical_problem', label: 'Technical problem' },
-  { value: 'other', label: 'Other' },
+  { value: 'inappropriate_content', labelKey: 'moderation.categories.inappropriateContent' },
+  { value: 'wrong_information', labelKey: 'moderation.categories.wrongInformation' },
+  { value: 'copyright', labelKey: 'moderation.categories.copyright' },
+  { value: 'technical_problem', labelKey: 'moderation.categories.technicalProblem' },
+  { value: 'other', labelKey: 'moderation.categories.other' },
 ];
 
 function joinClasses(...parts) {
@@ -54,6 +55,7 @@ export default function LessonActionButton({
   compact = false,
   className = '',
 }) {
+  const { t } = useI18n();
   const titleId = useId();
   const projectId = lessonIdFrom(lesson);
   const staff = isStaffOrAdmin(user);
@@ -69,8 +71,8 @@ export default function LessonActionButton({
   const [notice, setNotice] = useState('');
 
   const selectedCategoryLabel = useMemo(
-    () => REPORT_CATEGORIES.find((item) => item.value === category)?.label || 'Issue',
-    [category],
+    () => t(REPORT_CATEGORIES.find((item) => item.value === category)?.labelKey || 'moderation.issue'),
+    [category, t],
   );
 
   useEffect(() => {
@@ -109,10 +111,10 @@ export default function LessonActionButton({
     setNotice('');
     try {
       const payload = await reportLesson(projectId, { category, message });
-      setNotice(payload?.deduped ? 'Report already received.' : 'Report received.');
+      setNotice(payload?.deduped ? t('moderation.reportAlreadyReceived') : t('moderation.reportReceived'));
       if (typeof onCompleted === 'function') onCompleted(payload);
     } catch (reportError) {
-      setError(reportError.message || 'Could not submit report.');
+      setError(reportError.message || t('moderation.couldNotSubmitReport'));
     } finally {
       setBusyAction('');
     }
@@ -135,10 +137,10 @@ export default function LessonActionButton({
           unpublish: unpublishOnChange,
         });
       }
-      setNotice(payload?.message || 'Moderation action saved.');
+      setNotice(payload?.message || t('moderation.actionSaved'));
       if (typeof onCompleted === 'function') onCompleted(payload);
     } catch (adminError) {
-      setError(adminError.message || 'Could not update moderation state.');
+      setError(adminError.message || t('moderation.couldNotUpdateState'));
     } finally {
       setBusyAction('');
     }
@@ -148,8 +150,8 @@ export default function LessonActionButton({
     <>
       <button
         type="button"
-        aria-label={staff ? 'Open moderation actions' : 'Report lesson issue'}
-        title={staff ? 'Moderation actions' : 'Report lesson issue'}
+        aria-label={staff ? t('moderation.openActions') : t('moderation.reportIssue')}
+        title={staff ? t('moderation.actions') : t('moderation.reportIssue')}
         onClick={handleOpen}
         onMouseDown={(event) => event.stopPropagation()}
         className={joinClasses(
@@ -163,8 +165,8 @@ export default function LessonActionButton({
 
       <ModalShell
         open={open}
-        eyebrow={staff ? 'Staff moderation' : selectedCategoryLabel}
-        title={staff ? lessonTitle : 'Report lesson'}
+        eyebrow={staff ? t('moderation.staffModeration') : selectedCategoryLabel}
+        title={staff ? lessonTitle : t('moderation.reportLesson')}
         titleId={titleId}
         onClose={closeModal}
         closeDisabled={Boolean(busyAction)}
@@ -184,12 +186,12 @@ export default function LessonActionButton({
         {staff ? (
           <div className="space-y-4">
             <label className="block text-sm font-medium text-[var(--text-secondary)]">
-              Publisher note
+              {t('moderation.publisherNote')}
               <textarea
                 value={adminReason}
                 onChange={(event) => setAdminReason(event.target.value)}
                 maxLength={4000}
-                placeholder="Add a concise moderation note..."
+                placeholder={t('moderation.addModerationNote')}
                 className="focus-ring mt-2 min-h-[112px] w-full resize-y rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]"
               />
             </label>
@@ -201,7 +203,7 @@ export default function LessonActionButton({
                 onChange={(event) => setUnpublishOnChange(event.target.checked)}
                 className="mt-1 h-4 w-4 rounded border-[var(--border-subtle)]"
               />
-              <span>Unpublish when requesting changes</span>
+              <span>{t('moderation.unpublishWhenRequestingChanges')}</span>
             </label>
 
             <div className="grid gap-2 sm:grid-cols-3">
@@ -213,7 +215,7 @@ export default function LessonActionButton({
                 fullWidth
               >
                 <XCircle size={14} />
-                <span>{busyAction === 'block' ? 'Blocking...' : 'Block'}</span>
+                <span>{busyAction === 'block' ? t('moderation.blocking') : t('moderation.block')}</span>
               </Button>
               <Button
                 size="sm"
@@ -223,7 +225,7 @@ export default function LessonActionButton({
                 fullWidth
               >
                 <Flag size={14} />
-                <span>{busyAction === 'request_changes' ? 'Saving...' : 'Request changes'}</span>
+                <span>{busyAction === 'request_changes' ? t('moderation.saving') : t('moderation.requestChanges')}</span>
               </Button>
               <Button
                 size="sm"
@@ -232,7 +234,7 @@ export default function LessonActionButton({
                 fullWidth
               >
                 <CheckCircle2 size={14} />
-                <span>{busyAction === 'approve' ? 'Approving...' : 'Approve'}</span>
+                <span>{busyAction === 'approve' ? t('moderation.approving') : t('moderation.approve')}</span>
               </Button>
             </div>
 
@@ -242,42 +244,42 @@ export default function LessonActionButton({
               onClick={closeModal}
             >
               <ExternalLink size={14} />
-              <span>Open moderation detail</span>
+              <span>{t('moderation.openDetail')}</span>
             </Link>
           </div>
         ) : (
           <form className="space-y-4" onSubmit={submitReport}>
             <label className="block text-sm font-medium text-[var(--text-secondary)]">
-              Category
+              {t('moderation.category')}
               <select
                 value={category}
                 onChange={(event) => setCategory(event.target.value)}
                 className="focus-ring mt-2 h-11 w-full rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
               >
                 {REPORT_CATEGORIES.map((item) => (
-                  <option key={item.value} value={item.value}>{item.label}</option>
+                  <option key={item.value} value={item.value}>{t(item.labelKey)}</option>
                 ))}
               </select>
             </label>
 
             <label className="block text-sm font-medium text-[var(--text-secondary)]">
-              Message
+              {t('moderation.message')}
               <textarea
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 maxLength={2000}
-                placeholder="Add context for the moderation team..."
+                placeholder={t('moderation.addReportContext')}
                 className="focus-ring mt-2 min-h-[112px] w-full resize-y rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)]"
               />
             </label>
 
             <div className="flex flex-wrap justify-end gap-2">
               <Button size="sm" variant="ghost" onClick={closeModal} disabled={Boolean(busyAction)}>
-                Cancel
+                {t('common.cancel')}
               </Button>
               <Button size="sm" type="submit" disabled={Boolean(busyAction)}>
                 <Flag size={14} />
-                <span>{busyAction === 'report' ? 'Submitting...' : 'Submit report'}</span>
+                <span>{busyAction === 'report' ? t('moderation.submitting') : t('moderation.submitReport')}</span>
               </Button>
             </div>
           </form>

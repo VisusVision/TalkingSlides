@@ -7,8 +7,17 @@ import {
 } from '../../api';
 import Button from './Button';
 import SurfaceCard from './SurfaceCard';
+import { useI18n } from '../../i18n/I18nProvider';
+
+function localizedAuthError(message, t) {
+  const normalized = String(message || '').trim().toLowerCase();
+  if (normalized.includes('username and password')) return t('auth.missingCredentials');
+  if (normalized.includes('invalid credentials')) return t('auth.invalidCredentials');
+  return message || t('auth.signInFailed');
+}
 
 export default function AuthModal({ open, onClose, onLoginSuccess }) {
+  const { t } = useI18n();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -41,7 +50,7 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
       setUsername('');
       setPassword('');
     } catch (err) {
-      setError(err.message || 'Sign-in failed.');
+      setError(localizedAuthError(err.message, t));
     } finally {
       setLoading(false);
     }
@@ -51,11 +60,11 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
     try {
       const data = await startGoogleRedirectFlow();
       if (!data?.authorization_url) {
-        throw new Error('Google redirect flow is unavailable.');
+        throw new Error(t('auth.googleUnavailable'));
       }
       window.location.href = data.authorization_url;
     } catch (err) {
-      setError(err.message || 'Google sign-in failed.');
+      setError(err.message || t('auth.googleFailed'));
     }
   };
 
@@ -66,14 +75,14 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
           type="button"
           onClick={onClose}
           className="focus-ring absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[color:var(--surface-muted)]"
-          aria-label="Close sign in"
+          aria-label={t('auth.closeSignIn')}
         >
           <X size={16} />
         </button>
 
-        <p className="label-sm">Welcome Back</p>
-        <h2 className="headline-md mt-2 text-[var(--text-primary)]">Continue Learning</h2>
-        <p className="body-md mt-2">Sign in to open your teaching studio, sync progress, and publish lessons.</p>
+        <p className="label-sm">{t('auth.welcomeBack')}</p>
+        <h2 className="headline-md mt-2 text-[var(--text-primary)]">{t('auth.continueLearning')}</h2>
+        <p className="body-md mt-2">{t('auth.intro')}</p>
 
         {canUseGoogle && (
           <Button
@@ -92,13 +101,13 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
               <path fill="#FBBC04" d="M136.6 331.1c-9.3-27.6-9.3-57.1 0-84.7V183.6H55.3c-41.9 84.7-41.9 184.0 0 268.7L136.6 331.1z" />
               <path fill="#EA4335" d="M272 107.7c36.8 0 70 12.9 96.2 34.4l72.1-72.1C391.4 26 334.8 0 272 0 176.4 0 95.1 64.8 55.3 156.3L136.6 219c19.1-57.5 72.4-100.1 135.4-100.1z" />
             </svg>
-            <span>Continue with Google</span>
+            <span>{t('auth.continueWithGoogle')}</span>
           </Button>
         )}
 
         <form className="mt-5 space-y-3" onSubmit={handleSubmit}>
           <label className="block text-sm text-[var(--text-secondary)]">
-            Username
+            {t('auth.username')}
             <input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
@@ -109,7 +118,7 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
           </label>
 
           <label className="block text-sm text-[var(--text-secondary)]">
-            Password
+            {t('auth.password')}
             <input
               value={password}
               onChange={(event) => setPassword(event.target.value)}
@@ -125,7 +134,7 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
 
           <Button className="w-full" type="submit" disabled={loading}>
             <LogIn size={16} />
-            <span>{loading ? 'Signing in...' : 'Sign In'}</span>
+            <span>{loading ? t('auth.signingIn') : t('auth.signIn')}</span>
           </Button>
         </form>
       </SurfaceCard>

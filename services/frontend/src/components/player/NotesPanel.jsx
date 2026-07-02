@@ -1,6 +1,7 @@
 import { CheckCircle2, ChevronDown, NotebookPen } from 'lucide-react';
 import Button from '../ui/Button';
 import SurfaceCard from '../ui/SurfaceCard';
+import { useI18n } from '../../i18n/I18nProvider';
 
 export default function NotesPanel({
   notes,
@@ -13,12 +14,14 @@ export default function NotesPanel({
   collapsed = false,
   onToggle,
 }) {
+  const { t } = useI18n();
+
   return (
     <SurfaceCard className="space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="label-sm">Study Notes</p>
-          <h2 className="title-lg mt-1 text-[var(--text-primary)]">Personal Notebook</h2>
+          <p className="label-sm">{t('watch.studyNotes')}</p>
+          <h2 className="title-lg mt-1 text-[var(--text-primary)]">{t('watch.personalNotebook')}</h2>
         </div>
         <div className="flex items-center gap-2">
           <NotebookPen size={17} className="text-[var(--text-secondary)]" />
@@ -27,7 +30,7 @@ export default function NotesPanel({
               type="button"
               onClick={onToggle}
               className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full token-surface text-[var(--text-secondary)]"
-              aria-label={collapsed ? 'Expand study notes' : 'Collapse study notes'}
+              aria-label={collapsed ? t('watch.expandStudyNotes') : t('watch.collapseStudyNotes')}
             >
               <ChevronDown
                 size={15}
@@ -44,7 +47,7 @@ export default function NotesPanel({
             <textarea
               value={notes}
               onChange={(event) => onNotesChange(event.target.value)}
-              placeholder="Capture ideas, definitions, and questions while watching..."
+              placeholder={t('watch.notesPlaceholder')}
               className="focus-ring min-h-[220px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[color:var(--surface-elevated)] p-3 text-sm leading-relaxed text-[var(--text-primary)]"
             />
           </div>
@@ -52,8 +55,8 @@ export default function NotesPanel({
           <div className="flex items-center justify-between gap-2">
             <p className="inline-flex items-center gap-1 text-xs text-[var(--text-secondary)]">
               <CheckCircle2 size={13} />
-              {savedAtLabel || 'Auto-saved locally'}
-              {unsaved ? ' - unsaved changes' : ''}
+              {savedAtLabel || t('watch.autoSavedLocally')}
+              {unsaved ? ` - ${t('watch.unsavedChanges')}` : ''}
             </p>
             <Button size="sm" onClick={onSave}>
               {saveActionLabel}
@@ -70,7 +73,7 @@ export default function NotesPanel({
 
       {collapsed && (
         <p className="text-xs text-[var(--text-secondary)]">
-          Notes are collapsed. Expand to continue editing your draft.
+          {t('watch.notesCollapsed')}
         </p>
       )}
     </SurfaceCard>

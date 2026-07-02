@@ -16,10 +16,12 @@ import {
 } from 'lucide-react';
 import Button from '../components/ui/Button';
 import PublicProfileEditor from '../components/profile/PublicProfileEditor';
+import LanguageSelector from '../components/ui/LanguageSelector';
 import ModalShell from '../components/ui/ModalShell';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { useTheme } from '../components/ui/ThemeProvider';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { useI18n } from '../i18n/I18nProvider';
 import {
   API_BASE_URL,
   deleteAvatarPreview,
@@ -340,6 +342,7 @@ function AvatarActionCard({ title, caption, icon: Icon, onClick }) {
 }
 
 function AvatarSetupChecklist({ items }) {
+  const { t } = useI18n();
   return (
     <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
       {items.map((item) => (
@@ -353,7 +356,7 @@ function AvatarSetupChecklist({ items }) {
         >
           <span className="font-medium">{item.label}</span>
           <span className="shrink-0 text-[0.68rem] uppercase tracking-normal">
-            {item.complete ? 'Done' : 'Pending'}
+            {item.complete ? t('common.done') : t('common.pending')}
           </span>
         </li>
       ))}
@@ -367,6 +370,7 @@ function AvatarConsentControls({
   onEnabledChange,
   disabled = false,
 }) {
+  const { t } = useI18n();
   return (
     <div className="grid gap-3 md:grid-cols-2">
       <label className="flex items-start gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-3 text-sm text-[var(--text-secondary)]">
@@ -378,9 +382,9 @@ function AvatarConsentControls({
           className="mt-1"
         />
         <span>
-          <span className="block font-semibold text-[var(--text-primary)]">Explicit avatar consent</span>
+          <span className="block font-semibold text-[var(--text-primary)]">{t('avatar.explicitConsent')}</span>
           <span className="mt-1 block text-xs leading-5">
-            I confirm I have permission to use this image and voice for avatar generation.
+            {t('avatar.explicitConsentCaption')}
           </span>
         </span>
       </label>
@@ -394,9 +398,9 @@ function AvatarConsentControls({
           className="mt-1"
         />
         <span>
-          <span className="block font-semibold text-[var(--text-primary)]">Avatar generation enabled</span>
+          <span className="block font-semibold text-[var(--text-primary)]">{t('avatar.generationEnabled')}</span>
           <span className="mt-1 block text-xs leading-5">
-            Allow preview generation after consent, portrait, and voice are ready.
+            {t('avatar.generationEnabledCaption')}
           </span>
         </span>
       </label>
@@ -461,6 +465,7 @@ function SettingsSection({
 }
 
 export default function Settings({ user, onUserRefresh }) {
+  const { t } = useI18n();
   const { resolvedTheme, setMode } = useTheme();
   const { capabilities } = useCapabilities();
   const storedSettingsState = useMemo(() => readRouteSessionState('settings', user), [user]);
@@ -718,11 +723,11 @@ export default function Settings({ user, onUserRefresh }) {
       },
       {
         label: 'Local TTS',
-        value: localTts.enabled ? 'Enabled' : localTtsStatus === 'fallback' ? 'Fallback' : 'Fallback',
+        value: localTts.enabled ? t('settings.enabled') : localTtsStatus === 'fallback' ? 'Fallback' : 'Fallback',
         enabled: Boolean(localTts.enabled),
       },
     ];
-  }, [capabilities]);
+  }, [capabilities, t]);
 
   const avatarSetupStatus = useMemo(() => {
     const normalized = normalizeAvatarSetupStatus(avatarProfilePayload || {});
@@ -756,11 +761,11 @@ export default function Settings({ user, onUserRefresh }) {
       ...normalized,
       state,
       checklist,
-      message: AVATAR_STATUS_MESSAGES[state] || normalized.message,
+      message: t(`avatar.${state === 'missing_consent' ? 'missingConsent' : state === 'missing_portrait' ? 'missingPortrait' : state === 'missing_voice' ? 'missingVoice' : state === 'needs_prepare' ? 'needsPrepare' : state}`) || AVATAR_STATUS_MESSAGES[state] || normalized.message,
       primary_action_label: state === 'failed'
-        ? 'Re-prepare avatar'
+        ? t('avatar.prepareAvatar')
         : state === 'needs_prepare'
-          ? (normalized.state === 'needs_prepare' ? normalized.primary_action_label : 'Prepare avatar')
+          ? t('avatar.prepareAvatar')
           : normalized.primary_action_label,
       can_prepare: canPrepare,
       can_generate_preview: Boolean(
@@ -774,9 +779,32 @@ export default function Settings({ user, onUserRefresh }) {
     avatarProfilePayload,
     avatarSettings.avatar_consent_confirmed,
     avatarSettings.avatar_enabled,
+    t,
   ]);
-  const avatarChecklist = useMemo(() => avatarChecklistItems(avatarSetupStatus), [avatarSetupStatus]);
-  const prepareAvatarButtonLabel = avatarSetupStatus.primary_action_label || (avatarSetupStatus.state === 'failed' ? 'Re-prepare avatar' : 'Prepare avatar');
+  const avatarChecklist = useMemo(() => {
+    const labelKeys = {
+      portrait_uploaded: 'avatar.checklistPortrait',
+      voice_uploaded: 'avatar.checklistVoice',
+      consent_confirmed: 'avatar.checklistConsent',
+      avatar_generation_enabled: 'avatar.checklistEnabled',
+      avatar_prepared: 'avatar.checklistPrepared',
+    };
+    return avatarChecklistItems(avatarSetupStatus).map((item) => ({
+      ...item,
+      label: t(labelKeys[item.key] || item.label),
+    }));
+  }, [avatarSetupStatus, t]);
+  const voiceRecorderStatusLabel = useMemo(() => {
+    const statusKeys = {
+      idle: 'avatar.recorderStatuses.idle',
+      recording: 'avatar.recorderStatuses.recording',
+      recorded: 'avatar.recorderStatuses.recorded',
+      error: 'avatar.recorderStatuses.error',
+      'requesting permission': 'avatar.recorderStatuses.requestingPermission',
+    };
+    return t(statusKeys[voiceRecorderStatus] || 'avatar.recorderStatuses.idle');
+  }, [t, voiceRecorderStatus]);
+  const prepareAvatarButtonLabel = avatarSetupStatus.primary_action_label || t('avatar.prepareAvatar');
 
   const loadAvatarProfile = useCallback(async () => {
     if (!avatarFeatureEnabled || !teacherMode || !user?.id) {
@@ -930,7 +958,7 @@ export default function Settings({ user, onUserRefresh }) {
       }
     }
     noteKeys.forEach((key) => window.localStorage.removeItem(key));
-    setLocalDataMessage(noteKeys.length ? 'Local notes cleared for this browser.' : 'No local notes were stored in this browser.');
+    setLocalDataMessage(noteKeys.length ? t('settings.localNotesCleared') : t('settings.noLocalNotes'));
   };
 
   const handleAvatarConsentChange = (checked) => {
@@ -955,7 +983,7 @@ export default function Settings({ user, onUserRefresh }) {
       await action();
       setTeacherMessage(successMessage);
     } catch (error) {
-      setTeacherMessage(error.message || 'Action failed.');
+      setTeacherMessage(error.message || t('common.error'));
     } finally {
       setTeacherBusy(false);
     }
@@ -1198,13 +1226,13 @@ export default function Settings({ user, onUserRefresh }) {
     await runTeacherAction(async () => {
       await uploadVoiceSample(user.id, voiceFile);
       await loadAvatarProfile();
-    }, 'Voice sample uploaded.');
+    }, t('avatar.voiceSampleUploaded'));
   };
 
   const handleUploadVisualSample = async () => {
     if (!avatarFeatureEnabled || !user?.id || (!imageFile && !videoFile)) return;
     if (!avatarSettings.avatar_consent_confirmed) {
-      setTeacherMessage('Confirm avatar consent before uploading a portrait.');
+      setTeacherMessage(t('avatar.confirmBeforePortrait'));
       return;
     }
 
@@ -1216,7 +1244,7 @@ export default function Settings({ user, onUserRefresh }) {
       }
       await loadAvatarProfile();
       await refreshSessionUser();
-    }, 'Avatar source sample uploaded.');
+    }, t('avatar.sourceSampleUploaded'));
   };
 
   const handleSaveTeacherDefaults = async () => {
@@ -1226,13 +1254,13 @@ export default function Settings({ user, onUserRefresh }) {
       await updateAvatarProfile(user.id, avatarSettings);
       await loadAvatarProfile();
       await refreshSessionUser();
-    }, 'Avatar settings saved.');
+    }, t('avatar.settingsSaved'));
   };
 
   const handlePrepareAvatar = async () => {
     if (!avatarFeatureEnabled || !user?.id) return;
     if (!avatarSetupStatus.can_prepare) {
-      setTeacherMessage(avatarSetupStatus.message || 'Complete avatar setup before preparing.');
+      setTeacherMessage(avatarSetupStatus.message || t('avatar.needsPrepare'));
       return;
     }
 
@@ -1244,13 +1272,13 @@ export default function Settings({ user, onUserRefresh }) {
         force_reprocess: avatarSetupStatus.needs_prepare || avatarSetupStatus.state === 'failed',
       });
       await loadAvatarProfile();
-    }, 'Avatar prep completed.');
+    }, t('avatar.prepCompleted'));
   };
 
   const handleGeneratePreview = async () => {
     if (!avatarFeatureEnabled || !user?.id) return;
     if (!avatarSetupStatus.can_generate_preview) {
-      setTeacherMessage(avatarSetupStatus.message || 'Prepare avatar before generating a preview.');
+      setTeacherMessage(avatarSetupStatus.message || t('avatar.needsPrepare'));
       return;
     }
 
@@ -1258,7 +1286,7 @@ export default function Settings({ user, onUserRefresh }) {
       const queued = await regenerateAvatarPreview(user.id);
       setPreviewJobId(String(queued?.job_id || ''));
       setPreviewStatusLabel('queued');
-    }, 'Avatar preview queued.');
+    }, t('avatar.previewQueued'));
   };
 
   const handleDeletePreview = async () => {
@@ -1269,7 +1297,7 @@ export default function Settings({ user, onUserRefresh }) {
       setPreviewVideoUrl('');
       setPreviewStatusLabel('deleted');
       await loadAvatarProfile();
-    }, 'Avatar preview removed.');
+    }, t('avatar.previewRemoved'));
   };
 
   const closeAvatarModal = () => {
@@ -1280,10 +1308,10 @@ export default function Settings({ user, onUserRefresh }) {
     <div className="space-y-5">
       <section className="layout-grid-12">
         <SurfaceCard elevated className="lg:col-span-12">
-          <p className="label-sm">Settings</p>
-          <h1 className="display-lg mt-2 text-[var(--text-primary)]">Workspace preferences</h1>
+          <p className="label-sm">{t('settings.title')}</p>
+          <h1 className="display-lg mt-2 text-[var(--text-primary)]">{t('settings.workspacePreferences')}</h1>
           <p className="body-md mt-3 max-w-2xl">
-            Manage account details, public profile text, playback accessibility, and deployment feature visibility.
+            {t('settings.subtitle')}
           </p>
         </SurfaceCard>
       </section>
@@ -1293,9 +1321,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="theme"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Account/Profile"
-          title="Theme mode"
-          caption="Theme choice is stored locally and applied across the workspace."
+          eyebrow={t('settings.themeEyebrow')}
+          title={t('settings.themeTitle')}
+          caption={t('settings.themeCaption')}
           icon={activeTheme === 'dark' ? MoonStar : Sun}
         >
           <div className="inline-flex rounded-full bg-[var(--surface-container-high)] p-1">
@@ -1315,7 +1343,7 @@ export default function Settings({ user, onUserRefresh }) {
                   }`}
                 >
                   <Icon size={15} />
-                  <span>{option.title}</span>
+                  <span>{option.id === 'dark' ? t('settings.dark') : t('settings.light')}</span>
                 </button>
               );
             })}
@@ -1324,19 +1352,31 @@ export default function Settings({ user, onUserRefresh }) {
           <div className="space-y-2 text-sm text-[var(--text-secondary)]">
             {THEME_OPTIONS.map((option) => (
               <p key={option.id}>
-                <span className="font-semibold text-[var(--text-primary)]">{option.title}:</span> {option.caption}
+                <span className="font-semibold text-[var(--text-primary)]">{option.id === 'dark' ? t('settings.dark') : t('settings.light')}:</span> {option.id === 'dark' ? t('settings.darkCaption') : t('settings.lightCaption')}
               </p>
             ))}
           </div>
         </SettingsSection>
 
         <SettingsSection
+          sectionId="language"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
+          eyebrow={t('settings.languageEyebrow')}
+          title={t('settings.languageTitle')}
+          caption={t('settings.languageCaption')}
+          icon={MonitorPlay}
+        >
+          <LanguageSelector />
+        </SettingsSection>
+
+        <SettingsSection
           sectionId="public-profile"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Publisher/Public Profile"
-          title="Public profile"
-          caption="Customize the public channel page shown to visitors."
+          eyebrow={t('settings.publicProfileEyebrow')}
+          title={t('settings.publicProfileTitle')}
+          caption={t('settings.publicProfileCaption')}
           icon={UserCircle2}
           className="md:col-span-2 2xl:col-span-1"
         >
@@ -1363,23 +1403,23 @@ export default function Settings({ user, onUserRefresh }) {
                         ? 'bg-[var(--status-success-bg)] text-[var(--status-success-fg)]'
                         : 'bg-[var(--surface-container-highest)] text-[var(--text-secondary)]'
                     }`}>
-                      {profileDraft.is_public_profile ? 'Public' : 'Private'}
+                      {profileDraft.is_public_profile ? t('settings.public') : t('settings.private')}
                     </span>
                     <p className="mt-2 truncate text-sm font-semibold text-[var(--text-primary)]">{publicDisplayName}</p>
                     <p className="text-xs text-[var(--text-secondary)]">
-                      {profileDraft.website_url || 'No website set'}
+                      {profileDraft.website_url || t('settings.noWebsiteSet')}
                     </p>
                   </div>
                 </div>
                 <Button size="sm" variant="secondary" onClick={openPublicProfileEditor} disabled={!user}>
                   <UserCircle2 size={15} />
-                  <span>Edit</span>
+                  <span>{t('settings.editPublicProfile')}</span>
                 </Button>
               </div>
             </div>
 
             {!user && (
-              <p className="text-sm text-[var(--text-secondary)]">Sign in to edit your public profile.</p>
+              <p className="text-sm text-[var(--text-secondary)]">{t('settings.signInEditPublicProfile')}</p>
             )}
             {profileMessage && (
               <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{profileMessage}</p>
@@ -1394,9 +1434,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="motion"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Playback/Accessibility"
-          title="Playback & accessibility"
-          caption="Tune watch playback flow and interface motion for this browser."
+          eyebrow={t('settings.playbackEyebrow')}
+          title={t('settings.playbackTitle')}
+          caption={t('settings.playbackCaption')}
           icon={MonitorPlay}
         >
           <div className="space-y-3">
@@ -1408,9 +1448,9 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Continue to next lesson</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{t('settings.continueNextTitle')}</span>
                 <span className="mt-1 block text-xs leading-5">
-                  Show the countdown prompt and continue when another lesson is available.
+                  {t('settings.continueNextCaption')}
                 </span>
               </span>
             </label>
@@ -1423,9 +1463,9 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Reduce UI Motion</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{t('settings.reducedMotionTitle')}</span>
                 <span className="mt-1 block text-xs leading-5">
-                  Reduces interface animations and UI motion. Does not affect generated avatar videos.
+                  {t('settings.reducedMotionCaption')}
                 </span>
               </span>
             </label>
@@ -1436,9 +1476,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="notifications"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="In-App Notifications"
-          title="Notification preferences"
-          caption="Stored in this browser for the notification center."
+          eyebrow={t('settings.notificationsEyebrow')}
+          title={t('settings.notificationsTitle')}
+          caption={t('settings.notificationsCaption')}
           icon={Bell}
         >
           <div className="space-y-3">
@@ -1450,8 +1490,8 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Comments on my lessons</span>
-                <span className="mt-1 block text-xs">Notify me about comments on lessons I publish.</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{t('settings.commentsOnLessons')}</span>
+                <span className="mt-1 block text-xs">{t('settings.commentsOnLessonsCaption')}</span>
               </span>
             </label>
 
@@ -1463,8 +1503,8 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Render status changes</span>
-                <span className="mt-1 block text-xs">Notify me when lesson or avatar renders finish or fail.</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{t('settings.renderUpdates')}</span>
+                <span className="mt-1 block text-xs">{t('settings.renderUpdatesCaption')}</span>
               </span>
             </label>
 
@@ -1476,8 +1516,8 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Followed publisher lessons</span>
-                <span className="mt-1 block text-xs">Notify me when publishers I follow post public lessons.</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{t('settings.followedPublisherLessons')}</span>
+                <span className="mt-1 block text-xs">{t('settings.followedPublisherLessonsCaption')}</span>
               </span>
             </label>
           </div>
@@ -1487,14 +1527,14 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="local-data"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Browser Data"
-          title="Local notes"
-          caption="This removes saved watch notes from this browser only."
+          eyebrow={t('settings.browserDataEyebrow')}
+          title={t('settings.browserDataTitle')}
+          caption={t('settings.browserDataCaption')}
           icon={Trash2}
         >
           <Button variant="secondary" onClick={clearLocalNotes}>
             <Trash2 size={15} />
-            <span>Clear Local Notes</span>
+            <span>{t('settings.clearLocalNotes')}</span>
           </Button>
 
           {localDataMessage && (
@@ -1506,9 +1546,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="system-features"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Deployment"
-          title="System features"
-          caption="Read-only capabilities reported by this deployment."
+          eyebrow={t('settings.deploymentEyebrow')}
+          title={t('settings.systemFeaturesTitle')}
+          caption={t('settings.systemFeaturesCaption')}
           icon={MonitorPlay}
         >
           <div className="grid gap-2 sm:grid-cols-2">
@@ -1535,31 +1575,31 @@ export default function Settings({ user, onUserRefresh }) {
             sectionId="avatar"
             openState={settingsOpenSections}
             onOpenStateChange={updateSettingsSectionOpen}
-            eyebrow="Avatar Preferences"
-            title="Voice and avatar samples"
-            caption="Advanced avatar controls are collapsed by default and remain separate from UI motion preferences."
+            eyebrow={t('avatar.preferences')}
+            title={t('avatar.sectionTitle')}
+            caption={t('avatar.sectionCaption')}
             icon={Sparkles}
             className="md:col-span-2 2xl:col-span-3"
             contentClassName="space-y-4"
           >
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
               <AvatarActionCard
-                title="Voice Sample"
-                caption="Upload one audio sample and preview it locally before saving."
+                title={t('avatar.voiceSample')}
+                caption={t('avatar.voiceSampleCaption')}
                 icon={Upload}
                 onClick={() => setAvatarModal('voice')}
               />
 
               <AvatarActionCard
-                title="Picture Or Video Sample"
-                caption="Upload an image or short video source and preview before submit."
+                title={t('avatar.pictureVideoSample')}
+                caption={t('avatar.pictureVideoSampleCaption')}
                 icon={UserCircle2}
                 onClick={() => setAvatarModal('media')}
               />
 
               <AvatarActionCard
-                title="Avatar Preview"
-                caption="Prepare profile, queue preview, and monitor render state."
+                title={t('avatar.preview')}
+                caption={t('avatar.previewCaption')}
                 icon={Sparkles}
                 onClick={() => setAvatarModal('preview')}
               />
@@ -1580,7 +1620,7 @@ export default function Settings({ user, onUserRefresh }) {
                 <div className="flex flex-wrap gap-2">
                   <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
                     <Save size={15} />
-                    <span>Save Avatar Settings</span>
+                    <span>{t('avatar.saveSettings')}</span>
                   </Button>
                   {avatarSetupStatus.can_prepare && (
                     <Button onClick={handlePrepareAvatar} disabled={teacherBusy}>
@@ -1591,7 +1631,7 @@ export default function Settings({ user, onUserRefresh }) {
                   {avatarSetupStatus.can_generate_preview && (
                     <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
                       <Sparkles size={15} />
-                      <span>Generate Preview</span>
+                      <span>{t('avatar.generatePreview')}</span>
                     </Button>
                   )}
                 </div>
@@ -1609,7 +1649,7 @@ export default function Settings({ user, onUserRefresh }) {
 
       <PublicProfileEditor
         open={profileEditorOpen}
-        title="Edit public profile"
+        title={t('settings.editPublicProfile')}
         titleId="settings-public-profile-editor-title"
         draft={profileEditDraft}
         displayNamePreview={profileEditorDisplayName}
@@ -1626,17 +1666,17 @@ export default function Settings({ user, onUserRefresh }) {
         saving={profileSaving}
         disabled={!user}
         saveDisabled={profileHasValidationErrors}
-        cancelLabel={profileEditorDirty ? 'Discard' : 'Cancel'}
+        cancelLabel={profileEditorDirty ? t('common.discard') : t('common.cancel')}
         canBackdropClose={!profileEditorDirty}
         formId="settings-public-profile-editor-form"
       />
 
       <ModalShell
         open={avatarFeatureEnabled && avatarModal === 'voice'}
-        eyebrow="Avatar Preferences"
-        title="Voice sample"
+        eyebrow={t('avatar.preferences')}
+        title={t('avatar.voiceModalTitle')}
         titleId="avatar-voice-modal-title"
-        closeLabel="Close voice sample"
+        closeLabel={t('avatar.closeVoiceSample')}
         onClose={closeAvatarModal}
         closeDisabled={teacherBusy || voiceRecorderStatus === 'recording'}
         canBackdropClose={!voiceFile && voiceRecorderStatus !== 'recording' && !recordedVoiceBlob}
@@ -1644,14 +1684,14 @@ export default function Settings({ user, onUserRefresh }) {
         footer={(
           <div className="flex justify-end">
             <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
-              <span>{voiceFile || recordedVoiceBlob ? 'Discard and close' : 'Close'}</span>
+              <span>{voiceFile || recordedVoiceBlob ? t('avatar.discardAndClose') : t('common.close')}</span>
             </Button>
           </div>
         )}
       >
         <div className="space-y-4">
           <label className="block text-sm text-[var(--text-secondary)]">
-            Voice audio
+            {t('avatar.voiceAudio')}
             <input
               type="file"
               accept="audio/*"
@@ -1663,9 +1703,9 @@ export default function Settings({ user, onUserRefresh }) {
           <div className="space-y-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold text-[var(--text-primary)]">Record from microphone</p>
+                <p className="text-sm font-semibold text-[var(--text-primary)]">{t('avatar.recordFromMicrophone')}</p>
                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                  Status: {voiceRecorderStatus}. Duration: {formatRecordingDuration(voiceRecordingDuration)}
+                  {t('avatar.recorderStatus', { status: voiceRecorderStatusLabel, duration: formatRecordingDuration(voiceRecordingDuration) })}
                 </p>
               </div>
               <Mic size={18} className="text-[var(--accent-primary)]" />
@@ -1694,12 +1734,12 @@ export default function Settings({ user, onUserRefresh }) {
                   disabled={teacherBusy || voiceRecorderStatus === 'requesting permission'}
                 >
                   <Mic size={15} />
-                  <span>{voiceRecorderStatus === 'requesting permission' ? 'Requesting...' : 'Start recording'}</span>
+                  <span>{voiceRecorderStatus === 'requesting permission' ? t('common.requesting') : t('avatar.startRecording')}</span>
                 </Button>
               ) : (
                 <Button variant="secondary" size="sm" onClick={handleStopVoiceRecording} disabled={teacherBusy}>
                   <Square size={15} />
-                  <span>Stop recording</span>
+                  <span>{t('avatar.stopRecording')}</span>
                 </Button>
               )}
 
@@ -1710,7 +1750,7 @@ export default function Settings({ user, onUserRefresh }) {
                 disabled={!recordedVoiceBlob || voiceRecorderStatus === 'recording'}
               >
                 <Play size={15} />
-                <span>Play preview</span>
+                <span>{t('avatar.playPreview')}</span>
               </Button>
 
               <Button
@@ -1720,7 +1760,7 @@ export default function Settings({ user, onUserRefresh }) {
                 disabled={!recordedVoiceBlob || voiceRecorderStatus === 'recording'}
               >
                 <Upload size={15} />
-                <span>Use recording</span>
+                <span>{t('avatar.useRecording')}</span>
               </Button>
 
               <Button
@@ -1730,7 +1770,7 @@ export default function Settings({ user, onUserRefresh }) {
                 disabled={teacherBusy || (!recordedVoiceBlob && voiceRecorderStatus !== 'recording' && voiceRecorderStatus !== 'error')}
               >
                 <Trash2 size={15} />
-                <span>Discard recording</span>
+                <span>{t('avatar.discardRecording')}</span>
               </Button>
             </div>
           </div>
@@ -1741,17 +1781,17 @@ export default function Settings({ user, onUserRefresh }) {
 
           <Button onClick={handleUploadVoice} disabled={teacherBusy || !voiceFile}>
             <Upload size={15} />
-            <span>{teacherBusy ? 'Uploading...' : 'Upload Voice Sample'}</span>
+            <span>{teacherBusy ? t('common.uploading') : t('avatar.uploadVoiceSample')}</span>
           </Button>
         </div>
       </ModalShell>
 
       <ModalShell
         open={avatarFeatureEnabled && avatarModal === 'media'}
-        eyebrow="Avatar Preferences"
-        title="Avatar image or video"
+        eyebrow={t('avatar.preferences')}
+        title={t('avatar.mediaModalTitle')}
         titleId="avatar-media-modal-title"
-        closeLabel="Close avatar image or video upload"
+        closeLabel={t('avatar.closeMediaModal')}
         onClose={closeAvatarModal}
         closeDisabled={teacherBusy}
         canBackdropClose={!imageFile && !videoFile}
@@ -1759,7 +1799,7 @@ export default function Settings({ user, onUserRefresh }) {
         footer={(
           <div className="flex justify-end">
             <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
-              <span>{imageFile || videoFile ? 'Discard and close' : 'Close'}</span>
+              <span>{imageFile || videoFile ? t('avatar.discardAndClose') : t('common.close')}</span>
             </Button>
           </div>
         )}
@@ -1767,7 +1807,7 @@ export default function Settings({ user, onUserRefresh }) {
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm text-[var(--text-secondary)]">
-              Portrait image
+              {t('avatar.portraitImage')}
               <input
                 type="file"
                 accept="image/*"
@@ -1777,7 +1817,7 @@ export default function Settings({ user, onUserRefresh }) {
             </label>
 
             <label className="block text-sm text-[var(--text-secondary)]">
-              Portrait video
+              {t('avatar.portraitVideo')}
               <input
                 type="file"
                 accept="video/*"
@@ -1796,14 +1836,14 @@ export default function Settings({ user, onUserRefresh }) {
 
           {!avatarSettings.avatar_consent_confirmed && (
             <p className="rounded-xl bg-[var(--status-warning-bg)] px-3 py-2 text-sm text-[var(--status-warning-fg)]">
-              Confirm avatar consent before uploading a portrait.
+              {t('avatar.confirmBeforePortrait')}
             </p>
           )}
 
           {mediaPreviewUrl && mediaPreviewType === 'image' && (
             <img
               src={mediaPreviewUrl}
-              alt="Uploaded avatar sample"
+              alt={t('avatar.uploadedAvatarSampleAlt')}
               className="max-h-56 w-full rounded-2xl object-cover token-surface"
             />
           )}
@@ -1818,24 +1858,24 @@ export default function Settings({ user, onUserRefresh }) {
 
           <Button onClick={handleUploadVisualSample} disabled={teacherBusy || !avatarSettings.avatar_consent_confirmed || (!imageFile && !videoFile)}>
             <Upload size={15} />
-            <span>{teacherBusy ? 'Uploading...' : 'Upload Visual Sample'}</span>
+            <span>{teacherBusy ? t('common.uploading') : t('avatar.uploadVisualSample')}</span>
           </Button>
         </div>
       </ModalShell>
 
       <ModalShell
         open={avatarFeatureEnabled && avatarModal === 'preview'}
-        eyebrow="Avatar Preferences"
-        title="Avatar preview"
+        eyebrow={t('avatar.preferences')}
+        title={t('avatar.previewModalTitle')}
         titleId="avatar-preview-modal-title"
-        closeLabel="Close avatar preview"
+        closeLabel={t('avatar.closePreview')}
         onClose={closeAvatarModal}
         closeDisabled={teacherBusy}
         maxWidthClass="max-w-2xl"
         footer={(
           <div className="flex justify-end">
             <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
-              <span>Close</span>
+              <span>{t('common.close')}</span>
             </Button>
           </div>
         )}
@@ -1851,28 +1891,28 @@ export default function Settings({ user, onUserRefresh }) {
 
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm text-[var(--text-secondary)]">
-              Motion preset
+              {t('avatar.motionPreset')}
               <select
                 value={avatarSettings.avatar_motion_preset}
                 onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_motion_preset: event.target.value }))}
                 className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
               >
-                <option value="natural">Natural</option>
-                <option value="expressive">Expressive</option>
-                <option value="calm">Calm</option>
+                <option value="natural">{t('avatar.natural')}</option>
+                <option value="expressive">{t('avatar.expressive')}</option>
+                <option value="calm">{t('avatar.calm')}</option>
               </select>
             </label>
 
             <label className="block text-sm text-[var(--text-secondary)]">
-              Quality preset
+              {t('avatar.qualityPreset')}
               <select
                 value={avatarSettings.avatar_quality_preset}
                 onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_quality_preset: event.target.value }))}
                 className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
               >
-                <option value="high">High</option>
-                <option value="balanced">Balanced</option>
-                <option value="fast">Fast</option>
+                <option value="high">{t('avatar.high')}</option>
+                <option value="balanced">{t('avatar.balanced')}</option>
+                <option value="fast">{t('avatar.fast')}</option>
               </select>
             </label>
           </div>
@@ -1888,13 +1928,13 @@ export default function Settings({ user, onUserRefresh }) {
                 }));
               }}
             />
-            <span>Allow composite fallback for preview preparation</span>
+            <span>{t('avatar.compositeFallback')}</span>
           </label>
 
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
               <Save size={15} />
-              <span>Save Avatar Settings</span>
+              <span>{t('avatar.saveSettings')}</span>
             </Button>
             {avatarSetupStatus.state !== 'ready' && (
               <Button onClick={handlePrepareAvatar} disabled={teacherBusy || !avatarSetupStatus.can_prepare}>
@@ -1904,17 +1944,17 @@ export default function Settings({ user, onUserRefresh }) {
             )}
             <Button onClick={handleGeneratePreview} disabled={teacherBusy || !avatarSetupStatus.can_generate_preview}>
               <Sparkles size={15} />
-              <span>Generate Preview</span>
+              <span>{t('avatar.generatePreview')}</span>
             </Button>
             <Button variant="ghost" onClick={handleDeletePreview} disabled={teacherBusy}>
               <Trash2 size={15} />
-              <span>Delete Preview</span>
+              <span>{t('avatar.deletePreview')}</span>
             </Button>
           </div>
 
           <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
             <p>
-              Preview status: <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
+              {t('avatar.previewStatus')} <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
             </p>
             <p className="mt-1 text-xs">{avatarSetupStatus.message}</p>
           </div>

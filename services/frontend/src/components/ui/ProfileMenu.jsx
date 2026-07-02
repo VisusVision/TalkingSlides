@@ -4,17 +4,19 @@ import { Link } from 'react-router-dom';
 import { fetchAuthenticatedMediaBlobUrl } from '../../api';
 import { displayNameFromUser, initialsFromUser, profilePhotoFromUser } from '../../utils/profileIdentity';
 import Button from './Button';
+import { useI18n } from '../../i18n/I18nProvider';
 
-function userRoleLabel(user) {
+function userRoleLabel(user, t) {
   const roleRaw = String(user?.profile?.role || user?.role || '').trim().toLowerCase();
-  if (!roleRaw) return 'Student';
-  if (roleRaw === 'teacher' || roleRaw === 'publisher') return 'Publisher';
-  if (roleRaw === 'student') return 'Student';
-  if (roleRaw === 'admin') return 'Admin';
+  if (!roleRaw) return t('auth.student');
+  if (roleRaw === 'teacher' || roleRaw === 'publisher') return t('auth.publisher');
+  if (roleRaw === 'student') return t('auth.student');
+  if (roleRaw === 'admin') return t('auth.admin');
   return roleRaw.charAt(0).toUpperCase() + roleRaw.slice(1);
 }
 
 export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogout }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [uploadedAvatarUrl, setUploadedAvatarUrl] = useState('');
   const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
@@ -77,7 +79,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
   if (authLoading) {
     return (
       <Button variant="secondary" size="sm" disabled>
-        <span>Syncing...</span>
+        <span>{t('auth.syncing')}</span>
       </Button>
     );
   }
@@ -86,16 +88,16 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
     return (
       <Button variant="secondary" size="sm" onClick={onLoginRequest}>
         <LogIn size={16} />
-        <span>Sign In</span>
+        <span>{t('auth.signIn')}</span>
       </Button>
     );
   }
 
   const displayName = displayNameFromUser(user);
-  const roleLabel = userRoleLabel(user);
+  const roleLabel = userRoleLabel(user, t);
   const visibleAvatarSrc = avatarLoadFailed ? '' : avatarSrc;
   const ownChannelPath = user?.id ? `/channel/${user.id}` : '/settings';
-  const ownChannelLabel = user?.id ? 'Open your channel' : 'Open account settings';
+  const ownChannelLabel = user?.id ? t('auth.openYourChannel') : t('auth.openAccountSettings');
 
   return (
     <div className="relative" ref={menuRef}>
@@ -104,7 +106,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           type="button"
           onClick={() => setOpen((prev) => !prev)}
           className="focus-ring hidden max-w-[11rem] text-right sm:flex sm:flex-col sm:items-end"
-          aria-label="Account menu"
+          aria-label={t('auth.accountMenu')}
           aria-expanded={open}
           aria-haspopup="menu"
         >
@@ -116,7 +118,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           type="button"
           onClick={() => setOpen((prev) => !prev)}
           className="focus-ring inline-flex h-10 w-10 items-center justify-center overflow-hidden rounded-full"
-          aria-label="Open account menu"
+          aria-label={t('auth.openAccountMenu')}
           aria-expanded={open}
           aria-haspopup="menu"
         >
@@ -150,7 +152,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
             className="focus-ring mb-2 block rounded-xl bg-[var(--surface-container-high)] px-3 py-2 transition hover:bg-[color:var(--hover-surface)]"
             onClick={() => setOpen(false)}
           >
-            <p className="label-sm">Your channel</p>
+            <p className="label-sm">{t('auth.yourChannel')}</p>
             <p className="mt-1 text-sm font-medium text-[var(--text-primary)]">{displayName}</p>
             <p className="mt-0.5 text-xs text-[var(--text-secondary)]">{roleLabel}</p>
           </Link>
@@ -162,7 +164,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
             onClick={() => setOpen(false)}
           >
             <BookOpen size={15} />
-            <span>Library</span>
+            <span>{t('common.library')}</span>
           </Link>
 
           <Link
@@ -172,7 +174,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
             onClick={() => setOpen(false)}
           >
             <SettingsIcon size={15} />
-            <span>Settings</span>
+            <span>{t('common.settings')}</span>
           </Link>
 
           <Link
@@ -182,7 +184,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
             onClick={() => setOpen(false)}
           >
             <CircleHelp size={15} />
-            <span>Help</span>
+            <span>{t('common.help')}</span>
           </Link>
 
           <button
@@ -195,7 +197,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
             }}
           >
             <LogOut size={15} />
-            <span>Sign Out</span>
+            <span>{t('auth.signOut')}</span>
           </button>
         </div>
       )}

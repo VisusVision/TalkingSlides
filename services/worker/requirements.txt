@@ -7,4 +7,4 @@ ffmpeg-python>=0.2
 requests>=2.31.0
 python-docx>=0.8
 PyMuPDF>=1.23
-opencv-python-headless>=4.10
+opencv-python-headless>=4.10,<5.0

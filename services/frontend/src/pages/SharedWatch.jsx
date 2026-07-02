@@ -6,6 +6,7 @@ import VideoStage from '../components/player/VideoStage';
 import UnavailableStage from '../components/player/UnavailableStage';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { PLAYER_MODES, resolvePlayerMode } from '../components/player/playerMode';
+import { useI18n } from '../i18n/I18nProvider';
 
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
 
@@ -20,6 +21,7 @@ function formatExpiresAt(value) {
 }
 
 export default function SharedWatch() {
+  const { t } = useI18n();
   const { token } = useParams();
   const videoRef = useRef(null);
   const [lesson, setLesson] = useState(null);
@@ -44,11 +46,12 @@ export default function SharedWatch() {
         if (!active) return;
         const reason = String(err?.reason || '').trim();
         if (reason === 'expired') {
-          setError('This share link has expired.');
+          setError(t('share.expired'));
         } else if (reason === 'revoked') {
-          setError('This share link has been revoked.');
+          setError(t('share.revoked'));
         } else {
-          setError(err.message || 'This share link is invalid.');
+          const message = String(err.message || '').trim();
+          setError(/share link/i.test(message) ? t('share.invalid') : message || t('share.invalid'));
         }
       })
       .finally(() => {
@@ -58,7 +61,7 @@ export default function SharedWatch() {
     return () => {
       active = false;
     };
-  }, [token]);
+  }, [t, token]);
 
   const playerCapabilities = useMemo(() => {
     if (typeof document === 'undefined') {
@@ -116,7 +119,7 @@ export default function SharedWatch() {
         <Suspense
           fallback={(
             <SurfaceCard elevated className="p-4 sm:p-5">
-              <p className="body-md">Loading secure player...</p>
+              <p className="body-md">{t('watch.loadingSecurePlayer')}</p>
             </SurfaceCard>
           )}
         >
@@ -137,7 +140,7 @@ export default function SharedWatch() {
     }
     return (
       <UnavailableStage
-        message={playerMode.message || 'Video source unavailable for this share link.'}
+        message={playerMode.message || t('share.videoUnavailable')}
         reason={playerMode.reason}
         mode={playerMode.mode}
       />
@@ -148,7 +151,7 @@ export default function SharedWatch() {
     return (
       <div className="mx-auto max-w-5xl space-y-5 px-4 py-8">
         <SurfaceCard elevated className="p-5">
-          <p className="body-md">Loading shared lesson...</p>
+          <p className="body-md">{t('share.loadingSharedLesson')}</p>
         </SurfaceCard>
       </div>
     );
@@ -159,15 +162,15 @@ export default function SharedWatch() {
       <div className="mx-auto max-w-3xl space-y-5 px-4 py-10">
         <SurfaceCard elevated className="space-y-4 p-5">
           <div>
-            <p className="label-sm">Shared Lesson</p>
-            <h1 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">Link unavailable</h1>
+            <p className="label-sm">{t('share.sharedLesson')}</p>
+            <h1 className="mt-1 text-xl font-semibold text-[var(--text-primary)]">{t('share.linkUnavailable')}</h1>
           </div>
           <p className="text-sm text-[var(--text-secondary)]">{error}</p>
           <Link
             to="/browse"
             className="focus-ring inline-flex h-11 items-center justify-center rounded-full bg-[var(--surface-container-highest)] px-5 text-sm font-medium text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)]"
           >
-            Browse lessons
+            {t('share.browseLessons')}
           </Link>
         </SurfaceCard>
       </div>
@@ -178,9 +181,9 @@ export default function SharedWatch() {
     <div className="mx-auto max-w-6xl space-y-5 px-4 py-6">
       <SurfaceCard className="token-glass flex flex-col gap-3 p-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <p className="label-sm">Shared Lesson</p>
+          <p className="label-sm">{t('share.sharedLesson')}</p>
           <h1 className="mt-1 text-2xl font-semibold leading-tight text-[var(--text-primary)]">
-            {lesson?.title || 'Untitled lesson'}
+            {lesson?.title || t('watch.untitledLesson')}
           </h1>
           {lesson?.description ? (
             <p className="mt-2 max-w-3xl text-sm text-[var(--text-secondary)]">{lesson.description}</p>
@@ -188,15 +191,15 @@ export default function SharedWatch() {
         </div>
         <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)]">
           <ShieldCheck size={13} />
-          Secure share
+          {t('share.secureShare')}
         </span>
       </SurfaceCard>
 
       {player}
 
       <SurfaceCard className="flex flex-col gap-2 p-4 text-sm text-[var(--text-secondary)] sm:flex-row sm:items-center sm:justify-between">
-        <span>{expiresAtLabel ? `Available until ${expiresAtLabel}` : 'This link is time-limited.'}</span>
-        <span>{Math.floor(playbackTime) > 0 ? `Playback position ${Math.floor(playbackTime)}s` : 'No sign-in required'}</span>
+        <span>{expiresAtLabel ? t('share.availableUntil', { date: expiresAtLabel }) : t('share.timeLimited')}</span>
+        <span>{Math.floor(playbackTime) > 0 ? t('share.playbackPosition', { seconds: Math.floor(playbackTime) }) : t('share.noSignInRequired')}</span>
       </SurfaceCard>
     </div>
   );

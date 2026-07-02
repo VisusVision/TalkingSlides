@@ -5,6 +5,7 @@ import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer
 import ContinueNextPrompt from './ContinueNextPrompt';
 import WatermarkOverlay from './WatermarkOverlay';
 import SurfaceCard from '../ui/SurfaceCard';
+import { useI18n } from '../../i18n/I18nProvider';
 
 const NATIVE_FULLSCREEN_CONTROL_HIDE_CSS = `
 .visus-shell-video::-webkit-media-controls-fullscreen-button {
@@ -112,13 +113,14 @@ function CaptionLayer({ text }) {
   );
 }
 
-function PlayerShellFullscreenButton({ active, onClick }) {
+function PlayerShellFullscreenButton({ active, onClick, enterLabel, exitLabel }) {
+  const label = active ? exitLabel : enterLabel;
   return (
     <button
       type="button"
       data-testid="player-shell-fullscreen"
-      aria-label={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
-      title={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
+      aria-label={label}
+      title={label}
       onClick={onClick}
       className="focus-ring absolute left-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm transition hover:bg-black/85"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.videoControls }}
@@ -170,7 +172,7 @@ export default function VideoStage({
   onPlaybackEnded,
   videoRef,
   asSurface = true,
-  captionMissingLabel = 'No captions yet',
+  captionMissingLabel,
   showSubtitleControls = true,
   showLessonDetails = true,
   avatarOverlayMode = 'floating',
@@ -179,6 +181,7 @@ export default function VideoStage({
   onContinueNext,
   onCancelContinueNext,
 }) {
+  const { t } = useI18n();
   const internalVideoRef = useRef(null);
   const playerShellRef = useRef(null);
   const activeVideoRef = videoRef || internalVideoRef;
@@ -231,20 +234,20 @@ export default function VideoStage({
 
   const selectedTrack = availableTracks.find((track) => track.key === selectedTrackKey) || null;
   const fallbackCaptionStatus = srtUrl
-    ? 'Captions generated but WebVTT track is unavailable. Rerender to create WebVTT.'
-    : captionMissingLabel;
+    ? t('watch.captionsUnavailable')
+    : captionMissingLabel || t('watch.noCaptionsYet');
   const loadedTrackLabel = availableTracks.map((track) => track.language_label).join(', ');
   const onlyOriginalTrack = availableTracks.length === 1 && availableTracks[0]?.is_original;
   const trackAvailabilityLabel = onlyOriginalTrack
-    ? 'Only original captions are available.'
-    : `Caption tracks loaded: ${loadedTrackLabel}.`;
+    ? t('watch.originalCaptionsOnly')
+    : t('watch.captionTracksLoaded', { labels: loadedTrackLabel });
   const captionStatus = useMemo(() => {
     if (!hasVideo) return '';
     if (!availableTracks.length) return fallbackCaptionStatus;
-    if (captionLoadFailed && selectedTrackKey !== 'off') return 'Captions could not be loaded.';
-    if (selectedTrackKey === 'off') return 'CC off';
-    return selectedTrack ? `CC enabled: ${selectedTrack.language_label}` : 'CC off';
-  }, [availableTracks.length, captionLoadFailed, fallbackCaptionStatus, hasVideo, selectedTrack, selectedTrackKey]);
+    if (captionLoadFailed && selectedTrackKey !== 'off') return t('watch.captionsCouldNotLoad');
+    if (selectedTrackKey === 'off') return t('watch.ccOff');
+    return selectedTrack ? t('watch.ccEnabled', { label: selectedTrack.language_label }) : t('watch.ccOff');
+  }, [availableTracks.length, captionLoadFailed, fallbackCaptionStatus, hasVideo, selectedTrack, selectedTrackKey, t]);
 
   useEffect(() => {
     if (selectedTrackKey === 'off') return;
@@ -432,6 +435,8 @@ export default function VideoStage({
             <PlayerShellFullscreenButton
               active={fullscreenActive}
               onClick={handlePlayerShellFullscreenToggle}
+              enterLabel={t('watch.enterPlayerFullscreen')}
+              exitLabel={t('watch.exitPlayerFullscreen')}
             />
             <ContinueNextPrompt
               prompt={continueNextPrompt}
@@ -442,27 +447,27 @@ export default function VideoStage({
         ) : (
           <div className="flex aspect-video items-center justify-center gap-2 text-sm text-[color:var(--media-text-on-image)] opacity-80">
             <AlertCircle size={16} />
-            <span>Video source unavailable for this lesson.</span>
+            <span>{t('watch.videoSourceUnavailable')}</span>
           </div>
         )}
       </div>
 
       {hasVideo && avatarProcessing && (
-        <p className="text-xs text-[var(--text-secondary)]">Avatar is being prepared.</p>
+        <p className="text-xs text-[var(--text-secondary)]">{t('watch.avatarPreparing')}</p>
       )}
 
       {hasVideo && showSubtitleControls && (
         <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <label className="flex min-w-0 items-center gap-2 text-sm text-[var(--text-secondary)]">
-              <span className="shrink-0 font-medium text-[var(--text-primary)]">Subtitles</span>
+              <span className="shrink-0 font-medium text-[var(--text-primary)]">{t('watch.subtitles')}</span>
               <select
                 value={selectedTrackKey}
                 onChange={handleSubtitleSelectionChange}
                 disabled={availableTracks.length === 0}
                 className="focus-ring h-9 min-w-[9rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
               >
-                <option value="off">Off</option>
+                <option value="off">{t('watch.off')}</option>
                 {availableTracks.map((track) => (
                   <option key={track.key} value={track.key}>
                     {track.language_label}
@@ -470,7 +475,7 @@ export default function VideoStage({
                 ))}
               </select>
             </label>
-            <p className="mt-1 text-xs text-[var(--text-secondary)]">Use this menu to choose subtitle language.</p>
+            <p className="mt-1 text-xs text-[var(--text-secondary)]">{t('watch.chooseSubtitleLanguage')}</p>
           </div>
           <div className="min-w-0 text-xs text-[var(--text-secondary)]">
             {availableTracks.length > 0 ? (
@@ -488,15 +493,15 @@ export default function VideoStage({
 
       {showLessonDetails && (
         <div className="space-y-2">
-          <h1 className="headline-md text-[var(--text-primary)]">{lesson?.title || 'Select a lesson to start'}</h1>
-          <p className="body-md max-w-3xl">{lesson?.description || 'Choose a lesson from related content to begin playback.'}</p>
+          <h1 className="headline-md text-[var(--text-primary)]">{lesson?.title || t('watch.selectLessonToStart')}</h1>
+          <p className="body-md max-w-3xl">{lesson?.description || t('watch.chooseLessonToBegin')}</p>
           <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || 'General'}</span>
+            <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || t('watch.general')}</span>
             <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatLessonDuration(lesson)}</span>
             <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.teacher_name || 'VISUS Instructor'}</span>
             <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
               <ShieldCheck size={12} />
-              Secure stream
+              {t('watch.secureStream')}
             </span>
           </div>
         </div>

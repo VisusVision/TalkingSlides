@@ -5,6 +5,7 @@ import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer
 import ContinueNextPrompt from './ContinueNextPrompt';
 import WatermarkOverlay from './WatermarkOverlay';
 import SurfaceCard from '../ui/SurfaceCard';
+import { useI18n } from '../../i18n/I18nProvider';
 
 const NATIVE_FULLSCREEN_CONTROL_HIDE_CSS = `
 .visus-shell-video::-webkit-media-controls-fullscreen-button {
@@ -132,13 +133,14 @@ function CaptionLayer({ text }) {
   );
 }
 
-function PlayerShellFullscreenButton({ active, onClick }) {
+function PlayerShellFullscreenButton({ active, onClick, enterLabel, exitLabel }) {
+  const label = active ? exitLabel : enterLabel;
   return (
     <button
       type="button"
       data-testid="player-shell-fullscreen"
-      aria-label={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
-      title={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
+      aria-label={label}
+      title={label}
       onClick={onClick}
       className="focus-ring absolute left-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm transition hover:bg-black/85"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.videoControls }}
@@ -173,6 +175,7 @@ export default function HlsPlayer({
   onContinueNext,
   onCancelContinueNext,
 }) {
+  const { t } = useI18n();
   const internalVideoRef = useRef(null);
   const playerShellRef = useRef(null);
   const activeVideoRef = videoRef || internalVideoRef;
@@ -220,14 +223,14 @@ export default function HlsPlayer({
 
   const activateFallback = useCallback((reason) => {
     if (!canUseFallback) {
-      const message = 'Secure stream is not available for this lesson.';
+      const message = t('watch.secureStreamUnavailable');
       setPlaybackError(message);
       onPlaybackError?.({ reason, message });
       return;
     }
     setPlaybackError('');
     setUsingFallback(true);
-  }, [canUseFallback, onPlaybackError]);
+  }, [canUseFallback, onPlaybackError, t]);
 
   const handleTrackReady = useCallback(() => {
     setActiveTextTrack(activeVideoRef.current, selectedTrack);
@@ -330,10 +333,10 @@ export default function HlsPlayer({
       activateFallback('video_source_error');
       return;
     }
-    const message = 'Secure stream is not available for this lesson.';
+    const message = t('watch.secureStreamUnavailable');
     setPlaybackError(message);
     onPlaybackError?.({ reason: 'fallback_video_error', message });
-  }, [activateFallback, onPlaybackError, usingFallback]);
+  }, [activateFallback, onPlaybackError, t, usingFallback]);
 
   const handlePlay = useCallback((event) => {
     onPlaybackStarted?.();
@@ -441,6 +444,8 @@ export default function HlsPlayer({
             <PlayerShellFullscreenButton
               active={fullscreenActive}
               onClick={handlePlayerShellFullscreenToggle}
+              enterLabel={t('watch.enterPlayerFullscreen')}
+              exitLabel={t('watch.exitPlayerFullscreen')}
             />
             <ContinueNextPrompt
               prompt={continueNextPrompt}
@@ -451,13 +456,13 @@ export default function HlsPlayer({
         ) : (
           <div className="flex aspect-video items-center justify-center gap-2 text-sm text-[color:var(--media-text-on-image)] opacity-80">
             <AlertCircle size={16} />
-            <span>Secure stream is not available for this lesson.</span>
+            <span>{t('watch.secureStreamUnavailable')}</span>
           </div>
         )}
       </div>
 
       {usingFallback && (
-        <p className="text-xs text-[var(--text-secondary)]">Playing MP4 fallback allowed by this lesson.</p>
+        <p className="text-xs text-[var(--text-secondary)]">{t('watch.playingFallback')}</p>
       )}
 
       {playbackError && (

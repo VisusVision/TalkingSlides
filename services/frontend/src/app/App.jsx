@@ -16,6 +16,7 @@ import SurfaceCard from '../components/ui/SurfaceCard';
 import { PageLoadingProvider } from '../components/ui/PageLoading';
 import { CapabilitiesProvider, useCapabilities } from '../lib/capabilities';
 import { ROUTE_RESET_EVENT, readRouteSessionState, writeRouteSessionState } from '../utils/routeSession';
+import { I18nProvider, useI18n } from '../i18n/I18nProvider';
 
 function getRedirectFromSearch(search) {
   const params = new URLSearchParams(search || '');
@@ -59,6 +60,7 @@ function AppWithRouter() {
   const navigate = useNavigate();
   const location = useLocation();
   const { refreshCapabilities } = useCapabilities();
+  const { t } = useI18n();
 
   const [searchQueries, setSearchQueries] = useState({});
   const [user, setUser] = useState(() => getStoredAuthUser());
@@ -214,8 +216,8 @@ function AppWithRouter() {
       >
         {authLoading ? (
           <SurfaceCard elevated className="mx-auto mt-8 max-w-xl text-center">
-            <p className="label-sm">Loading Session</p>
-            <p className="body-md mt-2">Syncing your profile and theme preferences...</p>
+            <p className="label-sm">{t('auth.loadingSession')}</p>
+            <p className="body-md mt-2">{t('auth.loadingSessionBody')}</p>
           </SurfaceCard>
         ) : (
           <RouteErrorBoundary resetKey={`${location.pathname}${location.search}`}>
@@ -240,14 +242,16 @@ function AppWithRouter() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <CapabilitiesProvider>
-        <BrowserRouter>
-          <PageLoadingProvider>
-            <AppWithRouter />
-          </PageLoadingProvider>
-        </BrowserRouter>
-      </CapabilitiesProvider>
-    </ThemeProvider>
+    <I18nProvider>
+      <ThemeProvider>
+        <CapabilitiesProvider>
+          <BrowserRouter>
+            <PageLoadingProvider>
+              <AppWithRouter />
+            </PageLoadingProvider>
+          </BrowserRouter>
+        </CapabilitiesProvider>
+      </ThemeProvider>
+    </I18nProvider>
   );
 }
