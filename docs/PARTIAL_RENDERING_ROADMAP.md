@@ -16,6 +16,9 @@ Implemented today:
 - Finalized `final_segments` entries carry `page_key` so targeted rerenders can match prior duration and pause metadata to stable pages.
 - Finalized audio duration remains stored as page/timeline metadata but is excluded from structural and sequence identity; `pause_seconds` remains structural because it is a render input.
 - Expected and finalized manifests use the same effective TXT layout, TTS language, avatar-disabled, and source-render defaults before hashing.
+- Expected and finalized manifests now share one canonical semantic TTS-settings identity: missing or empty override containers match zero applied-override counts, while genuine provider, model, voice, rate, and effective override changes remain detectable.
+- Expected and finalized manifests also share the same deterministic effective TTS-input identity: raw authored narration remains a separate `narration_text_hash`, while `tts_input_hash` uses the post-normalization spoken text actually supplied to TTS.
+- Raw override values are represented by a deterministic fingerprint only when non-empty, so empty container shape cannot cause false non-target changes and raw override terms are not stored in the manifest.
 - A pure report-only classifier can compare an old manifest with a newly built expected manifest and label dependency changes without changing render behavior.
 - `playback_assets.json` now surfaces report-only `partial_render_analysis` metadata from the old sidecar manifest and the newly finalized manifest for debugging and future optimization.
 - `partial_render_analysis.plan` now maps classifier output to report-only future planning actions without changing render behavior.
@@ -46,7 +49,7 @@ Current safety rule:
 - The final lesson asset is still finalized after targeted work; the system does not yet publish independent immutable slide packages.
 - Final MP4, HLS sidecar, SRT, VTT, playback sidecar, manifest, and analysis are still regenerated because narration duration, timeline, and subtitles can shift.
 - Structural timeline changes are intentionally conservative and still full rerender.
-- The real avatar-disabled TXT narration smoke will be retried after this canonical manifest behavior is merged.
+- The fresh avatar-disabled TXT narration smoke will be retried after the canonical TTS-settings and effective TTS-input behavior is merged.
 
 ## Future Content-hash Manifest
 

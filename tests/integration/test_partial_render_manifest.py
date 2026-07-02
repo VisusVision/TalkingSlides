@@ -24,12 +24,14 @@ django.setup()
 
 from django.contrib.auth.models import User  # noqa: E402
 
-from core.models import Job, Project, UserProfile  # noqa: E402
+from core.models import Job, Project, UserProfile, default_project_tts_settings  # noqa: E402
 from worker import tasks as worker_tasks  # noqa: E402
 from worker.partial_render_manifest import (  # noqa: E402
     build_expected_partial_render_manifest,
     build_partial_render_manifest,
     build_partial_render_plan,
+    canonicalize_tts_input,
+    canonicalize_tts_settings,
     classify_partial_render_changes,
     canonical_json,
     get_narration_only_recompose_eligibility,
@@ -196,6 +198,302 @@ def test_hash_helpers_are_stable():
     assert stable_hash(normalize_text("Alpha\r\nBeta")) == stable_hash(normalize_text("Alpha\nBeta"))
 
 
+def test_tts_input_identity_uses_effective_spoken_text_for_raw_and_finalized_shapes():
+    raw_narration = "Second slide narration with TTS-settings terminology."
+    finalized_spoken = "Second slide narration with T T S-settings terminology."
+    raw_settings = default_project_tts_settings()
+
+    expected_input = canonicalize_tts_input(
+        raw_narration,
+        tts_settings=raw_settings,
+        effective_language="en",
+    )
+    finalized_input = canonicalize_tts_input(
+        raw_narration,
+        tts_settings=worker_tasks._summarize_tts_settings(raw_settings),
+        effective_language="en",
+        spoken_text=finalized_spoken,
+    )
+
+    assert expected_input == finalized_input
+    assert expected_input == {"language": "en", "spoken_text": finalized_spoken}
+    assert stable_hash(raw_narration) != stable_hash(expected_input)
+
+
+def test_tts_input_identity_changes_for_effective_normalization_and_overrides():
+    baseline = canonicalize_tts_input("TTS settings use API and ChatGPT pipeline.", effective_language="en")
+    disabled_settings = {**default_project_tts_settings(), "normalization_enabled": False}
+    abbreviation_settings = {
+        **default_project_tts_settings(),
+        "overrides": {"abbreviation": {"API": "application programming interface"}},
+    }
+    technical_settings = {
+        **default_project_tts_settings(),
+        "overrides": {"technical": {"pipeline": "pipe line"}},
+    }
+    mixed_word_settings = {
+        **default_project_tts_settings(),
+        "overrides": {"mixed_word": {"ChatGPT": "chat jee pee tee"}},
+    }
+
+    assert canonicalize_tts_input(
+        "TTS settings use API and ChatGPT pipeline.",
+        tts_settings=disabled_settings,
+        effective_language="en",
+    ) != baseline
+    assert canonicalize_tts_input(
+        "TTS settings use API and ChatGPT pipeline.",
+        tts_settings=abbreviation_settings,
+        effective_language="en",
+    ) != baseline
+    assert canonicalize_tts_input(
+        "TTS settings use API and ChatGPT pipeline.",
+        tts_settings=technical_settings,
+        effective_language="en",
+    ) != baseline
+    assert canonicalize_tts_input(
+        "TTS settings use API and ChatGPT pipeline.",
+        tts_settings=mixed_word_settings,
+        effective_language="en",
+    ) != baseline
+    assert canonicalize_tts_input("ASP ve Pipeline açıklaması.", effective_language="tr") != canonicalize_tts_input(
+        "ASP ve Pipeline açıklaması.",
+        effective_language="en",
+    )
+
+
+def test_tts_input_identity_does_not_double_normalize_finalized_spoken_text():
+    finalized = canonicalize_tts_input(
+        "TTS-settings",
+        effective_language="en",
+        spoken_text="T T S-settings",
+    )
+
+    assert finalized == {"language": "en", "spoken_text": "T T S-settings"}
+
+
+def test_tts_input_identity_handles_malformed_values_deterministically():
+    malformed_settings = {
+        "normalization_enabled": True,
+        "overrides": {"technical": {"API": {"replacement": "A P I"}}},
+    }
+
+    left = canonicalize_tts_input(
+        ["TTS", "settings"],
+        tts_settings=malformed_settings,
+        effective_language={"language": "en"},
+    )
+    right = canonicalize_tts_input(
+        ["TTS", "settings"],
+        tts_settings=deepcopy(malformed_settings),
+        effective_language={"language": "en"},
+    )
+
+    assert left == right
+    assert left["language"] == "en"
+    assert isinstance(left["spoken_text"], str)
+
+
+def test_fresh_project_and_finalized_tts_settings_share_semantic_identity():
+    fresh_settings = default_project_tts_settings()
+    finalized_settings = {
+        "provider_preference": "auto",
+        "normalization_enabled": True,
+        "normalization_mode": "loose",
+        "unknown_word_strategy": "keep",
+        "speech_speed": 1.0,
+        "volume_gain_db": 0,
+        "pause_seconds": None,
+        "applied_overrides": {
+            "technical_count": 0,
+            "abbreviation_count": 0,
+            "mixed_word_count": 0,
+            "merged_override_count": 0,
+        },
+    }
+
+    canonical_fresh = canonicalize_tts_settings(fresh_settings)
+    canonical_finalized = canonicalize_tts_settings(finalized_settings)
+
+    assert canonical_fresh == canonical_finalized
+    assert stable_hash(canonical_fresh) == "sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51"
+
+
+@pytest.mark.parametrize(
+    "override_shape",
+    [
+        None,
+        {},
+        {"technical": {}, "abbreviation": {}, "mixed_word": {}},
+    ],
+)
+def test_missing_and_empty_tts_override_containers_are_equivalent(override_shape):
+    settings = default_project_tts_settings()
+    if override_shape is None:
+        settings.pop("overrides")
+    else:
+        settings["overrides"] = override_shape
+    settings["page_overrides"] = {}
+    settings["voice_overrides"] = {}
+    settings["provider_overrides"] = {}
+    settings["speech_speed"] = "1.0"
+
+    canonical = canonicalize_tts_settings(settings)
+
+    assert canonical == canonicalize_tts_settings(
+        {
+            **default_project_tts_settings(),
+            "applied_overrides": {
+                "technical_count": "0",
+                "abbreviation_count": 0,
+                "mixed_word_count": 0.0,
+                "merged_override_count": 0,
+            },
+        }
+    )
+    assert "effective_overrides_hash" not in canonical
+    assert canonical == canonicalize_tts_settings(
+        {
+            **default_project_tts_settings(),
+            "overrides": {"technical": {"API": "", "": "A P I", "CPU": {"replacement": "C P U"}}},
+            "applied_overrides": {
+                "technical_count": 0,
+                "abbreviation_count": 0,
+                "mixed_word_count": 0,
+                "merged_override_count": 0,
+            },
+        }
+    )
+
+
+def test_nonempty_tts_override_values_have_stable_detectable_identity():
+    first = default_project_tts_settings()
+    first["overrides"]["technical"] = {"API": "A P I"}
+    equivalent = deepcopy(first)
+    changed = deepcopy(first)
+    changed["overrides"]["technical"]["API"] = "application programming interface"
+
+    canonical_first = canonicalize_tts_settings(first)
+    canonical_equivalent = canonicalize_tts_settings(equivalent)
+    canonical_changed = canonicalize_tts_settings(changed)
+
+    assert canonical_first["applied_overrides"] == {
+        "technical_count": 1,
+        "abbreviation_count": 0,
+        "mixed_word_count": 0,
+        "merged_override_count": 1,
+    }
+    assert canonical_first["effective_overrides_hash"].startswith("sha256:")
+    assert canonicalize_tts_settings(canonical_first) == canonical_first
+    assert stable_hash(canonical_first) == stable_hash(canonical_equivalent)
+    assert stable_hash(canonical_first) != stable_hash(canonical_changed)
+
+
+def test_tts_override_fingerprint_excludes_paths_secrets_and_transient_metadata():
+    baseline = {
+        **default_project_tts_settings(),
+        "page_overrides": {
+            "s1-p1": {
+                "speech_speed": 1.1,
+                "voice_id": "voice-1",
+                "voice_sample_path": "/storage/private/sample.wav",
+                "api_key": "not-semantic",
+                "generated_at": "2026-07-02T10:00:00Z",
+                "job_id": 100,
+            }
+        },
+    }
+    transient_changes = deepcopy(baseline)
+    transient_changes["page_overrides"]["s1-p1"].update(
+        {
+            "voice_sample_path": "/different/private/sample.wav",
+            "api_key": "different-secret",
+            "generated_at": "2026-07-03T10:00:00Z",
+            "job_id": 101,
+        }
+    )
+    semantic_change = deepcopy(baseline)
+    semantic_change["page_overrides"]["s1-p1"]["speech_speed"] = 1.2
+
+    canonical = canonicalize_tts_settings(baseline)
+
+    assert canonical["effective_overrides_hash"].startswith("sha256:")
+    assert canonical == canonicalize_tts_settings(transient_changes)
+    assert canonical != canonicalize_tts_settings(semantic_change)
+    assert "/storage/private/sample.wav" not in json.dumps(canonical)
+    assert "not-semantic" not in json.dumps(canonical)
+    assert "effective_overrides_hash" not in canonicalize_tts_settings(
+        {"effective_overrides_hash": "/storage/private/sample.wav"}
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    [
+        ("provider_preference", "gtts"),
+        ("normalization_mode", "strict"),
+        ("unknown_word_strategy", "phonetic"),
+        ("model", "xtts-v3"),
+        ("voice_id", "voice-2"),
+        ("speech_speed", 1.15),
+        ("volume_gain_db", 3),
+        ("pitch", 1.2),
+        ("style", "conversational"),
+        ("emotion", "calm"),
+        ("temperature", 0.7),
+        ("language", "tr"),
+    ],
+)
+def test_output_affecting_tts_settings_change_semantic_identity(field, changed_value):
+    baseline = {
+        **default_project_tts_settings(),
+        "model": "xtts-v2",
+        "voice_id": "voice-1",
+        "language": "en",
+    }
+    changed = {**baseline, field: changed_value}
+
+    assert stable_hash(canonicalize_tts_settings(baseline)) != stable_hash(
+        canonicalize_tts_settings(changed)
+    )
+
+
+def test_tts_setting_aliases_and_malformed_values_normalize_deterministically():
+    assert canonicalize_tts_settings({"rate": "1.15"}) == canonicalize_tts_settings(
+        {"speech_speed": 1.15}
+    )
+    assert canonicalize_tts_settings({"volume": "2"}) == canonicalize_tts_settings(
+        {"volume_gain_db": 2}
+    )
+    assert canonicalize_tts_settings(
+        {
+            "provider_preference": "silent",
+            "normalization_mode": "medium",
+            "unknown_word_strategy": "spell",
+        }
+    ) == canonicalize_tts_settings(
+        {
+            "provider_preference": "auto",
+            "normalization_mode": "loose",
+            "unknown_word_strategy": "keep",
+        }
+    )
+
+    malformed_left = {
+        "provider_preference": {"secondary": "gtts", "primary": "auto"},
+        "model": ["xtts-v2"],
+        "overrides": {"technical": {"API": {"b": 2, "a": 1}}},
+    }
+    malformed_right = {
+        "provider_preference": {"primary": "auto", "secondary": "gtts"},
+        "model": ["xtts-v2"],
+        "overrides": {"technical": {"API": {"a": 1, "b": 2}}},
+    }
+
+    assert canonicalize_tts_settings(malformed_left) == canonicalize_tts_settings(malformed_right)
+    assert worker_tasks._summarize_tts_settings(["invalid"]) == canonicalize_tts_settings(None)
+
+
 def test_manifest_shape_and_hash_dependencies():
     project_id = 42
     first = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
@@ -336,6 +634,7 @@ def test_expected_and_finalized_txt_defaults_share_layout_and_language_identity(
             display_text="Visible one",
             narration_text="Narration one",
         ),
+        "spoken_text": "Narration one.",
         "whiteboard_mode": True,
         "scene_background_mode": "whiteboard",
         "scene_background_fit": None,
@@ -883,6 +1182,60 @@ def test_narration_only_recompose_eligibility_allows_target_tts_only_with_unchan
     assert "non_target_page_changed" in mixed_report["fallback_reasons"]
 
 
+def test_pre_render_eligibility_log_payload_is_sanitized_and_page_specific():
+    classification = _classification_result(
+        _classification_page(
+            page_key="s1-p1",
+            classification="narration_text_changed",
+            reasons=["narration_text_changed", "tts_input_changed"],
+        ),
+        _classification_page(
+            page_key="s2-p1",
+            classification="tts_settings_changed",
+            reasons=["tts_settings_changed"],
+            index=1,
+        ),
+    )
+    decision = {
+        "comparison_phase": "pre_render_eligibility",
+        "mode": "narration_only_recompose",
+        "target_page_keys": ["s1-p1"],
+        "classification": classification,
+        "plan": build_partial_render_plan(classification),
+        "fallback_reasons": ["non_target_page_changed"],
+        "artifacts_by_page_key": {
+            "s1-p1": {"slide_image_abs_path": "/secret/storage/slide.png"},
+        },
+    }
+
+    payload = worker_tasks._partial_render_eligibility_log_payload(decision)
+
+    assert payload == {
+        "phase": "pre_render_eligibility",
+        "mode": "narration_only_recompose",
+        "global_reasons": [],
+        "target_pages": [
+            {
+                "page_key": "s1-p1",
+                "classification": "narration_text_changed",
+                "reasons": ["narration_text_changed", "tts_input_changed"],
+                "recommended_action": "rerun_tts_avatar_future",
+            }
+        ],
+        "changed_non_target_pages": [
+            {
+                "page_key": "s2-p1",
+                "classification": "tts_settings_changed",
+                "reasons": ["tts_settings_changed"],
+                "recommended_action": "rerun_tts_avatar_future",
+            }
+        ],
+        "fallback_reasons": ["non_target_page_changed"],
+    }
+    assert "secret" not in json.dumps(payload)
+    assert "artifact" not in json.dumps(payload)
+
+
 def test_expected_manifest_builder_uses_new_slide_inputs_and_reuses_artifacts_by_page_key_only():
     previous_playback_assets = {
         "final_segments": [
@@ -1093,10 +1446,21 @@ def _runtime_slides_from_finalized_results(results: list[dict]) -> list[dict]:
     return slides
 
 
-def _finalize_two_page_txt_sidecar(tmp_path, project: Project, job: Job):
+def _finalize_two_page_txt_sidecar(
+    tmp_path,
+    project: Project,
+    job: Job,
+    *,
+    tts_settings: dict[str, Any] | None = None,
+    finalized_tts_settings: dict[str, Any] | None = None,
+    pause_seconds: float = 0.25,
+    narration_texts: tuple[str, str] = ("Narration one", "Narration two"),
+    spoken_texts: tuple[str, str] | None = None,
+):
     project_root = tmp_path / str(project.id)
     avatar_options = {"enabled": False, "requested": False}
-    tts_settings = {"provider_preference": "gtts", "speech_speed": 1.0}
+    tts_settings = dict(tts_settings or {"provider_preference": "gtts", "speech_speed": 1.0})
+    finalized_tts_settings = dict(finalized_tts_settings or tts_settings)
     source_report = {"renderer": "txt_whiteboard"}
     default_scene = {
         "source_type": "txt",
@@ -1107,8 +1471,17 @@ def _finalize_two_page_txt_sidecar(tmp_path, project: Project, job: Job):
     }
     results: list[dict[str, Any]] = []
     slides: list[dict[str, Any]] = []
-    for index, narration_text in enumerate(("Narration one", "Narration two")):
+    for index, narration_text in enumerate(narration_texts):
         page_key = f"s{index + 1}-p1"
+        spoken_text = (
+            spoken_texts[index]
+            if spoken_texts and index < len(spoken_texts)
+            else canonicalize_tts_input(
+                narration_text,
+                tts_settings=tts_settings,
+                effective_language="en",
+            )["spoken_text"]
+        )
         part_path = project_root / "parts" / f"part_{index + 1:03d}.mp4"
         slide_path = project_root / "parts" / f"part_{index + 1:03d}.whiteboard.png"
         audio_path = project_root / "audio" / f"slide_{index + 1:03d}.mp3"
@@ -1125,12 +1498,12 @@ def _finalize_two_page_txt_sidecar(tmp_path, project: Project, job: Job):
                 "split_index": 0,
                 "part_path": str(part_path),
                 "duration": 2.0 + index,
-                "pause_seconds": 0.25,
+                "pause_seconds": pause_seconds,
                 "text": narration_text,
                 "narration_text": narration_text,
                 "original_text": narration_text,
                 "display_text": narration_text,
-                "spoken_text": narration_text,
+                "spoken_text": spoken_text,
                 "tts_normalization_language": "en",
                 "tts_normalization_rules_applied": [],
                 "tts_provider": "gtts",
@@ -1141,7 +1514,7 @@ def _finalize_two_page_txt_sidecar(tmp_path, project: Project, job: Job):
                 "tts_applied_overrides": {},
                 "tts_fallback_used": False,
                 "tts_fallback_reason": "",
-                "tts_settings": tts_settings,
+                "tts_settings": finalized_tts_settings,
                 "tts_preprocessing_warnings": [],
                 "slide_path": str(slide_path),
                 "tts_audio_path": str(audio_path),
@@ -2441,6 +2814,81 @@ def test_real_export_shaped_txt_sidecar_supports_narration_only_decision(tmp_pat
 
 
 @pytest.mark.django_db
+def test_fresh_project_tts_shape_keeps_unchanged_txt_page_eligible(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers
+
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("fresh_project_tts_narration_owner")
+    project = Project.objects.create(title="Fresh project TTS narration", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    raw_tts_settings = default_project_tts_settings()
+    finalized_tts_settings = worker_tasks._summarize_tts_settings(raw_tts_settings)
+    _results, slides, sidecar, avatar_options, _tts_settings = _finalize_two_page_txt_sidecar(
+        tmp_path,
+        project,
+        job,
+        tts_settings=raw_tts_settings,
+        finalized_tts_settings=finalized_tts_settings,
+        pause_seconds=0.8,
+        narration_texts=(
+            "First slide narration for effective TTS-input partial-render smoke.",
+            "Second slide narration with TTS-settings terminology.",
+        ),
+        spoken_texts=(
+            "First slide narration for effective T T S-input partial-render smoke.",
+            "Second slide narration with T T S-settings terminology.",
+        ),
+    )
+    slides[0].update(
+        {
+            "notes_text": "First slide narration changed for effective TTS-input partial-render smoke version two.",
+            "narration_text": "First slide narration changed for effective TTS-input partial-render smoke version two.",
+            "subtitle_chunks": [
+                "First slide narration changed for effective TTS-input partial-render smoke version two."
+            ],
+        }
+    )
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 4.416)
+
+    enriched_slides = worker_tasks._slides_with_previous_segment_timing(slides, sidecar)
+    expected_manifest = build_expected_partial_render_manifest(
+        project_id=project.id,
+        job_id=job.id + 1,
+        slides=enriched_slides,
+        previous_playback_assets=sidecar,
+        tts_settings=raw_tts_settings,
+        avatar_options=avatar_options,
+        effective_language="en",
+    )
+    decision = worker_tasks._build_narration_only_recompose_runtime_decision(
+        project_id=project.id,
+        job_id=job.id + 1,
+        slides=slides,
+        rerender_page_keys={"s1-p1"},
+        previous_playback_assets=sidecar,
+        tts_settings=raw_tts_settings,
+        avatar_options=avatar_options,
+        effective_language="en",
+    )
+
+    old_page = sidecar["partial_render_manifest"]["pages"]["s2-p1"]
+    expected_page = expected_manifest["pages"]["s2-p1"]
+    assert old_page["tts_settings_hash"] == expected_page["tts_settings_hash"]
+    assert old_page["tts_input_hash"] == expected_page["tts_input_hash"]
+    assert old_page["tts_settings_hash"] == (
+        "sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51"
+    )
+    assert expected_page["pause_seconds"] == 0.8
+    assert decision["classification"]["global_reasons"] == []
+    assert decision["classification"]["pages"]["s1-p1"]["classification"] == "narration_text_changed"
+    assert decision["classification"]["pages"]["s2-p1"]["classification"] == "unchanged"
+    assert decision["classification"]["pages"]["s2-p1"]["reasons"] == []
+    assert decision["plan"]["pages"]["s2-p1"]["recommended_action"] == "reuse_all"
+    assert "non_target_page_changed" not in decision["fallback_reasons"]
+    assert decision["eligible"] is True
+
+
+@pytest.mark.django_db
 def test_real_txt_conservative_merge_preserves_prior_metadata_and_slide_image(tmp_path, monkeypatch):
     _patch_finalize_side_effects(monkeypatch, tmp_path)
     owner = _make_user("real_txt_conservative_merge_owner")
@@ -2824,6 +3272,8 @@ def test_finalize_records_narration_only_recompose_and_shifts_later_subtitle_tim
     assert sidecar["hls"]["packaging_status"] == "test_regenerated"
     assert sidecar["narration_only_recomposed_count"] == 1
     assert sidecar["narration_only_recomposed_pages"] == ["s1-p1"]
+    assert sidecar["final_segments"][0]["narration_only_recomposed"] is True
+    assert sidecar["final_segments"][1]["narration_only_recomposed"] is False
     assert sidecar["partial_render_analysis"]["narration_only_recomposed_count"] == 1
     assert sidecar["partial_render_analysis"]["narration_only_recomposed_pages"] == ["s1-p1"]
     assert sidecar["timeline"][0]["duration"] == 5.0
