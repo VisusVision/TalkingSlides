@@ -4,9 +4,20 @@ import hashlib
 import json
 import math
 import re
+import sys
 import unicodedata
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any
+
+try:
+    from tts_preprocess import canonicalize_tts_input
+except (ModuleNotFoundError, ImportError):
+    sys.modules.pop("tts_preprocess", None)
+    _TTS_ROOT = Path(__file__).resolve().parents[1] / "tts_service"
+    if _TTS_ROOT.exists() and str(_TTS_ROOT) not in sys.path:
+        sys.path.insert(0, str(_TTS_ROOT))
+    from tts_preprocess import canonicalize_tts_input
 
 
 PARTIAL_RENDER_MANIFEST_VERSION = 1
@@ -124,6 +135,200 @@ def normalize_text(value: Any) -> str:
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
     text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
     return unicodedata.normalize("NFC", text)
+
+
+_TTS_OVERRIDE_CONTAINERS = (
+    "overrides",
+    "page_overrides",
+    "voice_overrides",
+    "provider_overrides",
+)
+_TTS_OVERRIDE_CATEGORIES = (
+    ("technical", "technical_count"),
+    ("abbreviation", "abbreviation_count"),
+    ("mixed_word", "mixed_word_count"),
+)
+_TTS_SEMANTIC_ID_KEYS = {
+    "model_id",
+    "provider_id",
+    "speaker_id",
+    "voice_id",
+}
+_TTS_NON_SEMANTIC_OVERRIDE_KEYS = {
+    "artifact",
+    "artifacts",
+    "error",
+    "errors",
+    "hostname",
+    "metadata",
+    "pid",
+    "runtime",
+    "runtime_metadata",
+    "status",
+    "worker",
+}
+_TTS_SENSITIVE_KEY_PARTS = (
+    "api_key",
+    "credential",
+    "password",
+    "secret",
+    "token",
+)
+
+
+def canonicalize_tts_settings(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Return one semantic TTS identity for raw and finalized settings.
+
+    Empty override containers normalize to zero applied counts. Non-empty
+    override values are represented by a deterministic fingerprint so genuine
+    pronunciation changes remain visible without storing raw terms in the
+    manifest.
+    """
+
+    settings = dict(value or {}) if isinstance(value, Mapping) else {}
+
+    def first_setting(*keys: str, default: Any = None) -> Any:
+        return _first_present(*(settings.get(key) for key in keys), default)
+
+    def normalized_text(*keys: str, default: str = "", lower: bool = False) -> str:
+        raw_value = first_setting(*keys, default=default)
+        if isinstance(raw_value, (Mapping, list, tuple, set)):
+            raw_value = default
+        text = str(raw_value or "").strip()
+        return text.lower() if lower else text
+
+    def normalized_choice(*keys: str, default: str, allowed: set[str]) -> str:
+        text = normalized_text(*keys, default=default, lower=True)
+        return text if text in allowed else default
+
+    def normalized_number(*keys: str, default: int | float | None = None) -> int | float | None:
+        number = _canonical_number(first_setting(*keys, default=default))
+        if number is None:
+            return default
+        if isinstance(default, int) and number.is_integer():
+            return int(number)
+        return number
+
+    def cleaned_override_map(name: str) -> dict[str, str]:
+        raw_overrides = settings.get("overrides") if isinstance(settings.get("overrides"), Mapping) else {}
+        value = raw_overrides.get(name) if isinstance(raw_overrides.get(name), Mapping) else {}
+        cleaned: dict[str, str] = {}
+        for term, replacement in value.items():
+            if isinstance(term, str) and isinstance(replacement, str):
+                t = term.strip()
+                r = replacement.strip()
+                if t and r:
+                    cleaned[t] = r
+        return cleaned
+
+    canonical: dict[str, Any] = {
+        "provider_preference": normalized_choice(
+            "provider_preference",
+            default="auto",
+            allowed={"auto", "xtts_v2", "gtts"},
+        ),
+        "normalization_enabled": _semantic_bool(first_setting("normalization_enabled", default=True)),
+        "normalization_mode": normalized_choice(
+            "normalization_mode",
+            default="loose",
+            allowed={"loose", "strict"},
+        ),
+        "unknown_word_strategy": normalized_choice(
+            "unknown_word_strategy",
+            default="keep",
+            allowed={"keep", "phonetic"},
+        ),
+        "speech_speed": normalized_number("speech_speed", "speed", "rate", default=1.0),
+        "volume_gain_db": normalized_number("volume_gain_db", "volume_db", "volume", default=0),
+        "pause_seconds": normalized_number("pause_seconds", default=None),
+    }
+
+    optional_text_fields = {
+        "provider": (("provider", "tts_provider"), True),
+        "model": (("model", "model_id", "model_name", "tts_model"), False),
+        "voice_id": (("voice_id", "voice", "speaker_id", "speaker"), False),
+        "language": (("effective_language", "language", "lang"), True),
+        "style": (("style", "speech_style"), True),
+        "emotion": (("emotion",), True),
+    }
+    for canonical_key, (aliases, lower) in optional_text_fields.items():
+        text = normalized_text(*aliases, lower=lower)
+        if text:
+            canonical[canonical_key] = text.replace("_", "-") if canonical_key == "language" else text
+
+    optional_number_fields = {
+        "pitch": (("pitch",), 1.0),
+        "temperature": (("temperature",), None),
+        "top_p": (("top_p",), None),
+        "top_k": (("top_k",), None),
+        "repetition_penalty": (("repetition_penalty",), None),
+        "length_penalty": (("length_penalty",), None),
+        "sample_rate": (("sample_rate",), None),
+        "seed": (("seed",), None),
+    }
+    for canonical_key, (aliases, default) in optional_number_fields.items():
+        if not any(key in settings for key in aliases):
+            continue
+        number = normalized_number(*aliases, default=default)
+        if number is not None:
+            canonical[canonical_key] = number
+
+    for canonical_key, aliases in {
+        "ssml_enabled": ("ssml_enabled",),
+        "use_sampling": ("use_sampling", "sampling_enabled"),
+    }.items():
+        if any(key in settings for key in aliases):
+            canonical[canonical_key] = _semantic_bool(first_setting(*aliases, default=False))
+
+    applied_overrides = (
+        settings.get("applied_overrides")
+        if isinstance(settings.get("applied_overrides"), Mapping)
+        else {}
+    )
+    override_counts: dict[str, int] = {}
+    merged_raw_overrides: dict[str, Any] = {}
+    cleaned_raw_overrides: dict[str, dict[str, str]] = {}
+    for category, count_key in _TTS_OVERRIDE_CATEGORIES:
+        category_map = cleaned_override_map(category)
+        cleaned_raw_overrides[category] = category_map
+        if category_map:
+            override_counts[count_key] = len(category_map)
+            merged_raw_overrides.update({str(key): item for key, item in category_map.items()})
+        else:
+            override_counts[count_key] = _canonical_nonnegative_int(applied_overrides.get(count_key))
+    override_counts["merged_override_count"] = (
+        len(merged_raw_overrides)
+        if merged_raw_overrides
+        else _canonical_nonnegative_int(applied_overrides.get("merged_override_count"))
+    )
+    canonical["applied_overrides"] = override_counts
+
+    effective_overrides: dict[str, Any] = {}
+    for container_key in _TTS_OVERRIDE_CONTAINERS:
+        semantic_value = (
+            _nonempty_semantic_value(cleaned_raw_overrides)
+            if container_key == "overrides"
+            else _semantic_tts_override_value(settings.get(container_key))
+        )
+        if semantic_value not in (None, {}, []):
+            effective_overrides[container_key] = semantic_value
+    applied_semantic_maps = {
+        str(key): semantic_value
+        for key, item in applied_overrides.items()
+        if isinstance(item, Mapping)
+        and (semantic_value := _nonempty_semantic_value(item)) not in (None, {}, [])
+    }
+    if applied_semantic_maps:
+        effective_overrides["applied_overrides"] = applied_semantic_maps
+
+    if effective_overrides:
+        canonical["effective_overrides_hash"] = stable_hash(effective_overrides)
+    else:
+        existing_fingerprint = str(settings.get("effective_overrides_hash") or "").strip()
+        if re.fullmatch(r"sha256:[0-9a-f]{64}", existing_fingerprint):
+            canonical["effective_overrides_hash"] = existing_fingerprint
+
+    return canonical
 
 
 def build_partial_render_manifest(
@@ -261,7 +466,7 @@ def build_partial_render_manifest(
             ),
         }
 
-        tts_settings = _drop_volatile(
+        raw_tts_settings = _drop_volatile(
             _first_present(
                 result.get("tts_settings"),
                 tts_meta.get("project_tts_settings"),
@@ -269,18 +474,21 @@ def build_partial_render_manifest(
                 {},
             )
         )
-        tts_input = {
-            "language": _canonical_language(
-                _first_present(
-                    result.get("tts_normalization_language"),
-                    tts_meta.get("tts_normalization_language"),
-                    slide.get("tts_normalization_language"),
-                    effective_language,
-                )
-            ),
-            "narration_text": narration_text,
-            "spoken_text": normalize_text(_first_present(result.get("spoken_text"), "")),
-        }
+        tts_settings = canonicalize_tts_settings(raw_tts_settings)
+        tts_language = _canonical_language(
+            _first_present(
+                result.get("tts_normalization_language"),
+                tts_meta.get("tts_normalization_language"),
+                slide.get("tts_normalization_language"),
+                effective_language,
+            )
+        )
+        tts_input = canonicalize_tts_input(
+            narration_text,
+            tts_settings=dict(raw_tts_settings) if isinstance(raw_tts_settings, Mapping) else None,
+            effective_language=tts_language,
+            spoken_text=_first_present(result.get("spoken_text"), tts_meta.get("spoken_text"), ""),
+        )
         avatar_enabled = bool(canonical_avatar_options.get("enabled"))
         avatar_engine_selected = _first_present(
             segment.get("avatar_engine_selected"),
@@ -533,6 +741,13 @@ def build_expected_partial_render_manifest(
                 previous_languages.get(page_key),
             )
         )
+        raw_tts_settings = _first_present(row.get("tts_settings"), tts_settings, {})
+        tts_input = canonicalize_tts_input(
+            narration_text,
+            tts_settings=dict(raw_tts_settings) if isinstance(raw_tts_settings, Mapping) else None,
+            effective_language=language,
+            spoken_text=row.get("spoken_text"),
+        )
         row.update(
             {
                 "index": index,
@@ -548,10 +763,10 @@ def build_expected_partial_render_manifest(
                 "narration_text": narration_text,
                 "display_text": display_text,
                 "original_text": display_text,
-                "spoken_text": normalize_text(_first_present(row.get("spoken_text"), narration_text)),
-                "tts_normalization_language": language,
+                "spoken_text": tts_input["spoken_text"],
+                "tts_normalization_language": tts_input["language"],
                 "subtitle_chunks": subtitle_chunks,
-                "tts_settings": dict(_first_present(row.get("tts_settings"), tts_settings, {}) or {}),
+                "tts_settings": canonicalize_tts_settings(raw_tts_settings),
                 "tts_audio_rel_path": artifacts.get("tts_audio", ""),
                 "avatar_segment_rel_path": artifacts.get("avatar_clip", ""),
                 "part_rel_path": artifacts.get("composed_segment", ""),
@@ -1095,6 +1310,76 @@ def _canonical_number(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _canonical_nonnegative_int(value: Any) -> int:
+    number = _canonical_number(value)
+    if number is None:
+        return 0
+    return max(0, int(number))
+
+
+def _nonempty_semantic_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key in sorted(value.keys(), key=lambda item: str(item)):
+            item = _nonempty_semantic_value(value[key])
+            if item not in (None, {}, []):
+                result[str(key)] = item
+        return result
+    if isinstance(value, set):
+        items = [_nonempty_semantic_value(item) for item in value]
+        return sorted(
+            (item for item in items if item not in (None, {}, [])),
+            key=canonical_json,
+        )
+    if isinstance(value, (list, tuple)):
+        items = [_nonempty_semantic_value(item) for item in value]
+        return [item for item in items if item not in (None, {}, [])]
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    if value is None:
+        return None
+    return _canonical_value(value)
+
+
+def _semantic_tts_override_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key in sorted(value.keys(), key=lambda item: str(item)):
+            key_text = str(key)
+            if _is_nonsemantic_tts_override_key(key_text):
+                continue
+            item = _semantic_tts_override_value(value[key])
+            if item not in (None, {}, []):
+                result[key_text] = item
+        return result
+    if isinstance(value, set):
+        items = [_semantic_tts_override_value(item) for item in value]
+        return sorted(
+            (item for item in items if item not in (None, {}, [])),
+            key=canonical_json,
+        )
+    if isinstance(value, (list, tuple)):
+        items = [_semantic_tts_override_value(item) for item in value]
+        return [item for item in items if item not in (None, {}, [])]
+    return _nonempty_semantic_value(value)
+
+
+def _is_nonsemantic_tts_override_key(value: str) -> bool:
+    key = str(value or "").strip().lower().replace("-", "_")
+    if not key:
+        return True
+    if key in VOLATILE_KEYS or key in _TTS_NON_SEMANTIC_OVERRIDE_KEYS:
+        return True
+    if any(part in key for part in _TTS_SENSITIVE_KEY_PARTS):
+        return True
+    if key.endswith(("_path", "_file", "_filename", "_directory", "_dir")):
+        return True
+    if (key == "id" or key.endswith("_id")) and key not in _TTS_SEMANTIC_ID_KEYS:
+        return True
+    return False
 
 
 def _canonical_language(value: Any) -> str:

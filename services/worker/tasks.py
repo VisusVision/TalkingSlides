@@ -67,6 +67,7 @@ from .partial_render_manifest import (  # noqa: E402
     build_expected_partial_render_manifest,
     build_partial_render_manifest,
     build_partial_render_plan,
+    canonicalize_tts_settings,
     classify_partial_render_changes,
     get_narration_only_recompose_eligibility,
     get_visual_only_recompose_eligibility,
@@ -1067,28 +1068,15 @@ def _write_language_detection_sidecar(project_id: str | int, payload: dict[str, 
     return _write_json_sidecar(project_id, "language_detection.json", payload)
 
 
-def _summarize_tts_settings(tts_settings: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(tts_settings, dict):
-        return {}
-    overrides = tts_settings.get("overrides") if isinstance(tts_settings.get("overrides"), dict) else {}
-    technical = overrides.get("technical") if isinstance(overrides.get("technical"), dict) else {}
-    abbreviation = overrides.get("abbreviation") if isinstance(overrides.get("abbreviation"), dict) else {}
-    mixed_word = overrides.get("mixed_word") if isinstance(overrides.get("mixed_word"), dict) else {}
-    return {
-        "provider_preference": str(tts_settings.get("provider_preference") or "auto"),
-        "normalization_enabled": bool(tts_settings.get("normalization_enabled", True)),
-        "normalization_mode": str(tts_settings.get("normalization_mode") or "loose"),
-        "unknown_word_strategy": str(tts_settings.get("unknown_word_strategy") or "keep"),
-        "speech_speed": tts_settings.get("speech_speed", 1.0),
-        "volume_gain_db": tts_settings.get("volume_gain_db", 0),
-        "pause_seconds": tts_settings.get("pause_seconds"),
-        "applied_overrides": {
-            "technical_count": len(technical),
-            "abbreviation_count": len(abbreviation),
-            "mixed_word_count": len(mixed_word),
-            "merged_override_count": len({**technical, **abbreviation, **mixed_word}),
-        },
-    }
+def _summarize_tts_settings(
+    tts_settings: dict[str, Any] | None,
+    *,
+    voice_id: str | None = None,
+) -> dict[str, Any]:
+    settings = dict(tts_settings) if isinstance(tts_settings, dict) else {}
+    if str(voice_id or "").strip():
+        settings["voice_id"] = str(voice_id).strip()
+    return canonicalize_tts_settings(settings)
 
 
 def _is_finite_number(value: Any) -> bool:
@@ -2277,6 +2265,64 @@ def _build_narration_only_recompose_runtime_decision(
         bool(page.get("eligible")) for page in decision["pages"].values()
     )
     return decision
+
+
+def _partial_render_eligibility_log_payload(decision: dict[str, Any] | None) -> dict[str, Any]:
+    decision = dict(decision or {})
+    classification = (
+        decision.get("classification")
+        if isinstance(decision.get("classification"), dict)
+        else {}
+    )
+    plan = decision.get("plan") if isinstance(decision.get("plan"), dict) else {}
+    classification_pages = (
+        classification.get("pages")
+        if isinstance(classification.get("pages"), dict)
+        else {}
+    )
+    plan_pages = plan.get("pages") if isinstance(plan.get("pages"), dict) else {}
+    target_keys = {str(key) for key in (decision.get("target_page_keys") or []) if str(key)}
+    target_pages: list[dict[str, Any]] = []
+    changed_non_target_pages: list[dict[str, Any]] = []
+
+    for page_key in sorted({*classification_pages.keys(), *plan_pages.keys(), *target_keys}):
+        classifier_page = (
+            classification_pages.get(page_key)
+            if isinstance(classification_pages.get(page_key), dict)
+            else {}
+        )
+        plan_page = plan_pages.get(page_key) if isinstance(plan_pages.get(page_key), dict) else {}
+        entry = {
+            "page_key": str(page_key),
+            "classification": str(classifier_page.get("classification") or "unchanged"),
+            "reasons": [str(reason) for reason in (classifier_page.get("reasons") or []) if str(reason)],
+            "recommended_action": str(plan_page.get("recommended_action") or ""),
+        }
+        if page_key in target_keys:
+            target_pages.append(entry)
+        elif (
+            entry["classification"] != "unchanged"
+            or entry["reasons"]
+            or entry["recommended_action"] not in {"", "reuse_all"}
+        ):
+            changed_non_target_pages.append(entry)
+
+    return {
+        "phase": str(decision.get("comparison_phase") or "pre_render_eligibility"),
+        "mode": str(decision.get("mode") or ""),
+        "global_reasons": [
+            str(reason)
+            for reason in (classification.get("global_reasons") or [])
+            if str(reason)
+        ],
+        "target_pages": target_pages,
+        "changed_non_target_pages": changed_non_target_pages,
+        "fallback_reasons": [
+            str(reason)
+            for reason in (decision.get("fallback_reasons") or [])
+            if str(reason)
+        ],
+    }
 
 
 def _mark_playback_sidecar_avatar_queued(
@@ -8057,7 +8103,7 @@ def recompose_visual_only_slide_segment(
 
         avatar_rel_path = str(artifacts.get("avatar_clip") or "").strip()
         avatar_applied = bool(avatar_rel_path)
-        tts_settings_summary = _summarize_tts_settings(tts_settings)
+        tts_settings_summary = _summarize_tts_settings(tts_settings, voice_id=voice_id)
         logger.info("Visual-only slide recomposed project=%s slide=%s part=%s", project_id, slide_num, part_out)
         return {
             "index": index,
@@ -8258,7 +8304,7 @@ def recompose_narration_only_slide_segment(
 
         spoken_text = str(tts_meta.get("spoken_text") or notes_text_prepared)
         tts_rules_applied = list(tts_meta.get("tts_normalization_rules_applied") or [])
-        tts_settings_summary = _summarize_tts_settings(tts_settings)
+        tts_settings_summary = _summarize_tts_settings(tts_settings, voice_id=voice_id)
         tts_applied_overrides = dict(
             tts_meta.get("applied_overrides")
             or tts_settings_summary.get("applied_overrides")
@@ -8464,7 +8510,7 @@ def synthesize_and_render_slide(
         )
         spoken_text = str(tts_meta.get("spoken_text") or notes_text_prepared)
         tts_rules_applied = list(tts_meta.get("tts_normalization_rules_applied") or [])
-        tts_settings_summary = _summarize_tts_settings(tts_settings)
+        tts_settings_summary = _summarize_tts_settings(tts_settings, voice_id=voice_id)
         tts_applied_overrides = dict(tts_meta.get("applied_overrides") or tts_settings_summary.get("applied_overrides") or {})
         if tts_rules_applied:
             logger.info(
@@ -9048,6 +9094,8 @@ def concat_and_finalize(
                 "pause_seconds": playback_assets["pause_durations"][idx],
                 "part_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("part_path"))),
                 "duration": float(item.get("duration") or 0.0),
+                "visual_only_recomposed": bool(item.get("visual_only_recomposed")),
+                "narration_only_recomposed": bool(item.get("narration_only_recomposed")),
             }
             for idx, item in enumerate(ordered)
         ]
@@ -9721,7 +9769,7 @@ def process_pptx_to_video(
         )
 
         _update_render_job(project_id, render_job_id, progress=10)
-        tts_settings_summary = _summarize_tts_settings(tts_settings)
+        tts_settings_summary = _summarize_tts_settings(tts_settings, voice_id=voice_id)
 
         teacher_id: int | None = None
         avatar_cfg = dict(avatar_options or {})
@@ -9795,7 +9843,7 @@ def process_pptx_to_video(
                 slides=slides,
                 rerender_page_keys=rerender_set,
                 previous_playback_assets=previous_playback_assets,
-                tts_settings=tts_settings,
+                tts_settings=tts_settings_summary,
                 avatar_options=avatar_cfg,
                 effective_language=resolved_lang,
             )
@@ -9819,9 +9867,18 @@ def process_pptx_to_video(
                     slides=slides,
                     rerender_page_keys=rerender_set,
                     previous_playback_assets=previous_playback_assets,
-                    tts_settings=tts_settings,
+                    tts_settings=tts_settings_summary,
                     avatar_options=avatar_cfg,
                     effective_language=resolved_lang,
+                )
+                logger.info(
+                    "partial_render_eligibility %s",
+                    json.dumps(
+                        _partial_render_eligibility_log_payload(narration_only_recompose_decision),
+                        ensure_ascii=True,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                 )
                 if narration_only_recompose_decision.get("eligible"):
                     logger.info(
