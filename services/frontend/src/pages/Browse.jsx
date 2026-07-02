@@ -6,7 +6,8 @@ import SurfaceCard from '../components/ui/SurfaceCard';
 import Button from '../components/ui/Button';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import { usePageLoading } from '../components/ui/PageLoading';
-import { normalizeLesson, formatDuration, formatViews } from '../lib/content';
+import { useI18n } from '../i18n/I18nProvider';
+import { normalizeLesson } from '../lib/content';
 import {
   clearRouteSessionState,
   onRouteReset,
@@ -15,6 +16,7 @@ import {
 } from '../utils/routeSession';
 
 export default function Browse({ searchQuery, user, onLoginRequest }) {
+  const { t, formatDuration, formatViews } = useI18n();
   const navigate = useNavigate();
   const location = useLocation();
   const directCategory = useMemo(() => {
@@ -97,7 +99,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
         setLessons(list.map((item) => normalizeLesson(item)));
       } catch (err) {
         if (!active) return;
-        setError(err.message || 'Unable to load catalog.');
+        setError(err.message || t('browse.loadError'));
         setLessons([]);
       } finally {
         if (active) {
@@ -110,7 +112,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
     return () => {
       active = false;
     };
-  }, [activeCategory]);
+  }, [activeCategory, t]);
 
   const filteredLessons = useMemo(() => {
     const q = String(searchQuery || '').trim().toLowerCase();
@@ -128,24 +130,24 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
     <div className="space-y-6">
       <section className="layout-grid-12">
         <SurfaceCard elevated className="lg:col-span-8">
-          <p className="label-sm">Explore</p>
-          <h1 className="display-lg mt-2 text-[var(--text-primary)]">Browse The Catalog</h1>
+          <p className="label-sm">{t('browse.explore')}</p>
+          <h1 className="display-lg mt-2 text-[var(--text-primary)]">{t('browse.title')}</h1>
           <p className="body-md mt-3 max-w-2xl">
-            Curated lecture cards built for quick scanning, deep study, and smooth transition into player mode.
+            {t('browse.subtitle')}
           </p>
         </SurfaceCard>
 
         <SurfaceCard className="lg:col-span-4">
-          <p className="label-sm">Results</p>
+          <p className="label-sm">{t('browse.results')}</p>
           <p className="mt-3 text-4xl font-['Manrope'] font-bold tracking-[-0.04em] text-[var(--text-primary)]">
             {filteredLessons.length}
           </p>
-          <p className="body-md mt-2">items match your active category and search query.</p>
+          <p className="body-md mt-2">{t('browse.resultsBody')}</p>
         </SurfaceCard>
       </section>
 
       <SurfaceCard className="space-y-3">
-        <p className="label-sm">Categories</p>
+        <p className="label-sm">{t('browse.categories')}</p>
         <div className="rail-scroll flex gap-2 overflow-x-auto pb-1">
           <button
             type="button"
@@ -156,7 +158,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
                 : 'token-surface text-[var(--text-secondary)]'
             }`}
           >
-            All
+            {t('browse.all')}
           </button>
           {categories.map((category) => (
             <button
@@ -177,7 +179,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
 
       {loading && (
         <SurfaceCard elevated>
-          <p className="body-md">Loading browse catalog...</p>
+          <p className="body-md">{t('browse.loading')}</p>
         </SurfaceCard>
       )}
 
@@ -190,8 +192,8 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
       {!loading && !error && filteredLessons.length === 0 && (
         <SurfaceCard elevated className="space-y-2 text-center">
           <SearchX className="mx-auto text-[var(--text-secondary)]" size={20} />
-          <p className="title-lg text-[var(--text-primary)]">No lessons found</p>
-          <p className="body-md">Try another keyword or category.</p>
+          <p className="title-lg text-[var(--text-primary)]">{t('browse.noResultsTitle')}</p>
+          <p className="body-md">{t('browse.noResultsBody')}</p>
         </SurfaceCard>
       )}
 
@@ -226,7 +228,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
               </div>
               <Button className="mt-4" size="sm" onClick={() => navigate(`/watch?lesson=${lesson.id}`)}>
                 <Compass size={14} />
-                <span>Open In Player</span>
+                <span>{t('browse.openInPlayer')}</span>
               </Button>
             </article>
           ))}

@@ -2,11 +2,13 @@ import { useMemo, useState } from 'react';
 import { CloudUpload, FileText, Sparkles } from 'lucide-react';
 import Button from '../ui/Button';
 import SurfaceCard from '../ui/SurfaceCard';
+import { useI18n } from '../../i18n/I18nProvider';
 import { featureEnabled, useCapabilities } from '../../lib/capabilities';
 
 const ACCEPTED_TYPES = ['.pptx', '.pdf', '.docx', '.txt'];
 
 export default function UploadComposer({ categories, submitting, submitError, onSubmit }) {
+  const { t } = useI18n();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const [title, setTitle] = useState('');
@@ -26,7 +28,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
     if (!file) return '';
     const extension = `.${String(file.name).split('.').pop().toLowerCase()}`;
     if (!ACCEPTED_TYPES.includes(extension)) {
-      return `Unsupported file type. Use ${ACCEPTED_TYPES.join(', ')}`;
+      return t('studio.unsupportedFileType', { types: ACCEPTED_TYPES.join(', ') });
     }
     return '';
   })();
@@ -51,33 +53,33 @@ export default function UploadComposer({ categories, submitting, submitError, on
   return (
     <SurfaceCard elevated className="space-y-5">
       <div>
-        <p className="label-sm">Authoring</p>
-        <h2 className="headline-md mt-1 text-[var(--text-primary)]">Create A New Lesson Draft</h2>
+        <p className="label-sm">{t('studio.authoring')}</p>
+        <h2 className="headline-md mt-1 text-[var(--text-primary)]">{t('studio.createLessonDraftTitle')}</h2>
         <p className="body-md mt-2">
-          Upload source material and tune pacing. Publish the lesson after the render is ready.
+          {t('studio.createLessonDraftBody')}
         </p>
       </div>
 
       <form className="space-y-4" onSubmit={handleSubmit}>
         <label className="block text-sm text-[var(--text-secondary)]">
-          Lesson title
+          {t('studio.lessonTitle')}
           <input
             type="text"
             value={title}
             onChange={(event) => setTitle(event.target.value)}
-            placeholder="Designing Cinematic AI Interfaces"
+            placeholder={t('studio.lessonTitlePlaceholder')}
             className="focus-ring mt-1 h-11 w-full rounded-2xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)] px-3 text-[var(--text-primary)]"
           />
         </label>
 
         <label className="block text-sm text-[var(--text-secondary)]">
-          Category
+          {t('studio.category')}
           <input
             type="text"
             value={category}
             onChange={(event) => setCategory(event.target.value)}
             list="studio-category-options"
-            placeholder="AI Product, Design, Storytelling"
+            placeholder={t('studio.categoryPlaceholder')}
             className="focus-ring mt-1 h-11 w-full rounded-2xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)] px-3 text-[var(--text-primary)]"
           />
           <datalist id="studio-category-options">
@@ -89,7 +91,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
 
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm text-[var(--text-secondary)]">
-            Pause between slides (sec)
+            {t('studio.pauseBetweenSlides')}
             <input
               type="number"
               min="0"
@@ -107,7 +109,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
                 checked={whiteboardModeAll}
                 onChange={(event) => setWhiteboardModeAll(event.target.checked)}
               />
-              <span>Whiteboard style on all slides</span>
+              <span>{t('studio.whiteboardAllSlides')}</span>
             </label>
             {avatarFeatureEnabled && (
               <>
@@ -117,10 +119,10 @@ export default function UploadComposer({ categories, submitting, submitError, on
                     checked={avatarEnabled}
                     onChange={(event) => setAvatarEnabled(event.target.checked)}
                   />
-                  <span>Render with avatar</span>
+                  <span>{t('studio.renderWithAvatar')}</span>
                 </label>
                 <p className="px-3 text-xs text-[var(--text-secondary)]">
-                  Avatar jobs use the separate avatar queue and can take longer.
+                  {t('studio.avatarQueueHint')}
                 </p>
               </>
             )}
@@ -128,7 +130,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
         </div>
 
         <label className="block text-sm text-[var(--text-secondary)]">
-          Source file
+          {t('studio.sourceFile')}
           <div className="mt-1 rounded-2xl border border-dashed border-[var(--border-subtle)] bg-[color:var(--surface-muted)] p-4">
             <input
               type="file"
@@ -137,7 +139,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
               className="focus-ring block w-full cursor-pointer text-sm text-[var(--text-primary)]"
             />
             <p className="mt-2 text-xs text-[var(--text-secondary)]">
-              Supported: {ACCEPTED_TYPES.join(', ')}
+              {t('studio.supportedTypes', { types: ACCEPTED_TYPES.join(', ') })}
             </p>
             {file && (
               <p className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--text-primary)]">
@@ -149,7 +151,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
         </label>
 
         <label className="block text-sm text-[var(--text-secondary)]">
-          Cover image (optional)
+          {t('studio.coverImageOptional')}
           <div className="mt-1 rounded-2xl border border-dashed border-[var(--border-subtle)] bg-[color:var(--surface-muted)] p-4">
             <input
               type="file"
@@ -158,7 +160,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
               className="focus-ring block w-full cursor-pointer text-sm text-[var(--text-primary)]"
             />
             <p className="mt-2 text-xs text-[var(--text-secondary)]">
-              PNG, JPG, WEBP, or GIF. Recommended 16:9 image.
+              {t('studio.coverHint')}
             </p>
             {coverFile && (
               <p className="mt-2 inline-flex items-center gap-1 text-xs text-[var(--text-primary)]">
@@ -178,7 +180,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
         <div className="flex flex-wrap gap-3">
           <Button type="submit" disabled={!file || submitting || Boolean(localValidationError)}>
             <CloudUpload size={16} />
-            <span>{submitting ? 'Creating...' : 'Create Lesson Draft'}</span>
+            <span>{submitting ? t('common.creating') : t('studio.createLessonDraft')}</span>
           </Button>
           <Button type="button" variant="secondary" onClick={() => {
             setTitle('');
@@ -190,7 +192,7 @@ export default function UploadComposer({ categories, submitting, submitError, on
             setCoverFile(null);
           }}>
             <Sparkles size={16} />
-            <span>Reset</span>
+            <span>{t('studio.resetForm')}</span>
           </Button>
         </div>
       </form>

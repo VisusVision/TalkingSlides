@@ -6,16 +6,22 @@ import { I18nProvider, useI18n } from './I18nProvider';
 import { LANGUAGE_STORAGE_KEY } from './translations';
 
 function Probe() {
-  const { t } = useI18n();
+  const { formatDate, formatDuration, formatNumber, formatViews, t } = useI18n();
   return (
     <div>
       <LanguageSelector />
       <p data-testid="save-label">{t('common.save')}</p>
+      <p data-testid="dashboard-label">{t('dashboard.continueWatching')}</p>
+      <p data-testid="studio-label">{t('studio.createLessonDraft')}</p>
       <p data-testid="settings-label">{t('common.settings')}</p>
       <p data-testid="watch-label">{t('watch.focusedContext')}</p>
       <p data-testid="subtitle-label">{t('watch.subtitles')}</p>
       <p data-testid="moderation-label">{t('moderation.reportIssue')}</p>
       <p data-testid="recorder-label">{t('avatar.recorderStatuses.idle')}</p>
+      <p data-testid="date-label">{formatDate('2026-06-22T12:00:00Z')}</p>
+      <p data-testid="duration-label">{formatDuration(90)}</p>
+      <p data-testid="number-label">{formatNumber(1250)}</p>
+      <p data-testid="views-label">{formatViews(1250)}</p>
     </div>
   );
 }
@@ -84,15 +90,27 @@ describe('I18nProvider', () => {
 
     await selectLanguage(host, 'tr');
     expect(host.querySelector('[data-testid="save-label"]')).toHaveTextContent('Kaydet');
+    expect(host.querySelector('[data-testid="dashboard-label"]')).toHaveTextContent('Izlemeye Devam Et');
+    expect(host.querySelector('[data-testid="studio-label"]')).toHaveTextContent('Ders Taslagi Olustur');
     expect(host.querySelector('[data-testid="settings-label"]')).toHaveTextContent('Ayarlar');
     expect(host.querySelector('[data-testid="watch-label"]')).toHaveTextContent('Odakli Baglamla Calis');
     expect(host.querySelector('[data-testid="subtitle-label"]')).toHaveTextContent('Altyazilar');
     expect(host.querySelector('[data-testid="moderation-label"]')).toHaveTextContent('Ders sorununu bildir');
     expect(host.querySelector('[data-testid="recorder-label"]')).toHaveTextContent('Bos');
+    expect(host.querySelector('[data-testid="date-label"]')).toHaveTextContent('22 Haz 2026');
+    expect(host.querySelector('[data-testid="duration-label"]')).toHaveTextContent('1,5 sa');
+    expect(host.querySelector('[data-testid="number-label"]')).toHaveTextContent('1.250');
+    expect(host.querySelector('[data-testid="views-label"]')).toHaveTextContent('1.250 goruntulenme');
     expect(window.localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('tr');
 
     await selectLanguage(host, 'en');
     expect(host.querySelector('[data-testid="save-label"]')).toHaveTextContent('Save');
+    expect(host.querySelector('[data-testid="dashboard-label"]')).toHaveTextContent('Continue Watching');
+    expect(host.querySelector('[data-testid="studio-label"]')).toHaveTextContent('Create Lesson Draft');
+    expect(host.querySelector('[data-testid="date-label"]')).toHaveTextContent('Jun 22, 2026');
+    expect(host.querySelector('[data-testid="duration-label"]')).toHaveTextContent('1.5 h');
+    expect(host.querySelector('[data-testid="number-label"]')).toHaveTextContent('1,250');
+    expect(host.querySelector('[data-testid="views-label"]')).toHaveTextContent('1,250 views');
     expect(window.localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('en');
 
     await act(async () => root.unmount());

@@ -1,6 +1,5 @@
 import { Clock3, PlayCircle } from 'lucide-react';
 import LessonActionButton from '../moderation/LessonActionButton';
-import { formatDuration, formatViews } from '../../lib/content';
 import { useI18n } from '../../i18n/I18nProvider';
 
 function backgroundFromLesson(lesson) {
@@ -18,8 +17,7 @@ function backgroundFromLesson(lesson) {
 }
 
 export default function LessonCard({ lesson, onOpen, compact = false, user, onLoginRequest }) {
-  const { t } = useI18n();
-  const viewCount = formatViews(lesson.views).replace(/\s+views$/, '');
+  const { t, formatDuration, formatViews } = useI18n();
 
   return (
     <article
@@ -61,7 +59,7 @@ export default function LessonCard({ lesson, onOpen, compact = false, user, onLo
           <p className="title-lg line-clamp-2 text-[var(--text-primary)]">{lesson.title}</p>
           <p className="mt-2 text-sm text-[var(--text-secondary)]">{lesson.teacherName}</p>
           <div className="mt-3 flex items-center justify-between text-xs text-[var(--text-secondary)]">
-            <span>{t('content.views', { count: viewCount })}</span>
+            <span>{formatViews(lesson.views)}</span>
             {lesson.badge && (
               <span className="rounded-full bg-[color:color-mix(in_srgb,var(--accent-primary),transparent_82%)] px-2 py-1 text-[11px] font-medium text-[var(--text-primary)]">
                 {lesson.badge}

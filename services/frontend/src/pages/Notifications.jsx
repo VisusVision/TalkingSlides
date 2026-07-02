@@ -8,8 +8,8 @@ import {
   markNotificationRead,
 } from '../api';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { useI18n } from '../i18n/I18nProvider';
 import {
-  formatNotificationTime,
   isSafeNotificationActionUrl,
   notifyNotificationsChanged,
   notificationPageInfo,
@@ -18,11 +18,12 @@ import NotificationTypeIcon from '../components/ui/NotificationTypeIcon';
 
 const PAGE_SIZE = 20;
 const FILTERS = [
-  { id: 'all', label: 'All' },
-  { id: 'unread', label: 'Unread' },
+  { id: 'all', labelKey: 'notifications.allFilter' },
+  { id: 'unread', labelKey: 'notifications.unreadFilterLabel' },
 ];
 
 function NotificationRow({ notification, onOpen, onMarkRead }) {
+  const { t, formatDateTime } = useI18n();
   const unread = !notification.is_read;
   const actionUrl = String(notification.action_url || '').trim();
 
@@ -50,7 +51,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
                 {notification.title}
               </h2>
               <span className="shrink-0 text-xs font-medium text-[var(--outline)]">
-                {formatNotificationTime(notification.created_at)}
+                {formatDateTime(notification.created_at)}
               </span>
             </div>
             {notification.body && (
@@ -59,8 +60,8 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
               </p>
             )}
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--outline)]">
-              {unread ? <span>Unread</span> : <span>Read</span>}
-              {actionUrl && <span>Open destination</span>}
+              {unread ? <span>{t('common.unreadStatus')}</span> : <span>{t('common.read')}</span>}
+              {actionUrl && <span>{t('common.openDestination')}</span>}
             </div>
           </button>
 
@@ -71,7 +72,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
               className="focus-ring mt-3 inline-flex h-8 items-center gap-1.5 rounded-full bg-[var(--surface-container-high)] px-3 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
             >
               <Check size={14} />
-              Mark read
+              {t('common.markRead')}
             </button>
           )}
         </div>
@@ -81,6 +82,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
 }
 
 export default function Notifications({ user }) {
+  const { t, formatNumber } = useI18n();
   const navigate = useNavigate();
   const [filter, setFilter] = useState('all');
   const [notifications, setNotifications] = useState([]);
@@ -126,12 +128,12 @@ export default function Notifications({ user }) {
       setPageInfo(info);
       setNotifications((current) => (reset ? info.results : [...current, ...info.results]));
     } catch (loadError) {
-      setError(loadError?.message || 'Failed to load notifications');
+      setError(loadError?.message || t('notifications.loadError'));
     } finally {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [pageInfo.nextOffset, unreadOnly]);
+  }, [pageInfo.nextOffset, t, unreadOnly]);
 
   useEffect(() => {
     refreshUnreadCount();
@@ -166,7 +168,7 @@ export default function Notifications({ user }) {
       updateAfterRead(notification);
       return true;
     } catch (readError) {
-      setError(readError?.message || 'Failed to update notification');
+      setError(readError?.message || t('notifications.updateOneError'));
       return false;
     }
   };
@@ -197,26 +199,26 @@ export default function Notifications({ user }) {
       }));
       notifyNotificationsChanged();
     } catch (markError) {
-      setError(markError?.message || 'Failed to mark notifications read');
+      setError(markError?.message || t('notifications.markAllError'));
     } finally {
       setMarkAllLoading(false);
     }
   };
 
-  const emptyTitle = unreadOnly ? 'No unread notifications' : 'No notifications yet';
+  const emptyTitle = unreadOnly ? t('notifications.noneUnread') : t('notifications.none');
   const emptyBody = unreadOnly
-    ? 'Everything visible here has been read.'
-    : 'New lesson activity, comments, and render updates will appear here.';
+    ? t('notifications.noneUnreadPageBody')
+    : t('notifications.nonePageBody');
 
   return (
     <div className="mx-auto flex w-[calc(100vw-3rem)] max-w-5xl min-w-0 flex-col gap-5 overflow-x-hidden px-3 pb-8 sm:w-full sm:px-5 lg:px-6">
       <section className="min-w-0 rounded-none bg-transparent py-2">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
-            <p className="label-sm">Notifications</p>
-            <h1 className="display-lg mt-2 text-[var(--text-primary)]">Notification center</h1>
+            <p className="label-sm">{t('notifications.title')}</p>
+            <h1 className="display-lg mt-2 text-[var(--text-primary)]">{t('notifications.center')}</h1>
             <p className="body-md mt-2 max-w-[19rem] sm:max-w-2xl">
-              Review comments, followed publisher updates, and render status changes.
+              {t('notifications.centerBody')}
             </p>
           </div>
           <button
@@ -226,7 +228,7 @@ export default function Notifications({ user }) {
             className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
             <CheckCheck size={16} />
-            <span>{markAllLoading ? 'Updating...' : 'Mark all read'}</span>
+            <span>{markAllLoading ? t('common.updating') : t('notifications.markAllRead')}</span>
           </button>
         </div>
       </section>
@@ -247,7 +249,7 @@ export default function Notifications({ user }) {
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >
-                  {option.label}
+                  {t(option.labelKey)}
                   {option.id === 'unread' && unreadCount > 0 && (
                     <span className="rounded-full bg-[var(--accent-primary)] px-1.5 text-[0.68rem] leading-5 text-white">
                       {unreadCount > 99 ? '99+' : unreadCount}
@@ -259,7 +261,10 @@ export default function Notifications({ user }) {
           </div>
 
           <p className="text-sm text-[var(--text-secondary)]">
-            {pageInfo.count} {pageInfo.count === 1 ? 'notification' : 'notifications'}
+            {t('notifications.count', {
+              count: formatNumber(pageInfo.count),
+              plural: pageInfo.count === 1 ? '' : 's',
+            })}
           </p>
         </div>
 
@@ -272,7 +277,7 @@ export default function Notifications({ user }) {
         {loading && (
           <div className="flex items-center gap-2 rounded-lg bg-[var(--surface-container-low)] px-4 py-6 text-sm text-[var(--text-secondary)]">
             <Loader2 size={16} className="animate-spin" />
-            Loading notifications...
+            {t('notifications.loadingTitle')}...
           </div>
         )}
 
@@ -308,7 +313,7 @@ export default function Notifications({ user }) {
               className="focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loadingMore ? <Loader2 size={16} className="animate-spin" /> : <Bell size={16} />}
-              <span>{loadingMore ? 'Loading...' : 'Load more'}</span>
+              <span>{loadingMore ? `${t('common.loading')}...` : t('common.loadMore')}</span>
             </button>
           </div>
         )}

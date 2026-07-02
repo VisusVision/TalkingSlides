@@ -44,10 +44,27 @@ function interpolate(template, params = {}) {
 
 export const I18nContext = createContext({
   language: DEFAULT_LANGUAGE,
+  locale: 'en-US',
   languageOptions: LANGUAGE_OPTIONS,
+  formatDate: () => '',
+  formatDateTime: () => '',
+  formatDuration: () => '',
+  formatNumber: (value) => String(value ?? ''),
+  formatViews: () => '',
   setLanguage: () => {},
   t: (key, params) => interpolate(readPath(translations[DEFAULT_LANGUAGE], key) || key, params),
 });
+
+const LOCALES = {
+  en: 'en-US',
+  tr: 'tr-TR',
+};
+
+function parseDate(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
 
 export function I18nProvider({ children }) {
   const [language, setLanguageState] = useState(resolveInitialLanguage);
@@ -63,15 +80,70 @@ export function I18nProvider({ children }) {
   }, [language]);
 
   const value = useMemo(() => {
+    const locale = LOCALES[language] || LOCALES[DEFAULT_LANGUAGE];
+
     const t = (key, params = {}) => {
       const localized = readPath(translations[language], key);
       const fallback = readPath(translations[DEFAULT_LANGUAGE], key);
       return interpolate(localized ?? fallback ?? key, params);
     };
 
+    const formatNumber = (value, options = {}) => {
+      const numeric = Number(value);
+      return new Intl.NumberFormat(locale, options).format(Number.isFinite(numeric) ? numeric : 0);
+    };
+
+    const formatDate = (value, options = {}) => {
+      const date = parseDate(value);
+      if (!date) return '';
+      return new Intl.DateTimeFormat(locale, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        ...options,
+      }).format(date);
+    };
+
+    const formatDateTime = (value, options = {}) => {
+      const date = parseDate(value);
+      if (!date) return '';
+      return new Intl.DateTimeFormat(locale, {
+        month: 'short',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        ...options,
+      }).format(date);
+    };
+
+    const formatDuration = (minutes) => {
+      const totalMinutes = Math.max(1, Number(minutes || 0));
+      if (totalMinutes >= 60) {
+        const hours = totalMinutes / 60;
+        return t('common.durationHours', {
+          value: formatNumber(hours, {
+            maximumFractionDigits: hours % 1 === 0 ? 0 : 1,
+          }),
+        });
+      }
+      return t('common.durationMinutes', {
+        value: formatNumber(Math.round(totalMinutes), { maximumFractionDigits: 0 }),
+      });
+    };
+
+    const formatViews = (value) => t('common.viewsCount', {
+      count: formatNumber(Math.max(0, Number(value || 0))),
+    });
+
     return {
       language,
+      locale,
       languageOptions: LANGUAGE_OPTIONS,
+      formatDate,
+      formatDateTime,
+      formatDuration,
+      formatNumber,
+      formatViews,
       setLanguage,
       t,
     };

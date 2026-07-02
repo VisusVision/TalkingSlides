@@ -26,6 +26,7 @@ import {
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { useI18n } from '../i18n/I18nProvider';
 import { canAccessStudio } from '../lib/auth';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -37,9 +38,9 @@ import {
 } from '../utils/routeSession';
 
 const RANGE_OPTIONS = [
-  { key: '7', label: 'Last 7 days' },
-  { key: '30', label: '30 days' },
-  { key: '90', label: '90 days' },
+  { key: '7', labelKey: 'analytics.ranges.last7' },
+  { key: '30', labelKey: 'analytics.ranges.last30' },
+  { key: '90', labelKey: 'analytics.ranges.last90' },
 ];
 
 const DONUT_COLORS = [
@@ -55,15 +56,6 @@ const ANALYTICS_INTELLIGENCE_ENHANCEMENT_POLL_INTERVAL_MS = 6000;
 function toNumber(value, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function compactNumber(value, options = {}) {
-  const numeric = toNumber(value);
-  return new Intl.NumberFormat('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-    ...options,
-  }).format(numeric);
 }
 
 function percent(value) {
@@ -120,25 +112,6 @@ function rangeDates(rangeKey) {
 
 function isStaffUser(user) {
   return Boolean(user?.is_staff || user?.is_superuser);
-}
-
-function formatDate(value) {
-  if (!value) return 'Recently updated';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'Recently updated';
-  return `Updated ${parsed.toLocaleDateString('en-US')}`;
-}
-
-function formatActivityTimestamp(value) {
-  if (!value) return 'Recent';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return 'Recent';
-  return parsed.toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
 }
 
 function emptyAnalyticsStats() {
@@ -261,25 +234,10 @@ function normalizeRecentActivity(source) {
     timestamp: String(item?.timestamp || ''),
     title: String(item?.lesson_title || item?.title || 'Lesson activity'),
     value: item?.value,
-  })).map((item) => {
-    const progress = Math.max(0, Math.min(100, Math.round(toNumber(item.value, 0))));
-    const labels = {
-      progress: 'Progress',
-      like: 'Like',
-      comment: 'Comment',
-    };
-    const descriptions = {
-      progress: `A learner reached ${progress}% progress`,
-      like: 'A learner liked a lesson',
-      comment: 'A learner commented',
-    };
-    return {
-      ...item,
-      label: labels[item.type] || 'Activity',
-      description: descriptions[item.type] || 'Learner activity was recorded',
-      timeLabel: formatActivityTimestamp(item.timestamp),
-    };
-  });
+  })).map((item) => ({
+    ...item,
+    progress: Math.max(0, Math.min(100, Math.round(toNumber(item.value, 0)))),
+  }));
 }
 
 function normalizeCategoryBreakdown(source) {
@@ -311,24 +269,24 @@ function trendValue(rawValue, hasActivity) {
   return numeric;
 }
 
-function buildInsight(metrics, categoryBreakdown) {
+function buildInsight(metrics, categoryBreakdown, t) {
   if (metrics.totalLessons <= 0 || (metrics.totalViews <= 0 && metrics.engagementEvents <= 0)) {
-    return 'No activity yet. Share a published lesson to collect insights.';
+    return t('analytics.noActivityInsight');
   }
   if (metrics.completionRate > 0 && metrics.completionRate < 50) {
-    return 'Completion rate is low. Consider shorter sections or clearer lesson checkpoints.';
+    return t('analytics.lowCompletionInsight');
   }
   const topCategory = categoryBreakdown[0];
   if (topCategory?.name && topCategory.engagement > 0) {
-    return `${topCategory.name} is currently driving the most recorded engagement in this range.`;
+    return t('analytics.topCategoryInsight', { category: topCategory.name });
   }
   if (metrics.uniqueViewers > 0 && metrics.engagementEvents > metrics.uniqueViewers) {
-    return 'Learners are generating repeat engagement through progress, likes, or comments.';
+    return t('analytics.repeatEngagementInsight');
   }
-  return 'Analytics are based on recorded progress, likes, and comments. More activity will make these signals more useful.';
+  return t('analytics.defaultInsight');
 }
 
-function normalizeAnalyticsStats(payload) {
+function normalizeAnalyticsStats(payload, t) {
   if (!payload || typeof payload !== 'object') {
     return emptyAnalyticsStats();
   }
@@ -384,7 +342,7 @@ function normalizeAnalyticsStats(payload) {
     recentActivity,
     categoryBreakdown,
     categoryOptions,
-    insight: buildInsight(metrics, categoryBreakdown),
+    insight: buildInsight(metrics, categoryBreakdown, t),
     isEmpty: !hasActivity,
     meta: payload.meta || {},
   };
@@ -895,6 +853,11 @@ function analyticsIntelligenceCopyText(report) {
 }
 
 function CategoryDonut({ categories }) {
+  const { t, formatNumber } = useI18n();
+  const compact = useCallback((value) => formatNumber(value, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  }), [formatNumber]);
   const visibleCategories = categories.slice(0, 6);
   const total = visibleCategories.reduce((sum, category) => sum + Math.max(0, toNumber(category.value, 0)), 0);
   const radius = 42;
@@ -938,9 +901,9 @@ function CategoryDonut({ categories }) {
         </svg>
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span className="font-['Manrope'] text-lg font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">
-            {compactNumber(total)}
+            {compact(total)}
           </span>
-          <span className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">events</span>
+          <span className="text-[0.62rem] font-semibold uppercase tracking-[0.12em] text-[var(--text-secondary)]">{t('analytics.events')}</span>
         </div>
       </div>
       <div className="min-w-0 flex-1 space-y-2">
@@ -953,7 +916,7 @@ function CategoryDonut({ categories }) {
               />
               <span className="line-clamp-1 font-semibold text-[var(--text-primary)]">{category.name}</span>
             </span>
-            <span className="font-semibold text-[var(--text-secondary)]">{compactNumber(category.value)}</span>
+            <span className="font-semibold text-[var(--text-secondary)]">{compact(category.value)}</span>
           </div>
         ))}
       </div>
@@ -983,6 +946,7 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
 }
 
 export default function Analytics({ user }) {
+  const { t, formatDate, formatDateTime, formatDuration, formatNumber, formatViews } = useI18n();
   const location = useLocation();
   const { capabilities } = useCapabilities();
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
@@ -1029,6 +993,11 @@ export default function Analytics({ user }) {
   const canCreateLesson = canAccessStudio(user);
   const canReviewModeration = isStaffUser(user);
   const hasActivity = !stats.isEmpty;
+  const compact = useCallback((value, options = {}) => formatNumber(value, {
+    notation: 'compact',
+    maximumFractionDigits: 1,
+    ...options,
+  }), [formatNumber]);
   const analyticsFilters = useMemo(() => {
     const dateRange = rangeDates(rangeKey);
     return {
@@ -1098,20 +1067,20 @@ export default function Analytics({ user }) {
       const payload = await fetchMyAnalytics(analyticsFilters);
 
       if (!activeRef.current) return;
-      const normalized = normalizeAnalyticsStats(payload);
+      const normalized = normalizeAnalyticsStats(payload, t);
       setStats(normalized);
       setAnalyticsCategories(normalized.categoryOptions);
     } catch (statsError) {
       if (!activeRef.current) return;
       setStats(emptyAnalyticsStats());
       setAnalyticsCategories([]);
-      setError(statsError.message || 'Could not load analytics.');
+      setError(statsError.message || t('analytics.couldNotLoad'));
     } finally {
       if (activeRef.current) {
         setLoading(false);
       }
     }
-  }, [analyticsFilters, user]);
+  }, [analyticsFilters, t, user]);
 
   const loadIntelligenceReport = useCallback(async (activeRef = { current: true }) => {
     if (!intelligenceFeatureEnabled) {
@@ -1134,13 +1103,13 @@ export default function Analytics({ user }) {
       if (!activeRef.current) return;
       setIntelligenceReport(null);
       setIntelligenceLoadedFilterKey(analyticsFilterKey);
-      setIntelligenceError(intelligenceLoadError.message || 'Analytics Intelligence is unavailable.');
+      setIntelligenceError(intelligenceLoadError.message || t('analytics.intelligenceUnavailable'));
     } finally {
       if (activeRef.current) {
         setIntelligenceLoading(false);
       }
     }
-  }, [analyticsFilterKey, analyticsFilters, intelligenceFeatureEnabled]);
+  }, [analyticsFilterKey, analyticsFilters, intelligenceFeatureEnabled, t]);
 
   useEffect(() => {
     const activeRef = { current: true };
@@ -1314,22 +1283,22 @@ export default function Analytics({ user }) {
     <div className="space-y-7 pb-8">
       <header className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="font-['Manrope'] text-4xl font-extrabold tracking-[-0.04em] text-[var(--text-primary)]">Performance Overview</h1>
-          <p className="mt-2 text-sm text-[var(--text-secondary)]">Real engagement signals from lesson progress, likes, and comments.</p>
+          <h1 className="font-['Manrope'] text-4xl font-extrabold tracking-[-0.04em] text-[var(--text-primary)]">{t('analytics.performanceOverview')}</h1>
+          <p className="mt-2 text-sm text-[var(--text-secondary)]">{t('analytics.performanceBody')}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {analyticsCategories.length > 0 && (
             <label className="focus-within:ring-focus inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-xs font-semibold text-[var(--text-secondary)]">
               <Filter size={14} />
-              <span className="sr-only">Filter by category</span>
+              <span className="sr-only">{t('analytics.filterByCategory')}</span>
               <select
                 value={categorySlug}
                 onChange={(event) => setCategorySlug(event.target.value)}
                 className="h-8 min-w-[10rem] rounded-full border-0 bg-[var(--surface-elevated)] px-1 text-xs font-semibold text-[var(--text-primary)] outline-none"
                 style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}
               >
-                <option value="" style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}>All categories</option>
+                <option value="" style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}>{t('analytics.allCategories')}</option>
                 {analyticsCategories.map((category) => (
                   <option
                     key={category.slug}
@@ -1355,7 +1324,7 @@ export default function Analytics({ user }) {
                     : 'text-[var(--text-secondary)] hover:bg-[var(--surface-container-high)] hover:text-[var(--text-primary)]'
                 }`}
               >
-                {option.label}
+              {t(option.labelKey)}
               </button>
             ))}
           </div>
@@ -1367,7 +1336,7 @@ export default function Analytics({ user }) {
             className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)] disabled:cursor-wait disabled:opacity-60"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
+            {t('common.reload')}
           </button>
         </div>
       </header>
@@ -1382,26 +1351,26 @@ export default function Analytics({ user }) {
         <SurfaceCard className="rounded-3xl border border-[color:rgba(208,188,255,0.22)] bg-[color:rgba(208,188,255,0.08)] p-6">
           <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="label-sm">No analytics yet</p>
+              <p className="label-sm">{t('analytics.noAnalyticsYet')}</p>
               <h2 className="mt-1 font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">
-                Publish lessons and collect watch activity to see insights.
+                {t('analytics.emptyTitle')}
               </h2>
               <p className="mt-2 max-w-2xl text-sm text-[var(--text-secondary)]">
-                This dashboard stays empty until real progress, likes, or comments are recorded.
+                {t('analytics.emptyBody')}
               </p>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center text-xs text-[var(--text-secondary)]">
               <div className="rounded-2xl bg-[color:var(--surface-muted)]/35 p-3">
-                <p className="font-['Manrope'] text-xl font-bold text-[var(--text-primary)]">{compactNumber(stats.metrics.publishedLessons)}</p>
-                <p>Published</p>
+                <p className="font-['Manrope'] text-xl font-bold text-[var(--text-primary)]">{compact(stats.metrics.publishedLessons)}</p>
+                <p>{t('common.published')}</p>
               </div>
               <div className="rounded-2xl bg-[color:var(--surface-muted)]/35 p-3">
-                <p className="font-['Manrope'] text-xl font-bold text-[var(--text-primary)]">{compactNumber(stats.metrics.draftLessons)}</p>
-                <p>Drafts</p>
+                <p className="font-['Manrope'] text-xl font-bold text-[var(--text-primary)]">{compact(stats.metrics.draftLessons)}</p>
+                <p>{t('common.draft')}</p>
               </div>
               <div className="rounded-2xl bg-[color:var(--surface-muted)]/35 p-3">
                 <p className="font-['Manrope'] text-xl font-bold text-[var(--text-primary)]">0</p>
-                <p>Events</p>
+                <p>{t('analytics.events')}</p>
               </div>
             </div>
           </div>
@@ -1415,12 +1384,12 @@ export default function Analytics({ user }) {
               <ShieldCheck size={20} />
             </span>
             <div>
-              <p className="label-sm">Moderation Review</p>
+              <p className="label-sm">{t('analytics.moderationReview')}</p>
               <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">
-                Staff moderation queue
+                {t('analytics.staffModerationQueue')}
               </h2>
               <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                Open review requests now live in the dedicated moderation dashboard.
+                {t('analytics.moderationReviewBody')}
               </p>
             </div>
           </div>
@@ -1428,7 +1397,7 @@ export default function Analytics({ user }) {
             to="/moderation"
             className="focus-ring inline-flex h-10 items-center justify-center rounded-full bg-[image:var(--accent-gradient)] px-4 text-sm font-bold text-white transition hover:scale-105 active:scale-95"
           >
-            Open Moderation
+            {t('analytics.openModeration')}
           </Link>
         </SurfaceCard>
       )}
@@ -1436,21 +1405,21 @@ export default function Analytics({ user }) {
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard
           icon={Eye}
-          label="Total Views"
-          value={compactNumber(stats.metrics.totalViews)}
+          label={t('analytics.views')}
+          value={compact(stats.metrics.totalViews)}
           trend={stats.metrics.trendViewsPct}
           active={hasActivity}
-          hint={`${compactNumber(stats.metrics.uniqueViewers)} unique viewers`}
-          emptyHint="No activity yet"
+          hint={`${compact(stats.metrics.uniqueViewers)} unique viewers`}
+          emptyHint={t('analytics.noActivityInsight')}
         />
         <KpiCard
           icon={Clock3}
-          label="Watch Time"
-          value={`${compactNumber(stats.metrics.watchHours)} hrs`}
+          label={t('analytics.watchTime')}
+          value={formatDuration(stats.metrics.watchHours * 60)}
           trend={stats.metrics.trendWatchPct}
           active={hasActivity}
           hint={stats.meta?.estimated_metrics ? 'Estimated from progress.' : 'Recorded watch time.'}
-          emptyHint="No watch time yet"
+          emptyHint={t('analytics.noActivityInsight')}
         />
         <SurfaceCard className="flex min-h-[10.5rem] items-center justify-between gap-4">
           <div className="min-w-0">
@@ -1460,21 +1429,21 @@ export default function Analytics({ user }) {
               </span>
               <TrendBadge value={stats.metrics.trendCompletionPct} />
             </div>
-            <p className="mt-4 text-[0.66rem] font-semibold uppercase tracking-[0.13em] text-[var(--text-secondary)]">Completion Rate</p>
+            <p className="mt-4 text-[0.66rem] font-semibold uppercase tracking-[0.13em] text-[var(--text-secondary)]">{t('analytics.completion')}</p>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              {hasActivity ? `${percent(stats.metrics.averageProgress)} average progress` : 'No activity yet'}
+              {hasActivity ? t('analytics.progressLabel', { value: percent(stats.metrics.averageProgress) }) : t('analytics.noActivityInsight')}
             </p>
           </div>
           <CompletionRing value={stats.metrics.completionRate} />
         </SurfaceCard>
         <KpiCard
           icon={MessageSquare}
-          label="Engagement Events"
-          value={compactNumber(stats.metrics.engagementEvents)}
+          label={t('analytics.engagement')}
+          value={compact(stats.metrics.engagementEvents)}
           trend={stats.metrics.trendEngagementPct}
           active={hasActivity}
-          hint={`${compactNumber(stats.metrics.likes)} likes / ${compactNumber(stats.metrics.comments)} comments`}
-          emptyHint="No engagement yet"
+          hint={t('analytics.likesComments', { likes: compact(stats.metrics.likes), comments: compact(stats.metrics.comments) })}
+          emptyHint={t('analytics.noActivityInsight')}
         />
       </section>
 
@@ -1482,7 +1451,7 @@ export default function Analytics({ user }) {
         <SurfaceCard className="flex min-h-[24rem] flex-col gap-6">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Views over time</h2>
+              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">{t('analytics.views')}</h2>
               <p className="text-xs text-[var(--text-secondary)]">Recorded progress activity by day</p>
             </div>
             <span className="rounded-full bg-[color:var(--surface-muted)]/40 px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
@@ -1513,7 +1482,7 @@ export default function Analytics({ user }) {
                         }}
                       >
                         <span className="absolute -top-8 left-1/2 hidden -translate-x-1/2 whitespace-nowrap rounded-lg bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] text-[var(--text-primary)] shadow-soft group-hover:block">
-                          {compactNumber(point.value)}
+                          {compact(point.value)}
                         </span>
                       </div>
                       <span className="truncate text-center text-[0.62rem] font-semibold uppercase tracking-[0.08em] text-[var(--text-secondary)]">{point.label}</span>
@@ -1523,7 +1492,7 @@ export default function Analytics({ user }) {
               </div>
               <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
                 <span>0</span>
-                <span>{compactNumber(seriesMax)} views</span>
+                <span>{formatViews(seriesMax)}</span>
               </div>
             </div>
           ) : (
@@ -1534,7 +1503,7 @@ export default function Analytics({ user }) {
         <SurfaceCard className="flex min-h-[24rem] flex-col gap-6 xl:max-h-[34rem]">
           <div>
             <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Category Breakdown</h2>
-            <p className="text-xs text-[var(--text-secondary)]">Engagement by owned lesson category</p>
+            <p className="text-xs text-[var(--text-secondary)]">{t('analytics.engagement')}</p>
           </div>
           {stats.categoryBreakdown.length > 0 ? (
             <div data-testid="analytics-category-list" className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
@@ -1548,20 +1517,24 @@ export default function Analytics({ user }) {
                   <article key={category.id} data-testid="analytics-category-row" className="space-y-2">
                     <div className="flex items-center justify-between gap-3 text-sm">
                       <p className="line-clamp-1 font-semibold text-[var(--text-primary)]">{category.name}</p>
-                      <p className="text-xs font-semibold text-[var(--accent-primary)]">{compactNumber(category.value)}</p>
+                      <p className="text-xs font-semibold text-[var(--accent-primary)]">{compact(category.value)}</p>
                     </div>
                     <div className="h-2.5 rounded-full bg-[color:var(--surface-muted)]">
                       <div className="h-full rounded-full" style={{ width: `${width}%`, backgroundColor: color }} />
                     </div>
                     <p className="text-[0.68rem] text-[var(--text-secondary)]">
-                      {compactNumber(category.views)} views / {compactNumber(category.engagement)} events / {compactNumber(category.lessonCount)} lessons
+                      {t('analytics.categoryStats', {
+                        views: compact(category.views),
+                        events: compact(category.engagement),
+                        lessons: compact(category.lessonCount),
+                      })}
                     </p>
                   </article>
                 );
               })}
             </div>
           ) : (
-            <EmptyPanel message="Category breakdown will appear once lessons collect activity." className="min-h-[17rem] flex-1" />
+            <EmptyPanel message={t('analytics.categoryBreakdownEmpty')} className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
       </section>
@@ -1569,8 +1542,8 @@ export default function Analytics({ user }) {
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <SurfaceCard className="space-y-6">
           <div>
-            <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Top Lessons</h2>
-            <p className="text-xs text-[var(--text-secondary)]">Ranked by recorded lesson activity</p>
+            <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">{t('analytics.topLessons')}</h2>
+            <p className="text-xs text-[var(--text-secondary)]">{t('analytics.rankedByActivity')}</p>
           </div>
 
           {stats.topLessons.length > 0 ? (
@@ -1588,30 +1561,35 @@ export default function Analytics({ user }) {
                           ? 'bg-emerald-400/15 text-emerald-300'
                           : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
                       }`}>
-                        {lesson.progressPct > 0 ? `${percent(lesson.progressPct)} progress` : 'No progress yet'}
+                        {lesson.progressPct > 0 ? t('analytics.progressLabel', { value: percent(lesson.progressPct) }) : t('common.noProgressYet')}
                       </span>
                     </div>
                     <div className="h-1.5 rounded-full bg-[color:var(--surface-muted)]">
                       <div className="h-full rounded-full bg-[image:var(--accent-gradient)]" style={{ width: percent(lesson.progressPct) }} />
                     </div>
                     <p className="text-[0.68rem] text-[var(--text-secondary)]">
-                      {compactNumber(lesson.views)} views / {compactNumber(lesson.engagementEvents)} events / {compactNumber(lesson.likes)} likes / {compactNumber(lesson.comments)} comments
-                      {lesson.completionPct > 0 ? ` / ${percent(lesson.completionPct)} completed` : ''}
+                      {t('analytics.topLessonStats', {
+                        views: compact(lesson.views),
+                        events: compact(lesson.engagementEvents),
+                        likes: compact(lesson.likes),
+                        comments: compact(lesson.comments),
+                      })}
+                      {lesson.completionPct > 0 ? ` / ${t('analytics.completedLabel', { value: percent(lesson.completionPct) })}` : ''}
                     </p>
                   </div>
                 </article>
               ))}
             </div>
           ) : (
-            <EmptyPanel message="Top lessons will appear after viewers start lessons in this range." />
+            <EmptyPanel message={t('analytics.topLessonsEmpty')} />
           )}
         </SurfaceCard>
 
         <SurfaceCard data-testid="analytics-recent-activity-card" className="flex max-h-[34rem] flex-col gap-6 overflow-hidden">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recent Activity</h2>
-              <p className="text-xs text-[var(--text-secondary)]">Aggregate activity only. Viewer identities are not shown.</p>
+              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">{t('analytics.recentActivity')}</h2>
+              <p className="text-xs text-[var(--text-secondary)]">{t('analytics.aggregateOnly')}</p>
             </div>
             {stats.recentActivity.length > 3 && (
               <button
@@ -1619,50 +1597,62 @@ export default function Analytics({ user }) {
                 onClick={() => setRecentActivityExpanded((value) => !value)}
                 className="focus-ring shrink-0 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)]"
               >
-                {recentActivityExpanded ? 'Show less' : `Show ${stats.recentActivity.length - 3} more`}
+                {recentActivityExpanded ? t('analytics.showLess') : t('analytics.showMore', { count: formatNumber(stats.recentActivity.length - 3) })}
               </button>
             )}
           </div>
           {stats.recentActivity.length > 0 ? (
             <div data-testid="analytics-recent-activity-list" className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-              {visibleRecentActivity.map((activity) => (
-                <article key={activity.id} data-testid="analytics-recent-activity-row" className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-3">
-                  <span className="mt-1.5 h-3 w-3 rounded-full bg-[var(--accent-primary)] shadow-[0_0_0_4px_rgba(208,188,255,0.14)]" />
-                  <div className="min-w-0 rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
-                    <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-                      <p className="line-clamp-1 min-w-0 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
-                      <div className="flex shrink-0 flex-wrap items-center gap-2">
-                        <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
-                          {activity.label}
-                        </span>
-                        <span className="text-[0.68rem] text-[var(--text-secondary)]">{activity.timeLabel}</span>
+              {visibleRecentActivity.map((activity) => {
+                const activityLabel = {
+                  progress: t('analytics.progress'),
+                  like: t('analytics.like'),
+                  comment: t('analytics.comment'),
+                }[activity.type] || t('analytics.activity');
+                const activityDescription = {
+                  progress: t('analytics.learnerReachedProgress', { progress: activity.progress }),
+                  like: t('analytics.learnerLiked'),
+                  comment: t('analytics.learnerCommented'),
+                }[activity.type] || t('analytics.learnerActivityRecorded');
+                return (
+                  <article key={activity.id} data-testid="analytics-recent-activity-row" className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-3">
+                    <span className="mt-1.5 h-3 w-3 rounded-full bg-[var(--accent-primary)] shadow-[0_0_0_4px_rgba(208,188,255,0.14)]" />
+                    <div className="min-w-0 rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
+                      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                        <p className="line-clamp-1 min-w-0 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
+                        <div className="flex shrink-0 flex-wrap items-center gap-2">
+                          <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-1 text-[0.62rem] font-semibold uppercase tracking-[0.1em] text-[var(--text-secondary)]">
+                            {activityLabel}
+                          </span>
+                          <span className="text-[0.68rem] text-[var(--text-secondary)]">{activity.timestamp ? formatDateTime(activity.timestamp) : t('analytics.recent')}</span>
+                        </div>
                       </div>
+                      <p className="mt-1 text-sm text-[var(--text-secondary)]">{activityDescription}</p>
                     </div>
-                    <p className="mt-1 text-sm text-[var(--text-secondary)]">{activity.description}</p>
-                  </div>
-                </article>
-              ))}
+                  </article>
+                );
+              })}
             </div>
           ) : (
-            <EmptyPanel message="Activity will appear here after viewers like, comment, or make progress on your lessons." className="min-h-[17rem] flex-1" />
+            <EmptyPanel message={t('analytics.recentActivityEmpty')} className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
       </section>
 
       <section className="overflow-hidden rounded-3xl token-surface-elevated">
         <div className="border-b border-[color:rgba(73,68,84,0.1)] px-5 py-4 sm:px-8 sm:py-6">
-          <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recent Lessons</h2>
-          <p className="mt-1 text-xs text-[var(--text-secondary)]">Creator-scoped lesson activity</p>
+          <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">{t('analytics.recentLessons')}</h2>
+          <p className="mt-1 text-xs text-[var(--text-secondary)]">{t('analytics.creatorScopedActivity')}</p>
         </div>
 
         <div className="overflow-x-auto">
           <table className="min-w-full text-left">
             <thead>
               <tr className="text-[0.62rem] uppercase tracking-[0.14em] text-[var(--text-secondary)]">
-                <th className="px-5 py-3 font-semibold sm:px-8">Lesson Name</th>
-                <th className="px-5 py-3 font-semibold sm:px-8">Views</th>
-                <th className="px-5 py-3 font-semibold sm:px-8">Progress</th>
-                <th className="px-5 py-3 font-semibold sm:px-8">Engagement</th>
+                <th className="px-5 py-3 font-semibold sm:px-8">{t('analytics.lessonName')}</th>
+                <th className="px-5 py-3 font-semibold sm:px-8">{t('analytics.views')}</th>
+                <th className="px-5 py-3 font-semibold sm:px-8">{t('analytics.progress')}</th>
+                <th className="px-5 py-3 font-semibold sm:px-8">{t('analytics.engagement')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[color:rgba(73,68,84,0.1)]">
@@ -1671,9 +1661,9 @@ export default function Analytics({ user }) {
                   <tr key={`recent-${lesson.id}`} className="hover:bg-[color:var(--surface-muted)]/40">
                     <td className="px-5 py-4 sm:px-8">
                       <p className="text-sm font-semibold text-[var(--text-primary)]">{lesson.title}</p>
-                      <p className="mt-1 text-[0.68rem] text-[var(--text-secondary)]">{formatDate(lesson.publishedAt)}</p>
+                      <p className="mt-1 text-[0.68rem] text-[var(--text-secondary)]">{t('common.updatedDate', { date: formatDate(lesson.publishedAt) })}</p>
                     </td>
-                    <td className="px-5 py-4 text-sm text-[var(--text-primary)] sm:px-8">{compactNumber(lesson.views)}</td>
+                    <td className="px-5 py-4 text-sm text-[var(--text-primary)] sm:px-8">{compact(lesson.views)}</td>
                     <td className="px-5 py-4 sm:px-8">
                       {lesson.progressPct > 0 ? (
                         <div className="flex items-center gap-2">
@@ -1683,13 +1673,13 @@ export default function Analytics({ user }) {
                           <span className="text-xs font-medium text-[var(--text-primary)]">{percent(lesson.progressPct)}</span>
                         </div>
                       ) : (
-                        <span className="text-xs text-[var(--text-secondary)]">No progress yet</span>
+                        <span className="text-xs text-[var(--text-secondary)]">{t('common.noProgressYet')}</span>
                       )}
                     </td>
                     <td className="px-5 py-4 text-sm text-[var(--text-primary)] sm:px-8">
-                      {compactNumber(lesson.engagementEvents)}
+                      {compact(lesson.engagementEvents)}
                       <p className="mt-1 text-[0.68rem] text-[var(--text-secondary)]">
-                        {compactNumber(lesson.likes)} likes / {compactNumber(lesson.comments)} comments
+                        {t('analytics.likesComments', { likes: compact(lesson.likes), comments: compact(lesson.comments) })}
                       </p>
                     </td>
                   </tr>
@@ -1697,7 +1687,7 @@ export default function Analytics({ user }) {
               ) : (
                 <tr>
                   <td colSpan={4} className="px-5 py-8 text-center text-sm text-[var(--text-secondary)] sm:px-8">
-                    Recent lesson activity will appear after viewers interact with your lessons.
+                    {t('analytics.recentLessonsEmpty')}
                   </td>
                 </tr>
               )}
@@ -1715,7 +1705,7 @@ export default function Analytics({ user }) {
             </span>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">Smart Insights</p>
+                <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">{t('analytics.smartInsights')}</p>
                 <ProviderLabel report={intelligenceReport} />
                 <AnalyticsEnhancementLabel report={intelligenceReport} />
                 <IntelligenceLanguageLabel report={intelligenceReport} />
@@ -1738,7 +1728,7 @@ export default function Analytics({ user }) {
                 className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)]"
               >
                 <Copy size={14} />
-                {intelligenceCopied ? 'Copied' : 'Copy'}
+                {intelligenceCopied ? t('common.copied') : t('common.copy')}
               </button>
             )}
             <button
@@ -1778,7 +1768,7 @@ export default function Analytics({ user }) {
         {intelligenceLoading && !intelligenceReport ? (
           <div className="flex min-h-28 items-center justify-center rounded-2xl bg-[color:var(--surface-muted)]/25 text-sm text-[var(--text-secondary)]">
             <RefreshCw size={16} className="mr-2 animate-spin" />
-            Loading latest report...
+            {t('analytics.loadingLatestReport')}
           </div>
         ) : intelligenceReport?.status === 'done' ? (
           <div className="space-y-6">
@@ -1807,7 +1797,7 @@ export default function Analytics({ user }) {
                 </p>
                 <p className="mt-3 text-xs leading-relaxed text-[var(--text-secondary)]">
                   Based on aggregate creator analytics for the selected range.
-                  {intelligenceReport.last_analyzed_at ? ` Last analyzed ${formatActivityTimestamp(intelligenceReport.last_analyzed_at)}.` : ''}
+                  {intelligenceReport.last_analyzed_at ? ` ${t('analytics.lastAnalyzed', { date: formatDateTime(intelligenceReport.last_analyzed_at) })}` : ''}
                 </p>
               </div>
               <div className="flex items-center justify-between gap-4 rounded-xl bg-[color:var(--surface-muted)]/25 p-5">
@@ -1867,13 +1857,13 @@ export default function Analytics({ user }) {
           </div>
         ) : intelligenceReport?.status === 'disabled' || intelligenceReport?.enabled === false ? (
           <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5 text-sm text-[var(--text-secondary)]">
-            Analytics Intelligence is disabled for this environment.
+            {t('analytics.intelligenceDisabled')}
           </div>
         ) : (
           <div className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
             <p className="text-sm text-[var(--text-secondary)]">{stats.insight}</p>
             <p className="mt-2 text-xs text-[var(--text-secondary)]">
-              Smart insights are being prepared automatically when creator analytics change.
+              {t('analytics.insightsPreparing')}
             </p>
           </div>
         )}
@@ -1887,17 +1877,17 @@ export default function Analytics({ user }) {
           </span>
           <div>
             <p className="text-sm font-semibold text-[var(--text-primary)]">
-              {compactNumber(stats.metrics.publishedLessons)} published lessons
+              {t('analytics.publishedDrafts', { published: compact(stats.metrics.publishedLessons) })}
             </p>
             <p className="text-xs text-[var(--text-secondary)]">
-              {compactNumber(stats.metrics.draftLessons)} drafts in this creator scope
+              {t('analytics.draftsScope', { drafts: compact(stats.metrics.draftLessons) })}
             </p>
           </div>
         </div>
         {loading && (
           <p className="inline-flex items-center gap-2 text-sm text-[var(--text-secondary)]">
             <RefreshCw size={14} className="animate-spin" />
-            Loading analytics...
+            {t('analytics.loadingAnalytics')}
           </p>
         )}
       </SurfaceCard>

@@ -1,6 +1,7 @@
 import { CirclePlay } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { normalizeLesson } from '../../lib/content';
+import { useI18n } from '../../i18n/I18nProvider';
 
 function lessonBackground(lesson) {
   if (!lesson?.imageUrl) {
@@ -35,25 +36,20 @@ export function normalizeLearningRows(payload = [], kind = 'history') {
     .filter(Boolean);
 }
 
-export function formatLearningDate(value) {
+export function formatLearningDate(value, formatDate) {
   if (!value) return '';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+  return formatDate(value);
 }
 
 export default function LearningLessonCard({ item, metaLabel = '' }) {
+  const { t, formatDate, formatNumber } = useI18n();
   const lesson = item?.lesson || {};
   const progressPct = Math.max(0, Math.min(100, Number(item?.progressPct || lesson.progress || 0)));
   const roundedProgress = Math.round(progressPct);
   const continueLabel = item?.kind === 'history' && progressPct > 0
-    ? `Continue from ${roundedProgress}%`
+    ? t('common.continueFromPercent', { count: formatNumber(roundedProgress) })
     : '';
-  const dateLabel = formatLearningDate(item?.timestamp);
+  const dateLabel = formatLearningDate(item?.timestamp, formatDate);
   const watchUrl = continueLabel
     ? `/watch?lesson=${lesson.id}&resume=1`
     : `/watch?lesson=${lesson.id}`;
@@ -85,7 +81,7 @@ export default function LearningLessonCard({ item, metaLabel = '' }) {
             <div className="h-full rounded-full bg-[image:var(--accent-gradient)]" style={{ width: `${Math.max(4, progressPct)}%` }} />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-[0.68rem] font-medium uppercase tracking-[0.12em] text-[var(--text-secondary)]">
-            <span>{metaLabel || `${roundedProgress}% watched`}</span>
+            <span>{metaLabel || t('common.percentWatched', { count: formatNumber(roundedProgress) })}</span>
             {dateLabel ? <span>{dateLabel}</span> : null}
           </div>
         </div>

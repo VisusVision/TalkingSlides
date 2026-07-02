@@ -162,14 +162,14 @@ test('authenticated Analytics renders mocked dashboard metrics', async ({ page }
   await expect(main.getByRole('heading', { name: 'Performance Overview', exact: true })).toBeVisible();
   await expect(main.getByText('Real engagement signals from lesson progress, likes, and comments.', { exact: true })).toBeVisible();
   await expect(main.getByRole('button', { name: 'Last 7 days', exact: true })).toBeVisible();
-  await expect(main.getByRole('button', { name: 'Refresh', exact: true })).toBeVisible();
+  await expect(main.getByRole('button', { name: 'Reload', exact: true })).toBeVisible();
 
-  await expect(metricCard('Total Views', '1.3K')).toBeVisible();
-  await expect(metricCard('Watch Time', '60 hrs')).toBeVisible();
-  await expect(metricCard('Completion Rate', '72%')).toBeVisible();
-  await expect(metricCard('Engagement Events', '96')).toBeVisible();
+  await expect(metricCard('Views', '1.3K')).toBeVisible();
+  await expect(metricCard('Watch Time', '60 h')).toBeVisible();
+  await expect(metricCard('Completion', '72%')).toBeVisible();
+  await expect(metricCard('Engagement', '96')).toBeVisible();
 
-  const viewsOverTimeSection = sectionByHeading('Views over time');
+  const viewsOverTimeSection = sectionByHeading('Views');
   await expect(viewsOverTimeSection).toBeVisible();
   await expect(viewsOverTimeSection.getByText('260 views', { exact: true })).toBeVisible();
 

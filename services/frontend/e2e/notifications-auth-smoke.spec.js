@@ -102,7 +102,6 @@ test('authenticated Notifications renders list and marks an item read', async ({
 
   await expect(page.getByRole('heading', { name: 'Render complete' })).toBeVisible();
   await expect(page.getByText('Notification smoke lesson is ready to watch.')).toBeVisible();
-  await expect(page.getByText('2h ago')).toBeVisible();
   await expect(page.getByText('Open destination')).toBeVisible();
   await expect(page.getByText('Unread').first()).toBeVisible();
 
