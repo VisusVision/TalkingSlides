@@ -97,20 +97,20 @@ export default function FeaturedHero({ lesson, onStartLesson, onBrowse }) {
         <div className="relative z-10 mx-auto flex h-full max-w-[1600px] items-end px-4 pb-10 pl-20 pt-24 sm:px-7 sm:pb-14 sm:pl-24 lg:px-10 lg:pb-16 lg:pl-28">
           <div className="max-w-3xl space-y-4">
             <p className="label-sm text-[color:var(--media-text-on-image)] opacity-80">{t('dashboard.featuredLecture')}</p>
-            <h1 className="display-lg text-[color:var(--media-text-on-image)]">{lesson.title}</h1>
-            <p className="max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base">
+            <h1 dir="auto" className="ugc-text display-lg text-[color:var(--media-text-on-image)]">{lesson.title}</h1>
+            <p dir="auto" className="ugc-text max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base">
               {lesson.description ||
                 t('dashboard.featuredDescription')}
             </p>
 
             <div className="flex flex-wrap gap-2 text-xs text-[color:var(--media-text-on-image)] opacity-85 sm:text-sm">
-              <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5 backdrop-blur-sm">
+              <span dir="auto" className="ugc-text rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5 backdrop-blur-sm">
                 {lesson.categoryName}
               </span>
               <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5 backdrop-blur-sm">
                 {formatDuration(lesson.durationMinutes)}
               </span>
-              <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5 backdrop-blur-sm">
+              <span dir="auto" className="ugc-text rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5 backdrop-blur-sm">
                 {t('dashboard.withTeacher', { teacher: lesson.teacherName })}
               </span>
             </div>

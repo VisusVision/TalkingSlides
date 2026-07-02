@@ -255,6 +255,10 @@
     --tw-ring-offset-color: transparent;
   }
 
+  .ugc-text {
+    unicode-bidi: plaintext;
+  }
+
   .cinematic-fade {
     animation: cinematic-fade 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
   }

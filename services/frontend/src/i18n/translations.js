@@ -1,13 +1,34 @@
+import ar from './locales/ar';
+import de from './locales/de';
+import es from './locales/es';
+import fr from './locales/fr';
+import it from './locales/it';
+import ja from './locales/ja';
+import ko from './locales/ko';
+import pt from './locales/pt';
+import ru from './locales/ru';
+import zhCN from './locales/zh-CN';
+
 export const DEFAULT_LANGUAGE = 'en';
-export const SUPPORTED_LANGUAGES = ['en', 'tr'];
+export const SUPPORTED_LANGUAGES = ['en', 'tr', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'ja', 'ko', 'zh-CN', 'ar'];
 export const LANGUAGE_STORAGE_KEY = 'talkingslides-ui-language';
 
 export const LANGUAGE_OPTIONS = [
   { code: 'en', label: 'English', nativeLabel: 'English' },
   { code: 'tr', label: 'Turkish', nativeLabel: 'Turkce' },
+  { code: 'es', label: 'Spanish', nativeLabel: 'Español' },
+  { code: 'fr', label: 'French', nativeLabel: 'Français' },
+  { code: 'de', label: 'German', nativeLabel: 'Deutsch' },
+  { code: 'it', label: 'Italian', nativeLabel: 'Italiano' },
+  { code: 'pt', label: 'Portuguese', nativeLabel: 'Português' },
+  { code: 'ru', label: 'Russian', nativeLabel: 'Русский' },
+  { code: 'ja', label: 'Japanese', nativeLabel: '日本語' },
+  { code: 'ko', label: 'Korean', nativeLabel: '한국어' },
+  { code: 'zh-CN', label: 'Simplified Chinese', nativeLabel: '简体中文' },
+  { code: 'ar', label: 'Arabic', nativeLabel: 'العربية' },
 ];
 
-export const translations = {
+const baseTranslations = {
   en: {
     common: {
       save: 'Save',
@@ -1320,4 +1341,18 @@ export const translations = {
       pageCouldNotRenderBody: 'Uygulama kabugu acik kaldi, ancak bu rota calisma zamani hatasi aldi. Sayfayi yenileyin veya panele donun.',
     },
   },
+};
+
+export const translations = {
+  ...baseTranslations,
+  ar,
+  de,
+  es,
+  fr,
+  it,
+  ja,
+  ko,
+  pt,
+  ru,
+  'zh-CN': zhCN,
 };

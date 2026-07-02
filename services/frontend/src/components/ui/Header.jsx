@@ -32,7 +32,7 @@ export default function Header({
 }) {
   const location = useLocation();
   const navigate = useNavigate();
-  const { t } = useI18n();
+  const { isRtl, t } = useI18n();
   const showSearch = !SEARCH_HIDDEN_PATHS.has(location.pathname);
   const isAuthenticated = Boolean(user) && !authLoading;
   const notificationRef = useRef(null);
@@ -163,6 +163,11 @@ export default function Header({
     }
   };
 
+  const trailingClass = isRtl ? 'mr-auto' : 'ml-auto';
+  const notificationMenuPosition = isRtl
+    ? 'md:left-0 md:right-auto'
+    : 'md:left-auto md:right-0';
+
   return (
     <>
       <header className="fixed top-0 z-50 w-full overflow-visible">
@@ -193,7 +198,7 @@ export default function Header({
             )}
           </div>
 
-          <div className="ml-auto flex items-center gap-2 sm:gap-3">
+          <div className={`${trailingClass} flex items-center gap-2 sm:gap-3`}>
             {isAuthenticated && (
               <div ref={notificationRef} className="relative block">
                 <button
@@ -212,7 +217,7 @@ export default function Header({
                 </button>
 
                 {notificationsOpen && (
-                  <div className="fixed left-3 right-3 top-16 z-[60] w-auto overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-primary)] shadow-2xl md:absolute md:left-auto md:right-0 md:top-12 md:w-[22rem]">
+                  <div className={`fixed left-3 right-3 top-16 z-[60] w-auto overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-primary)] shadow-2xl md:absolute ${notificationMenuPosition} md:top-12 md:w-[22rem]`}>
                     <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-4 py-3">
                       <div>
                         <p className="text-sm font-semibold">{t('notifications.title')}</p>

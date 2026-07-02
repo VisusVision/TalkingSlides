@@ -48,6 +48,7 @@ export default function NotesPanel({
               value={notes}
               onChange={(event) => onNotesChange(event.target.value)}
               placeholder={t('watch.notesPlaceholder')}
+              dir="auto"
               className="focus-ring min-h-[220px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[color:var(--surface-elevated)] p-3 text-sm leading-relaxed text-[var(--text-primary)]"
             />
           </div>
