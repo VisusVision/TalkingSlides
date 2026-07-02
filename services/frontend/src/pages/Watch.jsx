@@ -1361,8 +1361,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     <div className="space-y-5">
       <SurfaceCard className="token-glass flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="label-sm">Watch</p>
-          <h1 className="headline-md mt-1 text-[var(--text-primary)]">Study With Focused Context</h1>
+          <p className="label-sm">{t('watch.pageEyebrow')}</p>
+          <h1 className="headline-md mt-1 text-[var(--text-primary)]">{t('watch.focusedContext')}</h1>
         </div>
 
         <Button variant={focusMode ? 'primary' : 'secondary'} onClick={handleFocusModeToggle} disabled={!activeLessonId}>

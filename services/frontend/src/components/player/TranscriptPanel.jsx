@@ -1,6 +1,7 @@
 import SurfaceCard from '../ui/SurfaceCard';
 import { ChevronDown } from 'lucide-react';
 import { formatTimestamp } from '../../lib/watch';
+import { useI18n } from '../../i18n/I18nProvider';
 
 export default function TranscriptPanel({
   lines,
@@ -9,19 +10,21 @@ export default function TranscriptPanel({
   collapsed = false,
   onToggle,
 }) {
+  const { t } = useI18n();
+
   return (
     <SurfaceCard className="space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="label-sm">Transcript</p>
-          <h2 className="title-lg mt-1 text-[var(--text-primary)]">Readable Timeline</h2>
+          <p className="label-sm">{t('watch.transcript')}</p>
+          <h2 className="title-lg mt-1 text-[var(--text-primary)]">{t('watch.readableTimeline')}</h2>
         </div>
         {typeof onToggle === 'function' && (
           <button
             type="button"
             onClick={onToggle}
             className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full token-surface text-[var(--text-secondary)]"
-            aria-label={collapsed ? 'Expand transcript' : 'Collapse transcript'}
+            aria-label={collapsed ? t('watch.expandTranscript') : t('watch.collapseTranscript')}
           >
             <ChevronDown
               size={15}
@@ -56,7 +59,7 @@ export default function TranscriptPanel({
       )}
 
       {collapsed && (
-        <p className="text-xs text-[var(--text-secondary)]">Collapsed</p>
+        <p className="text-xs text-[var(--text-secondary)]">{t('watch.collapsed')}</p>
       )}
     </SurfaceCard>
   );

@@ -1,6 +1,7 @@
 import SurfaceCard from '../ui/SurfaceCard';
 import { ChevronDown } from 'lucide-react';
 import { formatTimestamp } from '../../lib/watch';
+import { useI18n } from '../../i18n/I18nProvider';
 
 export default function ChapterList({
   chapters,
@@ -9,19 +10,21 @@ export default function ChapterList({
   collapsed = false,
   onToggle,
 }) {
+  const { t } = useI18n();
+
   return (
     <SurfaceCard className="space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="label-sm">Chapters</p>
-          <h2 className="title-lg mt-1 text-[var(--text-primary)]">Lecture Flow</h2>
+          <p className="label-sm">{t('watch.chapters')}</p>
+          <h2 className="title-lg mt-1 text-[var(--text-primary)]">{t('watch.lectureFlow')}</h2>
         </div>
         {typeof onToggle === 'function' && (
           <button
             type="button"
             onClick={onToggle}
             className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full token-surface text-[var(--text-secondary)]"
-            aria-label={collapsed ? 'Expand chapters' : 'Collapse chapters'}
+            aria-label={collapsed ? t('watch.expandChapters') : t('watch.collapseChapters')}
           >
             <ChevronDown
               size={15}
@@ -55,7 +58,7 @@ export default function ChapterList({
       )}
 
       {collapsed && (
-        <p className="text-xs text-[var(--text-secondary)]">Collapsed</p>
+        <p className="text-xs text-[var(--text-secondary)]">{t('watch.collapsed')}</p>
       )}
     </SurfaceCard>
   );

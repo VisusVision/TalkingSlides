@@ -794,6 +794,16 @@ export default function Settings({ user, onUserRefresh }) {
       label: t(labelKeys[item.key] || item.label),
     }));
   }, [avatarSetupStatus, t]);
+  const voiceRecorderStatusLabel = useMemo(() => {
+    const statusKeys = {
+      idle: 'avatar.recorderStatuses.idle',
+      recording: 'avatar.recorderStatuses.recording',
+      recorded: 'avatar.recorderStatuses.recorded',
+      error: 'avatar.recorderStatuses.error',
+      'requesting permission': 'avatar.recorderStatuses.requestingPermission',
+    };
+    return t(statusKeys[voiceRecorderStatus] || 'avatar.recorderStatuses.idle');
+  }, [t, voiceRecorderStatus]);
   const prepareAvatarButtonLabel = avatarSetupStatus.primary_action_label || t('avatar.prepareAvatar');
 
   const loadAvatarProfile = useCallback(async () => {
@@ -1695,7 +1705,7 @@ export default function Settings({ user, onUserRefresh }) {
               <div>
                 <p className="text-sm font-semibold text-[var(--text-primary)]">{t('avatar.recordFromMicrophone')}</p>
                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                  {t('avatar.recorderStatus', { status: voiceRecorderStatus, duration: formatRecordingDuration(voiceRecordingDuration) })}
+                  {t('avatar.recorderStatus', { status: voiceRecorderStatusLabel, duration: formatRecordingDuration(voiceRecordingDuration) })}
                 </p>
               </div>
               <Mic size={18} className="text-[var(--accent-primary)]" />

@@ -12,6 +12,10 @@ function Probe() {
       <LanguageSelector />
       <p data-testid="save-label">{t('common.save')}</p>
       <p data-testid="settings-label">{t('common.settings')}</p>
+      <p data-testid="watch-label">{t('watch.focusedContext')}</p>
+      <p data-testid="subtitle-label">{t('watch.subtitles')}</p>
+      <p data-testid="moderation-label">{t('moderation.reportIssue')}</p>
+      <p data-testid="recorder-label">{t('avatar.recorderStatuses.idle')}</p>
     </div>
   );
 }
@@ -81,6 +85,10 @@ describe('I18nProvider', () => {
     await selectLanguage(host, 'tr');
     expect(host.querySelector('[data-testid="save-label"]')).toHaveTextContent('Kaydet');
     expect(host.querySelector('[data-testid="settings-label"]')).toHaveTextContent('Ayarlar');
+    expect(host.querySelector('[data-testid="watch-label"]')).toHaveTextContent('Odakli Baglamla Calis');
+    expect(host.querySelector('[data-testid="subtitle-label"]')).toHaveTextContent('Altyazilar');
+    expect(host.querySelector('[data-testid="moderation-label"]')).toHaveTextContent('Ders sorununu bildir');
+    expect(host.querySelector('[data-testid="recorder-label"]')).toHaveTextContent('Bos');
     expect(window.localStorage.getItem(LANGUAGE_STORAGE_KEY)).toBe('tr');
 
     await selectLanguage(host, 'en');

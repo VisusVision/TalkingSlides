@@ -9,6 +9,13 @@ import Button from './Button';
 import SurfaceCard from './SurfaceCard';
 import { useI18n } from '../../i18n/I18nProvider';
 
+function localizedAuthError(message, t) {
+  const normalized = String(message || '').trim().toLowerCase();
+  if (normalized.includes('username and password')) return t('auth.missingCredentials');
+  if (normalized.includes('invalid credentials')) return t('auth.invalidCredentials');
+  return message || t('auth.signInFailed');
+}
+
 export default function AuthModal({ open, onClose, onLoginSuccess }) {
   const { t } = useI18n();
   const [username, setUsername] = useState('');
@@ -43,7 +50,7 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
       setUsername('');
       setPassword('');
     } catch (err) {
-      setError(err.message || t('auth.signInFailed'));
+      setError(localizedAuthError(err.message, t));
     } finally {
       setLoading(false);
     }
