@@ -10,8 +10,8 @@ import { fetchCatalog, fetchCatalogFeed } from '../api';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { useI18n } from '../i18n/I18nProvider';
 import { fallbackSections, sectionsFromFeed } from '../lib/content';
-import { formatDuration, formatViews } from '../lib/content';
 import {
   clearRouteSessionState,
   onRouteReset,
@@ -29,6 +29,15 @@ const FALLBACK_CATEGORIES = [
   'Digital Economics',
   'Neuroscience',
 ];
+
+const CATEGORY_TRANSLATION_KEYS = {
+  [ALL_TOPICS]: 'dashboard.allTopics',
+  'Artificial Intelligence': 'dashboard.categories.artificialIntelligence',
+  'Creative Design': 'dashboard.categories.creativeDesign',
+  'Advanced Mathematics': 'dashboard.categories.advancedMathematics',
+  'Digital Economics': 'dashboard.categories.digitalEconomics',
+  Neuroscience: 'dashboard.categories.neuroscience',
+};
 
 function lessonBackground(lesson, fallback = 'var(--card-fallback)') {
   if (!lesson?.imageUrl) {
@@ -99,6 +108,7 @@ function railScrollState(node) {
 }
 
 export default function Home({ searchQuery, user, onLoginRequest }) {
+  const { t, formatDuration, formatViews, formatNumber } = useI18n();
   const navigate = useNavigate();
   const recommendedRailRef = useRef(null);
   const storedDashboardState = useMemo(() => readRouteSessionState('dashboard', user), [user]);
@@ -170,7 +180,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
           setSections(fallbackSections(catalog));
         } catch (catalogError) {
           if (!active) return;
-          setError(catalogError.message || 'Could not load discovery feed.');
+          setError(catalogError.message || t('dashboard.loadError'));
           setSections([]);
         }
       } finally {
@@ -185,7 +195,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
     return () => {
       active = false;
     };
-  }, [searchQuery]);
+  }, [searchQuery, t]);
 
   const allLessons = useMemo(() => flattenUniqueLessons(sections), [sections]);
 
@@ -269,7 +279,14 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
     return takeAvoidingSeen(sorted, seenAbove, 5);
   }, [bentoLessons, continueLessons, featuredLesson, filteredRecommended, scopedLessons]);
 
-  const topicRailTitle = activeCategory === ALL_TOPICS ? 'Explore by topic' : `More in ${activeCategory}`;
+  const categoryLabel = useCallback((category) => {
+    const key = CATEGORY_TRANSLATION_KEYS[category];
+    return key ? t(key) : category;
+  }, [t]);
+
+  const topicRailTitle = activeCategory === ALL_TOPICS
+    ? t('dashboard.exploreByTopic')
+    : t('dashboard.moreInCategory', { category: categoryLabel(activeCategory) });
 
   const updateRecommendedRailState = useCallback(() => {
     setRecommendedRailState(railScrollState(recommendedRailRef.current));
@@ -308,7 +325,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
   return (
     <div className="space-y-12 pb-10">
       {featuredLesson && (
-        <section className="relative -mx-3 overflow-hidden rounded-[1.75rem] sm:-mx-6 lg:-mx-8" aria-label="Featured lesson">
+        <section className="relative -mx-3 overflow-hidden rounded-[1.75rem] sm:-mx-6 lg:-mx-8" aria-label={t('dashboard.featuredLesson')}>
           <LessonActionButton
             lesson={featuredLesson}
             user={user}
@@ -325,10 +342,10 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
               <div className="max-w-3xl space-y-5">
                 <div className="flex flex-wrap items-center gap-3 text-xs">
                   <span className="rounded-full border border-[color:rgba(208,188,255,0.3)] bg-[color:rgba(208,188,255,0.2)] px-3 py-1.5 font-semibold uppercase tracking-[0.14em] text-[color:var(--media-text-on-image)]">
-                    ✦︎ AI Academy Original
+                    {t('dashboard.academyOriginal')}
                   </span>
                   <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5 font-semibold uppercase tracking-[0.14em] text-[color:var(--media-text-on-image)]">
-                    {featuredLesson.categoryName || 'AI Mastery'}
+                    {categoryLabel(featuredLesson.categoryName) || t('dashboard.defaultCategory')}
                   </span>
                 </div>
 
@@ -337,16 +354,16 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
                 </h1>
 
                 <p className="max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base">
-                  {featuredLesson.description || 'Master the foundations of modern intelligence with guided cinematic lessons, transcript-first context, and practical studio workflows.'}
+                  {featuredLesson.description || t('dashboard.defaultDescription')}
                 </p>
 
                 <div className="flex flex-wrap items-center gap-3">
                   <Button size="lg" onClick={() => openLesson(featuredLesson.id)}>
                     <PlayCircle size={18} />
-                    <span>Watch Now</span>
+                    <span>{t('dashboard.watchNow')}</span>
                   </Button>
                   <Button variant="secondary" size="lg" onClick={() => navigate('/watch')}>
-                    <span>Lesson Details</span>
+                    <span>{t('dashboard.lessonDetails')}</span>
                   </Button>
                 </div>
               </div>
@@ -373,7 +390,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
                     : 'token-surface-elevated text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                 }`}
               >
-                {category}
+                {categoryLabel(category)}
               </button>
             );
           })}
@@ -382,14 +399,14 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
 
       {loading && (
         <SurfaceCard elevated className="space-y-2">
-          <p className="label-sm">Loading</p>
-          <p className="body-md">Building your personalized dashboard...</p>
+          <p className="label-sm">{t('dashboard.loadingTitle')}</p>
+          <p className="body-md">{t('dashboard.loadingBody')}</p>
         </SurfaceCard>
       )}
 
       {error && (
         <SurfaceCard elevated className="space-y-2">
-          <p className="label-sm">Feed Notice</p>
+          <p className="label-sm">{t('dashboard.feedNotice')}</p>
           <p className="text-sm text-[color:var(--feedback-danger-fg)]">{error}</p>
         </SurfaceCard>
       )}
@@ -397,13 +414,13 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
       {!loading && continueLessons.length > 0 && (
         <section className="space-y-5">
           <div className="flex items-center justify-between">
-            <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Continue Watching</h2>
+            <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">{t('dashboard.continueWatching')}</h2>
             <button
               type="button"
               onClick={() => navigate('/history')}
               className="focus-ring text-sm font-semibold text-[var(--accent-primary)]"
             >
-              View History
+              {t('dashboard.viewHistory')}
             </button>
           </div>
 
@@ -433,7 +450,11 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
 
                   <div className="space-y-1.5 p-4">
                     <p className="line-clamp-1 text-sm font-semibold text-[var(--text-primary)]">{lesson.title}</p>
-                    <p className="text-xs text-[var(--text-secondary)]">{lesson.teacherName} • {Math.max(1, Math.ceil((100 - (lesson.progress || 0)) * (lesson.durationMinutes || 10) / 100))}m left</p>
+                    <p className="text-xs text-[var(--text-secondary)]">
+                      {lesson.teacherName} - {t('dashboard.minutesLeft', {
+                        count: formatNumber(Math.max(1, Math.ceil((100 - (lesson.progress || 0)) * (lesson.durationMinutes || 10) / 100))),
+                      })}
+                    </p>
                   </div>
                 </button>
               </article>
@@ -445,11 +466,11 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
       {!loading && filteredRecommended.length > 0 && (
         <section className="space-y-5 overflow-hidden">
           <div className="flex items-center justify-between">
-            <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recommended For You</h2>
+            <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">{t('dashboard.recommendedForYou')}</h2>
             <div className="hidden items-center gap-2 sm:flex">
               <button
                 type="button"
-                aria-label="Scroll recommended lessons left"
+                aria-label={t('dashboard.scrollRecommendedLeft')}
                 onClick={() => scrollRecommendedRail(-1)}
                 disabled={!recommendedRailState.canScrollLeft}
                 className={`focus-ring inline-flex h-9 w-9 items-center justify-center rounded-full token-surface-elevated text-[var(--text-secondary)] transition ${
@@ -460,7 +481,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
               </button>
               <button
                 type="button"
-                aria-label="Scroll recommended lessons right"
+                aria-label={t('dashboard.scrollRecommendedRight')}
                 onClick={() => scrollRecommendedRail(1)}
                 disabled={!recommendedRailState.canScrollRight}
                 className={`focus-ring inline-flex h-9 w-9 items-center justify-center rounded-full token-surface-elevated text-[var(--text-secondary)] transition ${
@@ -526,7 +547,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
                   <span className="inline-flex h-9 w-9 items-center justify-center rounded-2xl border border-white/20 bg-black/20 text-white">
                     <span className="material-symbols-outlined">neurology</span>
                   </span>
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[color:var(--media-text-on-image)]">Masterclass</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[color:var(--media-text-on-image)]">{t('dashboard.masterclass')}</p>
                   <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[color:var(--media-text-on-image)]">{bentoLessons[0].title}</p>
                   <p className="text-xs text-[color:var(--media-text-on-image)] opacity-85">{bentoLessons[0].teacherName}</p>
                 </div>
@@ -564,7 +585,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
 
       {!loading && trendingLessons.length > 0 && (
         <section className="space-y-5">
-          <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Trending Now</h2>
+          <h2 className="font-['Manrope'] text-2xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">{t('dashboard.trendingNow')}</h2>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
             {trendingLessons.map((lesson, index) => (
               <article key={`trending-${lesson.id}`} className="relative">
@@ -596,8 +617,8 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
 
       {!loading && allLessons.length === 0 && (
         <SurfaceCard elevated className="space-y-3 text-center">
-          <p className="title-lg text-[var(--text-primary)]">No lessons matched your search</p>
-          <p className="body-md">Try a broader keyword or continue in the full catalog.</p>
+          <p className="title-lg text-[var(--text-primary)]">{t('dashboard.noSearchTitle')}</p>
+          <p className="body-md">{t('dashboard.noSearchBody')}</p>
         </SurfaceCard>
       )}
     </div>

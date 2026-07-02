@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BookOpenCheck, PlayCircle } from 'lucide-react';
 import Button from '../ui/Button';
-import { formatDuration } from '../../lib/content';
+import { useI18n } from '../../i18n/I18nProvider';
 
 function reducedMotionEnabled() {
   if (typeof window === 'undefined') return false;
@@ -25,8 +25,7 @@ function resolveHeroMedia(lesson) {
 }
 
 export default function FeaturedHero({ lesson, onStartLesson, onBrowse }) {
-  if (!lesson) return null;
-
+  const { t, formatDuration } = useI18n();
   const { poster, video } = useMemo(() => resolveHeroMedia(lesson), [lesson]);
   const [reducedMotion, setReducedMotion] = useState(reducedMotionEnabled);
   const [videoFailed, setVideoFailed] = useState(false);
@@ -61,10 +60,12 @@ export default function FeaturedHero({ lesson, onStartLesson, onBrowse }) {
     [video, reducedMotion, videoFailed],
   );
 
+  if (!lesson) return null;
+
   return (
     <section
       className="cinematic-fade relative -mx-3 overflow-hidden sm:-mx-6 lg:-mx-8"
-      aria-label="Featured lecture"
+      aria-label={t('dashboard.featuredLecture')}
     >
       <div className="relative min-h-[430px] max-h-[780px] h-[68vh]">
         {poster ? (
@@ -95,11 +96,11 @@ export default function FeaturedHero({ lesson, onStartLesson, onBrowse }) {
 
         <div className="relative z-10 mx-auto flex h-full max-w-[1600px] items-end px-4 pb-10 pl-20 pt-24 sm:px-7 sm:pb-14 sm:pl-24 lg:px-10 lg:pb-16 lg:pl-28">
           <div className="max-w-3xl space-y-4">
-            <p className="label-sm text-[color:var(--media-text-on-image)] opacity-80">Featured Lecture</p>
+            <p className="label-sm text-[color:var(--media-text-on-image)] opacity-80">{t('dashboard.featuredLecture')}</p>
             <h1 className="display-lg text-[color:var(--media-text-on-image)]">{lesson.title}</h1>
             <p className="max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base">
               {lesson.description ||
-                'Explore a cinematic lesson experience built for clarity: chapter-led learning, transcript context, and quick notes in one focused workspace.'}
+                t('dashboard.featuredDescription')}
             </p>
 
             <div className="flex flex-wrap gap-2 text-xs text-[color:var(--media-text-on-image)] opacity-85 sm:text-sm">
@@ -110,18 +111,18 @@ export default function FeaturedHero({ lesson, onStartLesson, onBrowse }) {
                 {formatDuration(lesson.durationMinutes)}
               </span>
               <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5 backdrop-blur-sm">
-                with {lesson.teacherName}
+                {t('dashboard.withTeacher', { teacher: lesson.teacherName })}
               </span>
             </div>
 
             <div className="flex flex-wrap items-center gap-3 pt-2">
               <Button size="lg" onClick={() => onStartLesson(lesson.id)}>
                 <PlayCircle size={18} />
-                <span>Start Watching</span>
+                <span>{t('dashboard.startWatching')}</span>
               </Button>
               <Button variant="secondary" size="lg" onClick={onBrowse}>
                 <BookOpenCheck size={18} />
-                <span>Browse Curriculum</span>
+                <span>{t('dashboard.browseCurriculum')}</span>
               </Button>
             </div>
           </div>

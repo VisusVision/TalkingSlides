@@ -364,10 +364,12 @@ def test_frontend_studio_hides_advanced_avatar_runtime_and_placement_controls():
 
 def test_frontend_studio_keeps_avatar_only_rerender_button():
     source = _frontend_source("pages", "Studio.jsx")
+    translations = _frontend_source("i18n", "translations.js")
 
     assert "rerenderProjectAvatar" in source
     assert "handleAvatarOnlyRerender" in source
-    assert "Rerender avatar only" in source
+    assert "studio.rerenderAvatarOnly" in source
+    assert "Rerender avatar only" in translations
 
 
 def test_frontend_secure_playback_path_keeps_hls_and_heartbeat():

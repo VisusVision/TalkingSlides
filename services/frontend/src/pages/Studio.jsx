@@ -61,6 +61,7 @@ import { adminReviewBackLabel, visualModerationRerenderMessage } from '../utils/
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { useI18n } from '../i18n/I18nProvider';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import PlaylistManager from '../components/studio/PlaylistManager';
 import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
@@ -1406,15 +1407,6 @@ function subtitleProviderMessage(track) {
   return { providerLabel, mockNote };
 }
 
-function safeDateLabel(value) {
-  if (!value) return 'Recent';
-  return new Date(value).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
-
 function lessonNotesKey(projectId) {
   return `visus-studio-notes-${projectId || 'none'}`;
 }
@@ -2676,6 +2668,7 @@ function LessonIntelligencePanel({
 }
 
 export default function Studio({ user, searchQuery = '', onLoginRequest }) {
+  const { t, formatDate, formatDateTime } = useI18n();
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
@@ -2716,6 +2709,19 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       .filter((panel) => !readOnlyReviewRequested || ['transcript', 'slides', 'moderation', 'intelligence'].includes(panel)),
     [intelligenceFeatureEnabled, readOnlyReviewRequested],
   );
+  const studioTabLabel = useCallback((tab) => t(`studio.tabs.${tab}`), [t]);
+  const studioProjectStatusLabel = useCallback((project) => {
+    const rawLabel = projectStatusLabel(project).toLowerCase();
+    if (rawLabel === 'ready') return t('studio.status.ready');
+    if (rawLabel === 'processing') return t('studio.status.processing');
+    if (rawLabel === 'queued') return t('studio.status.queued');
+    if (rawLabel === 'failed') return t('studio.status.failed');
+    if (rawLabel === 'draft') return t('studio.status.draft');
+    return projectStatusLabel(project);
+  }, [t]);
+  const studioPublicationLabel = useCallback((project) => (
+    project?.is_published ? t('studio.status.published') : t('studio.status.draft')
+  ), [t]);
   const previewVideoRef = useRef(null);
   const previewSectionRef = useRef(null);
   const transcriptEditorRef = useRef(null);
@@ -5221,7 +5227,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     return (
       <SurfaceCard elevated className="mx-auto max-w-2xl space-y-4 text-center">
         <p className="label-sm">Studio Access</p>
-        <h1 className="headline-md text-[var(--text-primary)]">Teacher Or Publisher Access Required</h1>
+        <h1 className="headline-md text-[var(--text-primary)]">{t('studio.accessRequired')}</h1>
         <p className="body-md">
           Your account can browse and watch lessons, but Studio authoring is available only to teacher, publisher, or staff roles.
         </p>
@@ -5239,9 +5245,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     <div className="min-w-0 max-w-full space-y-5 overflow-x-hidden">
       <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden">
         <div className="min-w-0">
-          <p className="label-sm">Studio Workspace</p>
+          <p className="label-sm">{t('studio.workspace')}</p>
           <h1 className="headline-md mt-1 text-[var(--text-primary)]">
-            {readOnlyReview ? 'Read-only Lesson Review' : 'Teacher Publishing Console'}
+            {readOnlyReview ? t('studio.readOnlyReview') : t('studio.teacherConsole')}
           </h1>
         </div>
 
@@ -5330,34 +5336,34 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               >
                 <div className="absolute inset-0 bg-[linear-gradient(125deg,rgba(6,10,16,0.2)_0%,rgba(6,10,16,0.62)_60%,rgba(6,10,16,0.88)_100%)]" />
                 <div className="relative z-10 flex h-full flex-col justify-end gap-4 px-5 py-6 sm:px-7 sm:py-8">
-                  <p className="label-sm text-[color:var(--media-text-on-image)]">Selected Lesson</p>
+                  <p className="label-sm text-[color:var(--media-text-on-image)]">{t('studio.selectedLesson')}</p>
                   <h2 className="headline-md text-[color:var(--media-text-on-image)]">
-                    {selectedLesson?.title || 'No lesson selected'}
+                    {selectedLesson?.title || t('studio.noLessonSelected')}
                   </h2>
                   <p className="max-w-2xl text-sm text-[color:var(--media-text-on-image)] opacity-90">
-                    {selectedLesson?.description || 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.'}
+                    {selectedLesson?.description || t('studio.selectLessonPrompt')}
                   </p>
 
                   <div className="flex flex-wrap gap-2 text-xs text-[color:var(--media-text-on-image)] opacity-90">
                     <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5">
-                      {selectedLesson?.category_name || 'Uncategorized'}
+                      {selectedLesson?.category_name || t('common.uncategorized')}
                     </span>
                     <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5">
-                      {selectedLesson ? safeDateLabel(selectedLesson.created_at) : 'Recent'}
+                      {selectedLesson ? formatDate(selectedLesson.created_at) : t('analytics.recent')}
                     </span>
                     {selectedLesson && (
                       <span className={`rounded-full px-3 py-1.5 ${projectStatusTone(selectedLesson)}`}>
-                        {projectStatusLabel(selectedLesson)}
+                        {studioProjectStatusLabel(selectedLesson)}
                       </span>
                     )}
                     {selectedLesson && (
                       <span className={`rounded-full px-3 py-1.5 ${projectPublicationTone(selectedLesson)}`}>
-                        {projectPublicationLabel(selectedLesson)}
+                        {studioPublicationLabel(selectedLesson)}
                       </span>
                     )}
                     {selectedLesson && (
                       <span className={`rounded-full px-3 py-1.5 ${moderationStatusTone(projectModerationStatus(selectedLesson, selectedModeration))}`}>
-                        Moderation: {moderationStatusLabel(projectModerationStatus(selectedLesson, selectedModeration))}
+                        {t('common.moderation')}: {moderationStatusLabel(projectModerationStatus(selectedLesson, selectedModeration))}
                       </span>
                     )}
                     {avatarFeatureEnabled && selectedLesson && (
@@ -5375,7 +5381,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
                         </div>
                         <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
-                          <span>{avatarVisible(selectedLesson) ? 'Avatar visible' : 'Avatar hidden'}</span>
+                          <span>{avatarVisible(selectedLesson) ? t('studio.avatarVisible') : t('studio.avatarHidden')}</span>
                           <input
                             type="checkbox"
                             className="sr-only"
@@ -5398,7 +5404,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       <div className="flex flex-wrap items-center gap-2">
                         <Button variant="secondary" onClick={handleAvatarOnlyRerender} disabled={avatarOnlyRerenderDisabled}>
                           <RefreshCcw size={16} />
-                          <span>{avatarRerendering ? 'Queueing' : 'Rerender avatar only'}</span>
+                          <span>{avatarRerendering ? t('studio.queueing') : t('studio.rerenderAvatarOnly')}</span>
                         </Button>
                       </div>
 
@@ -5412,7 +5418,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     {!readOnlyReview && (
                       <Button onClick={() => selectedLesson && openEditorForProject(selectedLesson)} disabled={!selectedLesson}>
                         <LayoutPanelTop size={16} />
-                        <span>Open Lesson Workspace</span>
+                        <span>{t('studio.openLessonWorkspace')}</span>
                       </Button>
                     )}
                     <Button
@@ -5421,7 +5427,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       disabled={!selectedLesson || (!readOnlyReview && !projectRenderReady(selectedLesson))}
                     >
                       <Eye size={16} />
-                      <span>{readOnlyReview ? 'Open Review Watch' : selectedLesson?.is_published ? 'Preview In Watch' : 'Preview Draft'}</span>
+                      <span>{readOnlyReview ? t('studio.openReviewWatch') : selectedLesson?.is_published ? t('studio.previewInWatch') : t('studio.previewDraft')}</span>
                     </Button>
                     {selectedLesson && projectRenderReady(selectedLesson) && !readOnlyReview && (
                       <Button
@@ -5430,7 +5436,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         disabled={!selectedLesson.is_published && !projectCanPublishFromModeration(selectedLesson, selectedModeration)}
                       >
                         {selectedLesson.is_published ? <EyeOff size={16} /> : <Eye size={16} />}
-                        <span>{selectedLesson.is_published ? 'Unpublish' : 'Publish'}</span>
+                        <span>{selectedLesson.is_published ? t('studio.unpublish') : t('studio.publish')}</span>
                       </Button>
                     )}
                   </div>
@@ -5442,14 +5448,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               <div className="rail-scroll flex gap-2 overflow-x-auto pb-1">
                 {LESSON_TABS.map((tab) => {
                   const selected = activeTab === tab;
-                  const label = tab === 'tts' ? 'TTS' : tab;
+                  const label = studioTabLabel(tab);
                   return (
                     <button
                       key={tab}
                       type="button"
                       onClick={() => setActiveTab(tab)}
                       className={`focus-ring rounded-full px-3 py-1.5 text-sm font-medium transition ${
-                        tab === 'tts' ? '' : 'capitalize'
+                        ''
                       } ${
                         selected
                           ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)]'
@@ -5464,12 +5470,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
               {activeTab === 'overview' && (
                 <div className="space-y-3">
-                  <p className="title-lg text-[var(--text-primary)]">Lesson Overview</p>
+                  <p className="title-lg text-[var(--text-primary)]">{t('studio.tabs.overview')}</p>
                   {selectedLesson && (
                     <div ref={previewSectionRef} className="rounded-2xl token-surface p-3">
                       {!projectRenderReady(selectedLesson) ? (
                         <div className="space-y-2 text-sm text-[var(--text-secondary)]">
-                          <p className="font-semibold text-[var(--text-primary)]">Render: {projectStatusLabel(selectedLesson)}</p>
+                          <p className="font-semibold text-[var(--text-primary)]">{t('studio.render')}: {studioProjectStatusLabel(selectedLesson)}</p>
                           <p>Preview available after render completes.</p>
                         </div>
                       ) : loadingPreview ? (
@@ -5554,7 +5560,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   </p>
                   {selectedLesson && (
                     <div className="rounded-2xl token-surface p-3 text-sm text-[var(--text-secondary)]">
-                      <p className="font-semibold text-[var(--text-primary)]">Visibility: {projectPublicationLabel(selectedLesson)}</p>
+                      <p className="font-semibold text-[var(--text-primary)]">{t('studio.visibility')}: {studioPublicationLabel(selectedLesson)}</p>
                       <p className="mt-1">
                         {!projectRenderReady(selectedLesson)
                           ? 'Publishing becomes available after the render finishes.'
@@ -5590,7 +5596,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 <div className="space-y-3">
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
-                      <p className="title-lg text-[var(--text-primary)]">Transcript</p>
+                      <p className="title-lg text-[var(--text-primary)]">{t('studio.tabs.transcript')}</p>
                       <p className="text-xs text-[var(--text-secondary)]">
                         Read-only lesson transcript. Open Studio Editor to make persistent transcript changes.
                       </p>
@@ -5736,7 +5742,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
               {activeTab === 'notes' && (
                 <div className="space-y-3">
-                  <p className="title-lg text-[var(--text-primary)]">Lesson Notes</p>
+                  <p className="title-lg text-[var(--text-primary)]">{t('studio.tabs.notes')}</p>
                   {lessonNotesLocalDraft && (
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[color:var(--status-warning-bg)] px-3 py-2 text-xs font-semibold text-[color:var(--status-warning-fg)]">
                       <span>Unsaved local draft found. Restore or discard?</span>
@@ -5759,7 +5765,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     <p className="text-xs text-[var(--text-secondary)]">{lessonNotesSavedAt || 'Not saved yet'}</p>
                     <Button size="sm" variant="secondary" onClick={saveLessonNotes}>
                       <Save size={14} />
-                      <span>Save Notes</span>
+                      <span>{t('studio.saveNotes')}</span>
                     </Button>
                   </div>
                 </div>
@@ -5837,16 +5843,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         <p className="title-lg line-clamp-2 max-w-full break-words text-[var(--text-primary)] [overflow-wrap:anywhere]">
                           {project.title || `Project #${project.id}`}
                         </p>
-                        <p className="mt-1 text-xs text-[var(--text-secondary)]">{safeDateLabel(project.created_at)}</p>
+                        <p className="mt-1 text-xs text-[var(--text-secondary)]">{formatDate(project.created_at)}</p>
                         <div className="mt-2 flex min-w-0 flex-wrap gap-1.5 text-[0.68rem] font-semibold">
                           <span className={`max-w-full rounded-full px-2 py-0.5 ${projectStatusTone(project)}`}>
-                            {projectStatusLabel(project)}
+                            {studioProjectStatusLabel(project)}
                           </span>
                           <span className={`max-w-full rounded-full px-2 py-0.5 ${projectPublicationTone(project)}`}>
-                            {projectPublicationLabel(project)}
+                            {studioPublicationLabel(project)}
                           </span>
                           <span className={`max-w-full break-words rounded-full px-2 py-0.5 [overflow-wrap:anywhere] ${moderationStatusTone(projectModerationStatus(project, projectModeration))}`}>
-                            Moderation: {moderationStatusLabel(projectModerationStatus(project, projectModeration))}
+                            {t('common.moderation')}: {moderationStatusLabel(projectModerationStatus(project, projectModeration))}
                           </span>
                           {avatarFeatureEnabled && (projectAvatarEnabled(project) || avatarProcessingStatus(project) !== 'none') && (
                             <span className="max-w-full break-words rounded-full bg-[color:var(--surface-muted)] px-2 py-0.5 text-[var(--text-secondary)] [overflow-wrap:anywhere]">
@@ -5860,19 +5866,19 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         {!readOnlyReview && (
                           <Button size="sm" onClick={() => openEditorForProject(project)}>
                             <BookOpenText size={14} />
-                            <span>Open</span>
+                            <span>{t('common.open')}</span>
                           </Button>
                         )}
                         {(projectRenderReady(project) || readOnlyReview) && (
                           <Button variant="secondary" size="sm" onClick={() => openPreviewForProject(project)}>
                             <Eye size={14} />
-                            <span>{readOnlyReview ? 'Review' : project.is_published ? 'Preview' : 'Draft Preview'}</span>
+                            <span>{readOnlyReview ? t('studio.review') : project.is_published ? t('studio.preview') : t('studio.draftPreview')}</span>
                           </Button>
                         )}
                         {!readOnlyReview && (
                           <Button variant="secondary" size="sm" onClick={() => handleRerenderProject(project)}>
                             <RefreshCcw size={14} />
-                            <span>Rerender</span>
+                            <span>{t('common.rerender')}</span>
                           </Button>
                         )}
                         {projectRenderReady(project) && !readOnlyReview && (
@@ -5883,13 +5889,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             disabled={!project.is_published && !projectCanPublishFromModeration(project, projectModeration)}
                           >
                             {project.is_published ? <EyeOff size={14} /> : <Eye size={14} />}
-                            <span>{project.is_published ? 'Unpublish' : 'Publish'}</span>
+                            <span>{project.is_published ? t('studio.unpublish') : t('studio.publish')}</span>
                           </Button>
                         )}
                         {!readOnlyReview && (
                           <Button variant="ghost" size="sm" onClick={() => handleDeleteProject(project)}>
                             <Trash2 size={14} />
-                            <span>Delete</span>
+                            <span>{t('common.delete')}</span>
                           </Button>
                         )}
                       </div>
@@ -6229,8 +6235,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           <Save size={14} />
                           <span>
                             {globalEditorActionBusy === 'save'
-                              ? 'Saving...'
-                              : 'Save changes'}
+                              ? t('common.saving')
+                              : t('studio.saveChanges')}
                           </span>
                         </Button>
                         <Button
@@ -6249,7 +6255,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             : ''}
                         >
                           <Trash2 size={14} />
-                          <span>{globalEditorActionBusy === 'discard' ? 'Discarding...' : 'Discard changes'}</span>
+                          <span>{globalEditorActionBusy === 'discard' ? t('studio.discarding') : t('studio.discardChanges')}</span>
                         </Button>
                         {avatarFeatureEnabled && (
                           <label className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] px-2.5 py-1 text-xs font-semibold text-[var(--text-secondary)]">
@@ -6258,11 +6264,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               checked={avatarEnabled}
                               onChange={(event) => setAvatarEnabled(event.target.checked)}
                               disabled={Boolean(globalEditorActionBusy)}
-                              aria-label="Render with avatar"
+                              aria-label={t('studio.renderWithAvatarAria')}
                             />
-                            <span>Render with avatar</span>
+                            <span>{t('studio.renderWithAvatar')}</span>
                             <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-0.5 text-[0.68rem] text-[var(--text-muted)]">
-                              Next rerender
+                              {t('studio.renderWithAvatarNext')}
                             </span>
                           </label>
                         )}
@@ -6279,18 +6285,18 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             : selectedLessonDirtyScope.rerenderDisabledReason}
                         >
                           <RefreshCcw size={14} />
-                          <span>{globalEditorActionBusy === 'rerender' ? 'Saving...' : 'Save & Rerender'}</span>
+                          <span>{globalEditorActionBusy === 'rerender' ? t('common.saving') : t('studio.saveAndRerender')}</span>
                         </Button>
                       </>
                     ) : (
                       <>
                         <Button size="sm" variant="secondary" onClick={persistEditorDraft}>
                           <Save size={14} />
-                          <span>Save Local Draft</span>
+                          <span>{t('studio.saveLocalDraft')}</span>
                         </Button>
                         <Button size="sm" onClick={publishFromEditor} disabled={submitting || !sourceFile}>
                           <Upload size={14} />
-                          <span>{submitting ? 'Creating...' : 'Create Lesson Draft'}</span>
+                          <span>{submitting ? t('studio.creatingLessonDraft') : t('studio.createLessonDraft')}</span>
                         </Button>
                       </>
                     )}

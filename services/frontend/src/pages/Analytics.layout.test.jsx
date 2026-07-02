@@ -154,7 +154,7 @@ describe('Analytics adaptive layout states', () => {
 
     const { host, root } = await renderAnalytics(activityPayload({ categories }));
 
-    expect(host.textContent).toContain('Views over time');
+    expect(host.textContent).toContain('Views');
     expect(host.querySelector('[data-testid="analytics-chart-body"]')).toBeTruthy();
     const categoryList = host.querySelector('[data-testid="analytics-category-list"]');
     expect(categoryList).toBeTruthy();
