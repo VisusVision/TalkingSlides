@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import django
 import pytest
 from django.test.utils import override_settings
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -38,9 +38,20 @@ def _require_avatar_source_columns():
     skip_if_column_missing("core_userprofile", "avatar_source_valid")
 
 
+def _cv2_without_cascade():
+    return SimpleNamespace(
+        COLOR_RGB2GRAY=0,
+        cvtColor=lambda array, _mode: array[..., 0],
+        data=SimpleNamespace(haarcascades=""),
+    )
+
+
 @pytest.mark.django_db
-def test_blank_active_avatar_source_fails_validation_and_readiness(tmp_path):
+def test_blank_active_avatar_source_fails_validation_and_readiness(tmp_path, monkeypatch):
+    from avatar import simple_input
+
     _require_avatar_source_columns()
+    monkeypatch.setattr(simple_input, "cv2", _cv2_without_cascade())
     suffix = uuid.uuid4().hex[:8]
     user = User.objects.create_user(username=f"teacher_blank_avatar_{suffix}", password="pass")
     rel_path = f"avatars/{user.id}/blank.png"
@@ -67,6 +78,47 @@ def test_blank_active_avatar_source_fails_validation_and_readiness(tmp_path):
     assert validation["valid"] is False
     assert profile.avatar_source_valid is False
     assert "avatar_input_face_not_detected" in profile.avatar_source_validation_error
+    assert readiness["ready"] is False
+    assert readiness["avatar_ready"] is False
+    assert "avatar_source_invalid" in readiness["missing_requirements"]
+
+
+@pytest.mark.django_db
+def test_unavailable_face_detector_uses_stable_error_and_blocks_readiness(tmp_path, monkeypatch):
+    from avatar import simple_input
+
+    _require_avatar_source_columns()
+    monkeypatch.setattr(simple_input, "cv2", _cv2_without_cascade())
+    suffix = uuid.uuid4().hex[:8]
+    user = User.objects.create_user(username=f"teacher_no_face_detector_{suffix}", password="pass")
+    rel_path = f"avatars/{user.id}/nonblank.png"
+    image_path = tmp_path / rel_path
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("RGB", (1024, 1024), (218, 208, 198))
+    ImageDraw.Draw(image).rectangle((128, 128, 896, 896), fill=(40, 80, 160))
+    image.save(image_path)
+
+    profile = UserProfile.objects.create(
+        user=user,
+        role="teacher",
+        avatar_enabled=True,
+        avatar_consent_confirmed=True,
+        avatar_image_original=rel_path,
+        avatar_image_processed=rel_path,
+        avatar_reference_type="image",
+        avatar_image_status="ready",
+    )
+    VoiceProfile.objects.create(user=user, provider="xtts_v2", voice_id=f"voice_{suffix}")
+
+    validation = refresh_avatar_source_validation(profile, storage_root=tmp_path, persist=True)
+    profile.refresh_from_db()
+    readiness = avatar_preview_readiness(profile, profile.user.voice_profile, storage_root=tmp_path)
+
+    assert validation["valid"] is False
+    assert validation["error"] == "avatar_face_detector_unavailable"
+    assert profile.avatar_source_valid is False
+    assert profile.avatar_source_validation_error == "avatar_face_detector_unavailable"
+    assert "CascadeClassifier" not in profile.avatar_source_validation_error
     assert readiness["ready"] is False
     assert readiness["avatar_ready"] is False
     assert "avatar_source_invalid" in readiness["missing_requirements"]

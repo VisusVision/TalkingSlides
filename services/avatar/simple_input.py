@@ -77,14 +77,39 @@ def _read_video_frame(path: Path) -> Image.Image | None:
 
 
 def _detect_face_bbox(image: Image.Image) -> tuple[int, int, int, int] | None:
-    if cv2 is None:
+    grayscale_extrema = image.convert("L").getextrema()
+    if grayscale_extrema[1] - grayscale_extrema[0] <= 1:
         return None
-    import numpy as np  # type: ignore
 
-    array = np.array(image)
-    gray = cv2.cvtColor(array, cv2.COLOR_RGB2GRAY)
-    cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(96, 96))
+    cascade_factory = getattr(cv2, "CascadeClassifier", None) if cv2 is not None else None
+    cvt_color = getattr(cv2, "cvtColor", None) if cv2 is not None else None
+    color_rgb_to_gray = getattr(cv2, "COLOR_RGB2GRAY", None) if cv2 is not None else None
+    cv2_data = getattr(cv2, "data", None) if cv2 is not None else None
+    haarcascades = str(getattr(cv2_data, "haarcascades", "") or "")
+    cascade_path = Path(haarcascades) / "haarcascade_frontalface_default.xml" if haarcascades else None
+    if (
+        not callable(cascade_factory)
+        or not callable(cvt_color)
+        or color_rgb_to_gray is None
+        or cascade_path is None
+        or not cascade_path.is_file()
+    ):
+        raise AvatarValidationError("avatar_face_detector_unavailable")
+
+    try:
+        import numpy as np  # type: ignore
+
+        array = np.array(image)
+        gray = cvt_color(array, color_rgb_to_gray)
+        cascade = cascade_factory(str(cascade_path))
+        cascade_empty = getattr(cascade, "empty", None)
+        if not callable(cascade_empty) or cascade_empty():
+            raise AvatarValidationError("avatar_face_detector_unavailable")
+        faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(96, 96))
+    except AvatarValidationError:
+        raise
+    except Exception as exc:
+        raise AvatarValidationError("avatar_face_detector_unavailable") from exc
     if faces is None or len(faces) == 0:
         return None
     x, y, width, height = [int(value) for value in max(faces, key=lambda face: int(face[2]) * int(face[3]))]

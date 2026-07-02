@@ -105,11 +105,11 @@ def validate_active_avatar_source(profile: UserProfile, *, storage_root: Path) -
             "face_bbox": [],
             "selected_source_key": "",
         }
-    except Exception as exc:
+    except Exception:
         return {
             **paths,
             "valid": False,
-            "error": str(exc or "avatar_source_validation_failed"),
+            "error": "avatar_source_validation_failed",
             "warning": "",
             "metrics": {},
             "face_bbox": [],
