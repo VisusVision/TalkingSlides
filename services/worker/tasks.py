@@ -1679,21 +1679,168 @@ def _playback_final_segments_by_page_key(playback_assets: dict[str, Any] | None)
     return segments
 
 
+def _manifest_page_keys_in_order(playback_assets: dict[str, Any] | None) -> list[str]:
+    if not isinstance(playback_assets, dict):
+        return []
+    manifest = playback_assets.get("partial_render_manifest")
+    if not _is_partial_render_manifest_available(manifest):
+        return []
+    pages = manifest.get("pages")
+    if not isinstance(pages, dict) or not pages:
+        return []
+
+    indexed: list[tuple[int, str]] = []
+    for page_key, page in pages.items():
+        if not isinstance(page, dict):
+            return []
+        try:
+            index = int(page.get("index"))
+        except (TypeError, ValueError):
+            return []
+        key = str(page_key or "").strip()
+        if not key:
+            return []
+        indexed.append((index, key))
+    indexed.sort(key=lambda item: item[0])
+    if [index for index, _key in indexed] != list(range(len(indexed))):
+        return []
+    keys = [key for _index, key in indexed]
+    return keys if len(set(keys)) == len(keys) else []
+
+
+def _legacy_final_segments_by_index(
+    slides: list[dict[str, Any]],
+    previous_playback_assets: dict[str, Any] | None,
+) -> dict[int, dict[str, Any]]:
+    if not isinstance(previous_playback_assets, dict):
+        return {}
+    final_segments = previous_playback_assets.get("final_segments")
+    if not isinstance(final_segments, list) or len(final_segments) != len(slides) or not slides:
+        return {}
+
+    current_keys: list[str] = []
+    for position, slide in enumerate(slides):
+        if not isinstance(slide, dict):
+            return {}
+        page_key = str(slide.get("page_key") or "").strip()
+        if slide.get("index") is None:
+            return {}
+        try:
+            index = int(slide.get("index"))
+        except (TypeError, ValueError):
+            return {}
+        if not page_key or index != position:
+            return {}
+        current_keys.append(page_key)
+    if len(set(current_keys)) != len(current_keys):
+        return {}
+    if _manifest_page_keys_in_order(previous_playback_assets) != current_keys:
+        return {}
+
+    by_index: dict[int, dict[str, Any]] = {}
+    for position, segment in enumerate(final_segments):
+        if not isinstance(segment, dict):
+            return {}
+        if segment.get("index") is None:
+            return {}
+        try:
+            index = int(segment.get("index"))
+        except (TypeError, ValueError):
+            return {}
+        if index != position or index in by_index:
+            return {}
+        by_index[index] = dict(segment)
+    return by_index
+
+
 def _slides_with_previous_segment_timing(
     slides: list[dict[str, Any]],
     previous_playback_assets: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     previous_segments = _playback_final_segments_by_page_key(previous_playback_assets)
+    legacy_segments = _legacy_final_segments_by_index(slides, previous_playback_assets)
     enriched: list[dict[str, Any]] = []
-    for slide in slides or []:
+    for position, slide in enumerate(slides or []):
         row = dict(slide or {})
         page_key = str(row.get("page_key") or "").strip()
         segment = previous_segments.get(page_key, {})
+        if not segment:
+            legacy_segment = legacy_segments.get(position, {})
+            if not str(legacy_segment.get("page_key") or "").strip():
+                segment = legacy_segment
         for key in ("duration", "pause_seconds"):
             if row.get(key) in (None, "") and segment.get(key) not in (None, ""):
                 row[key] = segment.get(key)
         enriched.append(row)
     return enriched
+
+
+_CACHED_SLIDE_IMAGE_HASH_KEYS = (
+    "display_text_hash",
+    "background_hash",
+    "layout_hash",
+    "structural_hash",
+    "source_render_hash",
+)
+
+
+def _cached_slide_images_for_unchanged_pages(
+    *,
+    project_id: str | int,
+    slides: list[dict[str, Any]],
+    previous_playback_assets: dict[str, Any] | None,
+    avatar_options: dict[str, Any] | None,
+) -> dict[str, str]:
+    if not isinstance(previous_playback_assets, dict):
+        return {}
+    old_manifest = previous_playback_assets.get("partial_render_manifest")
+    if not _is_partial_render_manifest_available(old_manifest):
+        return {}
+    try:
+        expected_manifest = build_expected_partial_render_manifest(
+            project_id=project_id,
+            slides=_slides_with_previous_segment_timing(slides, previous_playback_assets),
+            previous_playback_assets=previous_playback_assets,
+            avatar_options=avatar_options,
+        )
+    except Exception:
+        logger.warning("Cached slide-image comparison failed project=%s", project_id, exc_info=True)
+        return {}
+    if str(old_manifest.get("sequence_hash") or "") != str(expected_manifest.get("sequence_hash") or ""):
+        return {}
+
+    old_pages = old_manifest.get("pages")
+    expected_pages = expected_manifest.get("pages")
+    if not isinstance(old_pages, dict) or not isinstance(expected_pages, dict):
+        return {}
+    artifacts_by_key = _playback_artifacts_by_page_key(previous_playback_assets)
+    reusable: dict[str, str] = {}
+    for position, slide in enumerate(slides):
+        if not isinstance(slide, dict):
+            continue
+        page_key = str(slide.get("page_key") or "").strip()
+        old_page = old_pages.get(page_key)
+        expected_page = expected_pages.get(page_key)
+        if not page_key or not isinstance(old_page, dict) or not isinstance(expected_page, dict):
+            continue
+        try:
+            old_index = int(old_page.get("index"))
+            expected_index = int(expected_page.get("index"))
+            current_index = int(slide.get("index", position))
+        except (TypeError, ValueError):
+            continue
+        if old_index != expected_index or expected_index != current_index:
+            continue
+        if any(
+            str(old_page.get(hash_key) or "") != str(expected_page.get(hash_key) or "")
+            for hash_key in _CACHED_SLIDE_IMAGE_HASH_KEYS
+        ):
+            continue
+        artifact = str((artifacts_by_key.get(page_key) or {}).get("slide_image") or "").strip()
+        artifact_path = _resolve_existing_artifact_path(artifact, storage_root=STORAGE_ROOT)
+        if artifact_path is not None:
+            reusable[page_key] = str(artifact_path)
+    return reusable
 
 
 def _resolve_existing_artifact_path(value: Any, *, storage_root: str | Path | None = None) -> Path | None:
@@ -8804,6 +8951,7 @@ def concat_and_finalize(
         playback_assets["final_segments"] = [
             {
                 "index": int(item.get("index") or 0),
+                "page_key": str(item.get("page_key") or ""),
                 "slide": playback_assets["slides"][idx],
                 "transcript": playback_assets["transcript"][idx],
                 "tts_audio": playback_assets["tts_audio"][idx],
@@ -9083,6 +9231,13 @@ def merge_and_finalize_segments(
         if isinstance(item, dict)
     }
     rerender_set = {str(key) for key in (rerender_page_keys or []) if str(key)}
+    previous_playback_assets = _read_playback_sidecar(project_id)
+    cached_slide_images = _cached_slide_images_for_unchanged_pages(
+        project_id=project_id,
+        slides=slides,
+        previous_playback_assets=previous_playback_assets,
+        avatar_options=avatar_options,
+    )
 
     full_results: list[dict[str, Any]] = []
     for slide in slides:
@@ -9101,6 +9256,7 @@ def merge_and_finalize_segments(
         slide_index = int(slide.get("index") or 0)
         avatar_segment_abs = Path(_avatar_storage_root()) / str(project_id) / "avatar_segments" / f"avatar_{int(slide.get('slide_num') or 0):03d}.mp4"
         avatar_rel = _safe_rel_path(_avatar_storage_root(), str(avatar_segment_abs)) if avatar_segment_abs.exists() else ""
+        slide_path = str(slide.get("image_path") or cached_slide_images.get(page_key) or "")
 
         full_results.append(
             {
@@ -9128,7 +9284,7 @@ def merge_and_finalize_segments(
                 "tts_fallback_reason": "",
                 "tts_settings": {},
                 "tts_preprocessing_warnings": [],
-                "slide_path": str(slide.get("image_path") or ""),
+                "slide_path": slide_path,
                 "tts_audio_path": audio_path,
                 "subtitle_chunks": list(slide.get("subtitle_chunks") or []),
                 "whiteboard_mode": bool(slide.get("whiteboard_mode")),

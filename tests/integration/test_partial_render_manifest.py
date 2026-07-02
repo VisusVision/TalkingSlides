@@ -712,6 +712,58 @@ def test_expected_manifest_builder_uses_new_slide_inputs_and_reuses_artifacts_by
     }
 
 
+def test_legacy_final_segments_without_page_keys_restore_timing_by_stable_index():
+    previous_playback_assets = _playback_assets()
+    previous_playback_assets["partial_render_manifest"] = _two_page_manifest()
+    for segment in previous_playback_assets["final_segments"]:
+        segment.pop("page_key")
+    slides = [
+        {"index": 0, "page_key": "s1-p1"},
+        {"index": 1, "page_key": "s2-p1"},
+    ]
+
+    enriched = worker_tasks._slides_with_previous_segment_timing(slides, previous_playback_assets)
+
+    assert [(row["duration"], row["pause_seconds"]) for row in enriched] == [(2.0, 0.25), (3.0, 0.25)]
+
+
+@pytest.mark.parametrize(
+    "slides",
+    [
+        [{"index": 0, "page_key": "s1-p1"}],
+        [
+            {"index": 0, "page_key": "s2-p1"},
+            {"index": 1, "page_key": "s1-p1"},
+        ],
+    ],
+)
+def test_legacy_final_segment_index_fallback_rejects_ambiguous_count_or_order(slides):
+    previous_playback_assets = _playback_assets()
+    previous_playback_assets["partial_render_manifest"] = _two_page_manifest()
+    for segment in previous_playback_assets["final_segments"]:
+        segment.pop("page_key")
+
+    enriched = worker_tasks._slides_with_previous_segment_timing(slides, previous_playback_assets)
+
+    assert all("duration" not in row and "pause_seconds" not in row for row in enriched)
+
+
+def test_legacy_final_segment_index_fallback_requires_explicit_contiguous_indexes():
+    previous_playback_assets = _playback_assets()
+    previous_playback_assets["partial_render_manifest"] = _two_page_manifest()
+    for segment in previous_playback_assets["final_segments"]:
+        segment.pop("page_key")
+    previous_playback_assets["final_segments"][1].pop("index")
+    slides = [
+        {"index": 0, "page_key": "s1-p1"},
+        {"index": 1, "page_key": "s2-p1"},
+    ]
+
+    enriched = worker_tasks._slides_with_previous_segment_timing(slides, previous_playback_assets)
+
+    assert all("duration" not in row and "pause_seconds" not in row for row in enriched)
+
+
 def _patch_finalize_side_effects(monkeypatch, tmp_path):
     from scripts import ffmpeg_helpers
 
@@ -757,6 +809,62 @@ def _patch_finalize_side_effects(monkeypatch, tmp_path):
         "_run_auto_video_frame_audit_after_render",
         lambda *_args, **_kwargs: {"enabled": False},
     )
+
+
+def _finalize_two_page_no_avatar_sidecar(tmp_path, project: Project, job: Job):
+    project_root = tmp_path / str(project.id)
+    results = []
+    for index, (display_text, narration_text) in enumerate(
+        [("Visible one", "Narration one"), ("Visible two", "Narration two")]
+    ):
+        result = _without_avatar(
+            _render_result(
+                index=index,
+                page_key=f"s{index + 1}-p1",
+                display_text=display_text,
+                narration_text=narration_text,
+                project_id=project.id,
+            )
+        )
+        part_path = project_root / "parts" / f"part_{index + 1:03d}.mp4"
+        slide_path = project_root / "images" / f"slide_{index + 1:03d}.png"
+        audio_path = project_root / "audio" / f"slide_{index + 1:03d}.mp3"
+        for path in (part_path, slide_path, audio_path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"artifact-{index}-{path.suffix}".encode("utf-8"))
+        result.update(
+            {
+                "part_path": str(part_path),
+                "slide_path": str(slide_path),
+                "tts_audio_path": str(audio_path),
+            }
+        )
+        results.append(result)
+
+    avatar_options = {"enabled": False, "requested": False}
+    worker_tasks.concat_and_finalize.run(
+        results,
+        str(project.id),
+        False,
+        avatar_options,
+        job.id,
+    )
+    sidecar_path = project_root / "playback_assets.json"
+    return results, json.loads(sidecar_path.read_text(encoding="utf-8")), avatar_options
+
+
+def _runtime_slides_from_finalized_results(results: list[dict]) -> list[dict]:
+    slides = []
+    for result in results:
+        row = dict(result)
+        row["notes_text"] = str(result.get("narration_text") or "")
+        row["audio_out"] = str(result.get("tts_audio_path") or "")
+        row["part_out"] = str(result.get("part_path") or "")
+        row["image_path"] = str(result.get("slide_path") or "")
+        for key in ("duration", "pause_seconds", "part_path", "slide_path", "tts_audio_path"):
+            row.pop(key, None)
+        slides.append(row)
+    return slides
 
 
 def test_visual_only_recompose_reuses_audio_avatar_and_replaces_only_target_part(tmp_path, monkeypatch):
@@ -1908,6 +2016,7 @@ def test_finalize_adds_manifest_without_removing_playback_sidecar_fields(tmp_pat
     assert sidecar["mp4_rel_path"] == f"{project.id}/{project.id}.mp4"
     assert sidecar["srt_rel_path"] == f"{project.id}/{project.id}.srt"
     assert sidecar["vtt_rel_path"] == f"{project.id}/{project.id}.vtt"
+    assert sidecar["final_segments"][0]["page_key"] == "s1-p1"
     assert sidecar["final_segments"][0]["part_rel_path"] == f"{project.id}/parts/part_001.mp4"
     assert finalize_result["playback_assets"]["partial_render_manifest"] == manifest
     assert finalize_result["playback_assets"]["partial_render_analysis"] == analysis
@@ -1933,6 +2042,121 @@ def test_finalize_adds_manifest_without_removing_playback_sidecar_fields(tmp_pat
     assert analysis["plan"]["pages"]["s1-p1"]["actual_behavior_changed"] is False
     assert analysis["plan"]["summary"]["full_rerender_required_future"] == 1
     assert analysis["plan"]["summary"]["unknown_requires_full"] == 1
+
+
+@pytest.mark.django_db
+def test_real_finalized_sidecar_supports_narration_only_runtime_decision(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers
+
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("finalized_narration_decision_owner")
+    project = Project.objects.create(title="Finalized narration decision", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    results, sidecar, avatar_options = _finalize_two_page_no_avatar_sidecar(tmp_path, project, job)
+    slides = _runtime_slides_from_finalized_results(results)
+    slides[0].update(
+        {
+            "text": "Narration one updated",
+            "narration_text": "Narration one updated",
+            "notes_text": "Narration one updated",
+            "spoken_text": "Narration one updated",
+            "subtitle_chunks": ["Narration one updated"],
+        }
+    )
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 2.0)
+
+    enriched = worker_tasks._slides_with_previous_segment_timing(slides, sidecar)
+    decision = worker_tasks._build_narration_only_recompose_runtime_decision(
+        project_id=project.id,
+        job_id=job.id + 1,
+        slides=slides,
+        rerender_page_keys={"s1-p1"},
+        previous_playback_assets=sidecar,
+        tts_settings={"provider_preference": "gtts", "speech_speed": 1.05},
+        avatar_options=avatar_options,
+    )
+
+    assert [segment["page_key"] for segment in sidecar["final_segments"]] == ["s1-p1", "s2-p1"]
+    assert [(row["duration"], row["pause_seconds"]) for row in enriched] == [(2.0, 0.25), (3.0, 0.25)]
+    assert decision["classification"]["global_reasons"] == []
+    assert decision["classification"]["pages"]["s2-p1"]["classification"] == "unchanged"
+    assert "structural_changed" not in decision["classification"]["pages"]["s1-p1"]["reasons"]
+    assert decision["eligible"] is True
+
+    legacy_sidecar = deepcopy(sidecar)
+    for segment in legacy_sidecar["final_segments"]:
+        segment.pop("page_key")
+    legacy_decision = worker_tasks._build_narration_only_recompose_runtime_decision(
+        project_id=project.id,
+        job_id=job.id + 2,
+        slides=slides,
+        rerender_page_keys={"s1-p1"},
+        previous_playback_assets=legacy_sidecar,
+        tts_settings={"provider_preference": "gtts", "speech_speed": 1.05},
+        avatar_options=avatar_options,
+    )
+    assert legacy_decision["classification"]["global_reasons"] == []
+    assert legacy_decision["eligible"] is True
+
+
+@pytest.mark.django_db
+def test_cached_merge_preserves_old_slide_image_only_when_visual_hashes_match(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers
+
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("cached_slide_image_owner")
+    project = Project.objects.create(title="Cached slide image", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    results, sidecar, avatar_options = _finalize_two_page_no_avatar_sidecar(tmp_path, project, job)
+    slides = _runtime_slides_from_finalized_results(results)
+    slides[0].update(
+        {
+            "text": "Narration one updated",
+            "narration_text": "Narration one updated",
+            "notes_text": "Narration one updated",
+            "spoken_text": "Narration one updated",
+            "subtitle_chunks": ["Narration one updated"],
+        }
+    )
+    slides[1]["image_path"] = ""
+    changed_result = {
+        **results[0],
+        "text": "Narration one updated",
+        "narration_text": "Narration one updated",
+        "spoken_text": "Narration one updated",
+        "subtitle_chunks": ["Narration one updated"],
+    }
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 2.0)
+    monkeypatch.setattr(worker_tasks, "_read_playback_sidecar", lambda _project_id: sidecar)
+    captured: dict[str, Any] = {}
+
+    def fake_finalize_apply(*, args):
+        captured["results"] = args[0]
+        return SimpleNamespace(result={"status": "ok"})
+
+    monkeypatch.setattr(worker_tasks.concat_and_finalize, "apply", fake_finalize_apply)
+
+    worker_tasks.merge_and_finalize_segments.run(
+        [changed_result],
+        str(project.id),
+        slides,
+        ["s1-p1"],
+        avatar_options,
+        job.id + 1,
+    )
+
+    unchanged = next(item for item in captured["results"] if item["page_key"] == "s2-p1")
+    assert unchanged["slide_path"] == results[1]["slide_path"]
+
+    source_changed_slides = deepcopy(slides)
+    source_changed_slides[1]["source_render_method"] = "changed-renderer"
+    reusable = worker_tasks._cached_slide_images_for_unchanged_pages(
+        project_id=project.id,
+        slides=source_changed_slides,
+        previous_playback_assets=sidecar,
+        avatar_options=avatar_options,
+    )
+    assert "s2-p1" not in reusable
 
 
 @pytest.mark.django_db

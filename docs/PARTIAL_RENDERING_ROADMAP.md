@@ -13,6 +13,7 @@ Implemented today:
 - `merge_and_finalize_segments` merges newly rendered slide outputs with existing unchanged artifacts, then finalizes the full lesson output.
 - `playback_assets.json` stores per-slide and final playback sidecar data used by Watch/API payloads.
 - `playback_assets.json` now includes report-only `partial_render_manifest` metadata with deterministic per-page dependency hashes.
+- Finalized `final_segments` entries carry `page_key` so targeted rerenders can match prior duration and pause metadata to stable pages.
 - A pure report-only classifier can compare an old manifest with a newly built expected manifest and label dependency changes without changing render behavior.
 - `playback_assets.json` now surfaces report-only `partial_render_analysis` metadata from the old sidecar manifest and the newly finalized manifest for debugging and future optimization.
 - `partial_render_analysis.plan` now maps classifier output to report-only future planning actions without changing render behavior.
@@ -37,6 +38,7 @@ Current safety rule:
 - Visual-only targeted recomposition recomputes the expected manifest, classifier, and plan at worker runtime before it can run.
 - Visual-only optimization is all-or-nothing for the targeted page set. If any target page is not eligible, all targets use the existing slide render path.
 - Narration-only targeted recomposition is avatar-disabled only, all-or-nothing, and requires an old manifest plus required old visual/segment/audio artifacts. Any uncertainty falls back to the existing slide render path.
+- Legacy sidecars without segment page keys use ordered timing fallback only when manifest order and segment/page counts match exactly; ambiguous sidecars still fall back conservatively.
 - Avatar-enabled narration/TTS changes are still deferred and fall back to the existing render behavior.
 - The final lesson asset is still finalized after targeted work; the system does not yet publish independent immutable slide packages.
 - Final MP4, HLS sidecar, SRT, VTT, playback sidecar, manifest, and analysis are still regenerated because narration duration, timeline, and subtitles can shift.
