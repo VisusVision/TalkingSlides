@@ -44,6 +44,7 @@ export default function TranscriptPanel({
               key={line.id}
               type="button"
               onClick={() => onJump(line.startSeconds)}
+              dir="auto"
               className={`focus-ring w-full rounded-2xl border px-3 py-2 text-left transition ${
                 active
                   ? 'border-[color:color-mix(in_srgb,var(--accent-secondary),transparent_34%)] bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_84%)]'
@@ -51,7 +52,7 @@ export default function TranscriptPanel({
               }`}
             >
               <p className="text-xs text-[var(--text-secondary)]">{formatTimestamp(line.startSeconds)}</p>
-              <p className="mt-1 text-sm text-[var(--text-primary)]">{line.text}</p>
+              <p className="ugc-text mt-1 text-sm text-[var(--text-primary)]">{line.text}</p>
             </button>
           );
         })}

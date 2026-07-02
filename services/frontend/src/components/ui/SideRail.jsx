@@ -51,7 +51,7 @@ function RailTooltip({ label, rightOffset = true }) {
   );
 }
 
-function RailNavItem({ to, label, icon: Icon, end = false, expanded, user }) {
+function RailNavItem({ to, label, icon: Icon, end = false, expanded, user, isRtl = false }) {
   const location = useLocation();
   const routeId = routeIdForPath(to);
   const activeRouteId = routeIdForPath(location.pathname);
@@ -83,14 +83,14 @@ function RailNavItem({ to, label, icon: Icon, end = false, expanded, user }) {
           </span>
           <span className={`hidden text-sm font-semibold ${expanded ? 'md:inline' : 'md:hidden'}`}>{label}</span>
           <span className="sr-only">{label}</span>
-          {!expanded ? <RailTooltip label={label} /> : null}
+          {!expanded ? <RailTooltip label={label} rightOffset={!isRtl} /> : null}
         </>
       )}
     </NavLink>
   );
 }
 
-function RailHelpItem({ to, label, icon: Icon, expanded, user }) {
+function RailHelpItem({ to, label, icon: Icon, expanded, user, isRtl = false }) {
   const location = useLocation();
   const routeId = routeIdForPath(to);
   const activeRouteId = routeIdForPath(location.pathname);
@@ -121,7 +121,7 @@ function RailHelpItem({ to, label, icon: Icon, expanded, user }) {
           </span>
           <span className={`hidden text-sm font-semibold ${expanded ? 'md:inline' : 'md:hidden'}`}>{label}</span>
           <span className="sr-only">{label}</span>
-          {!expanded ? <RailTooltip label={label} /> : null}
+          {!expanded ? <RailTooltip label={label} rightOffset={!isRtl} /> : null}
         </>
       )}
     </NavLink>
@@ -135,7 +135,7 @@ export default function SideRail({
   onToggleCollapse,
 }) {
   const location = useLocation();
-  const { t } = useI18n();
+  const { isRtl, t } = useI18n();
   const signedIn = isSignedIn(user);
   const studioAllowed = canAccessStudio(user);
   const analyticsAllowed = canAccessAnalytics(user);
@@ -156,12 +156,17 @@ export default function SideRail({
       window.dispatchEvent(new CustomEvent('visus:create-lesson-request'));
     }
   };
+  const sideClass = isRtl ? 'right-0' : 'left-0';
+  const borderClass = isRtl ? 'border-l' : 'border-r';
+  const toggleIcon = isRtl
+    ? (collapsed ? 'right_panel_open' : 'right_panel_close')
+    : (collapsed ? 'left_panel_open' : 'left_panel_close');
 
   return (
     <aside
-      className={`fixed left-0 top-16 z-40 hidden h-[calc(100vh-4rem)] transition-[width] duration-300 md:block ${expanded ? 'md:w-[16rem] xl:w-[18rem]' : 'md:w-[5rem]'}`}
+      className={`fixed ${sideClass} top-16 z-40 hidden h-[calc(100vh-4rem)] transition-[width] duration-300 md:block ${expanded ? 'md:w-[16rem] xl:w-[18rem]' : 'md:w-[5rem]'}`}
     >
-      <div className="flex h-full flex-col border-r border-[color:var(--border-subtle)] bg-[var(--surface)] py-4">
+      <div className={`flex h-full flex-col ${borderClass} border-[color:var(--border-subtle)] bg-[var(--surface)] py-4`}>
         <div className="px-3 pb-4 lg:px-5">
           <div className={`flex items-center gap-2 ${expanded ? 'justify-between' : 'justify-center'}`}>
             {expanded ? (
@@ -181,7 +186,7 @@ export default function SideRail({
               title={collapsed ? t('navigation.expandSidebar') : t('navigation.collapseSidebar')}
               aria-label={collapsed ? t('navigation.expandSidebar') : t('navigation.collapseSidebar')}
             >
-              <span className="material-symbols-outlined text-[20px] leading-none">{collapsed ? 'left_panel_open' : 'left_panel_close'}</span>
+              <span className="material-symbols-outlined text-[20px] leading-none">{toggleIcon}</span>
             </button>
           </div>
         </div>
@@ -197,6 +202,7 @@ export default function SideRail({
                 end={item.end}
                 expanded={expanded}
                 user={user}
+                isRtl={isRtl}
               />
             ))}
           </div>
@@ -214,12 +220,12 @@ export default function SideRail({
               >
                 <Plus size={16} strokeWidth={2} />
                 <span className={`hidden text-[0.68rem] font-bold uppercase tracking-[0.12em] ${expanded ? 'md:inline' : 'md:hidden'}`}>{t('navigation.createLesson')}</span>
-                {!expanded ? <RailTooltip label={t('navigation.createLesson')} /> : null}
+                {!expanded ? <RailTooltip label={t('navigation.createLesson')} rightOffset={!isRtl} /> : null}
               </button>
             ) : null}
 
-            <RailNavItem to="/settings" label={t('navigation.settings')} icon={Settings} expanded={expanded} user={user} />
-            <RailHelpItem to="/help" label={t('navigation.help')} icon={CircleHelp} expanded={expanded} user={user} />
+            <RailNavItem to="/settings" label={t('navigation.settings')} icon={Settings} expanded={expanded} user={user} isRtl={isRtl} />
+            <RailHelpItem to="/help" label={t('navigation.help')} icon={CircleHelp} expanded={expanded} user={user} isRtl={isRtl} />
           </div>
         </nav>
       </div>

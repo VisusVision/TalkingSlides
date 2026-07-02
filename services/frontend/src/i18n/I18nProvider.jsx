@@ -7,9 +7,21 @@ import {
   translations,
 } from './translations';
 
+const SUPPORTED_LANGUAGE_MAP = SUPPORTED_LANGUAGES.reduce((acc, language) => {
+  acc[language.toLowerCase()] = language;
+  return acc;
+}, {});
+const RTL_LANGUAGES = new Set(['ar']);
+
 function normalizeLanguage(value) {
-  const code = String(value || '').trim().toLowerCase().split('-')[0];
-  return SUPPORTED_LANGUAGES.includes(code) ? code : '';
+  const raw = String(value || '').trim();
+  const code = raw.toLowerCase();
+  if (SUPPORTED_LANGUAGE_MAP[code]) return SUPPORTED_LANGUAGE_MAP[code];
+
+  if (code.startsWith('zh')) return 'zh-CN';
+
+  const base = code.split('-')[0];
+  return SUPPORTED_LANGUAGE_MAP[base] || '';
 }
 
 export function resolveInitialLanguage() {
@@ -45,6 +57,8 @@ function interpolate(template, params = {}) {
 export const I18nContext = createContext({
   language: DEFAULT_LANGUAGE,
   locale: 'en-US',
+  direction: 'ltr',
+  isRtl: false,
   languageOptions: LANGUAGE_OPTIONS,
   formatDate: () => '',
   formatDateTime: () => '',
@@ -56,8 +70,18 @@ export const I18nContext = createContext({
 });
 
 const LOCALES = {
+  ar: 'ar',
+  de: 'de-DE',
   en: 'en-US',
+  es: 'es-ES',
+  fr: 'fr-FR',
+  it: 'it-IT',
+  ja: 'ja-JP',
+  ko: 'ko-KR',
+  pt: 'pt-PT',
+  ru: 'ru-RU',
   tr: 'tr-TR',
+  'zh-CN': 'zh-CN',
 };
 
 function parseDate(value) {
@@ -75,12 +99,17 @@ export function I18nProvider({ children }) {
   };
 
   useEffect(() => {
+    const direction = RTL_LANGUAGES.has(language) ? 'rtl' : 'ltr';
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, language);
     document.documentElement.lang = language;
+    document.documentElement.setAttribute('dir', direction);
+    document.documentElement.classList.toggle('rtl', direction === 'rtl');
   }, [language]);
 
   const value = useMemo(() => {
     const locale = LOCALES[language] || LOCALES[DEFAULT_LANGUAGE];
+    const direction = RTL_LANGUAGES.has(language) ? 'rtl' : 'ltr';
+    const isRtl = direction === 'rtl';
 
     const t = (key, params = {}) => {
       const localized = readPath(translations[language], key);
@@ -138,6 +167,8 @@ export function I18nProvider({ children }) {
     return {
       language,
       locale,
+      direction,
+      isRtl,
       languageOptions: LANGUAGE_OPTIONS,
       formatDate,
       formatDateTime,

@@ -331,7 +331,7 @@ export function WatchContextPanel({ context, currentLessonId, onOpenLesson }) {
                   </span>
                 )}
                 <span className="min-w-0 flex-1">
-                  <span className="line-clamp-2 text-sm font-semibold leading-snug text-[var(--text-primary)]">
+                  <span dir="auto" className="ugc-text line-clamp-2 text-sm font-semibold leading-snug text-[var(--text-primary)]">
                     {contextLesson.title}
                   </span>
                   <span className="mt-1 block truncate text-xs text-[var(--text-secondary)]">
@@ -389,6 +389,7 @@ function WatchStudyPanel({
           value={notes}
           onChange={(event) => onNotesChange(event.target.value)}
           placeholder={t('watch.notesPlaceholder')}
+          dir="auto"
           className="focus-ring mt-1 min-h-[260px] w-full resize-y rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm leading-relaxed text-[var(--text-primary)]"
         />
       </label>
@@ -1410,7 +1411,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                   <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                     <div className="min-w-0 space-y-2">
                       <div>
-                        <h1 className="text-xl font-semibold leading-tight text-[var(--text-primary)]">
+                        <h1 dir="auto" className="ugc-text text-xl font-semibold leading-tight text-[var(--text-primary)]">
                           {lesson?.title || t('watch.untitledLesson')}
                         </h1>
                         <div className="mt-3">
@@ -1424,7 +1425,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         </div>
                       </div>
                       <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
-                        <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || lesson?.categoryName || t('watch.general')}</span>
+                        <span dir="auto" className="ugc-text rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{lesson?.category_name || lesson?.categoryName || t('watch.general')}</span>
                         <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatDuration(lesson?.duration_minutes || lesson?.durationMinutes || 8)}</span>
                         <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
                           <ShieldCheck size={12} />
@@ -1437,7 +1438,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         )}
                       </div>
                       {lesson?.description && (
-                        <p className="line-clamp-2 max-w-3xl text-sm text-[var(--text-secondary)]">{lesson.description}</p>
+                        <p dir="auto" className="ugc-text line-clamp-2 max-w-3xl text-sm text-[var(--text-secondary)]">{lesson.description}</p>
                       )}
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -1610,6 +1611,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         maxLength={2000}
                         placeholder={user ? t('watch.writeComment') : t('watch.signInCommentPlaceholder')}
                         disabled={!user || commentSubmitting}
+                        dir="auto"
                         className="focus-ring mt-1 min-h-[72px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-65"
                       />
                     </label>
@@ -1652,12 +1654,12 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                       visibleComments.map((comment) => (
                         <article key={comment.id} className="rounded-xl bg-[var(--surface-container-high)] p-3">
                           <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="text-sm font-semibold text-[var(--text-primary)]">{comment.display_name || comment.username || t('watch.viewer')}</p>
+                            <p dir="auto" className="ugc-text text-sm font-semibold text-[var(--text-primary)]">{comment.display_name || comment.username || t('watch.viewer')}</p>
                             {comment.created_at && (
                               <span className="text-xs text-[var(--text-secondary)]">{formatCommentDate(comment.created_at)}</span>
                             )}
                           </div>
-                          <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{comment.text}</p>
+                          <p dir="auto" className="ugc-text mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">{comment.text}</p>
                         </article>
                       ))
                     )}

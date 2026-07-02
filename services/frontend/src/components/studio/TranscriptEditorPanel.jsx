@@ -1657,13 +1657,14 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                     onChange={(event) => updateDisplayText(index, event.target.value)}
                     readOnly={readOnly}
                     disabled={readOnly}
+                    dir="auto"
                     className={`focus-ring mt-2 min-h-[130px] w-full resize-y rounded-xl border bg-[var(--surface-elevated)] p-3 text-sm leading-6 text-[var(--text-primary)] ${
                       displayWarned ? 'border-[color:var(--status-warning-fg)]' : 'border-[var(--border-subtle)]'
                     }`}
                     placeholder="Text visible on the slide..."
                   />
                 ) : (
-                  <p className="mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">
+                  <p dir="auto" className="ugc-text mt-2 whitespace-pre-wrap text-sm text-[var(--text-secondary)]">
                     {displayText || 'No display text yet.'}
                   </p>
                 )}
@@ -1707,6 +1708,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
                   onChange={(event) => updateNarrationText(index, event.target.value)}
                   readOnly={readOnly}
                   disabled={readOnly}
+                  dir="auto"
                   className={`focus-ring mt-1 w-full resize-y rounded-2xl border bg-[var(--surface-elevated)] p-4 text-[var(--text-primary)] ${
                     narrationWarned
                       ? 'border-[color:var(--status-warning-fg)]'

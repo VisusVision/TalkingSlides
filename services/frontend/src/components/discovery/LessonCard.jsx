@@ -42,7 +42,7 @@ export default function LessonCard({ lesson, onOpen, compact = false, user, onLo
           role="img"
           aria-label={t('content.coverFor', { title: lesson.title })}
         >
-          <span className="absolute left-3 top-3 inline-flex items-center rounded-full bg-[color:var(--media-pill-bg)] px-2 py-1 text-[11px] font-medium text-[color:var(--media-text-on-image)] backdrop-blur-sm">
+          <span dir="auto" className="ugc-text absolute left-3 top-3 inline-flex items-center rounded-full bg-[color:var(--media-pill-bg)] px-2 py-1 text-[11px] font-medium text-[color:var(--media-text-on-image)] backdrop-blur-sm">
             {lesson.categoryName}
           </span>
           <span className="absolute bottom-3 left-3 inline-flex items-center gap-1 rounded-full bg-[color:var(--media-pill-bg)] px-2.5 py-1 text-xs text-[color:var(--media-text-on-image)] backdrop-blur-sm">
@@ -56,8 +56,8 @@ export default function LessonCard({ lesson, onOpen, compact = false, user, onLo
         </div>
 
         <div>
-          <p className="title-lg line-clamp-2 text-[var(--text-primary)]">{lesson.title}</p>
-          <p className="mt-2 text-sm text-[var(--text-secondary)]">{lesson.teacherName}</p>
+          <p dir="auto" className="ugc-text title-lg line-clamp-2 text-[var(--text-primary)]">{lesson.title}</p>
+          <p dir="auto" className="ugc-text mt-2 text-sm text-[var(--text-secondary)]">{lesson.teacherName}</p>
           <div className="mt-3 flex items-center justify-between text-xs text-[var(--text-secondary)]">
             <span>{formatViews(lesson.views)}</span>
             {lesson.badge && (
