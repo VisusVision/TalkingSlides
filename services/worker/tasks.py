@@ -62,6 +62,8 @@ from celery.signals import worker_ready  # noqa: E402
 from .avatar_timeout_policy import resolve_preview_task_time_limits  # noqa: E402
 from .celery_app import app  # noqa: E402
 from .partial_render_manifest import (  # noqa: E402
+    PARTIAL_RENDER_HASH_SEMANTICS_VERSION,
+    PARTIAL_RENDER_MANIFEST_VERSION,
     build_expected_partial_render_manifest,
     build_partial_render_manifest,
     build_partial_render_plan,
@@ -1565,9 +1567,20 @@ def _read_playback_sidecar(project_id: str | int) -> dict[str, Any]:
 def _is_partial_render_manifest_available(value: Any) -> bool:
     try:
         version = int(value.get("version") or 0) if isinstance(value, dict) else 0
+        hash_semantics_version = (
+            int(value.get("hash_semantics_version") or 0)
+            if isinstance(value, dict)
+            else 0
+        )
     except (TypeError, ValueError):
         version = 0
-    return isinstance(value, dict) and version == 1 and isinstance(value.get("pages"), dict)
+        hash_semantics_version = 0
+    return (
+        isinstance(value, dict)
+        and version == PARTIAL_RENDER_MANIFEST_VERSION
+        and hash_semantics_version == PARTIAL_RENDER_HASH_SEMANTICS_VERSION
+        and isinstance(value.get("pages"), dict)
+    )
 
 
 def _partial_render_plan_failed_report() -> dict[str, Any]:
@@ -1607,6 +1620,11 @@ def _build_partial_render_analysis_report(
         "version": 1,
         "mode": "report_only",
         "generated_from": "partial_render_manifest",
+        "comparison_phase": "post_render_finalized",
+        "comparison_roles": {
+            "old": "previous_finalized_manifest",
+            "expected": "current_finalized_manifest",
+        },
         "classifier": {
             "available": old_available and current_available,
             "result": classifier_result,
@@ -1677,6 +1695,30 @@ def _playback_final_segments_by_page_key(playback_assets: dict[str, Any] | None)
         if page_key:
             segments[page_key] = dict(segment)
     return segments
+
+
+def _playback_tts_metadata_by_page_key(playback_assets: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not isinstance(playback_assets, dict):
+        return {}
+    rows = playback_assets.get("tts_normalization")
+    if not isinstance(rows, list):
+        return {}
+    metadata: dict[str, dict[str, Any]] = {}
+    final_segments = _playback_final_segments_by_page_key(playback_assets)
+    ordered_segment_keys = [
+        str(segment.get("page_key") or "").strip()
+        for segment in (playback_assets.get("final_segments") or [])
+        if isinstance(segment, dict)
+    ]
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        page_key = str(row.get("page_key") or "").strip()
+        if not page_key and position < len(ordered_segment_keys):
+            page_key = ordered_segment_keys[position]
+        if page_key and page_key in final_segments:
+            metadata[page_key] = dict(row)
+    return metadata
 
 
 def _manifest_page_keys_in_order(playback_assets: dict[str, Any] | None) -> list[str]:
@@ -1769,7 +1811,7 @@ def _slides_with_previous_segment_timing(
             if not str(legacy_segment.get("page_key") or "").strip():
                 segment = legacy_segment
         for key in ("duration", "pause_seconds"):
-            if row.get(key) in (None, "") and segment.get(key) not in (None, ""):
+            if not _is_finite_number(row.get(key)) and _is_finite_number(segment.get(key)):
                 row[key] = segment.get(key)
         enriched.append(row)
     return enriched
@@ -1790,6 +1832,7 @@ def _cached_slide_images_for_unchanged_pages(
     slides: list[dict[str, Any]],
     previous_playback_assets: dict[str, Any] | None,
     avatar_options: dict[str, Any] | None,
+    effective_language: str | None = None,
 ) -> dict[str, str]:
     if not isinstance(previous_playback_assets, dict):
         return {}
@@ -1802,6 +1845,7 @@ def _cached_slide_images_for_unchanged_pages(
             slides=_slides_with_previous_segment_timing(slides, previous_playback_assets),
             previous_playback_assets=previous_playback_assets,
             avatar_options=avatar_options,
+            effective_language=effective_language,
         )
     except Exception:
         logger.warning("Cached slide-image comparison failed project=%s", project_id, exc_info=True)
@@ -1916,7 +1960,14 @@ def _current_visual_inputs_available(slide: dict[str, Any]) -> bool:
 
 def _avatar_artifact_required_for_visual_recompose(avatar_options: dict[str, Any] | None) -> bool:
     cfg = dict(avatar_options or {})
-    return bool(cfg.get("requested", cfg.get("enabled", False)))
+    value = cfg.get("requested", cfg.get("enabled", False))
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off", "none", "disabled", "not_enabled"}:
+            return False
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+    return bool(value)
 
 
 def _build_visual_only_recompose_runtime_decision(
@@ -1928,11 +1979,17 @@ def _build_visual_only_recompose_runtime_decision(
     previous_playback_assets: dict[str, Any] | None,
     tts_settings: dict[str, Any] | None,
     avatar_options: dict[str, Any] | None,
+    effective_language: str | None = None,
 ) -> dict[str, Any]:
     target_keys = sorted({str(key) for key in rerender_page_keys if str(key)})
     decision: dict[str, Any] = {
         "eligible": False,
         "mode": "visual_only_recompose",
+        "comparison_phase": "pre_render_eligibility",
+        "comparison_roles": {
+            "old": "previous_finalized_manifest",
+            "expected": "current_render_inputs",
+        },
         "target_page_keys": target_keys,
         "fallback_reasons": [],
         "pages": {},
@@ -1962,6 +2019,7 @@ def _build_visual_only_recompose_runtime_decision(
             previous_playback_assets=previous_playback_assets,
             tts_settings=tts_settings,
             avatar_options=avatar_options,
+            effective_language=effective_language,
         )
         classification = classify_partial_render_changes(
             old_manifest=old_manifest if _is_partial_render_manifest_available(old_manifest) else None,
@@ -2059,11 +2117,17 @@ def _build_narration_only_recompose_runtime_decision(
     previous_playback_assets: dict[str, Any] | None,
     tts_settings: dict[str, Any] | None,
     avatar_options: dict[str, Any] | None,
+    effective_language: str | None = None,
 ) -> dict[str, Any]:
     target_keys = sorted({str(key) for key in rerender_page_keys if str(key)})
     decision: dict[str, Any] = {
         "eligible": False,
         "mode": "narration_only_recompose",
+        "comparison_phase": "pre_render_eligibility",
+        "comparison_roles": {
+            "old": "previous_finalized_manifest",
+            "expected": "current_render_inputs",
+        },
         "target_page_keys": target_keys,
         "fallback_reasons": [],
         "pages": {},
@@ -2100,6 +2164,7 @@ def _build_narration_only_recompose_runtime_decision(
             previous_playback_assets=previous_playback_assets,
             tts_settings=tts_settings,
             avatar_options=avatar_options,
+            effective_language=effective_language,
         )
         classification = classify_partial_render_changes(
             old_manifest=old_manifest,
@@ -2183,7 +2248,7 @@ def _build_narration_only_recompose_runtime_decision(
                 add_page_fallback("unchanged_composed_segment_missing")
             if current_audio_abs is None:
                 add_page_fallback("unchanged_tts_audio_missing")
-            if current_slide_abs is None:
+            if current_slide_abs is None and slide_image_abs is None:
                 add_page_fallback("unchanged_slide_image_missing")
             if get_audio_duration is not None and current_audio_abs is not None:
                 try:
@@ -7929,6 +7994,9 @@ def _render_visual_only_slide_image(slide_meta: dict[str, Any], *, part_out: str
         "subtitle_chunks": subtitle_chunks or [notes_text_prepared],
         "whiteboard_mode": effective_whiteboard_mode,
         "scene_background_mode": scene_background_mode,
+        "scene_background_fit": scene_background_fit,
+        "scene_text_scale": scene_text_scale,
+        "editor_document": editor_document,
         "source_render_warnings": combined_source_render_warnings,
         "source_render_details": combined_source_render_details,
     }
@@ -8022,6 +8090,9 @@ def recompose_visual_only_slide_segment(
             "subtitle_chunks": list(visual["subtitle_chunks"] or []),
             "whiteboard_mode": bool(visual["whiteboard_mode"]),
             "scene_background_mode": str(visual["scene_background_mode"] or ""),
+            "scene_background_fit": str(visual.get("scene_background_fit") or ""),
+            "scene_text_scale": visual.get("scene_text_scale"),
+            "editor_document": dict(visual.get("editor_document") or slide_meta.get("editor_document") or {}),
             "source_render_method": str(slide_meta.get("source_render_method") or ""),
             "source_render_warnings": list(visual["source_render_warnings"] or []),
             "source_render_details": _details_list_from_value(visual.get("source_render_details")),
@@ -8225,6 +8296,9 @@ def recompose_narration_only_slide_segment(
             "subtitle_chunks": subtitle_chunks or [notes_text_prepared],
             "whiteboard_mode": bool(slide_meta.get("whiteboard_mode")),
             "scene_background_mode": str(slide_meta.get("scene_background_mode") or ""),
+            "scene_background_fit": slide_meta.get("scene_background_fit"),
+            "scene_text_scale": slide_meta.get("scene_text_scale"),
+            "editor_document": dict(slide_meta.get("editor_document") or {}),
             "source_render_method": str(slide_meta.get("source_render_method") or ""),
             "source_render_warnings": _warning_list_from_value(slide_meta.get("source_render_warnings")),
             "source_render_details": _details_list_from_value(slide_meta.get("source_render_details")),
@@ -8656,6 +8730,9 @@ def synthesize_and_render_slide(
             "subtitle_chunks": subtitle_chunks or [notes_text_prepared],
             "whiteboard_mode": effective_whiteboard_mode,
             "scene_background_mode": scene_background_mode,
+            "scene_background_fit": scene_background_fit,
+            "scene_text_scale": scene_text_scale,
+            "editor_document": editor_document,
             "source_render_method": str(slide_meta.get("source_render_method") or ""),
             "source_render_warnings": combined_source_render_warnings,
             "source_render_details": combined_source_render_details,
@@ -9030,6 +9107,11 @@ def concat_and_finalize(
                 "version": 1,
                 "mode": "report_only",
                 "generated_from": "partial_render_manifest",
+                "comparison_phase": "post_render_finalized",
+                "comparison_roles": {
+                    "old": "previous_finalized_manifest",
+                    "expected": "current_finalized_manifest",
+                },
                 "classifier": {
                     "available": False,
                     "result": None,
@@ -9238,6 +9320,9 @@ def merge_and_finalize_segments(
         previous_playback_assets=previous_playback_assets,
         avatar_options=avatar_options,
     )
+    previous_segments = _playback_final_segments_by_page_key(previous_playback_assets)
+    previous_tts_metadata = _playback_tts_metadata_by_page_key(previous_playback_assets)
+    previous_artifacts = _playback_artifacts_by_page_key(previous_playback_assets)
 
     full_results: list[dict[str, Any]] = []
     for slide in slides:
@@ -9246,17 +9331,86 @@ def merge_and_finalize_segments(
             full_results.append(changed_by_key[page_key])
             continue
 
+        safe_prior_reuse = page_key in cached_slide_images
+        previous_segment = previous_segments.get(page_key, {}) if safe_prior_reuse else {}
+        previous_tts = previous_tts_metadata.get(page_key, {}) if safe_prior_reuse else {}
+        previous_page_artifacts = previous_artifacts.get(page_key, {}) if safe_prior_reuse else {}
         part_path = str(slide.get("part_out") or "")
+        if not part_path:
+            previous_part = _resolve_existing_artifact_path(
+                previous_page_artifacts.get("composed_segment"),
+                storage_root=STORAGE_ROOT,
+            )
+            part_path = str(previous_part or "")
         audio_path = str(slide.get("audio_out") or "")
-        pause_seconds = float(slide.get("pause_seconds") or 2.2)
-        duration = 0.0
-        if audio_path and Path(audio_path).exists():
+        if not audio_path:
+            previous_audio = _resolve_existing_artifact_path(
+                previous_page_artifacts.get("tts_audio"),
+                storage_root=STORAGE_ROOT,
+            )
+            audio_path = str(previous_audio or "")
+        current_pause = slide.get("pause_seconds")
+        previous_pause = previous_segment.get("pause_seconds")
+        pause_seconds = (
+            float(current_pause)
+            if _is_finite_number(current_pause)
+            else float(previous_pause)
+            if _is_finite_number(previous_pause)
+            else 2.2
+        )
+        current_duration = slide.get("duration")
+        previous_duration = previous_segment.get("duration")
+        duration = (
+            float(current_duration)
+            if _is_finite_number(current_duration)
+            else float(previous_duration)
+            if _is_finite_number(previous_duration)
+            else 0.0
+        )
+        if duration <= 0 and audio_path and Path(audio_path).exists():
             duration = float(get_audio_duration(audio_path)) + max(pause_seconds, 0.0)
 
         slide_index = int(slide.get("index") or 0)
         avatar_segment_abs = Path(_avatar_storage_root()) / str(project_id) / "avatar_segments" / f"avatar_{int(slide.get('slide_num') or 0):03d}.mp4"
         avatar_rel = _safe_rel_path(_avatar_storage_root(), str(avatar_segment_abs)) if avatar_segment_abs.exists() else ""
         slide_path = str(slide.get("image_path") or cached_slide_images.get(page_key) or "")
+        source_render_method = str(
+            slide.get("source_render_method")
+            or previous_segment.get("source_render_method")
+            or ""
+        )
+        source_render_warnings = (
+            list(slide.get("source_render_warnings") or [])
+            if "source_render_warnings" in slide
+            else list(previous_segment.get("source_render_warnings") or [])
+        )
+        source_render_details = (
+            _details_list_from_value(slide.get("source_render_details"))
+            if "source_render_details" in slide
+            else _details_list_from_value(previous_segment.get("source_render_details"))
+        )
+        source_render_dependency_report = (
+            dict(slide.get("source_render_dependency_report") or {})
+            if "source_render_dependency_report" in slide
+            else dict(previous_segment.get("source_render_dependency_report") or {})
+        )
+        spoken_text = str(
+            slide.get("spoken_text")
+            or previous_tts.get("spoken_text")
+            or slide.get("narration_text")
+            or slide.get("notes_text")
+            or ""
+        )
+        tts_language = str(
+            slide.get("tts_normalization_language")
+            or previous_tts.get("tts_normalization_language")
+            or ""
+        )
+        tts_settings = dict(
+            slide.get("tts_settings")
+            or previous_tts.get("project_tts_settings")
+            or {}
+        )
 
         full_results.append(
             {
@@ -9271,25 +9425,37 @@ def merge_and_finalize_segments(
                 "text": str(slide.get("narration_text") or slide.get("notes_text") or ""),
                 "original_text": str(slide.get("original_text") or slide.get("notes_text") or ""),
                 "display_text": str(slide.get("display_text") or slide.get("original_text") or slide.get("notes_text") or ""),
-                "spoken_text": "",
-                "tts_normalization_language": "",
-                "tts_normalization_rules_applied": [],
-                "tts_provider": "cached",
-                "tts_provider_preference": "",
-                "tts_normalization_enabled": None,
-                "tts_normalization_mode": "",
-                "tts_unknown_word_strategy": "",
-                "tts_applied_overrides": {},
-                "tts_fallback_used": False,
-                "tts_fallback_reason": "",
-                "tts_settings": {},
-                "tts_preprocessing_warnings": [],
+                "spoken_text": spoken_text,
+                "tts_normalization_language": tts_language,
+                "tts_normalization_rules_applied": list(
+                    previous_tts.get("tts_normalization_rules_applied") or []
+                ),
+                "tts_provider": str(previous_tts.get("tts_provider") or "cached"),
+                "tts_provider_preference": str(previous_tts.get("provider_preference") or ""),
+                "tts_normalization_enabled": previous_tts.get("normalization_enabled"),
+                "tts_normalization_mode": str(previous_tts.get("normalization_mode") or ""),
+                "tts_unknown_word_strategy": str(previous_tts.get("unknown_word_strategy") or ""),
+                "tts_applied_overrides": dict(previous_tts.get("applied_overrides") or {}),
+                "tts_fallback_used": bool(previous_tts.get("fallback_used", False)),
+                "tts_fallback_reason": str(previous_tts.get("fallback_reason") or ""),
+                "tts_settings": tts_settings,
+                "tts_preprocessing_warnings": list(previous_tts.get("tts_preprocessing_warnings") or []),
                 "slide_path": slide_path,
                 "tts_audio_path": audio_path,
                 "subtitle_chunks": list(slide.get("subtitle_chunks") or []),
                 "whiteboard_mode": bool(slide.get("whiteboard_mode")),
+                "scene_background_mode": str(slide.get("scene_background_mode") or ""),
+                "scene_background_fit": slide.get("scene_background_fit"),
+                "scene_text_scale": slide.get("scene_text_scale"),
+                "editor_document": dict(slide.get("editor_document") or {}),
+                "source_render_method": source_render_method,
+                "source_render_warnings": source_render_warnings,
+                "source_render_details": source_render_details,
+                "source_render_dependency_report": source_render_dependency_report,
+                "source_background_warnings": _warning_list_from_value(slide.get("source_background_warnings")),
+                "source_background_details": _details_list_from_value(slide.get("source_background_details")),
                 "avatar_applied": bool(avatar_rel),
-                "avatar_engine_used": "cached",
+                "avatar_engine_used": str(previous_segment.get("avatar_engine_selected") or ("cached" if avatar_rel else "none")),
                 "avatar_fallback_chain": [],
                 "avatar_segment_rel_path": avatar_rel,
                 "avatar_attempted": bool(avatar_rel),
@@ -9631,6 +9797,7 @@ def process_pptx_to_video(
                 previous_playback_assets=previous_playback_assets,
                 tts_settings=tts_settings,
                 avatar_options=avatar_cfg,
+                effective_language=resolved_lang,
             )
             if visual_only_recompose_decision.get("eligible"):
                 logger.info(
@@ -9654,6 +9821,7 @@ def process_pptx_to_video(
                     previous_playback_assets=previous_playback_assets,
                     tts_settings=tts_settings,
                     avatar_options=avatar_cfg,
+                    effective_language=resolved_lang,
                 )
                 if narration_only_recompose_decision.get("eligible"):
                     logger.info(

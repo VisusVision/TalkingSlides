@@ -9,6 +9,10 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 
+PARTIAL_RENDER_MANIFEST_VERSION = 1
+PARTIAL_RENDER_HASH_SEMANTICS_VERSION = 2
+
+
 VOLATILE_KEYS = {
     "avatar_job_id",
     "base_job_id",
@@ -131,6 +135,7 @@ def build_partial_render_manifest(
     playback_assets: Mapping[str, Any] | None = None,
     slides: Iterable[Mapping[str, Any]] | None = None,
     avatar_options: Mapping[str, Any] | None = None,
+    effective_language: Any = None,
 ) -> dict[str, Any]:
     playback = dict(playback_assets or {})
     results = _mapping_list(ordered_results)
@@ -140,6 +145,7 @@ def build_partial_render_manifest(
     tts_normalization = _mapping_list(playback.get("tts_normalization"))
     avatar_metadata = _mapping_list(playback.get("avatar_slide_metadata"))
     source_render_metadata = _mapping_list(playback.get("source_render_metadata"))
+    canonical_avatar_options = _canonical_avatar_options(avatar_options)
 
     count = _page_count(
         results,
@@ -264,26 +270,41 @@ def build_partial_render_manifest(
             )
         )
         tts_input = {
-            "language": _first_present(
-                result.get("tts_normalization_language"),
-                tts_meta.get("tts_normalization_language"),
-                "",
+            "language": _canonical_language(
+                _first_present(
+                    result.get("tts_normalization_language"),
+                    tts_meta.get("tts_normalization_language"),
+                    slide.get("tts_normalization_language"),
+                    effective_language,
+                )
             ),
             "narration_text": narration_text,
             "spoken_text": normalize_text(_first_present(result.get("spoken_text"), "")),
         }
+        avatar_enabled = bool(canonical_avatar_options.get("enabled"))
+        avatar_engine_selected = _first_present(
+            segment.get("avatar_engine_selected"),
+            avatar_meta.get("avatar_engine_selected"),
+            result.get("avatar_engine_selected"),
+            result.get("avatar_engine_used"),
+            playback.get("avatar_engine_selected"),
+            "",
+        )
+        avatar_status = _first_present(
+            segment.get("avatar_status"),
+            avatar_meta.get("avatar_status"),
+            result.get("avatar_status"),
+            "none",
+        )
         avatar_settings = _drop_volatile(
             {
-                "options": dict(avatar_options or {}),
-                "engine_selected": _first_present(
-                    segment.get("avatar_engine_selected"),
-                    avatar_meta.get("avatar_engine_selected"),
-                    result.get("avatar_engine_selected"),
-                    result.get("avatar_engine_used"),
-                    playback.get("avatar_engine_selected"),
-                    "",
+                "options": canonical_avatar_options,
+                "engine_selected": (
+                    _canonical_disabled_avatar_value(avatar_engine_selected)
+                    if not avatar_enabled
+                    else avatar_engine_selected
                 ),
-                "attempted": bool(
+                "attempted": avatar_enabled and _semantic_bool(
                     _first_present(
                         segment.get("avatar_attempted"),
                         avatar_meta.get("avatar_attempted"),
@@ -291,7 +312,7 @@ def build_partial_render_manifest(
                         False,
                     )
                 ),
-                "applied": bool(
+                "applied": avatar_enabled and _semantic_bool(
                     _first_present(
                         segment.get("avatar_applied"),
                         avatar_meta.get("avatar_applied"),
@@ -299,11 +320,10 @@ def build_partial_render_manifest(
                         False,
                     )
                 ),
-                "status": _first_present(
-                    segment.get("avatar_status"),
-                    avatar_meta.get("avatar_status"),
-                    result.get("avatar_status"),
-                    "none",
+                "status": (
+                    _canonical_disabled_avatar_value(avatar_status)
+                    if not avatar_enabled
+                    else avatar_status
                 ),
                 "tts_audio": artifacts["tts_audio"],
                 "narration_text": narration_text,
@@ -353,40 +373,41 @@ def build_partial_render_manifest(
                 ),
             }
         )
-        layout = _drop_volatile(
-            {
-                "background_fit": _first_present(
-                    result.get("scene_background_fit"),
-                    slide.get("scene_background_fit"),
-                    "",
-                ),
-                "text_scale": _first_present(result.get("scene_text_scale"), slide.get("scene_text_scale"), ""),
-                "whiteboard_mode": bool(
-                    _first_present(result.get("whiteboard_mode"), slide.get("whiteboard_mode"), False)
-                ),
-                "editor_scene": _nested_value(
-                    _first_present(result.get("editor_document"), slide.get("editor_document"), {}),
-                    "scene",
-                )
-                or {},
-            }
+        layout = _canonical_layout_identity(
+            result=result,
+            slide=slide,
+        )
+        duration = _canonical_number(_first_present(segment.get("duration"), result.get("duration")))
+        pause_seconds = _canonical_number(
+            _first_present(
+                segment.get("pause_seconds"),
+                result.get("pause_seconds"),
+                slide.get("pause_seconds"),
+            )
         )
         structural = {
             "index": index,
             "page_key": page_key,
             "page_id": _canonical_value(page_id),
-            "source_slide_index": _first_present(result.get("source_slide_index"), slide.get("source_slide_index"), ""),
-            "split_index": _first_present(result.get("split_index"), slide.get("split_index"), ""),
-            "duration": _first_present(segment.get("duration"), result.get("duration"), ""),
-            "pause_seconds": _first_present(
-                segment.get("pause_seconds"),
-                result.get("pause_seconds"),
-                slide.get("pause_seconds"),
-                "",
+            "source_slide_index": _canonical_optional_int(
+                _first_present(result.get("source_slide_index"), slide.get("source_slide_index"))
             ),
+            "split_index": _canonical_optional_int(
+                _first_present(result.get("split_index"), slide.get("split_index"))
+            ),
+            "pause_seconds": pause_seconds,
         }
+        result_editor_scene = _nested_value(result.get("editor_document"), "scene")
+        slide_editor_scene = _nested_value(slide.get("editor_document"), "scene")
         source_render = _drop_volatile(
             {
+                "source_type": _first_present(
+                    result.get("source_type"),
+                    slide.get("source_type"),
+                    result_editor_scene.get("source_type") if isinstance(result_editor_scene, Mapping) else None,
+                    slide_editor_scene.get("source_type") if isinstance(slide_editor_scene, Mapping) else None,
+                    "",
+                ),
                 "method": _first_present(
                     segment.get("source_render_method"),
                     result.get("source_render_method"),
@@ -420,6 +441,8 @@ def build_partial_render_manifest(
             "index": index,
             "page_key": page_key,
             "page_id": _canonical_value(page_id),
+            "duration": duration,
+            "pause_seconds": pause_seconds,
             "display_text_hash": stable_hash(display_text),
             "narration_text_hash": stable_hash(narration_text),
             "subtitle_text_hash": stable_hash(subtitle_text),
@@ -445,7 +468,8 @@ def build_partial_render_manifest(
         )
 
     manifest: dict[str, Any] = {
-        "version": 1,
+        "version": PARTIAL_RENDER_MANIFEST_VERSION,
+        "hash_semantics_version": PARTIAL_RENDER_HASH_SEMANTICS_VERSION,
         "project_id": _canonical_value(project_id),
         "job_id": _canonical_value(_first_present(job_id, render_job_id)),
         "sequence_hash": stable_hash(sequence_items),
@@ -464,6 +488,7 @@ def build_expected_partial_render_manifest(
     previous_playback_assets: Mapping[str, Any] | None = None,
     tts_settings: Mapping[str, Any] | None = None,
     avatar_options: Mapping[str, Any] | None = None,
+    effective_language: Any = None,
 ) -> dict[str, Any]:
     """Build a pre-render manifest from current slide inputs.
 
@@ -473,6 +498,7 @@ def build_expected_partial_render_manifest(
     """
 
     artifacts_by_key = _previous_artifacts_by_page_key(previous_playback_assets)
+    previous_languages = _previous_tts_languages_by_page_key(previous_playback_assets)
     rows: list[dict[str, Any]] = []
     used_keys: set[str] = set()
     for position, slide in enumerate(_mapping_list(slides)):
@@ -500,6 +526,13 @@ def build_expected_partial_render_manifest(
             subtitle_chunks = [narration_text]
 
         artifacts = artifacts_by_key.get(page_key, {})
+        language = _canonical_language(
+            _first_present(
+                effective_language,
+                row.get("tts_normalization_language"),
+                previous_languages.get(page_key),
+            )
+        )
         row.update(
             {
                 "index": index,
@@ -516,6 +549,7 @@ def build_expected_partial_render_manifest(
                 "display_text": display_text,
                 "original_text": display_text,
                 "spoken_text": normalize_text(_first_present(row.get("spoken_text"), narration_text)),
+                "tts_normalization_language": language,
                 "subtitle_chunks": subtitle_chunks,
                 "tts_settings": dict(_first_present(row.get("tts_settings"), tts_settings, {}) or {}),
                 "tts_audio_rel_path": artifacts.get("tts_audio", ""),
@@ -533,6 +567,7 @@ def build_expected_partial_render_manifest(
         ordered_results=rows,
         playback_assets=playback_assets,
         avatar_options=avatar_options,
+        effective_language=effective_language,
     )
 
 
@@ -1043,6 +1078,142 @@ def _int_or(value: Any, fallback: int | None) -> int:
         return 0 if fallback is None else int(fallback)
 
 
+def _canonical_optional_int(value: Any) -> int | str:
+    if value is None or value == "":
+        return ""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _canonical_number(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _canonical_language(value: Any) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _semantic_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "no", "off", "none", "disabled", "not_enabled"}:
+            return False
+        if normalized in {"1", "true", "yes", "on", "enabled", "ready"}:
+            return True
+    return bool(value)
+
+
+def _canonical_disabled_avatar_value(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"", "0", "false", "none", "disabled", "not_enabled", "cached"}:
+        return "none"
+    return normalized
+
+
+def _canonical_avatar_options(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    options = _drop_volatile(dict(value or {}))
+    requested = _semantic_bool(
+        _first_present(
+            options.get("requested"),
+            options.get("enabled"),
+            options.get("avatar_enabled"),
+            options.get("render_with_avatar"),
+            False,
+        )
+    )
+    if not requested:
+        return {"enabled": False, "requested": False}
+
+    normalized = dict(options)
+    for key in (
+        "enabled",
+        "requested",
+        "avatar_enabled",
+        "render_with_avatar",
+        "restoration_enabled",
+        "liveportrait_enabled",
+        "avatar_source_valid",
+        "avatar_preview_stale",
+        "avatar_moderation_blocked",
+    ):
+        if key in normalized:
+            normalized[key] = _semantic_bool(normalized[key])
+    normalized["enabled"] = True
+    normalized["requested"] = True
+    return normalized
+
+
+def _canonical_layout_identity(
+    *,
+    result: Mapping[str, Any],
+    slide: Mapping[str, Any],
+) -> dict[str, Any]:
+    result_document = result.get("editor_document")
+    slide_document = slide.get("editor_document")
+    editor_document = (
+        result_document
+        if isinstance(result_document, Mapping)
+        else slide_document
+        if isinstance(slide_document, Mapping)
+        else {}
+    )
+    raw_editor_scene = _nested_value(editor_document, "scene")
+    editor_scene = dict(raw_editor_scene) if isinstance(raw_editor_scene, Mapping) else {}
+    background_fit = str(
+        _first_present(
+            result.get("scene_background_fit"),
+            slide.get("scene_background_fit"),
+            editor_scene.get("background_fit"),
+            "contain",
+        )
+        or "contain"
+    ).strip().lower()
+    text_scale = _canonical_number(
+        _first_present(
+            result.get("scene_text_scale"),
+            slide.get("scene_text_scale"),
+            editor_scene.get("text_scale"),
+            1.0,
+        )
+    )
+    if text_scale is None:
+        text_scale = 1.0
+    text_scale = max(0.75, min(text_scale, 2.0))
+    whiteboard_mode = _semantic_bool(
+        _first_present(result.get("whiteboard_mode"), slide.get("whiteboard_mode"), False)
+    )
+
+    # These scene keys are generated render defaults or are represented by
+    # dedicated hashes. Preserve every other editor-scene field so real user
+    # layout edits remain visible to the classifier.
+    for key in (
+        "background_fit",
+        "background_mode",
+        "source_background_generated",
+        "source_background_warnings",
+        "source_type",
+        "text_scale",
+    ):
+        editor_scene.pop(key, None)
+
+    return _drop_volatile(
+        {
+            "background_fit": background_fit,
+            "text_scale": text_scale,
+            "whiteboard_mode": whiteboard_mode,
+            "editor_scene": editor_scene,
+        }
+    )
+
+
 def _manifest_page_key(value: Any, index: int, used: set[str]) -> str:
     raw = str(value or "").strip()
     key = raw or f"slide:{index}"
@@ -1090,7 +1261,9 @@ def _artifact_path(value: Any) -> str:
 
 
 def _expected_playback_assets_from_options(avatar_options: Mapping[str, Any] | None) -> dict[str, Any]:
-    options = dict(avatar_options or {})
+    options = _canonical_avatar_options(avatar_options)
+    if not options.get("enabled"):
+        return {"avatar": {}}
     avatar = {
         "default_position": _first_present(
             options.get("default_position"),
@@ -1109,6 +1282,26 @@ def _expected_playback_assets_from_options(avatar_options: Mapping[str, Any] | N
         "enhanced_pending": options.get("enhanced_pending"),
     }
     return {"avatar": _drop_empty(avatar)}
+
+
+def _previous_tts_languages_by_page_key(
+    previous_playback_assets: Mapping[str, Any] | None,
+) -> dict[str, str]:
+    if not isinstance(previous_playback_assets, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for position, row in enumerate(_mapping_list(previous_playback_assets.get("tts_normalization"))):
+        page_key = str(row.get("page_key") or "").strip()
+        if not page_key:
+            segment = _row_for_position(
+                _mapping_list(previous_playback_assets.get("final_segments")),
+                position,
+            )
+            page_key = str(segment.get("page_key") or "").strip()
+        language = _canonical_language(row.get("tts_normalization_language"))
+        if page_key and language:
+            result[page_key] = language
+    return result
 
 
 def _previous_artifacts_by_page_key(previous_playback_assets: Mapping[str, Any] | None) -> dict[str, dict[str, str]]:
@@ -1169,11 +1362,18 @@ def _drop_empty(value: Mapping[str, Any]) -> dict[str, Any]:
 def _valid_manifest(value: Any) -> bool:
     try:
         version = int(value.get("version") or 0) if isinstance(value, Mapping) else 0
+        hash_semantics_version = (
+            int(value.get("hash_semantics_version") or 0)
+            if isinstance(value, Mapping)
+            else 0
+        )
     except (TypeError, ValueError):
         version = 0
+        hash_semantics_version = 0
     return (
         isinstance(value, Mapping)
-        and version == 1
+        and version == PARTIAL_RENDER_MANIFEST_VERSION
+        and hash_semantics_version == PARTIAL_RENDER_HASH_SEMANTICS_VERSION
         and isinstance(value.get("pages"), Mapping)
     )
 

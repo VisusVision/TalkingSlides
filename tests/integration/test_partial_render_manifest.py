@@ -209,6 +209,7 @@ def test_manifest_shape_and_hash_dependencies():
     )
 
     assert manifest["version"] == 1
+    assert manifest["hash_semantics_version"] == 2
     assert manifest["project_id"] == project_id
     assert manifest["job_id"] == 77
     assert list(manifest["pages"]) == ["s1-p1", "s2-p1"]
@@ -219,6 +220,8 @@ def test_manifest_shape_and_hash_dependencies():
         "slide_image": "42/images/slide_001.png",
     }
     assert manifest["pages"]["s2-p1"]["artifacts"]["avatar_clip"] == "42/avatar_segments/avatar_002.mp4"
+    assert manifest["pages"]["s1-p1"]["duration"] == 2.0
+    assert manifest["pages"]["s1-p1"]["pause_seconds"] == 0.25
     assert manifest["pages"]["s1-p1"]["invalidation_reasons"] == []
 
     reordered = build_partial_render_manifest(
@@ -253,6 +256,229 @@ def test_manifest_shape_and_hash_dependencies():
         narration_changed["pages"]["s1-p1"]["narration_text_hash"]
         != manifest["pages"]["s1-p1"]["narration_text_hash"]
     )
+
+
+def test_output_duration_is_metadata_not_structural_identity_but_pause_remains_structural():
+    baseline_result = _render_result(
+        index=0,
+        page_key="s1-p1",
+        display_text="Visible one",
+        narration_text="Narration one",
+    )
+    baseline = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[baseline_result],
+        playback_assets={"final_segments": [{**baseline_result, "page_key": "s1-p1"}]},
+        avatar_options={"enabled": False},
+    )
+    duration_changed_result = {
+        **baseline_result,
+        "text": "Narration one edited",
+        "narration_text": "Narration one edited",
+        "spoken_text": "Narration one edited",
+        "subtitle_chunks": ["Narration one edited"],
+        "duration": 7.5,
+    }
+    duration_changed = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[duration_changed_result],
+        playback_assets={"final_segments": [{**duration_changed_result, "page_key": "s1-p1"}]},
+        avatar_options={"enabled": False},
+    )
+    pause_changed_result = {**duration_changed_result, "pause_seconds": 0.75}
+    pause_changed = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[pause_changed_result],
+        playback_assets={"final_segments": [{**pause_changed_result, "page_key": "s1-p1"}]},
+        avatar_options={"enabled": False},
+    )
+
+    assert baseline["pages"]["s1-p1"]["duration"] == 2.0
+    assert duration_changed["pages"]["s1-p1"]["duration"] == 7.5
+    assert baseline["pages"]["s1-p1"]["structural_hash"] == duration_changed["pages"]["s1-p1"]["structural_hash"]
+    assert baseline["sequence_hash"] == duration_changed["sequence_hash"]
+    assert duration_changed["pages"]["s1-p1"]["structural_hash"] != pause_changed["pages"]["s1-p1"]["structural_hash"]
+    assert duration_changed["sequence_hash"] != pause_changed["sequence_hash"]
+    duration_report = classify_partial_render_changes(
+        old_manifest=baseline,
+        expected_manifest=duration_changed,
+        required_artifacts=(),
+    )
+    pause_report = classify_partial_render_changes(
+        old_manifest=duration_changed,
+        expected_manifest=pause_changed,
+        required_artifacts=(),
+    )
+    assert "structural_changed" not in duration_report["pages"]["s1-p1"]["reasons"]
+    assert duration_report["global_reasons"] == []
+    assert pause_report["pages"]["s1-p1"]["classification"] == "structural_changed"
+    assert pause_report["global_reasons"] == ["structural_changed"]
+
+
+def test_old_hash_semantics_are_rejected_conservatively():
+    old_manifest = _two_page_manifest()
+    old_manifest.pop("hash_semantics_version")
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=_two_page_manifest(),
+    )
+
+    assert report["global_reasons"] == ["unknown_requires_full"]
+    assert all(page["requires_full"] for page in report["pages"].values())
+
+
+def test_expected_and_finalized_txt_defaults_share_layout_and_language_identity():
+    finalized_result = {
+        **_render_result(
+            index=0,
+            page_key="s1-p1",
+            display_text="Visible one",
+            narration_text="Narration one",
+        ),
+        "whiteboard_mode": True,
+        "scene_background_mode": "whiteboard",
+        "scene_background_fit": None,
+        "scene_text_scale": None,
+        "editor_document": {},
+        "tts_normalization_language": "en",
+        "avatar_engine_used": "none",
+    }
+    finalized = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[finalized_result],
+        playback_assets={"final_segments": [{**finalized_result, "page_key": "s1-p1"}]},
+        avatar_options={"enabled": False, "requested": "0"},
+    )
+    expected_slide = {
+        "index": 0,
+        "page_key": "s1-p1",
+        "source_slide_index": 0,
+        "split_index": 0,
+        "display_text": "Visible one",
+        "narration_text": "Narration one",
+        "subtitle_chunks": ["Narration one"],
+        "whiteboard_mode": True,
+        "scene_background_mode": "whiteboard",
+        "scene_background_fit": "contain",
+        "scene_text_scale": 1.0,
+        "editor_document": {
+            "scene": {
+                "source_type": "txt",
+                "source_background_generated": False,
+                "background_mode": "whiteboard",
+                "background_fit": "contain",
+                "text_scale": 1.0,
+            }
+        },
+    }
+    expected = build_expected_partial_render_manifest(
+        project_id=42,
+        slides=[expected_slide],
+        previous_playback_assets={"partial_render_manifest": finalized},
+        tts_settings={"provider_preference": "gtts", "speech_speed": 1.05},
+        avatar_options={"enabled": 0},
+        effective_language="EN",
+    )
+
+    assert finalized["pages"]["s1-p1"]["layout_hash"] == expected["pages"]["s1-p1"]["layout_hash"]
+    assert finalized["pages"]["s1-p1"]["tts_input_hash"] == expected["pages"]["s1-p1"]["tts_input_hash"]
+    assert finalized["pages"]["s1-p1"]["avatar_input_hash"] == expected["pages"]["s1-p1"]["avatar_input_hash"]
+
+    edited_layout = build_expected_partial_render_manifest(
+        project_id=42,
+        slides=[
+            {
+                **expected_slide,
+                "scene_text_scale": 1.25,
+                "editor_document": {
+                    "scene": {
+                        **expected_slide["editor_document"]["scene"],
+                        "text_scale": 1.25,
+                        "overlay_layout": {"padding": 32},
+                    }
+                },
+            }
+        ],
+        previous_playback_assets={"partial_render_manifest": finalized},
+        tts_settings={"provider_preference": "gtts", "speech_speed": 1.05},
+        avatar_options={"enabled": False},
+        effective_language="en",
+    )
+    changed_language = build_expected_partial_render_manifest(
+        project_id=42,
+        slides=[expected_slide],
+        previous_playback_assets={"partial_render_manifest": finalized},
+        tts_settings={"provider_preference": "gtts", "speech_speed": 1.05},
+        avatar_options={"enabled": False},
+        effective_language="tr",
+    )
+
+    assert edited_layout["pages"]["s1-p1"]["layout_hash"] != expected["pages"]["s1-p1"]["layout_hash"]
+    assert changed_language["pages"]["s1-p1"]["tts_input_hash"] != expected["pages"]["s1-p1"]["tts_input_hash"]
+    language_report = classify_partial_render_changes(
+        old_manifest=expected,
+        expected_manifest=changed_language,
+        required_artifacts=(),
+    )
+    assert language_report["pages"]["s1-p1"]["classification"] == "tts_input_changed"
+
+
+@pytest.mark.parametrize("malformed_scene", ["invalid", ["invalid"], 7])
+def test_layout_canonicalization_treats_malformed_scene_as_safe_default(malformed_scene):
+    result = {
+        **_render_result(
+            index=0,
+            page_key="s1-p1",
+            display_text="Visible one",
+            narration_text="Narration one",
+        ),
+        "scene_background_fit": None,
+        "scene_text_scale": None,
+        "editor_document": {"scene": malformed_scene},
+    }
+    manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[result],
+        avatar_options={"enabled": False},
+    )
+    default_manifest = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[{**result, "editor_document": {}}],
+        avatar_options={"enabled": False},
+    )
+
+    assert manifest["pages"]["s1-p1"]["layout_hash"] == default_manifest["pages"]["s1-p1"]["layout_hash"]
+
+
+@pytest.mark.parametrize("disabled_value", [False, 0, "0", "false", None])
+def test_avatar_disabled_representations_hash_identically(disabled_value):
+    result = _without_avatar(
+        _render_result(
+            index=0,
+            page_key="s1-p1",
+            display_text="Visible one",
+            narration_text="Narration one",
+        )
+    )
+    baseline = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[result],
+        avatar_options={"enabled": False, "requested": False},
+    )
+    candidate = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[{**result, "avatar_engine_used": "cached"}],
+        avatar_options={"enabled": disabled_value, "requested": disabled_value},
+    )
+    enabled = build_partial_render_manifest(
+        project_id=42,
+        ordered_results=[result],
+        avatar_options={"enabled": True, "requested": True},
+    )
+
+    assert candidate["pages"]["s1-p1"]["avatar_input_hash"] == baseline["pages"]["s1-p1"]["avatar_input_hash"]
+    assert enabled["pages"]["s1-p1"]["avatar_input_hash"] != baseline["pages"]["s1-p1"]["avatar_input_hash"]
 
 
 def test_manifest_fallback_page_key_and_targeted_merge_artifact_stability():
@@ -867,6 +1093,120 @@ def _runtime_slides_from_finalized_results(results: list[dict]) -> list[dict]:
     return slides
 
 
+def _finalize_two_page_txt_sidecar(tmp_path, project: Project, job: Job):
+    project_root = tmp_path / str(project.id)
+    avatar_options = {"enabled": False, "requested": False}
+    tts_settings = {"provider_preference": "gtts", "speech_speed": 1.0}
+    source_report = {"renderer": "txt_whiteboard"}
+    default_scene = {
+        "source_type": "txt",
+        "source_background_generated": False,
+        "background_mode": "whiteboard",
+        "background_fit": "contain",
+        "text_scale": 1.0,
+    }
+    results: list[dict[str, Any]] = []
+    slides: list[dict[str, Any]] = []
+    for index, narration_text in enumerate(("Narration one", "Narration two")):
+        page_key = f"s{index + 1}-p1"
+        part_path = project_root / "parts" / f"part_{index + 1:03d}.mp4"
+        slide_path = project_root / "parts" / f"part_{index + 1:03d}.whiteboard.png"
+        audio_path = project_root / "audio" / f"slide_{index + 1:03d}.mp3"
+        for path in (part_path, slide_path, audio_path):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"txt-artifact-{index}-{path.suffix}".encode("utf-8"))
+
+        results.append(
+            {
+                "index": index,
+                "slide_num": index + 1,
+                "page_key": page_key,
+                "source_slide_index": index,
+                "split_index": 0,
+                "part_path": str(part_path),
+                "duration": 2.0 + index,
+                "pause_seconds": 0.25,
+                "text": narration_text,
+                "narration_text": narration_text,
+                "original_text": narration_text,
+                "display_text": narration_text,
+                "spoken_text": narration_text,
+                "tts_normalization_language": "en",
+                "tts_normalization_rules_applied": [],
+                "tts_provider": "gtts",
+                "tts_provider_preference": "gtts",
+                "tts_normalization_enabled": True,
+                "tts_normalization_mode": "loose",
+                "tts_unknown_word_strategy": "keep",
+                "tts_applied_overrides": {},
+                "tts_fallback_used": False,
+                "tts_fallback_reason": "",
+                "tts_settings": tts_settings,
+                "tts_preprocessing_warnings": [],
+                "slide_path": str(slide_path),
+                "tts_audio_path": str(audio_path),
+                "subtitle_chunks": [narration_text],
+                "whiteboard_mode": True,
+                "scene_background_mode": "whiteboard",
+                "scene_background_fit": "contain",
+                "scene_text_scale": 1.0,
+                "editor_document": {"scene": dict(default_scene)},
+                "source_render_method": "txt_whiteboard",
+                "source_render_warnings": [],
+                "source_render_details": [],
+                "source_render_dependency_report": source_report,
+                "source_background_warnings": [],
+                "source_background_details": [],
+                "avatar_applied": False,
+                "avatar_engine_used": "none",
+                "avatar_segment_rel_path": "",
+                "avatar_attempted": False,
+                "avatar_skipped": False,
+                "avatar_failed": False,
+                "avatar_status": "none",
+            }
+        )
+        slides.append(
+            {
+                "index": index,
+                "slide_num": index + 1,
+                "page_key": page_key,
+                "source_slide_index": index,
+                "split_index": 0,
+                "image_path": "",
+                "audio_out": str(audio_path),
+                "part_out": str(part_path),
+                "notes_text": narration_text,
+                "narration_text": narration_text,
+                "original_text": narration_text,
+                "display_text": narration_text,
+                "subtitle_chunks": [narration_text],
+                "whiteboard_mode": True,
+                "scene_background_mode": "whiteboard",
+                "scene_background_fit": "contain",
+                "scene_text_scale": 1.0,
+                "editor_document": {"scene": dict(default_scene)},
+                "source_type": "txt",
+                "source_render_method": "txt_whiteboard",
+                "source_render_warnings": [],
+                "source_render_details": [],
+                "source_render_dependency_report": source_report,
+                "source_background_warnings": [],
+                "source_background_details": [],
+            }
+        )
+
+    worker_tasks.concat_and_finalize.run(
+        results,
+        str(project.id),
+        False,
+        avatar_options,
+        job.id,
+    )
+    sidecar_path = project_root / "playback_assets.json"
+    return results, slides, json.loads(sidecar_path.read_text(encoding="utf-8")), avatar_options, tts_settings
+
+
 def test_visual_only_recompose_reuses_audio_avatar_and_replaces_only_target_part(tmp_path, monkeypatch):
     from scripts import ffmpeg_helpers
 
@@ -1337,6 +1677,7 @@ def _old_sidecar_for_visual_recompose(
     old_result: dict,
     avatar_options: dict | None = None,
     avatar_payload: dict | None = None,
+    effective_language: str = "en",
 ) -> dict:
     playback_assets = {
         "final_segments": [
@@ -1358,6 +1699,7 @@ def _old_sidecar_for_visual_recompose(
             {
                 "index": int(old_result.get("index") or 0),
                 "page_key": str(old_result.get("page_key") or ""),
+                "tts_normalization_language": effective_language,
                 "project_tts_settings": dict(old_result.get("tts_settings") or {}),
             }
         ],
@@ -1368,6 +1710,7 @@ def _old_sidecar_for_visual_recompose(
         ordered_results=[old_result],
         playback_assets=playback_assets,
         avatar_options=avatar_options,
+        effective_language=effective_language,
     )
     if avatar_payload:
         playback_assets["avatar"] = dict(avatar_payload)
@@ -1381,6 +1724,7 @@ def _old_sidecar_for_results(
     old_results: list[dict],
     *,
     avatar_options: dict | None = None,
+    effective_language: str = "en",
 ) -> dict:
     final_segments = []
     tts_normalization = []
@@ -1404,6 +1748,7 @@ def _old_sidecar_for_results(
             {
                 "index": int(old_result.get("index") or 0),
                 "page_key": str(old_result.get("page_key") or ""),
+                "tts_normalization_language": effective_language,
                 "project_tts_settings": dict(old_result.get("tts_settings") or {}),
             }
         )
@@ -1420,6 +1765,7 @@ def _old_sidecar_for_results(
         ordered_results=old_results,
         playback_assets=playback_assets,
         avatar_options=avatar_options,
+        effective_language=effective_language,
     )
     return playback_assets
 
@@ -2030,6 +2376,11 @@ def test_finalize_adds_manifest_without_removing_playback_sidecar_fields(tmp_pat
     assert analysis["version"] == 1
     assert analysis["mode"] == "report_only"
     assert analysis["generated_from"] == "partial_render_manifest"
+    assert analysis["comparison_phase"] == "post_render_finalized"
+    assert analysis["comparison_roles"] == {
+        "old": "previous_finalized_manifest",
+        "expected": "current_finalized_manifest",
+    }
     assert analysis["classifier"]["available"] is False
     assert analysis["classifier"]["notes"] == [
         "old_playback_assets_missing",
@@ -2042,6 +2393,133 @@ def test_finalize_adds_manifest_without_removing_playback_sidecar_fields(tmp_pat
     assert analysis["plan"]["pages"]["s1-p1"]["actual_behavior_changed"] is False
     assert analysis["plan"]["summary"]["full_rerender_required_future"] == 1
     assert analysis["plan"]["summary"]["unknown_requires_full"] == 1
+
+
+@pytest.mark.django_db
+def test_real_export_shaped_txt_sidecar_supports_narration_only_decision(tmp_path, monkeypatch):
+    from scripts import ffmpeg_helpers
+
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("real_txt_narration_decision_owner")
+    project = Project.objects.create(title="Real TXT narration decision", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    _results, slides, sidecar, avatar_options, tts_settings = _finalize_two_page_txt_sidecar(
+        tmp_path,
+        project,
+        job,
+    )
+    slides[0].update(
+        {
+            "notes_text": "Narration one updated",
+            "narration_text": "Narration one updated",
+            "subtitle_chunks": ["Narration one updated"],
+        }
+    )
+    monkeypatch.setattr(ffmpeg_helpers, "get_audio_duration", lambda _path: 2.0)
+
+    decision = worker_tasks._build_narration_only_recompose_runtime_decision(
+        project_id=project.id,
+        job_id=job.id + 1,
+        slides=slides,
+        rerender_page_keys={"s1-p1"},
+        previous_playback_assets=sidecar,
+        tts_settings=tts_settings,
+        avatar_options=avatar_options,
+        effective_language="en",
+    )
+
+    assert sidecar["partial_render_manifest"]["pages"]["s1-p1"]["duration"] == 2.0
+    assert decision["classification"]["global_reasons"] == []
+    assert decision["comparison_phase"] == "pre_render_eligibility"
+    assert decision["comparison_roles"] == {
+        "old": "previous_finalized_manifest",
+        "expected": "current_render_inputs",
+    }
+    assert "structural_changed" not in decision["classification"]["pages"]["s1-p1"]["reasons"]
+    assert decision["classification"]["pages"]["s2-p1"]["classification"] == "unchanged"
+    assert decision["eligible"] is True
+
+
+@pytest.mark.django_db
+def test_real_txt_conservative_merge_preserves_prior_metadata_and_slide_image(tmp_path, monkeypatch):
+    _patch_finalize_side_effects(monkeypatch, tmp_path)
+    owner = _make_user("real_txt_conservative_merge_owner")
+    project = Project.objects.create(title="Real TXT conservative merge", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    results, slides, sidecar, avatar_options, _tts_settings = _finalize_two_page_txt_sidecar(
+        tmp_path,
+        project,
+        job,
+    )
+    slides[0].update(
+        {
+            "notes_text": "Narration one updated",
+            "narration_text": "Narration one updated",
+            "subtitle_chunks": ["Narration one updated"],
+        }
+    )
+    slides[1].update(
+        {
+            "audio_out": "",
+            "part_out": "",
+            "duration": "invalid",
+            "pause_seconds": "invalid",
+        }
+    )
+    changed_result = {
+        **results[0],
+        "text": "Narration one updated",
+        "narration_text": "Narration one updated",
+        "spoken_text": "Narration one updated",
+        "subtitle_chunks": ["Narration one updated"],
+        "duration": 4.0,
+    }
+    monkeypatch.setattr(worker_tasks, "_read_playback_sidecar", lambda _project_id: sidecar)
+    captured: dict[str, Any] = {}
+
+    def fake_finalize_apply(*, args):
+        captured["results"] = args[0]
+        return SimpleNamespace(result={"status": "ok"})
+
+    monkeypatch.setattr(worker_tasks.concat_and_finalize, "apply", fake_finalize_apply)
+
+    worker_tasks.merge_and_finalize_segments.run(
+        [changed_result],
+        str(project.id),
+        slides,
+        ["s1-p1"],
+        avatar_options,
+        job.id + 1,
+    )
+
+    unchanged = next(item for item in captured["results"] if item["page_key"] == "s2-p1")
+    assert unchanged["duration"] == 3.0
+    assert unchanged["pause_seconds"] == 0.25
+    assert unchanged["part_path"] == results[1]["part_path"]
+    assert unchanged["tts_audio_path"] == results[1]["tts_audio_path"]
+    assert unchanged["slide_path"] == results[1]["slide_path"]
+    assert unchanged["tts_normalization_language"] == "en"
+    assert unchanged["tts_settings"]["provider_preference"] == "gtts"
+    assert unchanged["source_render_method"] == "txt_whiteboard"
+    assert unchanged["source_render_dependency_report"] == {"renderer": "txt_whiteboard"}
+
+    layout_changed = deepcopy(slides)
+    layout_changed[1]["scene_text_scale"] = 1.25
+    layout_changed[1]["editor_document"]["scene"]["text_scale"] = 1.25
+    source_changed = deepcopy(slides)
+    source_changed[1]["source_render_method"] = "changed-renderer"
+    reordered = [deepcopy(slides[1]), deepcopy(slides[0])]
+    for index, slide in enumerate(reordered):
+        slide["index"] = index
+
+    for unsafe_slides in (layout_changed, source_changed, reordered):
+        reusable = worker_tasks._cached_slide_images_for_unchanged_pages(
+            project_id=project.id,
+            slides=unsafe_slides,
+            previous_playback_assets=sidecar,
+            avatar_options=avatar_options,
+        )
+        assert "s2-p1" not in reusable
 
 
 @pytest.mark.django_db
@@ -2450,6 +2928,11 @@ def test_partial_render_analysis_failure_does_not_fail_finalize(tmp_path, monkey
         "version": 1,
         "mode": "report_only",
         "generated_from": "partial_render_manifest",
+        "comparison_phase": "post_render_finalized",
+        "comparison_roles": {
+            "old": "previous_finalized_manifest",
+            "expected": "current_finalized_manifest",
+        },
         "classifier": {
             "available": False,
             "result": None,
