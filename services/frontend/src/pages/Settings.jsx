@@ -96,6 +96,37 @@ const DEFAULT_AVATAR_SETTINGS = {
   composite_fallback_allowed: false,
 };
 
+const AVATAR_LAYOUT_POSITION_OPTIONS = [
+  { value: 'top-left', label: 'Top left' },
+  { value: 'top-right', label: 'Top right' },
+  { value: 'bottom-left', label: 'Bottom left' },
+  { value: 'bottom-right', label: 'Bottom right' },
+];
+
+const AVATAR_LAYOUT_SIZE_OPTIONS = [
+  { value: 'small', label: 'Small' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'large', label: 'Large' },
+];
+
+function normalizeAvatarLayoutPosition(value, fallback = 'top-right') {
+  const raw = String(value || '').trim().toLowerCase();
+  return AVATAR_LAYOUT_POSITION_OPTIONS.some((option) => option.value === raw) ? raw : fallback;
+}
+
+function normalizeAvatarLayoutSize(value, fallback = 'medium') {
+  const raw = String(value || '').trim().toLowerCase();
+  return AVATAR_LAYOUT_SIZE_OPTIONS.some((option) => option.value === raw) ? raw : fallback;
+}
+
+function normalizeAvatarLayoutVisible(value, fallback = true) {
+  if (typeof value === 'boolean') return value;
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on', 'visible', 'show'].includes(raw)) return true;
+  if (['0', 'false', 'no', 'off', 'hidden', 'hide'].includes(raw)) return false;
+  return fallback;
+}
+
 const AVATAR_STATUS_MESSAGES = {
   missing_consent: 'Confirm avatar consent before preparing or generating an avatar.',
   missing_portrait: 'Upload an avatar portrait image.',
@@ -800,9 +831,12 @@ export default function Settings({ user, onUserRefresh }) {
         avatar_motion_preset: profile.avatar_motion_preset || previous.avatar_motion_preset,
         avatar_lipsync_engine: profile.avatar_lipsync_engine || previous.avatar_lipsync_engine,
         avatar_quality_preset: profile.avatar_quality_preset || previous.avatar_quality_preset,
-        avatar_overlay_visible: profile.avatar_overlay_visible ?? previous.avatar_overlay_visible,
-        avatar_overlay_default_position: profile.avatar_overlay_default_position || previous.avatar_overlay_default_position,
-        avatar_overlay_size: profile.avatar_overlay_size || previous.avatar_overlay_size,
+        avatar_overlay_visible: normalizeAvatarLayoutVisible(profile.avatar_overlay_visible, previous.avatar_overlay_visible),
+        avatar_overlay_default_position: normalizeAvatarLayoutPosition(
+          profile.avatar_overlay_default_position,
+          previous.avatar_overlay_default_position,
+        ),
+        avatar_overlay_size: normalizeAvatarLayoutSize(profile.avatar_overlay_size, previous.avatar_overlay_size),
       }));
     } catch (error) {
       setTeacherMessage(error.message || 'Unable to load avatar profile settings.');
@@ -1874,6 +1908,52 @@ export default function Settings({ user, onUserRefresh }) {
                 <option value="balanced">Balanced</option>
                 <option value="fast">Fast</option>
               </select>
+            </label>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="block text-sm text-[var(--text-secondary)]">
+              Default avatar position
+              <select
+                value={avatarSettings.avatar_overlay_default_position}
+                onChange={(event) => setAvatarSettings((prev) => ({
+                  ...prev,
+                  avatar_overlay_default_position: normalizeAvatarLayoutPosition(event.target.value, prev.avatar_overlay_default_position),
+                }))}
+                className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+              >
+                {AVATAR_LAYOUT_POSITION_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block text-sm text-[var(--text-secondary)]">
+              Default avatar size
+              <select
+                value={avatarSettings.avatar_overlay_size}
+                onChange={(event) => setAvatarSettings((prev) => ({
+                  ...prev,
+                  avatar_overlay_size: normalizeAvatarLayoutSize(event.target.value, prev.avatar_overlay_size),
+                }))}
+                className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
+              >
+                {AVATAR_LAYOUT_SIZE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="inline-flex items-center gap-2 rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+              <input
+                type="checkbox"
+                checked={avatarSettings.avatar_overlay_visible}
+                onChange={(event) => setAvatarSettings((prev) => ({
+                  ...prev,
+                  avatar_overlay_visible: event.target.checked,
+                }))}
+              />
+              <span>Default avatar visibility</span>
             </label>
           </div>
 

@@ -22,7 +22,7 @@ from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core import views  # noqa: E402
 from core.avatar_runtime_settings import default_avatar_runtime_settings, normalize_safe_avatar_motion_preset  # noqa: E402
-from core.models import AvatarOverlayPreference, AvatarRenderJob, Job, Project, UserProfile  # noqa: E402
+from core.models import AvatarOverlayPreference, AvatarRenderJob, Job, Project, TranscriptPage, UserProfile  # noqa: E402
 from tests.integration.schema_skip import skip_if_column_missing  # noqa: E402
 
 pytestmark = pytest.mark.django_db
@@ -233,7 +233,7 @@ def test_frontend_avatar_reset_restores_default_position():
     source = _frontend_source("components", "player", "AvatarOverlayLayer.jsx")
 
     assert "Reset avatar position" in source
-    assert "setCurrentPlacement(clampAvatarPlacement(defaultPlacement, bounds))" in source
+    assert "setCurrentPlacement(clampAvatarPlacement(authoredPlacement, bounds))" in source
     assert "clearStoredPlacement(lessonId)" in source
 
 
@@ -461,6 +461,55 @@ def test_avatar_overlay_default_placement_is_top_right_medium():
     assert placement["x"] == 0.72
     assert placement["y"] == 0.08
     assert placement["width"] == 0.24
+
+
+def test_avatar_profile_layout_defaults_save_and_invalid_values_fall_back_safely():
+    suffix = uuid.uuid4().hex[:8]
+    teacher = User.objects.create_user(username=f"profile_layout_{suffix}", password="pass")
+    profile = UserProfile.objects.create(user=teacher, role="teacher")
+
+    factory = APIRequestFactory()
+    request = factory.patch(
+        f"/api/v1/users/{teacher.id}/avatar/",
+        {
+            "avatar_overlay_default_position": "bottom-left",
+            "avatar_overlay_size": "large",
+            "avatar_overlay_visible": False,
+        },
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    response = views.AvatarProfileView.as_view()(request, user_id=teacher.id)
+
+    assert response.status_code == 200
+    profile.refresh_from_db()
+    assert profile.avatar_overlay_default_position == "bottom-left"
+    assert profile.avatar_overlay_size == "large"
+    assert profile.avatar_overlay_visible is False
+    assert response.data["profile"]["avatar_overlay_default_position"] == "bottom-left"
+    assert response.data["profile"]["avatar_overlay_size"] == "large"
+    assert response.data["profile"]["avatar_overlay_visible"] is False
+
+    invalid_request = factory.patch(
+        f"/api/v1/users/{teacher.id}/avatar/",
+        {
+            "avatar_overlay_default_position": "center",
+            "avatar_overlay_size": "giant",
+            "avatar_overlay_visible": "maybe",
+        },
+        format="json",
+    )
+    force_authenticate(invalid_request, user=teacher)
+
+    invalid_response = views.AvatarProfileView.as_view()(invalid_request, user_id=teacher.id)
+
+    assert invalid_response.status_code == 200
+    profile.refresh_from_db()
+    assert profile.avatar_overlay_default_position == "bottom-left"
+    assert profile.avatar_overlay_size == "large"
+    assert profile.avatar_overlay_visible is False
+    assert not Job.objects.filter(project__user=teacher, job_type__icontains="avatar").exists()
 
 
 def test_avatar_overlay_placement_saves_and_returns_normalized_payload():
@@ -974,7 +1023,47 @@ def test_watch_payload_exposes_avatar_only_when_visible_and_ready(tmp_path):
     )
     sidecar_path = tmp_path / str(lesson.id) / "playback_assets.json"
     sidecar_path.parent.mkdir(parents=True)
-    sidecar_path.write_text(json.dumps({"avatar": {"track_rel_path": f"{lesson.id}/avatar/avatar_track.mp4"}}), encoding="utf-8")
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "timeline": [
+                    {"order": 0, "page_key": "s1-p1", "start": 0.0, "end": 2.0},
+                    {"order": 1, "page_key": "s2-p1", "start": 2.0, "end": 5.0},
+                ],
+                "avatar": {
+                    "track_rel_path": f"{lesson.id}/avatar/avatar_track.mp4",
+                    "publisher_avatar_layout": {
+                        "position": "top-right",
+                        "size": "medium",
+                        "visible": True,
+                    },
+                    "layout_by_page": [
+                        {
+                            "index": 0,
+                            "page_key": "s1-p1",
+                            "effective_avatar_layout": {
+                                "position": "top-right",
+                                "size": "medium",
+                                "visible": True,
+                            },
+                            "avatar_layout_source": "publisher",
+                        },
+                        {
+                            "index": 1,
+                            "page_key": "s2-p1",
+                            "effective_avatar_layout": {
+                                "position": "bottom-left",
+                                "size": "large",
+                                "visible": False,
+                            },
+                            "avatar_layout_source": "slide",
+                        },
+                    ],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
 
     factory = APIRequestFactory()
     request = _with_session(factory.get(f"/api/v1/catalog/{lesson.id}/"))
@@ -1001,6 +1090,135 @@ def test_watch_payload_exposes_avatar_only_when_visible_and_ready(tmp_path):
     assert ready_response.status_code == 200
     assert ready_response.data["avatar_available"] is True
     assert ready_response.data["avatar_overlay"]["enabled"] is True
+    assert ready_response.data["avatar_overlay"]["layout_by_page"] == [
+        {
+            "index": 0,
+            "page_key": "s1-p1",
+            "position": "top-right",
+            "size": "medium",
+            "visible": True,
+            "source": "publisher",
+            "sources": {
+                "position": "publisher",
+                "size": "publisher",
+                "visible": "publisher",
+            },
+            "start": 0.0,
+            "end": 2.0,
+        },
+        {
+            "index": 1,
+            "page_key": "s2-p1",
+            "position": "bottom-left",
+            "size": "large",
+            "visible": False,
+            "source": "slide",
+            "sources": {
+                "position": "slide",
+                "size": "slide",
+                "visible": "slide",
+            },
+            "start": 2.0,
+            "end": 5.0,
+        },
+    ]
+
+
+def test_playback_layout_uses_active_scene_over_stale_sidecar_metadata():
+    teacher = User.objects.create_user(username=f"layout_scene_{uuid.uuid4().hex[:8]}", password="pass")
+    UserProfile.objects.create(
+        user=teacher,
+        role="teacher",
+        avatar_overlay_default_position="top-right",
+        avatar_overlay_size="medium",
+        avatar_overlay_visible=True,
+    )
+    lesson = Project.objects.create(title="Active avatar layout", user=teacher)
+    TranscriptPage.objects.create(
+        project=lesson,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        editor_document={"scene": {"background_mode": "original"}},
+    )
+    TranscriptPage.objects.create(
+        project=lesson,
+        order=1,
+        source_slide_index=1,
+        split_index=0,
+        page_key="s2-p1",
+        editor_document={
+            "scene": {
+                "background_mode": "original",
+                "avatar_layout": {
+                    "position": "bottom-left",
+                    "size": "large",
+                    "visible": False,
+                },
+            }
+        },
+    )
+    stale_layout = {
+        "effective_avatar_layout": {
+            "position": "top-left",
+            "size": "small",
+            "visible": True,
+        },
+        "avatar_layout_source": "system",
+    }
+    sidecar = {
+        "timeline": [
+            {"index": 0, "page_key": "s1-p1", "start": 0.0, "end": 2.0},
+            {"index": 1, "page_key": "s2-p1", "start": 2.0, "end": 5.0},
+        ],
+        "avatar": {
+            "publisher_avatar_layout": {
+                "position": "top-left",
+                "size": "small",
+                "visible": True,
+            },
+            "layout_by_page": [
+                {"index": 0, "page_key": "s1-p1", **stale_layout},
+                {"index": 1, "page_key": "s2-p1", **stale_layout},
+            ],
+        },
+    }
+
+    rows = views._avatar_layout_by_page_from_sidecar(sidecar, project=lesson)
+
+    assert rows == [
+        {
+            "index": 0,
+            "page_key": "s1-p1",
+            "position": "top-right",
+            "size": "medium",
+            "visible": True,
+            "source": "publisher",
+            "sources": {
+                "position": "publisher",
+                "size": "publisher",
+                "visible": "publisher",
+            },
+            "start": 0.0,
+            "end": 2.0,
+        },
+        {
+            "index": 1,
+            "page_key": "s2-p1",
+            "position": "bottom-left",
+            "size": "large",
+            "visible": False,
+            "source": "slide",
+            "sources": {
+                "position": "slide",
+                "size": "slide",
+                "visible": "slide",
+            },
+            "start": 2.0,
+            "end": 5.0,
+        },
+    ]
 
 
 def _setup_avatar_only_rerender_lesson(tmp_path, monkeypatch, runtime_settings=None):

@@ -21,6 +21,8 @@ from django.contrib.auth.models import User
 from core.avatar_readiness import normalize_avatar_engine
 from core.avatar_image_moderation import avatar_image_moderation_gate
 from core.avatar_placement import (
+    avatar_layout_from_profile,
+    normalize_avatar_layout_override,
     normalize_avatar_placement,
     placement_from_overlay_preference,
     project_avatar_placement,
@@ -534,6 +536,12 @@ def transcript_page_editor_document_for_response(page: TranscriptPage, context: 
     highlight_style = str(highlight_spec.get("style") or "none")
     highlight_detector = str(highlight_spec.get("detector") or "auto")
     highlight_preview_path = _scene_path(scene, "highlight_preview_path")
+    if "avatar_layout" in safe_scene:
+        avatar_layout = normalize_avatar_layout_override(safe_scene.get("avatar_layout"))
+        if avatar_layout:
+            safe_scene["avatar_layout"] = avatar_layout
+        else:
+            safe_scene.pop("avatar_layout", None)
     safe_scene.update(
         {
             "background_mode": mode,
@@ -795,6 +803,9 @@ class VoiceProfileSerializer(serializers.ModelSerializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     banner_url = serializers.SerializerMethodField()
     logo_url = serializers.SerializerMethodField()
+    avatar_overlay_default_position = serializers.SerializerMethodField()
+    avatar_overlay_size = serializers.SerializerMethodField()
+    avatar_overlay_visible = serializers.SerializerMethodField()
 
     class Meta:
         model = UserProfile
@@ -864,6 +875,15 @@ class UserProfileSerializer(serializers.ModelSerializer):
             return ""
         version = str(int(obj.updated_at.timestamp())) if getattr(obj, "updated_at", None) else None
         return _profile_asset_url(getattr(obj, "user_id", None), "logo", self.context, version)
+
+    def get_avatar_overlay_default_position(self, obj):
+        return avatar_layout_from_profile(obj)["position"]
+
+    def get_avatar_overlay_size(self, obj):
+        return avatar_layout_from_profile(obj)["size"]
+
+    def get_avatar_overlay_visible(self, obj):
+        return avatar_layout_from_profile(obj)["visible"]
 
 
 class SiteHelpContentSerializer(serializers.ModelSerializer):

@@ -200,6 +200,7 @@ export default function VideoStage({
   const hasVideo = Boolean(lesson?.stream_url);
   const avatarOverlay = lesson?.avatar_overlay || {};
   const avatarPlacement = avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {};
+  const avatarLayoutByPage = avatarOverlay?.layout_by_page || avatarOverlay?.layoutByPage || [];
   const avatarStreamUrl = String(avatarOverlay?.stream_url || '').trim();
   const avatarOverlayEnabled = Boolean(avatarOverlayMode !== 'disabled' && avatarOverlay?.enabled && avatarStreamUrl);
   const avatarStatus = String(lesson?.avatar_processing_status || 'none').trim().toLowerCase();
@@ -425,6 +426,7 @@ export default function VideoStage({
                 src={avatarStreamUrl}
                 enabled={avatarOverlayEnabled}
                 placement={avatarPlacement}
+                layoutByPage={avatarLayoutByPage}
                 videoRef={activeVideoRef}
               />
             )}

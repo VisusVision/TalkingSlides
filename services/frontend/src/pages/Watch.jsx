@@ -159,6 +159,7 @@ function avatarOverlayDataForLesson(lesson) {
     enhancedAvailable: Boolean(avatarOverlay?.enhanced_available),
     enhancedPending: Boolean(avatarOverlay?.enhanced_pending),
     placement: avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {},
+    layoutByPage: avatarOverlay?.layout_by_page || avatarOverlay?.layoutByPage || [],
     processing: ['queued', 'processing'].includes(String(lesson?.avatar_processing_status || '').trim().toLowerCase()),
     message: String(lesson?.avatar_processing_message || '').trim(),
   };
@@ -367,6 +368,7 @@ function WatchStudyPanel({
             src={avatar.src}
             enabled={avatar.enabled}
             placement={avatar.placement}
+            layoutByPage={avatar.layoutByPage}
             videoRef={videoRef}
             mode="study-panel"
           />

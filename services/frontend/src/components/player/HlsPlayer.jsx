@@ -185,6 +185,7 @@ export default function HlsPlayer({
   const canUseFallback = Boolean(fallbackAllowed && fallbackUrl);
   const avatarOverlay = lesson?.avatar_overlay || {};
   const avatarPlacement = avatarOverlay?.placement || avatarOverlay?.defaults || lesson?.avatar_placement || {};
+  const avatarLayoutByPage = avatarOverlay?.layout_by_page || avatarOverlay?.layoutByPage || [];
   const avatarStreamUrl = String(avatarOverlay?.stream_url || '').trim();
   const avatarOverlayEnabled = Boolean(avatarOverlayMode !== 'disabled' && avatarOverlay?.enabled && avatarStreamUrl);
   const mediaCrossOrigin = lesson?.session_binding_active || lesson?.protection?.session_binding_active
@@ -434,6 +435,7 @@ export default function HlsPlayer({
                 src={avatarStreamUrl}
                 enabled={avatarOverlayEnabled}
                 placement={avatarPlacement}
+                layoutByPage={avatarLayoutByPage}
                 videoRef={activeVideoRef}
               />
             )}

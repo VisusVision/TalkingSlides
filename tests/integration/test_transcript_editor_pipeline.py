@@ -25,6 +25,7 @@ from django.test.utils import override_settings  # noqa: E402
 from rest_framework.test import APIRequestFactory, force_authenticate  # noqa: E402
 
 from core import views  # noqa: E402
+from core.drafts import promote_project_draft  # noqa: E402
 from core.models import Project, TranscriptPage, Job, UserProfile  # noqa: E402
 from core.serializers import canonical_project_tts_settings  # noqa: E402
 
@@ -202,6 +203,274 @@ def test_transcript_patch_partial_update_preserves_other_pages_and_original_text
     assert page_one.original_text == "Original one"
     assert page_two.narration_text == "Original two"
     assert page_two.original_text == "Original two"
+
+
+@pytest.mark.django_db
+def test_transcript_avatar_layout_round_trip_reset_and_draft_promotion_preserve_scene(monkeypatch):
+    _ensure_transcript_table()
+    teacher = _make_teacher("transcript_avatar_layout")
+    project = Project.objects.create(title="Transcript avatar layout", user=teacher)
+    page_one = TranscriptPage.objects.create(
+        project=project,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text="Original one",
+        narration_text="Original one",
+        editor_document={
+            "version": 1,
+            "scene": {
+                "background_mode": "custom",
+                "unrelated_scene_value": {"keep": True},
+            },
+        },
+    )
+    page_two = TranscriptPage.objects.create(
+        project=project,
+        order=1,
+        source_slide_index=1,
+        split_index=0,
+        page_key="s2-p1",
+        original_text="Original two",
+        narration_text="Original two",
+        editor_document={"version": 1, "scene": {"background_mode": "whiteboard"}},
+    )
+    monkeypatch.setattr(views, "_queue_lesson_intelligence_schedule", lambda *_args, **_kwargs: None)
+    factory = APIRequestFactory()
+
+    set_request = factory.patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {
+            "pages": [
+                {
+                    "id": page_one.id,
+                    "editor_document": {
+                        "scene": {
+                            "avatar_layout": {
+                                "position": "bottom-left",
+                                "size": "large",
+                                "visible": False,
+                            }
+                        }
+                    },
+                }
+            ]
+        },
+        format="json",
+    )
+    force_authenticate(set_request, user=teacher)
+    set_response = views.ProjectTranscriptView.as_view()(set_request, project_id=project.id)
+
+    assert set_response.status_code == 200
+    page_one.refresh_from_db()
+    page_two.refresh_from_db()
+    assert page_one.editor_document["scene"] == {
+        "background_mode": "custom",
+        "unrelated_scene_value": {"keep": True},
+        "avatar_layout": {
+            "position": "bottom-left",
+            "size": "large",
+            "visible": False,
+        },
+    }
+    assert page_two.editor_document["scene"] == {"background_mode": "whiteboard"}
+
+    reset_request = factory.patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {
+            "pages": [
+                {
+                    "id": page_one.id,
+                    "editor_document": {"scene": {"avatar_layout": None}},
+                }
+            ]
+        },
+        format="json",
+    )
+    force_authenticate(reset_request, user=teacher)
+    reset_response = views.ProjectTranscriptView.as_view()(reset_request, project_id=project.id)
+
+    assert reset_response.status_code == 200
+    page_one.refresh_from_db()
+    assert page_one.editor_document["scene"] == {
+        "background_mode": "custom",
+        "unrelated_scene_value": {"keep": True},
+    }
+
+    draft_request = factory.patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {
+            "draft_only": True,
+            "pages": [
+                {
+                    "id": page_one.id,
+                    "editor_document": {
+                        "scene": {
+                            "avatar_layout": {
+                                "position": "top-left",
+                                "visible": False,
+                            }
+                        }
+                    },
+                }
+            ],
+        },
+        format="json",
+    )
+    force_authenticate(draft_request, user=teacher)
+    draft_response = views.ProjectTranscriptView.as_view()(draft_request, project_id=project.id)
+
+    assert draft_response.status_code == 200
+    project.refresh_from_db()
+    draft_page = next(item for item in project.draft_data["transcript_pages"] if item["page_key"] == "s1-p1")
+    assert draft_page["editor_document"]["scene"]["avatar_layout"] == {
+        "position": "top-left",
+        "visible": False,
+    }
+
+    promote_project_draft(project)
+    page_one.refresh_from_db()
+    page_two.refresh_from_db()
+    assert page_one.editor_document["scene"] == {
+        "background_mode": "custom",
+        "unrelated_scene_value": {"keep": True},
+        "avatar_layout": {
+            "position": "top-left",
+            "visible": False,
+        },
+    }
+    assert page_two.editor_document["scene"] == {"background_mode": "whiteboard"}
+
+
+@pytest.mark.django_db
+def test_layout_only_transcript_draft_avoids_text_moderation_and_intelligence(monkeypatch):
+    _ensure_transcript_table()
+    teacher = _make_teacher("transcript_avatar_layout_scope")
+    project = Project.objects.create(title="Layout-only draft scope", user=teacher)
+    page = TranscriptPage.objects.create(
+        project=project,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text="Original",
+        narration_text="Narration",
+        editor_document={"version": 1, "scene": {"background_mode": "original"}},
+    )
+    monkeypatch.setattr(
+        views,
+        "_run_draft_source_moderation_after_save",
+        lambda *_args, **_kwargs: pytest.fail("layout-only save must not run text moderation"),
+    )
+    monkeypatch.setattr(
+        views,
+        "_queue_lesson_intelligence_schedule",
+        lambda *_args, **_kwargs: pytest.fail("layout-only save must not schedule text intelligence"),
+    )
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {
+            "draft_only": True,
+            "pages": [
+                {
+                    "id": page.id,
+                    "page_key": page.page_key,
+                    "editor_document": {
+                        "scene": {
+                            "avatar_layout": {
+                                "position": "bottom-right",
+                                "visible": False,
+                            }
+                        }
+                    },
+                }
+            ],
+        },
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    response = views.ProjectTranscriptView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 200
+    project.refresh_from_db()
+    assert project.draft_data["metadata"]["metadata_dirty"] is True
+    assert project.draft_data["metadata"]["transcript_dirty"] is False
+    assert project.draft_data["metadata"]["render_required"] is False
+    assert "intelligence_auto_scheduled" not in response.data
+
+
+@pytest.mark.django_db
+def test_layout_only_transcript_draft_promotes_without_render_job(monkeypatch):
+    _ensure_transcript_table()
+    teacher = _make_teacher("transcript_avatar_layout_promote")
+    project = Project.objects.create(title="Layout-only draft promotion", user=teacher)
+    page = TranscriptPage.objects.create(
+        project=project,
+        order=0,
+        source_slide_index=0,
+        split_index=0,
+        page_key="s1-p1",
+        original_text="Original",
+        narration_text="Narration",
+        subtitle_chunks=["Narration"],
+        editor_document={"version": 1, "scene": {"background_mode": "original"}},
+    )
+    monkeypatch.setattr(
+        views,
+        "_queue_or_record_transcript_rerender",
+        lambda *_args, **_kwargs: pytest.fail("layout-only promotion must not queue a render"),
+    )
+    monkeypatch.setattr(
+        views,
+        "_run_draft_visual_moderation_before_promotion",
+        lambda *_args, **_kwargs: None,
+    )
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript/",
+        {
+            "draft_only": True,
+            "trigger_rerender": True,
+            "pages": [
+                {
+                    "id": page.id,
+                    "page_key": page.page_key,
+                    "editor_document": {
+                        "scene": {
+                            "avatar_layout": {
+                                "position": "bottom-left",
+                                "size": "large",
+                                "visible": False,
+                            }
+                        }
+                    },
+                }
+            ],
+        },
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    response = views.ProjectTranscriptView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 200
+    assert response.data["rerender_job"] is None
+    assert response.data["rerender_strategy"] == "none"
+    page.refresh_from_db()
+    project.refresh_from_db()
+    assert page.original_text == "Original"
+    assert page.narration_text == "Narration"
+    assert page.subtitle_chunks == ["Narration"]
+    assert page.editor_document["scene"]["avatar_layout"] == {
+        "position": "bottom-left",
+        "size": "large",
+        "visible": False,
+    }
+    assert project.draft_data == {}
+    assert Job.objects.filter(project=project, job_type="video_export").count() == 0
 
 
 @pytest.mark.django_db

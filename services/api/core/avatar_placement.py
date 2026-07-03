@@ -6,7 +6,15 @@ from collections.abc import Mapping
 from typing import Any
 
 
-AVATAR_PLACEMENT_POSITIONS = {"top-right", "top-left", "bottom-right", "bottom-left", "custom"}
+AVATAR_LAYOUT_POSITIONS = {"top-right", "top-left", "bottom-right", "bottom-left"}
+AVATAR_LAYOUT_SIZES = {"small", "medium", "large"}
+SYSTEM_AVATAR_LAYOUT = {
+    "position": "top-right",
+    "size": "medium",
+    "visible": True,
+}
+
+AVATAR_PLACEMENT_POSITIONS = {*AVATAR_LAYOUT_POSITIONS, "custom"}
 AVATAR_PLACEMENT_SIZES = {"small", "medium", "large"}
 AVATAR_PLACEMENT_WIDTHS = {
     "small": 0.18,
@@ -40,6 +48,163 @@ def _float_or_none(value: Any) -> float | None:
 
 def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
+
+
+def _clean_layout_position(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in AVATAR_LAYOUT_POSITIONS else None
+
+
+def _clean_layout_size(value: Any) -> str | None:
+    text = str(value or "").strip().lower()
+    return text if text in AVATAR_LAYOUT_SIZES else None
+
+
+def _clean_layout_visibility(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "visible", "show", "shown"}:
+        return True
+    if text in {"0", "false", "no", "off", "hidden", "hide"}:
+        return False
+    return None
+
+
+def _layout_mapping(raw: Any) -> Mapping[str, Any]:
+    if isinstance(raw, Mapping) and isinstance(raw.get("avatar_layout"), Mapping):
+        return raw.get("avatar_layout") or {}
+    if isinstance(raw, Mapping):
+        return raw
+    return {}
+
+
+def _inherit_value(value: Any) -> bool:
+    if value is None:
+        return True
+    text = str(value).strip().lower()
+    return text in {"", "inherit", "default", "publisher", "lesson", "null", "none"}
+
+
+def normalize_avatar_layout_defaults(
+    raw: Any = None,
+    *,
+    fallback: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return a complete avatar layout default payload.
+
+    This intentionally accepts only semantic position/size/visibility values.
+    Unknown values fail closed to the fallback instead of entering render hashes.
+    """
+
+    base = dict(SYSTEM_AVATAR_LAYOUT)
+    if isinstance(fallback, Mapping):
+        fallback_position = _clean_layout_position(fallback.get("position"))
+        fallback_size = _clean_layout_size(fallback.get("size"))
+        fallback_visible = _clean_layout_visibility(fallback.get("visible"))
+        if fallback_position:
+            base["position"] = fallback_position
+        if fallback_size:
+            base["size"] = fallback_size
+        if fallback_visible is not None:
+            base["visible"] = fallback_visible
+
+    source = _layout_mapping(raw)
+    position = _clean_layout_position(source.get("position", base["position"]))
+    size = _clean_layout_size(source.get("size", base["size"]))
+    visible = _clean_layout_visibility(source.get("visible", base["visible"]))
+    return {
+        "position": position or base["position"],
+        "size": size or base["size"],
+        "visible": base["visible"] if visible is None else visible,
+    }
+
+
+def normalize_avatar_layout_override(raw: Any = None) -> dict[str, Any]:
+    """Return a sparse per-lesson/per-slide override.
+
+    Missing, null, empty, or explicit inherit values mean inheritance. Malformed
+    values are ignored so they do not crash rendering or pollute identity hashes.
+    """
+
+    source = _layout_mapping(raw)
+    cleaned: dict[str, Any] = {}
+    if "position" in source and not _inherit_value(source.get("position")):
+        position = _clean_layout_position(source.get("position"))
+        if position:
+            cleaned["position"] = position
+    if "size" in source and not _inherit_value(source.get("size")):
+        size = _clean_layout_size(source.get("size"))
+        if size:
+            cleaned["size"] = size
+    if "visible" in source and not _inherit_value(source.get("visible")):
+        visible = _clean_layout_visibility(source.get("visible"))
+        if visible is not None:
+            cleaned["visible"] = visible
+    return cleaned
+
+
+def avatar_layout_from_profile(profile: Any | None) -> dict[str, Any]:
+    if profile is None:
+        return dict(SYSTEM_AVATAR_LAYOUT)
+    return normalize_avatar_layout_defaults(
+        {
+            "position": getattr(profile, "avatar_overlay_default_position", "top-right") or "top-right",
+            "size": getattr(profile, "avatar_overlay_size", "medium") or "medium",
+            "visible": getattr(profile, "avatar_overlay_visible", True),
+        }
+    )
+
+
+def resolve_avatar_layout(
+    slide_override: Any = None,
+    lesson_override: Any = None,
+    publisher_default: Any = None,
+    system_default: Any = None,
+) -> dict[str, Any]:
+    """Resolve slide -> lesson -> publisher -> system avatar layout."""
+
+    system = normalize_avatar_layout_defaults(system_default)
+    publisher = normalize_avatar_layout_override(publisher_default)
+    lesson = normalize_avatar_layout_override(lesson_override)
+    slide = normalize_avatar_layout_override(slide_override)
+    values: dict[str, Any] = {}
+    sources: dict[str, str] = {}
+    for key in ("position", "size", "visible"):
+        if key in slide:
+            values[key] = slide[key]
+            sources[key] = "slide"
+        elif key in lesson:
+            values[key] = lesson[key]
+            sources[key] = "lesson"
+        elif key in publisher:
+            values[key] = publisher[key]
+            sources[key] = "publisher"
+        else:
+            values[key] = system[key]
+            sources[key] = "system"
+
+    for level in ("slide", "lesson", "publisher", "system"):
+        if level in sources.values():
+            source_level = level
+            break
+    else:
+        source_level = "system"
+
+    return {
+        "position": values["position"],
+        "size": values["size"],
+        "visible": bool(values["visible"]),
+        "sources": sources,
+        "source_level": source_level,
+    }
+
+
+def avatar_layout_to_placement(layout: Any) -> dict[str, Any]:
+    resolved = normalize_avatar_layout_defaults(layout)
+    return normalize_avatar_placement({"position": resolved["position"], "size": resolved["size"]})
 
 
 def _ratio_from_value(value: Any, default: float) -> float:

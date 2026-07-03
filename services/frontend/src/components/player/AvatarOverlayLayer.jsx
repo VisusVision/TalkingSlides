@@ -127,6 +127,46 @@ function placementFromStorage(lessonId, fallbackPlacement) {
   return normalizeAvatarPlacement(stored || fallbackPlacement, fallbackPlacement);
 }
 
+export function normalizeAvatarLayoutByPage(rows, fallbackPlacement = DEFAULT_AVATAR_PLACEMENT) {
+  const fallback = normalizeAvatarPlacement(fallbackPlacement || DEFAULT_AVATAR_PLACEMENT);
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row, index) => {
+    const source = row && typeof row === 'object' ? row : {};
+    const placement = normalizeAvatarPlacement(
+      {
+        position: source.position,
+        size: source.size,
+      },
+      fallback,
+    );
+    const start = Number(source.start);
+    const end = Number(source.end);
+    return {
+      index: Number.isFinite(Number(source.index)) ? Number(source.index) : index,
+      pageKey: String(source.page_key || source.pageKey || ''),
+      start: Number.isFinite(start) && start >= 0 ? start : null,
+      end: Number.isFinite(end) && end >= 0 ? end : null,
+      visible: typeof source.visible === 'boolean' ? source.visible : true,
+      placement,
+    };
+  });
+}
+
+export function avatarLayoutIndexAtTime(rows, currentTime) {
+  if (!Array.isArray(rows) || !rows.length) return -1;
+  const time = Number(currentTime);
+  if (!Number.isFinite(time)) return 0;
+  const exactIndex = rows.findIndex((row, index) => {
+    const start = Number(row?.start);
+    const end = Number(row?.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    return time >= start && (time < end || (index === rows.length - 1 && time === end));
+  });
+  if (exactIndex >= 0) return exactIndex;
+  const nextIndex = rows.findIndex((row) => Number.isFinite(Number(row?.start)) && time < Number(row.start));
+  return nextIndex > 0 ? nextIndex - 1 : nextIndex === 0 ? 0 : rows.length - 1;
+}
+
 function containerHeightRatio(width, bounds) {
   const rectWidth = Number(bounds?.width || 0);
   const rectHeight = Number(bounds?.height || 0);
@@ -440,6 +480,7 @@ export default function AvatarOverlayLayer({
   src,
   enabled = true,
   placement,
+  layoutByPage = [],
   videoRef,
   mode = 'floating',
   className = '',
@@ -456,7 +497,18 @@ export default function AvatarOverlayLayer({
   const resizingRef = useRef(false);
   const [avatarVisible, setAvatarVisible] = useState(() => readStoredVisible(lessonId));
   const defaultPlacement = useMemo(() => normalizeAvatarPlacement(placement || DEFAULT_AVATAR_PLACEMENT), [placement]);
-  const [currentPlacement, setCurrentPlacement] = useState(() => placementFromStorage(lessonId, defaultPlacement));
+  const normalizedLayoutByPage = useMemo(
+    () => normalizeAvatarLayoutByPage(layoutByPage, defaultPlacement),
+    [defaultPlacement, layoutByPage],
+  );
+  const [activeLayoutIndex, setActiveLayoutIndex] = useState(() => (
+    avatarLayoutIndexAtTime(normalizedLayoutByPage, videoRef?.current?.currentTime)
+  ));
+  const activeLayout = normalizedLayoutByPage[activeLayoutIndex] || null;
+  const authoredPlacement = activeLayout?.placement || defaultPlacement;
+  const pageVisible = activeLayout?.visible !== false;
+  const overlayVisible = avatarVisible && pageVisible;
+  const [currentPlacement, setCurrentPlacement] = useState(() => placementFromStorage(lessonId, authoredPlacement));
   const [dragging, setDragging] = useState(false);
   const [resizing, setResizing] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(false);
@@ -471,7 +523,7 @@ export default function AvatarOverlayLayer({
 
   useEffect(() => {
     setAvatarVisible(readStoredVisible(lessonId));
-    setCurrentPlacement(placementFromStorage(lessonId, defaultPlacement));
+    setCurrentPlacement(placementFromStorage(lessonId, authoredPlacement));
     setTheaterScale(readStoredTheaterScale(lessonId));
     setTheaterOpen(false);
     setControlsVisible(false);
@@ -485,8 +537,29 @@ export default function AvatarOverlayLayer({
     resizeStateRef.current = null;
   }, [defaultPlacement, lessonId, src]);
 
+  useEffect(() => {
+    const mainVideo = videoRef?.current;
+    const updateActiveLayout = () => {
+      setActiveLayoutIndex((current) => {
+        const next = avatarLayoutIndexAtTime(normalizedLayoutByPage, mainVideo?.currentTime);
+        return current === next ? current : next;
+      });
+    };
+    updateActiveLayout();
+    if (!mainVideo) return undefined;
+    const events = ['loadedmetadata', 'seeked', 'timeupdate'];
+    events.forEach((eventName) => mainVideo.addEventListener(eventName, updateActiveLayout));
+    return () => events.forEach((eventName) => mainVideo.removeEventListener(eventName, updateActiveLayout));
+  }, [normalizedLayoutByPage, videoRef]);
+
+  useEffect(() => {
+    if (readStoredJson(storageKey(lessonId, 'position'))) return;
+    const bounds = getPlacementBounds();
+    setCurrentPlacement(clampAvatarPlacement(authoredPlacement, bounds));
+  }, [authoredPlacement, getPlacementBounds, lessonId]);
+
   useLayoutEffect(() => {
-    if (!avatarVisible) return;
+    if (!overlayVisible) return;
     const bounds = getPlacementBounds();
     if (!bounds) return;
     setCurrentPlacement((previousPlacement) => {
@@ -497,10 +570,10 @@ export default function AvatarOverlayLayer({
       }
       return nextPlacement;
     });
-  }, [avatarVisible, getPlacementBounds, lessonId, src]);
+  }, [getPlacementBounds, lessonId, overlayVisible, src]);
 
   useEffect(() => {
-    if (!avatarVisible) return undefined;
+    if (!overlayVisible) return undefined;
     const handleResize = () => {
       const bounds = getPlacementBounds();
       if (!bounds) return;
@@ -513,7 +586,7 @@ export default function AvatarOverlayLayer({
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [avatarVisible, getPlacementBounds, lessonId]);
+  }, [getPlacementBounds, lessonId, overlayVisible]);
 
   useEffect(() => {
     writeStoredVisible(lessonId, avatarVisible);
@@ -598,7 +671,7 @@ export default function AvatarOverlayLayer({
   const syncAvatarPlayback = useCallback(() => {
     const mainVideo = videoRef?.current;
     const avatarVideo = avatarVideoRef.current;
-    if (!mainVideo || !avatarVideo || !enabled || !src || !avatarVisible) return;
+    if (!mainVideo || !avatarVideo || !enabled || !src || !overlayVisible) return;
 
     if (
       Number.isFinite(mainVideo.currentTime)
@@ -617,18 +690,18 @@ export default function AvatarOverlayLayer({
       return;
     }
     avatarVideo.play().catch(() => {});
-  }, [avatarVisible, enabled, src, videoRef]);
+  }, [enabled, overlayVisible, src, videoRef]);
 
   useEffect(() => {
     const mainVideo = videoRef?.current;
-    if (!mainVideo || !enabled || !src || !avatarVisible) return undefined;
+    if (!mainVideo || !enabled || !src || !overlayVisible) return undefined;
     const events = ['play', 'playing', 'pause', 'ended', 'seeked', 'ratechange', 'timeupdate', 'loadedmetadata'];
     events.forEach((eventName) => mainVideo.addEventListener(eventName, syncAvatarPlayback));
     syncAvatarPlayback();
     return () => {
       events.forEach((eventName) => mainVideo.removeEventListener(eventName, syncAvatarPlayback));
     };
-  }, [avatarVisible, enabled, src, syncAvatarPlayback, videoRef]);
+  }, [enabled, overlayVisible, src, syncAvatarPlayback, videoRef]);
 
   const persistPlacement = useCallback((nextPlacement) => {
     const bounds = getPlacementBounds();
@@ -821,18 +894,18 @@ export default function AvatarOverlayLayer({
 
   const handleReset = useCallback(() => {
     const bounds = getPlacementBounds();
-    setCurrentPlacement(clampAvatarPlacement(defaultPlacement, bounds));
+    setCurrentPlacement(clampAvatarPlacement(authoredPlacement, bounds));
     setStudyPanelCustomSize(false);
     clearStoredPlacement(lessonId);
-  }, [defaultPlacement, getPlacementBounds, lessonId]);
+  }, [authoredPlacement, getPlacementBounds, lessonId]);
 
   const applyFloatingPreset = useCallback(() => {
     const bounds = getPlacementBounds();
-    const nextPlacement = clampAvatarPlacement(defaultPlacement, bounds);
+    const nextPlacement = clampAvatarPlacement(authoredPlacement, bounds);
     setCurrentPlacement(nextPlacement);
     setStudyPanelCustomSize(false);
     clearStoredPlacement(lessonId);
-  }, [defaultPlacement, getPlacementBounds, lessonId]);
+  }, [authoredPlacement, getPlacementBounds, lessonId]);
 
   const handleTheaterReset = useCallback(() => {
     handleReset();
@@ -870,6 +943,7 @@ export default function AvatarOverlayLayer({
   }, [applyFloatingPreset, currentPlacement, lessonId, showControls, theaterOpen]);
 
   if (!enabled || !src) return null;
+  if (!pageVisible) return null;
 
   const theaterButtonActive = isAvatarEffectivelyLarge(currentPlacement, theaterOpen);
   const studyPanelFrameStyle = theaterOpen
