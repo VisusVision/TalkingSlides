@@ -48,14 +48,15 @@ def sample_run() -> CheckRun:
     )
 
 
-def test_all_six_sections_render(window: SetupAssistantWindow) -> None:
-    assert window.pages.count() == 6
-    assert [window.navigation.item(index).text() for index in range(6)] == [
-        "Welcome",
+def test_all_sections_render(window: SetupAssistantWindow) -> None:
+    assert window.pages.count() == 7
+    assert [window.navigation.item(index).text() for index in range(7)] == [
+        "Overview",
+        "Repository",
         "Requirements",
-        "Installation & Configuration",
         "System Diagnostics",
-        "Runtime",
+        "Services",
+        "Configuration",
         "Report",
     ]
 
@@ -63,7 +64,7 @@ def test_all_six_sections_render(window: SetupAssistantWindow) -> None:
 def test_status_group_and_details_expand(window: SetupAssistantWindow) -> None:
     window._render_results(sample_run())
     assert window.result_tree.topLevelItemCount() == 1
-    assert "Failure" in window.result_tree.topLevelItem(0).text(0)
+    assert "Failed" in window.result_tree.topLevelItem(0).text(0)
     assert "Start Docker" in window.details.toPlainText()
 
 
@@ -76,6 +77,70 @@ def test_secret_not_shown_in_ui_details(window: SetupAssistantWindow) -> None:
 def test_repository_selection_validation(window: SetupAssistantWindow, talking_slides_repo: Path) -> None:
     window.repository_edit.setText(str(talking_slides_repo))
     assert "markers found" in window.repository_state.text().lower()
+
+
+def test_services_and_action_required_render(window: SetupAssistantWindow) -> None:
+    assert "api" in window.service_cards
+    assert window.action_required_list.topLevelItemCount() > 0
+
+
+def test_onboarding_page_loads_and_repository_actions_are_gated(
+    application,
+    tmp_path: Path,
+) -> None:
+    value = SetupAssistantWindow(tmp_path / "missing")
+    try:
+        assert value.navigation.currentRow() == 1
+        assert "Missing:" in value.repository_state.text()
+        buttons = value.service_cards["api"]["buttons"]
+        assert not buttons["start"].isEnabled()
+        assert buttons["start"].toolTip() == "Repository required"
+    finally:
+        value.close()
+
+
+def test_browse_flow_updates_selected_path(
+    monkeypatch,
+    window: SetupAssistantWindow,
+    talking_slides_repo: Path,
+) -> None:
+    monkeypatch.setattr(
+        QtWidgets.QFileDialog,
+        "getExistingDirectory",
+        lambda *args, **kwargs: str(talking_slides_repo),
+    )
+    window.repository_edit.clear()
+    window._browse_repository()
+    assert window.repository_edit.text() == str(talking_slides_repo)
+    assert "markers found" in window.repository_state.text().lower()
+
+
+def test_system_only_continuation(
+    monkeypatch,
+    application,
+    talking_slides_repo: Path,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "tools.setup_assistant.repository.preference_path",
+        lambda: tmp_path / "settings.json",
+    )
+    value = SetupAssistantWindow(talking_slides_repo)
+    try:
+        value._enable_system_only()
+        assert value._system_only
+        assert value._active_repository is None
+        assert "System-only mode" in value.overview_mode.text()
+        assert value.navigation.currentRow() == 0
+    finally:
+        value.close()
+
+
+def test_valid_repository_service_actions_are_enabled(window: SetupAssistantWindow) -> None:
+    buttons = window.service_cards["api"]["buttons"]
+    assert buttons["start"].isEnabled()
+    assert buttons["stop"].isEnabled()
+    assert buttons["restart"].isEnabled()
 
 
 def test_runtime_profile_selection(window: SetupAssistantWindow) -> None:

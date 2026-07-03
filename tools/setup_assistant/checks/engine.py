@@ -12,9 +12,11 @@ from threading import Event
 from typing import Callable
 
 from ..models import CheckResult, CheckRun, CheckStatus, Profile, SafeAction, Severity
+from ..ollama import OllamaManager
 from ..platforms import platform_checks
 from ..repository import RepositoryValidation, discover_repository
 from ..runner import CommandResult, CommandRunner, CommandSpec
+from ..status import ServiceStatus
 
 ProgressCallback = Callable[[str, int, int], None]
 
@@ -44,20 +46,22 @@ class CheckEngine:
         full: bool = False,
         internet: bool = False,
         repository: str | os.PathLike[str] | None = None,
+        system_only: bool = False,
         progress: ProgressCallback | None = None,
         cancel_event: Event | None = None,
     ) -> CheckRun:
         started = time.monotonic()
         started_at = datetime.now(timezone.utc).isoformat()
-        validation = discover_repository(repository)
+        validation = None if system_only else discover_repository(repository)
         repo = validation.path if validation and validation.valid else None
         steps: list[tuple[str, Callable[[], list[CheckResult]]]] = [
             ("System requirements", lambda: platform_checks(repo, self.runner, profile, full)),
-            ("Repository", lambda: self._repository_checks(validation)),
+            ("Repository", lambda: self._repository_checks(validation, system_only)),
             ("Configuration", lambda: self._configuration_checks(repo, profile)),
             ("Docker", lambda: self._docker_checks(repo, profile, full, cancel_event)),
             ("Ports", lambda: self._port_checks(full)),
             ("Profile assets", lambda: self._profile_checks(repo, profile, full)),
+            ("Ollama", lambda: self._ollama_checks(repo)),
             ("Runtime health", lambda: self._health_checks(profile) if full else self._skipped_health()),
             ("Git summary", lambda: self._git_checks(repo)),
             ("Internet", self._internet_check if internet else self._skipped_internet),
@@ -81,7 +85,7 @@ class CheckEngine:
             results.extend(callback())
         return CheckRun(
             profile=profile,
-            mode="full" if full else "quick",
+            mode="system-only" if system_only else ("full" if full else "quick"),
             platform=platform.system(),
             results=results,
             started_at=started_at,
@@ -90,7 +94,21 @@ class CheckEngine:
         )
 
     @staticmethod
-    def _repository_checks(validation: RepositoryValidation | None) -> list[CheckResult]:
+    def _repository_checks(
+        validation: RepositoryValidation | None,
+        system_only: bool = False,
+    ) -> list[CheckResult]:
+        if system_only:
+            return [
+                CheckResult(
+                    "repository.discovery",
+                    "TalkingSlides repository",
+                    "Installation & Configuration",
+                    CheckStatus.SKIPPED,
+                    Severity.INFO,
+                    "Repository required for project checks and actions; system checks remain available.",
+                )
+            ]
         if validation is None:
             return [
                 CheckResult(
@@ -156,10 +174,59 @@ class CheckEngine:
             ),
         ]
 
+    def _ollama_checks(self, repository: Path | None) -> list[CheckResult]:
+        state = OllamaManager(self.runner).inspect(repository)
+        if state.status in {ServiceStatus.HEALTHY, ServiceStatus.RUNNING}:
+            check_status = CheckStatus.PASS
+            severity = Severity.INFO
+        elif state.status in {ServiceStatus.OPTIONAL, ServiceStatus.NOT_CONFIGURED} and not state.required:
+            check_status = CheckStatus.SKIPPED
+            severity = Severity.INFO
+        elif state.status is ServiceStatus.BLOCKED and state.required:
+            check_status = CheckStatus.FAILURE
+            severity = Severity.HIGH
+        else:
+            check_status = CheckStatus.WARNING
+            severity = Severity.MEDIUM
+        return [
+            CheckResult(
+                "ollama.host",
+                "Host-side Ollama",
+                "Optional integrations",
+                check_status,
+                severity,
+                state.summary,
+                technical_details=state.details,
+                remediation=(
+                    "Install or start Ollama manually; model downloads require separate confirmation."
+                    if check_status in {CheckStatus.FAILURE, CheckStatus.WARNING}
+                    else ""
+                ),
+                documentation_reference="docs/FULL_STACK_LOCAL_RUNTIME.md#intelligence--ollama",
+                diagnostic_data={
+                    "installed": state.installed,
+                    "running": state.running,
+                    "required": state.required,
+                    "model_count": len(state.models),
+                    "missing_model_count": len(state.missing_models),
+                    "assistant_owned": state.assistant_owned,
+                },
+            )
+        ]
+
     @staticmethod
     def _configuration_checks(repository: Path | None, profile: Profile) -> list[CheckResult]:
         if not repository:
-            return []
+            return [
+                CheckResult(
+                    "config.repository_required",
+                    "Repository configuration",
+                    "Installation & Configuration",
+                    CheckStatus.SKIPPED,
+                    Severity.INFO,
+                    "Repository required",
+                )
+            ]
         env_file = repository / "infra" / ".env"
         env_example = repository / "infra" / ".env.example"
         results = [
@@ -247,6 +314,16 @@ class CheckEngine:
             self._command_check("docker.daemon", "Docker daemon", daemon, "Start Docker and wait for the daemon to become ready."),
         ]
         if not repository:
+            results.append(
+                CheckResult(
+                    "docker.compose_config",
+                    "Compose configuration",
+                    "Docker",
+                    CheckStatus.SKIPPED,
+                    Severity.INFO,
+                    "Repository required",
+                )
+            )
             return results
         if not full:
             results.append(
@@ -355,7 +432,17 @@ class CheckEngine:
     @staticmethod
     def _profile_checks(repository: Path | None, profile: Profile, full: bool) -> list[CheckResult]:
         if not repository:
-            return []
+            return [
+                CheckResult(
+                    "profile.repository_required",
+                    "Profile assets",
+                    "Profile",
+                    CheckStatus.SKIPPED,
+                    Severity.INFO,
+                    "Repository required",
+                    profile=profile.value,
+                )
+            ]
         if profile is Profile.CORE:
             return [
                 CheckResult(
@@ -469,7 +556,16 @@ class CheckEngine:
 
     def _git_checks(self, repository: Path | None) -> list[CheckResult]:
         if not repository:
-            return []
+            return [
+                CheckResult(
+                    "git.repository_required",
+                    "Git state",
+                    "Installation & Configuration",
+                    CheckStatus.SKIPPED,
+                    Severity.INFO,
+                    "Repository required",
+                )
+            ]
         result = self.runner.run(CommandSpec.create(("git", "status", "--short"), cwd=repository, timeout_seconds=8))
         if not result.ok:
             return [

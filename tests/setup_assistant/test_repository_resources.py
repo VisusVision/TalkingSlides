@@ -23,7 +23,12 @@ def test_preference_round_trip(talking_slides_repo: Path, tmp_path: Path) -> Non
     target = tmp_path / "preferences.json"
     repository.save_repository_preference(talking_slides_repo, target)
     assert repository.load_repository_preference(target).resolve() == talking_slides_repo.resolve()
-    assert set(json.loads(target.read_text(encoding="utf-8"))) == {"repository"}
+    assert set(json.loads(target.read_text(encoding="utf-8"))) == {
+        "schema",
+        "repository",
+        "recent_repositories",
+        "system_only",
+    }
 
 
 def test_discovery_uses_explicit_path(talking_slides_repo: Path) -> None:
