@@ -1,6 +1,6 @@
-# Installer Roadmap
+# Setup Assistant Roadmap
 
-This roadmap describes the planned Windows installer architecture for VISUS VidLab. It is design guidance, not a claim that an EXE, MSI, or one-click installer already exists.
+TalkingSlides Setup Assistant now implements the shared diagnostics/runtime core, PySide6 desktop application, CLI, compatibility wrappers, and target-native PyInstaller configuration described by the original Windows installer roadmap. Release binaries are not committed and no release has been published. See [SETUP_ASSISTANT.md](SETUP_ASSISTANT.md) for current usage and packaging.
 
 ## Goals
 
@@ -21,16 +21,16 @@ This roadmap describes the planned Windows installer architecture for VISUS VidL
 
 ## Release Package Contents
 
-A future release package should contain:
+A release package contains:
 
-- A small Windows launcher, initially a signed PowerShell entry point or batch wrapper.
+- A windowed `TalkingSlides-Setup.exe` and console `talkingslides-setup-cli.exe` on Windows.
+- Equivalent portable GUI/CLI executables in a Linux archive.
 - Profile-aware scripts for preflight, start, stop, update, and health summary.
-- A versioned `.env` generator based on `infra/.env.example`.
+- A confirmed no-overwrite `.env` creation action based on `infra/.env.example`.
 - Documentation links for install, troubleshooting, runtime profiles, and operations.
-- Optional checksums for downloaded models or external artifacts.
-- A manifest describing supported service images, model versions, required ports, and profile dependencies.
+- Sanitized diagnostic JSON/Markdown/text reports.
 
-Future packaging may wrap the scripts in an EXE/MSI, but the script contract should remain testable without the wrapper.
+The source and CLI contracts remain testable without a packaged GUI.
 
 ## Installer Flow
 
@@ -202,8 +202,8 @@ Recovery should prefer clear instructions, rerunnable commands, and narrow retri
 - Document model storage and resource expectations.
 - Add Compose/service wiring only after the resource and update model is clear.
 
-### Phase F: Packaged EXE/MSI Wrapper
+### Phase F: Target-native Packages
 
-- Wrap the script contract in a signed launcher or installer.
-- Preserve transparent commands and logs.
-- Keep consent gates for prerequisites, models, heavy builds, updates, and destructive actions.
+- Implemented: PyInstaller GUI/CLI specs and a Windows/Linux packaging matrix.
+- Implemented: transparent command previews, structured logs, and confirmation gates.
+- Pending release process: execute CI after branch publication, sign release artifacts where required, and publish through the normal release workflow.

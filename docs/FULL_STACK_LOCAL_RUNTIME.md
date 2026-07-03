@@ -1,11 +1,12 @@
 # Full Stack Local Runtime
 
-This document describes the local runtime profiles VISUS VidLab should expose through scripts and the future installer. These are product/runtime profiles, not all current Docker Compose profiles.
+This document describes TalkingSlides local runtime profiles exposed through TalkingSlides Setup Assistant and compatibility scripts. These are product/runtime profiles, not all current Docker Compose profiles.
 
 Current reality:
 
-- `VISUS-VidLab.bat` and `scripts/visus-launcher.ps1` provide the local console launcher menu for Doctor, runtime actions, health checks, quick tests, local URLs, and Doctor report saving.
-- `scripts/windows-runtime.ps1` is the profile selector/start wrapper that a future EXE/MSI can wrap.
+- TalkingSlides Setup Assistant provides the cross-platform GUI, CLI, System Diagnostics, reports, and runtime controls.
+- `VISUS-VidLab.bat`, `scripts/visus-launcher.ps1`, and `scripts/windows-doctor.ps1` are deprecated compatibility wrappers.
+- `scripts/windows-runtime.ps1` remains the Windows profile selector/start adapter.
 - `scripts/windows-dev-start.ps1` starts selected Compose services by name.
 - `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing, building, or starting services.
 - `scripts/windows-runtime-health.ps1` summarizes already-running services and HTTP endpoints without starting, rebuilding, or pulling anything.
@@ -26,21 +27,23 @@ Current reality:
 | `translation` | Add local LibreTranslate service for translation fallback checks. | `.\scripts\windows-runtime.ps1 -Profile translation` |
 | `full` | Combine core, worker, TTS, avatar worker, and LibreTranslate after preflight passes. | `.\scripts\windows-runtime.ps1 -Profile full` |
 
-## Local Launcher
+## Setup Assistant and Legacy Launcher
 
-Run the installer-like console launcher from the repository root:
+Run the shared source application:
 
-```powershell
-VISUS-VidLab.bat
+```text
+python -m tools.setup_assistant gui
+python -m tools.setup_assistant check --profile core
 ```
 
-or:
+Legacy wrappers remain:
 
 ```powershell
-.\scripts\visus-launcher.ps1
+.\VISUS-VidLab.bat -ListActions
+.\scripts\visus-launcher.ps1 -ListActions
 ```
 
-The launcher is a convenience wrapper around the existing scripts. Doctor remains read-only and does not print secret values. Runtime start uses `scripts/windows-runtime.ps1`, which preserves the current safe start behavior. Runtime stop uses `scripts/windows-runtime.ps1 -Stop`, which preserves volumes, images, and runtime data. Avatar runtime should only be started intentionally because `worker-avatar` can consume real queued avatar work.
+System Diagnostics is read-only and does not print secret values. Windows runtime start uses `scripts/windows-runtime.ps1`, preserving the no-build/no-pull behavior. Stop preserves volumes, images, and runtime data. Avatar start requires an additional acknowledgement because `worker-avatar` can consume real queued work.
 
 ## Core
 
@@ -291,8 +294,8 @@ The read-only summary commands are:
 
 Known gaps:
 
-- There is no one-click installer yet.
-- There is no packaged EXE/MSI wrapper yet.
+- Windows and Linux packaging awaits target-native CI execution until the branch is published.
+- The current Linux portable distribution is a PyInstaller executable/archive rather than an AppImage.
 - Ollama is not Compose-managed yet.
 - `windows-runtime.ps1` does not install or start Ollama and does not pull Ollama models.
 - Full avatar runtime is not a normal CI path and should remain a hardware smoke path.

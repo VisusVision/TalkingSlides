@@ -2,12 +2,15 @@
 
 ## User Setup Docs
 
+- [TalkingSlides Setup Assistant](SETUP_ASSISTANT.md)
 - [Windows installation](INSTALL_WINDOWS.md)
 - [Local development quickstart](LOCAL_DEVELOPMENT_QUICKSTART.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 
-Useful Windows diagnostics:
+Useful setup and runtime diagnostics:
 
+- `python -m tools.setup_assistant check` runs shared cross-platform System Diagnostics.
+- `python -m tools.setup_assistant report --format json` exports a sanitized report.
 - `scripts/windows-runtime.ps1` runs the profile wrapper for preflight, start, status, stop, and health actions.
 - `scripts/windows-preflight.ps1` checks host prerequisites and profile readiness without installing or starting services.
 - `scripts/windows-runtime-health.ps1` checks already-running services and HTTP endpoints without rebuilding or pulling images.

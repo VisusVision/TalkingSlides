@@ -27,28 +27,35 @@ The active integration branch for contribution work is `developer`.
 
 ## Quick Start
 
-From the repository root:
+Use TalkingSlides Setup Assistant for cross-platform setup and read-only diagnostics:
 
-For the local launcher menu, double-click `VISUS-VidLab.bat` or run:
-
-```powershell
-.\scripts\visus-launcher.ps1
+```text
+python -m tools.setup_assistant check --profile core
+python -m tools.setup_assistant check --profile tts --full
+python -m tools.setup_assistant report --format json
 ```
 
-The launcher is a convenience wrapper around the existing Windows scripts. Doctor remains read-only, runtime start/stop uses the safe runtime wrapper, and avatar runtime should only be started intentionally because it can process real queued avatar work.
+Desktop/build dependencies are isolated in `requirements-setup-assistant.txt`. After installing them in a project virtual environment, launch:
 
-Manual script flow:
+```text
+python -m tools.setup_assistant gui
+```
+
+The application validates or asks for the repository folder; it does not depend on the current working directory. Quick Check is read-only. Full Check adds ports, Compose validation, profile assets, and already-running service health. Internet access is tested only when explicitly requested.
+
+The Windows `TalkingSlides-Setup.exe` and CLI companion plus the equivalent Linux portable executables are built on their target operating systems by `.github/workflows/setup-assistant-package.yml`. A Windows `.exe` does not run natively on Linux. See [TalkingSlides Setup Assistant](docs/SETUP_ASSISTANT.md).
+
+Legacy compatibility commands remain available and print a deprecation notice:
 
 ```powershell
-Copy-Item .\infra\.env.example .\infra\.env
 .\scripts\windows-doctor.ps1
-.\scripts\windows-preflight.ps1
-.\scripts\windows-dev-setup.ps1 -CheckOnly
-.\scripts\windows-runtime.ps1 -Profile core
-.\scripts\windows-runtime-health.ps1
+.\scripts\visus-launcher.ps1 -ListActions
+.\VISUS-VidLab.bat -ListActions
 ```
 
-Then open:
+Runtime changes require explicit confirmation in the Setup Assistant. Avatar startup requires an additional queue-risk acknowledgement because a worker can process real queued avatar work.
+
+After starting the core runtime, open:
 
 - Frontend: `http://localhost:3000`
 - API readiness: `http://localhost:8000/api/v1/ready/`
@@ -79,24 +86,19 @@ The planned installer/runtime profiles are documented in [docs/FULL_STACK_LOCAL_
 - `translation`: enables the Compose `translation` profile for LibreTranslate.
 - `full-stack`: planned combination after preflight checks pass.
 
-Use the read-only Windows checks before and after startup:
+Use shared System Diagnostics before and after startup:
 
-```powershell
-.\scripts\windows-doctor.ps1
-.\scripts\windows-doctor.ps1 -Json
-.\scripts\windows-preflight.ps1
-.\scripts\windows-preflight.ps1 -Json
-.\scripts\windows-runtime-health.ps1
-.\scripts\windows-runtime-health.ps1 -Json
-.\scripts\windows-runtime.ps1 -Status
+```text
+talkingslides-setup check --profile core
+talkingslides-setup check --profile tts --full
+talkingslides-setup report --format markdown
+talkingslides-setup runtime status --profile core
 ```
 
-`windows-doctor.ps1` is the one-command installer readiness report. It checks host prerequisites, Docker/Compose shape, env-file presence, required core variable names, optional provider groups, and model/cache paths without printing secret values. It does not build, pull, start services, install packages, download models, delete Docker data, or run avatar jobs.
-
-`PASS` means the check is ready, `WARN` means optional or degraded behavior needs attention, and `FAIL` means a core blocker must be fixed before the core app should be considered ready.
+`pass` means the check is ready, `warning` means optional or degraded behavior needs attention, `failure` means a blocker needs action, and `skipped` means the selected mode/profile intentionally omitted the check.
 `windows-runtime-health.ps1` may exit with code `1` when the core stack is stopped because it only checks already-running services.
 `windows-runtime.ps1 -Stop` uses `docker compose stop` and preserves volumes, images, and runtime data.
-`VISUS-VidLab.bat` and `scripts/visus-launcher.ps1` expose these checks, runtime actions, quick tests, local URLs, and doctor report saving from one console menu.
+`windows-doctor.ps1`, `VISUS-VidLab.bat`, and `scripts/visus-launcher.ps1` are deprecated compatibility wrappers for TalkingSlides Setup Assistant.
 
 ## Full Local AI Runtime
 
@@ -113,6 +115,7 @@ The local AI path is intentionally profile-driven. Heavy dependencies should sta
 See:
 
 - [Windows install guide](docs/INSTALL_WINDOWS.md)
+- [TalkingSlides Setup Assistant](docs/SETUP_ASSISTANT.md)
 - [Full stack local runtime](docs/FULL_STACK_LOCAL_RUNTIME.md)
 - [Installer roadmap](docs/INSTALLER_ROADMAP.md)
 - [Avatar pipeline](docs/AVATAR_PIPELINE.md)
@@ -123,6 +126,7 @@ See:
 Start with [docs/README.md](docs/README.md). Key docs:
 
 - [Windows installation](docs/INSTALL_WINDOWS.md)
+- [TalkingSlides Setup Assistant](docs/SETUP_ASSISTANT.md)
 - [Local development](docs/LOCAL_DEVELOPMENT.md)
 - [Local development quickstart](docs/LOCAL_DEVELOPMENT_QUICKSTART.md)
 - [Environment variables](docs/ENVIRONMENT_VARIABLES.md)

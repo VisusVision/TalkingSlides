@@ -1,34 +1,31 @@
 # Windows Installation
 
-This guide sets up VISUS VidLab for local development on Windows. The current path uses PowerShell scripts and Docker Compose. A future one-click installer is planned and documented in [INSTALLER_ROADMAP.md](INSTALLER_ROADMAP.md).
+This guide sets up TalkingSlides for local development on Windows. TalkingSlides Setup Assistant is the primary setup and System Diagnostics application; existing PowerShell scripts remain as compatibility and runtime adapters. See [SETUP_ASSISTANT.md](SETUP_ASSISTANT.md).
 
 ## Current Developer Setup
 
-Use this flow for normal local development:
+From source, run read-only System Diagnostics:
 
-```powershell
-VISUS-VidLab.bat
+```text
+python -m tools.setup_assistant check --profile core
+python -m tools.setup_assistant check --profile tts --full
+python -m tools.setup_assistant report --format json
 ```
 
-You can also run the same launcher directly:
+After installing `requirements-setup-assistant.txt` in a project virtual environment, launch the desktop application:
 
-```powershell
-.\scripts\visus-launcher.ps1
+```text
+python -m tools.setup_assistant gui
 ```
 
-The launcher is a convenience wrapper, not an EXE/MSI installer. It provides menu options for Doctor, core runtime start, avatar runtime start, health checks, quick tests, safe stop, local URLs, and saving Doctor reports. Doctor remains read-only. Runtime start and stop actions delegate to `scripts/windows-runtime.ps1`, preserving the existing no-build/no-pull start behavior and safe stop behavior. Start avatar runtime only when you intentionally want avatar work to be processed.
+Target-native CI builds `TalkingSlides-Setup.exe` (windowed GUI) and `talkingslides-setup-cli.exe` (CLI companion). The GUI does not require a normal console window. Diagnostics require no administrator privileges. Runtime changes show the exact command and require confirmation.
 
-Manual script flow:
+Legacy entry points are retained as deprecated wrappers:
 
 ```powershell
-git clone <repo-url> AI_ACADEMY
-cd AI_ACADEMY
 .\scripts\windows-doctor.ps1
-.\scripts\windows-preflight.ps1
-Copy-Item infra\.env.example infra\.env
-.\scripts\windows-dev-setup.ps1 -CheckOnly
-.\scripts\windows-runtime.ps1 -Profile core
-.\scripts\windows-runtime-health.ps1
+.\scripts\visus-launcher.ps1 -ListActions
+.\VISUS-VidLab.bat -ListActions
 ```
 
 The default start script launches the core stack:
@@ -84,34 +81,38 @@ node --version
 npm --version
 ```
 
-Run the read-only preflight and setup checks:
+Run the shared read-only checks:
+
+```text
+talkingslides-setup check --profile core
+talkingslides-setup check --profile tts --full
+talkingslides-setup report --format json
+```
+
+Legacy script checks remain available:
 
 ```powershell
-.\scripts\windows-doctor.ps1
-.\scripts\windows-doctor.ps1 -Json
-.\scripts\windows-doctor.ps1 -OutputPath scratch\doctor-report.json
 .\scripts\windows-preflight.ps1
 .\scripts\windows-preflight.ps1 -Json
 .\scripts\windows-dev-setup.ps1 -CheckOnly
 ```
 
-`windows-doctor.ps1` is the first one-command readiness report for a new Windows developer or company checkout. It is read-only by default: it does not build images, pull images, start services, install packages, download models, delete Docker volumes/images, or run avatar jobs. It checks host prerequisites, Docker/Compose shape, `infra\.env` presence, required core variable names, optional provider groups, and model/cache paths. Secret-like values are never printed; the report shows only variable names as present, missing, blank, or placeholder-like.
-
-Optional providers are warnings, not core startup failures, unless the selected env state makes them required. Missing Google OAuth, SMTP/Brevo/Mailjet, OpenAI, Ollama, LibreTranslate, and avatar credentials/assets are reported as `WARN` with the disabled capability explained.
+TalkingSlides Setup Assistant preserves stdout/stderr separately, uses native exit codes, enforces timeouts, supports cancellation, sanitizes secret-like output, and does not build, pull, start services, install packages, download models, delete Docker data, or run avatar jobs during diagnostics.
 
 `windows-preflight.ps1` does not install Docker, WSL2, Ollama, GPU drivers, models, or Python packages. It reports host prerequisites, ports, disk space, `infra\.env` state, Compose config, optional GPU hints, and optional Ollama reachability. When run for `-Profile avatar` or `-Profile full`, it also reports read-only avatar image/model warnings without starting containers.
 
 Status meanings:
 
-- `PASS`: ready for the selected path.
-- `WARN`: optional, degraded, already-running, or follow-up-needed state.
-- `FAIL`: core blocker. The script exits with code `1` when core blockers are present.
+- `pass`: ready for the selected path.
+- `warning`: optional, degraded, already-running, or follow-up-needed state.
+- `failure`: blocker. The CLI exits with code `1` when failures are present.
+- `skipped`: intentionally omitted by the selected mode/profile.
 
 ## Docker Desktop and WSL2 Notes
 
 Docker Desktop should be installed and running before starting services. On Windows, enable WSL2 integration in Docker Desktop settings.
 
-The current scripts do not install Docker Desktop, WSL2, GPU drivers, or system packages. A future installer may guide users to prerequisite installers, but it should not silently make major system changes.
+The Setup Assistant and compatibility scripts do not install Docker Desktop, WSL2, GPU drivers, or system packages. They provide clear remediation without silently making major system changes.
 
 ## NVIDIA / Avatar Notes
 
@@ -194,8 +195,7 @@ The older development stop script still has an explicit destructive volume-remov
 
 ## Runtime Wrapper
 
-`scripts/windows-runtime.ps1` is the current profile selector/start wrapper. It is still a PowerShell script, not an EXE/MSI installer.
-`VISUS-VidLab.bat` and `scripts/visus-launcher.ps1` are the installer-like console menu on top of this wrapper. Use them when you want one place to run Doctor, start or stop a selected runtime profile, check health, open local URLs, or save a timestamped Doctor report under `scratch\doctor-reports\`.
+`scripts/windows-runtime.ps1` remains the Windows profile selector/start wrapper used by TalkingSlides Setup Assistant. `VISUS-VidLab.bat` and `scripts/visus-launcher.ps1` redirect legacy users to the new application.
 
 Common commands:
 
@@ -271,21 +271,20 @@ Important current reality:
 - `worker-avatar` is behind the Compose `avatar` profile; the core runtime does not start it.
 - Avatar heavy dependencies belong in the Docker worker image.
 - Full avatar runtime is not a normal CI path.
-- The one-click EXE/MSI installer is planned, not present.
-- The current runtime, preflight, and health scripts are installer-friendly building blocks; they are not an EXE/MSI package.
+- Packaging configuration for the Windows GUI/CLI executables is present; release artifacts are built by target-native CI and are not committed.
+- The current runtime, preflight, and health scripts remain compatibility building blocks behind the shared application.
 
-## Future One-click Installer Goal
+## Setup Assistant Scope
 
-The future installer should:
+TalkingSlides Setup Assistant:
 
 - Run prerequisite checks for Windows, WSL2, Docker Desktop, Docker daemon, ports, disk space, and optional GPU mode.
-- Wrap the current runtime, preflight, and runtime health script contracts.
+- Use the current runtime script contract for Windows start/stop/status/health.
 - Let the user select runtime profiles before heavy downloads or builds.
-- Generate `.env` safely without exposing secrets.
-- Pull or build Docker images for selected profiles.
-- Download or verify model artifacts with consent.
+- Create `.env` from the example only when the target is absent.
+- Report missing models without downloading them.
 - Produce a clear health summary.
-- Provide start, stop, update, and troubleshooting actions.
+- Provide confirmed start/stop plus read-only status/health actions.
 - Avoid silent destructive actions.
 
 See [INSTALLER_ROADMAP.md](INSTALLER_ROADMAP.md).
