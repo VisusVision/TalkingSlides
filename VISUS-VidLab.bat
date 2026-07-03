@@ -5,7 +5,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\visus-launcher
 set "VISUS_EXIT=%ERRORLEVEL%"
 if not "%VISUS_EXIT%"=="0" (
     echo.
-    echo VISUS VidLab launcher exited with code %VISUS_EXIT%.
+    echo TalkingSlides Setup Assistant compatibility launcher exited with code %VISUS_EXIT%.
     pause
 )
 exit /b %VISUS_EXIT%

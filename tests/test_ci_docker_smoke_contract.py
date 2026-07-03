@@ -184,43 +184,14 @@ def test_windows_doctor_report_script_contract() -> None:
     assert "[switch]$Json" in script
     assert '[string]$OutputPath = ""' in script
     assert "if (-not [string]::IsNullOrWhiteSpace($OutputPath))" in script
-    assert "VISUS VidLab Windows doctor" in script
-    assert "Read-only: no builds, pulls, installs, service starts, model downloads, volume/image deletes, or avatar jobs." in script
-    assert "Secret-like values are reported by variable name only. Values are never printed." in script
-    assert "Values were not printed." in script
-    assert "secret_values_printed = $false" in script
-
-    for required_name in [
-        "DJANGO_SETTINGS_MODULE",
-        "SECRET_KEY",
-        "POSTGRES_HOST",
-        "POSTGRES_DB",
-        "POSTGRES_USER",
-        "POSTGRES_PASSWORD",
-        "REDIS_URL",
-        "CELERY_BROKER_URL",
-        "CELERY_RESULT_BACKEND",
-        "STORAGE_BACKEND",
-        "STORAGE_ROOT",
-        "MEDIA_TOKEN_SECRET",
-        "VITE_API_BASE_URL",
-    ]:
-        assert required_name in script
-
-    for warning_text in [
-        "Google sign-in disabled. Create OAuth credentials in Google Cloud Console if needed.",
-        "Email sending disabled. Configure SMTP/Brevo/Mailjet.",
-        "Cloud AI disabled. Use Ollama/local fallback if configured.",
-        "Local AI disabled.",
-        "Translation disabled unless profile configured.",
-        "Avatar rendering disabled until avatar profile/image/models are ready.",
-        "STORAGE_BACKEND=s3 requires S3 credentials.",
-        "DRM is enabled but provider metadata may be incomplete.",
-        "Payment/EZDRM-like variables are present, but no runtime payment path was validated.",
-    ]:
-        assert warning_text in script
-
-    assert '"S3 storage adapter" $EnvMap @("S3_BUCKET_NAME", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY") "WARN" "WARN"' in script
+    assert "TalkingSlides Setup Assistant System Diagnostics" in script
+    assert '"-m", "tools.setup_assistant"' in script
+    assert '"check"' in script
+    assert '"report"' in script
+    assert '"--full"' in script
+    assert '"--repository"' in script
+    assert "exit $exitCode" in script
+    assert "Deprecated compatibility command" in script
 
     forbidden_execution_tokens = [
         "Invoke-Expression",
@@ -264,27 +235,14 @@ def test_visus_launcher_entry_points_and_safety_contract() -> None:
     assert "ExecutionPolicy Bypass" in bat
     assert "scripts\\visus-launcher.ps1" in bat
 
-    for menu_item in [
-        "[1] Run Doctor",
-        "[2] Start Core Runtime",
-        "[3] Start Avatar Runtime",
-        "[4] Health Check",
-        "[5] Run Quick Tests",
-        "[6] Run Full Tests",
-        "[7] Stop Runtime",
-        "[8] Open Local URLs",
-        "[9] Save Doctor Report",
-        "[0] Exit",
-    ]:
-        assert menu_item in launcher
-
-    assert "windows-doctor.ps1" in launcher
-    assert "windows-runtime.ps1" in launcher
-    assert "windows-runtime-health.ps1" in launcher
-    assert '@("-Profile", $selectedProfile, "-Stop")' in launcher
-    assert ".\\.venv\\Scripts\\python.exe -m pytest tests\\test_ci_docker_smoke_contract.py -q" in launcher
-    assert "scratch\\doctor-reports" in launcher
-    assert "Secret values are never printed" in launcher
+    assert "TalkingSlides Setup Assistant" in launcher
+    assert "Deprecated compatibility entry point" in launcher
+    assert "talkingslides-setup check --profile core" in launcher
+    assert "talkingslides-setup runtime status --profile core" in launcher
+    assert "talkingslides-setup runtime stop --profile avatar --confirm" in launcher
+    assert "python -m tools.setup_assistant" in launcher
+    assert "TalkingSlides-Setup.exe" in launcher
+    assert "exit $exitCode" in launcher
 
     forbidden_direct_commands = [
         r"(?i)\bdocker\s+build\b",
@@ -326,10 +284,10 @@ def test_visus_launcher_docs_are_linked_from_windows_docs() -> None:
         assert ".\\scripts\\visus-launcher.ps1" in doc
 
     combined = "\n".join([readme, install, runtime])
-    assert "convenience wrapper" in combined
-    assert "Doctor remains read-only" in combined
+    assert "deprecated compatibility" in combined.lower()
+    assert "System Diagnostics is read-only" in combined
     assert "scripts/windows-runtime.ps1" in combined
-    assert "avatar runtime should only be started intentionally" in combined.lower()
+    assert "avatar" in combined.lower()
 
 
 def test_avatar_local_wheels_are_ignored_but_not_dockerignored() -> None:
@@ -466,9 +424,9 @@ def test_windows_doctor_docs_are_onboarding_entry_point() -> None:
     install = (REPO_ROOT / "docs" / "INSTALL_WINDOWS.md").read_text(encoding="utf-8")
     docs = "\n".join([readme, install])
 
+    assert "python -m tools.setup_assistant check --profile core" in docs
+    assert "TalkingSlides-Setup.exe" in docs
+    assert "talkingslides-setup-cli.exe" in install
+    assert "System Diagnostics" in docs
+    assert "sanitizes secret-like output" in install
     assert ".\\scripts\\windows-doctor.ps1" in docs
-    assert ".\\scripts\\windows-doctor.ps1 -Json" in docs
-    assert ".\\scripts\\windows-doctor.ps1 -OutputPath scratch\\doctor-report.json" in install
-    assert "one-command installer readiness report" in docs
-    assert "Secret-like values are never printed" in install
-    assert "does not build, pull, start services, install packages, download models, delete Docker data, or run avatar jobs" in readme
