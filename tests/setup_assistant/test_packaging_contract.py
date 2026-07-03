@@ -13,6 +13,10 @@ def test_windows_gui_and_cli_names_do_not_collide() -> None:
     assert '"talkingslides-setup"' in cli
     assert "gui_entry.py" in gui
     assert "cli_entry.py" in cli
+    assert "SETUP_ASSISTANT_VERSION_HOOK" in gui
+    assert "SETUP_ASSISTANT_VERSION_HOOK" in cli
+    assert "runtime_hooks=[VERSION_HOOK] if VERSION_HOOK else []" in gui
+    assert "runtime_hooks=[VERSION_HOOK] if VERSION_HOOK else []" in cli
 
 
 def test_cli_package_excludes_gui_dependency() -> None:
@@ -26,11 +30,26 @@ def test_packaging_workflow_tests_before_build_and_uses_target_matrix() -> None:
     assert workflow.index("Run setup-assistant tests") < workflow.index("Build target-native executables")
     assert "windows-latest" in workflow
     assert "ubuntu-latest" in workflow
-    assert "TalkingSlides-Setup-0.1.0-" in workflow
+    assert 'setup-assistant-v*' in workflow
+    assert "Resolve package version" in workflow
+    assert "SETUP_ASSISTANT_VERSION: ${{ steps.version.outputs.version }}" in workflow
+    assert "TalkingSlides-Setup-0.1.0-" not in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert "permissions:\n  contents: read" in workflow
+    assert "permissions:\n      contents: read" in workflow
+    assert "permissions:\n      contents: write" in workflow
     assert "check --profile core --repository . --json" in workflow
     assert "report --profile core --repository . --format json" in workflow
+    assert "needs: package" in workflow
+    assert "github.event_name == 'push'" in workflow
+    assert "github.ref_type == 'tag'" in workflow
+    assert "startsWith(github.ref_name, 'setup-assistant-v')" in workflow
+    assert "release.py checksums" in workflow
+    assert "release.py publish" in workflow
+    assert "actions/download-artifact@v4" in workflow
+    assert "merge-multiple: true" in workflow
+    assert "QT_QPA_PLATFORM: offscreen" in workflow
+    assert ".venv" not in workflow
 
 
 def test_packaging_does_not_track_generated_artifacts() -> None:
