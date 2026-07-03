@@ -7,8 +7,8 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from threading import Event
-from typing import Mapping, Sequence
+from threading import Event, Thread
+from typing import Callable, Mapping, Sequence
 
 from .reports.sanitize import sanitize_argv, sanitize_text
 
@@ -97,7 +97,12 @@ class CommandResult:
 class CommandRunner:
     """Run argv-only commands without a shell and preserve native process semantics."""
 
-    def run(self, spec: CommandSpec, cancel_event: Event | None = None) -> CommandResult:
+    def run(
+        self,
+        spec: CommandSpec,
+        cancel_event: Event | None = None,
+        output_callback: Callable[[str, str], None] | None = None,
+    ) -> CommandResult:
         started = time.monotonic()
         cwd = spec.cwd.resolve() if spec.cwd else None
         if cwd is not None and not cwd.is_dir():
@@ -132,28 +137,37 @@ class CommandRunner:
 
         timed_out = False
         cancelled = False
-        stdout_bytes = b""
-        stderr_bytes = b""
         deadline = started + max(spec.timeout_seconds, 0.01)
-        while True:
-            if cancel_event and cancel_event.is_set():
-                cancelled = True
-                process.terminate()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0 and process.poll() is None:
-                timed_out = True
-                process.terminate()
-            try:
-                stdout_bytes, stderr_bytes = process.communicate(timeout=0.1)
-                break
-            except subprocess.TimeoutExpired:
-                if timed_out or cancelled:
-                    try:
-                        stdout_bytes, stderr_bytes = process.communicate(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        stdout_bytes, stderr_bytes = process.communicate()
+        if output_callback:
+            stdout_bytes, stderr_bytes, timed_out, cancelled = self._stream_process(
+                process,
+                deadline,
+                cancel_event,
+                output_callback,
+                spec.sanitize_output,
+            )
+        else:
+            stdout_bytes = b""
+            stderr_bytes = b""
+            while True:
+                if cancel_event and cancel_event.is_set() and not cancelled:
+                    cancelled = True
+                    process.terminate()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 and process.poll() is None:
+                    timed_out = True
+                    process.terminate()
+                try:
+                    stdout_bytes, stderr_bytes = process.communicate(timeout=0.1)
                     break
+                except subprocess.TimeoutExpired:
+                    if timed_out or cancelled:
+                        try:
+                            stdout_bytes, stderr_bytes = process.communicate(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            stdout_bytes, stderr_bytes = process.communicate()
+                        break
 
         stdout = _decode_output(stdout_bytes)
         stderr = _decode_output(stderr_bytes)
@@ -171,6 +185,53 @@ class CommandRunner:
             cancelled=cancelled,
             error="Command timed out." if timed_out else ("Command cancelled." if cancelled else ""),
         )
+
+    @staticmethod
+    def _stream_process(
+        process: subprocess.Popen,
+        deadline: float,
+        cancel_event: Event | None,
+        output_callback: Callable[[str, str], None],
+        sanitize_output: bool,
+    ) -> tuple[bytes, bytes, bool, bool]:
+        buffers: dict[str, list[bytes]] = {"stdout": [], "stderr": []}
+
+        def read_stream(name: str, stream) -> None:
+            while True:
+                chunk = stream.read(1024)
+                if not chunk:
+                    break
+                buffers[name].append(chunk)
+                text = _decode_output(chunk)
+                output_callback(name, sanitize_text(text) if sanitize_output else text)
+
+        threads = [
+            Thread(target=read_stream, args=("stdout", process.stdout), daemon=True),
+            Thread(target=read_stream, args=("stderr", process.stderr), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        timed_out = False
+        cancelled = False
+        while process.poll() is None:
+            if cancel_event and cancel_event.is_set() and not cancelled:
+                cancelled = True
+                process.terminate()
+            elif time.monotonic() >= deadline:
+                timed_out = True
+                process.terminate()
+            try:
+                process.wait(timeout=0.05)
+            except subprocess.TimeoutExpired:
+                continue
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        for thread in threads:
+            thread.join(timeout=1)
+        return b"".join(buffers["stdout"]), b"".join(buffers["stderr"]), timed_out, cancelled
 
     @staticmethod
     def _error_result(spec: CommandSpec, started: float, message: str) -> CommandResult:

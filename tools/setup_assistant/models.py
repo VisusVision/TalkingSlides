@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any
 
 APP_NAME = "TalkingSlides Setup Assistant"
-VERSION = os.environ.get("TALKINGSLIDES_SETUP_ASSISTANT_VERSION", "0.1.0")
+VERSION = os.environ.get("TALKINGSLIDES_SETUP_ASSISTANT_VERSION", "0.2.0-dev")
 
 
 class CheckStatus(str, Enum):

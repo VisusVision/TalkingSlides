@@ -34,14 +34,18 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--profile", type=_profile, default=Profile.CORE)
     check.add_argument("--full", action="store_true", help="Include ports, Compose validation, health, and profile assets.")
     check.add_argument("--internet", action="store_true", help="Explicitly include an internet connectivity probe.")
-    check.add_argument("--repository", type=Path)
+    check_scope = check.add_mutually_exclusive_group()
+    check_scope.add_argument("--repository", type=Path)
+    check_scope.add_argument("--system-only", action="store_true", help="Run host checks without repository discovery.")
     check.add_argument("--json", action="store_true", dest="json_output")
 
     report = subcommands.add_parser("report", help="Run checks and render a sanitized report.")
     report.add_argument("--profile", type=_profile, default=Profile.CORE)
     report.add_argument("--full", action="store_true")
     report.add_argument("--internet", action="store_true")
-    report.add_argument("--repository", type=Path)
+    report_scope = report.add_mutually_exclusive_group()
+    report_scope.add_argument("--repository", type=Path)
+    report_scope.add_argument("--system-only", action="store_true", help="Run host checks without repository discovery.")
     report.add_argument("--format", choices=("json", "markdown", "text"), default="json")
     report.add_argument("--output", type=Path, help="Write to this path; stdout is used when omitted.")
 
@@ -73,6 +77,7 @@ def _run_checks(args: argparse.Namespace):
         full=args.full,
         internet=args.internet,
         repository=args.repository,
+        system_only=bool(getattr(args, "system_only", False)),
     )
 
 

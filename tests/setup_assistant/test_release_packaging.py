@@ -25,6 +25,10 @@ def _load_release_helper():
 release = _load_release_helper()
 
 
+def test_next_development_version_is_0_2_0_dev() -> None:
+    assert release.DEFAULT_DEVELOPMENT_VERSION == "0.2.0-dev"
+
+
 def test_release_tag_parsing_accepts_only_setup_assistant_semver_tags() -> None:
     assert release.parse_release_tag("setup-assistant-v0.1.0") == "0.1.0"
     assert release.parse_release_tag("setup-assistant-v12.34.56") == "12.34.56"

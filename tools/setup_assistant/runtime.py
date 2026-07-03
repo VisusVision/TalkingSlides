@@ -63,7 +63,7 @@ class RuntimeManager:
             argv.extend(("--profile", "avatar"))
         services = [service for service in PROFILE_SERVICES[profile] if not (no_frontend and service == "frontend")]
         if action == "start":
-            argv.extend(("up", "-d", "--no-build", "--no-recreate", *services))
+            argv.extend(("up", "-d", "--no-build", "--pull", "never", *services))
         elif action == "stop":
             argv.extend(("stop", *services))
         elif action == "status":
