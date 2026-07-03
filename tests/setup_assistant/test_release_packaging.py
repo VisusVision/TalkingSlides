@@ -25,8 +25,8 @@ def _load_release_helper():
 release = _load_release_helper()
 
 
-def test_next_development_version_is_0_2_0_dev() -> None:
-    assert release.DEFAULT_DEVELOPMENT_VERSION == "0.2.0-dev"
+def test_next_development_version_is_0_2_1_dev() -> None:
+    assert release.DEFAULT_DEVELOPMENT_VERSION == "0.2.1-dev"
 
 
 def test_release_tag_parsing_accepts_only_setup_assistant_semver_tags() -> None:
@@ -86,6 +86,11 @@ def test_final_release_artifact_names_are_versioned_by_product_os_and_architectu
         "TalkingSlides-Setup-0.1.0-windows-x64.exe",
         "talkingslides-setup-cli-0.1.0-windows-x64.exe",
         "TalkingSlides-Setup-0.1.0-linux-x64.tar.gz",
+    )
+    assert release.release_artifact_names("0.2.1") == (
+        "TalkingSlides-Setup-0.2.1-windows-x64.exe",
+        "talkingslides-setup-cli-0.2.1-windows-x64.exe",
+        "TalkingSlides-Setup-0.2.1-linux-x64.tar.gz",
     )
 
 

@@ -11,6 +11,16 @@ TalkingSlides Setup Assistant is the native desktop and CLI onboarding, diagnost
 
 Windows and Linux are separate target-native packages.
 
+## What is fixed in 0.2.1
+
+- Repository identity is now separate from optional capabilities, so valid TalkingSlides checkouts are accepted even when newer Setup Assistant source files or modern runtime scripts are absent.
+- Clone uses the repository's configured default branch when the branch/ref field is empty. Explicit refs still use `--branch <ref> --single-branch`.
+- Successful clones are never deleted automatically. Valid checkouts activate immediately, including compatibility-limited checkouts with warnings.
+- A successful clone that does not match TalkingSlides identity is preserved for inspection with an explicit message.
+- Failed, cancelled, or timed-out clone cleanup is bounded, path-checked, non-elevated, and tolerant of locked/read-only Windows files.
+- Existing destination recovery is safer: valid checkouts are selected, limited checkouts show warnings, and non-empty invalid folders are not overwritten or removed.
+- Service and runtime controls are gated by detected capabilities, with unsupported actions disabled and explained.
+
 ## What is included in 0.2
 
 - First-run detected-repository, existing-folder, safe-clone, and system-only choices.
@@ -22,13 +32,14 @@ Windows and Linux are separate target-native packages.
 - Bounded sanitized logs with copy, save, clear-display, and stoppable follow.
 - Host-side Ollama detection, model inventory, safe assistant-owned start/stop, and external-manager guidance.
 - Secret-blind configuration status and a classified Action Required panel.
-- Development version `0.2.0-dev`; a future matching release tag overrides it at package time.
+- Development version `0.2.1-dev`; a future matching release tag overrides it at package time.
 
 ## Safety
 
 - No automatic Docker, Git, Ollama, driver, operating-system service, or model installation.
 - No implicit Docker build, pull, prune, image deletion, volume deletion, or `down -v`.
-- Repository actions require a fully validated TalkingSlides checkout.
+- Repository identity is validated with stable project markers; optional capability gaps disable only affected actions.
+- Successful Git clones and pre-existing destinations are never removed automatically.
 - External commands use argument arrays, native exit codes, separate stdout/stderr, timeouts, cancellation where appropriate, and sanitized descriptions.
 - Secret values are never displayed.
 - An Ollama process not started by the current assistant is never terminated.

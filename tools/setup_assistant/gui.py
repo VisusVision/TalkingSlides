@@ -23,9 +23,11 @@ from .reports import render_text, sanitize_text, write_report
 from .repository import (
     RepositoryContext,
     RepositoryState,
+    display_marker_list,
     forget_repository,
     initial_repository_context,
     load_repository_settings,
+    repository_validation_details,
     save_repository_preference,
     select_system_only,
     validate_repository,
@@ -385,6 +387,12 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
         self.repository_state.setWordWrap(True)
         self.repository_state.setAccessibleName("Repository validation status")
         layout.addWidget(self.repository_state)
+        self.repository_details = QtWidgets.QPlainTextEdit()
+        self.repository_details.setReadOnly(True)
+        self.repository_details.setMaximumHeight(120)
+        self.repository_details.setAccessibleName("Repository identity and capabilities")
+        self.repository_details.setPlaceholderText("Repository identity and capability details appear here.")
+        layout.addWidget(self.repository_details)
 
         clone_group = QtWidgets.QGroupBox("Clone TalkingSlides")
         clone_form = QtWidgets.QFormLayout(clone_group)
@@ -392,6 +400,7 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
         self.clone_url.setAccessibleName("Clone repository URL")
         self.clone_ref = QtWidgets.QLineEdit(DEFAULT_REPOSITORY_REF)
         self.clone_ref.setAccessibleName("Clone branch or ref")
+        self.clone_ref.setPlaceholderText("Default repository branch")
         destination_row = QtWidgets.QHBoxLayout()
         self.clone_destination = QtWidgets.QLineEdit(
             os.fspath(Path.home() / "TalkingSlides")
@@ -722,7 +731,17 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
         enabled = self.group_combo.count() > 0 and not self._busy()
         self.start_group_button.setEnabled(enabled)
         self.stop_group_button.setEnabled(enabled)
-        tooltip = "" if enabled else "Repository required"
+        if enabled:
+            tooltip = ""
+        elif not self._active_repository:
+            tooltip = "Repository required"
+        else:
+            validation = validate_repository(self._active_repository)
+            tooltip = (
+                "Modern runtime groups require scripts/windows-runtime.ps1."
+                if validation.valid and not validation.capabilities.modern_windows_runtime
+                else "No compatible runtime groups are available in this checkout."
+            )
         self.start_group_button.setToolTip(tooltip)
         self.stop_group_button.setToolTip(tooltip)
 
@@ -755,20 +774,31 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
             self.repository_state.setText(f"{status_text(ServiceStatus.NOT_CONFIGURED)} — No repository selected.")
             self.repository_state.setToolTip(presentation.description)
             self.repository_state.setStyleSheet(f"color: {presentation.light_color}")
+            if hasattr(self, "repository_details"):
+                self.repository_details.clear()
             return
         validation = validate_repository(text)
         if validation.valid:
-            presentation = status_presentation(ServiceStatus.HEALTHY, dark=dark)
+            limited = validation.compatibility_level != "modern"
+            presentation = status_presentation(ServiceStatus.DEGRADED if limited else ServiceStatus.HEALTHY, dark=dark)
             git_note = " Git metadata found." if validation.git_metadata else " Git metadata is not required for portable source."
-            self.repository_state.setText(f"{status_text(ServiceStatus.HEALTHY)} — Repository markers found.{git_note}")
-            self.repository_state.setToolTip(presentation.description)
+            if limited:
+                self.repository_state.setText(
+                    f"{presentation.icon} Attention — TalkingSlides repository detected, "
+                    f"but some modern runtime controls are unavailable.{git_note}"
+                )
+            else:
+                self.repository_state.setText(f"{status_text(ServiceStatus.HEALTHY)} — Compatible TalkingSlides repository.{git_note}")
+            self.repository_state.setToolTip(repository_validation_details(validation))
         else:
             presentation = status_presentation(ServiceStatus.BLOCKED, dark=dark)
             self.repository_state.setText(
                 f"{status_text(ServiceStatus.BLOCKED)} — Not a TalkingSlides repository. "
-                f"Missing: {', '.join(validation.missing_markers)}"
+                f"Missing: {', '.join(display_marker_list(validation.missing_identity_markers))}"
             )
-            self.repository_state.setToolTip("Select the repository root containing every listed project marker.")
+            self.repository_state.setToolTip(repository_validation_details(validation))
+        if hasattr(self, "repository_details"):
+            self.repository_details.setPlainText(repository_validation_details(validation))
         self.repository_state.setStyleSheet(f"color: {presentation.light_color}")
 
     def _use_detected_repository(self) -> None:
@@ -784,23 +814,30 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(
                 self,
                 "Invalid repository",
-                f"Missing project markers:\n{chr(10).join(validation.missing_markers)}",
+                f"Missing identity markers:\n{chr(10).join(display_marker_list(validation.missing_identity_markers))}",
             )
             return
+        self._activate_repository_validation(validation, "Repository selected.")
+
+    def _activate_repository_validation(self, validation, message: str) -> None:
         try:
             save_repository_preference(validation.path)
         except OSError as exc:
             QtWidgets.QMessageBox.warning(self, "Preference not saved", sanitize_text(str(exc)))
         self._active_repository = validation.path
         self._system_only = False
-        self._context = RepositoryContext(RepositoryState.VALID_SELECTED, validation, "Repository selected.")
+        self._context = RepositoryContext(RepositoryState.VALID_SELECTED, validation, message)
         self.repository_edit.setText(os.fspath(validation.path))
+        self._validate_repository()
         self._refresh_repository_header()
         self._refresh_configuration()
         self._initialize_service_cards()
         self._update_action_required()
         self.navigation.setCurrentRow(0)
-        self.statusBar().showMessage(f"Active repository: {validation.path}", 7000)
+        if validation.warnings:
+            self.statusBar().showMessage(f"Active repository with compatibility warnings: {validation.path}", 9000)
+        else:
+            self.statusBar().showMessage(f"Active repository: {validation.path}", 7000)
 
     def _forget_selected_repository(self) -> None:
         if self._busy() or not self.repository_edit.text().strip():
@@ -853,16 +890,19 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
         existing = validate_repository(request.destination)
         if request.destination.exists() and existing.valid:
             self.repository_edit.setText(os.fspath(existing.path))
-            self._activate_selected_repository()
+            self._activate_repository_validation(existing, "Existing TalkingSlides checkout selected.")
+            self.clone_output.appendPlainText("Existing TalkingSlides checkout selected.")
             return
         command = manager.command(request)
+        ref_label = request.ref.strip() or "Default repository branch"
         preview = "\n".join(
             (
                 f"Repository: {sanitized_repository_url(request.repository_url)}",
                 f"Destination: {request.destination.resolve(strict=False)}",
-                f"Branch/ref: {request.ref}",
+                f"Branch/ref: {ref_label}",
                 "",
-                "Git will clone one branch. Duration and network usage depend on repository size.",
+                "Git will clone the repository default branch unless an explicit ref is supplied. "
+                "Duration and network usage depend on repository size.",
                 "",
                 "Command arguments:",
                 "\n".join(f"  {index}: {sanitize_text(value)}" for index, value in enumerate(command)),
@@ -907,25 +947,29 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
     def _clone_completed(self, result) -> None:
         self.clone_progress.setVisible(False)
         if result.ok and result.validation:
-            self.clone_output.appendPlainText("Clone completed and repository validation passed.")
-            self.repository_edit.setText(os.fspath(result.validation.path))
-            try:
-                save_repository_preference(result.validation.path)
-            except OSError as exc:
-                self.clone_output.appendPlainText(f"Preference could not be saved: {sanitize_text(str(exc))}")
-            self._active_repository = result.validation.path
-            self._system_only = False
-            self._context = RepositoryContext(RepositoryState.VALID_SELECTED, result.validation, "Clone completed.")
-            self._refresh_repository_header()
-            self._refresh_configuration()
-            self._initialize_service_cards()
-            self._update_action_required()
-            self.navigation.setCurrentRow(0)
+            if result.validation.warnings:
+                self.clone_output.appendPlainText("Clone completed. TalkingSlides repository selected with compatibility warnings.")
+                for warning in result.validation.warnings:
+                    self.clone_output.appendPlainText(f"Warning: {sanitize_text(warning)}")
+            else:
+                self.clone_output.appendPlainText("Clone completed and compatible TalkingSlides repository selected.")
+            if result.checked_out_branch:
+                self.clone_output.appendPlainText(f"Checked out branch: {sanitize_text(result.checked_out_branch)}")
+            if result.head_commit:
+                self.clone_output.appendPlainText(f"HEAD commit: {sanitize_text(result.head_commit)}")
+            if result.origin_url:
+                self.clone_output.appendPlainText(f"Origin: {sanitize_text(result.origin_url)}")
+            self._activate_repository_validation(result.validation, "Clone completed.")
             return
         self._context = RepositoryContext(RepositoryState.CLONE_FAILED, result.validation, result.error)
-        self.clone_output.appendPlainText(f"Clone failed: {sanitize_text(result.error)}")
+        label = "Clone failed"
+        if result.outcome == "cloned_but_not_talkingslides":
+            label = "Clone completed"
+        self.clone_output.appendPlainText(f"{label}: {sanitize_text(result.error)}")
         if result.cleaned_incomplete_destination:
             self.clone_output.appendPlainText("Removed only the incomplete destination created by this clone attempt.")
+        elif result.cleanup_error:
+            self.clone_output.appendPlainText(sanitize_text(result.cleanup_error))
 
     @QtCore.Slot()
     def _clone_finished(self) -> None:
@@ -1075,9 +1119,14 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
         card["snapshot"] = snapshot
         buttons: dict[str, QtWidgets.QPushButton] = card["buttons"]  # type: ignore[assignment]
         repository_blocked = snapshot.definition.repository_required and not self._active_repository
+        controller = ServiceController(self._active_repository)
         for action, button in buttons.items():
             button.setToolTip("")
             enabled = not repository_blocked and not self._busy()
+            unavailable_reason = controller.action_unavailable_reason(snapshot.definition.service_id, action)
+            if unavailable_reason:
+                enabled = False
+                button.setToolTip(unavailable_reason)
             if snapshot.definition.service_id == "ollama" and action == "stop":
                 enabled = enabled and snapshot.assistant_owned
                 if not snapshot.assistant_owned:
@@ -1138,6 +1187,10 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Repository required", "Select a valid TalkingSlides repository.")
             return
         controller = ServiceController(self._active_repository)
+        reason = controller.action_unavailable_reason(service_id, action)
+        if reason:
+            QtWidgets.QMessageBox.warning(self, "Action unavailable", reason)
+            return
         if action == "logs":
             self._start_task(
                 f"Loading {definition.display_name} logs",
@@ -1147,8 +1200,9 @@ class SetupAssistantWindow(QtWidgets.QMainWindow):
             return
         try:
             preview = controller.preview(service_id, action)
-        except ValueError:
-            preview = (f"Use the safe {definition.service_type.value} adapter for {definition.display_name}.",)
+        except ValueError as exc:
+            QtWidgets.QMessageBox.warning(self, "Action unavailable", str(exc))
+            return
         warning = ""
         if action == "pull":
             warning = "\n\nThis can download a large image and use network bandwidth."

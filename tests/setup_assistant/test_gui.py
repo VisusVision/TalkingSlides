@@ -10,8 +10,20 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 PySide6 = pytest.importorskip("PySide6")
 from PySide6 import QtWidgets
 
+from tools.setup_assistant.clone import CloneRequest, CloneResult
 from tools.setup_assistant.gui import SetupAssistantWindow
 from tools.setup_assistant.models import CheckResult, CheckRun, CheckStatus, Profile, Severity
+from tools.setup_assistant.repository import load_repository_settings, validate_repository
+
+
+def make_public_main_style_repository(path: Path) -> Path:
+    for directory in ("infra", "scripts", "services/api", "services/frontend"):
+        (path / directory).mkdir(parents=True, exist_ok=True)
+    (path / "infra" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (path / "README.md").write_text("# TalkingSlides\n", encoding="utf-8")
+    (path / "scripts" / "windows-dev-start.ps1").write_text("# legacy start\n", encoding="utf-8")
+    (path / "scripts" / "windows-dev-setup.ps1").write_text("# legacy setup\n", encoding="utf-8")
+    return path
 
 
 @pytest.fixture(scope="module")
@@ -76,7 +88,7 @@ def test_secret_not_shown_in_ui_details(window: SetupAssistantWindow) -> None:
 
 def test_repository_selection_validation(window: SetupAssistantWindow, talking_slides_repo: Path) -> None:
     window.repository_edit.setText(str(talking_slides_repo))
-    assert "markers found" in window.repository_state.text().lower()
+    assert "compatible talkingslides repository" in window.repository_state.text().lower()
 
 
 def test_services_and_action_required_render(window: SetupAssistantWindow) -> None:
@@ -112,7 +124,7 @@ def test_browse_flow_updates_selected_path(
     window.repository_edit.clear()
     window._browse_repository()
     assert window.repository_edit.text() == str(talking_slides_repo)
-    assert "markers found" in window.repository_state.text().lower()
+    assert "compatible talkingslides repository" in window.repository_state.text().lower()
 
 
 def test_system_only_continuation(
@@ -132,6 +144,65 @@ def test_system_only_continuation(
         assert value._active_repository is None
         assert "System-only mode" in value.overview_mode.text()
         assert value.navigation.currentRow() == 0
+    finally:
+        value.close()
+
+
+def test_manual_selection_of_public_main_style_repository_succeeds(
+    monkeypatch,
+    application,
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(
+        "tools.setup_assistant.repository.preference_path",
+        lambda: settings_path,
+    )
+    repository = make_public_main_style_repository(tmp_path / "TalkingSlides")
+    value = SetupAssistantWindow(tmp_path / "missing")
+    try:
+        value.repository_edit.setText(str(repository))
+        value._activate_selected_repository()
+        assert value._active_repository == repository.resolve()
+        assert "Attention" in value.repository_state.text()
+        assert "modern runtime" in value.repository_details.toPlainText().lower()
+        assert not value.start_group_button.isEnabled()
+        assert "windows-runtime.ps1" in value.start_group_button.toolTip()
+    finally:
+        value.close()
+
+
+def test_clone_limited_repository_auto_activates_with_warning(
+    monkeypatch,
+    application,
+    tmp_path: Path,
+) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setattr(
+        "tools.setup_assistant.repository.preference_path",
+        lambda: settings_path,
+    )
+    destination = make_public_main_style_repository(tmp_path / "TalkingSlides")
+    validation = validate_repository(destination)
+    value = SetupAssistantWindow(tmp_path / "missing")
+    try:
+        result = CloneResult(
+            CloneRequest(destination, ref=""),
+            True,
+            validation=validation,
+            outcome="cloned_with_warnings",
+            checked_out_branch="main",
+            head_commit="abc123",
+            origin_url="https://github.com/VisusVision/TalkingSlides.git",
+        )
+        value._clone_completed(result)
+        settings = load_repository_settings(settings_path)
+        assert value._active_repository == destination.resolve()
+        assert value.repository_edit.text() == str(destination.resolve())
+        assert settings.repository == destination.resolve()
+        assert destination.resolve() in settings.recent_repositories
+        assert value.navigation.currentRow() == 0
+        assert "compatibility warnings" in value.clone_output.toPlainText()
     finally:
         value.close()
 
