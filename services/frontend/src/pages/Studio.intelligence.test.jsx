@@ -289,4 +289,18 @@ describe('predicted rerender impact preview', () => {
     expect(source).toContain('onClick={() => handleGlobalEditorSave({ triggerRerender: true })}');
     expect(source).toContain('Save & Rerender');
   });
+
+  it('preserves per-slide avatar layout in prediction payloads and scene controls', () => {
+    const source = readFileSync('src/pages/Studio.jsx', 'utf8');
+    expect(source).toContain("'avatar_layout'");
+    expect(source).toContain('Avatar position');
+    expect(source).toContain('Avatar size');
+    expect(source).toContain('Avatar visibility');
+    expect(source).toContain('handleAvatarLayoutChange');
+    expect(source).toContain('transcriptEditorRef.current?.updateAvatarLayout');
+    expect(source).toContain('Inherit publisher default');
+    expect(source).toContain('Layout settings do not enable avatar rendering.');
+    expect(source).toContain("avatarLayoutSourceLabel(selectedSceneEffectiveAvatarLayout.sources?.position)");
+    expect(source).toContain('effectiveAvatarLayout');
+  });
 });

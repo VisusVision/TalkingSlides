@@ -186,6 +186,70 @@ describe('AvatarOverlayLayer direct manipulation UX', () => {
     host.remove();
   });
 
+  it('consumes per-page position, size, and visibility from the playback timeline', async () => {
+    const mainVideo = document.createElement('video');
+    Object.defineProperty(mainVideo, 'currentTime', {
+      configurable: true,
+      writable: true,
+      value: 0.5,
+    });
+    const { host, root } = renderOverlay({
+      videoRef: { current: mainVideo },
+      layoutByPage: [
+        {
+          page_key: 's1-p1',
+          start: 0,
+          end: 2,
+          position: 'top-right',
+          size: 'medium',
+          visible: true,
+        },
+        {
+          page_key: 's2-p1',
+          start: 2,
+          end: 4,
+          position: 'bottom-left',
+          size: 'large',
+          visible: true,
+        },
+        {
+          page_key: 's3-p1',
+          start: 4,
+          end: 6,
+          position: 'top-left',
+          size: 'small',
+          visible: false,
+        },
+      ],
+    });
+
+    let frame = host.querySelector('[role="group"][aria-label="Avatar overlay"]');
+    expect(percentValue(frame.style.left)).toBe(72);
+    expect(percentValue(frame.style.top)).toBe(8);
+    expect(percentValue(frame.style.width)).toBe(24);
+
+    mainVideo.currentTime = 2.5;
+    await dispatch(mainVideo, new Event('timeupdate'));
+    frame = host.querySelector('[role="group"][aria-label="Avatar overlay"]');
+    expect(percentValue(frame.style.left)).toBe(4);
+    expect(percentValue(frame.style.width)).toBe(30);
+    expect(percentValue(frame.style.top)).toBeGreaterThan(60);
+
+    mainVideo.currentTime = 4.5;
+    await dispatch(mainVideo, new Event('timeupdate'));
+    expect(host.querySelector('[role="group"][aria-label="Avatar overlay"]')).toBeNull();
+    expect(host.querySelector('[data-testid="avatar-overlay-video"]')).toBeNull();
+
+    mainVideo.currentTime = 0.5;
+    await dispatch(mainVideo, new Event('timeupdate'));
+    frame = host.querySelector('[role="group"][aria-label="Avatar overlay"]');
+    expect(frame).toBeTruthy();
+    expect(percentValue(frame.style.left)).toBe(72);
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
   it('can grow again after being resized to the manual minimum', async () => {
     const { host, root, frame, resizeGrip } = renderOverlay();
 

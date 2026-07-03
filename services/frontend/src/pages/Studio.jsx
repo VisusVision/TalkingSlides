@@ -626,6 +626,7 @@ function partialRenderPreviewEditorDocument(document) {
       'highlight_enabled',
       'highlight_style',
       'highlight_detector',
+      'avatar_layout',
       'overlay_layout',
       'font',
     ].forEach((key) => {
@@ -1974,6 +1975,126 @@ const SCENE_BACKGROUND_FITS = new Set(['contain', 'cover', 'stretch']);
 const SCENE_TEXT_SCALE_MIN = 0.75;
 const SCENE_TEXT_SCALE_MAX = 2;
 const SCENE_TEXT_PREVIEW_BASE_REM = 2.35;
+const AVATAR_LAYOUT_POSITIONS = new Set(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
+const AVATAR_LAYOUT_SIZES = new Set(['small', 'medium', 'large']);
+const DEFAULT_AVATAR_LAYOUT = { position: 'top-right', size: 'medium', visible: true };
+const AVATAR_LAYOUT_POSITION_OPTIONS = [
+  { value: '', label: 'Inherit publisher default' },
+  { value: 'top-left', label: 'Top left' },
+  { value: 'top-right', label: 'Top right' },
+  { value: 'bottom-left', label: 'Bottom left' },
+  { value: 'bottom-right', label: 'Bottom right' },
+];
+const AVATAR_LAYOUT_SIZE_OPTIONS = [
+  { value: '', label: 'Inherit publisher default' },
+  { value: 'small', label: 'Small' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'large', label: 'Large' },
+];
+const AVATAR_LAYOUT_VISIBILITY_OPTIONS = [
+  { value: '', label: 'Inherit publisher default' },
+  { value: 'visible', label: 'Visible' },
+  { value: 'hidden', label: 'Hidden' },
+];
+
+function normalizeAvatarLayoutDefaults(value) {
+  const source = plainObject(value) || {};
+  const rawPosition = String(source.position || '').trim().toLowerCase();
+  const rawSize = String(source.size || '').trim().toLowerCase();
+  const rawVisible = source.visible;
+  let visible = DEFAULT_AVATAR_LAYOUT.visible;
+  if (typeof rawVisible === 'boolean') {
+    visible = rawVisible;
+  } else {
+    const raw = String(rawVisible ?? '').trim().toLowerCase();
+    if (['1', 'true', 'yes', 'on', 'visible', 'show'].includes(raw)) visible = true;
+    if (['0', 'false', 'no', 'off', 'hidden', 'hide'].includes(raw)) visible = false;
+  }
+  return {
+    position: AVATAR_LAYOUT_POSITIONS.has(rawPosition) ? rawPosition : DEFAULT_AVATAR_LAYOUT.position,
+    size: AVATAR_LAYOUT_SIZES.has(rawSize) ? rawSize : DEFAULT_AVATAR_LAYOUT.size,
+    visible,
+  };
+}
+
+function normalizeAvatarLayoutOverride(value) {
+  const source = plainObject(value) || {};
+  const next = {};
+  const rawPosition = String(source.position || '').trim().toLowerCase();
+  const rawSize = String(source.size || '').trim().toLowerCase();
+  if (AVATAR_LAYOUT_POSITIONS.has(rawPosition)) next.position = rawPosition;
+  if (AVATAR_LAYOUT_SIZES.has(rawSize)) next.size = rawSize;
+  if (Object.prototype.hasOwnProperty.call(source, 'visible')) {
+    if (typeof source.visible === 'boolean') {
+      next.visible = source.visible;
+    } else {
+      const rawVisible = String(source.visible ?? '').trim().toLowerCase();
+      if (['1', 'true', 'yes', 'on', 'visible', 'show'].includes(rawVisible)) next.visible = true;
+      if (['0', 'false', 'no', 'off', 'hidden', 'hide'].includes(rawVisible)) next.visible = false;
+    }
+  }
+  return next;
+}
+
+function publisherAvatarLayoutFromLesson(lesson) {
+  return normalizeAvatarLayoutDefaults(
+    lesson?.avatar_overlay?.defaults?.avatar_layout
+      || lesson?.avatar_overlay?.defaults?.publisher_avatar_layout
+      || lesson?.avatar_overlay?.defaults
+      || lesson?.avatar_overlay?.placement
+      || {},
+  );
+}
+
+function resolveAvatarLayout(slideOverride, lessonOverride, publisherDefault) {
+  const slide = normalizeAvatarLayoutOverride(slideOverride);
+  const lesson = normalizeAvatarLayoutOverride(lessonOverride);
+  const publisher = normalizeAvatarLayoutDefaults(publisherDefault);
+  const sources = {};
+  const values = {};
+  ['position', 'size', 'visible'].forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(slide, field)) {
+      values[field] = slide[field];
+      sources[field] = 'slide';
+    } else if (Object.prototype.hasOwnProperty.call(lesson, field)) {
+      values[field] = lesson[field];
+      sources[field] = 'lesson';
+    } else {
+      values[field] = publisher[field];
+      sources[field] = 'publisher';
+    }
+  });
+  return {
+    position: values.position,
+    size: values.size,
+    visible: Boolean(values.visible),
+    sources,
+  };
+}
+
+function avatarLayoutLabel(field, value) {
+  if (field === 'visible') return value ? 'Visible' : 'Hidden';
+  return String(value || '')
+    .split('-')
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(' ');
+}
+
+function avatarLayoutOverrideValue(override, field) {
+  if (!plainObject(override) || !Object.prototype.hasOwnProperty.call(override, field)) return '';
+  if (field === 'visible') return override[field] ? 'visible' : 'hidden';
+  return override[field];
+}
+
+function avatarLayoutSourceLabel(source) {
+  return {
+    slide: 'this slide',
+    lesson: 'lesson override',
+    publisher: 'publisher default',
+    system: 'system default',
+  }[String(source || '').trim().toLowerCase()] || 'publisher default';
+}
 
 function pageSceneSettings(page) {
   const scene = page?.editor_document?.scene && typeof page.editor_document.scene === 'object'
@@ -1996,6 +2117,7 @@ function pageSceneSettings(page) {
   const highlightStyle = ['none', 'box', 'bold'].includes(rawHighlightStyle) ? rawHighlightStyle : 'none';
   const rawHighlightDetector = String(scene.highlight_detector || 'auto').trim().toLowerCase();
   const highlightDetector = rawHighlightDetector === 'auto' ? 'auto' : 'auto';
+  const avatarLayoutOverride = normalizeAvatarLayoutOverride(scene.avatar_layout);
   return {
     backgroundMode,
     backgroundFit,
@@ -2013,6 +2135,7 @@ function pageSceneSettings(page) {
     highlightStyle,
     highlightDetector,
     highlightPreviewUrl: textValue(scene.highlight_preview_url),
+    avatarLayoutOverride,
   };
 }
 
@@ -4785,6 +4908,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   };
 
   const sceneItems = useMemo(() => {
+    const publisherAvatarLayout = publisherAvatarLayoutFromLesson(selectedLesson);
+    const lessonAvatarLayout = normalizeAvatarLayoutOverride(selectedLesson?.avatar_layout);
     if (transcriptPages.length > 0) {
       return transcriptPages.map((page, index) => {
         const key = pageIdentity(page, index);
@@ -4792,6 +4917,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         const status = draft.status || sceneStatusFromPage(page);
         const displayText = draft.display_text ?? pageDisplayText(page);
         const sceneSettings = pageSceneSettings(page);
+        const avatarLayoutOverride = Object.prototype.hasOwnProperty.call(draft, 'avatar_layout')
+          ? normalizeAvatarLayoutOverride(draft.avatar_layout)
+          : sceneSettings.avatarLayoutOverride;
+        const effectiveAvatarLayout = resolveAvatarLayout(
+          avatarLayoutOverride,
+          lessonAvatarLayout,
+          publisherAvatarLayout,
+        );
         const backgroundUrl = sceneBackgroundUrl(page);
         const thumbnailUrl = sceneSettings.backgroundMode === 'whiteboard'
           ? ''
@@ -4825,6 +4958,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           highlightStyle: sceneSettings.highlightStyle,
           highlightDetector: sceneSettings.highlightDetector,
           highlightPreviewUrl: sceneSettings.highlightPreviewUrl,
+          avatarLayoutOverride,
+          effectiveAvatarLayout,
           draftBackgroundDirty: Boolean(page?.draft_background_dirty || page?.draft_scene_dirty),
           moderationWarning: moderationSlideWarnings[key] || null,
           page,
@@ -4869,7 +5004,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       subtitleCount: 0,
       thumbnailUrl: '',
     }));
-  }, [editorCanvas, moderationSlideWarnings, sceneDraftStatus, transcriptPages]);
+  }, [editorCanvas, moderationSlideWarnings, sceneDraftStatus, selectedLesson, transcriptPages]);
 
   const sceneKeysSignature = useMemo(
     () => sceneItems.map((scene) => scene.key).join('|'),
@@ -4918,6 +5053,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const selectedSceneHighlightStyle = selectedScene?.highlightStyle || 'none';
   const selectedSceneActiveHighlightStyle = selectedSceneHighlightEnabled ? selectedSceneHighlightStyle : 'none';
   const selectedSceneHighlightDetector = selectedScene?.highlightDetector || 'auto';
+  const selectedSceneAvatarLayoutOverride = selectedScene?.avatarLayoutOverride || {};
+  const selectedSceneEffectiveAvatarLayout = selectedScene?.effectiveAvatarLayout || DEFAULT_AVATAR_LAYOUT;
   const selectedSceneBackgroundWarning = selectedScene?.key
     ? moderationBackgroundWarnings[selectedScene.key] || null
     : null;
@@ -5097,6 +5234,28 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     }
     handleScenePatch({ background_mode: nextMode }, 'Background mode updated.');
   }, [handleScenePatch, selectedSceneHasCustomBackground, selectedSceneOriginalAvailable, selectedSceneSourceBackgroundAvailable, selectedSceneSourceBackgroundMessage]);
+
+  const handleAvatarLayoutChange = useCallback((field, value) => {
+    const current = normalizeAvatarLayoutOverride(selectedSceneAvatarLayoutOverride);
+    const next = { ...current };
+    if (value === '') {
+      delete next[field];
+    } else if (field === 'visible') {
+      next.visible = value === 'visible';
+    } else {
+      next[field] = value;
+    }
+    const fields = ['position', 'size', 'visible'];
+    const changed = fields.some((key) => current[key] !== next[key]);
+    if (!changed) return;
+    transcriptEditorRef.current?.updateAvatarLayout(
+      selectedScene?.key || '',
+      selectedScene?.index ?? selectedPageIndex,
+      next,
+    );
+    setSceneActionError('');
+    setSceneActionMessage('Avatar layout updated locally. Save changes to persist it.');
+  }, [selectedPageIndex, selectedScene?.index, selectedScene?.key, selectedSceneAvatarLayoutOverride]);
 
   const handleHighlightPreview = useCallback(async () => {
     if (readOnlyReview || !selectedLesson?.id || !selectedScene?.page?.id || highlightPreviewBusy) return;
@@ -5371,7 +5530,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         setGlobalEditorMessage('Lesson is already up to date.');
         return;
       }
-      const hadTranscriptChanges = Boolean(transcriptEditorRef.current?.hasUnsavedChanges?.());
+      const hadTranscriptTextChanges = Boolean(transcriptEditorRef.current?.hasUnsavedTextChanges?.());
       const shouldPromoteNonRenderDraft = Boolean(
         !shouldTriggerRerender
         && selectedLessonDirtyScope.savedNonRenderDraftDirty
@@ -5410,7 +5569,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
       setTranscriptDirty(false);
       setTtsDirty(false);
-      if (hadTranscriptChanges) {
+      if (hadTranscriptTextChanges) {
         if (intelligenceFeatureEnabled && activeEditorPanel === 'intelligence') {
           await handleAnalyzeLessonIntelligence(selectedLesson, { auto: true });
         } else if (intelligenceFeatureEnabled) {
@@ -7033,6 +7192,80 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             />
                             <span className="mt-1 block text-[0.68rem]">{selectedSceneTextScale.toFixed(2)}x</span>
                           </label>
+
+                          <div className="space-y-3 rounded-xl bg-[var(--surface-container-high)] p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-xs font-semibold text-[var(--text-secondary)]">Avatar layout</p>
+                              <span className="text-[0.68rem] font-medium text-[var(--text-secondary)]">
+                                {avatarLayoutLabel('position', selectedSceneEffectiveAvatarLayout.position)}
+                                {' / '}
+                                {avatarLayoutLabel('size', selectedSceneEffectiveAvatarLayout.size)}
+                                {' / '}
+                                {avatarLayoutLabel('visible', selectedSceneEffectiveAvatarLayout.visible)}
+                              </span>
+                            </div>
+                            <div className="grid gap-3 sm:grid-cols-3">
+                              <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                                Avatar position
+                                <select
+                                  value={avatarLayoutOverrideValue(selectedSceneAvatarLayoutOverride, 'position')}
+                                  onChange={(event) => handleAvatarLayoutChange('position', event.target.value)}
+                                  disabled={readOnlyReview || Boolean(sceneActionBusy)}
+                                  className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
+                                >
+                                  {AVATAR_LAYOUT_POSITION_OPTIONS.map((option) => (
+                                    <option key={option.value || 'inherit'} value={option.value}>{option.label}</option>
+                                  ))}
+                                </select>
+                                <span className="mt-1 block text-[0.68rem]">
+                                  Effective: {avatarLayoutLabel('position', selectedSceneEffectiveAvatarLayout.position)}
+                                  {' from '}
+                                  {avatarLayoutSourceLabel(selectedSceneEffectiveAvatarLayout.sources?.position)}
+                                </span>
+                              </label>
+
+                              <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                                Avatar size
+                                <select
+                                  value={avatarLayoutOverrideValue(selectedSceneAvatarLayoutOverride, 'size')}
+                                  onChange={(event) => handleAvatarLayoutChange('size', event.target.value)}
+                                  disabled={readOnlyReview || Boolean(sceneActionBusy)}
+                                  className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
+                                >
+                                  {AVATAR_LAYOUT_SIZE_OPTIONS.map((option) => (
+                                    <option key={option.value || 'inherit'} value={option.value}>{option.label}</option>
+                                  ))}
+                                </select>
+                                <span className="mt-1 block text-[0.68rem]">
+                                  Effective: {avatarLayoutLabel('size', selectedSceneEffectiveAvatarLayout.size)}
+                                  {' from '}
+                                  {avatarLayoutSourceLabel(selectedSceneEffectiveAvatarLayout.sources?.size)}
+                                </span>
+                              </label>
+
+                              <label className="block text-xs font-medium text-[var(--text-secondary)]">
+                                Avatar visibility
+                                <select
+                                  value={avatarLayoutOverrideValue(selectedSceneAvatarLayoutOverride, 'visible')}
+                                  onChange={(event) => handleAvatarLayoutChange('visible', event.target.value)}
+                                  disabled={readOnlyReview || Boolean(sceneActionBusy)}
+                                  className="focus-ring mt-1 h-9 w-full rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)]"
+                                >
+                                  {AVATAR_LAYOUT_VISIBILITY_OPTIONS.map((option) => (
+                                    <option key={option.value || 'inherit'} value={option.value}>{option.label}</option>
+                                  ))}
+                                </select>
+                                <span className="mt-1 block text-[0.68rem]">
+                                  Effective: {avatarLayoutLabel('visible', selectedSceneEffectiveAvatarLayout.visible)}
+                                  {' from '}
+                                  {avatarLayoutSourceLabel(selectedSceneEffectiveAvatarLayout.sources?.visible)}
+                                </span>
+                              </label>
+                            </div>
+                            <p className="text-[0.68rem] text-[var(--text-secondary)]">
+                              Layout settings do not enable avatar rendering.
+                            </p>
+                          </div>
 
                           <div className="space-y-2 rounded-xl bg-[var(--surface-container-high)] p-3">
                             <p className="text-xs font-semibold text-[var(--text-secondary)]">Highlight preview</p>

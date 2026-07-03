@@ -45,9 +45,11 @@ except Exception:
 # Ensure scripts package is importable both in Docker (/app/scripts) and local dev.
 _SCRIPT_DIRS = [
     Path(__file__).resolve().parent.parent,
+    Path(__file__).resolve().parent.parent / "api",
     Path(__file__).resolve().parent.parent / "scripts",
     Path(__file__).resolve().parent.parent / "avatar",
     Path("/app"),
+    Path("/app/api"),
     Path("/app/scripts"),
     Path("/app/avatar"),
 ]
@@ -71,6 +73,12 @@ from .partial_render_manifest import (  # noqa: E402
     classify_partial_render_changes,
     get_narration_only_recompose_eligibility,
     get_visual_only_recompose_eligibility,
+)
+from core.avatar_placement import (  # noqa: E402
+    avatar_layout_from_profile,
+    normalize_avatar_layout_defaults,
+    normalize_avatar_layout_override,
+    resolve_avatar_layout,
 )
 
 logger = logging.getLogger(__name__)
@@ -538,6 +546,11 @@ def _render_followup_avatar_options(project, *, job_id: int) -> dict[str, Any]:
         "avatar_moderation_status": str(teacher_avatar_cfg.get("avatar_moderation_status") or "not_scanned"),
         "avatar_moderation_blocked": bool(teacher_avatar_cfg.get("avatar_moderation_blocked")),
         "avatar_moderation_error_code": str(teacher_avatar_cfg.get("avatar_moderation_error_code") or ""),
+        "publisher_avatar_layout": dict(teacher_avatar_cfg.get("publisher_avatar_layout") or {}),
+        "lesson_avatar_layout": teacher_avatar_cfg.get("lesson_avatar_layout"),
+        "default_position": str(teacher_avatar_cfg.get("default_position") or "top-right"),
+        "default_size": str(teacher_avatar_cfg.get("default_size") or "medium"),
+        "default_visible": bool(teacher_avatar_cfg.get("default_visible", True)),
         "composite_fallback_allowed": False,
     }
 
@@ -3054,6 +3067,53 @@ def _scene_render_warning_list(slide_payload: dict[str, Any], scene: dict[str, A
     )
 
 
+def _publisher_avatar_layout_from_options(avatar_options: dict[str, Any] | None) -> dict[str, Any]:
+    options = dict(avatar_options or {})
+    return normalize_avatar_layout_defaults(
+        options.get("publisher_avatar_layout")
+        or options.get("avatar_layout")
+        or {
+            "position": options.get("default_position") or options.get("avatar_default_position"),
+            "size": options.get("default_size") or options.get("avatar_default_size"),
+            "visible": options.get("default_visible") if "default_visible" in options else options.get("avatar_default_visible"),
+        }
+    )
+
+
+def _resolve_slide_avatar_layout(
+    slide_meta: dict[str, Any],
+    avatar_options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    editor_document = slide_meta.get("editor_document") if isinstance(slide_meta.get("editor_document"), dict) else {}
+    editor_scene = editor_document.get("scene") if isinstance(editor_document.get("scene"), dict) else {}
+    slide_override = normalize_avatar_layout_override(slide_meta.get("avatar_layout") or editor_scene.get("avatar_layout"))
+    options = dict(avatar_options or {})
+    return resolve_avatar_layout(
+        slide_override,
+        options.get("lesson_avatar_layout"),
+        _publisher_avatar_layout_from_options(options),
+    )
+
+
+def _semantic_avatar_layout(layout: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_avatar_layout_defaults(layout)
+    return {
+        "position": normalized["position"],
+        "size": normalized["size"],
+        "visible": bool(normalized["visible"]),
+    }
+
+
+def _result_avatar_layout(
+    result: dict[str, Any],
+    avatar_options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    raw = result.get("avatar_layout")
+    if isinstance(raw, dict) and raw:
+        return dict(raw)
+    return _resolve_slide_avatar_layout(result, avatar_options)
+
+
 def _normalize_scene_mode_for_render(
     scene_mode: str,
     *,
@@ -3240,6 +3300,7 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
                     scene.get("text_scale"),
                     fallback=1.0,
                 ),
+                "avatar_layout": normalize_avatar_layout_override(scene.get("avatar_layout")),
                 "moderation_image_path": moderation_image_path,
                 "image_path": render_image_path,
                 "audio_out": str(ws["audio"] / f"slide_{display_index + 1:03d}.mp3"),
@@ -5915,6 +5976,7 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
         and (processed_rel_path or original_rel_path or video_rel_path)
     )
     runtime_settings = default_avatar_runtime_settings()
+    publisher_avatar_layout = avatar_layout_from_profile(profile)
 
     return {
         "enabled": enabled,
@@ -5943,6 +6005,11 @@ def _get_teacher_avatar_config(teacher_id: int | None) -> dict[str, Any]:
         "avatar_moderation_blocked": bool(moderation_gate.get("blocked")),
         "avatar_moderation_error_code": str(moderation_gate.get("error_code") or ""),
         "avatar_moderation_summary": dict(profile.avatar_moderation_summary or {}),
+        "publisher_avatar_layout": publisher_avatar_layout,
+        "lesson_avatar_layout": None,
+        "default_position": publisher_avatar_layout["position"],
+        "default_size": publisher_avatar_layout["size"],
+        "default_visible": publisher_avatar_layout["visible"],
     }
 
 
@@ -6304,6 +6371,8 @@ def render_lesson_avatar_overlay(
             "avatar_engine_selected": str(avatar_cfg.get("avatar_engine_selected") or avatar_cfg.get("lipsync_engine") or "liveportrait+musetalk"),
             "avatar_fallback_chain": [],
             "avatar_motion_validation": {},
+            "avatar_layout": _result_avatar_layout(item, avatar_cfg),
+            "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_cfg)),
         }
         try:
             if not audio_path or not Path(audio_path).exists():
@@ -6395,6 +6464,8 @@ def render_lesson_avatar_overlay(
                     "quality": "fast",
                     "enhanced_pending": bool(progressive_restoration_enabled),
                     "enhanced_available": False,
+                    "avatar_layout": _result_avatar_layout(item, avatar_cfg),
+                    "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_cfg)),
                     **runtime_observability,
                     "duration": round(float(item.get("duration") or 0.0), 3),
                 }
@@ -6533,6 +6604,19 @@ def render_lesson_avatar_overlay(
         sidecar = _read_playback_sidecar(project_id_int) or {}
         preferred_abs = Path(_avatar_storage_root()) / preferred_track_rel
         now_iso = timezone.now().isoformat()
+        publisher_avatar_layout = _publisher_avatar_layout_from_options(avatar_cfg)
+        layout_by_page = [
+            {
+                "index": int(item.get("index") or 0),
+                "slide_num": int(item.get("slide_num") or 0),
+                "page_key": str(item.get("page_key") or ""),
+                "avatar_layout": _result_avatar_layout(item, avatar_cfg),
+                "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_cfg)),
+                "avatar_layout_source": str(_result_avatar_layout(item, avatar_cfg).get("source_level") or "system"),
+                "avatar_layout_sources": dict(_result_avatar_layout(item, avatar_cfg).get("sources") or {}),
+            }
+            for item in ordered
+        ]
         sidecar["avatar"] = {
             "track_rel_path": preferred_track_rel,
             "track_fast_rel_path": avatar_fast_track_rel,
@@ -6543,8 +6627,11 @@ def render_lesson_avatar_overlay(
             "version": _track_version(preferred_abs),
             "updated_at": now_iso,
             "progressive_restoration_enabled": bool(progressive_restoration_enabled),
-            "default_position": "top-right",
-            "default_size": "medium",
+            "default_position": publisher_avatar_layout["position"],
+            "default_size": publisher_avatar_layout["size"],
+            "default_visible": bool(publisher_avatar_layout["visible"]),
+            "publisher_avatar_layout": publisher_avatar_layout,
+            "layout_by_page": layout_by_page,
             "segments": avatar_segments,
         }
         sidecar["avatar_status"] = "ready"
@@ -6560,6 +6647,7 @@ def render_lesson_avatar_overlay(
         sidecar["avatar_clips"] = [segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
         sidecar["avatar_clips_fast"] = list(sidecar["avatar_clips"])
         sidecar["avatar_clips_restored"] = [restored_segment_rel_by_index.get(int(item.get("index") or 0), "") for item in ordered]
+        sidecar["avatar_layout_pages"] = layout_by_page
         sidecar["avatar_slide_metadata"] = avatar_slide_metadata
         final_segments = sidecar.get("final_segments")
         if isinstance(final_segments, list):
@@ -6586,6 +6674,8 @@ def render_lesson_avatar_overlay(
                 final_segment["musetalk_source_kind"] = str(meta.get("musetalk_source_kind") or "")
                 final_segment["liveportrait_fallback_used"] = bool(meta.get("liveportrait_fallback_used"))
                 final_segment["liveportrait_failure_reason"] = str(meta.get("liveportrait_failure_reason") or "")
+                final_segment["avatar_layout"] = _result_avatar_layout(meta, avatar_cfg)
+                final_segment["effective_avatar_layout"] = _semantic_avatar_layout(_result_avatar_layout(meta, avatar_cfg))
         _write_playback_sidecar(project_id_int, sidecar)
 
     fast_message = (
@@ -8082,6 +8172,7 @@ def recompose_visual_only_slide_segment(
         if not audio_path or not Path(audio_path).is_file():
             raise RuntimeError("visual_recompose_audio_missing")
         visual = _render_visual_only_slide_image(slide_meta, part_out=part_out)
+        effective_avatar_layout = _resolve_slide_avatar_layout(slide_meta, avatar_options)
         audio_duration = get_audio_duration(audio_path)
         total_duration = audio_duration + max(float(pause_sec), 0.0)
         part_path = Path(part_out)
@@ -8139,6 +8230,10 @@ def recompose_visual_only_slide_segment(
             "scene_background_fit": str(visual.get("scene_background_fit") or ""),
             "scene_text_scale": visual.get("scene_text_scale"),
             "editor_document": dict(visual.get("editor_document") or slide_meta.get("editor_document") or {}),
+            "avatar_layout": effective_avatar_layout,
+            "effective_avatar_layout": _semantic_avatar_layout(effective_avatar_layout),
+            "avatar_layout_source": str(effective_avatar_layout.get("source_level") or "system"),
+            "avatar_layout_sources": dict(effective_avatar_layout.get("sources") or {}),
             "source_render_method": str(slide_meta.get("source_render_method") or ""),
             "source_render_warnings": list(visual["source_render_warnings"] or []),
             "source_render_details": _details_list_from_value(visual.get("source_render_details")),
@@ -8448,6 +8543,7 @@ def synthesize_and_render_slide(
     whiteboard_mode = bool(slide_meta.get("whiteboard_mode"))
     editor_document = slide_meta.get("editor_document") if isinstance(slide_meta.get("editor_document"), dict) else {}
     editor_scene = editor_document.get("scene") if isinstance(editor_document.get("scene"), dict) else {}
+    effective_avatar_layout = _resolve_slide_avatar_layout(slide_meta, avatar_options)
     scene_background_mode = _scene_mode_from_value(
         slide_meta.get("scene_background_mode") or editor_scene.get("background_mode"),
         fallback="whiteboard" if whiteboard_mode else "original",
@@ -8785,6 +8881,7 @@ def synthesize_and_render_slide(
             "source_render_dependency_report": dict(slide_meta.get("source_render_dependency_report") or {}),
             "source_background_warnings": source_background_warnings,
             "source_background_details": source_background_details,
+            "avatar_layout": effective_avatar_layout,
             "avatar_applied": avatar_applied,
             "avatar_engine_used": avatar_engine_used,
             "avatar_fallback_chain": avatar_fallback_chain,
@@ -8938,6 +9035,8 @@ def concat_and_finalize(
                         "avatar_engine_selected": str(result.get("avatar_engine_selected") or result.get("avatar_engine_used") or "none"),
                         "fallback_chain": list(result.get("avatar_fallback_chain") or []),
                         "segment_rel_path": str(result.get("avatar_segment_rel_path") or ""),
+                        "avatar_layout": _result_avatar_layout(result, avatar_options),
+                        "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(result, avatar_options)),
                         "duration": round(duration, 3),
                     }
                 )
@@ -8987,6 +9086,18 @@ def concat_and_finalize(
                 for detail in list(item.get("details") or [])
             ]
         )
+        avatar_layout_pages = [
+            {
+                "index": int(item.get("index") or 0),
+                "slide_num": int(item.get("slide_num") or 0),
+                "page_key": str(item.get("page_key") or ""),
+                "avatar_layout": _result_avatar_layout(item, avatar_options),
+                "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_options)),
+                "avatar_layout_source": str(_result_avatar_layout(item, avatar_options).get("source_level") or "system"),
+                "avatar_layout_sources": dict(_result_avatar_layout(item, avatar_options).get("sources") or {}),
+            }
+            for item in ordered
+        ]
         protection_mode = _worker_protection_mode()
         playback_assets: dict[str, Any] = {
             "asset_id": f"{DRM_ASSET_ID_PREFIX}{project_id}",
@@ -9034,6 +9145,7 @@ def concat_and_finalize(
                 for item in ordered
             ],
             "avatar_clips": [str(item.get("avatar_segment_rel_path") or "") for item in ordered],
+            "avatar_layout_pages": avatar_layout_pages,
             "avatar_failures": avatar_failures,
             "avatar_slide_metadata": [
                 {
@@ -9051,6 +9163,8 @@ def concat_and_finalize(
                     "avatar_engine_selected": str(item.get("avatar_engine_selected") or item.get("avatar_engine_used") or "none"),
                     "avatar_fallback_chain": list(item.get("avatar_fallback_chain") or []),
                     "avatar_motion_validation": dict(item.get("avatar_motion_validation") or {}),
+                    "avatar_layout": _result_avatar_layout(item, avatar_options),
+                    "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_options)),
                 }
                 for item in ordered
             ],
@@ -9087,6 +9201,8 @@ def concat_and_finalize(
                 "avatar_error": str(item.get("avatar_error") or item.get("avatar_failure_reason") or ""),
                 "avatar_failure_reason": str(item.get("avatar_failure_reason") or item.get("avatar_error") or ""),
                 "avatar_engine_selected": str(item.get("avatar_engine_selected") or item.get("avatar_engine_used") or "none"),
+                "avatar_layout": _result_avatar_layout(item, avatar_options),
+                "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_options)),
                 "source_render_method": str(item.get("source_render_method") or ""),
                 "source_render_warnings": list(item.get("source_render_warnings") or []),
                 "source_render_details": _details_list_from_value(item.get("source_render_details")),
@@ -9115,10 +9231,14 @@ def concat_and_finalize(
                         avatar_segment_paths.append(str(abs_path))
                 if avatar_segment_paths:
                     concat_videos(avatar_segment_paths, str(avatar_track_path))
+                    publisher_avatar_layout = _publisher_avatar_layout_from_options(avatar_options)
                     playback_assets["avatar"] = {
                         "track_rel_path": f"{output_rel_prefix}/avatar/avatar_track.mp4",
-                        "default_position": "top-right",
-                        "default_size": "medium",
+                        "default_position": publisher_avatar_layout["position"],
+                        "default_size": publisher_avatar_layout["size"],
+                        "default_visible": bool(publisher_avatar_layout["visible"]),
+                        "publisher_avatar_layout": publisher_avatar_layout,
+                        "layout_by_page": avatar_layout_pages,
                         "segments": avatar_segments,
                     }
             except Exception:

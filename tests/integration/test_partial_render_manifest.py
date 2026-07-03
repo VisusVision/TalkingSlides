@@ -859,6 +859,94 @@ def test_classifier_maps_hash_fields_to_reasons(hash_key, reason, requires_full)
     assert page["requires_full"] is requires_full
 
 
+def _single_page_avatar_layout_manifest(
+    *,
+    slide_layout: dict | None = None,
+    publisher_layout: dict | None = None,
+) -> dict:
+    result = _render_result(index=0, page_key="s1-p1", display_text="Visible one", narration_text="Narration one")
+    scene = dict(result["editor_document"]["scene"])
+    if slide_layout is not None:
+        scene["avatar_layout"] = slide_layout
+    result["editor_document"] = {"scene": scene}
+    return build_partial_render_manifest(
+        project_id=42,
+        job_id=77,
+        ordered_results=[result],
+        playback_assets=_playback_assets(42),
+        avatar_options={
+            "enabled": True,
+            "teacher_id": 9,
+            "publisher_avatar_layout": publisher_layout or {"position": "top-right", "size": "medium", "visible": True},
+        },
+    )
+
+
+def test_avatar_layout_identity_uses_effective_values_not_override_source():
+    inherited = _single_page_avatar_layout_manifest()
+    explicit_same = _single_page_avatar_layout_manifest(slide_layout={"position": "top-right"})
+    malformed = _single_page_avatar_layout_manifest(slide_layout={"position": "center", "size": "giant", "visible": "maybe"})
+
+    inherited_page = inherited["pages"]["s1-p1"]
+    explicit_page = explicit_same["pages"]["s1-p1"]
+    malformed_page = malformed["pages"]["s1-p1"]
+
+    assert explicit_page["avatar_display_hash"] == inherited_page["avatar_display_hash"]
+    assert explicit_page["avatar_input_hash"] == inherited_page["avatar_input_hash"]
+    assert malformed_page["avatar_display_hash"] == inherited_page["avatar_display_hash"]
+    assert malformed_page["avatar_input_hash"] == inherited_page["avatar_input_hash"]
+    assert explicit_page["narration_text_hash"] == inherited_page["narration_text_hash"]
+    assert explicit_page["subtitle_text_hash"] == inherited_page["subtitle_text_hash"]
+
+
+@pytest.mark.parametrize(
+    "slide_layout",
+    [
+        {"position": "bottom-left"},
+        {"size": "large"},
+        {"visible": False},
+    ],
+)
+def test_avatar_layout_changes_classify_as_avatar_display_only(slide_layout):
+    old_manifest = _single_page_avatar_layout_manifest()
+    expected_manifest = _single_page_avatar_layout_manifest(slide_layout=slide_layout)
+
+    report = classify_partial_render_changes(
+        old_manifest=old_manifest,
+        expected_manifest=expected_manifest,
+    )
+    page = report["pages"]["s1-p1"]
+
+    assert page["classification"] == "avatar_display_changed"
+    assert page["changed_hashes"] == ["avatar_display_hash"]
+    assert expected_manifest["pages"]["s1-p1"]["tts_input_hash"] == old_manifest["pages"]["s1-p1"]["tts_input_hash"]
+    assert expected_manifest["pages"]["s1-p1"]["tts_settings_hash"] == old_manifest["pages"]["s1-p1"]["tts_settings_hash"]
+    assert expected_manifest["pages"]["s1-p1"]["layout_hash"] == old_manifest["pages"]["s1-p1"]["layout_hash"]
+    assert expected_manifest["pages"]["s1-p1"]["narration_text_hash"] == old_manifest["pages"]["s1-p1"]["narration_text_hash"]
+    assert expected_manifest["pages"]["s1-p1"]["subtitle_text_hash"] == old_manifest["pages"]["s1-p1"]["subtitle_text_hash"]
+
+
+def test_avatar_layout_publisher_default_changes_only_inheriting_slides():
+    inherited_old = _single_page_avatar_layout_manifest(
+        publisher_layout={"position": "top-right", "size": "medium", "visible": True}
+    )
+    inherited_new = _single_page_avatar_layout_manifest(
+        publisher_layout={"position": "top-left", "size": "medium", "visible": True}
+    )
+    explicit_old = _single_page_avatar_layout_manifest(
+        slide_layout={"position": "top-right"},
+        publisher_layout={"position": "top-right", "size": "medium", "visible": True},
+    )
+    explicit_new = _single_page_avatar_layout_manifest(
+        slide_layout={"position": "top-right"},
+        publisher_layout={"position": "top-left", "size": "medium", "visible": True},
+    )
+
+    assert inherited_old["pages"]["s1-p1"]["avatar_display_hash"] != inherited_new["pages"]["s1-p1"]["avatar_display_hash"]
+    assert explicit_old["pages"]["s1-p1"]["avatar_display_hash"] == explicit_new["pages"]["s1-p1"]["avatar_display_hash"]
+    assert explicit_old["pages"]["s1-p1"]["avatar_input_hash"] == explicit_new["pages"]["s1-p1"]["avatar_input_hash"]
+
+
 @pytest.mark.parametrize("old_manifest", [None, {"version": "legacy", "pages": []}])
 def test_classifier_missing_or_invalid_old_manifest_requires_full(old_manifest):
     expected_manifest = _two_page_manifest()
@@ -1639,13 +1727,28 @@ def test_visual_only_recompose_reuses_audio_avatar_and_replaces_only_target_part
             "split_index": 0,
             "narration_text": "Narration",
             "display_text": "New visible",
+            "editor_document": {
+                "scene": {
+                    "avatar_layout": {
+                        "position": "bottom-left",
+                        "visible": False,
+                    }
+                }
+            },
         },
         "42",
         "voice",
         0.5,
         "en",
         "service",
-        {"enabled": False},
+        {
+            "enabled": False,
+            "publisher_avatar_layout": {
+                "position": "top-right",
+                "size": "large",
+                "visible": True,
+            },
+        },
         {"provider_preference": "gtts"},
         {
             "tts_audio": "42/audio/slide_001.mp3",
@@ -1663,6 +1766,22 @@ def test_visual_only_recompose_reuses_audio_avatar_and_replaces_only_target_part
     assert result["tts_provider"] == "cached"
     assert result["avatar_segment_rel_path"] == "42/avatar_segments/avatar_001.mp4"
     assert result["avatar_engine_used"] == "cached"
+    assert result["avatar_layout"] == {
+        "position": "bottom-left",
+        "size": "large",
+        "visible": False,
+        "source_level": "slide",
+        "sources": {
+            "position": "slide",
+            "size": "publisher",
+            "visible": "slide",
+        },
+    }
+    assert result["effective_avatar_layout"] == {
+        "position": "bottom-left",
+        "size": "large",
+        "visible": False,
+    }
     assert result["visual_only_recomposed"] is True
     assert list(part_path.parent.glob("*.visual-recompose.*")) == []
 

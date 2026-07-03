@@ -19,6 +19,27 @@ except (ModuleNotFoundError, ImportError):
         sys.path.insert(0, str(_TTS_ROOT))
     from tts_preprocess import canonicalize_tts_input
 
+try:
+    from core.avatar_placement import (
+        normalize_avatar_layout_defaults,
+        normalize_avatar_layout_override,
+        resolve_avatar_layout,
+    )
+except (ModuleNotFoundError, ImportError):
+    sys.modules.pop("core.avatar_placement", None)
+    _API_ROOTS = (
+        Path(__file__).resolve().parents[1] / "api",
+        Path("/app/api"),
+    )
+    for _api_root in _API_ROOTS:
+        if _api_root.exists() and str(_api_root) not in sys.path:
+            sys.path.insert(0, str(_api_root))
+    from core.avatar_placement import (
+        normalize_avatar_layout_defaults,
+        normalize_avatar_layout_override,
+        resolve_avatar_layout,
+    )
+
 
 PARTIAL_RENDER_MANIFEST_VERSION = 1
 PARTIAL_RENDER_HASH_SEMANTICS_VERSION = 2
@@ -506,7 +527,7 @@ def build_partial_render_manifest(
         )
         avatar_settings = _drop_volatile(
             {
-                "options": canonical_avatar_options,
+                "options": _avatar_input_options(canonical_avatar_options),
                 "engine_selected": (
                     _canonical_disabled_avatar_value(avatar_engine_selected)
                     if not avatar_enabled
@@ -537,26 +558,17 @@ def build_partial_render_manifest(
                 "narration_text": narration_text,
             }
         )
+        resolved_avatar_layout = _resolved_page_avatar_layout(
+            result=result,
+            slide=slide,
+            segment=segment,
+            avatar_meta=avatar_meta,
+            playback=playback,
+            avatar_options=avatar_options,
+        )
+        semantic_avatar_layout = _semantic_avatar_layout(resolved_avatar_layout)
         avatar_display = _drop_volatile(
-            {
-                "default_position": _nested_value(playback.get("avatar"), "default_position"),
-                "default_size": _nested_value(playback.get("avatar"), "default_size"),
-                "quality": _first_present(
-                    segment.get("avatar_quality"),
-                    avatar_meta.get("avatar_quality"),
-                    _nested_value(playback.get("avatar"), "quality"),
-                ),
-                "enhanced_available": _first_present(
-                    segment.get("avatar_enhanced_available"),
-                    avatar_meta.get("avatar_enhanced_available"),
-                    _nested_value(playback.get("avatar"), "enhanced_available"),
-                ),
-                "enhanced_pending": _first_present(
-                    segment.get("avatar_enhanced_pending"),
-                    avatar_meta.get("avatar_enhanced_pending"),
-                    _nested_value(playback.get("avatar"), "enhanced_pending"),
-                ),
-            }
+            semantic_avatar_layout
         )
         background = _drop_volatile(
             {
@@ -662,6 +674,7 @@ def build_partial_render_manifest(
             "layout_hash": stable_hash(layout),
             "structural_hash": stable_hash(structural),
             "source_render_hash": stable_hash(source_render),
+            "avatar_layout": semantic_avatar_layout,
             "artifacts": artifacts,
             "invalidation_reasons": [],
         }
@@ -1436,6 +1449,109 @@ def _canonical_avatar_options(value: Mapping[str, Any] | None) -> dict[str, Any]
     return normalized
 
 
+def _avatar_input_options(options: Mapping[str, Any]) -> dict[str, Any]:
+    cleaned = dict(options or {})
+    for key in (
+        "avatar_default_position",
+        "avatar_default_size",
+        "avatar_default_visible",
+        "avatar_layout",
+        "default_position",
+        "default_size",
+        "default_visible",
+        "lesson_avatar_layout",
+        "publisher_avatar_layout",
+    ):
+        cleaned.pop(key, None)
+    return cleaned
+
+
+def _avatar_layout_defaults_from_sources(
+    *,
+    avatar_options: Mapping[str, Any] | None,
+    playback: Mapping[str, Any],
+) -> dict[str, Any]:
+    options = dict(avatar_options or {})
+    playback_avatar = playback.get("avatar") if isinstance(playback.get("avatar"), Mapping) else {}
+    raw_default = _first_present(
+        options.get("publisher_avatar_layout"),
+        options.get("avatar_layout"),
+        playback_avatar.get("publisher_avatar_layout"),
+        playback_avatar.get("avatar_layout"),
+        {
+            "position": _first_present(
+                options.get("default_position"),
+                options.get("avatar_default_position"),
+                playback_avatar.get("default_position"),
+            ),
+            "size": _first_present(
+                options.get("default_size"),
+                options.get("avatar_default_size"),
+                playback_avatar.get("default_size"),
+            ),
+            "visible": _first_present(
+                options.get("default_visible"),
+                options.get("avatar_default_visible"),
+                playback_avatar.get("default_visible"),
+                playback_avatar.get("visible"),
+            ),
+        },
+    )
+    return normalize_avatar_layout_defaults(raw_default)
+
+
+def _avatar_layout_override_from_page(
+    *,
+    result: Mapping[str, Any],
+    slide: Mapping[str, Any],
+    segment: Mapping[str, Any],
+    avatar_meta: Mapping[str, Any],
+) -> dict[str, Any]:
+    result_scene = _nested_value(result.get("editor_document"), "scene")
+    slide_scene = _nested_value(slide.get("editor_document"), "scene")
+    for present, candidate in (
+        ("avatar_layout" in result, result.get("avatar_layout")),
+        (isinstance(result_scene, Mapping) and "avatar_layout" in result_scene, _nested_value(result_scene, "avatar_layout")),
+        (isinstance(slide_scene, Mapping) and "avatar_layout" in slide_scene, _nested_value(slide_scene, "avatar_layout")),
+        ("avatar_layout" in segment, segment.get("avatar_layout")),
+        ("avatar_layout" in avatar_meta, avatar_meta.get("avatar_layout")),
+    ):
+        if present:
+            return normalize_avatar_layout_override(candidate)
+    return {}
+
+
+def _resolved_page_avatar_layout(
+    *,
+    result: Mapping[str, Any],
+    slide: Mapping[str, Any],
+    segment: Mapping[str, Any],
+    avatar_meta: Mapping[str, Any],
+    playback: Mapping[str, Any],
+    avatar_options: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    options = dict(avatar_options or {})
+    return resolve_avatar_layout(
+        _avatar_layout_override_from_page(
+            result=result,
+            slide=slide,
+            segment=segment,
+            avatar_meta=avatar_meta,
+        ),
+        options.get("lesson_avatar_layout"),
+        _avatar_layout_defaults_from_sources(avatar_options=avatar_options, playback=playback),
+    )
+
+
+def _semantic_avatar_layout(layout: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = normalize_avatar_layout_defaults(layout)
+    return {
+        "position": normalized["position"],
+        "size": normalized["size"],
+        "visible": bool(normalized["visible"]),
+    }
+
+
 def _canonical_layout_identity(
     *,
     result: Mapping[str, Any],
@@ -1480,6 +1596,7 @@ def _canonical_layout_identity(
     # dedicated hashes. Preserve every other editor-scene field so real user
     # layout edits remain visible to the classifier.
     for key in (
+        "avatar_layout",
         "background_fit",
         "background_mode",
         "source_background_generated",

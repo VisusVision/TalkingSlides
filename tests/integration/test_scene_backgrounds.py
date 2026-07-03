@@ -186,6 +186,66 @@ def test_owner_can_patch_scene_settings():
 
 
 @pytest.mark.django_db
+def test_owner_can_patch_avatar_layout_without_visual_moderation_dirty():
+    teacher = _make_teacher("patch_avatar_layout_owner")
+    project = Project.objects.create(title="Patch avatar layout", user=teacher)
+    page = _make_page(project)
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/scene/",
+        {
+            "draft_only": True,
+            "avatar_layout": {
+                "position": "bottom-left",
+                "size": "large",
+                "visible": False,
+            },
+        },
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    response = views.TranscriptPageSceneView.as_view()(request, project_id=project.id, page_id=page.id)
+
+    assert response.status_code == 200
+    scene = response.data["page"]["editor_document"]["scene"]
+    assert scene["avatar_layout"] == {"position": "bottom-left", "size": "large", "visible": False}
+    assert response.data["draft_metadata"]["metadata_dirty"] is True
+    assert response.data["draft_metadata"]["render_required"] is False
+    assert response.data["draft_metadata"]["background_dirty"] is False
+    assert response.data["draft_metadata"]["visual_assets_dirty"] is False
+
+
+@pytest.mark.django_db
+def test_scene_avatar_layout_reset_to_inherit_removes_override():
+    teacher = _make_teacher("patch_avatar_layout_reset")
+    project = Project.objects.create(title="Reset avatar layout", user=teacher)
+    page = _make_page(
+        project,
+        editor_document={
+            "version": 1,
+            "scene": {
+                "avatar_layout": {"position": "top-left", "size": "small", "visible": False},
+            },
+        },
+    )
+
+    request = APIRequestFactory().patch(
+        f"/api/v1/projects/{project.id}/transcript-pages/{page.id}/scene/",
+        {"draft_only": False, "avatar_layout": {"position": None, "size": None, "visible": None}},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    response = views.TranscriptPageSceneView.as_view()(request, project_id=project.id, page_id=page.id)
+
+    assert response.status_code == 200
+    page.refresh_from_db()
+    assert "avatar_layout" not in page.editor_document["scene"]
+    assert "avatar_layout" not in response.data["page"]["editor_document"]["scene"]
+
+
+@pytest.mark.django_db
 def test_owner_can_select_source_background_mode(tmp_path):
     teacher = _make_teacher("patch_source_background_owner")
     project = Project.objects.create(title="Patch source background", user=teacher)

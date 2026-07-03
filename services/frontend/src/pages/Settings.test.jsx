@@ -86,6 +86,25 @@ async function openVoiceSampleModal(host) {
   });
 }
 
+async function openAvatarPreviewModal(host) {
+  let avatarPreviewButton = findButton(host, 'Avatar Preview');
+  if (!avatarPreviewButton) {
+    const avatarSectionButton = findButton(host, 'Voice and avatar samples');
+    expect(avatarSectionButton).toBeTruthy();
+
+    await act(async () => {
+      avatarSectionButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    avatarPreviewButton = findButton(host, 'Avatar Preview');
+  }
+
+  expect(avatarPreviewButton).toBeTruthy();
+
+  await act(async () => {
+    avatarPreviewButton.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
 async function clickSettingsButton(label) {
   await act(async () => {
     findButton(document.body, label).dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -345,6 +364,83 @@ describe('Settings theme controls', () => {
     expect(apiMocks.fetchAvatarProfile).toHaveBeenCalledWith(staffUser.id);
     expect(document.body.textContent).toContain('Record from microphone');
     expect(findButton(document.body, 'Start recording')).toBeTruthy();
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it('saves avatar layout defaults without preparing or generating a preview', async () => {
+    capabilityMockState.avatarEnabled = true;
+    apiMocks.fetchAvatarProfile.mockResolvedValue({
+      profile: {
+        avatar_consent_confirmed: true,
+        avatar_enabled: true,
+        avatar_overlay_default_position: 'bottom-left',
+        avatar_overlay_size: 'large',
+        avatar_overlay_visible: false,
+      },
+      avatar_setup_status: {
+        state: 'missing_voice',
+        checklist: {
+          portrait_uploaded: true,
+          voice_uploaded: false,
+          consent_confirmed: true,
+          avatar_generation_enabled: true,
+          avatar_prepared: false,
+        },
+      },
+    });
+    apiMocks.updateAvatarProfile.mockResolvedValue({ status: 'updated' });
+    const { host, root } = await renderSettings({ user: teacherUser });
+
+    await openAvatarPreviewModal(host);
+
+    const positionSelect = findLabel(document.body, 'Default avatar position').querySelector('select');
+    const sizeSelect = findLabel(document.body, 'Default avatar size').querySelector('select');
+    const visibilityInput = findLabel(document.body, 'Default avatar visibility').querySelector('input');
+
+    expect(positionSelect.value).toBe('bottom-left');
+    expect(sizeSelect.value).toBe('large');
+    expect(visibilityInput.checked).toBe(false);
+
+    await act(async () => {
+      positionSelect.value = 'top-left';
+      positionSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      sizeSelect.value = 'small';
+      sizeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await clickSettingsButton('Save Avatar Settings');
+
+    expect(apiMocks.updateAvatarProfile).toHaveBeenCalledWith(teacherUser.id, expect.objectContaining({
+      avatar_overlay_default_position: 'top-left',
+      avatar_overlay_size: 'small',
+      avatar_overlay_visible: false,
+    }));
+    expect(apiMocks.prepareAvatarProfile).not.toHaveBeenCalled();
+    expect(apiMocks.regenerateAvatarPreview).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it('normalizes invalid loaded avatar layout defaults in the controls', async () => {
+    capabilityMockState.avatarEnabled = true;
+    apiMocks.fetchAvatarProfile.mockResolvedValue({
+      profile: {
+        avatar_overlay_default_position: 'center',
+        avatar_overlay_size: 'giant',
+        avatar_overlay_visible: 'maybe',
+      },
+      avatar_setup_status: { state: 'not_configured', checklist: {} },
+    });
+    const { host, root } = await renderSettings({ user: teacherUser });
+
+    await openAvatarPreviewModal(host);
+
+    expect(findLabel(document.body, 'Default avatar position').querySelector('select').value).toBe('top-right');
+    expect(findLabel(document.body, 'Default avatar size').querySelector('select').value).toBe('medium');
+    expect(findLabel(document.body, 'Default avatar visibility').querySelector('input').checked).toBe(true);
 
     await act(async () => root.unmount());
     host.remove();

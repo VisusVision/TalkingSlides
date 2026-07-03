@@ -24,9 +24,55 @@ const POLL_INTERVAL_MS = 2000;
 const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 const LOCAL_DRAFT_DB_NAME = 'visus-studio-local-drafts';
 const LOCAL_DRAFT_STORE_NAME = 'drafts';
+const AVATAR_LAYOUT_POSITIONS = new Set(['top-left', 'top-right', 'bottom-left', 'bottom-right']);
+const AVATAR_LAYOUT_SIZES = new Set(['small', 'medium', 'large']);
 
 function textValue(value) {
   return value === null || value === undefined ? '' : String(value);
+}
+
+export function normalizeTranscriptAvatarLayout(value) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const next = {};
+  const position = String(source.position || '').trim().toLowerCase();
+  const size = String(source.size || '').trim().toLowerCase();
+  if (AVATAR_LAYOUT_POSITIONS.has(position)) next.position = position;
+  if (AVATAR_LAYOUT_SIZES.has(size)) next.size = size;
+  if (typeof source.visible === 'boolean') next.visible = source.visible;
+  return next;
+}
+
+function cloneEditorDocument(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const document = { ...value };
+  if (value.scene && typeof value.scene === 'object' && !Array.isArray(value.scene)) {
+    document.scene = { ...value.scene };
+    if (value.scene.avatar_layout && typeof value.scene.avatar_layout === 'object') {
+      document.scene.avatar_layout = { ...value.scene.avatar_layout };
+    }
+  }
+  return document;
+}
+
+export function pageWithTranscriptAvatarLayout(page, value) {
+  const nextPage = { ...page };
+  const editorDocument = cloneEditorDocument(page?.editor_document);
+  const scene = editorDocument.scene && typeof editorDocument.scene === 'object'
+    ? { ...editorDocument.scene }
+    : {};
+  const avatarLayout = normalizeTranscriptAvatarLayout(value);
+  if (Object.keys(avatarLayout).length) {
+    scene.avatar_layout = avatarLayout;
+  } else {
+    delete scene.avatar_layout;
+  }
+  if (Object.keys(scene).length) {
+    editorDocument.scene = scene;
+  } else {
+    delete editorDocument.scene;
+  }
+  nextPage.editor_document = editorDocument;
+  return nextPage;
 }
 
 function narrationValue(page) {
@@ -111,10 +157,7 @@ function clonePage(page, index) {
     original_text: textValue(page?.original_text),
     narration_text: narrationValue(page),
     rich_text_html: textValue(page?.rich_text_html),
-    editor_document:
-      page?.editor_document && typeof page.editor_document === 'object'
-        ? { ...page.editor_document }
-        : {},
+    editor_document: cloneEditorDocument(page?.editor_document),
     subtitle_chunks: Array.isArray(page?.subtitle_chunks) ? [...page.subtitle_chunks] : [],
     whiteboard_mode: Boolean(page?.whiteboard_mode),
   };
@@ -139,7 +182,7 @@ function pageDescriptor(page, index) {
   return `${pageLabel(page, index)}${key}`;
 }
 
-function editableSignature(page) {
+export function transcriptContentSignature(page) {
   const flags = editorTextFlags(page);
   return JSON.stringify({
     original_text: textValue(page?.original_text),
@@ -147,6 +190,14 @@ function editableSignature(page) {
     whiteboard_mode: Boolean(page?.whiteboard_mode),
     narration_customized: flags.narration_customized,
     display_text_customized: flags.display_text_customized,
+  });
+}
+
+export function editableSignature(page) {
+  const scene = page?.editor_document?.scene;
+  return JSON.stringify({
+    content: transcriptContentSignature(page),
+    avatar_layout: normalizeTranscriptAvatarLayout(scene?.avatar_layout),
   });
 }
 
@@ -178,18 +229,29 @@ function diffLabelForPage(page, index, dirtyPageIndexes) {
   return 'unchanged';
 }
 
-function buildPayloadPage(page) {
+export function buildPayloadPage(page, { avatarLayoutOnly = false } = {}) {
   const narrationText = textValue(page?.narration_text);
   const displayText = displayValue(page);
   const html = narrationToHtml(displayText);
   const flags = editorTextFlags(page);
-  const payload = {
-    original_text: displayText,
-    narration_text: narrationText,
-    rich_text_html: html,
-    editor_document: displayToEditorDocument(displayText, html, flags),
-    whiteboard_mode: Boolean(page?.whiteboard_mode),
-  };
+  const currentScene = page?.editor_document?.scene;
+  const scene = currentScene && typeof currentScene === 'object' && !Array.isArray(currentScene)
+    ? { ...currentScene }
+    : {};
+  const avatarLayout = normalizeTranscriptAvatarLayout(scene.avatar_layout);
+  scene.avatar_layout = Object.keys(avatarLayout).length ? avatarLayout : null;
+  const payload = avatarLayoutOnly
+    ? { editor_document: { scene: { avatar_layout: scene.avatar_layout } } }
+    : {
+        original_text: displayText,
+        narration_text: narrationText,
+        rich_text_html: html,
+        editor_document: {
+          ...displayToEditorDocument(displayText, html, flags),
+          scene,
+        },
+        whiteboard_mode: Boolean(page?.whiteboard_mode),
+      };
 
   for (const key of ['id', 'page_key', 'order', 'source_slide_index', 'split_index']) {
     if (page?.[key] !== undefined && page?.[key] !== null && page?.[key] !== '') {
@@ -643,6 +705,13 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   }, [draftPages, sourcePages]);
 
   const isDirty = dirtyPageIndexes.size > 0 || draftPages.length !== sourcePages.length;
+  const hasTextChanges = useMemo(() => (
+    draftPages.length !== sourcePages.length
+    || draftPages.some((page, index) => (
+      !sourcePages[index]
+      || transcriptContentSignature(page) !== transcriptContentSignature(sourcePages[index])
+    ))
+  ), [draftPages, sourcePages]);
 
   useEffect(() => {
     onDirtyChange?.(isDirty);
@@ -682,6 +751,7 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         dirty: dirtyPageIndexes.has(index),
         display_text: displayValue(page),
         narration_text: textValue(page?.narration_text),
+        avatar_layout: normalizeTranscriptAvatarLayout(page?.editor_document?.scene?.avatar_layout),
       };
       return acc;
     }, {});
@@ -716,6 +786,18 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
   const updateDraftPage = useCallback((index, patch) => {
     setDraftPages((current) => {
       const nextPages = current.map((page, pageIndex) => (pageIndex === index ? { ...page, ...patch } : page));
+      persistLocalTranscriptPages(nextPages);
+      return nextPages;
+    });
+  }, [persistLocalTranscriptPages]);
+
+  const updateAvatarLayout = useCallback((targetPageKey, targetPageIndex, value) => {
+    setDraftPages((current) => {
+      const nextPages = current.map((page, index) => {
+        const matchesKey = targetPageKey && pageKey(page, index) === String(targetPageKey);
+        const matchesIndex = !targetPageKey && index === Number(targetPageIndex);
+        return matchesKey || matchesIndex ? pageWithTranscriptAvatarLayout(page, value) : page;
+      });
       persistLocalTranscriptPages(nextPages);
       return nextPages;
     });
@@ -1234,9 +1316,16 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
       setPollingStartedAt(null);
 
       try {
-        const payloadPages = draftPages
-          .filter((page, index) => dirtyPageIndexes.has(index))
-          .map(buildPayloadPage);
+        const payloadPages = draftPages.reduce((items, page, index) => {
+          if (!dirtyPageIndexes.has(index)) return items;
+          const sourcePage = sourcePages[index];
+          const avatarLayoutOnly = Boolean(
+            sourcePage
+            && transcriptContentSignature(page) === transcriptContentSignature(sourcePage),
+          );
+          items.push(buildPayloadPage(page, { avatarLayoutOnly }));
+          return items;
+        }, []);
         if (!payloadPages.length && !triggerRerender) {
           setStatusMessage('No transcript changes to save.');
           return;
@@ -1296,15 +1385,17 @@ const TranscriptEditorPanel = forwardRef(function TranscriptEditorPanel({
         }
       }
     },
-    [dirtyPageIndexes, draftPages, localDraftScope, onModerationUpdated, onPagesUpdated, onProjectRefresh, pollRerenderJob, project, readOnly, rerendering, saving, showLocalActions],
+    [dirtyPageIndexes, draftPages, localDraftScope, onModerationUpdated, onPagesUpdated, onProjectRefresh, pollRerenderJob, project, readOnly, rerendering, saving, showLocalActions, sourcePages],
   );
 
   useImperativeHandle(ref, () => ({
     save: saveTranscript,
     hasUnsavedChanges: () => isDirty,
+    hasUnsavedTextChanges: () => hasTextChanges,
     isBusy: () => controlsDisabled,
     applyNarrationSuggestion,
-  }), [applyNarrationSuggestion, controlsDisabled, isDirty, saveTranscript]);
+    updateAvatarLayout,
+  }), [applyNarrationSuggestion, controlsDisabled, hasTextChanges, isDirty, saveTranscript, updateAvatarLayout]);
 
   if (!project) {
     return (

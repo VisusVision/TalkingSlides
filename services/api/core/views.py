@@ -114,6 +114,7 @@ from core.serializers import (
     SlideSerializer,
     SiteHelpContentSerializer,
     TranscriptPageSerializer,
+    UserProfileSerializer,
     UserSerializer,
     canonical_project_tts_settings,
     merge_project_tts_settings_patch,
@@ -183,8 +184,12 @@ from core.tts_llm_suggestions import pronunciation_suggestion_response
 from core.avatar_readiness import avatar_preview_readiness, avatar_setup_status, normalize_avatar_engine
 from core.avatar_placement import (
     apply_avatar_placement_to_preference,
+    avatar_layout_from_profile,
+    normalize_avatar_layout_defaults,
+    normalize_avatar_layout_override,
     normalize_avatar_placement,
     project_avatar_placement,
+    resolve_avatar_layout,
 )
 from core.avatar_runtime_settings import (
     project_avatar_runtime_settings,
@@ -1295,6 +1300,7 @@ def _partial_render_preview_editor_document(value: Any) -> dict[str, Any]:
             "highlight_enabled",
             "highlight_style",
             "highlight_detector",
+            "avatar_layout",
             "overlay_layout",
             "font",
         ):
@@ -1448,7 +1454,11 @@ def _partial_render_preview_pages(project: Project, request) -> tuple[str, list[
 
 def _partial_render_preview_avatar_options(project: Project, request) -> dict[str, Any]:
     teacher = getattr(project, "user", None)
-    profile = getattr(teacher, "profile", None) if teacher is not None else None
+    try:
+        profile = getattr(teacher, "profile", None) if teacher is not None else None
+    except ObjectDoesNotExist:
+        profile = None
+    publisher_layout = avatar_layout_from_profile(profile)
     if not avatar_enabled():
         requested = False
     elif "avatar_enabled" in request.data or "render_with_avatar" in request.data:
@@ -1463,6 +1473,11 @@ def _partial_render_preview_avatar_options(project: Project, request) -> dict[st
         "enabled": bool(requested),
         "teacher_id": int(getattr(teacher, "id", 0) or 0),
         "avatar_visible": bool(getattr(project, "avatar_visible", True)),
+        "publisher_avatar_layout": publisher_layout,
+        "lesson_avatar_layout": None,
+        "default_position": publisher_layout["position"],
+        "default_size": publisher_layout["size"],
+        "default_visible": publisher_layout["visible"],
         "avatar_runtime_settings": project_avatar_runtime_settings(project),
     }
 
@@ -1806,9 +1821,15 @@ def _raw_scene_from_document(editor_document: Any) -> dict:
 def _merge_editor_document_preserving_scene(next_document: dict, current_document: Any) -> dict:
     document = deepcopy(next_document or {})
     current_scene = deepcopy(_raw_scene_from_document(current_document))
-    if current_scene:
-        incoming_scene = deepcopy(_raw_scene_from_document(document))
+    incoming_scene = deepcopy(_raw_scene_from_document(document))
+    if current_scene or incoming_scene:
         merged_scene = {**current_scene, **incoming_scene}
+        if "avatar_layout" in incoming_scene:
+            avatar_layout = normalize_avatar_layout_override(incoming_scene.get("avatar_layout"))
+            if avatar_layout:
+                merged_scene["avatar_layout"] = avatar_layout
+            else:
+                merged_scene.pop("avatar_layout", None)
         for unsafe_key in (
             "original_background_path",
             "custom_background_path",
@@ -2676,6 +2697,18 @@ def _playback_payload(
         "secure_hls_active": bool(hls_manifest_token),
     }
     avatar_defaults = dict(avatar_overlay_defaults or {})
+    publisher_avatar_layout = normalize_avatar_layout_defaults(
+        avatar_defaults.get("avatar_layout")
+        or avatar_defaults.get("publisher_avatar_layout")
+        or {
+            "position": avatar_defaults.get("avatar_overlay_default_position") or avatar_defaults.get("position"),
+            "size": avatar_defaults.get("avatar_overlay_size") or avatar_defaults.get("size"),
+            "visible": avatar_defaults.get("visible"),
+        }
+    )
+    avatar_defaults["avatar_layout"] = publisher_avatar_layout
+    avatar_defaults["publisher_avatar_layout"] = publisher_avatar_layout
+    avatar_defaults.setdefault("lesson_avatar_layout", None)
     avatar_placement = normalize_avatar_placement(
         avatar_defaults.get("avatar_placement") if isinstance(avatar_defaults.get("avatar_placement"), dict) else avatar_defaults
     )
@@ -2689,6 +2722,7 @@ def _playback_payload(
         "enhanced_pending": bool(avatar_state.get("enhanced_pending")),
         "version": str(avatar_state.get("version") or ""),
         "updated_at": str(avatar_state.get("updated_at") or ""),
+        "layout_by_page": list(avatar_state.get("layout_by_page") or []),
     }
 
     if avatar_token:
@@ -5840,6 +5874,11 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     teacher = project.user
     if teacher is None:
         return {"enabled": False}
+    try:
+        profile = getattr(teacher, "profile", None)
+    except ObjectDoesNotExist:
+        profile = None
+    publisher_layout = avatar_layout_from_profile(profile)
     if not avatar_enabled():
         return {
             "requested": False,
@@ -5855,11 +5894,16 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
             "avatar_source_validation_error": feature_disabled_reason("Avatar"),
             "avatar_moderation_status": "skipped",
             "avatar_moderation_blocked": False,
+            "publisher_avatar_layout": publisher_layout,
+            "lesson_avatar_layout": None,
+            "default_position": publisher_layout["position"],
+            "default_size": publisher_layout["size"],
+            "default_visible": publisher_layout["visible"],
         }
 
-    profile = getattr(teacher, "profile", None)
     if profile is None:
         profile, _ = UserProfile.objects.get_or_create(user=teacher, defaults={"role": "teacher"})
+        publisher_layout = avatar_layout_from_profile(profile)
 
     request_override = request.data.get("avatar_enabled")
     if request_override is None:
@@ -5934,6 +5978,11 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
         "avatar_moderation_blocked": bool(moderation_gate.get("blocked")),
         "avatar_moderation_error_code": str(moderation_gate.get("error_code") or ""),
         "avatar_moderation_summary": dict(profile.avatar_moderation_summary or {}),
+        "publisher_avatar_layout": publisher_layout,
+        "lesson_avatar_layout": None,
+        "default_position": publisher_layout["position"],
+        "default_size": publisher_layout["size"],
+        "default_visible": publisher_layout["visible"],
         "composite_configured": composite_ready,
         "composite_lesson_enabled": _composite_lesson_enabled(),
         "composite_fallback_allowed": composite_fallback_allowed,
@@ -5944,12 +5993,19 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
 
 def _avatar_overlay_defaults_for_project(project: Project) -> dict:
     project_user = getattr(project, "user", None)
-    teacher_profile = getattr(project_user, "profile", None) if project_user else None
+    try:
+        teacher_profile = getattr(project_user, "profile", None) if project_user else None
+    except ObjectDoesNotExist:
+        teacher_profile = None
     placement = project_avatar_placement(project)
+    publisher_layout = avatar_layout_from_profile(teacher_profile)
     return {
         **placement,
         "avatar_placement": placement,
-        "visible": bool(getattr(teacher_profile, "avatar_overlay_visible", True)),
+        "avatar_layout": publisher_layout,
+        "publisher_avatar_layout": publisher_layout,
+        "lesson_avatar_layout": None,
+        "visible": bool(publisher_layout["visible"]),
     }
 
 
@@ -5983,6 +6039,130 @@ def _avatar_file_version(storage_root: str | os.PathLike[str], rel_path: str) ->
         return digest[:16]
     except Exception:
         return ""
+
+
+def _avatar_layout_by_page_from_sidecar(
+    sidecar: dict | None,
+    *,
+    project: Project | None = None,
+) -> list[dict[str, Any]]:
+    if not isinstance(sidecar, dict):
+        return []
+
+    avatar_payload = sidecar.get("avatar")
+    avatar_payload = avatar_payload if isinstance(avatar_payload, dict) else {}
+    raw_layout_rows = avatar_payload.get("layout_by_page") or sidecar.get("avatar_layout_pages") or []
+    layout_rows = [row for row in raw_layout_rows if isinstance(row, Mapping)]
+    timeline_rows = [row for row in (sidecar.get("timeline") or []) if isinstance(row, Mapping)]
+    if not timeline_rows and not layout_rows:
+        return []
+
+    publisher_default = None
+    active_by_key: dict[str, TranscriptPage] = {}
+    active_by_index: dict[int, TranscriptPage] = {}
+    if project is not None:
+        project_user = getattr(project, "user", None)
+        try:
+            teacher_profile = getattr(project_user, "profile", None) if project_user else None
+        except ObjectDoesNotExist:
+            teacher_profile = None
+        publisher_default = avatar_layout_from_profile(teacher_profile)
+        active_pages = list(_active_transcript_pages(project))
+        active_by_key = {
+            str(page.page_key): page
+            for page in active_pages
+            if str(page.page_key or "").strip()
+        }
+        active_by_index = {
+            int(page.order): page
+            for page in active_pages
+        }
+    if publisher_default is None:
+        publisher_default = (
+            avatar_payload.get("publisher_avatar_layout")
+            or {
+                "position": avatar_payload.get("default_position"),
+                "size": avatar_payload.get("default_size"),
+                "visible": avatar_payload.get("default_visible"),
+            }
+        )
+    default_layout = resolve_avatar_layout(publisher_default=publisher_default)
+    by_key = {
+        str(row.get("page_key") or ""): row
+        for row in layout_rows
+        if str(row.get("page_key") or "").strip()
+    }
+    by_index = {
+        int(row.get("index")): row
+        for row in layout_rows
+        if str(row.get("index", "")).strip().lstrip("-").isdigit()
+    }
+    allowed_sources = {"slide", "lesson", "publisher", "system"}
+    rows: list[dict[str, Any]] = []
+    source_rows = timeline_rows or layout_rows
+    for fallback_index, timeline in enumerate(source_rows):
+        page_key = str(timeline.get("page_key") or "").strip()
+        try:
+            index = int(timeline.get("index", timeline.get("order", fallback_index)))
+        except (TypeError, ValueError):
+            index = fallback_index
+        layout_row = by_key.get(page_key) or by_index.get(index) or timeline
+        active_page = active_by_key.get(page_key) or active_by_index.get(index)
+        if active_page is not None:
+            editor_document = (
+                active_page.editor_document
+                if isinstance(active_page.editor_document, Mapping)
+                else {}
+            )
+            scene = editor_document.get("scene") if isinstance(editor_document.get("scene"), Mapping) else {}
+            raw_layout = resolve_avatar_layout(
+                scene.get("avatar_layout"),
+                publisher_default=publisher_default,
+            )
+        else:
+            raw_layout = (
+                layout_row.get("effective_avatar_layout")
+                or layout_row.get("avatar_layout")
+                or default_layout
+            )
+        effective = normalize_avatar_layout_defaults(raw_layout)
+        source_level = str(
+            (raw_layout.get("source_level") if active_page is not None and isinstance(raw_layout, Mapping) else "")
+            or layout_row.get("avatar_layout_source")
+            or (raw_layout.get("source_level") if isinstance(raw_layout, Mapping) else "")
+            or default_layout.get("source_level")
+            or "system"
+        ).strip().lower()
+        if source_level not in allowed_sources:
+            source_level = "system"
+        raw_sources = (
+            (raw_layout.get("sources") if active_page is not None and isinstance(raw_layout, Mapping) else {})
+            or layout_row.get("avatar_layout_sources")
+            or (raw_layout.get("sources") if isinstance(raw_layout, Mapping) else {})
+            or {}
+        )
+        sources = {}
+        for key in ("position", "size", "visible"):
+            raw_source = str(raw_sources.get(key) or source_level).strip().lower()
+            sources[key] = raw_source if raw_source in allowed_sources else "system"
+        row = {
+            "index": index,
+            "page_key": page_key,
+            "position": effective["position"],
+            "size": effective["size"],
+            "visible": bool(effective["visible"]),
+            "source": source_level,
+            "sources": sources,
+        }
+        for key in ("start", "end"):
+            try:
+                value = float(timeline.get(key))
+            except (TypeError, ValueError):
+                continue
+            if value == value and value >= 0:
+                row[key] = round(value, 3)
+        rows.append(row)
+    return rows
 
 
 def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dict[str, Any]:
@@ -6039,6 +6219,7 @@ def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dic
         "track_fast_rel_path": fast_rel if fast_exists else "",
         "track_restored_rel_path": restored_rel if restored_exists else "",
         "rel_paths": sorted(set(rel_paths)),
+        "layout_by_page": _avatar_layout_by_page_from_sidecar(sidecar, project=project),
     }
 
 
@@ -7661,6 +7842,22 @@ def _next_draft_temp_page_id(draft_data: dict) -> int:
     return (min(negative_ids) - 1) if negative_ids else -1
 
 
+def _transcript_update_is_avatar_layout_only(item: Any) -> bool:
+    identity_keys = {"id", "page_key", "order", "source_slide_index", "split_index"}
+    if not isinstance(item, Mapping) or set(item) - identity_keys != {"editor_document"}:
+        return False
+    document = item.get("editor_document")
+    if not isinstance(document, Mapping) or set(document) != {"scene"}:
+        return False
+    scene = document.get("scene")
+    return isinstance(scene, Mapping) and set(scene) == {"avatar_layout"}
+
+
+def _transcript_updates_are_avatar_layout_only(updates: list[dict]) -> bool:
+    items = [item for item in updates if isinstance(item, Mapping)]
+    return bool(items) and all(_transcript_update_is_avatar_layout_only(item) for item in items)
+
+
 def _apply_transcript_draft_updates(project: Project, updates: list[dict]) -> tuple[dict, set[str]]:
     draft_data = ensure_project_draft_data(project)
     pages = draft_data.setdefault("transcript_pages", [])
@@ -7703,12 +7900,13 @@ def _apply_transcript_draft_updates(project: Project, updates: list[dict]) -> tu
 
         if "editor_document" in item and isinstance(item.get("editor_document"), dict):
             incoming_document = dict(item.get("editor_document") or {})
-            incoming_document.setdefault("text", {})
-            if isinstance(incoming_document["text"], dict):
-                incoming_document["text"].update({
-                    "narration_customized": bool(text_flags.get("narration_customized")),
-                    "display_text_customized": bool(text_flags.get("display_text_customized")),
-                })
+            if not _transcript_update_is_avatar_layout_only(item):
+                incoming_document.setdefault("text", {})
+                if isinstance(incoming_document["text"], dict):
+                    incoming_document["text"].update({
+                        "narration_customized": bool(text_flags.get("narration_customized")),
+                        "display_text_customized": bool(text_flags.get("display_text_customized")),
+                    })
             page["editor_document"] = _merge_editor_document_preserving_scene(
                 incoming_document,
                 page.get("editor_document") or {},
@@ -8125,13 +8323,23 @@ class ProjectTranscriptView(APIView):
 
         if draft_only or draft_rerender:
             draft_data, changed_page_keys = _apply_transcript_draft_updates(project, updates)
+            avatar_layout_only = bool(
+                changed_page_keys
+                and _transcript_updates_are_avatar_layout_only(updates)
+            )
             if changed_page_keys:
-                mark_draft_dirty(draft_data, transcript_dirty=True, render_required=True)
-                draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="text")
+                mark_draft_dirty(
+                    draft_data,
+                    metadata_dirty=avatar_layout_only,
+                    transcript_dirty=not avatar_layout_only,
+                    render_required=not avatar_layout_only,
+                )
+                if not avatar_layout_only:
+                    draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="text")
             save_project_draft_data(project, draft_data, dirty=True)
             project.refresh_from_db()
             source_moderation_result = None
-            if changed_page_keys:
+            if changed_page_keys and not avatar_layout_only:
                 source_moderation_result = _run_draft_source_moderation_after_save(project, request)
                 project.refresh_from_db()
             if draft_rerender and _draft_moderation_result_blocks(source_moderation_result):
@@ -8222,7 +8430,7 @@ class ProjectTranscriptView(APIView):
                 payload["message"] = "Video rerender not required."
             if source_moderation_result:
                 payload["moderation"] = source_moderation_result
-            if changed_page_keys:
+            if changed_page_keys and not avatar_layout_only:
                 payload["intelligence_auto_scheduled"] = _queue_lesson_intelligence_schedule(
                     project.id,
                     reason="draft_rerender_requested" if draft_rerender else "draft_transcript_saved",
@@ -9860,6 +10068,29 @@ class TranscriptPageBackgroundImageView(APIView):
         return response
 
 
+def _apply_scene_avatar_layout_patch(scene: dict[str, Any], raw_patch: Any) -> bool:
+    before = normalize_avatar_layout_override(scene.get("avatar_layout"))
+    if not isinstance(raw_patch, Mapping):
+        scene.pop("avatar_layout", None)
+        return bool(before)
+
+    next_layout = dict(before)
+    for key in ("position", "size", "visible"):
+        if key not in raw_patch:
+            continue
+        cleaned = normalize_avatar_layout_override({key: raw_patch.get(key)})
+        if key in cleaned:
+            next_layout[key] = cleaned[key]
+        else:
+            next_layout.pop(key, None)
+
+    if next_layout:
+        scene["avatar_layout"] = next_layout
+    else:
+        scene.pop("avatar_layout", None)
+    return next_layout != before
+
+
 class TranscriptPageSceneView(APIView):
     """PATCH scene settings for one transcript page."""
 
@@ -9882,6 +10113,18 @@ class TranscriptPageSceneView(APIView):
                 return Response({"error": "Draft transcript page not found."}, status=status.HTTP_404_NOT_FOUND)
             page = _active_page_for_draft_page(project, draft_page)
             scene = _draft_page_scene_for_storage(draft_page, page)
+            visual_scene_dirty = any(
+                key in request.data
+                for key in (
+                    "background_mode",
+                    "background_fit",
+                    "text_scale",
+                    "highlight_enabled",
+                    "highlight_style",
+                    "highlight_detector",
+                )
+            )
+            avatar_layout_changed = False
             if "background_mode" in request.data:
                 mode = str(request.data.get("background_mode") or "").strip().lower()
                 if mode not in SCENE_BACKGROUND_MODES:
@@ -9921,20 +10164,25 @@ class TranscriptPageSceneView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 scene["highlight_detector"] = detector
-            scene.pop("highlight", None)
-            _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
+            if "avatar_layout" in request.data:
+                avatar_layout_changed = _apply_scene_avatar_layout_patch(scene, request.data.get("avatar_layout"))
+            if visual_scene_dirty:
+                scene.pop("highlight", None)
+                _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
             _set_draft_page_scene(draft_page, scene)
             mark_draft_dirty(
                 draft_data,
-                background_dirty=True,
-                visual_assets_dirty=True,
-                render_required=True,
+                metadata_dirty=avatar_layout_changed,
+                background_dirty=visual_scene_dirty,
+                visual_assets_dirty=visual_scene_dirty,
+                render_required=visual_scene_dirty,
             )
-            draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
+            if visual_scene_dirty:
+                draft_data = _clear_stale_draft_moderation_block(project, draft_data, scope="visual")
             save_project_draft_data(project, draft_data, dirty=True)
             moderation_result = None
             asset_type, asset_path = _effective_scene_visual_asset(scene)
-            if asset_path:
+            if visual_scene_dirty and asset_path:
                 _mark_project_visual_moderation_stale(
                     project,
                     reason="studio_scene_background_changed",
@@ -9967,6 +10215,17 @@ class TranscriptPageSceneView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
         scene = _page_scene_for_storage(page)
+        visual_scene_dirty = any(
+            key in request.data
+            for key in (
+                "background_mode",
+                "background_fit",
+                "text_scale",
+                "highlight_enabled",
+                "highlight_style",
+                "highlight_detector",
+            )
+        )
         if "background_mode" in request.data:
             mode = str(request.data.get("background_mode") or "").strip().lower()
             if mode not in SCENE_BACKGROUND_MODES:
@@ -10006,8 +10265,11 @@ class TranscriptPageSceneView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             scene["highlight_detector"] = detector
-        scene.pop("highlight", None)
-        _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
+        if "avatar_layout" in request.data:
+            _apply_scene_avatar_layout_patch(scene, request.data.get("avatar_layout"))
+        if visual_scene_dirty:
+            scene.pop("highlight", None)
+            _apply_scene_highlight_spec(scene, _normalize_scene_highlight_spec(scene))
 
         _set_page_scene(page, scene)
         page.whiteboard_mode = scene["background_mode"] == "whiteboard"
@@ -11491,12 +11753,22 @@ class AvatarProfileView(APIView):
         profile.avatar_engine_fallback = ""
         if "avatar_quality_preset" in data:
             profile.avatar_quality_preset = str(data.get("avatar_quality_preset") or "high")
+        current_layout = avatar_layout_from_profile(profile)
         if "avatar_overlay_default_position" in data:
-            profile.avatar_overlay_default_position = str(data.get("avatar_overlay_default_position") or "top-right")
+            profile.avatar_overlay_default_position = normalize_avatar_layout_defaults(
+                {"position": data.get("avatar_overlay_default_position")},
+                fallback=current_layout,
+            )["position"]
         if "avatar_overlay_size" in data:
-            profile.avatar_overlay_size = str(data.get("avatar_overlay_size") or "medium")
+            profile.avatar_overlay_size = normalize_avatar_layout_defaults(
+                {"size": data.get("avatar_overlay_size")},
+                fallback=current_layout,
+            )["size"]
         if "avatar_overlay_visible" in data:
-            profile.avatar_overlay_visible = str(data.get("avatar_overlay_visible", "")).strip().lower() in {"1", "true", "yes", "on"}
+            profile.avatar_overlay_visible = normalize_avatar_layout_defaults(
+                {"visible": data.get("avatar_overlay_visible")},
+                fallback=current_layout,
+            )["visible"]
         if "avatar_consent_confirmed" in data:
             profile.avatar_consent_confirmed = str(data.get("avatar_consent_confirmed", "")).strip().lower() in {
                 "1",
@@ -11529,7 +11801,7 @@ class AvatarProfileView(APIView):
         return Response(
             {
                 "status": "updated",
-                "profile": UserSerializer(user).data.get("profile", {}),
+                "profile": UserProfileSerializer(profile, context={"request": request}).data,
                 "readiness": readiness,
                 "avatar_setup_status": setup_status,
                 "action_required": setup_status.get("action_required"),
