@@ -8,7 +8,12 @@ on:
       - "packaging/setup_assistant/**"
       - "requirements-setup-assistant.txt"
       - "tests/setup_assistant/**"
+      - "docs/SETUP_ASSISTANT.md"
+      - "docs/SETUP_ASSISTANT_RELEASE_NOTES.md"
       - ".github/workflows/setup-assistant-package.yml"
+  push:
+    tags:
+      - "setup-assistant-v*"
 
 permissions:
   contents: read
@@ -18,16 +23,20 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: Windows executable
             runner: windows-latest
-            suffix: windows-x86_64
+            platform: windows
+            suffix: windows-x64
           - name: Linux portable executable
             runner: ubuntu-latest
-            suffix: linux-x86_64
+            platform: linux
+            suffix: linux-x64
 
     steps:
       - uses: actions/checkout@v5
@@ -40,6 +49,10 @@ jobs:
           cache-dependency-path: |
             requirements-test.txt
             requirements-setup-assistant.txt
+
+      - name: Resolve package version
+        id: version
+        run: python packaging/setup_assistant/release.py github-env
 
       - name: Install setup-assistant dependencies
         run: python -m pip install -r requirements-test.txt -r requirements-setup-assistant.txt
@@ -83,6 +96,8 @@ jobs:
         run: python -m pytest -p no:django -c tests/setup_assistant/pytest.ini tests/setup_assistant -q
 
       - name: Build target-native executables
+        env:
+          SETUP_ASSISTANT_VERSION: ${{ steps.version.outputs.version }}
         run: python packaging/setup_assistant/build.py
 
       - name: Smoke Windows packages
@@ -117,27 +132,52 @@ jobs:
           python -m json.tool ./dist/setup-assistant/report.json > /dev/null
           ./dist/setup-assistant/TalkingSlides-Setup --smoke
 
-      - name: Archive Windows packages
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          Compress-Archive `
-            -Path ".\dist\setup-assistant\TalkingSlides-Setup.exe", ".\dist\setup-assistant\talkingslides-setup-cli.exe" `
-            -DestinationPath ".\dist\TalkingSlides-Setup-0.1.0-${{ matrix.suffix }}.zip"
-
-      - name: Archive Linux packages
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          tar -C dist/setup-assistant -czf "dist/TalkingSlides-Setup-0.1.0-${{ matrix.suffix }}.tar.gz" \
-            TalkingSlides-Setup talkingslides-setup
+      - name: Assemble versioned package artifacts
+        run: python packaging/setup_assistant/release.py assemble --platform ${{ matrix.platform }} --version "${{ steps.version.outputs.version }}" --output-dir dist/release
 
       - name: Upload versioned package
         uses: actions/upload-artifact@v4
         with:
-          name: TalkingSlides-Setup-0.1.0-${{ matrix.suffix }}-${{ github.sha }}
-          path: |
-            dist/TalkingSlides-Setup-0.1.0-${{ matrix.suffix }}.zip
-            dist/TalkingSlides-Setup-0.1.0-${{ matrix.suffix }}.tar.gz
+          name: setup-assistant-${{ matrix.suffix }}-${{ github.sha }}
+          path: dist/release/*
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'setup-assistant-v')
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Resolve release version
+        id: version
+        run: python packaging/setup_assistant/release.py github-env
+
+      - name: Download package artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: setup-assistant-*-x64-${{ github.sha }}
+          path: dist/release
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        run: python packaging/setup_assistant/release.py checksums --version "${{ steps.version.outputs.version }}" --artifact-dir dist/release
+
+      - name: Render release notes
+        run: python packaging/setup_assistant/release.py notes --version "${{ steps.version.outputs.version }}" --tag "${{ github.ref_name }}" --output dist/release/RELEASE_NOTES.md
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python packaging/setup_assistant/release.py publish --version "${{ steps.version.outputs.version }}" --tag "${{ github.ref_name }}" --artifact-dir dist/release --notes dist/release/RELEASE_NOTES.md

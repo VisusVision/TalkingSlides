@@ -1,10 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from pathlib import Path
 import sys
 
 ROOT = Path(SPECPATH).parents[1]
 ASSET = ROOT / "tools" / "setup_assistant" / "assets" / "talkingslides-setup.svg"
 CLI_NAME = "talkingslides-setup-cli" if sys.platform.startswith("win") else "talkingslides-setup"
+VERSION_HOOK = os.environ.get("SETUP_ASSISTANT_VERSION_HOOK")
 
 analysis = Analysis(
     [str(ROOT / "packaging" / "setup_assistant" / "cli_entry.py")],
@@ -14,7 +16,7 @@ analysis = Analysis(
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[VERSION_HOOK] if VERSION_HOOK else [],
     excludes=["PySide6", "tools.setup_assistant.gui"],
     noarchive=False,
 )

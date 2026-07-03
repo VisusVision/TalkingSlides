@@ -1,8 +1,10 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 from pathlib import Path
 
 ROOT = Path(SPECPATH).parents[1]
 ASSET = ROOT / "tools" / "setup_assistant" / "assets" / "talkingslides-setup.svg"
+VERSION_HOOK = os.environ.get("SETUP_ASSISTANT_VERSION_HOOK")
 
 analysis = Analysis(
     [str(ROOT / "packaging" / "setup_assistant" / "gui_entry.py")],
@@ -12,7 +14,7 @@ analysis = Analysis(
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=[VERSION_HOOK] if VERSION_HOOK else [],
     excludes=[],
     noarchive=False,
 )

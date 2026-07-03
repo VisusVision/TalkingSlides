@@ -28,6 +28,46 @@ Tkinter was rejected because it would require more custom work to meet the reque
 
 The application diagnoses Docker, WSL, drivers, permissions, and virtualization. It does not silently install or reconfigure those system components.
 
+## Release Downloads
+
+Download packaged builds from the repository's GitHub Releases page after a maintainer publishes a `setup-assistant-vMAJOR.MINOR.PATCH` release.
+
+Choose the file for the host operating system:
+
+- Windows GUI: `TalkingSlides-Setup-0.1.0-windows-x64.exe`.
+- Windows CLI: `talkingslides-setup-cli-0.1.0-windows-x64.exe`.
+- Linux portable package: `TalkingSlides-Setup-0.1.0-linux-x64.tar.gz`.
+- Checksums: `SHA256SUMS.txt`.
+
+Windows and Linux packages are target-native. The Windows `.exe` files do not run natively on Linux.
+
+On Windows, use the GUI executable for the desktop assistant and the CLI executable for terminal diagnostics and report export:
+
+```powershell
+.\TalkingSlides-Setup-0.1.0-windows-x64.exe
+.\talkingslides-setup-cli-0.1.0-windows-x64.exe --help
+```
+
+On Linux, extract the archive and launch the executable you need:
+
+```bash
+tar -xzf TalkingSlides-Setup-0.1.0-linux-x64.tar.gz
+./TalkingSlides-Setup
+./talkingslides-setup --help
+```
+
+Verify Windows downloads with PowerShell:
+
+```powershell
+Get-FileHash .\TalkingSlides-Setup-0.1.0-windows-x64.exe -Algorithm SHA256
+```
+
+Verify Linux downloads from the directory containing `SHA256SUMS.txt`:
+
+```bash
+sha256sum -c SHA256SUMS.txt
+```
+
 ## Source Usage
 
 The CLI core has no GUI dependency:
@@ -143,7 +183,7 @@ Linux CI builds:
 
 - `TalkingSlides-Setup` — portable GUI executable;
 - `talkingslides-setup` — portable CLI executable;
-- a versioned `.tar.gz` containing both.
+- a versioned `.tar.gz` containing both with executable permissions preserved.
 
 The Linux tarball is the current equivalent portable Linux distribution. An AppImage can be added later without changing the shared core. A Windows `.exe` does not run natively on Linux. PyInstaller packages are built and smoked on their target operating system; they are never cross-labeled.
 
@@ -153,7 +193,28 @@ Run a local target-native build only from a project virtual environment:
 python packaging/setup_assistant/build.py
 ```
 
-Generated `build/` and `dist/` content is ignored and must not be committed. `.github/workflows/setup-assistant-package.yml` runs focused tests before packaging and uploads versioned artifacts; it does not publish a release.
+Generated `build/` and `dist/` content is ignored and must not be committed. `.github/workflows/setup-assistant-package.yml` runs focused tests before packaging and uploads versioned workflow artifacts for pull requests and manual validation.
+
+Release publishing is tag-triggered only. Release tags use:
+
+```text
+setup-assistant-vMAJOR.MINOR.PATCH
+```
+
+The first planned release tag is:
+
+```text
+setup-assistant-v0.1.0
+```
+
+For a tag push, the workflow derives the package display version from the tag, removes the `setup-assistant-v` prefix for file names, assembles the final Windows and Linux downloads, generates `SHA256SUMS.txt`, and creates one GitHub Release for the exact tag using `GITHUB_TOKEN`. Pull requests and manual workflow runs build and smoke packages but do not create GitHub Releases.
+
+Maintainers should create and push release tags only after the release workflow is merged and `developer` is green:
+
+```text
+git tag -a setup-assistant-v0.1.0 -m "TalkingSlides Setup Assistant v0.1.0"
+git push org setup-assistant-v0.1.0
+```
 
 ## Legacy Compatibility
 

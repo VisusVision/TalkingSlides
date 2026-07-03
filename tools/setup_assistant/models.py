@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
 APP_NAME = "TalkingSlides Setup Assistant"
-VERSION = "0.1.0"
+VERSION = os.environ.get("TALKINGSLIDES_SETUP_ASSISTANT_VERSION", "0.1.0")
 
 
 class CheckStatus(str, Enum):
