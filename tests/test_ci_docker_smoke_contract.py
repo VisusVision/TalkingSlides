@@ -53,6 +53,69 @@ def test_worker_dockerfile_keeps_runtime_avatar_dependencies_opt_in() -> None:
     assert "Skipping OpenMMLab/mmcv dependencies for smoke build because INSTALL_OPENMMLAB_DEPS=${INSTALL_OPENMMLAB_DEPS}." in dockerfile
     assert "Skipping LivePortrait pretrained weights download for smoke build." in dockerfile
     assert dockerfile.index('"/build-context/$MMCV_LOCAL_WHEEL"') < dockerfile.index('"$MMCV_WHEEL_URL"')
+    assert "COPY scripts/check_avatar_models.py /app/scripts/check_avatar_models.py" in dockerfile
+    assert "COPY scripts/avatar_worker_health.py /app/scripts/avatar_worker_health.py" in dockerfile
+    assert "COPY infra/dockerfiles/local-storage-entrypoint.sh /usr/local/bin/local-storage-entrypoint.sh" in dockerfile
+
+
+def test_avatar_cloud_compose_override_is_cloud_safe_and_queue_aware() -> None:
+    override = (REPO_ROOT / "infra" / "docker-compose.avatar.cloud.yml").read_text(encoding="utf-8")
+
+    assert "AVATAR_IMAGE" in override
+    assert "build: !reset null" in override
+    assert "volumes: !override" in override
+    assert "../" not in override
+    assert "..\\" not in override
+    assert "C:\\" not in override
+    assert "/app/storage_local/models" in override
+    assert "/app/storage_local" in override
+    assert "count: all" in override
+    assert 'device_ids: [ "${AVATAR_GPU0_DEVICE:-0}" ]' in override
+    assert 'device_ids: [ "${AVATAR_GPU1_DEVICE:-1}" ]' in override
+    assert "NVIDIA_VISIBLE_DEVICES" in override
+    assert "NVIDIA_DRIVER_CAPABILITIES" in override
+    assert "CELERY_AVATAR_WORKER_CONCURRENCY" in override
+    assert "--concurrency=$${CELERY_AVATAR_WORKER_CONCURRENCY:-1}" in override
+    assert "worker-avatar-smoke:" in override
+    assert "CELERY_AVATAR_QUEUE: avatar-smoke" in override
+    assert "CELERY_WORKER_QUEUES: avatar-smoke" in override
+    assert "worker-avatar-gpu0:" in override
+    assert "worker-avatar-gpu1:" in override
+    assert "AVATAR_GPU0_LOCK_PATH" in override
+    assert "AVATAR_GPU1_LOCK_PATH" in override
+    assert "avatar_gpu_0.lock" in override
+    assert "avatar_gpu_1.lock" in override
+    assert "/app/scripts/check_avatar_models.py" in override
+    assert "/app/scripts/avatar_worker_health.py" in override
+
+
+def test_avatar_cloud_env_and_docs_cover_required_gpu_deployment_vars() -> None:
+    env_example = (REPO_ROOT / "infra" / ".env.example").read_text(encoding="utf-8")
+    env_docs = (REPO_ROOT / "docs" / "ENVIRONMENT_VARIABLES.md").read_text(encoding="utf-8")
+    cloud_docs = (REPO_ROOT / "docs" / "AVATAR_CLOUD_DEPLOYMENT.md").read_text(encoding="utf-8")
+    combined = "\n".join([env_example, env_docs, cloud_docs])
+
+    required = [
+        "AVATAR_IMAGE",
+        "AVATAR_GPU_DEVICE",
+        "NVIDIA_VISIBLE_DEVICES",
+        "NVIDIA_DRIVER_CAPABILITIES",
+        "MUSETALK_MODEL_PATH",
+        "AVATAR_LIVEPORTRAIT_MODEL_PATH",
+        "STORAGE_ROOT",
+        "CELERY_AVATAR_QUEUE",
+        "CELERY_WORKER_QUEUES",
+        "CELERY_AVATAR_WORKER_CONCURRENCY",
+        "AVATAR_GPU_SERIAL_LOCK_PATH",
+    ]
+    for name in required:
+        assert name in combined
+
+    assert "avatar-smoke" in cloud_docs
+    assert "CELERY_AVATAR_QUEUE=avatar-smoke" in cloud_docs
+    assert "CELERY_AVATAR_QUEUE=avatar" in cloud_docs
+    assert "Do not start smoke workers against `CELERY_AVATAR_QUEUE=avatar`" in cloud_docs
+    assert "one lock path per worker/GPU" in env_docs
 
 
 def test_local_compose_builds_avatar_worker_with_heavy_deps_by_default() -> None:

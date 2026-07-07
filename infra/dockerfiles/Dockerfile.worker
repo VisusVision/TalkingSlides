@@ -167,6 +167,13 @@ COPY services/scripts/ /app/scripts/
 COPY services/tts_service/tts_preprocess/ /app/tts_preprocess/
 COPY services/avatar/  /app/avatar/
 COPY services/api/     /app/api/
+COPY scripts/check_avatar_models.py /app/scripts/check_avatar_models.py
+COPY scripts/avatar_worker_health.py /app/scripts/avatar_worker_health.py
+COPY infra/dockerfiles/local-storage-entrypoint.sh /usr/local/bin/local-storage-entrypoint.sh
+RUN chmod +x \
+     /app/scripts/check_avatar_models.py \
+     /app/scripts/avatar_worker_health.py \
+     /usr/local/bin/local-storage-entrypoint.sh
 
 # ---------------------------------------------------------------------------
 # Non-root user + writable dirs required by LibreOffice / dconf
