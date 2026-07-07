@@ -75,4 +75,45 @@ describe('VideoStage continue-next prompt', () => {
     await act(async () => root.unmount());
     host.remove();
   });
+
+  it('uses the lesson playback VTT for the Original subtitle track', async () => {
+    const { host, root } = renderStage({
+      lesson: {
+        id: 101,
+        title: 'Current lesson',
+        stream_url: '/api/v1/stream/video-grant/',
+        vtt_url: '/api/v1/stream/granted-original-vtt/',
+        subtitle_vtt_url: '/api/v1/stream/granted-original-vtt/',
+      },
+      subtitleTracks: [
+        {
+          id: 'original',
+          type: 'original',
+          language_code: 'original',
+          language_label: 'Original',
+          status: 'ready',
+          is_original: true,
+          vtt_url: '/api/v1/stream/stale-track-vtt/',
+        },
+        {
+          id: 5,
+          language_code: 'tr',
+          language_label: 'Turkish',
+          status: 'ready',
+          vtt_url: '/api/v1/stream/translated-tr-vtt/',
+        },
+      ],
+      selectedSubtitleKey: 'original',
+    });
+
+    const originalTrack = host.querySelector('track[label="Original"]');
+    const translatedTrack = host.querySelector('track[label="Turkish"]');
+
+    expect(originalTrack?.getAttribute('src')).toContain('/api/v1/stream/granted-original-vtt/');
+    expect(originalTrack?.getAttribute('src')).not.toContain('/api/v1/stream/stale-track-vtt/');
+    expect(translatedTrack?.getAttribute('src')).toContain('/api/v1/stream/translated-tr-vtt/');
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
 });

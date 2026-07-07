@@ -144,9 +144,12 @@ def test_valid_share_token_returns_playback_metadata_and_protected_media(tmp_pat
         assert response.data["playback_status"]["grant_active"] is True
 
         stream_response = client.get(_stream_path(response.data["stream_url"]))
+        vtt_response = client.get(_stream_path(response.data["vtt_url"]))
 
     assert stream_response.status_code == 200
     assert b"fake-mp4" in b"".join(stream_response.streaming_content)
+    assert vtt_response.status_code == 200
+    assert b"Shared caption" in b"".join(vtt_response.streaming_content)
 
 
 @pytest.mark.django_db
@@ -194,7 +197,7 @@ def test_revoked_share_link_rejects_existing_media_stream(tmp_path):
     ):
         metadata = client.get(f"/api/v1/share/{token}/")
         assert metadata.status_code == 200
-        stream_path = _stream_path(metadata.data["stream_url"])
+        stream_path = _stream_path(metadata.data["vtt_url"])
         share_link.revoked_at = timezone.now()
         share_link.save(update_fields=["revoked_at"])
         stream_response = client.get(stream_path)
@@ -219,7 +222,7 @@ def test_expired_share_link_rejects_existing_media_stream(tmp_path):
     ):
         metadata = client.get(f"/api/v1/share/{token}/")
         assert metadata.status_code == 200
-        stream_path = _stream_path(metadata.data["stream_url"])
+        stream_path = _stream_path(metadata.data["vtt_url"])
         share_link.expires_at = timezone.now() - timedelta(seconds=1)
         share_link.save(update_fields=["expires_at"])
         stream_response = client.get(stream_path)

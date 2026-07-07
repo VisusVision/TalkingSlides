@@ -1696,6 +1696,84 @@ def test_catalog_detail_reuses_same_session_grant_for_rapid_duplicate_requests(t
 
 
 @pytest.mark.django_db
+def test_catalog_and_subtitle_tracks_reuse_same_session_grant_for_vtt(tmp_path):
+    cache.clear()
+    student = User.objects.create_user(username="same_session_vtt_student", password="pw")
+    teacher = _make_teacher("same_session_vtt_teacher")
+    project = Project.objects.create(
+        title="Same session VTT grant",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    (tmp_path / str(project.id)).mkdir(parents=True, exist_ok=True)
+    (tmp_path / job.result_url).write_bytes(b"fake-mp4")
+    (tmp_path / job.srt_url).write_text("1\n00:00:00,000 --> 00:00:01,000\nCaption\n", encoding="utf-8")
+    (tmp_path / f"{project.id}/{project.id}.vtt").write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nCaption\n",
+        encoding="utf-8",
+    )
+
+    class _Session:
+        session_key = f"same-session-vtt-{project.id}"
+
+        def save(self):
+            return None
+
+    factory = APIRequestFactory()
+    shared_session = _Session()
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+        LESSON_PROTECTION_ALLOW_MP4_FALLBACK=True,
+        LESSON_PROTECTION_BIND_PLAYBACK_TO_SESSION=True,
+        ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+    ):
+        catalog_request = factory.get(f"/api/v1/catalog/{project.id}/")
+        force_authenticate(catalog_request, user=student)
+        catalog_request.user = student
+        catalog_request.session = shared_session
+        catalog_response = views.CatalogDetailView.as_view()(catalog_request, project_id=project.id)
+
+        tracks_request = factory.get(f"/api/v1/projects/{project.id}/subtitle-tracks/")
+        force_authenticate(tracks_request, user=student)
+        tracks_request.user = student
+        tracks_request.session = shared_session
+        tracks_response = views.ProjectSubtitleTrackListView.as_view()(tracks_request, project_id=project.id)
+
+        stream_token = _extract_stream_tokens(catalog_response.data["stream_url"])[0]
+        original_track = next(track for track in tracks_response.data["tracks"] if track["id"] == "original")
+        vtt_token = _extract_stream_tokens(original_track["vtt_url"])[0]
+        vtt_stream_request = factory.get(f"/api/v1/stream/{vtt_token}/")
+        force_authenticate(vtt_stream_request, user=student)
+        vtt_stream_request.user = student
+        vtt_stream_request.session = shared_session
+        vtt_stream_response = views.MediaStreamView.as_view()(vtt_stream_request, token=vtt_token)
+
+    assert catalog_response.status_code == 200
+    assert tracks_response.status_code == 200
+    _stream_job_id, stream_type, _stream_rel, stream_grant_id, stream_bind_key = views.validate_media_token(stream_token)
+    vtt_job_id, vtt_type, vtt_rel_path, vtt_grant_id, vtt_bind_key = views.validate_media_token(vtt_token)
+    assert stream_type == "video"
+    assert vtt_job_id == job.id
+    assert vtt_type == "vtt"
+    assert vtt_rel_path == f"{project.id}/{project.id}.vtt"
+    assert vtt_grant_id == stream_grant_id
+    assert vtt_bind_key == stream_bind_key
+    assert vtt_stream_response.status_code == 200
+    assert b"Caption" in b"".join(vtt_stream_response.streaming_content)
+
+
+@pytest.mark.django_db
 def test_heartbeat_succeeds_after_duplicate_same_session_catalog_requests(tmp_path):
     cache.clear()
     student = User.objects.create_user(username="same_session_heartbeat_student", password="pw")
