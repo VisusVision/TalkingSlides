@@ -39,8 +39,14 @@ jobs:
 
       - name: Install media tooling (ffprobe)
         run: |
+          if command -v ffprobe >/dev/null 2>&1; then
+            ffprobe -version
+            exit 0
+          fi
+          sudo find /etc/apt/sources.list.d -type f \( -name "*microsoft*" -o -name "*azure*" \) -print -exec sudo sed -i -E 's/^[[:space:]]*deb /# deb /' {} \;
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          ffprobe -version
 
       - name: Migration check
         working-directory: services/api
