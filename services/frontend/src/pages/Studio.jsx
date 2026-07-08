@@ -66,6 +66,12 @@ import CreateLessonModal from '../components/studio/CreateLessonModal';
 import PlaylistManager from '../components/studio/PlaylistManager';
 import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
 import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
+import {
+  StudioInspectorHeading,
+  StudioMoreActionsLabel,
+  StudioRenderStatus,
+  StudioSlideRail,
+} from '../components/studio/StudioWorkspaceChrome';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
@@ -6468,9 +6474,22 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         </section>
       ) : (
         <>
-          <section className="grid min-w-0 max-w-full gap-5 overflow-x-hidden xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <section
+            data-testid="studio-editor-layout"
+            className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[14rem_minmax(0,1fr)_minmax(20rem,24rem)] 2xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
+          >
+            <StudioSlideRail
+              scenes={sceneItems}
+              selectedSceneKey={selectedScene?.key}
+              loading={loadingTranscript}
+              onSelect={handleSelectScene}
+            />
             <div className="min-w-0 space-y-5">
               <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
+                <StudioRenderStatus
+                  renderStatus={latestRenderStatus}
+                  projectStatus={selectedLesson?.status}
+                />
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block text-sm text-[var(--text-secondary)]">
                     Lesson title
@@ -6746,18 +6765,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               </SurfaceCard>
             </div>
 
-            <aside className="min-w-0 max-w-full">
+            <aside className="min-w-0 max-w-full xl:sticky xl:top-4 xl:self-start">
               <SurfaceCard
                 elevated
                 className="flex min-h-[72vh] min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:max-h-[calc(100vh-9rem)]"
               >
                 <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Editor Workspace</h3>
-                    <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                      {selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'}
-                    </p>
-                  </div>
+                  <StudioInspectorHeading projectTitle={selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'} />
                   <div className="flex min-w-0 flex-wrap justify-end gap-2">
                     {readOnlyReview ? (
                       <span className="rounded-full bg-[color:var(--status-info-bg)] px-3 py-1.5 text-xs font-semibold text-[color:var(--status-info-fg)]">
@@ -6785,44 +6799,6 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         </Button>
                         <Button
                           size="sm"
-                          variant="secondary"
-                          onClick={handleDiscardChanges}
-                          disabled={
-                            Boolean(globalEditorActionBusy)
-                            || !selectedLessonDirtyScope.canDiscardChanges
-                          }
-                          title={selectedLessonDirtyScope.canDiscardChanges
-                            ? 'Discard local and draft editor changes.'
-                            : selectedLessonDirtyScope.discardDisabledReason}
-                          className={selectedLessonDirtyScope.canDiscardChanges
-                            ? 'border border-[color:var(--outline-variant)] shadow-[0_0_0_1px_rgba(107,56,212,0.15)]'
-                            : ''}
-                        >
-                          <Trash2 size={14} />
-                          <span>{globalEditorActionBusy === 'discard' ? 'Discarding...' : 'Discard changes'}</span>
-                        </Button>
-                        {avatarFeatureEnabled && (
-                          <label className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] px-2.5 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-                            <input
-                              type="checkbox"
-                              checked={avatarEnabled}
-                              onChange={(event) => setAvatarEnabled(event.target.checked)}
-                              disabled={Boolean(globalEditorActionBusy)}
-                              aria-label="Render with avatar"
-                            />
-                            <span>Render with avatar</span>
-                            <span className="rounded-full bg-[var(--surface-elevated)] px-2 py-0.5 text-[0.68rem] text-[var(--text-muted)]">
-                              Next rerender
-                            </span>
-                          </label>
-                        )}
-                        <PreviewRerenderImpactButton
-                          busy={partialRenderPreviewBusy}
-                          disabled={Boolean(globalEditorActionBusy)}
-                          onClick={handlePreviewRerenderImpact}
-                        />
-                        <Button
-                          size="sm"
                           variant={selectedLessonDirtyScope.canSaveRerender ? 'primary' : 'secondary'}
                           onClick={() => handleGlobalEditorSave({ triggerRerender: true })}
                           disabled={
@@ -6836,6 +6812,44 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           <RefreshCcw size={14} />
                           <span>{globalEditorActionBusy === 'rerender' ? 'Saving...' : 'Save & Rerender'}</span>
                         </Button>
+                        <details className="relative">
+                          <summary className="focus-ring flex min-h-9 cursor-pointer list-none items-center gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] px-3 text-xs font-semibold text-[var(--text-secondary)]">
+                            <StudioMoreActionsLabel />
+                            <ChevronDown size={13} />
+                          </summary>
+                          <div className="absolute right-0 z-30 mt-2 w-64 space-y-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-2 shadow-xl">
+                            {avatarFeatureEnabled && (
+                              <label className="flex min-h-10 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-[var(--text-secondary)]">
+                                <input
+                                  type="checkbox"
+                                  checked={avatarEnabled}
+                                  onChange={(event) => setAvatarEnabled(event.target.checked)}
+                                  disabled={Boolean(globalEditorActionBusy)}
+                                  aria-label="Render with avatar"
+                                />
+                                <span>Render with avatar</span>
+                              </label>
+                            )}
+                            <PreviewRerenderImpactButton
+                              busy={partialRenderPreviewBusy}
+                              disabled={Boolean(globalEditorActionBusy)}
+                              onClick={handlePreviewRerenderImpact}
+                            />
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={handleDiscardChanges}
+                              disabled={Boolean(globalEditorActionBusy) || !selectedLessonDirtyScope.canDiscardChanges}
+                              title={selectedLessonDirtyScope.canDiscardChanges
+                                ? 'Discard local and draft editor changes.'
+                                : selectedLessonDirtyScope.discardDisabledReason}
+                              className="w-full justify-start"
+                            >
+                              <Trash2 size={14} />
+                              <span>{globalEditorActionBusy === 'discard' ? 'Discarding...' : 'Discard changes'}</span>
+                            </Button>
+                          </div>
+                        </details>
                       </>
                     ) : (
                       <>
