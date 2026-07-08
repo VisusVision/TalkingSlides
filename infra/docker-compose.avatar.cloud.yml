@@ -1,0 +1,175 @@
+# Cloud/Linux GPU override for avatar workers.
+#
+# Usage:
+#   docker compose -f infra/docker-compose.yml -f infra/docker-compose.avatar.cloud.yml --profile avatar up -d worker-avatar
+#
+# This file intentionally avoids source bind mounts. Use AVATAR_IMAGE for a
+# prebuilt worker image that already contains /app/api, /app/worker,
+# /app/scripts, /app/avatar, and avatar runtime dependencies.
+
+x-avatar-cloud-env: &avatar-cloud-env
+  DJANGO_SETTINGS_MODULE: config.settings
+  PYTHONPATH: /app/api:/app:/app/scripts:/app/tts_preprocess:/app/services
+  SQLITE_TEST_DATABASE_PATH: /tmp/ai_academy_worker_test.sqlite3
+  STORAGE_ROOT: /app/storage_local
+  LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
+  LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
+  TORCH_HOME: /app/storage_local/models/torch
+  XDG_CACHE_HOME: /tmp/visus-cache
+  MPLCONFIGDIR: /tmp/visus-cache/matplotlib
+  NUMBA_CACHE_DIR: /tmp/visus-cache/numba
+  MUSETALK_MODEL_PATH: "${MUSETALK_MODEL_PATH:-/app/storage_local/models}"
+  AVATAR_LIVEPORTRAIT_MODEL_PATH: "${AVATAR_LIVEPORTRAIT_MODEL_PATH:-/opt/liveportrait/pretrained_weights}"
+  CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
+  CELERY_AVATAR_QUEUE: "${CELERY_AVATAR_QUEUE:-avatar}"
+  CELERY_WORKER_QUEUES: "${CELERY_AVATAR_QUEUE:-avatar}"
+  CELERY_WORKER_CONCURRENCY: "${CELERY_AVATAR_WORKER_CONCURRENCY:-1}"
+  CELERY_AVATAR_WORKER_CONCURRENCY: "${CELERY_AVATAR_WORKER_CONCURRENCY:-1}"
+  AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "1"
+  MUSETALK_USE_FAKE_MMPPOSE: "0"
+  MUSETALK_REQUIRE_REAL_POSE: "1"
+  TTS_SERVICE_URL: http://tts_service:8001
+  TTS_SERVICE_TIMEOUT: "${TTS_SERVICE_TIMEOUT:-420}"
+  TTS_SERVICE_CONNECT_TIMEOUT: "${TTS_SERVICE_CONNECT_TIMEOUT:-10}"
+  TTS_READY_TIMEOUT: "${TTS_READY_TIMEOUT:-420}"
+  TTS_READY_POLL_INTERVAL: "${TTS_READY_POLL_INTERVAL:-3}"
+  AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE: "${AVATAR_PREVIEW_DEBUG_ACCEPT_UNSTABLE:-0}"
+  NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+  NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+  LD_LIBRARY_PATH: /usr/local/lib/python3.10/site-packages/torch/lib
+
+x-avatar-cloud-worker: &avatar-cloud-worker
+  image: "${AVATAR_IMAGE:-ai_academy_worker:local}"
+  env_file: .env
+  restart: unless-stopped
+  networks:
+    - academy_net
+  user: root
+  entrypoint: [ "sh", "/usr/local/bin/local-storage-entrypoint.sh" ]
+  command: >
+    sh -lc 'export LD_LIBRARY_PATH="$${AI_ACADEMY_LD_LIBRARY_PATH}:$${LD_LIBRARY_PATH}";
+    mkdir -p "$${STORAGE_ROOT:-/app/storage_local}" "$${MUSETALK_MODEL_PATH:-/app/storage_local/models}" "$${XDG_CACHE_HOME:-/tmp/visus-cache}" "$${MPLCONFIGDIR:-/tmp/visus-cache/matplotlib}" "$${NUMBA_CACHE_DIR:-/tmp/visus-cache/numba}" &&
+    python /app/scripts/check_avatar_models.py "$${MUSETALK_MODEL_PATH:-/app/storage_local/models}" --json >/tmp/avatar-model-check.json &&
+    if [ "$${AVATAR_BOOTSTRAP_ON_WORKER_STARTUP:-1}" = "1" ]; then
+      python /app/worker/bootstrap_musetalk.py;
+    else
+      echo "Skipping avatar bootstrap on avatar worker";
+    fi &&
+    exec celery -A worker worker
+    --loglevel=$${CELERY_LOG_LEVEL:-info}
+    --concurrency=$${CELERY_AVATAR_WORKER_CONCURRENCY:-1}
+    --prefetch-multiplier=$${CELERY_PREFETCH_MULTIPLIER:-1}
+    -Q $${CELERY_WORKER_QUEUES:-$${CELERY_AVATAR_QUEUE:-avatar}}'
+  volumes: !override
+    - ${AVATAR_MEDIA_VOLUME:-avatar_media}:/app/storage_local
+    - ${AVATAR_MODEL_VOLUME:-avatar_models}:/app/storage_local/models
+  environment:
+    <<: *avatar-cloud-env
+    AVATAR_GPU_SERIAL_LOCK_PATH: "${AVATAR_GPU_SERIAL_LOCK_PATH:-/app/storage_local/locks/avatar_gpu_all.lock}"
+  healthcheck:
+    test: [ "CMD", "python", "/app/scripts/avatar_worker_health.py" ]
+    interval: 30s
+    timeout: 10s
+    retries: 20
+    start_period: 300s
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_started
+    tts_service:
+      condition: service_started
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [ gpu ]
+
+services:
+  worker-avatar:
+    <<: *avatar-cloud-worker
+    build: !reset null
+    profiles:
+      - avatar
+
+  worker-avatar-smoke:
+    <<: *avatar-cloud-worker
+    profiles:
+      - avatar-smoke
+    environment:
+      <<: *avatar-cloud-env
+      CELERY_AVATAR_QUEUE: avatar-smoke
+      CELERY_WORKER_QUEUES: avatar-smoke
+      AVATAR_GPU_SERIAL_LOCK_PATH: "${AVATAR_SMOKE_GPU_SERIAL_LOCK_PATH:-/app/storage_local/locks/avatar_smoke.lock}"
+
+  worker-avatar-gpu0:
+    <<: *avatar-cloud-worker
+    profiles:
+      - avatar-multigpu
+    environment:
+      <<: *avatar-cloud-env
+      NVIDIA_VISIBLE_DEVICES: "${AVATAR_GPU0_DEVICE:-0}"
+      AVATAR_GPU_SERIAL_LOCK_PATH: "${AVATAR_GPU0_LOCK_PATH:-/app/storage_local/locks/avatar_gpu_0.lock}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "${AVATAR_GPU0_DEVICE:-0}" ]
+              capabilities: [ gpu ]
+
+  worker-avatar-gpu1:
+    <<: *avatar-cloud-worker
+    profiles:
+      - avatar-multigpu
+    environment:
+      <<: *avatar-cloud-env
+      NVIDIA_VISIBLE_DEVICES: "${AVATAR_GPU1_DEVICE:-1}"
+      AVATAR_GPU_SERIAL_LOCK_PATH: "${AVATAR_GPU1_LOCK_PATH:-/app/storage_local/locks/avatar_gpu_1.lock}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "${AVATAR_GPU1_DEVICE:-1}" ]
+              capabilities: [ gpu ]
+
+  worker-avatar-gpu2:
+    <<: *avatar-cloud-worker
+    profiles:
+      - avatar-multigpu
+    environment:
+      <<: *avatar-cloud-env
+      NVIDIA_VISIBLE_DEVICES: "${AVATAR_GPU2_DEVICE:-2}"
+      AVATAR_GPU_SERIAL_LOCK_PATH: "${AVATAR_GPU2_LOCK_PATH:-/app/storage_local/locks/avatar_gpu_2.lock}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "${AVATAR_GPU2_DEVICE:-2}" ]
+              capabilities: [ gpu ]
+
+  worker-avatar-gpu3:
+    <<: *avatar-cloud-worker
+    profiles:
+      - avatar-multigpu
+    environment:
+      <<: *avatar-cloud-env
+      NVIDIA_VISIBLE_DEVICES: "${AVATAR_GPU3_DEVICE:-3}"
+      AVATAR_GPU_SERIAL_LOCK_PATH: "${AVATAR_GPU3_LOCK_PATH:-/app/storage_local/locks/avatar_gpu_3.lock}"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ "${AVATAR_GPU3_DEVICE:-3}" ]
+              capabilities: [ gpu ]
+
+volumes:
+  avatar_media:
+    name: "${AVATAR_MEDIA_VOLUME_NAME:-talkingslides_avatar_media}"
+  avatar_models:
+    name: "${AVATAR_MODEL_VOLUME_NAME:-talkingslides_avatar_models}"

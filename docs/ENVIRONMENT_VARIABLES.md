@@ -263,13 +263,17 @@ Use `scripts/windows-avatar-runtime.ps1` to print the avatar image preparation a
 | Variable | Service | Local | Prod | Default/example | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | `ENABLE_AVATAR` | API/frontend/worker-avatar | Optional | Optional | `0` | Master deployment flag for avatar profile, preview, overlay, and render scheduling. When disabled, avatar endpoints return disabled responses, render jobs ignore avatar options, worker avatar scheduling is skipped, and frontend avatar UI is hidden. Existing avatar engine env vars still imply enabled when this is unset. |
+| `AVATAR_IMAGE` | worker-avatar cloud override | Optional | Recommended | `ai_academy_worker:local` | Prebuilt avatar worker image used by `infra/docker-compose.avatar.cloud.yml`. Cloud images must contain app source and avatar runtime dependencies. |
+| `AVATAR_GPU_DEVICE` | worker-avatar cloud override | Optional | If avatar GPU | `all` | Compose GPU request. Use `all` or values such as `device=0` for a specific GPU. |
+| `NVIDIA_VISIBLE_DEVICES` | worker-avatar/TTS | Optional | If NVIDIA GPU | `all` | NVIDIA runtime device visibility. For one GPU use the GPU id, for example `0`. |
+| `NVIDIA_DRIVER_CAPABILITIES` | worker-avatar/TTS | Optional | If NVIDIA GPU | `compute,utility` | NVIDIA container driver capabilities required for CUDA and `nvidia-smi`. |
 | `AVATAR_ENGINE` | API/worker-avatar | Optional | If avatar | `liveportrait+musetalk` | Selected avatar engine chain. |
 | Compose `avatar` profile | worker-avatar | Optional | If avatar | off by default | `worker-avatar` is excluded from default Compose commands and is included by `windows-runtime.ps1 -Profile avatar` or `-Profile full`. |
 | `INSTALL_AVATAR_RUNTIME_DEPS`, `INSTALL_OPENMMLAB_DEPS`, `DOWNLOAD_LIVEPORTRAIT_WEIGHTS` | worker-avatar build | Optional | If avatar | `1`, `1`, `1` | Heavy build toggles. CI smoke may override these to `0`; live avatar images need avatar runtime and OpenMMLab dependencies in Docker. |
 | `MMCV_FIND_LINKS`, `MMCV_WHEEL_URL`, `MMCV_LOCAL_WHEEL` | worker-avatar build | Optional | If avatar | OpenMMLab index, blank, `local_wheels/mmcv.whl` | Prebuilt `mmcv` install sources. A local wheel under `local_wheels/` is used before the remote URL/index and must not be committed. |
 | `AVATAR_BOOTSTRAP_ON_WORKER_STARTUP` | worker-avatar | Optional | Recommended | `0` local template | Controls runtime bootstrap. |
-| `MUSETALK_HOME`, `MUSETALK_MODEL_PATH`, `MUSETALK_ENGINE_VERSION` | worker-avatar | If avatar | If avatar | `/opt/musetalk`, model path | MuseTalk runtime/model config. |
-| `AVATAR_LIVEPORTRAIT_HOME`, `AVATAR_LIVEPORTRAIT_MODEL_PATH`, `AVATAR_LIVEPORTRAIT_ENTRYPOINT` | worker-avatar | If avatar | If avatar | `/opt/liveportrait` paths | LivePortrait runtime/model config. |
+| `MUSETALK_HOME`, `MUSETALK_MODEL_PATH`, `MUSETALK_ENGINE_VERSION` | worker-avatar | If avatar | If avatar | `/opt/musetalk`, `/app/storage_local/models`, version | MuseTalk runtime/model config. In cloud, mount models explicitly at `/app/storage_local/models`. |
+| `AVATAR_LIVEPORTRAIT_HOME`, `AVATAR_LIVEPORTRAIT_MODEL_PATH`, `AVATAR_LIVEPORTRAIT_ENTRYPOINT` | worker-avatar | If avatar | If avatar | `/opt/liveportrait` paths | LivePortrait runtime/model config. `AVATAR_LIVEPORTRAIT_MODEL_PATH` is model/data storage, not the code checkout. |
 | `AVATAR_LIVEPORTRAIT_CMD`, `AVATAR_MUSETALK_CMD` | worker-avatar | If avatar | If avatar | runner commands | Real engine command templates. |
 | `AVATAR_LIVEPORTRAIT_CALM_IMAGE_TEMPLATE` | worker-avatar | Optional | Recommended when available | `storage_local/avatar_templates/calm_lecture_driver.mp4` | External calm lecture driving template. This is media and must not be committed. |
 | `AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE` | worker-avatar | If avatar | If avatar | d11 template path | Vetted placeholder image driving template fallback. |
@@ -279,12 +283,16 @@ Use `scripts/windows-avatar-runtime.ps1` to print the avatar image preparation a
 | `AVATAR_MUSETALK_SERVICE_ENABLED`, `AVATAR_MUSETALK_SERVICE_PORT`, `AVATAR_MUSETALK_ROUTE` | worker-avatar | If avatar | If avatar | service route values | Persistent MuseTalk service behavior. |
 | `AVATAR_PREVIEW_USE_LIVEPORTRAIT`, `AVATAR_PREVIEW_USE_MUSETALK`, `AVATAR_PREVIEW_USE_RESTORATION` | worker-avatar | Optional | Recommended | `1`, `1`, `0` | Preview stage toggles. |
 | `AVATAR_ENABLE_COMPOSITE_LESSON`, `AVATAR_ALLOW_COMPOSITE_FALLBACK` | worker-avatar | Optional | Optional | `0`, `0` | Composite lesson controls. |
-| `AVATAR_GPU_SERIAL_LOCK_ENABLED`, `AVATAR_GPU_SERIAL_LOCK_PATH` | worker-avatar | Optional | Recommended | `1`, lock path | Serializes GPU jobs. |
+| `AVATAR_GPU_SERIAL_LOCK_ENABLED`, `AVATAR_GPU_SERIAL_LOCK_PATH` | worker-avatar | Optional | Recommended | `1`, lock path | Serializes GPU jobs. In multi-GPU cloud mode use one lock path per worker/GPU, for example `/app/storage_local/locks/avatar_gpu_0.lock`; sharing one path serializes all GPUs. |
 | `AVATAR_STAGE_TIMEOUT_*`, `AVATAR_ORCH_*`, `AVATAR_PREVIEW_*_TIMEOUT_*` | worker-avatar | Optional | Recommended | see template | Stage and orchestration timeouts. |
 | `AVATAR_PREVIEW_LIVEPORTRAIT_*`, `AVATAR_LIVEPORTRAIT_STABILIZE_*`, `AVATAR_MIN_EYE_BLINK_CHANGE_COMPOSER` | worker-avatar | Optional | Tuning | see template | Motion/stability validation tuning. |
 | `AVATAR_PREVIEW_RESTORE_CMD`, `AVATAR_PREVIEW_RESTORATION_MODEL` | worker-avatar | Optional | If restoration | empty, `codeformer` | Restoration command/model. |
 | `AVATAR_REAL_FALLBACK_ENGINE`, `AVATAR_SADTALKER_CMD`, `AVATAR_WAV2LIP_*`, `AVATAR_VIDEO_REFERENCE_CMD` | worker-avatar | Optional | If enabled | empty/commented | Optional fallback engines. |
 | `TORCH_HOME`, `XDG_CACHE_HOME` | worker-avatar/TTS | Optional | Recommended | storage cache paths | Model/cache locations. |
+
+See [AVATAR_CLOUD_DEPLOYMENT.md](AVATAR_CLOUD_DEPLOYMENT.md) for the
+cloud override, persistent model/media volumes, `avatar-smoke` queue, production
+`avatar` queue, and one-worker-per-GPU examples.
 
 ## Moderation
 
