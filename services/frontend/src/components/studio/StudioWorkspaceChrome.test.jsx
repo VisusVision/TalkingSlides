@@ -30,6 +30,8 @@ describe('Studio workspace chrome', () => {
 
   it('renders the slide rail and preserves selection callbacks', async () => {
     const onSelect = vi.fn();
+    const onMove = vi.fn();
+    const onDelete = vi.fn();
     await act(async () => {
       root.render(
         <StudioSlideRail
@@ -39,15 +41,36 @@ describe('Studio workspace chrome', () => {
           ]}
           selectedSceneKey="one"
           onSelect={onSelect}
+          onMove={onMove}
+          onDelete={onDelete}
         />,
       );
     });
 
     expect(host.querySelector('[data-testid="studio-slide-rail"]')).toBeTruthy();
-    const buttons = host.querySelectorAll('button');
+    const buttons = host.querySelectorAll('button[aria-label^="Select slide"]');
     expect(buttons[0]).toHaveAttribute('aria-current', 'true');
     await act(async () => buttons[1].click());
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'two' }), 1);
+
+    await act(async () => {
+      buttons[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ key: 'two' }), 1);
+
+    await act(async () => {
+      buttons[0].dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true,
+        cancelable: true,
+        clientX: 24,
+        clientY: 32,
+      }));
+    });
+    expect(document.body.textContent).toContain('Delete');
+    const deleteItem = Array.from(document.body.querySelectorAll('[role="menuitem"]'))
+      .find((item) => item.textContent.includes('Delete'));
+    await act(async () => deleteItem.click());
+    expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ key: 'one' }), 0);
   });
 
   it('shows localized loading, empty, and render queue states', async () => {
