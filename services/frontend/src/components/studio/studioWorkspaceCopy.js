@@ -2,10 +2,24 @@ const STUDIO_WORKSPACE_MESSAGES = {
   en: {
     slides: 'Slides',
     slidesHint: 'Select a slide to edit',
+    slideCount: 'slides',
     loadingSlides: 'Loading slides',
     noSlides: 'No slides yet',
     noSlidesHint: 'Upload a source file to create the first slide.',
     slide: 'Slide',
+    slideActions: 'Slide actions',
+    selectSlide: 'Select slide',
+    moveUp: 'Move up',
+    moveDown: 'Move down',
+    duplicate: 'Duplicate',
+    duplicateUnavailable: 'Duplicate is not supported by the current transcript API.',
+    delete: 'Delete',
+    copy: 'Copy',
+    paste: 'Paste',
+    pasteUnavailable: 'Paste is unavailable for this slide.',
+    rename: 'Rename',
+    renameUnavailable: 'Rename is not supported by the current transcript API.',
+    dragToReorder: 'Drag to reorder',
     renderStatus: 'Render status',
     renderReady: 'Ready',
     renderProcessing: 'Processing',
@@ -19,6 +33,22 @@ const STUDIO_WORKSPACE_MESSAGES = {
     inspector: 'Inspector',
     inspectorHint: 'Controls for the selected slide',
     moreActions: 'More actions',
+    saving: 'Saving...',
+    saved: 'Saved',
+    unsavedChanges: 'Unsaved changes',
+    upToDate: 'Up to date',
+    lastSaved: 'Last saved',
+    neverSaved: 'Not saved yet',
+    noProjectTitle: 'No project selected',
+    noProjectHint: 'Select a project or create a lesson draft to begin editing.',
+    noSlideTitle: 'No slide selected',
+    noSlideHint: 'Choose a slide from the filmstrip to edit its scene settings.',
+    noAssetsTitle: 'No assets',
+    noAssetsHint: 'Upload a source file, cover, or slide background to add assets.',
+    noAvatarTitle: 'No avatar',
+    noAvatarHint: 'Avatar rendering is not enabled for this lesson.',
+    noNarrationTitle: 'No narration',
+    noNarrationHint: 'Add transcript text before rendering narration.',
   },
   tr: {
     slides: 'Slaytlar',
@@ -49,5 +79,9 @@ export function studioWorkspaceLocale(rawLocale = '') {
 }
 
 export function studioWorkspaceCopy(rawLocale = '') {
-  return STUDIO_WORKSPACE_MESSAGES[studioWorkspaceLocale(rawLocale)];
+  const locale = studioWorkspaceLocale(rawLocale);
+  return {
+    ...STUDIO_WORKSPACE_MESSAGES.en,
+    ...STUDIO_WORKSPACE_MESSAGES[locale],
+  };
 }

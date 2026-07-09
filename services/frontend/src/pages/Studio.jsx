@@ -46,6 +46,7 @@ import {
   rerenderProjectAvatar,
   rerenderProject,
   rescanProjectModeration,
+  transcriptPageAction,
   updateTranscriptPageScene,
   updateProjectPublished,
   fetchSubtitleTracks,
@@ -68,9 +69,13 @@ import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
 import TtsSettingsPanel from '../components/studio/TtsSettingsPanel';
 import {
   StudioInspectorHeading,
+  StudioInspectorSection,
   StudioMoreActionsLabel,
   StudioRenderStatus,
+  StudioSaveStatus,
+  StudioEmptyState,
   StudioSlideRail,
+  StudioToolbarGroup,
 } from '../components/studio/StudioWorkspaceChrome';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -254,6 +259,23 @@ function normalizedStatus(value) {
 function timestampMs(value) {
   const timestamp = Date.parse(String(value || ''));
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatEditorSaveTime(date = new Date()) {
+  return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+}
+
+function eventTargetAcceptsTextInput(target) {
+  if (!target || typeof target !== 'object') return false;
+  const element = target;
+  const tagName = String(element.tagName || '').toLowerCase();
+  return Boolean(
+    element.isContentEditable
+    || tagName === 'input'
+    || tagName === 'textarea'
+    || tagName === 'select'
+    || element.closest?.('[contenteditable="true"]'),
+  );
 }
 
 function currentManualApprovalCoversDraft(project, draftMetadata) {
@@ -3267,6 +3289,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [globalEditorActionBusy, setGlobalEditorActionBusy] = useState('');
   const [globalEditorMessage, setGlobalEditorMessage] = useState('');
   const [globalEditorError, setGlobalEditorError] = useState('');
+  const [slideActionBusy, setSlideActionBusy] = useState('');
+  const [copiedSlide, setCopiedSlide] = useState(null);
+  const [editorLastSavedAt, setEditorLastSavedAt] = useState('');
   const [partialRenderPreview, setPartialRenderPreview] = useState(null);
   const [partialRenderPreviewBusy, setPartialRenderPreviewBusy] = useState(false);
   const [partialRenderPreviewError, setPartialRenderPreviewError] = useState('');
@@ -4222,6 +4247,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         setWhiteboardModeAll(Boolean(draft.whiteboardModeAll));
         setAvatarEnabled(avatarFeatureEnabled && draft.avatarEnabled === true);
         setEditorSavedAtLabel('Draft restored');
+        setEditorLastSavedAt('');
         return;
       } catch {
         window.localStorage.removeItem(key);
@@ -4235,7 +4261,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setWhiteboardModeAll(false);
     setAvatarEnabled(avatarFeatureEnabled && Boolean(selectedLesson?.avatar_enabled_override ?? selectedLesson?.avatar_active ?? false));
     setEditorSavedAtLabel('');
-  }, [avatarFeatureEnabled, selectedLesson?.avatar_active, selectedLesson?.avatar_enabled_override, selectedLesson?.category_name, selectedLesson?.description, selectedLesson?.id, selectedLesson?.title]);
+    setEditorLastSavedAt(selectedLesson?.updated_at ? formatEditorSaveTime(new Date(selectedLesson.updated_at)) : '');
+  }, [avatarFeatureEnabled, selectedLesson?.avatar_active, selectedLesson?.avatar_enabled_override, selectedLesson?.category_name, selectedLesson?.description, selectedLesson?.id, selectedLesson?.title, selectedLesson?.updated_at]);
 
   useEffect(() => {
     setAvatarRerenderMessage('');
@@ -4298,7 +4325,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       avatarEnabled: avatarFeatureEnabled && avatarEnabled,
     };
     window.localStorage.setItem(editorDraftKey(selectedLesson?.id), JSON.stringify(draftPayload));
-    setEditorSavedAtLabel(`Draft saved at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
+    const savedAt = formatEditorSaveTime();
+    setEditorSavedAtLabel(`Draft saved at ${savedAt}`);
+    setEditorLastSavedAt(savedAt);
   };
 
   const saveLessonNotes = () => {
@@ -4307,7 +4336,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     clearLessonNotesDraft(studioLocalDraftScope, selectedLesson.id);
     setLessonNotesLocalDraft(null);
     setLessonNotesSavedValue(lessonNotes);
-    setLessonNotesSavedAt(`Saved at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
+    setLessonNotesSavedAt(`Saved at ${formatEditorSaveTime()}`);
   };
 
   const restoreLessonNotesDraft = () => {
@@ -5160,6 +5189,131 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setSelectedPageIndex(index);
   }, []);
 
+  const applySlideActionResponse = useCallback(async (response, selection = {}) => {
+    const updatedPages = Array.isArray(response?.pages) ? response.pages : [];
+    if (updatedPages.length) {
+      setTranscriptPages(updatedPages);
+    }
+    if (response?.has_draft) {
+      setSelectedLessonDraftMetadata(response?.draft_metadata || {});
+    }
+    if (selectedLesson?.id) {
+      invalidateSelectedLessonCache(selectedLesson.id);
+      await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
+    }
+    const pagesForSelection = updatedPages.length ? updatedPages : transcriptPages;
+    if (!pagesForSelection.length) return;
+    const requestedPageId = selection.pageId;
+    const nextIndex = requestedPageId
+      ? pagesForSelection.findIndex((page) => String(page.id) === String(requestedPageId))
+      : Number(selection.index);
+    const safeIndex = Number.isFinite(nextIndex) && nextIndex >= 0
+      ? Math.min(nextIndex, pagesForSelection.length - 1)
+      : Math.min(selectedPageIndex, pagesForSelection.length - 1);
+    const nextPage = pagesForSelection[safeIndex];
+    if (nextPage) {
+      const key = pageIdentity(nextPage, safeIndex);
+      setSelectedPageKey(key);
+      setSelectedPageIndex(safeIndex);
+    }
+  }, [invalidateSelectedLessonCache, refreshSelectedLessonState, selectedLesson?.id, selectedPageIndex, transcriptPages]);
+
+  const runSlideStructureAction = useCallback(async (action, payload, selection = {}) => {
+    if (readOnlyReview || !selectedLesson?.id || slideActionBusy || globalEditorActionBusy) return;
+    if (transcriptDirty) {
+      setGlobalEditorMessage('');
+      setGlobalEditorError('Save or discard unsaved transcript edits before changing slide structure.');
+      return;
+    }
+    setSlideActionBusy(action);
+    setGlobalEditorMessage(`${action === 'delete_page' ? 'Deleting slide' : 'Updating slide order'}...`);
+    setGlobalEditorError('');
+    try {
+      const response = await transcriptPageAction(selectedLesson.id, {
+        ...payload,
+        action,
+        trigger_rerender: false,
+        draft_only: true,
+        pause_sec: selectedLesson?.tts_settings?.pause_seconds ?? undefined,
+        lang_hint: 'auto',
+      });
+      await applySlideActionResponse(response, selection);
+      const affected = Array.isArray(response?.changed_page_keys) ? response.changed_page_keys.length : 0;
+      setGlobalEditorMessage(
+        action === 'delete_page'
+          ? `Slide deleted${affected ? ` (${affected} page affected)` : ''}.`
+          : `Slide order updated${affected ? ` (${affected} pages affected)` : ''}.`,
+      );
+    } catch (err) {
+      setGlobalEditorMessage('');
+      setGlobalEditorError(err.message || 'Could not update slide structure.');
+    } finally {
+      setSlideActionBusy('');
+    }
+  }, [
+    applySlideActionResponse,
+    globalEditorActionBusy,
+    readOnlyReview,
+    selectedLesson,
+    slideActionBusy,
+    transcriptDirty,
+  ]);
+
+  const reorderSlides = useCallback((fromIndex, toIndex) => {
+    if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0) return null;
+    const orderedPages = [...transcriptPages];
+    if (fromIndex >= orderedPages.length || toIndex >= orderedPages.length) return null;
+    const [moved] = orderedPages.splice(fromIndex, 1);
+    orderedPages.splice(toIndex, 0, moved);
+    if (!moved?.id || orderedPages.some((page) => !page?.id)) return null;
+    return { orderedPages, moved };
+  }, [transcriptPages]);
+
+  const handleSlideReorder = useCallback((scene, fromIndex, toIndex) => {
+    const result = reorderSlides(fromIndex, toIndex);
+    if (!result) {
+      setGlobalEditorError('Slide reordering is unavailable until transcript pages finish loading.');
+      return;
+    }
+    runSlideStructureAction(
+      'reorder_pages',
+      { page_ids: result.orderedPages.map((page) => page.id) },
+      { pageId: result.moved.id, index: toIndex },
+    );
+  }, [reorderSlides, runSlideStructureAction]);
+
+  const handleSlideMove = useCallback((scene, index, direction) => {
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    handleSlideReorder(scene, index, targetIndex);
+  }, [handleSlideReorder]);
+
+  const handleSlideDelete = useCallback((scene, index) => {
+    if (!scene?.page?.id) {
+      setGlobalEditorError('This slide cannot be deleted until transcript pages finish loading.');
+      return;
+    }
+    if (!window.confirm(`Delete ${scene.label || `slide ${index + 1}`} from the active transcript?`)) return;
+    const fallbackIndex = Math.min(index, Math.max(transcriptPages.length - 2, 0));
+    runSlideStructureAction(
+      'delete_page',
+      { page_id: scene.page.id },
+      { index: fallbackIndex },
+    );
+  }, [runSlideStructureAction, transcriptPages.length]);
+
+  const handleSlideCopy = useCallback(async (scene) => {
+    if (!scene) return;
+    const text = textValue(scene.fullText || scene.text || scene.label);
+    setCopiedSlide({ key: scene.key, text });
+    try {
+      if (text) await copyTextToClipboard(text);
+      setGlobalEditorError('');
+      setGlobalEditorMessage(text ? 'Slide text copied.' : 'Slide copied.');
+    } catch {
+      setGlobalEditorMessage('Slide copied.');
+    }
+  }, []);
+
   const handleSelectTranscriptPage = useCallback((page, index) => {
     const key = pageIdentity(page, index);
     const scene = sceneItems.find((item) => item.key === key) || sceneItems[index] || { key, index };
@@ -5534,6 +5688,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       if (!selectedLessonDirtyScope.hasChanges) {
         await refreshSelectedLessonState(selectedLesson.id, { showLoading: false, bypassCache: true });
         setGlobalEditorMessage('Lesson is already up to date.');
+        setEditorLastSavedAt(formatEditorSaveTime());
         return;
       }
       const hadTranscriptTextChanges = Boolean(transcriptEditorRef.current?.hasUnsavedTextChanges?.());
@@ -5603,6 +5758,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         )
         : promoteMessage || transcriptMessage || 'Saved all changes.';
       setGlobalEditorMessage(nextMessage);
+      setEditorLastSavedAt(formatEditorSaveTime());
     } catch (err) {
       if (err?.details) {
         applyProjectModerationPayload(err.details, 'needs_admin_review');
@@ -5690,6 +5846,58 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     selectedLesson?.id,
     selectedLessonDirtyScope.hasChanges,
     selectedLessonHasDraft,
+  ]);
+
+  useEffect(() => {
+    if (studioView !== 'editor') return undefined;
+    const handleEditorShortcut = (event) => {
+      if (eventTargetAcceptsTextInput(event.target)) return;
+      const mod = event.ctrlKey || event.metaKey;
+      const key = String(event.key || '').toLowerCase();
+
+      if (mod && key === 's') {
+        event.preventDefault();
+        handleGlobalEditorSave({ triggerRerender: false });
+        return;
+      }
+
+      if (mod && key === 'z') {
+        return;
+      }
+
+      if (key === 'delete' || key === 'backspace') {
+        if (selectedScene?.page && !readOnlyReview) {
+          event.preventDefault();
+          handleSlideDelete(selectedScene, selectedPageIndex);
+        }
+        return;
+      }
+
+      if (key === 'arrowup') {
+        event.preventDefault();
+        const nextIndex = Math.max(0, selectedPageIndex - 1);
+        if (sceneItems[nextIndex]) handleSelectScene(sceneItems[nextIndex], nextIndex);
+        return;
+      }
+
+      if (key === 'arrowdown') {
+        event.preventDefault();
+        const nextIndex = Math.min(sceneItems.length - 1, selectedPageIndex + 1);
+        if (sceneItems[nextIndex]) handleSelectScene(sceneItems[nextIndex], nextIndex);
+      }
+    };
+
+    window.addEventListener('keydown', handleEditorShortcut);
+    return () => window.removeEventListener('keydown', handleEditorShortcut);
+  }, [
+    handleGlobalEditorSave,
+    handleSelectScene,
+    handleSlideDelete,
+    readOnlyReview,
+    sceneItems,
+    selectedPageIndex,
+    selectedScene,
+    studioView,
   ]);
 
   const toggleSlideExpanded = useCallback((sceneKey) => {
@@ -6483,6 +6691,15 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               selectedSceneKey={selectedScene?.key}
               loading={loadingTranscript}
               onSelect={handleSelectScene}
+              onReorder={handleSlideReorder}
+              onMove={handleSlideMove}
+              onDelete={handleSlideDelete}
+              onCopy={handleSlideCopy}
+              canPaste={Boolean(copiedSlide)}
+              readOnly={readOnlyReview}
+              actionBusy={Boolean(slideActionBusy || globalEditorActionBusy)}
+              supportsDuplicate={false}
+              supportsRename={false}
             />
             <div className="min-w-0 space-y-5">
               <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
@@ -6773,12 +6990,18 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
                   <StudioInspectorHeading projectTitle={selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'} />
                   <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                    <StudioSaveStatus
+                      saving={Boolean(globalEditorActionBusy === 'save' || globalEditorActionBusy === 'rerender' || slideActionBusy)}
+                      hasChanges={selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile)}
+                      lastSavedAt={editorLastSavedAt}
+                      error={globalEditorError}
+                    />
                     {readOnlyReview ? (
                       <span className="rounded-full bg-[color:var(--status-info-bg)] px-3 py-1.5 text-xs font-semibold text-[color:var(--status-info-fg)]">
                         Read only
                       </span>
                     ) : selectedLesson ? (
-                      <>
+                      <StudioToolbarGroup label="Project save actions">
                         <Button
                           size="sm"
                           variant={selectedLessonDirtyScope.canSaveChanges ? 'primary' : 'secondary'}
@@ -6812,6 +7035,21 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           <RefreshCcw size={14} />
                           <span>{globalEditorActionBusy === 'rerender' ? 'Saving...' : 'Save & Rerender'}</span>
                         </Button>
+                      </StudioToolbarGroup>
+                    ) : (
+                      <StudioToolbarGroup label="Draft creation actions">
+                        <Button size="sm" variant="secondary" onClick={persistEditorDraft}>
+                          <Save size={14} />
+                          <span>Save Local Draft</span>
+                        </Button>
+                        <Button size="sm" onClick={publishFromEditor} disabled={submitting || !sourceFile}>
+                          <Upload size={14} />
+                          <span>{submitting ? 'Creating...' : 'Create Lesson Draft'}</span>
+                        </Button>
+                      </StudioToolbarGroup>
+                    )}
+                    {!readOnlyReview && selectedLesson && (
+                      <StudioToolbarGroup label="Editor options">
                         <details className="relative">
                           <summary className="focus-ring flex min-h-9 cursor-pointer list-none items-center gap-1 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] px-3 text-xs font-semibold text-[var(--text-secondary)]">
                             <StudioMoreActionsLabel />
@@ -6850,18 +7088,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             </Button>
                           </div>
                         </details>
-                      </>
-                    ) : (
-                      <>
-                        <Button size="sm" variant="secondary" onClick={persistEditorDraft}>
-                          <Save size={14} />
-                          <span>Save Local Draft</span>
-                        </Button>
-                        <Button size="sm" onClick={publishFromEditor} disabled={submitting || !sourceFile}>
-                          <Upload size={14} />
-                          <span>{submitting ? 'Creating...' : 'Create Lesson Draft'}</span>
-                        </Button>
-                      </>
+                      </StudioToolbarGroup>
                     )}
                   </div>
                 </div>
@@ -6965,14 +7192,31 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         <p className="title-lg text-[var(--text-primary)]">Slides</p>
                         <p className="text-xs text-[var(--text-secondary)]">Adjust the selected slide background and lesson cover. Select slides from the timeline below the preview.</p>
                       </div>
+                      {!selectedLesson && (
+                        <StudioEmptyState kind="project" />
+                      )}
+                      {selectedLesson && !hasSelectedLessonCover && !selectedSceneBackgroundUrl && (
+                        <StudioEmptyState kind="assets" />
+                      )}
+                      {selectedLesson && !projectAvatarEnabled(selectedLesson) && (
+                        <StudioEmptyState kind="avatar" />
+                      )}
+                      {selectedLesson && selectedScene?.page && !selectedSceneFullText.trim() && (
+                        <StudioEmptyState kind="narration" />
+                      )}
                       {selectedLesson && (
-                        <div className={`space-y-3 rounded-2xl p-3 ${
+                        <StudioInspectorSection
+                          title="Lesson cover"
+                          summary="Update the cover used on lesson cards."
+                          defaultOpen={false}
+                          className={`${
                           coverModerationWarningFlagged
                             ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)]'
                             : coverModerationWarningPending
                               ? 'border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)]'
                             : 'token-surface'
-                        }`}>
+                        }`}
+                        >
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
                               <p className="text-sm font-semibold text-[var(--text-primary)]">Lesson cover</p>
@@ -7070,17 +7314,22 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               )}
                             </div>
                           )}
-                        </div>
+                        </StudioInspectorSection>
                       )}
 
                       {selectedScene?.page && (
-                        <div className={`space-y-3 rounded-2xl p-3 ${
+                        <StudioInspectorSection
+                          title="Scene background"
+                          summary={selectedScene?.label || 'Selected slide controls'}
+                          defaultOpen
+                          className={`${
                           selectedSceneBackgroundWarningFlagged
                             ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)]'
                             : selectedSceneBackgroundWarningPending
                               ? 'border border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)]'
                             : 'token-surface'
-                        }`}>
+                        }`}
+                        >
                           <div>
                             <p className="text-sm font-semibold text-[var(--text-primary)]">Scene background</p>
                             <p className="mt-1 text-xs text-[var(--text-secondary)]">
@@ -7408,7 +7657,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               {sceneActionError}
                             </p>
                           )}
-                        </div>
+                        </StudioInspectorSection>
+                      )}
+                      {selectedLesson && !selectedScene?.page && (
+                        <StudioEmptyState kind="slide" />
                       )}
                     </div>
 
