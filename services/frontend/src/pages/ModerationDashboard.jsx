@@ -24,6 +24,7 @@ import {
 } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { useLocale } from '../i18n/LocaleProvider';
 import { usePageLoading } from '../components/ui/PageLoading';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import {
@@ -491,6 +492,7 @@ function ModerationPreview({ issue }) {
 }
 
 export default function ModerationDashboard({ user, searchQuery = '' }) {
+  const { t } = useLocale();
   const location = useLocation();
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
@@ -920,12 +922,12 @@ export default function ModerationDashboard({ user, searchQuery = '' }) {
     <div className="space-y-6 pb-8">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="label-sm">Staff Moderation</p>
+          <p className="label-sm">{t('moderationLabel')}</p>
           <h1 className="font-['Manrope'] text-4xl font-extrabold tracking-[-0.04em] text-[var(--text-primary)]">
-            Moderation Dashboard
+            {t('moderationTitle')}
           </h1>
           <p className="mt-2 max-w-3xl text-sm text-[var(--text-secondary)]">
-            Review publisher requests, inspect moderation findings, and approve or reject lessons that need staff attention.
+            {t('moderationHelper')}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -934,11 +936,11 @@ export default function ModerationDashboard({ user, searchQuery = '' }) {
               ? 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
               : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
           }`}>
-            {visualModerationEnabled ? 'Visual scan enabled' : 'Visual scan disabled'}
+            {visualModerationEnabled ? t('visualScanEnabled') : t('visualScanDisabled')}
           </span>
           <Button variant="secondary" onClick={loadReviewRequests} disabled={loading || Boolean(actionBusy)}>
             <RefreshCcw size={16} />
-            <span>Refresh</span>
+            <span>{t('refresh')}</span>
           </Button>
         </div>
       </header>

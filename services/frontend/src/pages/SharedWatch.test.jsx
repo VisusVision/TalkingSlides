@@ -2,6 +2,7 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LocaleProvider } from '../i18n/LocaleProvider';
 
 const mocks = vi.hoisted(() => ({
   fetchSharedLesson: vi.fn(),
@@ -51,11 +52,13 @@ async function renderShared(initialEntry = '/share/share-token') {
 
   await act(async () => {
     root.render(
-      <MemoryRouter initialEntries={[initialEntry]}>
-        <Routes>
-          <Route path="/share/:token" element={<SharedWatch />} />
-        </Routes>
-      </MemoryRouter>,
+      <LocaleProvider>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <Routes>
+            <Route path="/share/:token" element={<SharedWatch />} />
+          </Routes>
+        </MemoryRouter>
+      </LocaleProvider>,
     );
   });
 

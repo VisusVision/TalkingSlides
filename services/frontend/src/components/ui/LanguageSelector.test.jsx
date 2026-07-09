@@ -32,12 +32,12 @@ describe('LanguageSelector', () => {
     await act(async () => {
       root.render(
         <LocaleProvider>
-          <LanguageSelector compact />
+          <LanguageSelector />
         </LocaleProvider>,
       );
     });
 
-    const selector = host.querySelector('[data-testid="global-language-selector"]');
+    const selector = host.querySelector('[data-testid="settings-language-selector"]');
     expect(selector).toBeVisible();
     expect(selector).toHaveAccessibleName('Application language');
     expect(selector.querySelectorAll('option')).toHaveLength(SUPPORTED_APP_LOCALES.length);
@@ -55,13 +55,11 @@ describe('LanguageSelector', () => {
     await act(async () => {
       root.render(
         <LocaleProvider>
-          <LanguageSelector compact />
           <LanguageSelector />
         </LocaleProvider>,
       );
     });
 
-    const globalSelector = host.querySelector('[data-testid="global-language-selector"]');
     const settingsSelector = host.querySelector('[data-testid="settings-language-selector"]');
 
     await act(async () => {
@@ -69,17 +67,15 @@ describe('LanguageSelector', () => {
       settingsSelector.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
-    expect(globalSelector.value).toBe('ar');
     expect(document.documentElement.lang).toBe('ar');
     expect(document.documentElement.dir).toBe('rtl');
     expect(document.documentElement).toHaveClass('rtl');
 
     await act(async () => {
-      globalSelector.value = 'en';
-      globalSelector.dispatchEvent(new Event('change', { bubbles: true }));
+      settingsSelector.value = 'en';
+      settingsSelector.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
-    expect(settingsSelector.value).toBe('en');
     expect(document.documentElement.dir).toBe('ltr');
     expect(document.documentElement).not.toHaveClass('rtl');
   });
@@ -90,12 +86,12 @@ describe('LanguageSelector', () => {
     await act(async () => {
       root.render(
         <LocaleProvider>
-          <LanguageSelector compact />
+          <LanguageSelector />
         </LocaleProvider>,
       );
     });
 
-    expect(host.querySelector('[data-testid="global-language-selector"]').value).toBe('tr');
+    expect(host.querySelector('[data-testid="settings-language-selector"]').value).toBe('tr');
     expect(document.documentElement.lang).toBe('tr');
   });
 
@@ -105,12 +101,12 @@ describe('LanguageSelector', () => {
     await act(async () => {
       root.render(
         <LocaleProvider>
-          <LanguageSelector compact />
+          <LanguageSelector />
         </LocaleProvider>,
       );
     });
 
-    expect(host.querySelector('[data-testid="global-language-selector"]').value).toBe('en');
+    expect(host.querySelector('[data-testid="settings-language-selector"]').value).toBe('en');
     expect(document.documentElement.lang).toBe('en');
     expect(window.localStorage.getItem(APP_LOCALE_STORAGE_KEY)).toBe('en');
   });
@@ -121,12 +117,12 @@ describe('LanguageSelector', () => {
     await act(async () => {
       root.render(
         <LocaleProvider>
-          <LanguageSelector compact />
+          <LanguageSelector />
         </LocaleProvider>,
       );
     });
 
-    const selector = host.querySelector('[data-testid="global-language-selector"]');
+    const selector = host.querySelector('[data-testid="settings-language-selector"]');
     expect(selector.value).toBe('tr');
     expect(document.documentElement.lang).toBe('tr');
     expect(window.localStorage.getItem(APP_LOCALE_STORAGE_KEY)).toBe('tr');

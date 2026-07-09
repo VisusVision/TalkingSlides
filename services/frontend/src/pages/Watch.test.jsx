@@ -155,7 +155,7 @@ async function renderWatch(user = null) {
   await act(async () => {
     root.render(
       <LocaleProvider>
-        <LanguageSelector compact />
+        <LanguageSelector />
         <MemoryRouter initialEntries={['/watch?lesson=42']}>
           <Watch searchQuery="" user={user} onLoginRequest={vi.fn()} />
         </MemoryRouter>
@@ -209,7 +209,7 @@ describe('public Watch transcript data flow', () => {
 
   it('rerenders Watch immediately when the shared selector changes locale', async () => {
     const { host, root } = await renderWatch();
-    const selector = host.querySelector('[data-testid="global-language-selector"]');
+    const selector = host.querySelector('[data-testid="settings-language-selector"]');
 
     expect(host.textContent).toContain('Study With Focused Context');
 

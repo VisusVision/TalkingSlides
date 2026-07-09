@@ -60,11 +60,11 @@ describe('Studio locale subscription', () => {
   it('rerenders immediately when the shared selector changes locale', async () => {
     const { host, root } = await renderNode(
       <LocaleProvider>
-        <LanguageSelector compact />
+        <LanguageSelector />
         <StudioLocaleHeader />
       </LocaleProvider>,
     );
-    const selector = host.querySelector('[data-testid="global-language-selector"]');
+    const selector = host.querySelector('[data-testid="settings-language-selector"]');
 
     expect(host.textContent).toContain('Teacher Publishing Console');
 

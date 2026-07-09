@@ -18,7 +18,7 @@ export default function LanguageSelector({ compact = false, id, testId }) {
       </span>
       <select
         id={id}
-        data-testid={testId || (compact ? 'global-language-selector' : 'settings-language-selector')}
+        data-testid={testId || 'settings-language-selector'}
         aria-label={accessibleLabel}
         value={locale}
         onChange={(event) => setLocale(event.target.value)}

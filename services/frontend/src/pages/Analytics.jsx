@@ -26,6 +26,7 @@ import {
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { useLocale } from '../i18n/LocaleProvider';
 import { canAccessStudio } from '../lib/auth';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -983,6 +984,7 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
 }
 
 export default function Analytics({ user }) {
+  const { t } = useLocale();
   const location = useLocation();
   const { capabilities } = useCapabilities();
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
@@ -1314,22 +1316,22 @@ export default function Analytics({ user }) {
     <div className="space-y-7 pb-8">
       <header className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="font-['Manrope'] text-4xl font-extrabold tracking-[-0.04em] text-[var(--text-primary)]">Performance Overview</h1>
-          <p className="mt-2 text-sm text-[var(--text-secondary)]">Real engagement signals from lesson progress, likes, and comments.</p>
+          <h1 className="font-['Manrope'] text-4xl font-extrabold tracking-[-0.04em] text-[var(--text-primary)]">{t('analyticsTitle')}</h1>
+          <p className="mt-2 text-sm text-[var(--text-secondary)]">{t('analyticsHelper')}</p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {analyticsCategories.length > 0 && (
             <label className="focus-within:ring-focus inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-xs font-semibold text-[var(--text-secondary)]">
               <Filter size={14} />
-              <span className="sr-only">Filter by category</span>
+              <span className="sr-only">{t('filterByCategory')}</span>
               <select
                 value={categorySlug}
                 onChange={(event) => setCategorySlug(event.target.value)}
                 className="h-8 min-w-[10rem] rounded-full border-0 bg-[var(--surface-elevated)] px-1 text-xs font-semibold text-[var(--text-primary)] outline-none"
                 style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}
               >
-                <option value="" style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}>All categories</option>
+                <option value="" style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}>{t('allCategories')}</option>
                 {analyticsCategories.map((category) => (
                   <option
                     key={category.slug}
@@ -1367,7 +1369,7 @@ export default function Analytics({ user }) {
             className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)] disabled:cursor-wait disabled:opacity-60"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
+            {t('refresh')}
           </button>
         </div>
       </header>

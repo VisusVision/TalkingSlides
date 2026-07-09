@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { LoaderCircle, Play, RotateCcw } from 'lucide-react';
 import { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer';
+import { useLocale } from '../../i18n/LocaleProvider';
 
 export default function PlaybackStartOverlay({
   videoRef,
   sourceKey = '',
   onPlaybackError,
 }) {
+  const { t } = useLocale();
   const [state, setState] = useState('idle');
   const [message, setMessage] = useState('');
   const [diagnostic, setDiagnostic] = useState('');
@@ -32,7 +34,7 @@ export default function PlaybackStartOverlay({
     const handleEnded = () => setState('ended');
     const handleError = () => {
       setState('error');
-      setMessage('Playback could not start. Check the secure stream and try again.');
+      setMessage(t('playbackCouldNotStart'));
       setDiagnostic(`MediaError:${video.error?.code || 'unknown'}`);
     };
 
@@ -46,7 +48,7 @@ export default function PlaybackStartOverlay({
       video.removeEventListener('ended', handleEnded);
       video.removeEventListener('error', handleError);
     };
-  }, [sourceKey, videoRef]);
+  }, [sourceKey, t, videoRef]);
 
   const startPlayback = useCallback(async () => {
     const video = videoRef?.current;
@@ -71,7 +73,7 @@ export default function PlaybackStartOverlay({
           error = fallbackError;
         }
       }
-      const nextMessage = 'Playback was blocked or the secure stream is unavailable. Try again.';
+      const nextMessage = t('playbackBlocked');
       setState('error');
       setMessage(nextMessage);
       setDiagnostic(`${error?.name || 'Error'}:${error?.message || 'play() rejected'}`);
@@ -81,17 +83,17 @@ export default function PlaybackStartOverlay({
         cause: error,
       });
     }
-  }, [onPlaybackError, videoRef]);
+  }, [onPlaybackError, t, videoRef]);
 
   if (state === 'playing') return null;
 
   const retry = state === 'error';
   const starting = state === 'starting';
   const label = retry
-    ? 'Retry playback'
+    ? t('retryPlayback')
     : state === 'ended'
-      ? 'Play again'
-      : 'Play lesson';
+      ? t('playAgain')
+      : t('playLesson');
   const Icon = starting ? LoaderCircle : retry ? RotateCcw : Play;
 
   return (
@@ -110,7 +112,7 @@ export default function PlaybackStartOverlay({
         className="focus-ring pointer-events-auto inline-flex min-h-12 items-center gap-2 rounded-full border border-white/35 bg-black/75 px-5 text-sm font-bold text-white shadow-xl backdrop-blur-sm transition hover:bg-black/90 disabled:cursor-wait disabled:opacity-80"
       >
         <Icon size={20} className={starting ? 'animate-spin' : ''} fill={retry ? 'none' : 'currentColor'} />
-        <span>{starting ? 'Starting…' : label}</span>
+        <span>{starting ? t('startingPlayback') : label}</span>
       </button>
       {message && (
         <p role="alert" className="max-w-md rounded-lg bg-black/80 px-3 py-2 text-xs font-medium text-white">

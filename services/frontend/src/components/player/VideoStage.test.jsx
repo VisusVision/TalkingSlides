@@ -1,6 +1,7 @@
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { LocaleProvider } from '../../i18n/LocaleProvider';
 import VideoStage from './VideoStage';
 
 function renderStage(props = {}) {
@@ -10,17 +11,19 @@ function renderStage(props = {}) {
 
   act(() => {
     root.render(
-      <VideoStage
-        lesson={{
-          id: 101,
-          title: 'Current lesson',
-          stream_url: '/media/current.mp4',
-        }}
-        asSurface={false}
-        showLessonDetails={false}
-        showSubtitleControls={false}
-        {...props}
-      />,
+      <LocaleProvider>
+        <VideoStage
+          lesson={{
+            id: 101,
+            title: 'Current lesson',
+            stream_url: '/media/current.mp4',
+          }}
+          asSurface={false}
+          showLessonDetails={false}
+          showSubtitleControls={false}
+          {...props}
+        />
+      </LocaleProvider>,
     );
   });
 
