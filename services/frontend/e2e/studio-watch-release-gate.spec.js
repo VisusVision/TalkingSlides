@@ -208,7 +208,15 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByRole('button', { name: 'Studio Editor' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Studio Editor' }).click();
-  await expect(page.getByText('Editor Workspace')).toBeVisible();
+  await expect(page.getByTestId('studio-editor-layout')).toBeVisible();
+  await expect(page.getByTestId('studio-slide-rail')).toBeVisible();
+  await expect(page.getByTestId('studio-render-status')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Inspector' })).toBeVisible();
+
+  await page.evaluate(() => document.documentElement.setAttribute('lang', 'tr-TR'));
+  await expect(page.getByRole('heading', { name: 'Slaytlar' })).toBeVisible();
+  await expect(page.getByText(/Render durumu:/).first()).toBeVisible();
+  await page.evaluate(() => document.documentElement.setAttribute('lang', 'en'));
 
   await page.getByLabel('Lesson title').fill('Release Gate Lesson');
   await page.getByLabel('Category').fill('Release QA');
