@@ -77,6 +77,7 @@ import {
   StudioSlideRail,
   StudioToolbarGroup,
 } from '../components/studio/StudioWorkspaceChrome';
+import StudioWorkflowGuide from '../components/studio/StudioWorkflowGuide';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
@@ -6001,10 +6002,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   return (
     <div className="min-w-0 max-w-full space-y-5 overflow-x-hidden">
-      <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden">
+      <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden py-3">
         <div className="min-w-0">
           <p className="label-sm">Studio Workspace</p>
-          <h1 className="headline-md mt-1 text-[var(--text-primary)]">
+          <h1 className="title-lg mt-1 text-[var(--text-primary)]">
             {readOnlyReview ? 'Read-only Lesson Review' : 'Teacher Publishing Console'}
           </h1>
         </div>
@@ -6074,6 +6075,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             />
           )}
         </>
+      )}
+
+      {studioView === 'editor' && !readOnlyReview && (
+        <StudioWorkflowGuide
+          hasChanges={selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile)}
+          renderReady={Boolean(selectedLesson && projectRenderReady(selectedLesson))}
+          published={Boolean(selectedLesson?.is_published)}
+        />
       )}
 
       {submitError && (
@@ -6684,7 +6693,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         <>
           <section
             data-testid="studio-editor-layout"
-            className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[14rem_minmax(0,1fr)_minmax(20rem,24rem)] 2xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
+            className="grid min-w-0 max-w-full gap-4 overflow-x-hidden lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] xl:grid-cols-[14rem_minmax(0,1fr)_minmax(20rem,24rem)] 2xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
           >
             <StudioSlideRail
               scenes={sceneItems}
@@ -6771,7 +6780,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 )}
 
                 <div
-                  className={`relative mx-auto overflow-hidden rounded-2xl ${
+                  className={`relative mx-auto overflow-hidden rounded-2xl [container-type:inline-size] ${
                     selectedSceneMode === 'whiteboard'
                       ? 'bg-white'
                       : 'bg-[var(--video-stage-bg)]'
@@ -6782,7 +6791,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     width: 'min(100%, calc(72vh * 3 / 2))',
                   }}
                 >
-                  {selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
+                  {selectedSceneMode === 'whiteboard' ? (
+                    <div className="absolute inset-0 bg-white" aria-hidden="true" />
+                  ) : selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
                     <img
                       src={selectedSceneBackgroundImageUrl || coverPreviewUrl}
                       alt="Selected scene preview"
@@ -6857,7 +6868,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           dir={selectedSceneTextDirection}
                           style={{
                             direction: selectedSceneTextDirection,
-                            fontSize: selectedSceneTextLayout.fontSize,
+                            fontSize: `min(${selectedSceneTextLayout.fontSize}, 7cqw)`,
                             lineHeight: selectedSceneTextLayout.lineHeight,
                             textAlign: selectedSceneTextDirection === 'rtl' ? 'right' : 'left',
                           }}
@@ -6982,14 +6993,17 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               </SurfaceCard>
             </div>
 
-            <aside className="min-w-0 max-w-full xl:sticky xl:top-4 xl:self-start">
+            <aside
+              data-testid="studio-inspector"
+              className="min-w-0 max-w-full lg:sticky lg:top-4 lg:self-start"
+            >
               <SurfaceCard
                 elevated
-                className="flex min-h-[72vh] min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:max-h-[calc(100vh-9rem)]"
+                className="flex min-h-0 min-w-0 max-w-full flex-col gap-4 overflow-hidden md:max-h-[calc(100vh-8rem)] md:min-h-[32rem] lg:max-h-[calc(100vh-9rem)] lg:min-h-[65vh]"
               >
-                <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+                <div className="flex shrink-0 flex-col items-stretch gap-3">
                   <StudioInspectorHeading projectTitle={selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'} />
-                  <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                  <div className="flex min-w-0 flex-wrap justify-start gap-2">
                     <StudioSaveStatus
                       saving={Boolean(globalEditorActionBusy === 'save' || globalEditorActionBusy === 'rerender' || slideActionBusy)}
                       hasChanges={selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile)}

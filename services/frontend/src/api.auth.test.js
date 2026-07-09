@@ -39,7 +39,10 @@ describe("auth token storage regressions", () => {
       expect.stringContaining("/auth/logout/"),
       expect.objectContaining({
         method: "POST",
-        headers: { Authorization: "Token token-123" },
+        headers: expect.objectContaining({
+          Authorization: "Token token-123",
+          "Accept-Language": "en",
+        }),
       }),
     );
     expect(getToken()).toBe("");

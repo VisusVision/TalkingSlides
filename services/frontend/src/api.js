@@ -6,6 +6,7 @@
 // (http://localhost:8000/api/v1).
 
 import { avatarSetupErrorMessage } from "./utils/avatarSetupStatus.js";
+import { currentAppLocale } from "./i18n/locale.js";
 
 const DEFAULT_API_BASE_URL = "http://localhost:8000/api/v1";
 
@@ -112,7 +113,8 @@ function clearLocalAuthState() {
 
 function authHeaders(extra = {}) {
   const token = getToken();
-  return token ? { Authorization: `Token ${token}`, ...extra } : { ...extra };
+  const localizedHeaders = { "Accept-Language": currentAppLocale(), ...extra };
+  return token ? { Authorization: `Token ${token}`, ...localizedHeaders } : localizedHeaders;
 }
 
 function clearLessonResponseCache() {

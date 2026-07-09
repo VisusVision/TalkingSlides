@@ -16,6 +16,7 @@ import {
 } from '../../utils/notifications';
 import NotificationTypeIcon from './NotificationTypeIcon';
 import ProfileMenu from './ProfileMenu';
+import LanguageSelector from './LanguageSelector';
 
 const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics', '/notifications']);
 const NOTIFICATION_DROPDOWN_LIMIT = 5;
@@ -191,6 +192,7 @@ export default function Header({
           </div>
 
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
+            {isAuthenticated && <LanguageSelector compact />}
             {isAuthenticated && (
               <div ref={notificationRef} className="relative block">
                 <button
