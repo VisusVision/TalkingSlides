@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bell,
   ChevronDown,
+  Languages,
   Mic,
   MonitorPlay,
   MoonStar,
@@ -15,11 +16,13 @@ import {
   UserCircle2,
 } from 'lucide-react';
 import Button from '../components/ui/Button';
+import LanguageSelector from '../components/ui/LanguageSelector';
 import PublicProfileEditor from '../components/profile/PublicProfileEditor';
 import ModalShell from '../components/ui/ModalShell';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { useTheme } from '../components/ui/ThemeProvider';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { useLocale } from '../i18n/LocaleProvider';
 import {
   API_BASE_URL,
   deleteAvatarPreview,
@@ -492,6 +495,7 @@ function SettingsSection({
 }
 
 export default function Settings({ user, onUserRefresh }) {
+  const { locale, supportedLocales, t } = useLocale();
   const { resolvedTheme, setMode } = useTheme();
   const { capabilities } = useCapabilities();
   const storedSettingsState = useMemo(() => readRouteSessionState('settings', user), [user]);
@@ -1314,10 +1318,10 @@ export default function Settings({ user, onUserRefresh }) {
     <div className="space-y-5">
       <section className="layout-grid-12">
         <SurfaceCard elevated className="lg:col-span-12">
-          <p className="label-sm">Settings</p>
-          <h1 className="display-lg mt-2 text-[var(--text-primary)]">Workspace preferences</h1>
+          <p className="label-sm">{t('settingsLabel')}</p>
+          <h1 className="display-lg mt-2 text-[var(--text-primary)]">{t('settingsTitle')}</h1>
           <p className="body-md mt-3 max-w-2xl">
-            Manage account details, public profile text, playback accessibility, and deployment feature visibility.
+            {t('settingsHelper')}
           </p>
         </SurfaceCard>
       </section>
@@ -1362,6 +1366,24 @@ export default function Settings({ user, onUserRefresh }) {
               </p>
             ))}
           </div>
+        </SettingsSection>
+
+        <SettingsSection
+          sectionId="language"
+          openState={settingsOpenSections}
+          onOpenStateChange={updateSettingsSectionOpen}
+          eyebrow={t('languageEyebrow')}
+          title={t('languageTitle')}
+          caption={t('languageHelper')}
+          icon={Languages}
+          defaultOpen
+        >
+          <LanguageSelector />
+          <p className="text-sm text-[var(--text-secondary)]" data-testid="current-language">
+            {t('currentLanguage', {
+              language: supportedLocales.find((option) => option.code === locale)?.label || locale,
+            })}
+          </p>
         </SettingsSection>
 
         <SettingsSection

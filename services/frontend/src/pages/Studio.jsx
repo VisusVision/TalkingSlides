@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocale } from '../i18n/LocaleProvider';
 import {
   createProject,
   deleteProject,
@@ -3157,6 +3158,19 @@ function LessonIntelligencePanel({
   );
 }
 
+export function StudioLocaleHeader({ readOnlyReview = false }) {
+  const { t } = useLocale();
+
+  return (
+    <div className="min-w-0">
+      <p className="label-sm">{t('studioLabel')}</p>
+      <h1 className="title-lg mt-1 text-[var(--text-primary)]">
+        {t(readOnlyReview ? 'studioReviewTitle' : 'studioTitle')}
+      </h1>
+    </div>
+  );
+}
+
 export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
@@ -6003,12 +6017,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   return (
     <div className="min-w-0 max-w-full space-y-5 overflow-x-hidden">
       <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden py-3">
-        <div className="min-w-0">
-          <p className="label-sm">Studio Workspace</p>
-          <h1 className="title-lg mt-1 text-[var(--text-primary)]">
-            {readOnlyReview ? 'Read-only Lesson Review' : 'Teacher Publishing Console'}
-          </h1>
-        </div>
+        <StudioLocaleHeader readOnlyReview={readOnlyReview} />
 
         {!readOnlyReview && (
         <div className="inline-flex max-w-full flex-wrap rounded-full token-surface p-1">

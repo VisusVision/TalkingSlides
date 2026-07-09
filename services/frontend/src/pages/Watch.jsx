@@ -33,6 +33,7 @@ import { buildChapters, buildTranscriptLines, resolveTranscriptSeekTarget } from
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 import { isAutoplayNextEnabled } from '../utils/playbackPreferences';
+import { useLocale } from '../i18n/LocaleProvider';
 
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
@@ -450,6 +451,17 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, pub
 }
 
 
+
+export function WatchLocaleHeader() {
+  const { t } = useLocale();
+
+  return (
+    <div>
+      <p className="label-sm">{t('watchLabel')}</p>
+      <h1 className="headline-md mt-1 text-[var(--text-primary)]">{t('watchTitle')}</h1>
+    </div>
+  );
+}
 
 export default function Watch({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
@@ -1356,10 +1368,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   return (
     <div className="space-y-5">
       <SurfaceCard className="token-glass flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <p className="label-sm">Watch</p>
-          <h1 className="headline-md mt-1 text-[var(--text-primary)]">Study With Focused Context</h1>
-        </div>
+        <WatchLocaleHeader />
 
         <Button variant={focusMode ? 'primary' : 'secondary'} onClick={handleFocusModeToggle} disabled={!activeLessonId}>
           <Focus size={15} />

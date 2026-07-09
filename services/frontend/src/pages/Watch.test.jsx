@@ -2,6 +2,8 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import LanguageSelector from '../components/ui/LanguageSelector';
+import { LocaleProvider } from '../i18n/LocaleProvider';
 
 const mocks = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -152,9 +154,12 @@ async function renderWatch(user = null) {
 
   await act(async () => {
     root.render(
-      <MemoryRouter initialEntries={['/watch?lesson=42']}>
-        <Watch searchQuery="" user={user} onLoginRequest={vi.fn()} />
-      </MemoryRouter>,
+      <LocaleProvider>
+        <LanguageSelector compact />
+        <MemoryRouter initialEntries={['/watch?lesson=42']}>
+          <Watch searchQuery="" user={user} onLoginRequest={vi.fn()} />
+        </MemoryRouter>
+      </LocaleProvider>,
     );
   });
 
@@ -197,6 +202,28 @@ describe('public Watch transcript data flow', () => {
     expect(host).toHaveTextContent('Public comment');
     expect(host.querySelector('[data-testid="video-stage"]')).toHaveTextContent('Public lesson');
     expect(mocks.fetchProjectTranscript).not.toHaveBeenCalled();
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it('rerenders Watch immediately when the shared selector changes locale', async () => {
+    const { host, root } = await renderWatch();
+    const selector = host.querySelector('[data-testid="global-language-selector"]');
+
+    expect(host.textContent).toContain('Study With Focused Context');
+
+    await act(async () => {
+      selector.value = 'tr';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('Odaklanmış Bağlamla Çalışın');
+
+    await act(async () => {
+      selector.value = 'en';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('Study With Focused Context');
 
     await act(async () => root.unmount());
     host.remove();

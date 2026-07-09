@@ -2,9 +2,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import {
   APP_LOCALE_CHANGED_EVENT,
   applyAppLocale,
+  normalizeAppLocale,
   readStoredAppLocale,
   SUPPORTED_APP_LOCALES,
 } from './locale';
+import { translateAppMessage } from './messages';
 
 const LocaleContext = createContext(null);
 
@@ -18,7 +20,7 @@ export function LocaleProvider({ children }) {
   useEffect(() => {
     const handleLocaleChange = (event) => {
       if (event.detail?.locale) {
-        setLocaleState(event.detail.locale);
+        setLocaleState(normalizeAppLocale(event.detail.locale));
       }
     };
     window.addEventListener(APP_LOCALE_CHANGED_EVENT, handleLocaleChange);
@@ -34,6 +36,7 @@ export function LocaleProvider({ children }) {
     locale,
     setLocale,
     supportedLocales: SUPPORTED_APP_LOCALES,
+    t: (key, params) => translateAppMessage(locale, key, params),
   }), [locale, setLocale]);
 
   return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>;
