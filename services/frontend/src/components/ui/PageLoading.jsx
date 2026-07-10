@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import Skeleton from './Skeleton';
 
 const PageLoadingContext = createContext({
   setPageLoading: () => {},
@@ -92,16 +93,16 @@ export function RouteLoadingFallback() {
   return (
     <div className="space-y-4 pt-4" role="status" aria-live="polite" aria-label="Loading page">
       <div className="rounded-3xl token-surface-elevated p-5">
-        <div className="visus-loading-sheen h-4 w-36 rounded-full bg-[color:var(--surface-container-high)]" />
-        <div className="visus-loading-sheen mt-4 h-8 max-w-md rounded-full bg-[color:var(--surface-container-high)]" />
-        <div className="visus-loading-sheen mt-3 h-4 max-w-2xl rounded-full bg-[color:var(--surface-container-high)]" />
+        <Skeleton className="h-4 w-36" rounded="full" />
+        <Skeleton className="mt-4 h-8 max-w-md" rounded="full" />
+        <Skeleton className="mt-3 h-4 max-w-2xl" rounded="full" />
       </div>
       <div className="grid gap-3 md:grid-cols-3">
         {Array.from({ length: 3 }, (_, index) => (
           <div key={`route-loading-${index}`} className="rounded-2xl token-surface p-4">
-            <div className="visus-loading-sheen h-4 w-2/3 rounded-full bg-[color:var(--surface-container-high)]" />
-            <div className="visus-loading-sheen mt-3 h-3 w-full rounded-full bg-[color:var(--surface-container-high)]" />
-            <div className="visus-loading-sheen mt-2 h-3 w-4/5 rounded-full bg-[color:var(--surface-container-high)]" />
+            <Skeleton className="h-4 w-2/3" rounded="full" />
+            <Skeleton className="mt-3 h-3 w-full" rounded="full" />
+            <Skeleton className="mt-2 h-3 w-4/5" rounded="full" />
           </div>
         ))}
       </div>

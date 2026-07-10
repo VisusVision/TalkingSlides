@@ -26,6 +26,7 @@ import {
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
+import Skeleton from '../components/ui/Skeleton';
 import { canAccessStudio } from '../lib/auth';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -982,6 +983,121 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
   );
 }
 
+function AnalyticsDashboardSkeleton({ intelligenceFeatureEnabled }) {
+  return (
+    <div className="space-y-6" role="status" aria-live="polite" aria-label="Loading analytics dashboard">
+      <span className="sr-only">Loading analytics...</span>
+
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {Array.from({ length: 4 }, (_, index) => (
+          <Skeleton.Card key={`analytics-kpi-skeleton-${index}`} className="min-h-[10.5rem] space-y-4">
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-10 w-10" rounded="lg" />
+              <Skeleton className="h-6 w-16" rounded="full" />
+            </div>
+            <Skeleton className="h-3 w-28" rounded="full" />
+            <Skeleton className="h-8 w-24" rounded="full" />
+            <Skeleton className="h-3 w-36" rounded="full" />
+          </Skeleton.Card>
+        ))}
+      </section>
+
+      <section className="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,0.9fr)]">
+        <Skeleton.Card className="min-h-[24rem] space-y-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="space-y-2">
+              <Skeleton className="h-5 w-40" rounded="full" />
+              <Skeleton className="h-3 w-52" rounded="full" />
+            </div>
+            <Skeleton className="h-7 w-20" rounded="full" />
+          </div>
+          <div className="flex min-h-64 flex-1 items-end gap-2 rounded-2xl bg-[linear-gradient(to_bottom,transparent,rgba(127,127,127,0.06))] px-2 pt-8">
+            {[58, 42, 74, 35, 66, 48, 82].map((height, index) => (
+              <Skeleton
+                key={`analytics-bar-skeleton-${index}`}
+                className="min-h-10 flex-1 rounded-b-none"
+                rounded="lg"
+                style={{ height: `${height}%` }}
+              />
+            ))}
+          </div>
+        </Skeleton.Card>
+
+        <Skeleton.Card className="min-h-[24rem] space-y-6">
+          <div className="space-y-2">
+            <Skeleton className="h-5 w-44" rounded="full" />
+            <Skeleton className="h-3 w-56" rounded="full" />
+          </div>
+          <div className="flex items-center gap-5">
+            <Skeleton className="h-32 w-32 shrink-0" rounded="full" />
+            <Skeleton.Text lines={4} className="flex-1" />
+          </div>
+          <Skeleton.Text lines={5} />
+        </Skeleton.Card>
+      </section>
+
+      <section className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <Skeleton.List count={4} itemClassName="token-surface-elevated p-4">
+          {(index) => (
+            <div className="grid grid-cols-[2.25rem_minmax(0,1fr)] gap-3">
+              <Skeleton className="h-9 w-9" rounded="lg" />
+              <div className="space-y-3">
+                <Skeleton className={index % 2 === 0 ? 'h-4 w-4/5' : 'h-4 w-2/3'} rounded="full" />
+                <Skeleton className="h-2 w-full" rounded="full" />
+                <Skeleton className="h-3 w-5/6" rounded="full" />
+              </div>
+            </div>
+          )}
+        </Skeleton.List>
+
+        <Skeleton.List count={3} itemClassName="token-surface-elevated p-4">
+          {() => (
+            <div className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-3">
+              <Skeleton className="mt-1 h-3 w-3" rounded="full" />
+              <div className="space-y-3">
+                <Skeleton className="h-4 w-3/4" rounded="full" />
+                <Skeleton.Text lines={2} />
+              </div>
+            </div>
+          )}
+        </Skeleton.List>
+      </section>
+
+      <SurfaceCard as="section" variant="elevated" padding="none" className="overflow-hidden">
+        <div className="border-b border-[var(--border-subtle)] px-5 py-4 sm:px-8 sm:py-6">
+          <Skeleton className="h-5 w-40" rounded="full" />
+          <Skeleton className="mt-2 h-3 w-52" rounded="full" />
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-left">
+            <tbody>
+              {Array.from({ length: 4 }, (_, index) => (
+                <Skeleton.TableRow key={`analytics-table-skeleton-${index}`} columns={4} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </SurfaceCard>
+
+      {intelligenceFeatureEnabled && (
+        <Skeleton.Card className="space-y-6 bg-[color:rgba(208,188,255,0.08)] p-6">
+          <div className="flex items-start gap-4">
+            <Skeleton className="h-11 w-11" rounded="lg" />
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-6 w-44" rounded="full" />
+              <Skeleton className="h-3 w-2/3" rounded="full" />
+            </div>
+          </div>
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+            <Skeleton.Text lines={5} />
+            <Skeleton className="h-36 w-full" rounded="lg" />
+          </div>
+        </Skeleton.Card>
+      )}
+    </div>
+  );
+}
+
 export default function Analytics({ user }) {
   const location = useLocation();
   const { capabilities } = useCapabilities();
@@ -1309,9 +1425,10 @@ export default function Analytics({ user }) {
             : intelligenceStale
               ? 'Re-analyze'
               : 'Analyze analytics';
+  const showInitialAnalyticsSkeleton = loading && stats.isEmpty && !error;
 
   return (
-    <div className="space-y-7 pb-8">
+    <div className="space-y-7 pb-8" aria-busy={loading}>
       <header className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
         <div>
           <h1 className="font-['Manrope'] text-4xl font-extrabold tracking-[-0.04em] text-[var(--text-primary)]">Performance Overview</h1>
@@ -1378,6 +1495,10 @@ export default function Analytics({ user }) {
         </SurfaceCard>
       )}
 
+      {showInitialAnalyticsSkeleton ? (
+        <AnalyticsDashboardSkeleton intelligenceFeatureEnabled={intelligenceFeatureEnabled} />
+      ) : (
+        <>
       {!loading && stats.isEmpty && !error && (
         <SurfaceCard variant="accent" padding="lg">
           <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
@@ -1776,9 +1897,15 @@ export default function Analytics({ user }) {
         )}
 
         {intelligenceLoading && !intelligenceReport ? (
-          <div className="flex min-h-28 items-center justify-center rounded-2xl bg-[color:var(--surface-muted)]/25 text-sm text-[var(--text-secondary)]">
-            <RefreshCw size={16} className="mr-2 animate-spin" />
-            Loading latest report...
+          <div role="status" aria-live="polite" aria-label="Loading latest analytics report" className="rounded-2xl bg-[color:var(--surface-muted)]/25 p-5">
+            <span className="sr-only">Loading latest report...</span>
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="space-y-3">
+                <Skeleton className="h-4 w-36" rounded="full" />
+                <Skeleton.Text lines={4} />
+              </div>
+              <Skeleton className="h-28 w-full" rounded="lg" />
+            </div>
           </div>
         ) : intelligenceReport?.status === 'done' ? (
           <div className="space-y-6">
@@ -1901,6 +2028,8 @@ export default function Analytics({ user }) {
           </p>
         )}
       </SurfaceCard>
+        </>
+      )}
 
       <CreateLessonModal
         open={createModalOpen}
