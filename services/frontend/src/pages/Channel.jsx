@@ -27,6 +27,7 @@ import SocialIcon from '../components/ui/SocialIcon';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
 import { formatDuration, normalizeLesson } from '../lib/content';
+import { currentAppLocale } from '../i18n/locale';
 import {
   SOCIAL_LINK_FIELDS,
   normalizedPublicProfilePayload,
@@ -92,7 +93,7 @@ function formatPublishedDate(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-US', {
+  return date.toLocaleDateString(currentAppLocale(), {
     month: 'short',
     day: 'numeric',
     year: 'numeric',

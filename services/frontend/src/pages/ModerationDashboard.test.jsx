@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LocaleProvider } from '../i18n/LocaleProvider';
 
 const mocks = vi.hoisted(() => ({
   adminApproveLesson: vi.fn(),
@@ -89,9 +90,11 @@ async function renderDashboard(props = {}, { route = '/' } = {}) {
   const root = createRoot(host);
   await act(async () => {
     root.render(
-      <MemoryRouter initialEntries={[route]}>
-        <ModerationDashboard {...props} />
-      </MemoryRouter>,
+      <LocaleProvider>
+        <MemoryRouter initialEntries={[route]}>
+          <ModerationDashboard {...props} />
+        </MemoryRouter>
+      </LocaleProvider>,
     );
   });
   await act(async () => {});
@@ -101,9 +104,11 @@ async function renderDashboard(props = {}, { route = '/' } = {}) {
     rerender: async (nextProps = {}) => {
       await act(async () => {
         root.render(
-          <MemoryRouter initialEntries={[route]}>
-            <ModerationDashboard {...nextProps} />
-          </MemoryRouter>,
+          <LocaleProvider>
+            <MemoryRouter initialEntries={[route]}>
+              <ModerationDashboard {...nextProps} />
+            </MemoryRouter>
+          </LocaleProvider>,
         );
       });
       await act(async () => {});

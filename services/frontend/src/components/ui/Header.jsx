@@ -16,6 +16,7 @@ import {
 } from '../../utils/notifications';
 import NotificationTypeIcon from './NotificationTypeIcon';
 import ProfileMenu from './ProfileMenu';
+import { useLocale } from '../../i18n/LocaleProvider';
 
 const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics', '/notifications']);
 const NOTIFICATION_DROPDOWN_LIMIT = 5;
@@ -28,6 +29,7 @@ export default function Header({
   onLoginRequest,
   onLogout,
 }) {
+  const { t } = useLocale();
   const location = useLocation();
   const navigate = useNavigate();
   const showSearch = !SEARCH_HIDDEN_PATHS.has(location.pathname);
@@ -90,7 +92,7 @@ export default function Header({
         if (!cancelled) setNotifications(notificationResults(data));
       })
       .catch((error) => {
-        if (!cancelled) setNotificationsError(error?.message || 'Failed to load notifications');
+        if (!cancelled) setNotificationsError(error?.message || t('unableToLoadNotifications'));
       })
       .finally(() => {
         if (!cancelled) setNotificationsLoading(false);
@@ -99,7 +101,7 @@ export default function Header({
     return () => {
       cancelled = true;
     };
-  }, [notificationsOpen, isAuthenticated, notificationFilter, user?.id]);
+  }, [notificationsOpen, isAuthenticated, notificationFilter, user?.id, t]);
 
   useEffect(() => {
     setNotificationsOpen(false);
@@ -130,7 +132,7 @@ export default function Header({
         notifyNotificationsChanged();
       }
     } catch (error) {
-      setNotificationsError(error?.message || 'Failed to update notification');
+      setNotificationsError(error?.message || t('unableToLoadNotifications'));
       return;
     }
 
@@ -154,7 +156,7 @@ export default function Header({
       ));
       notifyNotificationsChanged();
     } catch (error) {
-      setNotificationsError(error?.message || 'Failed to update notifications');
+      setNotificationsError(error?.message || t('unableToLoadNotifications'));
     } finally {
       setMarkAllLoading(false);
     }
@@ -168,7 +170,7 @@ export default function Header({
             <Link
               to="/"
               className="focus-ring inline-flex shrink-0 items-center"
-              aria-label="VISUS VidLab home"
+              aria-label={t('visusHomeLabel')}
             >
               <span className="font-['Manrope'] text-[1.3rem] font-extrabold tracking-[-0.045em] text-[var(--text-primary)] sm:text-[1.45rem]">
                 VISUS VidLab
@@ -182,9 +184,9 @@ export default function Header({
                   value={searchQuery}
                   onChange={(event) => onSearchQueryChange(event.target.value)}
                   type="search"
-                  placeholder="Search lessons, teachers, and topics"
+                  placeholder={t('globalSearchPlaceholder')}
                   className="h-full w-full border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--outline)] focus:outline-none"
-                  aria-label="Global search"
+                  aria-label={t('globalSearchLabel')}
                 />
               </label>
             )}
@@ -196,7 +198,7 @@ export default function Header({
                 <button
                   type="button"
                   className="focus-ring relative inline-flex h-10 w-10 items-center justify-center rounded-full text-[#9ca3af] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
-                  aria-label="Notifications"
+                  aria-label={t('notificationsLabel')}
                   aria-expanded={notificationsOpen}
                   onClick={() => setNotificationsOpen((open) => !open)}
                 >
@@ -212,8 +214,8 @@ export default function Header({
                   <div className="fixed left-3 right-3 top-16 z-[60] w-auto overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-primary)] shadow-2xl md:absolute md:left-auto md:right-0 md:top-12 md:w-[22rem]">
                     <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-4 py-3">
                       <div>
-                        <p className="text-sm font-semibold">Notifications</p>
-                        <p className="text-xs text-[var(--outline)]">{unreadCount} unread</p>
+                        <p className="text-sm font-semibold">{t('notificationsLabel')}</p>
+                        <p className="text-xs text-[var(--outline)]">{t('unreadCount', { count: unreadCount })}</p>
                       </div>
                       <button
                         type="button"
@@ -222,7 +224,7 @@ export default function Header({
                         disabled={markAllLoading || unreadCount === 0}
                       >
                         <CheckCheck size={14} />
-                        Mark all read
+                        {t('markAllRead')}
                       </button>
                     </div>
 
@@ -234,13 +236,13 @@ export default function Header({
                             key={filter}
                             type="button"
                             onClick={() => setNotificationFilter(filter)}
-                            className={`focus-ring h-8 rounded-full px-3 text-xs font-semibold capitalize transition ${
+                            className={`focus-ring h-8 rounded-full px-3 text-xs font-semibold transition ${
                               selected
                                 ? 'bg-[color:rgba(107,56,212,0.12)] text-[var(--text-primary)] dark:bg-[color:rgba(208,188,255,0.2)]'
                                 : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]'
                             }`}
                           >
-                            {filter}
+                            {filter === 'unread' ? t('unreadFilter') : t('allFilter')}
                           </button>
                         );
                       })}
@@ -249,14 +251,14 @@ export default function Header({
                     <div className="max-h-[calc(100vh-15rem)] overflow-y-auto md:max-h-[26rem]">
                       {notificationsLoading && (
                         <div className="px-4 py-6 text-sm text-[var(--text-secondary)]">
-                          <p className="font-semibold text-[var(--text-primary)]">Loading notifications</p>
-                          <p className="mt-1 text-xs">Checking the latest activity.</p>
+                          <p className="font-semibold text-[var(--text-primary)]">{t('loadingNotifications')}</p>
+                          <p className="mt-1 text-xs">{t('checkingLatestActivity')}</p>
                         </div>
                       )}
 
                       {!notificationsLoading && notificationsError && (
                         <div className="px-4 py-6 text-sm text-red-600">
-                          <p className="font-semibold">Unable to load notifications</p>
+                          <p className="font-semibold">{t('unableToLoadNotifications')}</p>
                           <p className="mt-1 text-xs">{notificationsError}</p>
                         </div>
                       )}
@@ -264,12 +266,12 @@ export default function Header({
                       {!notificationsLoading && !notificationsError && notifications.length === 0 && (
                         <div className="px-4 py-7 text-sm text-[var(--text-secondary)]">
                           <p className="font-semibold text-[var(--text-primary)]">
-                            {notificationFilter === 'unread' ? 'No unread notifications' : 'No notifications yet'}
+                            {notificationFilter === 'unread' ? t('noUnreadNotifications') : t('noNotificationsYet')}
                           </p>
                           <p className="mt-1 text-xs">
                             {notificationFilter === 'unread'
-                              ? 'Everything in this view has been read.'
-                              : 'Comments, followed publisher posts, and render updates will appear here.'}
+                              ? t('everythingRead')
+                              : t('notificationEmptyBody')}
                           </p>
                         </div>
                       )}
@@ -296,7 +298,7 @@ export default function Header({
                                 )}
                                 <div className="mt-2 flex items-center gap-2 text-[0.7rem] font-medium text-[var(--outline)]">
                                   <span>{formatNotificationTime(notification.created_at)}</span>
-                                  {notification.action_url && <span>Open</span>}
+                                  {notification.action_url && <span>{t('openAction')}</span>}
                                 </div>
                               </div>
                               {unread && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[var(--accent-primary)]" />}
@@ -312,7 +314,7 @@ export default function Header({
                         onClick={() => setNotificationsOpen(false)}
                         className="focus-ring flex h-9 items-center justify-center rounded-full text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-accent-soft)]"
                       >
-                        View all notifications
+                        {t('viewAllNotifications')}
                       </Link>
                     </div>
                   </div>

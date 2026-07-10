@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LocaleProvider } from '../i18n/LocaleProvider';
 
 const apiMocks = vi.hoisted(() => ({
   analyzeMyAnalyticsIntelligence: vi.fn(),
@@ -124,9 +125,11 @@ async function renderAnalytics(payload) {
 
   await act(async () => {
     root.render(
-      <MemoryRouter initialEntries={['/analytics']}>
-        <Analytics user={publisherUser} />
-      </MemoryRouter>,
+      <LocaleProvider>
+        <MemoryRouter initialEntries={['/analytics']}>
+          <Analytics user={publisherUser} />
+        </MemoryRouter>
+      </LocaleProvider>,
     );
   });
   await act(async () => {});

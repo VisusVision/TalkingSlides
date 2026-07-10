@@ -1,3 +1,5 @@
+import { currentAppLocale } from '../i18n/locale';
+
 export function notificationResults(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.results)) return payload.results;
@@ -16,14 +18,15 @@ export function formatNotificationTime(value) {
   const created = new Date(value);
   if (Number.isNaN(created.getTime())) return '';
   const seconds = Math.max(0, Math.floor((Date.now() - created.getTime()) / 1000));
-  if (seconds < 60) return 'Just now';
+  const locale = currentAppLocale();
+  if (seconds < 60) return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(0, 'second');
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
+  if (minutes < 60) return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-minutes, 'minute');
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-hours, 'hour');
   const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return created.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  if (days < 7) return new Intl.RelativeTimeFormat(locale, { numeric: 'auto' }).format(-days, 'day');
+  return created.toLocaleDateString(locale, { month: 'short', day: 'numeric' });
 }
 
 export function isSafeNotificationActionUrl(value) {

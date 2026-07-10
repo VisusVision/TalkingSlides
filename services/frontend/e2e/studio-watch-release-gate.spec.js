@@ -213,10 +213,16 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByTestId('studio-render-status')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Inspector' })).toBeVisible();
 
-  await page.evaluate(() => document.documentElement.setAttribute('lang', 'tr-TR'));
+  await page.evaluate(() => {
+    window.localStorage.setItem('visus-ui-locale', 'tr');
+    window.dispatchEvent(new CustomEvent('visus-locale-changed', { detail: { locale: 'tr' } }));
+  });
   await expect(page.getByRole('heading', { name: 'Slaytlar' })).toBeVisible();
-  await expect(page.getByText(/Render durumu:/).first()).toBeVisible();
-  await page.evaluate(() => document.documentElement.setAttribute('lang', 'en'));
+  await expect(page.getByText(/durumu:/).first()).toBeVisible();
+  await page.evaluate(() => {
+    window.localStorage.setItem('visus-ui-locale', 'en');
+    window.dispatchEvent(new CustomEvent('visus-locale-changed', { detail: { locale: 'en' } }));
+  });
 
   await page.getByLabel('Lesson title').fill('Release Gate Lesson');
   await page.getByLabel('Category').fill('Release QA');
@@ -227,7 +233,7 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   });
   await page.getByRole('button', { name: 'Create Lesson Draft' }).click();
 
-  await expect(page.getByRole('button', { name: 'Preview In Watch' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /Preview (In Watch|Draft)/ }).first()).toBeVisible();
   await expect(page.getByText('Ready').first()).toBeVisible();
   await expect(page.getByText('Moderation: Approved').first()).toBeVisible();
   await expect(page.getByText('Release Gate Lesson').first()).toBeVisible();

@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 
 import { previewPartialRenderImpact } from '../api';
+import LanguageSelector from '../components/ui/LanguageSelector';
+import { LocaleProvider } from '../i18n/LocaleProvider';
 import {
   PredictedRerenderImpactPanel,
   PreviewRerenderImpactButton,
@@ -13,6 +15,7 @@ import {
   lessonIntelligenceProviderLabel,
   partialRenderPreviewSourceLabel,
   renderAnalysisActionLabel,
+  StudioLocaleHeader,
 } from './Studio';
 
 async function renderNode(node) {
@@ -50,6 +53,35 @@ describe('lesson intelligence draft labels', () => {
   it('treats missing provider metadata as an AI draft only when not marked heuristic', () => {
     expect(lessonIntelligenceDraftLabel({ ai_generated: false })).toBe('Heuristic suggestion');
     expect(lessonIntelligenceDraftLabel({ draft_narration: 'Explain the objective.' })).toBe('AI draft');
+  });
+});
+
+describe('Studio locale subscription', () => {
+  it('rerenders immediately when the shared selector changes locale', async () => {
+    const { host, root } = await renderNode(
+      <LocaleProvider>
+        <LanguageSelector />
+        <StudioLocaleHeader />
+      </LocaleProvider>,
+    );
+    const selector = host.querySelector('[data-testid="settings-language-selector"]');
+
+    expect(host.textContent).toContain('Teacher Publishing Console');
+
+    await act(async () => {
+      selector.value = 'tr';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('Öğretmen Yayın Konsolu');
+
+    await act(async () => {
+      selector.value = 'en';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('Teacher Publishing Console');
+
+    await act(async () => root.unmount());
+    host.remove();
   });
 });
 
