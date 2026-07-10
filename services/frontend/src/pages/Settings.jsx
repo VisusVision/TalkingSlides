@@ -354,19 +354,22 @@ function readNotificationPreferences() {
 
 function AvatarActionCard({ title, caption, icon: Icon, onClick }) {
   return (
-    <button
+    <SurfaceCard
+      as="button"
       type="button"
       onClick={onClick}
-      className="focus-ring flex h-full items-start gap-3 rounded-2xl token-surface p-4 text-left transition hover:bg-[color:var(--hover-surface)]"
+      padding="sm"
+      interactive
+      className="flex h-full w-full items-start gap-3 text-left hover:bg-[color:var(--hover-surface)]"
     >
       <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--surface-container-highest)] text-[var(--accent-primary)]">
         <Icon size={18} />
       </span>
       <span className="min-w-0">
-        <span className="block text-sm font-semibold text-[var(--text-primary)]">{title}</span>
-        <span className="mt-1 block text-xs leading-5 text-[var(--text-secondary)]">{caption}</span>
+        <SurfaceCard.Title as="span" size="sm" className="block">{title}</SurfaceCard.Title>
+        <SurfaceCard.Description as="span" className="mt-1 block text-xs leading-5">{caption}</SurfaceCard.Description>
       </span>
-    </button>
+    </SurfaceCard>
   );
 }
 
@@ -467,7 +470,8 @@ function SettingsSection({
 
   return (
     <SurfaceCard className={`space-y-4 ${className}`}>
-      <button
+      <SurfaceCard.Header
+        as="button"
         type="button"
         onClick={handleToggle}
         className="focus-ring flex w-full items-start justify-between gap-3 rounded-2xl text-left"
@@ -478,15 +482,15 @@ function SettingsSection({
             {Icon ? <Icon size={16} className="text-[var(--accent-primary)]" /> : null}
             <span className="label-sm">{eyebrow}</span>
           </span>
-          <span className="title-lg mt-2 block text-[var(--text-primary)]">{title}</span>
+          <SurfaceCard.Title as="span" className="mt-2 block">{title}</SurfaceCard.Title>
           {caption ? (
-            <span className="mt-1 block text-sm font-normal text-[var(--text-secondary)]">{caption}</span>
+            <SurfaceCard.Description as="span" className="mt-1 block">{caption}</SurfaceCard.Description>
           ) : null}
         </span>
         <ChevronDown size={18} className={`mt-1 shrink-0 text-[var(--text-secondary)] transition ${open ? 'rotate-180' : ''}`} />
-      </button>
+      </SurfaceCard.Header>
 
-      {open ? <div className={contentClassName}>{children}</div> : null}
+      {open ? <SurfaceCard.Body className={contentClassName}>{children}</SurfaceCard.Body> : null}
     </SurfaceCard>
   );
 }

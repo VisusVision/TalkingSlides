@@ -964,19 +964,19 @@ function CategoryDonut({ categories }) {
 function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, children }) {
   return (
     <SurfaceCard className="min-h-[10.5rem] space-y-4">
-      <div className="flex items-start justify-between gap-3">
+      <SurfaceCard.Header>
         <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-[color:rgba(208,188,255,0.1)] text-[var(--accent-primary)]">
           <Icon size={18} />
         </span>
         <TrendBadge value={trend} />
-      </div>
-      <div>
+      </SurfaceCard.Header>
+      <SurfaceCard.Body className="space-y-2">
         <p className="text-[0.66rem] font-semibold uppercase tracking-[0.13em] text-[var(--text-secondary)]">{label}</p>
-        <p className="mt-1 font-['Manrope'] text-3xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">{value}</p>
-        <p className="mt-2 min-h-[1rem] text-[0.72rem] leading-relaxed text-[var(--text-secondary)]">
+        <SurfaceCard.Title as="p" className="text-3xl font-extrabold">{value}</SurfaceCard.Title>
+        <SurfaceCard.Description className="min-h-[1rem] text-[0.72rem]">
           {active ? hint : emptyHint}
-        </p>
-      </div>
+        </SurfaceCard.Description>
+      </SurfaceCard.Body>
       {children}
     </SurfaceCard>
   );
@@ -1373,22 +1373,22 @@ export default function Analytics({ user }) {
       </header>
 
       {error && (
-        <SurfaceCard className="rounded-2xl bg-[color:var(--feedback-danger-bg)] p-4">
+        <SurfaceCard variant="danger" padding="sm">
           <p className="text-sm text-[color:var(--feedback-danger-fg)]">{error}</p>
         </SurfaceCard>
       )}
 
       {!loading && stats.isEmpty && !error && (
-        <SurfaceCard className="rounded-3xl border border-[color:rgba(208,188,255,0.22)] bg-[color:rgba(208,188,255,0.08)] p-6">
+        <SurfaceCard variant="accent" padding="lg">
           <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
             <div>
               <p className="label-sm">No analytics yet</p>
-              <h2 className="mt-1 font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">
+              <SurfaceCard.Title className="mt-1 text-2xl font-extrabold">
                 Publish lessons and collect watch activity to see insights.
-              </h2>
-              <p className="mt-2 max-w-2xl text-sm text-[var(--text-secondary)]">
+              </SurfaceCard.Title>
+              <SurfaceCard.Description className="mt-2 max-w-2xl">
                 This dashboard stays empty until real progress, likes, or comments are recorded.
-              </p>
+              </SurfaceCard.Description>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center text-xs text-[var(--text-secondary)]">
               <div className="rounded-2xl bg-[color:var(--surface-muted)]/35 p-3">
@@ -1410,20 +1410,20 @@ export default function Analytics({ user }) {
 
       {canReviewModeration && (
         <SurfaceCard className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex items-start gap-3">
+          <SurfaceCard.Header className="items-start">
             <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:rgba(208,188,255,0.14)] text-[var(--accent-primary)]">
               <ShieldCheck size={20} />
             </span>
             <div>
               <p className="label-sm">Moderation Review</p>
-              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">
+              <SurfaceCard.Title>
                 Staff moderation queue
-              </h2>
-              <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              </SurfaceCard.Title>
+              <SurfaceCard.Description className="mt-1">
                 Open review requests now live in the dedicated moderation dashboard.
-              </p>
+              </SurfaceCard.Description>
             </div>
-          </div>
+          </SurfaceCard.Header>
           <Link
             to="/moderation"
             className="focus-ring inline-flex h-10 items-center justify-center rounded-full bg-[image:var(--accent-gradient)] px-4 text-sm font-bold text-white transition hover:scale-105 active:scale-95"
@@ -1480,15 +1480,15 @@ export default function Analytics({ user }) {
 
       <section className="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,0.9fr)]">
         <SurfaceCard className="flex min-h-[24rem] flex-col gap-6">
-          <div className="flex items-start justify-between gap-4">
+          <SurfaceCard.Header>
             <div>
-              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Views over time</h2>
-              <p className="text-xs text-[var(--text-secondary)]">Recorded progress activity by day</p>
+              <SurfaceCard.Title>Views over time</SurfaceCard.Title>
+              <SurfaceCard.Description className="text-xs">Recorded progress activity by day</SurfaceCard.Description>
             </div>
             <span className="rounded-full bg-[color:var(--surface-muted)]/40 px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
               {rangeKey} days
             </span>
-          </div>
+          </SurfaceCard.Header>
 
           {hasChartActivity ? (
             <div data-testid="analytics-chart-body" className="flex min-h-[17rem] flex-1 flex-col gap-3">
@@ -1532,10 +1532,10 @@ export default function Analytics({ user }) {
         </SurfaceCard>
 
         <SurfaceCard className="flex min-h-[24rem] flex-col gap-6 xl:max-h-[34rem]">
-          <div>
-            <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Category Breakdown</h2>
-            <p className="text-xs text-[var(--text-secondary)]">Engagement by owned lesson category</p>
-          </div>
+          <SurfaceCard.Header layout="stack">
+            <SurfaceCard.Title>Category Breakdown</SurfaceCard.Title>
+            <SurfaceCard.Description className="text-xs">Engagement by owned lesson category</SurfaceCard.Description>
+          </SurfaceCard.Header>
           {stats.categoryBreakdown.length > 0 ? (
             <div data-testid="analytics-category-list" className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
               {stats.categoryBreakdown.length <= 6 && (
@@ -1568,10 +1568,10 @@ export default function Analytics({ user }) {
 
       <section className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <SurfaceCard className="space-y-6">
-          <div>
-            <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Top Lessons</h2>
-            <p className="text-xs text-[var(--text-secondary)]">Ranked by recorded lesson activity</p>
-          </div>
+          <SurfaceCard.Header layout="stack">
+            <SurfaceCard.Title>Top Lessons</SurfaceCard.Title>
+            <SurfaceCard.Description className="text-xs">Ranked by recorded lesson activity</SurfaceCard.Description>
+          </SurfaceCard.Header>
 
           {stats.topLessons.length > 0 ? (
             <div className="space-y-3">
@@ -1608,10 +1608,10 @@ export default function Analytics({ user }) {
         </SurfaceCard>
 
         <SurfaceCard data-testid="analytics-recent-activity-card" className="flex max-h-[34rem] flex-col gap-6 overflow-hidden">
-          <div className="flex items-start justify-between gap-4">
+          <SurfaceCard.Header>
             <div>
-              <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recent Activity</h2>
-              <p className="text-xs text-[var(--text-secondary)]">Aggregate activity only. Viewer identities are not shown.</p>
+              <SurfaceCard.Title>Recent Activity</SurfaceCard.Title>
+              <SurfaceCard.Description className="text-xs">Aggregate activity only. Viewer identities are not shown.</SurfaceCard.Description>
             </div>
             {stats.recentActivity.length > 3 && (
               <button
@@ -1622,7 +1622,7 @@ export default function Analytics({ user }) {
                 {recentActivityExpanded ? 'Show less' : `Show ${stats.recentActivity.length - 3} more`}
               </button>
             )}
-          </div>
+          </SurfaceCard.Header>
           {stats.recentActivity.length > 0 ? (
             <div data-testid="analytics-recent-activity-list" className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
               {visibleRecentActivity.map((activity) => (
@@ -1649,11 +1649,11 @@ export default function Analytics({ user }) {
         </SurfaceCard>
       </section>
 
-      <section className="overflow-hidden rounded-3xl token-surface-elevated">
-        <div className="border-b border-[color:rgba(73,68,84,0.1)] px-5 py-4 sm:px-8 sm:py-6">
-          <h2 className="font-['Manrope'] text-xl font-bold tracking-[-0.02em] text-[var(--text-primary)]">Recent Lessons</h2>
-          <p className="mt-1 text-xs text-[var(--text-secondary)]">Creator-scoped lesson activity</p>
-        </div>
+      <SurfaceCard as="section" variant="elevated" padding="none" className="overflow-hidden">
+        <SurfaceCard.Header layout="stack" className="border-b border-[var(--border-subtle)] px-5 py-4 sm:px-8 sm:py-6">
+          <SurfaceCard.Title>Recent Lessons</SurfaceCard.Title>
+          <SurfaceCard.Description className="mt-1 text-xs">Creator-scoped lesson activity</SurfaceCard.Description>
+        </SurfaceCard.Header>
 
         <div className="overflow-x-auto">
           <table className="min-w-full text-left">
@@ -1704,10 +1704,10 @@ export default function Analytics({ user }) {
             </tbody>
           </table>
         </div>
-      </section>
+      </SurfaceCard>
 
       {intelligenceFeatureEnabled && (
-      <SurfaceCard className="space-y-6 border border-[color:rgba(208,188,255,0.2)] bg-[color:rgba(208,188,255,0.08)] p-6 sm:p-8">
+      <SurfaceCard variant="accent" padding="lg" className="space-y-6">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-4">
             <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:rgba(208,188,255,0.14)] text-[var(--accent-primary)]">
@@ -1715,7 +1715,7 @@ export default function Analytics({ user }) {
             </span>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <p className="font-['Manrope'] text-2xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">Smart Insights</p>
+                <SurfaceCard.Title as="p" className="text-2xl font-extrabold">Smart Insights</SurfaceCard.Title>
                 <ProviderLabel report={intelligenceReport} />
                 <AnalyticsEnhancementLabel report={intelligenceReport} />
                 <IntelligenceLanguageLabel report={intelligenceReport} />
@@ -1725,9 +1725,9 @@ export default function Analytics({ user }) {
                   </span>
                 )}
               </div>
-              <p className="mt-2 max-w-3xl text-sm leading-relaxed text-[var(--text-secondary)]">
+              <SurfaceCard.Description className="mt-2 max-w-3xl">
                 Suggestions are advisory. They do not change your lessons until you edit them.
-              </p>
+              </SurfaceCard.Description>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">

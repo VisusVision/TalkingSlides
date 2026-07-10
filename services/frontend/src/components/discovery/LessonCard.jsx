@@ -1,5 +1,6 @@
 import { Clock3, PlayCircle } from 'lucide-react';
 import LessonActionButton from '../moderation/LessonActionButton';
+import SurfaceCard from '../ui/SurfaceCard';
 import { formatDuration, formatViews } from '../../lib/content';
 
 function backgroundFromLesson(lesson) {
@@ -18,8 +19,12 @@ function backgroundFromLesson(lesson) {
 
 export default function LessonCard({ lesson, onOpen, compact = false, user, onLoginRequest }) {
   return (
-    <article
-      className="group reveal-up relative w-[252px] shrink-0 overflow-hidden rounded-3xl token-surface-elevated p-3 shadow-soft transition duration-300 hover:-translate-y-1.5 hover:shadow-lift"
+    <SurfaceCard
+      as="article"
+      variant="elevated"
+      padding="sm"
+      interactive
+      className="group reveal-up relative w-[252px] shrink-0 overflow-hidden"
       style={{ animationDelay: '80ms' }}
     >
       <LessonActionButton
@@ -75,6 +80,6 @@ export default function LessonCard({ lesson, onOpen, compact = false, user, onLo
           )}
         </div>
       </button>
-    </article>
+    </SurfaceCard>
   );
 }

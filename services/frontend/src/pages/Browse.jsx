@@ -199,9 +199,13 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
       {!loading && !error && filteredLessons.length > 0 && (
         <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {filteredLessons.map((lesson) => (
-            <article
+            <SurfaceCard
+              as="article"
               key={lesson.id}
-              className="relative rounded-3xl token-surface-elevated p-4 shadow-soft transition hover:-translate-y-1 hover:shadow-lift"
+              variant="elevated"
+              padding="sm"
+              interactive
+              className="relative"
             >
               <LessonActionButton
                 lesson={lesson}
@@ -229,7 +233,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
                 <Compass size={14} />
                 <span>Open In Player</span>
               </Button>
-            </article>
+            </SurfaceCard>
           ))}
         </section>
       )}
