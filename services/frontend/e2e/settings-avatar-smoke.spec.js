@@ -93,6 +93,56 @@ const AVATAR_PROFILE_PAYLOAD = {
   },
 };
 
+function installFakeVoiceRecorder() {
+  class FakeMediaRecorder {
+    static isTypeSupported() {
+      return true;
+    }
+
+    constructor(stream, options = {}) {
+      this.stream = stream;
+      this.mimeType = options.mimeType || 'audio/webm';
+      this.state = 'inactive';
+      this.ondataavailable = null;
+      this.onerror = null;
+      this.onstop = null;
+    }
+
+    start() {
+      this.state = 'recording';
+    }
+
+    stop() {
+      if (this.state !== 'recording') return;
+      this.state = 'inactive';
+      const data = new Blob(['voice-smoke-sample'], { type: this.mimeType });
+      this.ondataavailable?.({ data });
+      this.onstop?.();
+    }
+  }
+
+  Object.defineProperty(window, 'MediaRecorder', {
+    configurable: true,
+    value: FakeMediaRecorder,
+  });
+  Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+    configurable: true,
+    value: async () => {},
+  });
+  Object.defineProperty(window.navigator, 'mediaDevices', {
+    configurable: true,
+    value: {
+      getUserMedia: async () => {
+        const track = { stop() {} };
+        return {
+          getAudioTracks: () => [track],
+          getTracks: () => [track],
+        };
+      },
+    },
+  });
+}
+
 test.use({
   permissions: ['microphone'],
   launchOptions: {
@@ -196,61 +246,14 @@ test.describe('microphone voice sample recording', () => {
       },
     });
 
-    await page.addInitScript(() => {
-      class FakeMediaRecorder {
-        static isTypeSupported() {
-          return true;
-        }
-
-        constructor(stream, options = {}) {
-          this.stream = stream;
-          this.mimeType = options.mimeType || 'audio/webm';
-          this.state = 'inactive';
-          this.ondataavailable = null;
-          this.onerror = null;
-          this.onstop = null;
-        }
-
-        start() {
-          this.state = 'recording';
-        }
-
-        stop() {
-          if (this.state !== 'recording') return;
-          this.state = 'inactive';
-          const data = new Blob(['voice-smoke-sample'], { type: this.mimeType });
-          this.ondataavailable?.({ data });
-          this.onstop?.();
-        }
-      }
-
-      Object.defineProperty(window, 'MediaRecorder', {
-        configurable: true,
-        value: FakeMediaRecorder,
-      });
-      Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
-        configurable: true,
-        value: async () => {},
-      });
-      Object.defineProperty(window.navigator, 'mediaDevices', {
-        configurable: true,
-        value: {
-          getUserMedia: async () => {
-            const track = { stop() {} };
-            return {
-              getAudioTracks: () => [track],
-              getTracks: () => [track],
-            };
-          },
-        },
-      });
-    });
+    await page.addInitScript(installFakeVoiceRecorder);
 
     await page.goto('/settings');
     await page.getByRole('button', { name: /Voice and avatar samples/ }).click();
     await page.getByRole('button', { name: /Voice Sample/ }).click();
 
     await expect(page.getByText('Record from microphone')).toBeVisible();
+    await page.evaluate(installFakeVoiceRecorder);
     await page.getByRole('button', { name: 'Start recording' }).click();
     await expect(page.getByText(/Status: recording/)).toBeVisible();
     await page.waitForTimeout(1200);
