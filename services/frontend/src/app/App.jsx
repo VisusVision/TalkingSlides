@@ -14,6 +14,7 @@ import RouteErrorBoundary from '../components/ui/RouteErrorBoundary';
 import { ThemeProvider } from '../components/ui/ThemeProvider';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { PageLoadingProvider } from '../components/ui/PageLoading';
+import { ToastProvider, toast } from '../components/ui/Toast';
 import { CapabilitiesProvider, useCapabilities } from '../lib/capabilities';
 import { ROUTE_RESET_EVENT, readRouteSessionState, writeRouteSessionState } from '../utils/routeSession';
 
@@ -189,6 +190,7 @@ function AppWithRouter() {
   const handleLoginSuccess = useCallback((nextUser) => {
     setUser(nextUser);
     setAuthModalOpen(false);
+    toast.success('Signed in');
     void refreshCapabilities({ force: true });
 
     const redirectTarget = pendingRedirect || getRedirectFromSearch(location.search);
@@ -244,7 +246,9 @@ export default function App() {
       <CapabilitiesProvider>
         <BrowserRouter>
           <PageLoadingProvider>
-            <AppWithRouter />
+            <ToastProvider>
+              <AppWithRouter />
+            </ToastProvider>
           </PageLoadingProvider>
         </BrowserRouter>
       </CapabilitiesProvider>

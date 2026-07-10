@@ -20,6 +20,7 @@ import ModalShell from '../components/ui/ModalShell';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { useTheme } from '../components/ui/ThemeProvider';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { toast } from '../components/ui/Toast';
 import {
   API_BASE_URL,
   deleteAvatarPreview,
@@ -1199,7 +1200,9 @@ export default function Settings({ user, onUserRefresh }) {
     if (!user?.id) return;
     if (profileHasValidationErrors) {
       setProfileFieldErrors(profileValidationErrors);
-      setProfileError('Fix the highlighted profile fields before saving.');
+      const message = 'Fix the highlighted profile fields before saving.';
+      setProfileError(message);
+      toast.warning(message);
       return;
     }
 
@@ -1218,14 +1221,18 @@ export default function Settings({ user, onUserRefresh }) {
       setBannerFile(null);
       setLogoFile(null);
       await refreshSessionUser();
-      setProfileMessage(profileAssetModerationMessage(payload));
+      const message = profileAssetModerationMessage(payload);
+      setProfileMessage(message);
+      toast.success(message);
       setProfileEditorOpen(false);
     } catch (error) {
       const fieldErrors = profileFieldErrorsFromApi(error.details);
       if (Object.keys(fieldErrors).length) {
         setProfileFieldErrors(fieldErrors);
       }
-      setProfileError(error.message || 'Unable to save public profile.');
+      const message = error.message || 'Unable to save public profile.';
+      setProfileError(message);
+      toast.error(message);
     } finally {
       setProfileSaving(false);
     }

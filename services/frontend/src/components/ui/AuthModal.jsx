@@ -8,6 +8,7 @@ import {
 import Button from './Button';
 import Dialog from './Dialog';
 import Input from './Input';
+import { toast } from './Toast';
 
 const AUTH_MODAL_TITLE_ID = 'auth-modal-title';
 const AUTH_MODAL_DESCRIPTION_ID = 'auth-modal-description';
@@ -45,7 +46,9 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
       setUsername('');
       setPassword('');
     } catch (err) {
-      setError(err.message || 'Sign-in failed.');
+      const message = err.message || 'Sign-in failed.';
+      setError(message);
+      toast.error(message);
     } finally {
       setLoading(false);
     }
@@ -59,7 +62,9 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
       }
       window.location.href = data.authorization_url;
     } catch (err) {
-      setError(err.message || 'Google sign-in failed.');
+      const message = err.message || 'Google sign-in failed.';
+      setError(message);
+      toast.error(message);
     }
   };
 
