@@ -10804,8 +10804,38 @@ export function translateAppMessage(locale, key, params = {}) {
   ));
 }
 
-export function localizeStaticUiText(locale, text) {
+let staticUiCanonicalTextMap = null;
+
+function staticCanonicalTextMap() {
+  if (staticUiCanonicalTextMap) return staticUiCanonicalTextMap;
+  const nextMap = new Map();
+  Object.entries(STATIC_UI_MESSAGES.en || {}).forEach(([source]) => {
+    nextMap.set(source, source);
+  });
+  Object.entries(STATIC_UI_MESSAGES).forEach(([, messages]) => {
+    Object.entries(messages || {}).forEach(([source, translated]) => {
+      if (typeof translated === 'string' && translated.trim()) {
+        nextMap.set(translated, source);
+      }
+    });
+  });
+  staticUiCanonicalTextMap = nextMap;
+  return staticUiCanonicalTextMap;
+}
+
+export function canonicalizeStaticUiText(text) {
   const value = String(text ?? '');
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  const canonical = staticCanonicalTextMap().get(trimmed);
+  if (!canonical || canonical === trimmed) return value;
+  const prefix = value.match(/^\s*/)?.[0] || '';
+  const suffix = value.match(/\s*$/)?.[0] || '';
+  return `${prefix}${canonical}${suffix}`;
+}
+
+export function localizeStaticUiText(locale, text) {
+  const value = canonicalizeStaticUiText(text);
   const trimmed = value.trim();
   if (!trimmed || locale === 'en') return value;
   const translated = STATIC_UI_MESSAGES[locale]?.[trimmed];

@@ -213,10 +213,16 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByTestId('studio-render-status')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Inspector' })).toBeVisible();
 
-  await page.evaluate(() => document.documentElement.setAttribute('lang', 'tr-TR'));
+  await page.evaluate(() => {
+    window.localStorage.setItem('visus-ui-locale', 'tr');
+    window.dispatchEvent(new CustomEvent('visus-locale-changed', { detail: { locale: 'tr' } }));
+  });
   await expect(page.getByRole('heading', { name: 'Slaytlar' })).toBeVisible();
   await expect(page.getByText(/Render durumu:/).first()).toBeVisible();
-  await page.evaluate(() => document.documentElement.setAttribute('lang', 'en'));
+  await page.evaluate(() => {
+    window.localStorage.setItem('visus-ui-locale', 'en');
+    window.dispatchEvent(new CustomEvent('visus-locale-changed', { detail: { locale: 'en' } }));
+  });
 
   await page.getByLabel('Lesson title').fill('Release Gate Lesson');
   await page.getByLabel('Category').fill('Release QA');

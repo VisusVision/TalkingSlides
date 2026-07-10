@@ -6,7 +6,7 @@ import {
   readStoredAppLocale,
   SUPPORTED_APP_LOCALES,
 } from './locale';
-import { localizeStaticUiText, translateAppMessage } from './messages';
+import { canonicalizeStaticUiText, localizeStaticUiText, translateAppMessage } from './messages';
 
 const LocaleContext = createContext(null);
 const staticTextOriginals = new WeakMap();
@@ -43,7 +43,7 @@ function localizeDocumentStaticText(locale) {
   while (walker.nextNode()) textNodes.push(walker.currentNode);
 
   textNodes.forEach((node) => {
-    const original = staticTextOriginals.get(node) || node.nodeValue;
+    const original = staticTextOriginals.get(node) || canonicalizeStaticUiText(node.nodeValue);
     staticTextOriginals.set(node, original);
     const nextValue = locale === 'en' ? original : localizeStaticUiText(locale, original);
     if (node.nodeValue !== nextValue) node.nodeValue = nextValue;
@@ -54,7 +54,7 @@ function localizeDocumentStaticText(locale) {
     const originals = staticAttributeOriginals.get(element) || {};
     LOCALIZED_ATTRIBUTES.forEach((attr) => {
       if (!element.hasAttribute(attr)) return;
-      const original = originals[attr] || element.getAttribute(attr);
+      const original = originals[attr] || canonicalizeStaticUiText(element.getAttribute(attr));
       originals[attr] = original;
       const nextValue = locale === 'en' ? original : localizeStaticUiText(locale, original);
       if (element.getAttribute(attr) !== nextValue) element.setAttribute(attr, nextValue);
