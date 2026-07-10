@@ -6,6 +6,7 @@ import {
   startGoogleRedirectFlow,
 } from '../../api';
 import Button from './Button';
+import Input from './Input';
 import SurfaceCard from './SurfaceCard';
 
 export default function AuthModal({ open, onClose, onLoginSuccess }) {
@@ -99,10 +100,10 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
         <form className="mt-5 space-y-3" onSubmit={handleSubmit}>
           <label className="block text-sm text-[var(--text-secondary)]">
             Username
-            <input
+            <Input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              className="focus-ring mt-1 h-11 w-full rounded-2xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)] px-3 text-[var(--text-primary)]"
+              className="mt-1"
               type="text"
               required
             />
@@ -110,10 +111,10 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
 
           <label className="block text-sm text-[var(--text-secondary)]">
             Password
-            <input
+            <Input
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              className="focus-ring mt-1 h-11 w-full rounded-2xl border border-[var(--border-subtle)] bg-[color:var(--surface-muted)] px-3 text-[var(--text-primary)]"
+              className="mt-1"
               type="password"
               required
             />

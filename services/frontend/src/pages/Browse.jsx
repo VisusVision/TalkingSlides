@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { fetchCatalog, fetchCategories } from '../api';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import Button from '../components/ui/Button';
+import Badge from '../components/ui/Badge';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import { usePageLoading } from '../components/ui/PageLoading';
 import { normalizeLesson, formatDuration, formatViews } from '../lib/content';
@@ -220,9 +221,9 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
               <p className="title-lg text-[var(--text-primary)]">{lesson.title}</p>
               <p className="mt-1 text-sm text-[var(--text-secondary)]">{lesson.teacherName}</p>
               <div className="mt-3 flex flex-wrap gap-2 text-xs text-[var(--text-secondary)]">
-                <span className="rounded-full bg-[color:var(--surface-muted)] px-2 py-1">{lesson.categoryName}</span>
-                <span className="rounded-full bg-[color:var(--surface-muted)] px-2 py-1">{formatDuration(lesson.durationMinutes)}</span>
-                <span className="rounded-full bg-[color:var(--surface-muted)] px-2 py-1">{formatViews(lesson.views)}</span>
+                <Badge>{lesson.categoryName}</Badge>
+                <Badge>{formatDuration(lesson.durationMinutes)}</Badge>
+                <Badge>{formatViews(lesson.views)}</Badge>
               </div>
               <Button className="mt-4" size="sm" onClick={() => navigate(`/watch?lesson=${lesson.id}`)}>
                 <Compass size={14} />
