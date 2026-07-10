@@ -12,9 +12,9 @@ const VARIANT_STYLES = {
 };
 
 const SIZE_STYLES = {
-  sm: 'h-9 px-3 text-sm',
-  md: 'h-11 px-5 text-sm',
-  lg: 'h-12 px-6 text-base',
+  sm: 'h-control-sm px-3 text-sm',
+  md: 'h-control-md px-5 text-sm',
+  lg: 'h-control-lg px-6 text-base',
 };
 
 export default function Button({
@@ -30,7 +30,7 @@ export default function Button({
     <button
       type={type}
       className={joinClasses(
-        'focus-ring inline-flex items-center justify-center gap-2 rounded-full font-medium transition duration-200 disabled:cursor-not-allowed disabled:opacity-60',
+        'focus-ring inline-flex items-center justify-center gap-2 rounded-pill font-medium transition duration-normal ease-standard disabled:cursor-not-allowed disabled:opacity-60',
         VARIANT_STYLES[variant] || VARIANT_STYLES.primary,
         SIZE_STYLES[size] || SIZE_STYLES.md,
         fullWidth && 'w-full',

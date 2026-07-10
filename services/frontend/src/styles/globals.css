@@ -67,6 +67,70 @@
 
   --bg-surface: var(--surface-container-low);
   --bg-elevated: var(--surface-container);
+
+  --space-0: 0;
+  --space-0-5: 0.125rem;
+  --space-1: 0.25rem;
+  --space-1-5: 0.375rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --radius-full: 9999px;
+
+  --radius-control: var(--radius-lg);
+  --radius-card: var(--radius-2xl);
+  --radius-dialog: var(--radius-2xl);
+  --radius-pill: var(--radius-full);
+
+  --shadow-xs: 0 1px 2px rgba(18, 20, 30, 0.06);
+  --shadow-sm: 0 6px 16px rgba(18, 20, 30, 0.08);
+  --shadow-md: 0 14px 32px rgba(18, 20, 30, 0.1);
+  --shadow-lg: 0 22px 48px rgba(18, 20, 30, 0.14);
+  --shadow-dialog: 0 28px 72px rgba(18, 20, 30, 0.18);
+  --shadow-focus: 0 0 0 3px color-mix(in srgb, var(--accent-primary), transparent 72%);
+
+  --duration-instant: 0ms;
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  --control-height-sm: 2.25rem;
+  --control-height-md: 2.75rem;
+  --control-height-lg: 3rem;
+  --icon-size-sm: 1rem;
+  --icon-size-md: 1.25rem;
+  --icon-size-lg: 1.5rem;
+
+  --font-sans: 'Inter', sans-serif;
+  --font-display: 'Manrope', sans-serif;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --leading-tight: 1.18;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.65;
+  --tracking-tight: -0.01em;
 }
 
 .dark {
@@ -130,6 +194,13 @@
 
   --bg-surface: var(--surface-container-low);
   --bg-elevated: var(--surface-container);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.28);
+  --shadow-md: 0 14px 34px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 22px 52px rgba(0, 0, 0, 0.38);
+  --shadow-dialog: 0 30px 76px rgba(0, 0, 0, 0.46);
+  --shadow-focus: 0 0 0 3px color-mix(in srgb, var(--accent-primary), transparent 68%);
 }
 
 @layer base {
@@ -141,7 +212,7 @@
 
   body {
     @apply m-0 antialiased;
-    font-family: 'Inter', sans-serif;
+    font-family: var(--font-sans);
     background: var(--bg);
     color: var(--text-primary);
   }
@@ -153,7 +224,7 @@
 
 @layer components {
   .display-lg {
-    font-family: 'Manrope', sans-serif;
+    font-family: var(--font-display);
     font-size: clamp(2rem, 3.5vw, 3.6rem);
     font-weight: 800;
     letter-spacing: -0.04em;
@@ -161,7 +232,7 @@
   }
 
   .headline-md {
-    font-family: 'Manrope', sans-serif;
+    font-family: var(--font-display);
     font-size: clamp(1.35rem, 2.2vw, 2rem);
     font-weight: 700;
     letter-spacing: -0.03em;
@@ -169,15 +240,15 @@
   }
 
   .title-lg {
-    font-family: 'Manrope', sans-serif;
+    font-family: var(--font-display);
     font-size: 1.1rem;
     font-weight: 700;
-    letter-spacing: -0.01em;
+    letter-spacing: var(--tracking-tight);
   }
 
   .body-md {
     font-size: 0.98rem;
-    line-height: 1.65;
+    line-height: var(--leading-relaxed);
     color: var(--text-secondary);
   }
 
@@ -256,11 +327,11 @@
   }
 
   .cinematic-fade {
-    animation: cinematic-fade 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: cinematic-fade 0.65s var(--ease-out) both;
   }
 
   .reveal-up {
-    animation: reveal-up 0.65s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation: reveal-up 0.65s var(--ease-out) both;
   }
 
   .visus-loading-sheen {
@@ -328,17 +399,29 @@
 }
 
 .visus-page-progress {
-  animation: visus-page-progress 1.05s ease-in-out infinite;
+  animation: visus-page-progress 1.05s var(--ease-in-out) infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    animation-duration: 0.001ms !important;
+    animation-duration: var(--duration-instant) !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.001ms !important;
+    transition-duration: var(--duration-instant) !important;
     scroll-behavior: auto !important;
+  }
+
+  .visus-page-progress {
+    animation: none !important;
+    opacity: 0.85;
+    transform: none !important;
+    width: 100%;
+  }
+
+  .visus-loading-sheen::after {
+    animation: none !important;
+    transform: none !important;
   }
 }
 
@@ -347,4 +430,14 @@
 .reduced-motion *::after {
   animation: none !important;
   transition: none !important;
+}
+
+.reduced-motion .visus-page-progress {
+  opacity: 0.85;
+  transform: none !important;
+  width: 100%;
+}
+
+.reduced-motion .visus-loading-sheen::after {
+  transform: none !important;
 }
