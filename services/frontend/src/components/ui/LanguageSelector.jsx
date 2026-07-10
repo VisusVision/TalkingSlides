@@ -30,7 +30,7 @@ export default function LanguageSelector({ compact = false, id, testId }) {
           <option key={option.code} value={option.code}>
             {compact
               ? option.shortLabel
-              : `${option.label}${option.nativeLabel ? ` — ${option.nativeLabel}` : ''}`}
+              : `${option.label}${option.nativeLabel ? ` - ${option.nativeLabel}` : ''}`}
           </option>
         ))}
       </select>

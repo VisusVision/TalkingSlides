@@ -1,11 +1,26 @@
+import { currentAppLocale } from '../i18n/locale';
+import { translateAppMessage } from '../i18n/messages';
+
 export function formatDuration(minutes) {
   const total = Math.max(1, Number(minutes || 0));
   const hours = Math.floor(total / 60);
   const mins = Math.round(total % 60);
+  const parts = [];
   if (hours > 0) {
-    return `${hours}h ${mins}m`;
+    parts.push(new Intl.NumberFormat(currentAppLocale(), {
+      style: 'unit',
+      unit: 'hour',
+      unitDisplay: 'narrow',
+    }).format(hours));
   }
-  return `${mins}m`;
+  if (mins > 0 || parts.length === 0) {
+    parts.push(new Intl.NumberFormat(currentAppLocale(), {
+      style: 'unit',
+      unit: 'minute',
+      unitDisplay: 'narrow',
+    }).format(mins));
+  }
+  return parts.join(' ');
 }
 
 function positiveNumber(value) {
@@ -37,10 +52,13 @@ export function formatLessonDuration(lesson, missingLabel = 'Duration unavailabl
 }
 
 export function formatViews(value) {
+  const locale = currentAppLocale();
   const count = Math.max(0, Number(value || 0));
-  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M views`;
-  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}K views`;
-  return `${count} views`;
+  const formatted = new Intl.NumberFormat(locale, {
+    notation: 'compact',
+    compactDisplay: 'short',
+  }).format(count);
+  return `${formatted} ${translateAppMessage(locale, 'viewCountUnit')}`;
 }
 
 export function normalizeLesson(input, fallbackBadge = '') {

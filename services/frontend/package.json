@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:ci": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "i18n:check": "node scripts/check-i18n-coverage.mjs"
   },
   "dependencies": {
     "hls.js": "^1.5.18",

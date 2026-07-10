@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StudioRenderStatus, StudioSlideRail } from './StudioWorkspaceChrome';
 import { studioWorkspaceCopy, studioWorkspaceLocale } from './studioWorkspaceCopy';
+import { translateAppMessage } from '../../i18n/messages';
 
 describe('Studio workspace chrome', () => {
   let host;
@@ -24,8 +25,8 @@ describe('Studio workspace chrome', () => {
 
   it('falls back expanded and unsupported locales safely', () => {
     expect(studioWorkspaceLocale('tr-TR')).toBe('tr');
-    expect(studioWorkspaceLocale('de-DE')).toBe('en');
-    expect(studioWorkspaceCopy('tr-TR').slides).toBe('Slaytlar');
+    expect(studioWorkspaceLocale('de-DE')).toBe('de');
+    expect(studioWorkspaceCopy('tr-TR').slides).toBe(translateAppMessage('tr', 'studioWorkspaceSlides'));
   });
 
   it('renders the slide rail and preserves selection callbacks', async () => {
@@ -76,12 +77,12 @@ describe('Studio workspace chrome', () => {
   it('shows localized loading, empty, and render queue states', async () => {
     document.documentElement.lang = 'tr-TR';
     await act(async () => root.render(<StudioSlideRail loading />));
-    expect(host.textContent).toContain('Slaytlar yükleniyor');
+    expect(host.textContent).toContain(translateAppMessage('tr', 'studioWorkspaceLoadingSlides'));
 
     await act(async () => root.render(<StudioSlideRail scenes={[]} />));
-    expect(host.textContent).toContain('Henüz slayt yok');
+    expect(host.textContent).toContain(translateAppMessage('tr', 'studioWorkspaceNoSlides'));
 
     await act(async () => root.render(<StudioRenderStatus renderStatus={{ status: 'processing' }} />));
-    expect(host.textContent).toContain('Render durumu: İşleniyor');
+    expect(host.textContent).toContain(`${translateAppMessage('tr', 'studioWorkspaceRenderStatus')}: ${translateAppMessage('tr', 'studioWorkspaceRenderProcessing')}`);
   });
 });

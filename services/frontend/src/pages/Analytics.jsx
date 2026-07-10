@@ -27,6 +27,8 @@ import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
 import { useLocale } from '../i18n/LocaleProvider';
+import { currentAppLocale } from '../i18n/locale';
+import { localizeStaticUiText } from '../i18n/messages';
 import { canAccessStudio } from '../lib/auth';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -60,11 +62,16 @@ function toNumber(value, fallback = 0) {
 
 function compactNumber(value, options = {}) {
   const numeric = toNumber(value);
-  return new Intl.NumberFormat('en-US', {
+  return new Intl.NumberFormat(currentAppLocale(), {
     notation: 'compact',
     maximumFractionDigits: 1,
     ...options,
   }).format(numeric);
+}
+
+function metricLabel(value, unit) {
+  const locale = currentAppLocale();
+  return `${compactNumber(value)} ${localizeStaticUiText(locale, unit)}`;
 }
 
 function percent(value) {
@@ -127,14 +134,14 @@ function formatDate(value) {
   if (!value) return 'Recently updated';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return 'Recently updated';
-  return `Updated ${parsed.toLocaleDateString('en-US')}`;
+  return `Updated ${parsed.toLocaleDateString(currentAppLocale())}`;
 }
 
 function formatActivityTimestamp(value) {
   if (!value) return 'Recent';
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return 'Recent';
-  return parsed.toLocaleString('en-US', {
+  return parsed.toLocaleString(currentAppLocale(), {
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
@@ -1525,7 +1532,7 @@ export default function Analytics({ user }) {
               </div>
               <div className="flex items-center justify-between text-xs text-[var(--text-secondary)]">
                 <span>0</span>
-                <span>{compactNumber(seriesMax)} views</span>
+                <span>{metricLabel(seriesMax, 'views')}</span>
               </div>
             </div>
           ) : (
@@ -1556,7 +1563,7 @@ export default function Analytics({ user }) {
                       <div className="h-full rounded-full" style={{ width: `${width}%`, backgroundColor: color }} />
                     </div>
                     <p className="text-[0.68rem] text-[var(--text-secondary)]">
-                      {compactNumber(category.views)} views / {compactNumber(category.engagement)} events / {compactNumber(category.lessonCount)} lessons
+                      {metricLabel(category.views, 'views')} / {metricLabel(category.engagement, 'events')} / {metricLabel(category.lessonCount, 'lessons')}
                     </p>
                   </article>
                 );
@@ -1597,7 +1604,7 @@ export default function Analytics({ user }) {
                       <div className="h-full rounded-full bg-[image:var(--accent-gradient)]" style={{ width: percent(lesson.progressPct) }} />
                     </div>
                     <p className="text-[0.68rem] text-[var(--text-secondary)]">
-                      {compactNumber(lesson.views)} views / {compactNumber(lesson.engagementEvents)} events / {compactNumber(lesson.likes)} likes / {compactNumber(lesson.comments)} comments
+                      {metricLabel(lesson.views, 'views')} / {metricLabel(lesson.engagementEvents, 'events')} / {metricLabel(lesson.likes, 'likes')} / {metricLabel(lesson.comments, 'comments')}
                       {lesson.completionPct > 0 ? ` / ${percent(lesson.completionPct)} completed` : ''}
                     </p>
                   </div>

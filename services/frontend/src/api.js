@@ -7,6 +7,7 @@
 
 import { avatarSetupErrorMessage } from "./utils/avatarSetupStatus.js";
 import { currentAppLocale } from "./i18n/locale.js";
+import { translateAppMessage } from "./i18n/messages.js";
 
 const DEFAULT_API_BASE_URL = "http://localhost:8000/api/v1";
 
@@ -131,16 +132,62 @@ function authCacheIdentity(headers = {}) {
   return 'anonymous';
 }
 
-function apiErrorMessage(data, fallback) {
-  const detail = data?.error || data?.detail || data?.message || data?.details;
-  if (typeof detail === "string" && detail.trim()) return detail;
-  if (detail && typeof detail === "object") return JSON.stringify(detail);
-  return fallback;
+function classifyApiError(data, fallback = "", status = 0) {
+  const rawCode = String(data?.code || data?.error_code || data?.reason || "").trim().toLowerCase();
+  const detail = data?.error || data?.detail || data?.message || data?.details || fallback;
+  const rawDetail = typeof detail === "string" ? detail : JSON.stringify(detail || "");
+  const normalized = `${rawCode} ${rawDetail}`.toLowerCase();
+
+  if (status === 401 || /invalid.*credential|invalid.*password|login failed|authentication failed/.test(normalized)) {
+    return "apiErrorInvalidCredentials";
+  }
+  if (status === 403 || /permission denied|forbidden|not authorized|unauthorized/.test(normalized)) {
+    return "apiErrorPermissionDenied";
+  }
+  if (status === 404 || /not found|does not exist/.test(normalized)) {
+    return "apiErrorNotFound";
+  }
+  if (status === 409 || /render.*already|already.*render|job.*active|render.*active/.test(normalized)) {
+    return "apiErrorRenderAlreadyActive";
+  }
+  if (/upload|file too large|unsupported file|invalid file/.test(normalized)) {
+    return "apiErrorUploadFailed";
+  }
+  if (/playback|stream|drm|video source|media unavailable/.test(normalized)) {
+    return "apiErrorPlaybackUnavailable";
+  }
+  if (/share.*expired|expired.*share/.test(normalized)) {
+    return "apiErrorShareExpired";
+  }
+  if (/share.*revoked|revoked.*share/.test(normalized)) {
+    return "apiErrorShareRevoked";
+  }
+  if (status === 400 || /validation|invalid|required|field/.test(normalized)) {
+    return "apiErrorValidationFailed";
+  }
+  return "";
 }
 
-function apiError(data, fallback) {
-  const error = new Error(apiErrorMessage(data, fallback));
+function localizedApiMessage(key, fallback = "") {
+  return key
+    ? translateAppMessage(currentAppLocale(), key)
+    : translateAppMessage(currentAppLocale(), "apiErrorUnexpected") || fallback;
+}
+
+export function apiErrorMessage(data, fallback, status = 0) {
+  const classified = classifyApiError(data, fallback, status);
+  if (classified) return localizedApiMessage(classified, fallback);
+  const detail = data?.error || data?.detail || data?.message || data?.details;
+  if (typeof detail === "string" && detail.trim() && !/traceback|stack|exception|sql|syntaxerror/i.test(detail)) {
+    return detail;
+  }
+  return localizedApiMessage("", fallback);
+}
+
+function apiError(data, fallback, status = 0) {
+  const error = new Error(apiErrorMessage(data, fallback, status));
   error.details = data;
+  error.status = status || data?.status;
   return error;
 }
 
@@ -161,7 +208,7 @@ export async function fetchCapabilities({ force = false } = {}) {
     .then(async (res) => {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw apiError(data, "Failed to fetch deployment capabilities");
+        throw apiError(data, "Failed to fetch deployment capabilities", res.status);
       }
       return data;
     })
@@ -181,7 +228,7 @@ export async function fetchAuthenticatedMediaBlobUrl(relPath) {
   const res = await fetch(url, { headers: authHeaders() });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `Failed to fetch media (${res.status})`);
+    throw apiError(data, `Failed to fetch media (${res.status})`, res.status);
   }
   const blob = await res.blob();
   return URL.createObjectURL(blob);
@@ -198,7 +245,7 @@ export async function fetchAuthenticatedAssetBlobUrl(url) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    const error = new Error(data.error || `Failed to fetch asset (${res.status})`);
+    const error = apiError(data, `Failed to fetch asset (${res.status})`, res.status);
     error.status = res.status;
     error.url = absolute;
     throw error;
@@ -219,7 +266,7 @@ export async function login(username, password) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Login failed");
+    throw apiError(data, "Login failed", res.status);
   }
   const data = await res.json();
   setToken(data.token);
@@ -272,7 +319,7 @@ export async function fetchHelpContent() {
   const res = await fetch(`${API_BASE_URL}/help/`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch help content"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch help content", res.status));
   }
   return data;
 }
@@ -281,7 +328,7 @@ export async function fetchMyProfile() {
   const res = await fetch(`${API_BASE_URL}/me/profile/`, { headers: authHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch profile"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch profile", res.status));
   }
   return data;
 }
@@ -303,7 +350,7 @@ export async function updateMyProfile(payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw apiError(data, "Failed to update profile");
+    throw apiError(data, "Failed to update profile", res.status);
   }
   return data;
 }
@@ -319,7 +366,7 @@ export async function uploadProfileAssets({ bannerFile, logoFile } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw apiError(data, "Failed to upload profile images");
+    throw apiError(data, "Failed to upload profile images", res.status);
   }
   return data;
 }
@@ -334,7 +381,7 @@ export async function fetchNotifications({ limit = 20, offset = 0, unreadOnly = 
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch notifications"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch notifications", res.status));
   }
   return data;
 }
@@ -345,7 +392,7 @@ export async function fetchNotificationUnreadCount() {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch notification count"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch notification count", res.status));
   }
   return data;
 }
@@ -357,7 +404,7 @@ export async function markNotificationRead(id) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to mark notification read"));
+    throw new Error(apiErrorMessage(data, "Failed to mark notification read", res.status));
   }
   return data;
 }
@@ -369,7 +416,7 @@ export async function markAllNotificationsRead() {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to mark notifications read"));
+    throw new Error(apiErrorMessage(data, "Failed to mark notifications read", res.status));
   }
   return data;
 }
@@ -388,7 +435,7 @@ export async function loginWithGoogle(credential) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Google sign-in failed");
+    throw apiError(data, "Google sign-in failed", res.status);
   }
   const data = await res.json();
   setToken(data.token);
@@ -401,7 +448,7 @@ export async function startGoogleRedirectFlow() {
   const res = await fetch(`${API_BASE_URL}/auth/google/redirect/start/`);
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || "Google redirect sign-in is unavailable");
+    throw apiError(data, "Google redirect sign-in is unavailable", res.status);
   }
   return res.json();
 }
@@ -432,7 +479,7 @@ export async function fetchProject(projectId) {
   const res = await fetch(`${API_BASE_URL}/projects/${projectId}/`, { headers: authHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch project"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch project", res.status));
   }
   return data;
 }
@@ -445,7 +492,7 @@ export async function createProject(formData) {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`Upload failed: ${text}`);
+    throw apiError({ error: text }, "Upload failed", res.status);
   }
   return res.json();
 }
@@ -476,7 +523,7 @@ export async function rerenderProject(projectId, options = {}) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw apiError(data, "Failed to rerender project");
+  if (!res.ok) throw apiError(data, "Failed to rerender project", res.status);
   return data;
 }
 
@@ -578,7 +625,7 @@ export async function updateProjectPublished(projectId, isPublished) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to update project publication state"));
+    throw new Error(apiErrorMessage(data, "Failed to update project publication state", res.status));
   }
   return res.json();
 }
@@ -595,7 +642,7 @@ export async function createProjectShareLink(projectId, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw apiError(data, 'Failed to create share link');
+    throw apiError(data, 'Failed to create share link', res.status);
   }
   const sharePath = data.share_path || (data.token ? `/share/${data.token}` : '');
   const shareUrl = sharePath
@@ -615,7 +662,7 @@ export async function revokeShareLink(shareLinkId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw apiError(data, 'Failed to revoke share link');
+    throw apiError(data, 'Failed to revoke share link', res.status);
   }
   return data;
 }
@@ -626,7 +673,7 @@ export async function getProjectModeration(projectId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch moderation status"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation status", res.status));
   }
   return data;
 }
@@ -639,7 +686,7 @@ export async function rescanProjectModeration(projectId, phase = "manual_rescan"
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to resubmit moderation scan"));
+    throw new Error(apiErrorMessage(data, "Failed to resubmit moderation scan", res.status));
   }
   return data;
 }
@@ -652,7 +699,7 @@ export async function requestProjectAdminReview(projectId, message = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const error = apiError(data, "Failed to request admin review");
+    const error = apiError(data, "Failed to request admin review", res.status);
     error.status = res.status;
     throw error;
   }
@@ -667,7 +714,7 @@ export async function reportLesson(projectId, { category, message = "" } = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to submit lesson report"));
+    throw new Error(apiErrorMessage(data, "Failed to submit lesson report", res.status));
   }
   return data;
 }
@@ -684,7 +731,7 @@ export async function listModerationReports(status = "open") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch moderation reports"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation reports", res.status));
   }
   return data;
 }
@@ -697,7 +744,7 @@ export async function runModerationReportAction(reportId, action, reason = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to update moderation report"));
+    throw new Error(apiErrorMessage(data, "Failed to update moderation report", res.status));
   }
   return data;
 }
@@ -720,7 +767,7 @@ export async function listModerationReviewRequests(status = "open") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch moderation review requests"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation review requests", res.status));
   }
   return data;
 }
@@ -731,7 +778,7 @@ export async function getModerationReviewRequest(id) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to fetch moderation review request"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch moderation review request", res.status));
   }
   return data;
 }
@@ -744,7 +791,7 @@ export async function approveModerationReviewRequest(id, adminResponse = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to approve moderation review request"));
+    throw new Error(apiErrorMessage(data, "Failed to approve moderation review request", res.status));
   }
   return data;
 }
@@ -757,7 +804,7 @@ export async function rejectModerationReviewRequest(id, adminResponse = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to reject moderation review request"));
+    throw new Error(apiErrorMessage(data, "Failed to reject moderation review request", res.status));
   }
   return data;
 }
@@ -770,7 +817,7 @@ export async function sendModerationReviewResponse(id, adminResponse = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to send moderation review response"));
+    throw new Error(apiErrorMessage(data, "Failed to send moderation review response", res.status));
   }
   return data;
 }
@@ -783,7 +830,7 @@ export async function adminBlockLesson(projectId, reason = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to block lesson"));
+    throw new Error(apiErrorMessage(data, "Failed to block lesson", res.status));
   }
   return data;
 }
@@ -796,7 +843,7 @@ export async function adminApproveLesson(projectId, reason = "") {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to approve lesson"));
+    throw new Error(apiErrorMessage(data, "Failed to approve lesson", res.status));
   }
   return data;
 }
@@ -809,7 +856,7 @@ export async function adminRequestLessonChanges(projectId, { reason = "", unpubl
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to request lesson changes"));
+    throw new Error(apiErrorMessage(data, "Failed to request lesson changes", res.status));
   }
   return data;
 }
@@ -828,7 +875,7 @@ export async function runAdminProjectModerationAction(
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to update moderation state"));
+    throw new Error(apiErrorMessage(data, "Failed to update moderation state", res.status));
   }
   return data;
 }
@@ -1136,7 +1183,7 @@ export async function fetchSharedLesson(token) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const error = new Error(apiErrorMessage(data, 'Share link is invalid or expired.'));
+    const error = new Error(apiErrorMessage(data, 'Share link is invalid or expired.', res.status));
     error.status = res.status;
     error.reason = data.reason || '';
     error.payload = data;
@@ -1192,7 +1239,7 @@ export async function getPlaylistContext(projectId) {
   );
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch playlist context"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch playlist context", res.status));
   }
   return res.json();
 }
@@ -1293,7 +1340,7 @@ export async function fetchMyAnalyticsIntelligence(filters = {}) {
   const res = await fetch(url, { headers: authHeaders() });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to fetch analytics intelligence'));
+    throw new Error(apiErrorMessage(data, 'Failed to fetch analytics intelligence', res.status));
   }
   return data;
 }
@@ -1314,7 +1361,7 @@ export async function analyzeMyAnalyticsIntelligence(filters = {}, options = {})
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to analyze analytics'));
+    throw new Error(apiErrorMessage(data, 'Failed to analyze analytics', res.status));
   }
   return data;
 }
@@ -1478,7 +1525,7 @@ export async function fetchProjectLessonIntelligence(projectId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to fetch lesson intelligence'));
+    throw new Error(apiErrorMessage(data, 'Failed to fetch lesson intelligence', res.status));
   }
   return data;
 }
@@ -1494,7 +1541,7 @@ export async function analyzeProjectLessonIntelligence(projectId, options = {}) 
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to analyze lesson'));
+    throw new Error(apiErrorMessage(data, 'Failed to analyze lesson', res.status));
   }
   return data;
 }
@@ -1507,7 +1554,7 @@ export async function previewPartialRenderImpact(projectId, payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to preview rerender impact'));
+    throw new Error(apiErrorMessage(data, 'Failed to preview rerender impact', res.status));
   }
   return data;
 }
@@ -1562,7 +1609,7 @@ export async function promoteProjectDraft(projectId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw apiError(data, 'Failed to save draft changes');
+    throw apiError(data, 'Failed to save draft changes', res.status);
   }
   return data;
 }
@@ -1575,7 +1622,7 @@ export async function updateTranscriptPageScene(projectId, pageId, payload = {})
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to update scene background settings'));
+    throw new Error(apiErrorMessage(data, 'Failed to update scene background settings', res.status));
   }
   return data;
 }
@@ -1588,7 +1635,7 @@ export async function previewTranscriptPageHighlight(projectId, pageId, payload 
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to preview highlight'));
+    throw new Error(apiErrorMessage(data, 'Failed to preview highlight', res.status));
   }
   return data;
 }
@@ -1606,7 +1653,7 @@ export async function uploadTranscriptPageBackground(projectId, pageId, file, op
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to upload slide background'));
+    throw new Error(apiErrorMessage(data, 'Failed to upload slide background', res.status));
   }
   return data;
 }
@@ -1619,7 +1666,7 @@ export async function removeTranscriptPageBackground(projectId, pageId, options 
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to remove slide background'));
+    throw new Error(apiErrorMessage(data, 'Failed to remove slide background', res.status));
   }
   return data;
 }
@@ -1632,7 +1679,7 @@ export async function applyProjectBackgroundToAll(projectId, payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to apply background to all slides'));
+    throw new Error(apiErrorMessage(data, 'Failed to apply background to all slides', res.status));
   }
   return data;
 }
@@ -1648,7 +1695,7 @@ export async function uploadProjectCover(projectId, file, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to update lesson cover'));
+    throw new Error(apiErrorMessage(data, 'Failed to update lesson cover', res.status));
   }
   return data;
 }
@@ -1661,7 +1708,7 @@ export async function removeProjectCover(projectId, options = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, 'Failed to remove lesson cover'));
+    throw new Error(apiErrorMessage(data, 'Failed to remove lesson cover', res.status));
   }
   return data;
 }
@@ -1711,7 +1758,7 @@ export async function fetchUserHistory() {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch watch history"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch watch history", res.status));
   }
   return res.json();
 }
@@ -1722,7 +1769,7 @@ export async function fetchLikedLessons() {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch liked lessons"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch liked lessons", res.status));
   }
   return res.json();
 }
@@ -1733,7 +1780,7 @@ export async function getFollowingPublishers() {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch followed publishers"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch followed publishers", res.status));
   }
   return res.json();
 }
@@ -1744,7 +1791,7 @@ export async function getPublisherProfile(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch publisher profile"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch publisher profile", res.status));
   }
   return res.json();
 }
@@ -1759,7 +1806,7 @@ export async function getPublisherLessons(userId, params = {}) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch publisher lessons"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch publisher lessons", res.status));
   }
   return res.json();
 }
@@ -1770,7 +1817,7 @@ export async function listPlaylists() {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch playlists"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch playlists", res.status));
   }
   return res.json();
 }
@@ -1783,7 +1830,7 @@ export async function createPlaylist(payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to create playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to create playlist", res.status));
   }
   return data;
 }
@@ -1796,7 +1843,7 @@ export async function updatePlaylist(id, payload = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to update playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to update playlist", res.status));
   }
   return data;
 }
@@ -1808,7 +1855,7 @@ export async function deletePlaylist(id) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to delete playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to delete playlist", res.status));
   }
   return true;
 }
@@ -1821,7 +1868,7 @@ export async function addPlaylistItem(id, projectId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to add lesson to playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to add lesson to playlist", res.status));
   }
   return data;
 }
@@ -1833,7 +1880,7 @@ export async function removePlaylistItem(id, projectId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to remove lesson from playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to remove lesson from playlist", res.status));
   }
   return true;
 }
@@ -1846,7 +1893,7 @@ export async function reorderPlaylistItems(id, projectIds = []) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to reorder playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to reorder playlist", res.status));
   }
   return data;
 }
@@ -1859,7 +1906,7 @@ export async function getPublisherPlaylists(userId) {
   );
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch publisher playlists"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch publisher playlists", res.status));
   }
   return res.json();
 }
@@ -1872,7 +1919,7 @@ export async function getPlaylist(id) {
   );
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch playlist", res.status));
   }
   return res.json();
 }
@@ -1884,7 +1931,7 @@ export async function toggleSavePlaylist(id) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(apiErrorMessage(data, "Failed to update saved playlist"));
+    throw new Error(apiErrorMessage(data, "Failed to update saved playlist", res.status));
   }
   return data;
 }
@@ -1895,7 +1942,7 @@ export async function getSavedPlaylists() {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to fetch saved playlists"));
+    throw new Error(apiErrorMessage(data, "Failed to fetch saved playlists", res.status));
   }
   return res.json();
 }
@@ -1907,7 +1954,7 @@ export async function toggleFollowPublisher(userId) {
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
-    throw new Error(apiErrorMessage(data, "Failed to update follow"));
+    throw new Error(apiErrorMessage(data, "Failed to update follow", res.status));
   }
   return res.json();
 }

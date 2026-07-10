@@ -34,6 +34,7 @@ import { featureEnabled, useCapabilities } from '../lib/capabilities';
 import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 import { isAutoplayNextEnabled } from '../utils/playbackPreferences';
 import { useLocale } from '../i18n/LocaleProvider';
+import { currentAppLocale } from '../i18n/locale';
 
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
@@ -131,7 +132,7 @@ function formatCommentDate(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-US', {
+  return date.toLocaleDateString(currentAppLocale(), {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -142,7 +143,7 @@ function formatShareExpiry(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  return date.toLocaleString(currentAppLocale(), { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 function compactCount(value, noun) {
@@ -743,7 +744,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
     window.localStorage.removeItem(draftNoteKey(activeLessonId));
     setSavedNotes(notes);
     setSaveHint('');
-    setSavedAtLabel(`Saved at ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`);
+    setSavedAtLabel(`Saved at ${new Date().toLocaleTimeString(currentAppLocale(), { hour: '2-digit', minute: '2-digit' })}`);
   };
 
   const visibleLessons = useMemo(

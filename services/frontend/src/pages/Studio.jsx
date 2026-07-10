@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLocale } from '../i18n/LocaleProvider';
+import { currentAppLocale } from '../i18n/locale';
 import {
   createProject,
   deleteProject,
@@ -264,7 +265,7 @@ function timestampMs(value) {
 }
 
 function formatEditorSaveTime(date = new Date()) {
-  return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleTimeString(currentAppLocale(), { hour: '2-digit', minute: '2-digit' });
 }
 
 function eventTargetAcceptsTextInput(target) {
@@ -1769,7 +1770,7 @@ function subtitleProviderMessage(track) {
 
 function safeDateLabel(value) {
   if (!value) return 'Recent';
-  return new Date(value).toLocaleDateString('en-US', {
+  return new Date(value).toLocaleDateString(currentAppLocale(), {
     month: 'short',
     day: 'numeric',
     year: 'numeric',

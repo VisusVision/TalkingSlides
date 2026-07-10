@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LocaleProvider, useLocale } from '../../i18n/LocaleProvider';
 import { APP_LOCALE_STORAGE_KEY } from '../../i18n/locale';
+import { translateAppMessage } from '../../i18n/messages';
 import LanguageSelector from './LanguageSelector';
 import AppShell from './AppShell';
 
@@ -76,18 +77,18 @@ describe('AppShell i18n', () => {
 
     expect(selector).toBeVisible();
     expect(host.querySelectorAll('select[aria-label="Application language"]')).toHaveLength(1);
-    expect(host.textContent).toContain('Dashboard');
-    expect(host.textContent).toContain('Studio Workspace');
-    expect(host.textContent).toContain('Watch');
+    expect(host.textContent).toContain(translateAppMessage('en', 'dashboardLabel'));
+    expect(host.textContent).toContain(translateAppMessage('en', 'studioLabel'));
+    expect(host.textContent).toContain(translateAppMessage('en', 'watchLabel'));
 
     await act(async () => {
       selector.value = 'tr';
       selector.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
-    expect(host.textContent).toContain('Kontrol Paneli');
-    expect(host.textContent).toContain('Stüdyo Çalışma Alanı');
-    expect(host.textContent).toContain('İzle');
+    expect(host.textContent).toContain(translateAppMessage('tr', 'dashboardLabel'));
+    expect(host.textContent).toContain(translateAppMessage('tr', 'studioLabel'));
+    expect(host.textContent).toContain(translateAppMessage('tr', 'watchLabel'));
     expect(window.localStorage.getItem(APP_LOCALE_STORAGE_KEY)).toBe('tr');
 
     await act(async () => {
@@ -98,7 +99,7 @@ describe('AppShell i18n', () => {
     expect(document.documentElement.lang).toBe('ar');
     expect(document.documentElement.dir).toBe('rtl');
     expect(document.documentElement).toHaveClass('rtl');
-    expect(host.textContent).toContain('لوحة المعلومات');
+    expect(host.textContent).toContain(translateAppMessage('ar', 'dashboardLabel'));
 
     await act(async () => {
       selector.value = 'en';
