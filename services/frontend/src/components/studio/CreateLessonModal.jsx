@@ -1,5 +1,7 @@
-import { X } from 'lucide-react';
 import UploadComposer from './UploadComposer';
+import Dialog from '../ui/Dialog';
+
+const CREATE_LESSON_MODAL_TITLE_ID = 'create-lesson-modal-title';
 
 export default function CreateLessonModal({
   open,
@@ -9,37 +11,34 @@ export default function CreateLessonModal({
   submitError,
   onSubmit,
 }) {
-  if (!open) return null;
-
-  const handleBackdropMouseDown = (event) => {
-    if (event.target === event.currentTarget && !submitting) {
-      onClose();
-    }
-  };
-
   return (
-    <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-[color:var(--modal-backdrop)] p-4"
-      onMouseDown={handleBackdropMouseDown}
+    <Dialog
+      open={open}
+      onClose={onClose}
+      titleId={CREATE_LESSON_MODAL_TITLE_ID}
+      closeOnBackdrop={!submitting}
+      closeOnEscape={!submitting}
+      closeDisabled={submitting}
+      size="lg"
+      className="max-w-2xl border-0 bg-transparent shadow-none"
     >
-      <div className="relative w-full max-w-2xl">
-        <button
-          type="button"
-          onClick={onClose}
+      <Dialog.Title className="sr-only">
+        Create A New Lesson Draft
+      </Dialog.Title>
+      <Dialog.Body className="relative p-0 sm:p-0">
+        <Dialog.Close
+          onClose={onClose}
           disabled={submitting}
-          className="focus-ring absolute right-4 top-4 z-10 inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[color:var(--surface-muted)] disabled:cursor-not-allowed disabled:opacity-60"
-          aria-label="Close create lesson"
-        >
-          <X size={16} />
-        </button>
-
+          closeLabel="Close create lesson"
+          className="absolute right-4 top-4 z-10 rtl:left-4 rtl:right-auto"
+        />
         <UploadComposer
           categories={categories}
           submitting={submitting}
           submitError={submitError}
           onSubmit={onSubmit}
         />
-      </div>
-    </div>
+      </Dialog.Body>
+    </Dialog>
   );
 }
