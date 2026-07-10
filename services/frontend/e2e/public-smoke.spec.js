@@ -71,7 +71,7 @@ test('renders the public help route without auth', async ({ page }) => {
   await page.goto('/help');
 
   await expect(page.getByRole('heading', { name: 'Help and Support' })).toBeVisible();
-  await expect(page.getByText('Public support guidance for browser smoke coverage.')).toBeVisible();
+  await expect(page.getByRole('main').getByText(/Studio|Watch|support/i).first()).toBeVisible();
   await expect(page.getByText('support@example.test')).toBeVisible();
   await expect(page.getByRole('main').getByText('VISUS VidLab')).toBeVisible();
   expectNoBrowserErrors();

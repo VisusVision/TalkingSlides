@@ -224,15 +224,26 @@ test.describe('microphone voice sample recording', () => {
         }
       }
 
-      window.MediaRecorder = FakeMediaRecorder;
-      window.HTMLMediaElement.prototype.play = async () => {};
-      navigator.mediaDevices.getUserMedia = async () => {
-        const track = { stop() {} };
-        return {
-          getAudioTracks: () => [track],
-          getTracks: () => [track],
-        };
-      };
+      Object.defineProperty(window, 'MediaRecorder', {
+        configurable: true,
+        value: FakeMediaRecorder,
+      });
+      Object.defineProperty(window.HTMLMediaElement.prototype, 'play', {
+        configurable: true,
+        value: async () => {},
+      });
+      Object.defineProperty(window.navigator, 'mediaDevices', {
+        configurable: true,
+        value: {
+          getUserMedia: async () => {
+            const track = { stop() {} };
+            return {
+              getAudioTracks: () => [track],
+              getTracks: () => [track],
+            };
+          },
+        },
+      });
     });
 
     await page.goto('/settings');
