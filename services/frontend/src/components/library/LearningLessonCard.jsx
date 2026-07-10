@@ -2,6 +2,27 @@ import { CirclePlay } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { normalizeLesson } from '../../lib/content';
 import { currentAppLocale } from '../../i18n/locale';
+import { localizeStaticUiText } from '../../i18n/messages';
+
+const PROGRESS_LABELS = {
+  tr: { watched: (percent) => `%${percent} izlendi`, continueFrom: (percent) => `%${percent} oranından devam et` },
+  es: { watched: (percent) => `${percent}% visto`, continueFrom: (percent) => `Continuar desde ${percent}%` },
+  fr: { watched: (percent) => `${percent} % regardé`, continueFrom: (percent) => `Reprendre à ${percent} %` },
+  de: { watched: (percent) => `${percent} % angesehen`, continueFrom: (percent) => `Ab ${percent} % fortsetzen` },
+  it: { watched: (percent) => `${percent}% guardato`, continueFrom: (percent) => `Continua da ${percent}%` },
+  pt: { watched: (percent) => `${percent}% assistido`, continueFrom: (percent) => `Continuar de ${percent}%` },
+  ru: { watched: (percent) => `Просмотрено ${percent}%`, continueFrom: (percent) => `Продолжить с ${percent}%` },
+  ja: { watched: (percent) => `${percent}% 視聴済み`, continueFrom: (percent) => `${percent}% から再開` },
+  ko: { watched: (percent) => `${percent}% 시청함`, continueFrom: (percent) => `${percent}%부터 계속` },
+  'zh-CN': { watched: (percent) => `已观看 ${percent}%`, continueFrom: (percent) => `从 ${percent}% 继续` },
+  ar: { watched: (percent) => `تمت مشاهدة ${percent}%`, continueFrom: (percent) => `تابع من ${percent}%` },
+};
+
+function progressText(locale, kind, percent) {
+  return PROGRESS_LABELS[locale]?.[kind]?.(percent) || (kind === 'continueFrom'
+    ? `Continue from ${percent}%`
+    : `${percent}% watched`);
+}
 
 function lessonBackground(lesson) {
   if (!lesson?.imageUrl) {
@@ -48,11 +69,12 @@ export function formatLearningDate(value) {
 }
 
 export default function LearningLessonCard({ item, metaLabel = '' }) {
+  const locale = currentAppLocale();
   const lesson = item?.lesson || {};
   const progressPct = Math.max(0, Math.min(100, Number(item?.progressPct || lesson.progress || 0)));
   const roundedProgress = Math.round(progressPct);
   const continueLabel = item?.kind === 'history' && progressPct > 0
-    ? `Continue from ${roundedProgress}%`
+    ? progressText(locale, 'continueFrom', roundedProgress)
     : '';
   const dateLabel = formatLearningDate(item?.timestamp);
   const watchUrl = continueLabel
@@ -86,7 +108,7 @@ export default function LearningLessonCard({ item, metaLabel = '' }) {
             <div className="h-full rounded-full bg-[image:var(--accent-gradient)]" style={{ width: `${Math.max(4, progressPct)}%` }} />
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 text-[0.68rem] font-medium uppercase tracking-[0.12em] text-[var(--text-secondary)]">
-            <span>{metaLabel || `${roundedProgress}% watched`}</span>
+            <span>{metaLabel ? localizeStaticUiText(locale, metaLabel) : progressText(locale, 'watched', roundedProgress)}</span>
             {dateLabel ? <span>{dateLabel}</span> : null}
           </div>
         </div>

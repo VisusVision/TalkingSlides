@@ -45,6 +45,36 @@ const RANGE_OPTIONS = [
   { key: '90', label: '90 days' },
 ];
 
+const ANALYTICS_UI_PHRASES = {
+  tr: {
+    'Last 7 days': 'Son 7 gün',
+    '30 days': '30 gün',
+    '90 days': '90 gün',
+    'Total Views': 'Toplam görüntüleme',
+    'Watch Time': 'İzleme süresi',
+    'Engagement Events': 'Etkileşim olayları',
+    'No activity yet': 'Henüz etkinlik yok',
+    'No watch time yet': 'Henüz izleme süresi yok',
+    'No engagement yet': 'Henüz etkileşim yok',
+    hrs: 'sa',
+    'unique viewers': 'benzersiz izleyici',
+    'average progress': 'ortalama ilerleme',
+  },
+  de: { 'Last 7 days': 'Letzte 7 Tage', '30 days': '30 Tage', '90 days': '90 Tage', 'Total Views': 'Aufrufe gesamt', 'Watch Time': 'Wiedergabezeit', 'Engagement Events': 'Interaktionen', 'No activity yet': 'Noch keine Aktivität', 'No watch time yet': 'Noch keine Wiedergabezeit', 'No engagement yet': 'Noch keine Interaktion', hrs: 'Std.', 'unique viewers': 'einmalige Zuschauer', 'average progress': 'durchschnittlicher Fortschritt' },
+  fr: { 'Last 7 days': '7 derniers jours', '30 days': '30 jours', '90 days': '90 jours', 'Total Views': 'Vues totales', 'Watch Time': 'Temps de visionnage', 'Engagement Events': 'Événements d’engagement', 'No activity yet': 'Aucune activité pour le moment', 'No watch time yet': 'Aucun temps de visionnage', 'No engagement yet': 'Aucun engagement pour le moment', hrs: 'h', 'unique viewers': 'spectateurs uniques', 'average progress': 'progression moyenne' },
+  es: { 'Last 7 days': 'Últimos 7 días', '30 days': '30 días', '90 days': '90 días', 'Total Views': 'Vistas totales', 'Watch Time': 'Tiempo de visualización', 'Engagement Events': 'Eventos de interacción', 'No activity yet': 'Aún no hay actividad', 'No watch time yet': 'Aún no hay tiempo de visualización', 'No engagement yet': 'Aún no hay interacción', hrs: 'h', 'unique viewers': 'espectadores únicos', 'average progress': 'progreso medio' },
+  pt: { 'Last 7 days': 'Últimos 7 dias', '30 days': '30 dias', '90 days': '90 dias', 'Total Views': 'Visualizações totais', 'Watch Time': 'Tempo assistido', 'Engagement Events': 'Eventos de engajamento', 'No activity yet': 'Ainda sem atividade', 'No watch time yet': 'Ainda sem tempo assistido', 'No engagement yet': 'Ainda sem engajamento', hrs: 'h', 'unique viewers': 'espectadores únicos', 'average progress': 'progresso médio' },
+  ru: { 'Last 7 days': 'Последние 7 дней', '30 days': '30 дней', '90 days': '90 дней', 'Total Views': 'Всего просмотров', 'Watch Time': 'Время просмотра', 'Engagement Events': 'События вовлеченности', 'No activity yet': 'Активности пока нет', 'No watch time yet': 'Времени просмотра пока нет', 'No engagement yet': 'Вовлеченности пока нет', hrs: 'ч', 'unique viewers': 'уникальных зрителей', 'average progress': 'средний прогресс' },
+  ja: { 'Last 7 days': '過去 7 日', '30 days': '30 日', '90 days': '90 日', 'Total Views': '総視聴数', 'Watch Time': '視聴時間', 'Engagement Events': 'エンゲージメント', 'No activity yet': 'まだアクティビティはありません', 'No watch time yet': 'まだ視聴時間はありません', 'No engagement yet': 'まだエンゲージメントはありません', hrs: '時間', 'unique viewers': 'ユニーク視聴者', 'average progress': '平均進捗' },
+  ko: { 'Last 7 days': '최근 7일', '30 days': '30일', '90 days': '90일', 'Total Views': '총 조회수', 'Watch Time': '시청 시간', 'Engagement Events': '참여 이벤트', 'No activity yet': '아직 활동 없음', 'No watch time yet': '아직 시청 시간 없음', 'No engagement yet': '아직 참여 없음', hrs: '시간', 'unique viewers': '고유 시청자', 'average progress': '평균 진행률' },
+  'zh-CN': { 'Last 7 days': '过去 7 天', '30 days': '30 天', '90 days': '90 天', 'Total Views': '总观看次数', 'Watch Time': '观看时长', 'Engagement Events': '互动事件', 'No activity yet': '暂无活动', 'No watch time yet': '暂无观看时长', 'No engagement yet': '暂无互动', hrs: '小时', 'unique viewers': '独立观看者', 'average progress': '平均进度' },
+  ar: { 'Last 7 days': 'آخر 7 أيام', '30 days': '30 يومًا', '90 days': '90 يومًا', 'Total Views': 'إجمالي المشاهدات', 'Watch Time': 'وقت المشاهدة', 'Engagement Events': 'أحداث التفاعل', 'No activity yet': 'لا يوجد نشاط بعد', 'No watch time yet': 'لا يوجد وقت مشاهدة بعد', 'No engagement yet': 'لا يوجد تفاعل بعد', hrs: 'س', 'unique viewers': 'مشاهدون فريدون', 'average progress': 'متوسط التقدم' },
+};
+
+function analyticsText(locale, text) {
+  return ANALYTICS_UI_PHRASES[locale]?.[text] || localizeStaticUiText(locale, text);
+}
+
 const DONUT_COLORS = [
   'var(--accent-primary)',
   '#38bdf8',
@@ -970,6 +1000,7 @@ function CategoryDonut({ categories }) {
 }
 
 function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, children }) {
+  const locale = currentAppLocale();
   return (
     <SurfaceCard className="min-h-[10.5rem] space-y-4">
       <div className="flex items-start justify-between gap-3">
@@ -979,10 +1010,10 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
         <TrendBadge value={trend} />
       </div>
       <div>
-        <p className="text-[0.66rem] font-semibold uppercase tracking-[0.13em] text-[var(--text-secondary)]">{label}</p>
+        <p className="text-[0.66rem] font-semibold uppercase tracking-[0.13em] text-[var(--text-secondary)]">{analyticsText(locale, label)}</p>
         <p className="mt-1 font-['Manrope'] text-3xl font-extrabold tracking-[-0.03em] text-[var(--text-primary)]">{value}</p>
         <p className="mt-2 min-h-[1rem] text-[0.72rem] leading-relaxed text-[var(--text-secondary)]">
-          {active ? hint : emptyHint}
+          {analyticsText(locale, active ? hint : emptyHint)}
         </p>
       </div>
       {children}
@@ -992,6 +1023,7 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
 
 export default function Analytics({ user }) {
   const { t } = useLocale();
+  const locale = currentAppLocale();
   const location = useLocation();
   const { capabilities } = useCapabilities();
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
@@ -1364,7 +1396,7 @@ export default function Analytics({ user }) {
                     : 'text-[var(--text-secondary)] hover:bg-[var(--surface-container-high)] hover:text-[var(--text-primary)]'
                 }`}
               >
-                {option.label}
+                {analyticsText(locale, option.label)}
               </button>
             ))}
           </div>
@@ -1449,13 +1481,13 @@ export default function Analytics({ user }) {
           value={compactNumber(stats.metrics.totalViews)}
           trend={stats.metrics.trendViewsPct}
           active={hasActivity}
-          hint={`${compactNumber(stats.metrics.uniqueViewers)} unique viewers`}
+          hint={`${compactNumber(stats.metrics.uniqueViewers)} ${analyticsText(locale, 'unique viewers')}`}
           emptyHint="No activity yet"
         />
         <KpiCard
           icon={Clock3}
           label="Watch Time"
-          value={`${compactNumber(stats.metrics.watchHours)} hrs`}
+          value={`${compactNumber(stats.metrics.watchHours)} ${analyticsText(locale, 'hrs')}`}
           trend={stats.metrics.trendWatchPct}
           active={hasActivity}
           hint={stats.meta?.estimated_metrics ? 'Estimated from progress.' : 'Recorded watch time.'}
@@ -1469,9 +1501,9 @@ export default function Analytics({ user }) {
               </span>
               <TrendBadge value={stats.metrics.trendCompletionPct} />
             </div>
-            <p className="mt-4 text-[0.66rem] font-semibold uppercase tracking-[0.13em] text-[var(--text-secondary)]">Completion Rate</p>
+            <p className="mt-4 text-[0.66rem] font-semibold uppercase tracking-[0.13em] text-[var(--text-secondary)]">{analyticsText(locale, 'Completion Rate')}</p>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">
-              {hasActivity ? `${percent(stats.metrics.averageProgress)} average progress` : 'No activity yet'}
+              {hasActivity ? `${percent(stats.metrics.averageProgress)} ${analyticsText(locale, 'average progress')}` : analyticsText(locale, 'No activity yet')}
             </p>
           </div>
           <CompletionRing value={stats.metrics.completionRate} />
@@ -1482,7 +1514,7 @@ export default function Analytics({ user }) {
           value={compactNumber(stats.metrics.engagementEvents)}
           trend={stats.metrics.trendEngagementPct}
           active={hasActivity}
-          hint={`${compactNumber(stats.metrics.likes)} likes / ${compactNumber(stats.metrics.comments)} comments`}
+          hint={`${compactNumber(stats.metrics.likes)} ${analyticsText(locale, 'likes')} / ${compactNumber(stats.metrics.comments)} ${analyticsText(locale, 'comments')}`}
           emptyHint="No engagement yet"
         />
       </section>

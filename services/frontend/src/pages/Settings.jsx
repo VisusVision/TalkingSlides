@@ -23,6 +23,7 @@ import SurfaceCard from '../components/ui/SurfaceCard';
 import { useTheme } from '../components/ui/ThemeProvider';
 import { usePageLoading } from '../components/ui/PageLoading';
 import { useLocale } from '../i18n/LocaleProvider';
+import { localizeStaticUiText } from '../i18n/messages';
 import {
   API_BASE_URL,
   deleteAvatarPreview,
@@ -65,6 +66,189 @@ import {
 const REDUCED_MOTION_KEY = 'visus-reduced-motion';
 const NOTIFICATION_PREFS_KEY = 'visus-notification-preferences';
 const API_ORIGIN = API_BASE_URL.replace(/\/api\/v1\/?$/, '');
+
+const SETTINGS_UI_PHRASES = {
+  tr: {
+    'Account/Profile': 'Hesap/Profil',
+    'Theme choice is stored locally and applied across the workspace.': 'Tema seçimi yerel olarak kaydedilir ve çalışma alanında uygulanır.',
+    'Publisher/Public Profile': 'Yayıncı/Herkese Açık Profil',
+    'Customize the public channel page shown to visitors.': 'Ziyaretçilere gösterilen herkese açık kanal sayfasını özelleştirin.',
+    'Playback/Accessibility': 'Oynatma/Erişilebilirlik',
+    'Tune watch playback flow and interface motion for this browser.': 'Bu tarayıcı için izleme akışını ve arayüz hareketini ayarlayın.',
+    'In-App Notifications': 'Uygulama İçi Bildirimler',
+    'Stored in this browser for the notification center.': 'Bildirim merkezi için bu tarayıcıda saklanır.',
+    'Browser Data': 'Tarayıcı Verileri',
+    'This removes saved watch notes from this browser only.': 'Bu işlem yalnızca bu tarayıcıdaki kayıtlı izleme notlarını kaldırır.',
+    Deployment: 'Dağıtım',
+    'Read-only capabilities reported by this deployment.': 'Bu dağıtım tarafından bildirilen salt okunur özellikler.',
+    'Avatar Preferences': 'Avatar Tercihleri',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'Gelişmiş avatar kontrolleri varsayılan olarak daraltılır ve arayüz hareket tercihlerinden ayrı kalır.',
+  },
+  es: {
+    'Account/Profile': 'Cuenta/Perfil',
+    'Theme choice is stored locally and applied across the workspace.': 'La elección del tema se guarda localmente y se aplica en todo el espacio de trabajo.',
+    'Publisher/Public Profile': 'Editor/Perfil público',
+    'Customize the public channel page shown to visitors.': 'Personaliza la página pública del canal que ven los visitantes.',
+    'Playback/Accessibility': 'Reproducción/Accesibilidad',
+    'Tune watch playback flow and interface motion for this browser.': 'Ajusta el flujo de reproducción y el movimiento de la interfaz para este navegador.',
+    'In-App Notifications': 'Notificaciones en la aplicación',
+    'Stored in this browser for the notification center.': 'Se guarda en este navegador para el centro de notificaciones.',
+    'Browser Data': 'Datos del navegador',
+    'This removes saved watch notes from this browser only.': 'Esto elimina las notas de visualización guardadas solo en este navegador.',
+    Deployment: 'Implementación',
+    'Read-only capabilities reported by this deployment.': 'Capacidades de solo lectura informadas por esta implementación.',
+    'Avatar Preferences': 'Preferencias de avatar',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'Los controles avanzados de avatar están contraídos de forma predeterminada y permanecen separados de las preferencias de movimiento de la interfaz.',
+  },
+  fr: {
+    'Account/Profile': 'Compte/Profil',
+    'Theme choice is stored locally and applied across the workspace.': 'Le choix du thème est enregistré localement et appliqué dans tout l’espace de travail.',
+    'Publisher/Public Profile': 'Éditeur/Profil public',
+    'Customize the public channel page shown to visitors.': 'Personnalisez la page publique de la chaîne affichée aux visiteurs.',
+    'Playback/Accessibility': 'Lecture/Accessibilité',
+    'Tune watch playback flow and interface motion for this browser.': 'Ajustez le flux de lecture et les mouvements de l’interface pour ce navigateur.',
+    'In-App Notifications': 'Notifications dans l’application',
+    'Stored in this browser for the notification center.': 'Stocké dans ce navigateur pour le centre de notifications.',
+    'Browser Data': 'Données du navigateur',
+    'This removes saved watch notes from this browser only.': 'Cela supprime uniquement les notes de visionnage enregistrées dans ce navigateur.',
+    Deployment: 'Déploiement',
+    'Read-only capabilities reported by this deployment.': 'Capacités en lecture seule signalées par ce déploiement.',
+    'Avatar Preferences': 'Préférences d’avatar',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'Les contrôles avancés de l’avatar sont réduits par défaut et restent séparés des préférences de mouvement de l’interface.',
+  },
+  de: {
+    'Account/Profile': 'Konto/Profil',
+    'Theme choice is stored locally and applied across the workspace.': 'Die Themenauswahl wird lokal gespeichert und im gesamten Arbeitsbereich angewendet.',
+    'Publisher/Public Profile': 'Publisher/Öffentliches Profil',
+    'Customize the public channel page shown to visitors.': 'Passe die öffentliche Kanalseite an, die Besucher sehen.',
+    'Playback/Accessibility': 'Wiedergabe/Barrierefreiheit',
+    'Tune watch playback flow and interface motion for this browser.': 'Passe Wiedergabeablauf und Oberflächenbewegung für diesen Browser an.',
+    'In-App Notifications': 'In-App-Benachrichtigungen',
+    'Stored in this browser for the notification center.': 'Wird für das Benachrichtigungscenter in diesem Browser gespeichert.',
+    'Browser Data': 'Browserdaten',
+    'This removes saved watch notes from this browser only.': 'Dadurch werden gespeicherte Wiedergabenotizen nur aus diesem Browser entfernt.',
+    Deployment: 'Bereitstellung',
+    'Read-only capabilities reported by this deployment.': 'Schreibgeschützte Funktionen, die von dieser Bereitstellung gemeldet werden.',
+    'Avatar Preferences': 'Avatar-Einstellungen',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'Erweiterte Avatar-Steuerelemente sind standardmäßig eingeklappt und bleiben von den Bewegungseinstellungen der Oberfläche getrennt.',
+  },
+  it: {
+    'Account/Profile': 'Account/Profilo',
+    'Theme choice is stored locally and applied across the workspace.': 'La scelta del tema viene salvata localmente e applicata in tutto lo spazio di lavoro.',
+    'Publisher/Public Profile': 'Editore/Profilo pubblico',
+    'Customize the public channel page shown to visitors.': 'Personalizza la pagina pubblica del canale mostrata ai visitatori.',
+    'Playback/Accessibility': 'Riproduzione/Accessibilità',
+    'Tune watch playback flow and interface motion for this browser.': 'Regola il flusso di riproduzione e il movimento dell’interfaccia per questo browser.',
+    'In-App Notifications': 'Notifiche nell’app',
+    'Stored in this browser for the notification center.': 'Archiviato in questo browser per il centro notifiche.',
+    'Browser Data': 'Dati del browser',
+    'This removes saved watch notes from this browser only.': 'Questo rimuove le note di visione salvate solo da questo browser.',
+    Deployment: 'Distribuzione',
+    'Read-only capabilities reported by this deployment.': 'Funzionalità di sola lettura segnalate da questa distribuzione.',
+    'Avatar Preferences': 'Preferenze avatar',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'I controlli avanzati dell’avatar sono compressi per impostazione predefinita e restano separati dalle preferenze di movimento dell’interfaccia.',
+  },
+  pt: {
+    'Account/Profile': 'Conta/Perfil',
+    'Theme choice is stored locally and applied across the workspace.': 'A escolha do tema é salva localmente e aplicada em todo o espaço de trabalho.',
+    'Publisher/Public Profile': 'Publicador/Perfil público',
+    'Customize the public channel page shown to visitors.': 'Personalize a página pública do canal exibida aos visitantes.',
+    'Playback/Accessibility': 'Reprodução/Acessibilidade',
+    'Tune watch playback flow and interface motion for this browser.': 'Ajuste o fluxo de reprodução e o movimento da interface para este navegador.',
+    'In-App Notifications': 'Notificações no aplicativo',
+    'Stored in this browser for the notification center.': 'Armazenado neste navegador para a central de notificações.',
+    'Browser Data': 'Dados do navegador',
+    'This removes saved watch notes from this browser only.': 'Isso remove as notas de visualização salvas apenas deste navegador.',
+    Deployment: 'Implantação',
+    'Read-only capabilities reported by this deployment.': 'Recursos somente leitura relatados por esta implantação.',
+    'Avatar Preferences': 'Preferências de avatar',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'Os controles avançados de avatar ficam recolhidos por padrão e permanecem separados das preferências de movimento da interface.',
+  },
+  ru: {
+    'Account/Profile': 'Учетная запись/Профиль',
+    'Theme choice is stored locally and applied across the workspace.': 'Выбор темы сохраняется локально и применяется во всем рабочем пространстве.',
+    'Publisher/Public Profile': 'Издатель/Публичный профиль',
+    'Customize the public channel page shown to visitors.': 'Настройте публичную страницу канала, которую видят посетители.',
+    'Playback/Accessibility': 'Воспроизведение/Доступность',
+    'Tune watch playback flow and interface motion for this browser.': 'Настройте процесс просмотра и анимацию интерфейса для этого браузера.',
+    'In-App Notifications': 'Уведомления в приложении',
+    'Stored in this browser for the notification center.': 'Сохраняется в этом браузере для центра уведомлений.',
+    'Browser Data': 'Данные браузера',
+    'This removes saved watch notes from this browser only.': 'Это удаляет сохраненные заметки просмотра только из этого браузера.',
+    Deployment: 'Развертывание',
+    'Read-only capabilities reported by this deployment.': 'Возможности только для чтения, сообщенные этим развертыванием.',
+    'Avatar Preferences': 'Настройки аватара',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'Расширенные элементы управления аватаром по умолчанию свернуты и отделены от настроек анимации интерфейса.',
+  },
+  ja: {
+    'Account/Profile': 'アカウント/プロフィール',
+    'Theme choice is stored locally and applied across the workspace.': 'テーマの選択はローカルに保存され、ワークスペース全体に適用されます。',
+    'Publisher/Public Profile': '発行者/公開プロフィール',
+    'Customize the public channel page shown to visitors.': '訪問者に表示される公開チャンネルページをカスタマイズします。',
+    'Playback/Accessibility': '再生/アクセシビリティ',
+    'Tune watch playback flow and interface motion for this browser.': 'このブラウザーの視聴フローとインターフェイスの動きを調整します。',
+    'In-App Notifications': 'アプリ内通知',
+    'Stored in this browser for the notification center.': '通知センター用にこのブラウザーに保存されます。',
+    'Browser Data': 'ブラウザーデータ',
+    'This removes saved watch notes from this browser only.': 'この操作は、このブラウザーに保存された視聴メモのみを削除します。',
+    Deployment: 'デプロイ',
+    'Read-only capabilities reported by this deployment.': 'このデプロイから報告された読み取り専用機能です。',
+    'Avatar Preferences': 'アバター設定',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': '詳細なアバターコントロールは既定で折りたたまれ、UI モーション設定とは別に保持されます。',
+  },
+  ko: {
+    'Account/Profile': '계정/프로필',
+    'Theme choice is stored locally and applied across the workspace.': '테마 선택은 로컬에 저장되어 작업 공간 전체에 적용됩니다.',
+    'Publisher/Public Profile': '게시자/공개 프로필',
+    'Customize the public channel page shown to visitors.': '방문자에게 표시되는 공개 채널 페이지를 사용자 지정합니다.',
+    'Playback/Accessibility': '재생/접근성',
+    'Tune watch playback flow and interface motion for this browser.': '이 브라우저의 시청 재생 흐름과 인터페이스 동작을 조정합니다.',
+    'In-App Notifications': '앱 내 알림',
+    'Stored in this browser for the notification center.': '알림 센터용으로 이 브라우저에 저장됩니다.',
+    'Browser Data': '브라우저 데이터',
+    'This removes saved watch notes from this browser only.': '저장된 시청 메모를 이 브라우저에서만 제거합니다.',
+    Deployment: '배포',
+    'Read-only capabilities reported by this deployment.': '이 배포에서 보고한 읽기 전용 기능입니다.',
+    'Avatar Preferences': '아바타 환경설정',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': '고급 아바타 컨트롤은 기본적으로 접혀 있으며 UI 모션 환경설정과 별도로 유지됩니다.',
+  },
+  'zh-CN': {
+    'Account/Profile': '账户/个人资料',
+    'Theme choice is stored locally and applied across the workspace.': '主题选择会保存在本地，并应用于整个工作区。',
+    'Publisher/Public Profile': '发布者/公开资料',
+    'Customize the public channel page shown to visitors.': '自定义访客看到的公开频道页面。',
+    'Playback/Accessibility': '播放/辅助功能',
+    'Tune watch playback flow and interface motion for this browser.': '为此浏览器调整观看播放流程和界面动效。',
+    'In-App Notifications': '应用内通知',
+    'Stored in this browser for the notification center.': '为通知中心保存在此浏览器中。',
+    'Browser Data': '浏览器数据',
+    'This removes saved watch notes from this browser only.': '这只会移除此浏览器中保存的观看笔记。',
+    Deployment: '部署',
+    'Read-only capabilities reported by this deployment.': '此部署报告的只读功能。',
+    'Avatar Preferences': '头像偏好设置',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': '高级头像控件默认折叠，并与界面动效偏好设置分开。',
+  },
+  ar: {
+    'Account/Profile': 'الحساب/الملف الشخصي',
+    'Theme choice is stored locally and applied across the workspace.': 'يتم حفظ اختيار السمة محليًا وتطبيقه في مساحة العمل.',
+    'Publisher/Public Profile': 'الناشر/الملف العام',
+    'Customize the public channel page shown to visitors.': 'خصص صفحة القناة العامة التي تظهر للزوار.',
+    'Playback/Accessibility': 'التشغيل/إمكانية الوصول',
+    'Tune watch playback flow and interface motion for this browser.': 'اضبط مسار تشغيل المشاهدة وحركة الواجهة لهذا المتصفح.',
+    'In-App Notifications': 'الإشعارات داخل التطبيق',
+    'Stored in this browser for the notification center.': 'يتم حفظه في هذا المتصفح لمركز الإشعارات.',
+    'Browser Data': 'بيانات المتصفح',
+    'This removes saved watch notes from this browser only.': 'يزيل هذا ملاحظات المشاهدة المحفوظة من هذا المتصفح فقط.',
+    Deployment: 'النشر',
+    'Read-only capabilities reported by this deployment.': 'إمكانات للقراءة فقط أبلغ عنها هذا النشر.',
+    'Avatar Preferences': 'تفضيلات الصورة الرمزية',
+    'Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.': 'يتم طي عناصر التحكم المتقدمة في الصورة الرمزية افتراضيًا وتبقى منفصلة عن تفضيلات حركة الواجهة.',
+  },
+};
+
+function localizeSettingsUiText(locale, text) {
+  return SETTINGS_UI_PHRASES[locale]?.[text] || localizeStaticUiText(locale, text);
+}
 
 const DEFAULT_NOTIFICATION_PREFERENCES = {
   commentsOnLessons: true,
@@ -373,7 +557,7 @@ function AvatarActionCard({ title, caption, icon: Icon, onClick }) {
   );
 }
 
-function AvatarSetupChecklist({ items }) {
+function AvatarSetupChecklist({ items, uiText = (text) => text }) {
   return (
     <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
       {items.map((item) => (
@@ -385,9 +569,9 @@ function AvatarSetupChecklist({ items }) {
               : 'border-[var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-secondary)]'
           }`}
         >
-          <span className="font-medium">{item.label}</span>
+          <span className="font-medium">{uiText(item.label)}</span>
           <span className="shrink-0 text-[0.68rem] uppercase tracking-normal">
-            {item.complete ? 'Done' : 'Pending'}
+            {item.complete ? uiText('Done') : uiText('Pending')}
           </span>
         </li>
       ))}
@@ -400,6 +584,7 @@ function AvatarConsentControls({
   onConsentChange,
   onEnabledChange,
   disabled = false,
+  uiText = (text) => text,
 }) {
   return (
     <div className="grid gap-3 md:grid-cols-2">
@@ -412,9 +597,9 @@ function AvatarConsentControls({
           className="mt-1"
         />
         <span>
-          <span className="block font-semibold text-[var(--text-primary)]">Explicit avatar consent</span>
+          <span className="block font-semibold text-[var(--text-primary)]">{uiText('Explicit avatar consent')}</span>
           <span className="mt-1 block text-xs leading-5">
-            I confirm I have permission to use this image and voice for avatar generation.
+            {uiText('I confirm I have permission to use this image and voice for avatar generation.')}
           </span>
         </span>
       </label>
@@ -428,9 +613,9 @@ function AvatarConsentControls({
           className="mt-1"
         />
         <span>
-          <span className="block font-semibold text-[var(--text-primary)]">Avatar generation enabled</span>
+          <span className="block font-semibold text-[var(--text-primary)]">{uiText('Avatar generation enabled')}</span>
           <span className="mt-1 block text-xs leading-5">
-            Allow preview generation after consent, portrait, and voice are ready.
+            {uiText('Allow preview generation after consent, portrait, and voice are ready.')}
           </span>
         </span>
       </label>
@@ -496,6 +681,7 @@ function SettingsSection({
 
 export default function Settings({ user, onUserRefresh }) {
   const { locale, supportedLocales, t } = useLocale();
+  const uiText = useCallback((text) => localizeSettingsUiText(locale, text), [locale]);
   const { resolvedTheme, setMode } = useTheme();
   const { capabilities } = useCapabilities();
   const storedSettingsState = useMemo(() => readRouteSessionState('settings', user), [user]);
@@ -968,7 +1154,9 @@ export default function Settings({ user, onUserRefresh }) {
       }
     }
     noteKeys.forEach((key) => window.localStorage.removeItem(key));
-    setLocalDataMessage(noteKeys.length ? 'Local notes cleared for this browser.' : 'No local notes were stored in this browser.');
+    setLocalDataMessage(noteKeys.length
+      ? uiText('Local notes cleared for this browser.')
+      : uiText('No local notes were stored in this browser.'));
   };
 
   const handleAvatarConsentChange = (checked) => {
@@ -1331,9 +1519,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="theme"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Account/Profile"
-          title="Theme mode"
-          caption="Theme choice is stored locally and applied across the workspace."
+          eyebrow={uiText('Account/Profile')}
+          title={uiText('Theme mode')}
+          caption={uiText('Theme choice is stored locally and applied across the workspace.')}
           icon={activeTheme === 'dark' ? MoonStar : Sun}
         >
           <div className="inline-flex rounded-full bg-[var(--surface-container-high)] p-1">
@@ -1353,7 +1541,7 @@ export default function Settings({ user, onUserRefresh }) {
                   }`}
                 >
                   <Icon size={15} />
-                  <span>{option.title}</span>
+                  <span>{uiText(option.title)}</span>
                 </button>
               );
             })}
@@ -1362,7 +1550,7 @@ export default function Settings({ user, onUserRefresh }) {
           <div className="space-y-2 text-sm text-[var(--text-secondary)]">
             {THEME_OPTIONS.map((option) => (
               <p key={option.id}>
-                <span className="font-semibold text-[var(--text-primary)]">{option.title}:</span> {option.caption}
+                <span className="font-semibold text-[var(--text-primary)]">{uiText(option.title)}:</span> {uiText(option.caption)}
               </p>
             ))}
           </div>
@@ -1381,7 +1569,9 @@ export default function Settings({ user, onUserRefresh }) {
           <LanguageSelector />
           <p className="text-sm text-[var(--text-secondary)]" data-testid="current-language">
             {t('currentLanguage', {
-              language: supportedLocales.find((option) => option.code === locale)?.label || locale,
+              language: supportedLocales.find((option) => option.code === locale)?.nativeLabel
+                || supportedLocales.find((option) => option.code === locale)?.label
+                || locale,
             })}
           </p>
         </SettingsSection>
@@ -1390,9 +1580,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="public-profile"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Publisher/Public Profile"
-          title="Public profile"
-          caption="Customize the public channel page shown to visitors."
+          eyebrow={uiText('Publisher/Public Profile')}
+          title={uiText('Public profile')}
+          caption={uiText('Customize the public channel page shown to visitors.')}
           icon={UserCircle2}
           className="md:col-span-2 2xl:col-span-1"
         >
@@ -1419,23 +1609,23 @@ export default function Settings({ user, onUserRefresh }) {
                         ? 'bg-[var(--status-success-bg)] text-[var(--status-success-fg)]'
                         : 'bg-[var(--surface-container-highest)] text-[var(--text-secondary)]'
                     }`}>
-                      {profileDraft.is_public_profile ? 'Public' : 'Private'}
+                      {profileDraft.is_public_profile ? uiText('Public') : uiText('Private')}
                     </span>
                     <p className="mt-2 truncate text-sm font-semibold text-[var(--text-primary)]">{publicDisplayName}</p>
                     <p className="text-xs text-[var(--text-secondary)]">
-                      {profileDraft.website_url || 'No website set'}
+                      {profileDraft.website_url || uiText('No website set')}
                     </p>
                   </div>
                 </div>
                 <Button size="sm" variant="secondary" onClick={openPublicProfileEditor} disabled={!user}>
                   <UserCircle2 size={15} />
-                  <span>Edit</span>
+                  <span>{uiText('Edit')}</span>
                 </Button>
               </div>
             </div>
 
             {!user && (
-              <p className="text-sm text-[var(--text-secondary)]">Sign in to edit your public profile.</p>
+              <p className="text-sm text-[var(--text-secondary)]">{uiText('Sign in to edit your public profile.')}</p>
             )}
             {profileMessage && (
               <p className="rounded-xl bg-[var(--status-success-bg)] px-3 py-2 text-sm text-[var(--status-success-fg)]">{profileMessage}</p>
@@ -1450,9 +1640,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="motion"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Playback/Accessibility"
-          title="Playback & accessibility"
-          caption="Tune watch playback flow and interface motion for this browser."
+          eyebrow={uiText('Playback/Accessibility')}
+          title={uiText('Playback & accessibility')}
+          caption={uiText('Tune watch playback flow and interface motion for this browser.')}
           icon={MonitorPlay}
         >
           <div className="space-y-3">
@@ -1464,9 +1654,9 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Continue to next lesson</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{uiText('Continue to next lesson')}</span>
                 <span className="mt-1 block text-xs leading-5">
-                  Show the countdown prompt and continue when another lesson is available.
+                  {uiText('Show the countdown prompt and continue when another lesson is available.')}
                 </span>
               </span>
             </label>
@@ -1479,9 +1669,9 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Reduce UI Motion</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{uiText('Reduce UI Motion')}</span>
                 <span className="mt-1 block text-xs leading-5">
-                  Reduces interface animations and UI motion. Does not affect generated avatar videos.
+                  {uiText('Reduces interface animations and UI motion. Does not affect generated avatar videos.')}
                 </span>
               </span>
             </label>
@@ -1492,9 +1682,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="notifications"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="In-App Notifications"
-          title="Notification preferences"
-          caption="Stored in this browser for the notification center."
+          eyebrow={uiText('In-App Notifications')}
+          title={uiText('Notification preferences')}
+          caption={uiText('Stored in this browser for the notification center.')}
           icon={Bell}
         >
           <div className="space-y-3">
@@ -1506,8 +1696,8 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Comments on my lessons</span>
-                <span className="mt-1 block text-xs">Notify me about comments on lessons I publish.</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{uiText('Comments on my lessons')}</span>
+                <span className="mt-1 block text-xs">{uiText('Notify me about comments on lessons I publish.')}</span>
               </span>
             </label>
 
@@ -1519,8 +1709,8 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Render status changes</span>
-                <span className="mt-1 block text-xs">Notify me when lesson or avatar renders finish or fail.</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{uiText('Render status changes')}</span>
+                <span className="mt-1 block text-xs">{uiText('Notify me when lesson or avatar renders finish or fail.')}</span>
               </span>
             </label>
 
@@ -1532,8 +1722,8 @@ export default function Settings({ user, onUserRefresh }) {
                 className="mt-1"
               />
               <span>
-                <span className="block font-semibold text-[var(--text-primary)]">Followed publisher lessons</span>
-                <span className="mt-1 block text-xs">Notify me when publishers I follow post public lessons.</span>
+                <span className="block font-semibold text-[var(--text-primary)]">{uiText('Followed publisher lessons')}</span>
+                <span className="mt-1 block text-xs">{uiText('Notify me when publishers I follow post public lessons.')}</span>
               </span>
             </label>
           </div>
@@ -1543,14 +1733,14 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="local-data"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Browser Data"
-          title="Local notes"
-          caption="This removes saved watch notes from this browser only."
+          eyebrow={uiText('Browser Data')}
+          title={uiText('Local notes')}
+          caption={uiText('This removes saved watch notes from this browser only.')}
           icon={Trash2}
         >
           <Button variant="secondary" onClick={clearLocalNotes}>
             <Trash2 size={15} />
-            <span>Clear Local Notes</span>
+            <span>{uiText('Clear Local Notes')}</span>
           </Button>
 
           {localDataMessage && (
@@ -1562,9 +1752,9 @@ export default function Settings({ user, onUserRefresh }) {
           sectionId="system-features"
           openState={settingsOpenSections}
           onOpenStateChange={updateSettingsSectionOpen}
-          eyebrow="Deployment"
-          title="System features"
-          caption="Read-only capabilities reported by this deployment."
+          eyebrow={uiText('Deployment')}
+          title={uiText('System features')}
+          caption={uiText('Read-only capabilities reported by this deployment.')}
           icon={MonitorPlay}
         >
           <div className="grid gap-2 sm:grid-cols-2">
@@ -1573,13 +1763,13 @@ export default function Settings({ user, onUserRefresh }) {
                 key={feature.label}
                 className="flex items-center justify-between gap-3 rounded-xl bg-[var(--surface-container-high)] px-3 py-2"
               >
-                <span className="text-sm font-medium text-[var(--text-primary)]">{feature.label}</span>
+                <span className="text-sm font-medium text-[var(--text-primary)]">{uiText(feature.label)}</span>
                 <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
                   feature.enabled
                     ? 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]'
                     : 'bg-[color:var(--surface-muted)] text-[var(--text-secondary)]'
                 }`}>
-                  {feature.value}
+                  {uiText(feature.value)}
                 </span>
               </div>
             ))}
@@ -1591,43 +1781,44 @@ export default function Settings({ user, onUserRefresh }) {
             sectionId="avatar"
             openState={settingsOpenSections}
             onOpenStateChange={updateSettingsSectionOpen}
-            eyebrow="Avatar Preferences"
-            title="Voice and avatar samples"
-            caption="Advanced avatar controls are collapsed by default and remain separate from UI motion preferences."
+            eyebrow={uiText('Avatar Preferences')}
+            title={uiText('Voice and avatar samples')}
+            caption={uiText('Advanced avatar controls are collapsed by default and remain separate from UI motion preferences.')}
             icon={Sparkles}
             className="md:col-span-2 2xl:col-span-3"
             contentClassName="space-y-4"
           >
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
               <AvatarActionCard
-                title="Voice Sample"
-                caption="Upload one audio sample and preview it locally before saving."
+                title={uiText('Voice Sample')}
+                caption={uiText('Upload one audio sample and preview it locally before saving.')}
                 icon={Upload}
                 onClick={() => setAvatarModal('voice')}
               />
 
               <AvatarActionCard
-                title="Picture Or Video Sample"
-                caption="Upload an image or short video source and preview before submit."
+                title={uiText('Picture Or Video Sample')}
+                caption={uiText('Upload an image or short video source and preview before submit.')}
                 icon={UserCircle2}
                 onClick={() => setAvatarModal('media')}
               />
 
               <AvatarActionCard
-                title="Avatar Preview"
-                caption="Prepare profile, queue preview, and monitor render state."
+                title={uiText('Avatar Preview')}
+                caption={uiText('Prepare profile, queue preview, and monitor render state.')}
                 icon={Sparkles}
                 onClick={() => setAvatarModal('preview')}
               />
             </div>
 
             <div className="space-y-3 rounded-2xl bg-[var(--surface-container-low)] p-4">
-              <AvatarSetupChecklist items={avatarChecklist} />
+              <AvatarSetupChecklist items={avatarChecklist} uiText={uiText} />
               <AvatarConsentControls
                 settings={avatarSettings}
                 onConsentChange={handleAvatarConsentChange}
                 onEnabledChange={handleAvatarEnabledChange}
                 disabled={teacherBusy}
+                uiText={uiText}
               />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="min-w-0 text-sm text-[var(--text-secondary)]">
@@ -1636,18 +1827,18 @@ export default function Settings({ user, onUserRefresh }) {
                 <div className="flex flex-wrap gap-2">
                   <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
                     <Save size={15} />
-                    <span>Save Avatar Settings</span>
+                    <span>{uiText('Save Avatar Settings')}</span>
                   </Button>
                   {avatarSetupStatus.can_prepare && (
                     <Button onClick={handlePrepareAvatar} disabled={teacherBusy}>
                       <Sparkles size={15} />
-                      <span>{prepareAvatarButtonLabel}</span>
+                      <span>{uiText(prepareAvatarButtonLabel)}</span>
                     </Button>
                   )}
                   {avatarSetupStatus.can_generate_preview && (
                     <Button onClick={handleGeneratePreview} disabled={teacherBusy}>
                       <Sparkles size={15} />
-                      <span>Generate Preview</span>
+                      <span>{uiText('Generate Preview')}</span>
                     </Button>
                   )}
                 </div>
@@ -1656,7 +1847,7 @@ export default function Settings({ user, onUserRefresh }) {
 
             {teacherMessage && (
               <p className="rounded-xl bg-[color:color-mix(in_srgb,var(--surface-muted),transparent_6%)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-                {teacherMessage}
+                {uiText(teacherMessage)}
               </p>
             )}
           </SettingsSection>
@@ -1665,7 +1856,7 @@ export default function Settings({ user, onUserRefresh }) {
 
       <PublicProfileEditor
         open={profileEditorOpen}
-        title="Edit public profile"
+        title={uiText('Edit public profile')}
         titleId="settings-public-profile-editor-title"
         draft={profileEditDraft}
         displayNamePreview={profileEditorDisplayName}
@@ -1682,17 +1873,17 @@ export default function Settings({ user, onUserRefresh }) {
         saving={profileSaving}
         disabled={!user}
         saveDisabled={profileHasValidationErrors}
-        cancelLabel={profileEditorDirty ? 'Discard' : 'Cancel'}
+        cancelLabel={profileEditorDirty ? uiText('Discard') : uiText('Cancel')}
         canBackdropClose={!profileEditorDirty}
         formId="settings-public-profile-editor-form"
       />
 
       <ModalShell
         open={avatarFeatureEnabled && avatarModal === 'voice'}
-        eyebrow="Avatar Preferences"
-        title="Voice sample"
+        eyebrow={uiText('Avatar Preferences')}
+        title={uiText('Voice sample')}
         titleId="avatar-voice-modal-title"
-        closeLabel="Close voice sample"
+        closeLabel={uiText('Close voice sample')}
         onClose={closeAvatarModal}
         closeDisabled={teacherBusy || voiceRecorderStatus === 'recording'}
         canBackdropClose={!voiceFile && voiceRecorderStatus !== 'recording' && !recordedVoiceBlob}
@@ -1700,14 +1891,14 @@ export default function Settings({ user, onUserRefresh }) {
         footer={(
           <div className="flex justify-end">
             <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
-              <span>{voiceFile || recordedVoiceBlob ? 'Discard and close' : 'Close'}</span>
+              <span>{voiceFile || recordedVoiceBlob ? uiText('Discard and close') : uiText('Close')}</span>
             </Button>
           </div>
         )}
       >
         <div className="space-y-4">
           <label className="block text-sm text-[var(--text-secondary)]">
-            Voice audio
+            {uiText('Voice audio')}
             <input
               type="file"
               accept="audio/*"
@@ -1719,9 +1910,9 @@ export default function Settings({ user, onUserRefresh }) {
           <div className="space-y-3 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold text-[var(--text-primary)]">Record from microphone</p>
+                <p className="text-sm font-semibold text-[var(--text-primary)]">{uiText('Record from microphone')}</p>
                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                  Status: {voiceRecorderStatus}. Duration: {formatRecordingDuration(voiceRecordingDuration)}
+                  {uiText('Status')}: {uiText(voiceRecorderStatus)}. {uiText('Duration')}: {formatRecordingDuration(voiceRecordingDuration)}
                 </p>
               </div>
               <Mic size={18} className="text-[var(--accent-primary)]" />
@@ -1733,7 +1924,7 @@ export default function Settings({ user, onUserRefresh }) {
 
             {voiceRecorderError && (
               <p className="rounded-xl bg-[var(--status-danger-bg)] px-3 py-2 text-sm text-[var(--status-danger-fg)]">
-                {voiceRecorderError}
+                {uiText(voiceRecorderError)}
               </p>
             )}
 
@@ -1750,12 +1941,12 @@ export default function Settings({ user, onUserRefresh }) {
                   disabled={teacherBusy || voiceRecorderStatus === 'requesting permission'}
                 >
                   <Mic size={15} />
-                  <span>{voiceRecorderStatus === 'requesting permission' ? 'Requesting...' : 'Start recording'}</span>
+                  <span>{voiceRecorderStatus === 'requesting permission' ? uiText('Requesting...') : uiText('Start recording')}</span>
                 </Button>
               ) : (
                 <Button variant="secondary" size="sm" onClick={handleStopVoiceRecording} disabled={teacherBusy}>
                   <Square size={15} />
-                  <span>Stop recording</span>
+                  <span>{uiText('Stop recording')}</span>
                 </Button>
               )}
 
@@ -1766,7 +1957,7 @@ export default function Settings({ user, onUserRefresh }) {
                 disabled={!recordedVoiceBlob || voiceRecorderStatus === 'recording'}
               >
                 <Play size={15} />
-                <span>Play preview</span>
+                <span>{uiText('Play preview')}</span>
               </Button>
 
               <Button
@@ -1776,7 +1967,7 @@ export default function Settings({ user, onUserRefresh }) {
                 disabled={!recordedVoiceBlob || voiceRecorderStatus === 'recording'}
               >
                 <Upload size={15} />
-                <span>Use recording</span>
+                <span>{uiText('Use recording')}</span>
               </Button>
 
               <Button
@@ -1786,7 +1977,7 @@ export default function Settings({ user, onUserRefresh }) {
                 disabled={teacherBusy || (!recordedVoiceBlob && voiceRecorderStatus !== 'recording' && voiceRecorderStatus !== 'error')}
               >
                 <Trash2 size={15} />
-                <span>Discard recording</span>
+                <span>{uiText('Discard recording')}</span>
               </Button>
             </div>
           </div>
@@ -1797,17 +1988,17 @@ export default function Settings({ user, onUserRefresh }) {
 
           <Button onClick={handleUploadVoice} disabled={teacherBusy || !voiceFile}>
             <Upload size={15} />
-            <span>{teacherBusy ? 'Uploading...' : 'Upload Voice Sample'}</span>
+            <span>{teacherBusy ? uiText('Uploading...') : uiText('Upload Voice Sample')}</span>
           </Button>
         </div>
       </ModalShell>
 
       <ModalShell
         open={avatarFeatureEnabled && avatarModal === 'media'}
-        eyebrow="Avatar Preferences"
-        title="Avatar image or video"
+        eyebrow={uiText('Avatar Preferences')}
+        title={uiText('Avatar image or video')}
         titleId="avatar-media-modal-title"
-        closeLabel="Close avatar image or video upload"
+        closeLabel={uiText('Close avatar image or video upload')}
         onClose={closeAvatarModal}
         closeDisabled={teacherBusy}
         canBackdropClose={!imageFile && !videoFile}
@@ -1815,7 +2006,7 @@ export default function Settings({ user, onUserRefresh }) {
         footer={(
           <div className="flex justify-end">
             <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
-              <span>{imageFile || videoFile ? 'Discard and close' : 'Close'}</span>
+              <span>{imageFile || videoFile ? uiText('Discard and close') : uiText('Close')}</span>
             </Button>
           </div>
         )}
@@ -1823,7 +2014,7 @@ export default function Settings({ user, onUserRefresh }) {
         <div className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm text-[var(--text-secondary)]">
-              Portrait image
+              {uiText('Portrait image')}
               <input
                 type="file"
                 accept="image/*"
@@ -1833,7 +2024,7 @@ export default function Settings({ user, onUserRefresh }) {
             </label>
 
             <label className="block text-sm text-[var(--text-secondary)]">
-              Portrait video
+              {uiText('Portrait video')}
               <input
                 type="file"
                 accept="video/*"
@@ -1848,18 +2039,19 @@ export default function Settings({ user, onUserRefresh }) {
             onConsentChange={handleAvatarConsentChange}
             onEnabledChange={handleAvatarEnabledChange}
             disabled={teacherBusy}
+            uiText={uiText}
           />
 
           {!avatarSettings.avatar_consent_confirmed && (
             <p className="rounded-xl bg-[var(--status-warning-bg)] px-3 py-2 text-sm text-[var(--status-warning-fg)]">
-              Confirm avatar consent before uploading a portrait.
+              {uiText('Confirm avatar consent before uploading a portrait.')}
             </p>
           )}
 
           {mediaPreviewUrl && mediaPreviewType === 'image' && (
             <img
               src={mediaPreviewUrl}
-              alt="Uploaded avatar sample"
+              alt={uiText('Uploaded avatar sample')}
               className="max-h-56 w-full rounded-2xl object-cover token-surface"
             />
           )}
@@ -1874,68 +2066,69 @@ export default function Settings({ user, onUserRefresh }) {
 
           <Button onClick={handleUploadVisualSample} disabled={teacherBusy || !avatarSettings.avatar_consent_confirmed || (!imageFile && !videoFile)}>
             <Upload size={15} />
-            <span>{teacherBusy ? 'Uploading...' : 'Upload Visual Sample'}</span>
+            <span>{teacherBusy ? uiText('Uploading...') : uiText('Upload Visual Sample')}</span>
           </Button>
         </div>
       </ModalShell>
 
       <ModalShell
         open={avatarFeatureEnabled && avatarModal === 'preview'}
-        eyebrow="Avatar Preferences"
-        title="Avatar preview"
+        eyebrow={uiText('Avatar Preferences')}
+        title={uiText('Avatar preview')}
         titleId="avatar-preview-modal-title"
-        closeLabel="Close avatar preview"
+        closeLabel={uiText('Close avatar preview')}
         onClose={closeAvatarModal}
         closeDisabled={teacherBusy}
         maxWidthClass="max-w-2xl"
         footer={(
           <div className="flex justify-end">
             <Button variant="ghost" onClick={closeAvatarModal} disabled={teacherBusy}>
-              <span>Close</span>
+              <span>{uiText('Close')}</span>
             </Button>
           </div>
         )}
       >
         <div className="space-y-4">
-          <AvatarSetupChecklist items={avatarChecklist} />
+          <AvatarSetupChecklist items={avatarChecklist} uiText={uiText} />
           <AvatarConsentControls
             settings={avatarSettings}
             onConsentChange={handleAvatarConsentChange}
             onEnabledChange={handleAvatarEnabledChange}
             disabled={teacherBusy}
+            uiText={uiText}
           />
 
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="block text-sm text-[var(--text-secondary)]">
-              Motion preset
+              {uiText('Motion preset')}
               <select
                 value={avatarSettings.avatar_motion_preset}
                 onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_motion_preset: event.target.value }))}
                 className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
               >
-                <option value="natural">Natural</option>
-                <option value="expressive">Expressive</option>
-                <option value="calm">Calm</option>
+                <option value="natural">{uiText('Natural')}</option>
+                <option value="expressive">{uiText('Expressive')}</option>
+                <option value="calm">{uiText('Calm')}</option>
               </select>
             </label>
 
             <label className="block text-sm text-[var(--text-secondary)]">
-              Quality preset
+              {uiText('Quality preset')}
               <select
                 value={avatarSettings.avatar_quality_preset}
                 onChange={(event) => setAvatarSettings((prev) => ({ ...prev, avatar_quality_preset: event.target.value }))}
                 className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
               >
-                <option value="high">High</option>
-                <option value="balanced">Balanced</option>
-                <option value="fast">Fast</option>
+                <option value="high">{uiText('High')}</option>
+                <option value="balanced">{uiText('Balanced')}</option>
+                <option value="fast">{uiText('Fast')}</option>
               </select>
             </label>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-3">
             <label className="block text-sm text-[var(--text-secondary)]">
-              Default avatar position
+              {uiText('Default avatar position')}
               <select
                 value={avatarSettings.avatar_overlay_default_position}
                 onChange={(event) => setAvatarSettings((prev) => ({
@@ -1945,13 +2138,13 @@ export default function Settings({ user, onUserRefresh }) {
                 className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
               >
                 {AVATAR_LAYOUT_POSITION_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
+                  <option key={option.value} value={option.value}>{uiText(option.label)}</option>
                 ))}
               </select>
             </label>
 
             <label className="block text-sm text-[var(--text-secondary)]">
-              Default avatar size
+              {uiText('Default avatar size')}
               <select
                 value={avatarSettings.avatar_overlay_size}
                 onChange={(event) => setAvatarSettings((prev) => ({
@@ -1961,7 +2154,7 @@ export default function Settings({ user, onUserRefresh }) {
                 className="focus-ring mt-1 h-10 w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)]"
               >
                 {AVATAR_LAYOUT_SIZE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
+                  <option key={option.value} value={option.value}>{uiText(option.label)}</option>
                 ))}
               </select>
             </label>
@@ -1975,7 +2168,7 @@ export default function Settings({ user, onUserRefresh }) {
                   avatar_overlay_visible: event.target.checked,
                 }))}
               />
-              <span>Default avatar visibility</span>
+              <span>{uiText('Default avatar visibility')}</span>
             </label>
           </div>
 
@@ -1990,35 +2183,35 @@ export default function Settings({ user, onUserRefresh }) {
                 }));
               }}
             />
-            <span>Allow composite fallback for preview preparation</span>
+            <span>{uiText('Allow composite fallback for preview preparation')}</span>
           </label>
 
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" onClick={handleSaveTeacherDefaults} disabled={teacherBusy}>
               <Save size={15} />
-              <span>Save Avatar Settings</span>
+              <span>{uiText('Save Avatar Settings')}</span>
             </Button>
             {avatarSetupStatus.state !== 'ready' && (
               <Button onClick={handlePrepareAvatar} disabled={teacherBusy || !avatarSetupStatus.can_prepare}>
                 <Sparkles size={15} />
-                <span>{prepareAvatarButtonLabel}</span>
+                <span>{uiText(prepareAvatarButtonLabel)}</span>
               </Button>
             )}
             <Button onClick={handleGeneratePreview} disabled={teacherBusy || !avatarSetupStatus.can_generate_preview}>
               <Sparkles size={15} />
-              <span>Generate Preview</span>
+              <span>{uiText('Generate Preview')}</span>
             </Button>
             <Button variant="ghost" onClick={handleDeletePreview} disabled={teacherBusy}>
               <Trash2 size={15} />
-              <span>Delete Preview</span>
+              <span>{uiText('Delete Preview')}</span>
             </Button>
           </div>
 
           <div className="rounded-xl bg-[var(--surface-container-high)] px-3 py-2 text-sm text-[var(--text-secondary)]">
             <p>
-              Preview status: <span className="font-medium text-[var(--text-primary)]">{previewStatusLabel}</span>
+              {uiText('Preview status')}: <span className="font-medium text-[var(--text-primary)]">{uiText(previewStatusLabel)}</span>
             </p>
-            <p className="mt-1 text-xs">{avatarSetupStatus.message}</p>
+            <p className="mt-1 text-xs">{uiText(avatarSetupStatus.message)}</p>
           </div>
 
           {previewVideoUrl && (

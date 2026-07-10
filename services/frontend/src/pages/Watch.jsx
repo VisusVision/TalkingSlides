@@ -35,6 +35,7 @@ import usePlaybackHeartbeat from '../hooks/usePlaybackHeartbeat';
 import { isAutoplayNextEnabled } from '../utils/playbackPreferences';
 import { useLocale } from '../i18n/LocaleProvider';
 import { currentAppLocale } from '../i18n/locale';
+import { localizeStaticUiText } from '../i18n/messages';
 
 const COMMENT_PREVIEW_LIMIT = 5;
 const AVATAR_ENHANCEMENT_POLL_INTERVAL_MS = 15000;
@@ -42,6 +43,41 @@ const PLAYLIST_COLLAPSED_KEY = 'visus-watch-playlist-collapsed';
 const PUBLISHER_CONTEXT_COLLAPSED_KEY_PREFIX = 'visus-watch-publisher-context-collapsed';
 const AUTOPLAY_COUNTDOWN_SECONDS = 5;
 const HlsPlayer = lazy(() => import('../components/player/HlsPlayer'));
+const WATCH_UI_PHRASES = {
+  tr: {
+    'Continue from': 'Devam et:',
+    Share: 'Paylaş',
+    Like: 'Beğen',
+    Liked: 'Beğenildi',
+    Comments: 'Yorumlar',
+    Showing: 'Gösteriliyor',
+    Language: 'Dil',
+    'Generate CC with AI': 'Yapay zeka ile CC oluştur',
+    Generating: 'Oluşturuluyor...',
+    'Add comment': 'Yorum ekle',
+    'Post comment': 'Yorum gönder',
+    Posting: 'Gönderiliyor...',
+    'Loading comments...': 'Yorumlar yükleniyor...',
+    'No comments yet.': 'Henüz yorum yok.',
+    comments: 'yorum',
+    'Focus Mode': 'Odak modu',
+    'Exit Focus': 'Odaktan çık',
+  },
+  es: { 'Continue from': 'Continuar desde', Share: 'Compartir', Like: 'Me gusta', Liked: 'Te gusta', Comments: 'Comentarios', 'Focus Mode': 'Modo enfoque', 'Exit Focus': 'Salir del enfoque', Showing: 'Mostrando', Language: 'Idioma', 'Generate CC with AI': 'Generar CC con IA', Generating: 'Generando...', 'Add comment': 'Añadir comentario', 'Post comment': 'Publicar comentario', Posting: 'Publicando...', 'Loading comments...': 'Cargando comentarios...', 'No comments yet.': 'Aún no hay comentarios.', comments: 'comentarios' },
+  fr: { 'Continue from': 'Reprendre à', Share: 'Partager', Like: 'J’aime', Liked: 'Aimé', Comments: 'Commentaires', 'Focus Mode': 'Mode focus', 'Exit Focus': 'Quitter le focus', Showing: 'Affichage', Language: 'Langue', 'Generate CC with AI': 'Générer CC avec l’IA', Generating: 'Génération...', 'Add comment': 'Ajouter un commentaire', 'Post comment': 'Publier le commentaire', Posting: 'Publication...', 'Loading comments...': 'Chargement des commentaires...', 'No comments yet.': 'Pas encore de commentaires.', comments: 'commentaires' },
+  de: { 'Continue from': 'Fortsetzen ab', Share: 'Teilen', Like: 'Gefällt mir', Liked: 'Gefällt mir', Comments: 'Kommentare', 'Focus Mode': 'Fokusmodus', 'Exit Focus': 'Fokus beenden', Showing: 'Angezeigt', Language: 'Sprache', 'Generate CC with AI': 'CC mit KI erzeugen', Generating: 'Wird erzeugt...', 'Add comment': 'Kommentar hinzufügen', 'Post comment': 'Kommentar posten', Posting: 'Wird gepostet...', 'Loading comments...': 'Kommentare werden geladen...', 'No comments yet.': 'Noch keine Kommentare.', comments: 'Kommentare' },
+  it: { 'Continue from': 'Continua da', Share: 'Condividi', Like: 'Mi piace', Liked: 'Piaciuto', Comments: 'Commenti', 'Focus Mode': 'Modalità focus', 'Exit Focus': 'Esci dal focus', Showing: 'Mostra', Language: 'Lingua', 'Generate CC with AI': 'Genera CC con IA', Generating: 'Generazione...', 'Add comment': 'Aggiungi commento', 'Post comment': 'Pubblica commento', Posting: 'Pubblicazione...', 'Loading comments...': 'Caricamento commenti...', 'No comments yet.': 'Nessun commento ancora.', comments: 'commenti' },
+  pt: { 'Continue from': 'Continuar de', Share: 'Compartilhar', Like: 'Curtir', Liked: 'Curtido', Comments: 'Comentários', 'Focus Mode': 'Modo foco', 'Exit Focus': 'Sair do foco', Showing: 'Mostrando', Language: 'Idioma', 'Generate CC with AI': 'Gerar CC com IA', Generating: 'Gerando...', 'Add comment': 'Adicionar comentário', 'Post comment': 'Publicar comentário', Posting: 'Publicando...', 'Loading comments...': 'Carregando comentários...', 'No comments yet.': 'Nenhum comentário ainda.', comments: 'comentários' },
+  ru: { 'Continue from': 'Продолжить с', Share: 'Поделиться', Like: 'Нравится', Liked: 'Понравилось', Comments: 'Комментарии', 'Focus Mode': 'Режим фокуса', 'Exit Focus': 'Выйти из фокуса', Showing: 'Показано', Language: 'Язык', 'Generate CC with AI': 'Создать CC с ИИ', Generating: 'Создание...', 'Add comment': 'Добавить комментарий', 'Post comment': 'Опубликовать комментарий', Posting: 'Публикация...', 'Loading comments...': 'Загрузка комментариев...', 'No comments yet.': 'Комментариев пока нет.', comments: 'комментариев' },
+  ja: { 'Continue from': '再開', Share: '共有', Like: 'いいね', Liked: 'いいね済み', Comments: 'コメント', 'Focus Mode': 'フォーカスモード', 'Exit Focus': 'フォーカス終了', Showing: '表示中', Language: '言語', 'Generate CC with AI': 'AI で CC を生成', Generating: '生成中...', 'Add comment': 'コメントを追加', 'Post comment': 'コメントを投稿', Posting: '投稿中...', 'Loading comments...': 'コメントを読み込んでいます...', 'No comments yet.': 'コメントはまだありません。', comments: '件のコメント' },
+  ko: { 'Continue from': '계속', Share: '공유', Like: '좋아요', Liked: '좋아요 표시됨', Comments: '댓글', 'Focus Mode': '집중 모드', 'Exit Focus': '집중 종료', Showing: '표시 중', Language: '언어', 'Generate CC with AI': 'AI로 CC 생성', Generating: '생성 중...', 'Add comment': '댓글 추가', 'Post comment': '댓글 게시', Posting: '게시 중...', 'Loading comments...': '댓글 로드 중...', 'No comments yet.': '아직 댓글이 없습니다.', comments: '댓글' },
+  'zh-CN': { 'Continue from': '继续于', Share: '分享', Like: '点赞', Liked: '已点赞', Comments: '评论', 'Focus Mode': '专注模式', 'Exit Focus': '退出专注', Showing: '正在显示', Language: '语言', 'Generate CC with AI': '用 AI 生成 CC', Generating: '正在生成...', 'Add comment': '添加评论', 'Post comment': '发表评论', Posting: '正在发布...', 'Loading comments...': '正在加载评论...', 'No comments yet.': '还没有评论。', comments: '条评论' },
+  ar: { 'Continue from': 'تابع من', Share: 'مشاركة', Like: 'إعجاب', Liked: 'تم الإعجاب', Comments: 'التعليقات', 'Focus Mode': 'وضع التركيز', 'Exit Focus': 'إنهاء التركيز', Showing: 'يعرض', Language: 'اللغة', 'Generate CC with AI': 'إنشاء CC بالذكاء الاصطناعي', Generating: 'جارٍ الإنشاء...', 'Add comment': 'إضافة تعليق', 'Post comment': 'نشر التعليق', Posting: 'جارٍ النشر...', 'Loading comments...': 'جارٍ تحميل التعليقات...', 'No comments yet.': 'لا توجد تعليقات حتى الآن.', comments: 'تعليقات' },
+};
+
+function localizeWatchUiText(locale, text) {
+  return WATCH_UI_PHRASES[locale]?.[text] || localizeStaticUiText(locale, text);
+}
 
 function normalizeCatalogList(payload) {
   const list = Array.isArray(payload) ? payload : payload.results || [];
@@ -465,6 +501,8 @@ export function WatchLocaleHeader() {
 }
 
 export default function Watch({ searchQuery, user, onLoginRequest }) {
+  const locale = currentAppLocale();
+  const uiText = useCallback((text) => localizeWatchUiText(locale, text), [locale]);
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
@@ -1373,27 +1411,27 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
         <Button variant={focusMode ? 'primary' : 'secondary'} onClick={handleFocusModeToggle} disabled={!activeLessonId}>
           <Focus size={15} />
-          <span>{focusMode ? 'Exit Focus' : 'Focus Mode'}</span>
+          <span>{focusMode ? uiText('Exit Focus') : uiText('Focus Mode')}</span>
         </Button>
       </SurfaceCard>
 
       {loadingCatalog && (
         <SurfaceCard elevated>
-          <p className="body-md">Loading lesson catalog...</p>
+          <p className="body-md">{uiText('Loading lesson catalog...')}</p>
         </SurfaceCard>
       )}
 
       {lessonError && (
         <SurfaceCard elevated>
-          <p className="text-sm text-[color:var(--feedback-danger-fg)]">{lessonError}</p>
+          <p className="text-sm text-[color:var(--feedback-danger-fg)]">{uiText(lessonError)}</p>
         </SurfaceCard>
       )}
 
       {!loadingCatalog && !activeLessonId && (
         <SurfaceCard elevated className="space-y-3">
-          <p className="title-lg text-[var(--text-primary)]">No lesson selected</p>
+          <p className="title-lg text-[var(--text-primary)]">{uiText('No lesson selected')}</p>
           <Button onClick={() => navigate('/')}>
-            <span>Go To Dashboard</span>
+            <span>{uiText('Go To Dashboard')}</span>
           </Button>
         </SurfaceCard>
       )}
@@ -1406,7 +1444,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
           <div data-testid="watch-video-column" className={focusMode ? 'space-y-5' : 'lg:col-span-8 space-y-5'}>
             {loadingLesson ? (
               <SurfaceCard elevated>
-                <p className="body-md">Loading lesson player...</p>
+                <p className="body-md">{uiText('Loading lesson player...')}</p>
               </SurfaceCard>
             ) : (
               <>
@@ -1434,11 +1472,11 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         <span className="rounded-full bg-[color:var(--surface-muted)] px-2.5 py-1">{formatDuration(lesson?.duration_minutes || lesson?.durationMinutes || 8)}</span>
                         <span className="inline-flex items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_82%)] px-2.5 py-1 text-[var(--text-primary)]">
                           <ShieldCheck size={12} />
-                          Secure stream
+                          {uiText('Secure stream')}
                         </span>
                         {progressLabel && userProgressPct < 95 && (
                           <span className="rounded-full bg-[var(--surface-container-highest)] px-2.5 py-1 font-semibold text-[var(--accent-primary)]">
-                            Continue from {progressLabel}
+                            {uiText('Continue from')} {progressLabel}
                           </span>
                         )}
                       </div>
@@ -1454,7 +1492,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                         disabled={likeBusy}
                       >
                         <Heart size={14} className={likedByMe ? 'fill-current' : ''} />
-                        <span>{likeBusy ? 'Saving...' : likedByMe ? 'Liked' : 'Like'}</span>
+                        <span>{likeBusy ? uiText('Saving...') : likedByMe ? uiText('Liked') : uiText('Like')}</span>
                         <span className="text-xs opacity-80">{likeCount}</span>
                       </Button>
                       <Button
@@ -1465,7 +1503,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                       >
                         <MessageSquare size={14} />
                         <span>{commentCount}</span>
-                        <span>Comments</span>
+                        <span>{uiText('Comments')}</span>
                       </Button>
                       {canShareLesson && (
                         <Button
@@ -1476,7 +1514,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           disabled={shareBusy}
                         >
                           <Share2 size={14} />
-                          <span>{shareBusy ? 'Creating...' : 'Share'}</span>
+                          <span>{shareBusy ? uiText('Creating...') : uiText('Share')}</span>
                         </Button>
                       )}
                       {publisherId && !isOwnPublisher && (
@@ -1488,7 +1526,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           disabled={followBusy}
                         >
                           {isFollowingPublisher ? <Check size={14} /> : <UserPlus size={14} />}
-                          <span>{followBusy ? 'Saving...' : isFollowingPublisher ? 'Following' : 'Follow'}</span>
+                          <span>{followBusy ? uiText('Saving...') : isFollowingPublisher ? uiText('Following') : uiText('Follow')}</span>
                         </Button>
                       )}
                       <LessonActionButton
@@ -1500,26 +1538,26 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                     </div>
                   </div>
                   {likeError && (
-                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{likeError}</p>
+                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{uiText(likeError)}</p>
                   )}
                   {followError && (
-                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{followError}</p>
+                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{uiText(followError)}</p>
                   )}
                   {shareError && (
-                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{shareError}</p>
+                    <p className="text-xs font-medium text-[color:var(--feedback-danger-fg)]">{uiText(shareError)}</p>
                   )}
                   {shareLink?.share_url && (
                     <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-3 sm:flex-row sm:items-center sm:justify-between">
                       <div className="min-w-0">
-                        <p className="text-xs font-semibold text-[var(--text-primary)]">Share link</p>
+                        <p className="text-xs font-semibold text-[var(--text-primary)]">{uiText('Share link')}</p>
                         <p className="mt-1 truncate text-xs text-[var(--text-secondary)]">{shareLink.share_url}</p>
                         {shareExpiresLabel && (
-                          <p className="mt-1 text-xs text-[var(--text-secondary)]">Expires {shareExpiresLabel}</p>
+                          <p className="mt-1 text-xs text-[var(--text-secondary)]">{uiText('Expires')} {shareExpiresLabel}</p>
                         )}
                       </div>
                       <Button size="sm" variant="secondary" type="button" onClick={handleCopyShareLink}>
                         <Copy size={14} />
-                        <span>{shareCopied ? 'Copied' : 'Copy'}</span>
+                        <span>{shareCopied ? uiText('Copied') : uiText('Copy')}</span>
                       </Button>
                     </div>
                   )}
@@ -1530,7 +1568,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                     <div className="min-w-0">
                       <p className="text-sm font-semibold text-[var(--text-primary)]">CC</p>
                       <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
-                        <label className="sr-only" htmlFor="watch-subtitle-track">Subtitle track</label>
+                        <label className="sr-only" htmlFor="watch-subtitle-track">{uiText('Subtitle track')}</label>
                         <select
                           id="watch-subtitle-track"
                           value={selectedSubtitleKey}
@@ -1542,25 +1580,25 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           disabled={subtitleOptions.length === 0}
                           className="focus-ring h-10 min-w-[12rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
                         >
-                          <option value="off">Off</option>
+                          <option value="off">{uiText('Off')}</option>
                           {subtitleOptions.map((option) => (
                             <option key={option.key} value={option.key}>{option.label}</option>
                           ))}
                         </select>
                         {selectedSubtitleOption && (
                           <span className="text-xs text-[var(--text-secondary)]">
-                            Showing {selectedSubtitleOption.label}
+                            {uiText('Showing')} {selectedSubtitleOption.label}
                           </span>
                         )}
                         {!selectedSubtitleOption && subtitleOptions.length === 0 && (
-                          <span className="text-xs text-[var(--text-secondary)]">No subtitle tracks available yet.</span>
+                          <span className="text-xs text-[var(--text-secondary)]">{uiText('No subtitle tracks available yet.')}</span>
                         )}
                       </div>
                     </div>
                     <div className="flex flex-col gap-2 lg:min-w-[22rem]">
-                      <span className="text-xs font-medium text-[var(--text-secondary)]">Need another subtitle?</span>
+                      <span className="text-xs font-medium text-[var(--text-secondary)]">{uiText('Need another subtitle?')}</span>
                       <div className="flex flex-col gap-2 sm:flex-row">
-                        <label className="sr-only" htmlFor="watch-subtitle-language">Language</label>
+                        <label className="sr-only" htmlFor="watch-subtitle-language">{uiText('Language')}</label>
                         <select
                           id="watch-subtitle-language"
                           value={selectedRequestLanguage?.code || ''}
@@ -1575,7 +1613,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                               </option>
                             ))
                           ) : (
-                            <option value="">All listed languages available</option>
+                            <option value="">{uiText('All listed languages available')}</option>
                           )}
                         </select>
                         <Button
@@ -1585,13 +1623,13 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           className="shrink-0"
                         >
                           <Sparkles size={14} />
-                          <span>{requestingSubtitleLanguage ? 'Generating...' : 'Generate CC with AI'}</span>
+                          <span>{requestingSubtitleLanguage ? uiText('Generating...') : uiText('Generate CC with AI')}</span>
                         </Button>
                       </div>
                     </div>
                   </div>
                   {subtitleRequestMessage && (
-                    <p className="text-xs text-[var(--text-secondary)]">{subtitleRequestMessage}</p>
+                    <p className="text-xs text-[var(--text-secondary)]">{uiText(subtitleRequestMessage)}</p>
                   )}
                 </SurfaceCard>
 
@@ -1599,34 +1637,34 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                   <SurfaceCard className="space-y-3 p-4">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
-                        <p className="text-sm font-semibold text-[var(--text-primary)]">Comments</p>
-                        <p className="mt-1 text-xs text-[var(--text-secondary)]">Share a note about this lesson.</p>
+                        <p className="text-sm font-semibold text-[var(--text-primary)]">{uiText('Comments')}</p>
+                        <p className="mt-1 text-xs text-[var(--text-secondary)]">{uiText('Share a note about this lesson.')}</p>
                       </div>
                       <span className="rounded-full bg-[var(--surface-container-highest)] px-3 py-1 text-xs font-semibold text-[var(--text-secondary)]">
-                        {commentCount} comment{commentCount === 1 ? '' : 's'}
+                        {commentCount} {uiText('comments')}
                       </span>
                     </div>
 
                     <form className="space-y-2" onSubmit={handleSubmitComment}>
                     <label className="block text-xs font-medium text-[var(--text-secondary)]">
-                      Add comment
+                      {uiText('Add comment')}
                       <textarea
                         value={commentText}
                         onChange={(event) => setCommentText(event.target.value)}
                         maxLength={2000}
-                        placeholder={user ? 'Write a comment...' : 'Sign in to post a comment.'}
+                        placeholder={user ? uiText('Write a comment...') : uiText('Sign in to post a comment.')}
                         disabled={!user || commentSubmitting}
                         className="focus-ring mt-1 min-h-[72px] w-full resize-y rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-65"
                       />
                     </label>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-xs text-[var(--text-secondary)]">
-                        {user ? `${commentText.length}/2000` : 'You can read comments without signing in.'}
+                        {user ? `${commentText.length}/2000` : uiText('You can read comments without signing in.')}
                       </p>
                       {user ? (
                         <Button size="sm" type="submit" disabled={commentSubmitting || !commentText.trim()}>
                           <Send size={14} />
-                          <span>{commentSubmitting ? 'Posting...' : 'Post comment'}</span>
+                          <span>{commentSubmitting ? uiText('Posting...') : uiText('Post comment')}</span>
                         </Button>
                       ) : (
                         <Button
@@ -1637,7 +1675,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                             if (typeof onLoginRequest === 'function') onLoginRequest(loginRedirectPath);
                           }}
                         >
-                          Sign in to comment
+                          {uiText('Sign in to comment')}
                         </Button>
                       )}
                     </div>
@@ -1645,15 +1683,15 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
 
                     {commentError && (
                       <p className="rounded-xl bg-[color:var(--feedback-danger-bg)] px-3 py-2 text-xs font-medium text-[color:var(--feedback-danger-fg)]">
-                        {commentError}
+                        {uiText(commentError)}
                       </p>
                     )}
 
                   <div className="space-y-2">
                     {commentsLoading ? (
-                      <p className="text-sm text-[var(--text-secondary)]">Loading comments...</p>
+                      <p className="text-sm text-[var(--text-secondary)]">{uiText('Loading comments...')}</p>
                     ) : comments.length === 0 ? (
-                      <p className="text-sm text-[var(--text-secondary)]">No comments yet.</p>
+                      <p className="text-sm text-[var(--text-secondary)]">{uiText('No comments yet.')}</p>
                     ) : (
                       visibleComments.map((comment) => (
                         <article key={comment.id} className="rounded-xl bg-[var(--surface-container-high)] p-3">

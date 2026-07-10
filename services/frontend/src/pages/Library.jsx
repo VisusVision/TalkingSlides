@@ -5,6 +5,8 @@ import { fetchLikedLessons, fetchUserHistory, getFollowingPublishers, getSavedPl
 import LearningLessonCard, { normalizeLearningRows } from '../components/library/LearningLessonCard';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { normalizeLesson } from '../lib/content';
+import { currentAppLocale } from '../i18n/locale';
+import { localizeStaticUiText } from '../i18n/messages';
 
 const LIBRARY_TABS = [
   { key: 'history', label: 'History', icon: History },
@@ -12,6 +14,23 @@ const LIBRARY_TABS = [
   { key: 'following', label: 'Following', icon: Users },
   { key: 'playlists', label: 'Playlists', icon: ListPlus },
 ];
+const LIBRARY_UI_PHRASES = {
+  tr: { 'Liked Lessons': 'Beğenilen dersler', Following: 'Takip edilenler' },
+  es: { 'Liked Lessons': 'Lecciones favoritas', Following: 'Seguidos' },
+  fr: { 'Liked Lessons': 'Leçons aimées', Following: 'Abonnements' },
+  de: { 'Liked Lessons': 'Favorisierte Lektionen', Following: 'Folge ich' },
+  it: { 'Liked Lessons': 'Lezioni piaciute', Following: 'Seguiti' },
+  pt: { 'Liked Lessons': 'Aulas curtidas', Following: 'Seguindo' },
+  ru: { 'Liked Lessons': 'Понравившиеся уроки', Following: 'Подписки' },
+  ja: { 'Liked Lessons': 'いいねしたレッスン', Following: 'フォロー中' },
+  ko: { 'Liked Lessons': '좋아요한 강의', Following: '팔로잉' },
+  'zh-CN': { 'Liked Lessons': '喜欢的课程', Following: '关注中' },
+  ar: { 'Liked Lessons': 'الدروس المعجب بها', Following: 'المتابعة' },
+};
+
+function libraryText(locale, text) {
+  return LIBRARY_UI_PHRASES[locale]?.[text] || localizeStaticUiText(locale, text);
+}
 
 function filterItems(items, query) {
   const needle = String(query || '').trim().toLowerCase();
@@ -77,11 +96,12 @@ function filterPlaylists(items, query) {
 }
 
 function EmptyPanel({ icon: Icon, title, body }) {
+  const locale = currentAppLocale();
   return (
     <SurfaceCard elevated className="text-center">
       <Icon className="mx-auto text-[var(--text-secondary)]" size={21} />
-      <p className="title-lg mt-2 text-[var(--text-primary)]">{title}</p>
-      {body ? <p className="body-md mt-1">{body}</p> : null}
+      <p className="title-lg mt-2 text-[var(--text-primary)]">{libraryText(locale, title)}</p>
+      {body ? <p className="body-md mt-1">{libraryText(locale, body)}</p> : null}
     </SurfaceCard>
   );
 }
@@ -196,6 +216,7 @@ function PublisherCard({ publisher }) {
 }
 
 export default function Library({ searchQuery }) {
+  const locale = currentAppLocale();
   const [activeTab, setActiveTab] = useState('history');
   const [historyRows, setHistoryRows] = useState([]);
   const [likedRows, setLikedRows] = useState([]);
@@ -327,7 +348,7 @@ export default function Library({ searchQuery }) {
                 }`}
               >
                 <Icon size={15} />
-                <span>{tab.label}</span>
+                <span>{libraryText(locale, tab.label)}</span>
               </button>
             );
           })}
