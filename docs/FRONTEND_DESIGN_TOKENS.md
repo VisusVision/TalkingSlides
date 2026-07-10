@@ -25,6 +25,12 @@ Prefer the existing semantic utility classes (`token-surface`, `token-surface-el
 Use Tailwind arbitrary values for existing semantic color tokens when needed, for example `bg-[var(--surface-container)]` or `text-[var(--text-primary)]`.
 Avoid introducing new arbitrary radii, shadows, transition timings, or control heights unless the token set is missing a reusable concept.
 
+## Shared Primitives
+
+Use `Input`, `Textarea`, and native `Select` from `services/frontend/src/components/ui` for new shared form work instead of duplicating page-level control classes.
+Use `SurfaceCard` for reusable card or panel surfaces and `Badge` for compact metadata or status chips.
+Keep feature-specific layout in the page or component, but avoid copying primitive radius, focus, disabled, border, placeholder, or status color styles into new surfaces.
+
 ## Reduced Motion
 
 `prefers-reduced-motion: reduce` minimizes non-essential animation and transition duration.

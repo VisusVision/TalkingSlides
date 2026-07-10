@@ -12,8 +12,9 @@ export default function SurfaceCard({
   return (
     <Component
       className={joinClasses(
-        'rounded-3xl p-5 sm:p-6',
+        'rounded-card p-5 sm:p-6',
         elevated ? 'token-surface-elevated' : 'token-surface',
+        elevated && 'shadow-token-sm',
         className,
       )}
       {...props}
