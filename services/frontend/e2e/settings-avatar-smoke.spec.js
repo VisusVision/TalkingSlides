@@ -197,14 +197,41 @@ test.describe('microphone voice sample recording', () => {
     });
 
     await page.addInitScript(() => {
+      class FakeMediaRecorder {
+        static isTypeSupported() {
+          return true;
+        }
+
+        constructor(stream, options = {}) {
+          this.stream = stream;
+          this.mimeType = options.mimeType || 'audio/webm';
+          this.state = 'inactive';
+          this.ondataavailable = null;
+          this.onerror = null;
+          this.onstop = null;
+        }
+
+        start() {
+          this.state = 'recording';
+        }
+
+        stop() {
+          if (this.state !== 'recording') return;
+          this.state = 'inactive';
+          const data = new Blob(['voice-smoke-sample'], { type: this.mimeType });
+          this.ondataavailable?.({ data });
+          this.onstop?.();
+        }
+      }
+
+      window.MediaRecorder = FakeMediaRecorder;
+      window.HTMLMediaElement.prototype.play = async () => {};
       navigator.mediaDevices.getUserMedia = async () => {
-        const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
-        const audioContext = new AudioContextCtor();
-        const oscillator = audioContext.createOscillator();
-        const destination = audioContext.createMediaStreamDestination();
-        oscillator.connect(destination);
-        oscillator.start();
-        return destination.stream;
+        const track = { stop() {} };
+        return {
+          getAudioTracks: () => [track],
+          getTracks: () => [track],
+        };
       };
     });
 

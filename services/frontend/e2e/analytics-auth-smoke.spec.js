@@ -125,7 +125,7 @@ async function mockAuthenticatedAnalyticsApi(page) {
     unreadCount: 0,
   });
 
-  await page.route('**/api/v1/me/analytics/?**', (route) => {
+  await page.route(/\/api\/v1\/me\/analytics\/(?:\?.*)?$/, (route) => {
     expect(route.request().method()).toBe('GET');
     return route.fulfill(jsonResponse(ANALYTICS_PAYLOAD));
   });

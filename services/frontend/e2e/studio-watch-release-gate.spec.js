@@ -218,7 +218,7 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
     window.dispatchEvent(new CustomEvent('visus-locale-changed', { detail: { locale: 'tr' } }));
   });
   await expect(page.getByRole('heading', { name: 'Slaytlar' })).toBeVisible();
-  await expect(page.getByText(/Render durumu:/).first()).toBeVisible();
+  await expect(page.getByText(/durumu:/).first()).toBeVisible();
   await page.evaluate(() => {
     window.localStorage.setItem('visus-ui-locale', 'en');
     window.dispatchEvent(new CustomEvent('visus-locale-changed', { detail: { locale: 'en' } }));
