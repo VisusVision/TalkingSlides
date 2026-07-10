@@ -74,13 +74,12 @@ import {
   StudioInspectorHeading,
   StudioInspectorSection,
   StudioMoreActionsLabel,
-  StudioRenderStatus,
   StudioSaveStatus,
   StudioEmptyState,
   StudioSlideRail,
   StudioToolbarGroup,
 } from '../components/studio/StudioWorkspaceChrome';
-import StudioWorkflowGuide from '../components/studio/StudioWorkflowGuide';
+import StudioWorkflowGuide, { studioWorkflowState } from '../components/studio/StudioWorkflowGuide';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
@@ -5888,6 +5887,124 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     selectedLessonHasDraft,
   ]);
 
+  const selectedLessonHasSlides = Boolean(
+    loadingTranscript
+    || transcriptPages.length > 0
+    || Number(selectedLesson?.slide_count || selectedLesson?.page_count || 0) > 0,
+  );
+  const selectedLessonHasNarration = Boolean(
+    loadingTranscript
+    || transcriptPages.some((page) => textValue(
+      page?.narration_text
+        || page?.narration
+        || page?.voiceover_text
+        || page?.text
+        || page?.display_text,
+    )),
+  );
+  const selectedLessonAvatarReady = !(
+    avatarFeatureEnabled
+    && selectedLesson
+    && projectAvatarEnabled(selectedLesson)
+    && ['queued', 'processing', 'running', 'pending'].includes(avatarProcessingStatus(selectedLesson))
+  );
+  const selectedLessonCanPublish = Boolean(
+    selectedLesson
+    && projectCanPublishFromModeration(selectedLesson, selectedModeration),
+  );
+  const workflowModel = useMemo(() => studioWorkflowState({
+    hasProject: Boolean(selectedLesson),
+    loadingProject: Boolean(loadingProjects && !selectedLesson),
+    apiError: projectsError || submitError || globalEditorError,
+    hasChanges: selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile),
+    requiresRerender: Boolean(selectedLesson && selectedLessonDirtyScope.requiresRerender),
+    renderReady: Boolean(selectedLesson && projectRenderReady(selectedLesson)),
+    renderStatus: latestRenderStatus,
+    projectStatus: selectedLesson?.status,
+    canPublish: selectedLessonCanPublish,
+    publishBlockedReason: selectedModeration?.publish_block_reason || selectedModeration?.publish_block?.reason || '',
+    moderationMessage: selectedLesson ? moderationMessage(selectedLesson, selectedModeration) : '',
+    published: Boolean(selectedLesson?.is_published),
+    hasSlides: selectedLessonHasSlides,
+    hasNarration: selectedLessonHasNarration,
+    avatarReady: selectedLessonAvatarReady,
+    staleProject: Boolean(selectedLessonDirtyScope.moderationMessage),
+    canRetryRender: Boolean(selectedLesson && !globalEditorActionBusy),
+  }), [
+    avatarFeatureEnabled,
+    coverFile,
+    editorCanvas,
+    globalEditorActionBusy,
+    globalEditorError,
+    latestRenderStatus,
+    loadingProjects,
+    projectsError,
+    selectedLesson,
+    selectedLessonAvatarReady,
+    selectedLessonCanPublish,
+    selectedLessonDirtyScope.hasChanges,
+    selectedLessonDirtyScope.moderationMessage,
+    selectedLessonDirtyScope.requiresRerender,
+    selectedLessonHasNarration,
+    selectedLessonHasSlides,
+    selectedModeration,
+    sourceFile,
+    submitError,
+  ]);
+
+  const handleWorkflowAction = useCallback(async (actionId) => {
+    if (readOnlyReview) return;
+    if (actionId === 'select_project') {
+      setStudioLocation('lessons');
+      return;
+    }
+    if (actionId === 'review_lesson') {
+      setActiveEditorPanel('transcript');
+      document.querySelector('[data-testid="studio-inspector"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    if (actionId === 'save_changes') {
+      await handleGlobalEditorSave({ triggerRerender: false });
+      return;
+    }
+    if (actionId === 'render_lesson') {
+      if (!selectedLesson) return;
+      if (selectedLessonDirtyScope.hasChanges || selectedLessonDirtyScope.requiresRerender) {
+        await handleGlobalEditorSave({ triggerRerender: true });
+      } else {
+        await handleRerenderProject(selectedLesson);
+      }
+      return;
+    }
+    if (actionId === 'retry_render') {
+      if (selectedLesson) await handleRerenderProject(selectedLesson);
+      return;
+    }
+    if (actionId === 'view_progress') {
+      document.querySelector('[data-testid="studio-workflow-render-card"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    if (actionId === 'resolve_publishing_issues') {
+      setActiveEditorPanel('moderation');
+      document.querySelector('[data-testid="studio-inspector"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    if (actionId === 'publish_lesson') {
+      if (selectedLesson) await handlePublishToggle(selectedLesson, true);
+      return;
+    }
+    if (actionId === 'watch_lesson') {
+      if (selectedLesson) openPreviewForProject(selectedLesson);
+    }
+  }, [
+    handleGlobalEditorSave,
+    readOnlyReview,
+    selectedLesson,
+    selectedLessonDirtyScope.hasChanges,
+    selectedLessonDirtyScope.requiresRerender,
+    setStudioLocation,
+  ]);
+
   useEffect(() => {
     if (studioView !== 'editor') return undefined;
     const handleEditorShortcut = (event) => {
@@ -6113,9 +6230,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
       {studioView === 'editor' && !readOnlyReview && (
         <StudioWorkflowGuide
+          locale={locale}
+          state={workflowModel}
           hasChanges={selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile)}
-          renderReady={Boolean(selectedLesson && projectRenderReady(selectedLesson))}
           published={Boolean(selectedLesson?.is_published)}
+          onAction={handleWorkflowAction}
         />
       )}
 
@@ -6746,10 +6865,6 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             />
             <div className="min-w-0 space-y-5">
               <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
-                <StudioRenderStatus
-                  renderStatus={latestRenderStatus}
-                  projectStatus={selectedLesson?.status}
-                />
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block text-sm text-[var(--text-secondary)]">
                     Lesson title
@@ -7052,7 +7167,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       <StudioToolbarGroup label="Project save actions">
                         <Button
                           size="sm"
-                          variant={selectedLessonDirtyScope.canSaveChanges ? 'primary' : 'secondary'}
+                          variant="secondary"
                           onClick={() => handleGlobalEditorSave({ triggerRerender: false })}
                           disabled={Boolean(globalEditorActionBusy)}
                           title={selectedLessonDirtyScope.canSaveChanges
@@ -7070,7 +7185,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         </Button>
                         <Button
                           size="sm"
-                          variant={selectedLessonDirtyScope.canSaveRerender ? 'primary' : 'secondary'}
+                          variant="secondary"
                           onClick={() => handleGlobalEditorSave({ triggerRerender: true })}
                           disabled={
                             Boolean(globalEditorActionBusy)
