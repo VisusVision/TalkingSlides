@@ -7,6 +7,7 @@ import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import { usePageLoading } from '../components/ui/PageLoading';
+import Skeleton from '../components/ui/Skeleton';
 import { normalizeLesson, formatDuration, formatViews } from '../lib/content';
 import {
   clearRouteSessionState,
@@ -14,6 +15,31 @@ import {
   readRouteSessionState,
   writeRouteSessionState,
 } from '../utils/routeSession';
+
+function BrowseCatalogSkeleton() {
+  return (
+    <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3" role="status" aria-live="polite" aria-label="Loading browse catalog">
+      <span className="sr-only">Loading browse catalog...</span>
+      {Array.from({ length: 6 }, (_, index) => (
+        <Skeleton.Card key={`browse-skeleton-${index}`} className="token-surface-elevated p-3">
+          <div className="space-y-4">
+            <Skeleton className="h-36 w-full" rounded="lg" />
+            <div className="space-y-2">
+              <Skeleton className="h-5 w-5/6" rounded="full" />
+              <Skeleton className="h-3 w-1/2" rounded="full" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Skeleton className="h-6 w-20" rounded="full" />
+              <Skeleton className="h-6 w-16" rounded="full" />
+              <Skeleton className="h-6 w-14" rounded="full" />
+            </div>
+            <Skeleton className="h-8 w-32" rounded="full" />
+          </div>
+        </Skeleton.Card>
+      ))}
+    </section>
+  );
+}
 
 export default function Browse({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
@@ -126,7 +152,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
   }, [lessons, searchQuery]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" aria-busy={loading}>
       <section className="layout-grid-12">
         <SurfaceCard elevated className="lg:col-span-8">
           <p className="label-sm">Explore</p>
@@ -176,11 +202,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
         </div>
       </SurfaceCard>
 
-      {loading && (
-        <SurfaceCard elevated>
-          <p className="body-md">Loading browse catalog...</p>
-        </SurfaceCard>
-      )}
+      {loading && <BrowseCatalogSkeleton />}
 
       {error && (
         <SurfaceCard elevated>

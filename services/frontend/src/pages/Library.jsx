@@ -3,6 +3,8 @@ import { ArrowRight, BookOpenText, Heart, History, ListPlus, PlayCircle, Users }
 import { Link } from 'react-router-dom';
 import { fetchLikedLessons, fetchUserHistory, getFollowingPublishers, getSavedPlaylists } from '../api';
 import LearningLessonCard, { normalizeLearningRows } from '../components/library/LearningLessonCard';
+import { usePageLoading } from '../components/ui/PageLoading';
+import Skeleton from '../components/ui/Skeleton';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { normalizeLesson } from '../lib/content';
 
@@ -83,6 +85,43 @@ function EmptyPanel({ icon: Icon, title, body }) {
       <p className="title-lg mt-2 text-[var(--text-primary)]">{title}</p>
       {body ? <p className="body-md mt-1">{body}</p> : null}
     </SurfaceCard>
+  );
+}
+
+function LibraryPanelSkeleton({ tab }) {
+  const isFollowing = tab === 'following';
+  const isPlaylists = tab === 'playlists';
+
+  return (
+    <div role="status" aria-live="polite" aria-label="Loading library" className="grid gap-3">
+      <span className="sr-only">Loading your library...</span>
+      {Array.from({ length: isFollowing ? 3 : 4 }, (_, index) => (
+        <Skeleton.Card key={`library-skeleton-${tab}-${index}`} className="token-surface-elevated p-3">
+          <div className="grid gap-4 md:grid-cols-[12rem_minmax(0,1fr)]">
+            {isFollowing ? (
+              <Skeleton.Avatar size="lg" />
+            ) : (
+              <Skeleton className="aspect-video w-full" rounded="lg" />
+            )}
+            <div className="min-w-0 space-y-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0 flex-1 space-y-2">
+                  <Skeleton className="h-4 w-3/4" rounded="full" />
+                  <Skeleton className="h-3 w-1/2" rounded="full" />
+                </div>
+                {isPlaylists && <Skeleton className="h-6 w-16" rounded="full" />}
+              </div>
+              <Skeleton.Text lines={2} />
+              <div className="flex flex-wrap gap-2">
+                <Skeleton className="h-6 w-24" rounded="full" />
+                <Skeleton className="h-6 w-20" rounded="full" />
+                {!isFollowing && <Skeleton className="h-6 w-28" rounded="full" />}
+              </div>
+            </div>
+          </div>
+        </Skeleton.Card>
+      ))}
+    </div>
   );
 }
 
@@ -212,6 +251,8 @@ export default function Library({ searchQuery }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  usePageLoading(loading, 'library');
+
   useEffect(() => {
     let active = true;
 
@@ -309,7 +350,7 @@ export default function Library({ searchQuery }) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6" aria-busy={loading}>
       <section className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="label-sm">Library</p>
@@ -342,7 +383,7 @@ export default function Library({ searchQuery }) {
         </div>
 
         {loading ? (
-          <p className="body-md">Loading your library...</p>
+          <LibraryPanelSkeleton tab={activeTab} />
         ) : error ? (
           <p className="text-sm font-medium text-[color:var(--feedback-danger-fg)]">{error}</p>
         ) : (
