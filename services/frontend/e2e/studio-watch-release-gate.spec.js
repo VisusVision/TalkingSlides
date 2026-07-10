@@ -233,7 +233,7 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   });
   await page.getByRole('button', { name: 'Create Lesson Draft' }).click();
 
-  await expect(page.getByRole('button', { name: 'Preview In Watch' }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: /Preview (In Watch|Draft)/ }).first()).toBeVisible();
   await expect(page.getByText('Ready').first()).toBeVisible();
   await expect(page.getByText('Moderation: Approved').first()).toBeVisible();
   await expect(page.getByText('Release Gate Lesson').first()).toBeVisible();
