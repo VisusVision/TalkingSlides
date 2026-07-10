@@ -31,6 +31,11 @@ Use `Input`, `Textarea`, and native `Select` from `services/frontend/src/compone
 Use `SurfaceCard` for reusable card or panel surfaces and `Badge` for compact metadata or status chips.
 Keep feature-specific layout in the page or component, but avoid copying primitive radius, focus, disabled, border, placeholder, or status color styles into new surfaces.
 
+Use `Dialog` from `services/frontend/src/components/ui/Dialog.jsx` for modal dialogs instead of feature-level fixed overlays.
+Compose it with `Dialog.Header`, `Dialog.Title`, `Dialog.Description`, `Dialog.Body`, `Dialog.Footer`, and `Dialog.Close` so dialogs share backdrop, sizing, surface, scroll-lock, focus containment, Escape handling, and close-button behavior.
+Disable backdrop or Escape closing for destructive, dirty, or submitting workflows that must force an explicit cancel or completion path.
+Existing `ModalShell` callers keep their legacy props, but new dialog work should avoid duplicating modal markup in pages.
+
 ## Reduced Motion
 
 `prefers-reduced-motion: reduce` minimizes non-essential animation and transition duration.

@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react';
-import { LogIn, X } from 'lucide-react';
+import { LogIn } from 'lucide-react';
 import {
   fetchAuthProviders,
   login,
   startGoogleRedirectFlow,
 } from '../../api';
 import Button from './Button';
+import Dialog from './Dialog';
 import Input from './Input';
-import SurfaceCard from './SurfaceCard';
+
+const AUTH_MODAL_TITLE_ID = 'auth-modal-title';
+const AUTH_MODAL_DESCRIPTION_ID = 'auth-modal-description';
 
 export default function AuthModal({ open, onClose, onLoginSuccess }) {
   const [username, setUsername] = useState('');
@@ -61,24 +64,32 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[color:var(--modal-backdrop)] p-4 backdrop-blur-sm">
-      <SurfaceCard className="relative w-full max-w-md" elevated>
-        <button
-          type="button"
-          onClick={onClose}
-          className="focus-ring absolute right-4 top-4 inline-flex h-8 w-8 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[color:var(--surface-muted)]"
-          aria-label="Close sign in"
-        >
-          <X size={16} />
-        </button>
+    <Dialog
+      open={open}
+      onClose={onClose}
+      titleId={AUTH_MODAL_TITLE_ID}
+      descriptionId={AUTH_MODAL_DESCRIPTION_ID}
+      size="sm"
+      closeOnBackdrop={false}
+      className="max-w-md"
+    >
+      <Dialog.Header>
+        <div>
+          <p className="label-sm">Welcome Back</p>
+          <Dialog.Title className="headline-md mt-2">
+            Continue Learning
+          </Dialog.Title>
+          <Dialog.Description>
+            Sign in to open your teaching studio, sync progress, and publish lessons.
+          </Dialog.Description>
+        </div>
+        <Dialog.Close onClose={onClose} closeLabel="Close sign in" />
+      </Dialog.Header>
 
-        <p className="label-sm">Welcome Back</p>
-        <h2 className="headline-md mt-2 text-[var(--text-primary)]">Continue Learning</h2>
-        <p className="body-md mt-2">Sign in to open your teaching studio, sync progress, and publish lessons.</p>
-
+      <Dialog.Body>
         {canUseGoogle && (
           <Button
-            className="mt-5 w-full"
+            className="w-full"
             variant="secondary"
             onClick={handleGoogleRedirect}
           >
@@ -129,7 +140,7 @@ export default function AuthModal({ open, onClose, onLoginSuccess }) {
             <span>{loading ? 'Signing in...' : 'Sign In'}</span>
           </Button>
         </form>
-      </SurfaceCard>
-    </div>
+      </Dialog.Body>
+    </Dialog>
   );
 }
