@@ -3,6 +3,11 @@ import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../components/ui/ThemeProvider';
+import { LocaleProvider } from '../i18n/LocaleProvider';
+import {
+  APP_LOCALE_STORAGE_KEY,
+  SUPPORTED_APP_LOCALES,
+} from '../i18n/locale';
 import { AUTOPLAY_NEXT_KEY } from '../utils/playbackPreferences';
 
 const apiMocks = vi.hoisted(() => ({
@@ -184,9 +189,11 @@ async function renderSettings({ user = null } = {}) {
   await act(async () => {
     root.render(
       <MemoryRouter>
-        <ThemeProvider>
-          <Settings user={user} onUserRefresh={vi.fn()} />
-        </ThemeProvider>
+        <LocaleProvider>
+          <ThemeProvider>
+            <Settings user={user} onUserRefresh={vi.fn()} />
+          </ThemeProvider>
+        </LocaleProvider>
       </MemoryRouter>,
     );
   });
@@ -202,6 +209,8 @@ describe('Settings theme controls', () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     document.documentElement.className = '';
+    document.documentElement.lang = 'en';
+    document.documentElement.dir = 'ltr';
     document.documentElement.removeAttribute('data-theme');
     window.matchMedia = vi.fn().mockImplementation(() => ({
       matches: false,
@@ -281,6 +290,42 @@ describe('Settings theme controls', () => {
       value: undefined,
     });
     vi.clearAllMocks();
+  });
+
+  it('renders every language and switches Settings between Turkish and English', async () => {
+    const { host, root } = await renderSettings();
+    const selector = host.querySelector('[data-testid="settings-language-selector"]');
+
+    expect(host.textContent).toContain('Choose the language used by the application interface.');
+    expect(selector.querySelectorAll('option')).toHaveLength(SUPPORTED_APP_LOCALES.length);
+    SUPPORTED_APP_LOCALES.forEach(({ label }) => {
+      expect(selector.textContent).toContain(label);
+    });
+
+    await act(async () => {
+      selector.value = 'tr';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('Ayarlar');
+    expect(host.textContent).toContain('Uygulama arayüzünde kullanılan dili seçin.');
+    expect(window.localStorage.getItem(APP_LOCALE_STORAGE_KEY)).toBe('tr');
+
+    await act(async () => {
+      selector.value = 'fr';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('Préférences de l’espace de travail');
+    expect(host.textContent).toContain('Choisissez la langue utilisée par l’interface de l’application.');
+
+    await act(async () => {
+      selector.value = 'en';
+      selector.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(host.textContent).toContain('Workspace preferences');
+    expect(host.textContent).toContain('Choose the language used by the application interface.');
+
+    await act(async () => root.unmount());
+    host.remove();
   });
 
   it('removes the duplicate current theme summary but keeps theme switching', async () => {

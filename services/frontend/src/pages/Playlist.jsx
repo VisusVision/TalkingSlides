@@ -5,6 +5,7 @@ import { getPlaylist, toggleSavePlaylist } from '../api';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { formatDuration, normalizeLesson } from '../lib/content';
+import { currentAppLocale } from '../i18n/locale';
 
 function lessonBackground(lesson) {
   if (!lesson?.imageUrl) {
@@ -26,7 +27,7 @@ function formatPublishedDate(value) {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
-  return date.toLocaleDateString('en-US', {
+  return date.toLocaleDateString(currentAppLocale(), {
     month: 'short',
     day: 'numeric',
     year: 'numeric',

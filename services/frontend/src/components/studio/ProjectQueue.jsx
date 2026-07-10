@@ -1,6 +1,7 @@
 import { Clock3, Eye, RefreshCcw, Trash2 } from 'lucide-react';
 import Button from '../ui/Button';
 import SurfaceCard from '../ui/SurfaceCard';
+import { currentAppLocale } from '../../i18n/locale';
 
 function statusTone(status) {
   const value = String(status || '').toLowerCase();
@@ -59,7 +60,7 @@ export default function ProjectQueue({
                   <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
                     <span className="inline-flex items-center gap-1">
                       <Clock3 size={12} />
-                      {new Date(project.created_at || Date.now()).toLocaleDateString('en-US')}
+                      {new Date(project.created_at || Date.now()).toLocaleDateString(currentAppLocale())}
                     </span>
                     <span className="rounded-full bg-[color:var(--surface-muted)] px-2 py-1">
                       {project.category_name || 'Uncategorized'}

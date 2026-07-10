@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { LocaleProvider } from '../i18n/LocaleProvider';
 import { AUTOPLAY_NEXT_KEY } from '../utils/playbackPreferences';
 
 const apiMocks = vi.hoisted(() => ({
@@ -216,9 +217,11 @@ describe('Watch notes-first layout', () => {
     apiMocks.getPlaylistContext.mockResolvedValue(publisherContext(5));
 
     const { host, root } = renderNode(
-      <MemoryRouter initialEntries={['/watch?lesson=376']}>
-        <Watch user={user} />
-      </MemoryRouter>,
+      <LocaleProvider>
+        <MemoryRouter initialEntries={['/watch?lesson=376']}>
+          <Watch user={user} />
+        </MemoryRouter>
+      </LocaleProvider>,
     );
 
     await flush();
@@ -255,9 +258,11 @@ describe('Watch notes-first layout', () => {
     apiMocks.getPlaylistContext.mockResolvedValue(publisherContext(2));
 
     const { host, root } = renderNode(
-      <MemoryRouter initialEntries={['/watch?lesson=376']}>
-        <Watch user={user} />
-      </MemoryRouter>,
+      <LocaleProvider>
+        <MemoryRouter initialEntries={['/watch?lesson=376']}>
+          <Watch user={user} />
+        </MemoryRouter>
+      </LocaleProvider>,
     );
 
     await flush();
@@ -298,9 +303,11 @@ describe('Watch notes-first layout', () => {
     apiMocks.getPlaylistContext.mockResolvedValue(publisherContext(2));
 
     const { host, root } = renderNode(
-      <MemoryRouter initialEntries={['/watch?lesson=376']}>
-        <Watch user={user} />
-      </MemoryRouter>,
+      <LocaleProvider>
+        <MemoryRouter initialEntries={['/watch?lesson=376']}>
+          <Watch user={user} />
+        </MemoryRouter>
+      </LocaleProvider>,
     );
 
     await flush();

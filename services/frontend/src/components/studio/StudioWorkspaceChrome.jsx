@@ -169,7 +169,7 @@ export function StudioSlideRail({
       aria-label={copy.slides}
       aria-busy={loading}
       data-testid="studio-slide-rail"
-      className="min-w-0 xl:sticky xl:top-4 xl:self-start"
+      className="min-w-0 lg:max-xl:col-span-2 xl:sticky xl:top-4 xl:self-start"
     >
       <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 shadow-soft">
         <div className="flex items-center gap-2">

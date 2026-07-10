@@ -16,6 +16,7 @@ import SurfaceCard from '../components/ui/SurfaceCard';
 import { PageLoadingProvider } from '../components/ui/PageLoading';
 import { CapabilitiesProvider, useCapabilities } from '../lib/capabilities';
 import { ROUTE_RESET_EVENT, readRouteSessionState, writeRouteSessionState } from '../utils/routeSession';
+import { LocaleProvider } from '../i18n/LocaleProvider';
 
 function getRedirectFromSearch(search) {
   const params = new URLSearchParams(search || '');
@@ -240,14 +241,16 @@ function AppWithRouter() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <CapabilitiesProvider>
-        <BrowserRouter>
-          <PageLoadingProvider>
-            <AppWithRouter />
-          </PageLoadingProvider>
-        </BrowserRouter>
-      </CapabilitiesProvider>
-    </ThemeProvider>
+    <LocaleProvider>
+      <ThemeProvider>
+        <CapabilitiesProvider>
+          <BrowserRouter>
+            <PageLoadingProvider>
+              <AppWithRouter />
+            </PageLoadingProvider>
+          </BrowserRouter>
+        </CapabilitiesProvider>
+      </ThemeProvider>
+    </LocaleProvider>
   );
 }

@@ -21,6 +21,9 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocale } from '../i18n/LocaleProvider';
+import { currentAppLocale } from '../i18n/locale';
+import { localizeStaticUiText } from '../i18n/messages';
 import {
   createProject,
   deleteProject,
@@ -71,12 +74,12 @@ import {
   StudioInspectorHeading,
   StudioInspectorSection,
   StudioMoreActionsLabel,
-  StudioRenderStatus,
   StudioSaveStatus,
   StudioEmptyState,
   StudioSlideRail,
   StudioToolbarGroup,
 } from '../components/studio/StudioWorkspaceChrome';
+import StudioWorkflowGuide, { studioWorkflowState } from '../components/studio/StudioWorkflowGuide';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
 import { featureEnabled, useCapabilities } from '../lib/capabilities';
@@ -94,6 +97,27 @@ const STUDIO_PROJECT_DETAIL_CACHE_MAX = 24;
 const STUDIO_PROJECT_CACHE_WINDOW = 5;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
 const STABLE_MODERATION_STATUSES = new Set(['approved', 'admin_approved', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed']);
+const STUDIO_UI_PHRASES = {
+  tr: {
+    'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'Transkripti, notları ve yayınlama metaverilerini incelemek için sağ raydan bir ders seçin.',
+    Uncategorized: 'Kategorisiz',
+    Recent: 'Yakın zamanda',
+  },
+  es: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'Selecciona una lección del panel derecho para revisar la transcripción, las notas y los metadatos de publicación.', Uncategorized: 'Sin categoría', Recent: 'Reciente' },
+  fr: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'Sélectionnez une leçon dans le panneau de droite pour inspecter la transcription, les notes et les métadonnées de publication.', Uncategorized: 'Non classé', Recent: 'Récent' },
+  de: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'Wähle rechts eine Lektion aus, um Transkript, Notizen und Veröffentlichungsmetadaten zu prüfen.', Uncategorized: 'Ohne Kategorie', Recent: 'Aktuell' },
+  it: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'Seleziona una lezione dal pannello destro per esaminare trascrizione, note e metadati di pubblicazione.', Uncategorized: 'Senza categoria', Recent: 'Recente' },
+  pt: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'Selecione uma aula no painel direito para inspecionar transcrição, notas e metadados de publicação.', Uncategorized: 'Sem categoria', Recent: 'Recente' },
+  ru: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'Выберите урок на правой панели, чтобы просмотреть расшифровку, заметки и метаданные публикации.', Uncategorized: 'Без категории', Recent: 'Недавнее' },
+  ja: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': '右側のレールからレッスンを選択して、文字起こし、メモ、公開メタデータを確認します。', Uncategorized: '未分類', Recent: '最近' },
+  ko: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': '오른쪽 패널에서 강의를 선택하여 스크립트, 메모, 게시 메타데이터를 검토하세요.', Uncategorized: '분류 없음', Recent: '최근' },
+  'zh-CN': { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': '从右侧栏选择课程，以检查转录、备注和发布元数据。', Uncategorized: '未分类', Recent: '最近' },
+  ar: { 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.': 'حدد درسًا من اللوحة اليمنى لفحص النص والملاحظات وبيانات النشر الوصفية.', Uncategorized: 'غير مصنف', Recent: 'حديث' },
+};
+
+function localizeStudioUiText(locale, text) {
+  return STUDIO_UI_PHRASES[locale]?.[text] || localizeStaticUiText(locale, text);
+}
 
 function normalizeProjectList(payload) {
   return Array.isArray(payload) ? payload : payload.results || [];
@@ -262,7 +286,7 @@ function timestampMs(value) {
 }
 
 function formatEditorSaveTime(date = new Date()) {
-  return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  return date.toLocaleTimeString(currentAppLocale(), { hour: '2-digit', minute: '2-digit' });
 }
 
 function eventTargetAcceptsTextInput(target) {
@@ -1767,7 +1791,7 @@ function subtitleProviderMessage(track) {
 
 function safeDateLabel(value) {
   if (!value) return 'Recent';
-  return new Date(value).toLocaleDateString('en-US', {
+  return new Date(value).toLocaleDateString(currentAppLocale(), {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
@@ -3156,8 +3180,23 @@ function LessonIntelligencePanel({
   );
 }
 
+export function StudioLocaleHeader({ readOnlyReview = false }) {
+  const { t } = useLocale();
+
+  return (
+    <div className="min-w-0">
+      <p className="label-sm">{t('studioLabel')}</p>
+      <h1 className="title-lg mt-1 text-[var(--text-primary)]">
+        {t(readOnlyReview ? 'studioReviewTitle' : 'studioTitle')}
+      </h1>
+    </div>
+  );
+}
+
 export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const navigate = useNavigate();
+  const locale = currentAppLocale();
+  const uiText = useCallback((text) => localizeStudioUiText(locale, text), [locale]);
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
   const intelligenceFeatureEnabled = featureEnabled(capabilities, 'intelligence');
@@ -5848,6 +5887,124 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     selectedLessonHasDraft,
   ]);
 
+  const selectedLessonHasSlides = Boolean(
+    loadingTranscript
+    || transcriptPages.length > 0
+    || Number(selectedLesson?.slide_count || selectedLesson?.page_count || 0) > 0,
+  );
+  const selectedLessonHasNarration = Boolean(
+    loadingTranscript
+    || transcriptPages.some((page) => textValue(
+      page?.narration_text
+        || page?.narration
+        || page?.voiceover_text
+        || page?.text
+        || page?.display_text,
+    )),
+  );
+  const selectedLessonAvatarReady = !(
+    avatarFeatureEnabled
+    && selectedLesson
+    && projectAvatarEnabled(selectedLesson)
+    && ['queued', 'processing', 'running', 'pending'].includes(avatarProcessingStatus(selectedLesson))
+  );
+  const selectedLessonCanPublish = Boolean(
+    selectedLesson
+    && projectCanPublishFromModeration(selectedLesson, selectedModeration),
+  );
+  const workflowModel = useMemo(() => studioWorkflowState({
+    hasProject: Boolean(selectedLesson),
+    loadingProject: Boolean(loadingProjects && !selectedLesson),
+    apiError: projectsError || submitError || globalEditorError,
+    hasChanges: selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile),
+    requiresRerender: Boolean(selectedLesson && selectedLessonDirtyScope.requiresRerender),
+    renderReady: Boolean(selectedLesson && projectRenderReady(selectedLesson)),
+    renderStatus: latestRenderStatus,
+    projectStatus: selectedLesson?.status,
+    canPublish: selectedLessonCanPublish,
+    publishBlockedReason: selectedModeration?.publish_block_reason || selectedModeration?.publish_block?.reason || '',
+    moderationMessage: selectedLesson ? moderationMessage(selectedLesson, selectedModeration) : '',
+    published: Boolean(selectedLesson?.is_published),
+    hasSlides: selectedLessonHasSlides,
+    hasNarration: selectedLessonHasNarration,
+    avatarReady: selectedLessonAvatarReady,
+    staleProject: Boolean(selectedLessonDirtyScope.moderationMessage),
+    canRetryRender: Boolean(selectedLesson && !globalEditorActionBusy),
+  }), [
+    avatarFeatureEnabled,
+    coverFile,
+    editorCanvas,
+    globalEditorActionBusy,
+    globalEditorError,
+    latestRenderStatus,
+    loadingProjects,
+    projectsError,
+    selectedLesson,
+    selectedLessonAvatarReady,
+    selectedLessonCanPublish,
+    selectedLessonDirtyScope.hasChanges,
+    selectedLessonDirtyScope.moderationMessage,
+    selectedLessonDirtyScope.requiresRerender,
+    selectedLessonHasNarration,
+    selectedLessonHasSlides,
+    selectedModeration,
+    sourceFile,
+    submitError,
+  ]);
+
+  const handleWorkflowAction = useCallback(async (actionId) => {
+    if (readOnlyReview) return;
+    if (actionId === 'select_project') {
+      setStudioLocation('lessons');
+      return;
+    }
+    if (actionId === 'review_lesson') {
+      setActiveEditorPanel('transcript');
+      document.querySelector('[data-testid="studio-inspector"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    if (actionId === 'save_changes') {
+      await handleGlobalEditorSave({ triggerRerender: false });
+      return;
+    }
+    if (actionId === 'render_lesson') {
+      if (!selectedLesson) return;
+      if (selectedLessonDirtyScope.hasChanges || selectedLessonDirtyScope.requiresRerender) {
+        await handleGlobalEditorSave({ triggerRerender: true });
+      } else {
+        await handleRerenderProject(selectedLesson);
+      }
+      return;
+    }
+    if (actionId === 'retry_render') {
+      if (selectedLesson) await handleRerenderProject(selectedLesson);
+      return;
+    }
+    if (actionId === 'view_progress') {
+      document.querySelector('[data-testid="studio-workflow-render-card"]')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    if (actionId === 'resolve_publishing_issues') {
+      setActiveEditorPanel('moderation');
+      document.querySelector('[data-testid="studio-inspector"]')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+    if (actionId === 'publish_lesson') {
+      if (selectedLesson) await handlePublishToggle(selectedLesson, true);
+      return;
+    }
+    if (actionId === 'watch_lesson') {
+      if (selectedLesson) openPreviewForProject(selectedLesson);
+    }
+  }, [
+    handleGlobalEditorSave,
+    readOnlyReview,
+    selectedLesson,
+    selectedLessonDirtyScope.hasChanges,
+    selectedLessonDirtyScope.requiresRerender,
+    setStudioLocation,
+  ]);
+
   useEffect(() => {
     if (studioView !== 'editor') return undefined;
     const handleEditorShortcut = (event) => {
@@ -6001,13 +6158,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
   return (
     <div className="min-w-0 max-w-full space-y-5 overflow-x-hidden">
-      <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden">
-        <div className="min-w-0">
-          <p className="label-sm">Studio Workspace</p>
-          <h1 className="headline-md mt-1 text-[var(--text-primary)]">
-            {readOnlyReview ? 'Read-only Lesson Review' : 'Teacher Publishing Console'}
-          </h1>
-        </div>
+      <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden py-3">
+        <StudioLocaleHeader readOnlyReview={readOnlyReview} />
 
         {!readOnlyReview && (
         <div className="inline-flex max-w-full flex-wrap rounded-full token-surface p-1">
@@ -6076,6 +6228,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         </>
       )}
 
+      {studioView === 'editor' && !readOnlyReview && (
+        <StudioWorkflowGuide
+          locale={locale}
+          state={workflowModel}
+          hasChanges={selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile)}
+          published={Boolean(selectedLesson?.is_published)}
+          onAction={handleWorkflowAction}
+        />
+      )}
+
       {submitError && (
         <SurfaceCard className="rounded-2xl bg-[color:var(--feedback-danger-bg)] p-4">
           <p className="text-sm text-[color:var(--feedback-danger-fg)]">{submitError}</p>
@@ -6094,20 +6256,20 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               >
                 <div className="absolute inset-0 bg-[linear-gradient(125deg,rgba(6,10,16,0.2)_0%,rgba(6,10,16,0.62)_60%,rgba(6,10,16,0.88)_100%)]" />
                 <div className="relative z-10 flex h-full flex-col justify-end gap-4 px-5 py-6 sm:px-7 sm:py-8">
-                  <p className="label-sm text-[color:var(--media-text-on-image)]">Selected Lesson</p>
+                  <p className="label-sm text-[color:var(--media-text-on-image)]">{uiText('Selected Lesson')}</p>
                   <h2 className="headline-md text-[color:var(--media-text-on-image)]">
-                    {selectedLesson?.title || 'No lesson selected'}
+                    {selectedLesson?.title || uiText('No lesson selected')}
                   </h2>
                   <p className="max-w-2xl text-sm text-[color:var(--media-text-on-image)] opacity-90">
-                    {selectedLesson?.description || 'Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.'}
+                    {selectedLesson?.description || uiText('Select a lesson from the right rail to inspect transcript, notes, and publishing metadata.')}
                   </p>
 
                   <div className="flex flex-wrap gap-2 text-xs text-[color:var(--media-text-on-image)] opacity-90">
                     <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5">
-                      {selectedLesson?.category_name || 'Uncategorized'}
+                      {selectedLesson?.category_name || uiText('Uncategorized')}
                     </span>
                     <span className="rounded-full bg-[color:var(--media-pill-bg)] px-3 py-1.5">
-                      {selectedLesson ? safeDateLabel(selectedLesson.created_at) : 'Recent'}
+                      {selectedLesson ? safeDateLabel(selectedLesson.created_at) : uiText('Recent')}
                     </span>
                     {selectedLesson && (
                       <span className={`rounded-full px-3 py-1.5 ${projectStatusTone(selectedLesson)}`}>
@@ -6684,7 +6846,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         <>
           <section
             data-testid="studio-editor-layout"
-            className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[14rem_minmax(0,1fr)_minmax(20rem,24rem)] 2xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
+            className="grid min-w-0 max-w-full gap-4 overflow-x-hidden lg:grid-cols-[minmax(0,1fr)_minmax(18rem,22rem)] xl:grid-cols-[14rem_minmax(0,1fr)_minmax(20rem,24rem)] 2xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
           >
             <StudioSlideRail
               scenes={sceneItems}
@@ -6703,10 +6865,6 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             />
             <div className="min-w-0 space-y-5">
               <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
-                <StudioRenderStatus
-                  renderStatus={latestRenderStatus}
-                  projectStatus={selectedLesson?.status}
-                />
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block text-sm text-[var(--text-secondary)]">
                     Lesson title
@@ -6771,7 +6929,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 )}
 
                 <div
-                  className={`relative mx-auto overflow-hidden rounded-2xl ${
+                  className={`relative mx-auto overflow-hidden rounded-2xl [container-type:inline-size] ${
                     selectedSceneMode === 'whiteboard'
                       ? 'bg-white'
                       : 'bg-[var(--video-stage-bg)]'
@@ -6782,7 +6940,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     width: 'min(100%, calc(72vh * 3 / 2))',
                   }}
                 >
-                  {selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
+                  {selectedSceneMode === 'whiteboard' ? (
+                    <div className="absolute inset-0 bg-white" aria-hidden="true" />
+                  ) : selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
                     <img
                       src={selectedSceneBackgroundImageUrl || coverPreviewUrl}
                       alt="Selected scene preview"
@@ -6857,7 +7017,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           dir={selectedSceneTextDirection}
                           style={{
                             direction: selectedSceneTextDirection,
-                            fontSize: selectedSceneTextLayout.fontSize,
+                            fontSize: `min(${selectedSceneTextLayout.fontSize}, 7cqw)`,
                             lineHeight: selectedSceneTextLayout.lineHeight,
                             textAlign: selectedSceneTextDirection === 'rtl' ? 'right' : 'left',
                           }}
@@ -6982,14 +7142,17 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               </SurfaceCard>
             </div>
 
-            <aside className="min-w-0 max-w-full xl:sticky xl:top-4 xl:self-start">
+            <aside
+              data-testid="studio-inspector"
+              className="min-w-0 max-w-full lg:sticky lg:top-4 lg:self-start"
+            >
               <SurfaceCard
                 elevated
-                className="flex min-h-[72vh] min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:max-h-[calc(100vh-9rem)]"
+                className="flex min-h-0 min-w-0 max-w-full flex-col gap-4 overflow-hidden md:max-h-[calc(100vh-8rem)] md:min-h-[32rem] lg:max-h-[calc(100vh-9rem)] lg:min-h-[65vh]"
               >
-                <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
+                <div className="flex shrink-0 flex-col items-stretch gap-3">
                   <StudioInspectorHeading projectTitle={selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'} />
-                  <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                  <div className="flex min-w-0 flex-wrap justify-start gap-2">
                     <StudioSaveStatus
                       saving={Boolean(globalEditorActionBusy === 'save' || globalEditorActionBusy === 'rerender' || slideActionBusy)}
                       hasChanges={selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile)}
@@ -7004,7 +7167,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       <StudioToolbarGroup label="Project save actions">
                         <Button
                           size="sm"
-                          variant={selectedLessonDirtyScope.canSaveChanges ? 'primary' : 'secondary'}
+                          variant="secondary"
                           onClick={() => handleGlobalEditorSave({ triggerRerender: false })}
                           disabled={Boolean(globalEditorActionBusy)}
                           title={selectedLessonDirtyScope.canSaveChanges
@@ -7022,7 +7185,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         </Button>
                         <Button
                           size="sm"
-                          variant={selectedLessonDirtyScope.canSaveRerender ? 'primary' : 'secondary'}
+                          variant="secondary"
                           onClick={() => handleGlobalEditorSave({ triggerRerender: true })}
                           disabled={
                             Boolean(globalEditorActionBusy)

@@ -5,6 +5,7 @@ import AvatarOverlayLayer, { AVATAR_OVERLAY_Z_INDEX } from './AvatarOverlayLayer
 import ContinueNextPrompt from './ContinueNextPrompt';
 import WatermarkOverlay from './WatermarkOverlay';
 import SurfaceCard from '../ui/SurfaceCard';
+import PlaybackStartOverlay from './PlaybackStartOverlay';
 
 const NATIVE_FULLSCREEN_CONTROL_HIDE_CSS = `
 .visus-shell-video::-webkit-media-controls-fullscreen-button {
@@ -440,6 +441,11 @@ export default function HlsPlayer({
               />
             )}
             <CaptionLayer text={activeCaptionText} />
+            <PlaybackStartOverlay
+              videoRef={activeVideoRef}
+              sourceKey={`${lesson?.id || 'lesson'}:${sourceUrl}`}
+              onPlaybackError={onPlaybackError}
+            />
             <PlayerShellFullscreenButton
               active={fullscreenActive}
               onClick={handlePlayerShellFullscreenToggle}
