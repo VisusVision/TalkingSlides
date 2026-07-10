@@ -1,5 +1,6 @@
 import { CirclePlay } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import SurfaceCard from '../ui/SurfaceCard';
 import { normalizeLesson } from '../../lib/content';
 
 function lessonBackground(lesson) {
@@ -59,9 +60,13 @@ export default function LearningLessonCard({ item, metaLabel = '' }) {
     : `/watch?lesson=${lesson.id}`;
 
   return (
-    <Link
+    <SurfaceCard
+      as={Link}
       to={watchUrl}
-      className="focus-ring group grid gap-4 rounded-xl token-surface-elevated p-3 text-left transition hover:-translate-y-0.5 md:grid-cols-[12rem_minmax(0,1fr)]"
+      variant="elevated"
+      padding="sm"
+      interactive
+      className="group grid gap-4 text-left md:grid-cols-[12rem_minmax(0,1fr)]"
     >
       <div className="relative aspect-video overflow-hidden rounded-lg bg-[var(--surface-container-high)]" style={lessonBackground(lesson)}>
         <div className="absolute inset-0 bg-black/10 transition group-hover:bg-black/0" />
@@ -97,6 +102,6 @@ export default function LearningLessonCard({ item, metaLabel = '' }) {
           </span>
         )}
       </div>
-    </Link>
+    </SurfaceCard>
   );
 }

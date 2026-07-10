@@ -104,9 +104,13 @@ function compactCount(value, noun) {
 
 function SavedPlaylistCard({ playlist }) {
   return (
-    <Link
+    <SurfaceCard
+      as={Link}
       to={`/playlist/${playlist.id}`}
-      className="focus-ring group grid gap-3 rounded-xl token-surface-elevated p-3 transition hover:-translate-y-0.5 sm:grid-cols-[12rem_minmax(0,1fr)]"
+      variant="elevated"
+      padding="sm"
+      interactive
+      className="group grid gap-3 sm:grid-cols-[12rem_minmax(0,1fr)]"
     >
       <div className="relative aspect-video overflow-hidden rounded-lg bg-[var(--surface-container-high)]" style={playlistCoverStyle(playlist)}>
         <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/45 px-2.5 py-1 text-xs font-semibold text-white">
@@ -140,7 +144,7 @@ function SavedPlaylistCard({ playlist }) {
           <p className="text-xs text-[var(--text-secondary)]">No public videos in this playlist yet.</p>
         )}
       </div>
-    </Link>
+    </SurfaceCard>
   );
 }
 
@@ -148,9 +152,13 @@ function PublisherCard({ publisher }) {
   const initial = String(publisher?.display_name || publisher?.username || 'P').trim().charAt(0).toUpperCase();
   const latestLessons = publisher?.latestLessons || [];
   return (
-    <Link
+    <SurfaceCard
+      as={Link}
       to={`/channel/${publisher.id}`}
-      className="focus-ring block rounded-xl token-surface-elevated p-4 transition hover:-translate-y-0.5"
+      variant="elevated"
+      padding="sm"
+      interactive
+      className="block"
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 gap-3">
@@ -191,7 +199,7 @@ function PublisherCard({ publisher }) {
           </div>
         </div>
       )}
-    </Link>
+    </SurfaceCard>
   );
 }
 
