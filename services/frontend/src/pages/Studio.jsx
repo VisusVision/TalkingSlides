@@ -63,6 +63,7 @@ import { adminReviewBackLabel, visualModerationRerenderMessage } from '../utils/
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import { usePageLoading } from '../components/ui/PageLoading';
+import { toast } from '../components/ui/Toast';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import PlaylistManager from '../components/studio/PlaylistManager';
 import TranscriptEditorPanel from '../components/studio/TranscriptEditorPanel';
@@ -4306,9 +4307,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           refreshProjectTranscript(createdProjectId, { showLoading: false, preserveOnError: true }),
         ]);
       }
+      toast.success('Lesson created');
       return createdProjectId || true;
     } catch (err) {
-      setSubmitError(err.message || 'Project upload failed.');
+      const message = err.message || 'Project upload failed.';
+      setSubmitError(message);
+      toast.error(message);
       return false;
     } finally {
       setSubmitting(false);
@@ -4359,7 +4363,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       await deleteProject(project.id);
       await refreshProjects();
     } catch (err) {
-      window.alert(err.message || 'Delete failed.');
+      toast.error(err.message || 'Delete failed.');
     }
   };
 
@@ -4392,9 +4396,10 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       );
       invalidateSelectedLessonCache(project.id);
       await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
+      toast.info('Rerender started');
       return true;
     } catch (err) {
-      window.alert(err.message || 'Rerender failed.');
+      toast.error(err.message || 'Rerender failed.');
       return false;
     }
   };
@@ -4409,8 +4414,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       if (selectedLesson?.id === project.id) {
         setSelectedLessonId(project.id);
       }
+      toast.success(nextVisible ? 'Avatar overlay shown' : 'Avatar overlay hidden');
     } catch (err) {
-      window.alert(err.message || 'Avatar visibility update failed.');
+      toast.error(err.message || 'Avatar visibility update failed.');
     } finally {
       setAvatarVisibilitySaving(false);
     }
@@ -4817,7 +4823,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       if (project.id !== selectedLesson?.id) {
         setSelectedLessonId(project.id);
       }
-      window.alert(message);
+      toast.warning(message);
       return;
     }
 
@@ -4826,12 +4832,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       invalidateSelectedLessonCache(project.id);
       handleProjectUpdated(updated);
       await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
+      toast.success(nextPublished ? 'Lesson published' : 'Lesson unpublished');
     } catch (err) {
       const message = err.message || 'Publication update failed.';
       setModerationError(message);
       invalidateSelectedLessonCache(project.id);
       await refreshSelectedLessonState(project.id, { showLoading: false, bypassCache: true });
-      window.alert(message);
+      toast.error(message);
     }
   };
 
