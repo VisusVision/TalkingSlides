@@ -1352,7 +1352,7 @@ export default function Settings({ user, onUserRefresh }) {
                   onClick={() => setMode(option.id)}
                   className={`focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition ${
                     selected
-                      ? 'bg-[color:rgba(107,56,212,0.12)] text-[var(--text-primary)] dark:bg-[color:rgba(208,188,255,0.2)]'
+                      ? 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >

@@ -155,7 +155,7 @@ function SavedPlaylistCard({ playlist }) {
       className="group grid gap-3 sm:grid-cols-[12rem_minmax(0,1fr)]"
     >
       <div className="relative aspect-video overflow-hidden rounded-lg bg-[var(--surface-container-high)]" style={playlistCoverStyle(playlist)}>
-        <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/45 px-2.5 py-1 text-xs font-semibold text-white">
+        <span className="absolute left-3 top-3 inline-flex items-center gap-1 rounded-full bg-[color:var(--media-pill-bg)] px-2.5 py-1 text-xs font-semibold text-[color:var(--media-text-on-image)] backdrop-blur-sm">
           <ListPlus size={13} />
           {compactCount(playlist.itemCount, 'video')}
         </span>

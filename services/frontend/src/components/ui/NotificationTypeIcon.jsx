@@ -10,28 +10,28 @@ import {
 const TYPE_STYLES = {
   publisher_comment_on_lesson: {
     Icon: MessageSquare,
-    tone: 'bg-[color:rgba(59,130,246,0.12)] text-blue-700 ring-blue-200 dark:bg-[color:rgba(96,165,250,0.16)] dark:text-blue-200 dark:ring-blue-400/30',
+    tone: 'bg-[color:var(--status-info-bg)] text-[color:var(--status-info-fg)] ring-[color:color-mix(in_srgb,var(--status-info-fg),transparent_68%)]',
   },
   student_followed_publisher_new_lesson: {
     Icon: PlayCircle,
-    tone: 'bg-[color:rgba(99,102,241,0.13)] text-indigo-700 ring-indigo-200 dark:bg-[color:rgba(129,140,248,0.18)] dark:text-indigo-200 dark:ring-indigo-400/30',
+    tone: 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)] ring-[color:color-mix(in_srgb,var(--accent-primary),transparent_68%)]',
   },
   publisher_lesson_render_done: {
     Icon: CheckCircle2,
-    tone: 'bg-[color:rgba(16,185,129,0.13)] text-emerald-700 ring-emerald-200 dark:bg-[color:rgba(52,211,153,0.16)] dark:text-emerald-200 dark:ring-emerald-400/30',
+    tone: 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)] ring-[color:color-mix(in_srgb,var(--status-success-fg),transparent_68%)]',
   },
   publisher_lesson_render_failed: {
     Icon: AlertTriangle,
-    tone: 'bg-[color:rgba(245,158,11,0.16)] text-amber-700 ring-amber-200 dark:bg-[color:rgba(251,191,36,0.18)] dark:text-amber-200 dark:ring-amber-400/30',
+    tone: 'bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)] ring-[color:color-mix(in_srgb,var(--status-warning-fg),transparent_64%)]',
   },
   publisher_avatar_render_done: {
     Icon: UserCircle,
-    tone: 'bg-[color:rgba(20,184,166,0.13)] text-teal-700 ring-teal-200 dark:bg-[color:rgba(45,212,191,0.16)] dark:text-teal-200 dark:ring-teal-400/30',
+    tone: 'bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)] ring-[color:color-mix(in_srgb,var(--status-success-fg),transparent_68%)]',
   },
   publisher_avatar_render_failed: {
     Icon: UserCircle,
     BadgeIcon: AlertTriangle,
-    tone: 'bg-[color:rgba(239,68,68,0.12)] text-red-700 ring-red-200 dark:bg-[color:rgba(248,113,113,0.16)] dark:text-red-200 dark:ring-red-400/30',
+    tone: 'bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-fg)] ring-[color:color-mix(in_srgb,var(--status-danger-fg),transparent_64%)]',
   },
 };
 
@@ -67,7 +67,7 @@ export default function NotificationTypeIcon({ eventType, size = 'md', className
     >
       <Icon size={dimensions.icon} strokeWidth={2.1} />
       {BadgeIcon ? (
-        <span className={`absolute -bottom-0.5 -right-0.5 inline-flex items-center justify-center rounded-full bg-[var(--surface-container-high)] text-red-700 ring-1 ring-red-200 dark:bg-[var(--surface-container-highest)] dark:text-red-200 dark:ring-red-400/40 ${dimensions.badge}`}>
+        <span className={`absolute -bottom-0.5 -right-0.5 inline-flex items-center justify-center rounded-full bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-fg)] ring-1 ring-[color:color-mix(in_srgb,var(--status-danger-fg),transparent_58%)] ${dimensions.badge}`}>
           <BadgeIcon size={dimensions.badgeIcon} strokeWidth={2.4} />
         </span>
       ) : null}

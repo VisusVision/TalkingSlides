@@ -20,7 +20,7 @@
   --surface-muted: var(--surface-container-high);
 
   --outline-variant: #cbc3d7;
-  --outline: #7b7486;
+  --outline: #746d7f;
   --border-subtle: rgba(203, 195, 215, 0.7);
 
   --text-primary: #1a1c20;
@@ -161,8 +161,8 @@
   --hover-surface-strong: rgba(255, 255, 255, 0.1);
   --hover-accent-soft: rgba(208, 188, 255, 0.1);
 
-  --glass-overlay: rgba(40, 42, 46, 0.6);
-  --glass-stroke: rgba(208, 188, 255, 0.1);
+  --glass-overlay: rgba(30, 32, 36, 0.86);
+  --glass-stroke: rgba(149, 142, 160, 0.28);
 
   --feedback-danger-bg: rgba(147, 0, 10, 0.26);
   --feedback-danger-fg: #ffdad6;
@@ -176,7 +176,7 @@
   --status-warning-bg: rgba(250, 204, 21, 0.24);
   --status-warning-fg: #fbd96d;
 
-  --modal-backdrop: rgba(17, 19, 23, 0.8);
+  --modal-backdrop: rgba(12, 14, 18, 0.74);
   --video-stage-bg: var(--surface-container-lowest);
 
   --media-text-on-image: #e2e2e8;
@@ -196,10 +196,10 @@
   --bg-elevated: var(--surface-container);
 
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.24);
-  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.28);
-  --shadow-md: 0 14px 34px rgba(0, 0, 0, 0.32);
-  --shadow-lg: 0 22px 52px rgba(0, 0, 0, 0.38);
-  --shadow-dialog: 0 30px 76px rgba(0, 0, 0, 0.46);
+  --shadow-sm: 0 6px 18px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 14px 34px rgba(0, 0, 0, 0.28);
+  --shadow-lg: 0 22px 52px rgba(0, 0, 0, 0.34);
+  --shadow-dialog: 0 30px 76px rgba(0, 0, 0, 0.42);
   --shadow-focus: 0 0 0 3px color-mix(in srgb, var(--accent-primary), transparent 68%);
 }
 
@@ -323,7 +323,7 @@
   .focus-ring {
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2;
     --tw-ring-color: var(--accent-primary);
-    --tw-ring-offset-color: transparent;
+    --tw-ring-offset-color: var(--bg);
   }
 
   .cinematic-fade {

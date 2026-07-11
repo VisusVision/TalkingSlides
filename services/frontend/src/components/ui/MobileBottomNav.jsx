@@ -40,7 +40,7 @@ export default function MobileBottomNav({ user }) {
 
   return (
     <nav
-      className="fixed bottom-0 left-0 z-50 flex w-full items-center justify-around gap-1 rounded-t-[2rem] border-t border-[color:var(--border-subtle)] bg-[color:rgba(255,255,255,0.9)] px-2 pb-5 pt-2 backdrop-blur-2xl dark:bg-[color:rgba(15,17,21,0.9)] md:hidden"
+      className="fixed bottom-0 left-0 z-50 flex w-full items-center justify-around gap-1 rounded-t-[2rem] border-t border-[color:var(--glass-stroke)] bg-[color:var(--glass-overlay)] px-2 pb-5 pt-2 backdrop-blur-2xl md:hidden"
       aria-label="Mobile primary navigation"
     >
       {mobileItems.map((item) => {

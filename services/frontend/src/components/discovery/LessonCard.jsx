@@ -32,7 +32,7 @@ export default function LessonCard({ lesson, onOpen, compact = false, user, onLo
         user={user}
         onLoginRequest={onLoginRequest}
         compact
-        className="absolute right-5 top-5 z-20 bg-[color:rgba(255,255,255,0.9)] text-slate-700"
+        className="absolute right-5 top-5 z-20 bg-[color:var(--media-pill-bg)] text-[color:var(--media-text-on-image)] backdrop-blur-sm"
       />
       <button
         type="button"

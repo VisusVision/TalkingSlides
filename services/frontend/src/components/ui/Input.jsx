@@ -14,7 +14,8 @@ const BASE_STYLES = [
   'focus-ring w-full rounded-control border border-[var(--border-subtle)]',
   'bg-[var(--surface-container-lowest)] px-3 text-[var(--text-primary)]',
   'placeholder:text-[var(--outline)] transition duration-normal ease-standard',
-  'disabled:cursor-not-allowed disabled:opacity-60',
+  'hover:border-[color:var(--outline)] focus-visible:border-[color:var(--accent-primary)]',
+  'disabled:cursor-not-allowed disabled:border-[color:var(--border-subtle)] disabled:bg-[var(--surface-container-low)] disabled:text-[var(--outline)] disabled:opacity-80',
   'aria-[invalid=true]:border-[color:var(--feedback-danger-fg)]',
 ].join(' ');
 

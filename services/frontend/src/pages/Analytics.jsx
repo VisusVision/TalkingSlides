@@ -861,7 +861,7 @@ function PriorityFixList({ report }) {
             const lessonTitle = humanizeAnalyticsSignal(item?.lesson_title || '');
             return (
               <article key={`priority-fix-${index}-${text}`} className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--surface-muted)]/25 p-4">
-                <span className="inline-flex rounded-full bg-[color:rgba(208,188,255,0.14)] px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">
+                <span className="inline-flex rounded-full bg-[color:var(--hover-accent-soft)] px-3 py-1 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-[var(--accent-primary)]">
                   {analyticsActionLabel(item)}
                 </span>
                 {lessonTitle && <p className="mt-3 text-xs font-semibold text-[var(--text-secondary)]">{lessonTitle}</p>}
@@ -975,7 +975,7 @@ function KpiCard({ icon: Icon, label, value, trend, hint, emptyHint, active, chi
   return (
     <SurfaceCard className="min-h-[10.5rem] space-y-4">
       <SurfaceCard.Header>
-        <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-[color:rgba(208,188,255,0.1)] text-[var(--accent-primary)]">
+        <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]">
           <Icon size={18} />
         </span>
         <TrendBadge value={trend} />
@@ -1020,7 +1020,7 @@ function AnalyticsDashboardSkeleton({ intelligenceFeatureEnabled }) {
             </div>
             <Skeleton className="h-7 w-20" rounded="full" />
           </div>
-          <div className="flex min-h-64 flex-1 items-end gap-2 rounded-2xl bg-[linear-gradient(to_bottom,transparent,rgba(127,127,127,0.06))] px-2 pt-8">
+          <div className="flex min-h-64 flex-1 items-end gap-2 rounded-2xl bg-[color:var(--surface-container-low)] px-2 pt-8">
             {[58, 42, 74, 35, 66, 48, 82].map((height, index) => (
               <Skeleton
                 key={`analytics-bar-skeleton-${index}`}
@@ -1089,7 +1089,7 @@ function AnalyticsDashboardSkeleton({ intelligenceFeatureEnabled }) {
       </SurfaceCard>
 
       {intelligenceFeatureEnabled && (
-        <Skeleton.Card className="space-y-6 bg-[color:rgba(208,188,255,0.08)] p-6">
+        <Skeleton.Card className="space-y-6 bg-[color:var(--hover-accent-soft)] p-6">
           <div className="flex items-start gap-4">
             <Skeleton className="h-11 w-11" rounded="lg" />
             <div className="flex-1 space-y-2">
@@ -1541,7 +1541,7 @@ export default function Analytics({ user }) {
       {canReviewModeration && (
         <SurfaceCard className="flex flex-wrap items-center justify-between gap-4">
           <SurfaceCard.Header className="items-start">
-            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:rgba(208,188,255,0.14)] text-[var(--accent-primary)]">
+            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]">
               <ShieldCheck size={20} />
             </span>
             <div>
@@ -1622,7 +1622,7 @@ export default function Analytics({ user }) {
 
           {hasChartActivity ? (
             <div data-testid="analytics-chart-body" className="flex min-h-[17rem] flex-1 flex-col gap-3">
-              <div className="relative flex min-h-64 flex-1 items-end gap-2 rounded-2xl bg-[linear-gradient(to_bottom,transparent,rgba(127,127,127,0.06))] px-2 pt-8">
+              <div className="relative flex min-h-64 flex-1 items-end gap-2 rounded-2xl bg-[color:var(--surface-container-low)] px-2 pt-8">
                 <div className="pointer-events-none absolute inset-x-2 top-1/3 border-t border-dashed border-[color:var(--border-subtle)]" />
                 <div className="pointer-events-none absolute inset-x-2 top-2/3 border-t border-dashed border-[color:var(--border-subtle)]" />
                 {stats.series.map((point) => {
@@ -1634,7 +1634,7 @@ export default function Analytics({ user }) {
                       <div
                         className={`relative rounded-t-xl transition ${
                           hasValue
-                            ? 'bg-[var(--accent-primary)] opacity-95 shadow-[0_0_18px_rgba(123,92,255,0.22)] group-hover:opacity-100'
+                            ? 'bg-[var(--accent-primary)] opacity-95 shadow-[0_0_18px_var(--hover-accent-soft)] group-hover:opacity-100'
                             : 'bg-[color:var(--surface-muted)]/45'
                         }`}
                         style={{
@@ -1757,7 +1757,7 @@ export default function Analytics({ user }) {
             <div data-testid="analytics-recent-activity-list" className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
               {visibleRecentActivity.map((activity) => (
                 <article key={activity.id} data-testid="analytics-recent-activity-row" className="grid grid-cols-[0.75rem_minmax(0,1fr)] gap-3">
-                  <span className="mt-1.5 h-3 w-3 rounded-full bg-[var(--accent-primary)] shadow-[0_0_0_4px_rgba(208,188,255,0.14)]" />
+                  <span className="mt-1.5 h-3 w-3 rounded-full bg-[var(--accent-primary)] shadow-[0_0_0_4px_var(--hover-accent-soft)]" />
                   <div className="min-w-0 rounded-2xl bg-[color:var(--surface-muted)]/30 p-4">
                     <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
                       <p className="line-clamp-1 min-w-0 text-sm font-semibold text-[var(--text-primary)]">{activity.title}</p>
@@ -1795,7 +1795,7 @@ export default function Analytics({ user }) {
                 <th className="px-5 py-3 font-semibold sm:px-8">Engagement</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-[color:rgba(73,68,84,0.1)]">
+            <tbody className="divide-y divide-[color:var(--border-subtle)]">
               {stats.recentLessons.length > 0 ? (
                 stats.recentLessons.map((lesson) => (
                   <tr key={`recent-${lesson.id}`} className="hover:bg-[color:var(--surface-muted)]/40">
@@ -1848,7 +1848,7 @@ export default function Analytics({ user }) {
       <SurfaceCard variant="accent" padding="lg" className="space-y-6">
         <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-4">
-            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:rgba(208,188,255,0.14)] text-[var(--accent-primary)]">
+            <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]">
               <Sparkles size={20} />
             </span>
             <div>
@@ -1937,7 +1937,7 @@ export default function Analytics({ user }) {
               </div>
             )}
             <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
-              <div className="rounded-xl border border-[color:rgba(208,188,255,0.24)] bg-[color:rgba(208,188,255,0.08)] p-5">
+              <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--accent-primary),transparent_72%)] bg-[color:var(--hover-accent-soft)] p-5">
                 <div className="flex flex-wrap items-center gap-2">
                   <Gauge size={17} className="text-[var(--accent-primary)]" />
                   <p className="text-sm font-bold text-[var(--text-primary)]">Smart insight</p>

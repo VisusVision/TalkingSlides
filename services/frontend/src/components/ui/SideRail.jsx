@@ -187,7 +187,7 @@ export default function SideRail({
             <button
               type="button"
               onClick={onToggleCollapse}
-              className="focus-ring inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--surface-container-high)] text-[#9ca3af] transition hover:bg-[var(--surface-container-highest)] hover:text-[var(--text-primary)]"
+              className="focus-ring inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--surface-container-high)] text-[var(--outline)] transition hover:bg-[var(--surface-container-highest)] hover:text-[var(--text-primary)]"
               title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             >
