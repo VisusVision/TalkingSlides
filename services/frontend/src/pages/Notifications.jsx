@@ -8,6 +8,7 @@ import {
   markNotificationRead,
 } from '../api';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import EmptyState from '../components/ui/EmptyState';
 import {
   formatNotificationTime,
   isSafeNotificationActionUrl,
@@ -207,6 +208,7 @@ export default function Notifications({ user }) {
   const emptyBody = unreadOnly
     ? 'Everything visible here has been read.'
     : 'New lesson activity, comments, and render updates will appear here.';
+  const EmptyIcon = unreadOnly ? CheckCheck : Inbox;
 
   return (
     <div className="mx-auto flex w-[calc(100vw-3rem)] max-w-5xl min-w-0 flex-col gap-5 overflow-x-hidden px-3 pb-8 sm:w-full sm:px-5 lg:px-6">
@@ -277,13 +279,12 @@ export default function Notifications({ user }) {
         )}
 
         {!loading && notifications.length === 0 && !error && (
-          <div className="flex flex-col items-center justify-center rounded-lg bg-[var(--surface-container-low)] px-4 py-12 text-center">
-            <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-[var(--surface-container-high)] text-[var(--text-secondary)]">
-              {unreadOnly ? <CheckCheck size={22} /> : <Inbox size={22} />}
-            </span>
-            <h2 className="mt-4 text-base font-semibold text-[var(--text-primary)]">{emptyTitle}</h2>
-            <p className="mt-2 max-w-sm text-sm leading-6 text-[var(--text-secondary)]">{emptyBody}</p>
-          </div>
+          <EmptyState
+            icon={EmptyIcon}
+            title={emptyTitle}
+            description={emptyBody}
+            className="rounded-lg bg-[var(--surface-container-low)]"
+          />
         )}
 
         {!loading && notifications.length > 0 && (

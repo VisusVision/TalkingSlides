@@ -5,6 +5,7 @@ import { fetchCatalog, fetchCategories } from '../api';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
+import EmptyState from '../components/ui/EmptyState';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import { usePageLoading } from '../components/ui/PageLoading';
 import Skeleton from '../components/ui/Skeleton';
@@ -211,11 +212,12 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
       )}
 
       {!loading && !error && filteredLessons.length === 0 && (
-        <SurfaceCard elevated className="space-y-2 text-center">
-          <SearchX className="mx-auto text-[var(--text-secondary)]" size={20} />
-          <p className="title-lg text-[var(--text-primary)]">No lessons found</p>
-          <p className="body-md">Try another keyword or category.</p>
-        </SurfaceCard>
+        <EmptyState
+          contained
+          icon={SearchX}
+          title="No lessons found"
+          description="Try another keyword or category."
+        />
       )}
 
       {!loading && !error && filteredLessons.length > 0 && (

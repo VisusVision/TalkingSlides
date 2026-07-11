@@ -25,6 +25,7 @@ import {
 } from '../api';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import EmptyState from '../components/ui/EmptyState';
 import { usePageLoading } from '../components/ui/PageLoading';
 import Skeleton from '../components/ui/Skeleton';
 import { canAccessStudio } from '../lib/auth';
@@ -407,11 +408,16 @@ function TrendBadge({ value }) {
   );
 }
 
-function EmptyPanel({ message, className = '' }) {
+function EmptyPanel({ title = 'No activity yet', message, icon: Icon = Gauge, className = '' }) {
   return (
-    <div className={`flex min-h-36 items-center justify-center rounded-2xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-muted)]/30 p-5 text-center text-sm text-[var(--text-secondary)] ${className}`}>
-      {message}
-    </div>
+    <EmptyState
+      compact
+      icon={Icon}
+      title={title}
+      titleAs="h3"
+      description={message}
+      className={`rounded-2xl border border-dashed border-[color:var(--border-subtle)] bg-[color:var(--surface-muted)]/30 ${className}`}
+    />
   );
 }
 
@@ -1501,16 +1507,12 @@ export default function Analytics({ user }) {
         <>
       {!loading && stats.isEmpty && !error && (
         <SurfaceCard variant="accent" padding="lg">
-          <div className="flex flex-col gap-5 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="label-sm">No analytics yet</p>
-              <SurfaceCard.Title className="mt-1 text-2xl font-extrabold">
-                Publish lessons and collect watch activity to see insights.
-              </SurfaceCard.Title>
-              <SurfaceCard.Description className="mt-2 max-w-2xl">
-                This dashboard stays empty until real progress, likes, or comments are recorded.
-              </SurfaceCard.Description>
-            </div>
+          <EmptyState
+            icon={Gauge}
+            title="No analytics yet"
+            description="Publish lessons and collect watch activity to see insights. This dashboard stays empty until real progress, likes, or comments are recorded."
+            className="min-h-0 px-0 py-0"
+          >
             <div className="grid grid-cols-3 gap-2 text-center text-xs text-[var(--text-secondary)]">
               <div className="rounded-2xl bg-[color:var(--surface-muted)]/35 p-3">
                 <p className="font-['Manrope'] text-xl font-bold text-[var(--text-primary)]">{compactNumber(stats.metrics.publishedLessons)}</p>
@@ -1525,7 +1527,7 @@ export default function Analytics({ user }) {
                 <p>Events</p>
               </div>
             </div>
-          </div>
+          </EmptyState>
         </SurfaceCard>
       )}
 
@@ -1648,7 +1650,7 @@ export default function Analytics({ user }) {
               </div>
             </div>
           ) : (
-            <EmptyPanel message="No recorded activity in this range." className="min-h-[17rem] flex-1" />
+            <EmptyPanel title="No recorded activity" message="No recorded activity in this range." className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
 
@@ -1682,7 +1684,7 @@ export default function Analytics({ user }) {
               })}
             </div>
           ) : (
-            <EmptyPanel message="Category breakdown will appear once lessons collect activity." className="min-h-[17rem] flex-1" />
+            <EmptyPanel title="No category activity" message="Category breakdown will appear once lessons collect activity." icon={Filter} className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
       </section>
@@ -1724,7 +1726,7 @@ export default function Analytics({ user }) {
               ))}
             </div>
           ) : (
-            <EmptyPanel message="Top lessons will appear after viewers start lessons in this range." />
+            <EmptyPanel title="No top lessons yet" message="Top lessons will appear after viewers start lessons in this range." icon={Eye} />
           )}
         </SurfaceCard>
 
@@ -1765,7 +1767,7 @@ export default function Analytics({ user }) {
               ))}
             </div>
           ) : (
-            <EmptyPanel message="Activity will appear here after viewers like, comment, or make progress on your lessons." className="min-h-[17rem] flex-1" />
+            <EmptyPanel title="No recent activity yet" message="Activity will appear here after viewers like, comment, or make progress on your lessons." icon={Clock3} className="min-h-[17rem] flex-1" />
           )}
         </SurfaceCard>
       </section>
@@ -1817,8 +1819,16 @@ export default function Analytics({ user }) {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={4} className="px-5 py-8 text-center text-sm text-[var(--text-secondary)] sm:px-8">
-                    Recent lesson activity will appear after viewers interact with your lessons.
+                  <td colSpan={4} className="px-5 py-6 sm:px-8">
+                    <EmptyState
+                      as="div"
+                      compact
+                      icon={Eye}
+                      title="No recent lesson activity"
+                      titleAs="h3"
+                      description="Recent lesson activity will appear after viewers interact with your lessons."
+                      className="min-h-0 px-3 py-4"
+                    />
                   </td>
                 </tr>
               )}

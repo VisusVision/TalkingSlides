@@ -36,6 +36,12 @@ Compose it with `Dialog.Header`, `Dialog.Title`, `Dialog.Description`, `Dialog.B
 Disable backdrop or Escape closing for destructive, dirty, or submitting workflows that must force an explicit cancel or completion path.
 Existing `ModalShell` callers keep their legacy props, but new dialog work should avoid duplicating modal markup in pages.
 
+Use `EmptyState` from `services/frontend/src/components/ui/EmptyState.jsx` when a loaded surface has no meaningful content to show.
+Empty states should say what is empty, why it may be empty, and what the user can do next when a real next action exists.
+Keep loading, empty, and error states separate: loading should use `Skeleton` or status text, failed requests should keep error UI, and `EmptyState` should render only after a successful zero-result or no-data response.
+Prefer concise copy, decorative icons, optional actions only when they map to an existing workflow, and compact empty states inside tables or dense panels.
+Avoid page-level duplicate empty-state card markup for new surfaces.
+
 ## Reduced Motion
 
 `prefers-reduced-motion: reduce` minimizes non-essential animation and transition duration.
