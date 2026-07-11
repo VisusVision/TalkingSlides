@@ -9,6 +9,7 @@ import {
 } from '../api';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import EmptyState from '../components/ui/EmptyState';
+import { PageContainer, PageHeader, PageToolbar } from '../components/ui/PageLayout';
 import {
   formatNotificationTime,
   isSafeNotificationActionUrl,
@@ -211,16 +212,12 @@ export default function Notifications({ user }) {
   const EmptyIcon = unreadOnly ? CheckCheck : Inbox;
 
   return (
-    <div className="mx-auto flex w-[calc(100vw-3rem)] max-w-5xl min-w-0 flex-col gap-5 overflow-x-hidden px-3 pb-8 sm:w-full sm:px-5 lg:px-6">
-      <section className="min-w-0 rounded-none bg-transparent py-2">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="min-w-0">
-            <p className="label-sm">Notifications</p>
-            <h1 className="display-lg mt-2 text-[var(--text-primary)]">Notification center</h1>
-            <p className="body-md mt-2 max-w-[19rem] sm:max-w-2xl">
-              Review comments, followed publisher updates, and render status changes.
-            </p>
-          </div>
+    <PageContainer width="standard" className="overflow-x-hidden">
+      <PageHeader
+        eyebrow="Notifications"
+        title="Notification center"
+        description="Review comments, followed publisher updates, and render status changes."
+        actions={(
           <button
             type="button"
             onClick={handleMarkAllRead}
@@ -230,11 +227,11 @@ export default function Notifications({ user }) {
             <CheckCheck size={16} />
             <span>{markAllLoading ? 'Updating...' : 'Mark all read'}</span>
           </button>
-        </div>
-      </section>
+        )}
+      />
 
       <SurfaceCard className="min-w-0 space-y-4 overflow-hidden">
-        <div className="flex flex-col gap-3 border-b border-[color:var(--border-subtle)] pb-4 sm:flex-row sm:items-center sm:justify-between">
+        <PageToolbar surface={false} className="border-b border-[color:var(--border-subtle)] pb-4" aria-label="Notification filters">
           <div className="inline-flex w-fit rounded-full bg-[var(--surface-container-high)] p-1">
             {FILTERS.map((option) => {
               const selected = filter === option.id;
@@ -263,7 +260,7 @@ export default function Notifications({ user }) {
           <p className="text-sm text-[var(--text-secondary)]">
             {pageInfo.count} {pageInfo.count === 1 ? 'notification' : 'notifications'}
           </p>
-        </div>
+        </PageToolbar>
 
         {error && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200">
@@ -314,6 +311,6 @@ export default function Notifications({ user }) {
           </div>
         )}
       </SurfaceCard>
-    </div>
+    </PageContainer>
   );
 }

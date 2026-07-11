@@ -7,6 +7,7 @@ import { usePageLoading } from '../components/ui/PageLoading';
 import Skeleton from '../components/ui/Skeleton';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import EmptyState from '../components/ui/EmptyState';
+import { PageContainer, PageHeader, PageToolbar } from '../components/ui/PageLayout';
 import { normalizeLesson } from '../lib/content';
 
 const LIBRARY_TABS = [
@@ -378,17 +379,16 @@ export default function Library({ searchQuery }) {
   };
 
   return (
-    <div className="space-y-6" aria-busy={loading}>
-      <section className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-        <div>
-          <p className="label-sm">Library</p>
-          <h1 className="headline-md text-[var(--text-primary)]">Your Learning Hub</h1>
-          <p className="body-md mt-2 max-w-2xl">Continue watched lessons, revisit liked lessons, and keep up with publishers you follow.</p>
-        </div>
-      </section>
+    <PageContainer width="standard" aria-busy={loading}>
+      <PageHeader
+        eyebrow="Library"
+        title="Your Learning Hub"
+        titleSize="headline"
+        description="Continue watched lessons, revisit liked lessons, and keep up with publishers you follow."
+      />
 
-      <SurfaceCard className="space-y-5">
-        <div className="rail-scroll flex gap-2 overflow-x-auto pb-1">
+      <PageToolbar aria-label="Library sections">
+        <div className="rail-scroll flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1">
           {LIBRARY_TABS.map((tab) => {
             const Icon = tab.icon;
             const active = activeTab === tab.key;
@@ -409,7 +409,9 @@ export default function Library({ searchQuery }) {
             );
           })}
         </div>
+      </PageToolbar>
 
+      <SurfaceCard className="space-y-5">
         {loading ? (
           <LibraryPanelSkeleton tab={activeTab} />
         ) : error ? (
@@ -418,6 +420,6 @@ export default function Library({ searchQuery }) {
           renderActivePanel()
         )}
       </SurfaceCard>
-    </div>
+    </PageContainer>
   );
 }

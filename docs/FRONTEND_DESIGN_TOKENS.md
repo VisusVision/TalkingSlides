@@ -42,6 +42,13 @@ Keep loading, empty, and error states separate: loading should use `Skeleton` or
 Prefer concise copy, decorative icons, optional actions only when they map to an existing workflow, and compact empty states inside tables or dense panels.
 Avoid page-level duplicate empty-state card markup for new surfaces.
 
+Use `PageContainer`, `PageHeader`, and `PageToolbar` from `services/frontend/src/components/ui/PageLayout.jsx` for new route-level screens and for representative migrations.
+`PageContainer` owns route-level width and vertical rhythm; choose `standard`, `wide`, or `full` only when the existing content density requires it.
+`PageHeader` owns eyebrow, heading, description, and action wrapping while preserving semantic heading elements.
+`PageToolbar` owns filter/search/tab row spacing and optional surface treatment; keep toolbar control order aligned with DOM order so keyboard and RTL behavior remain predictable.
+Avoid duplicating page-level `max-w-* mx-auto`, header flex wrappers, and pill toolbar surface classes in new screens.
+Existing navigation should keep route-driven active states, `aria-current`, visible focus rings, and a non-color selected indicator.
+
 ## Reduced Motion
 
 `prefers-reduced-motion: reduce` minimizes non-essential animation and transition duration.

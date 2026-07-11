@@ -28,14 +28,14 @@ const PRIMARY_ITEMS = [
 function railItemClass(isActive, expanded) {
   const tone = isActive
     ? expanded
-      ? 'bg-[color:rgba(107,56,212,0.1)] text-[var(--accent-primary)] font-semibold shadow-[inset_0_0_0_2px_rgba(107,56,212,0.5)] dark:bg-[color:rgba(208,188,255,0.1)] dark:shadow-[inset_0_0_0_2px_rgba(208,188,255,0.62)]'
-      : 'bg-[color:rgba(107,56,212,0.1)] text-[var(--accent-primary)] shadow-[inset_0_0_0_1.5px_rgba(107,56,212,0.55)] dark:bg-[color:rgba(208,188,255,0.1)] dark:shadow-[inset_0_0_0_1.5px_rgba(208,188,255,0.65)]'
-    : 'text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]';
+      ? 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)] font-semibold shadow-[inset_0_0_0_1px_var(--accent-primary)]'
+      : 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)] shadow-[inset_0_0_0_1px_var(--accent-primary)]'
+    : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]';
   const layout = expanded
     ? 'mx-4 justify-start rounded-full px-4 py-3'
     : 'mx-auto h-12 w-12 justify-center rounded-full border border-[color:var(--border-subtle)] p-0';
 
-  return `group focus-ring relative flex items-center gap-3 transition-all duration-200 ${tone} ${layout}`;
+  return `group focus-ring relative flex items-center gap-3 outline-offset-2 transition-all duration-200 ${tone} ${layout}`;
 }
 
 function RailTooltip({ label, rightOffset = true }) {
@@ -73,6 +73,12 @@ function RailNavItem({ to, label, icon: Icon, end = false, expanded, user }) {
     >
       {({ isActive }) => (
         <>
+          {isActive ? (
+            <span
+              aria-hidden="true"
+              className={`absolute top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-[var(--accent-primary)] ${expanded ? 'left-2 rtl:left-auto rtl:right-2' : '-left-1 rtl:-right-1 rtl:left-auto'}`}
+            />
+          ) : null}
           <span
             className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
               isActive ? 'bg-transparent text-[var(--accent-primary)]' : 'bg-transparent text-current'
@@ -111,6 +117,12 @@ function RailHelpItem({ to, label, icon: Icon, expanded, user }) {
     >
       {({ isActive }) => (
         <>
+          {isActive ? (
+            <span
+              aria-hidden="true"
+              className={`absolute top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-[var(--accent-primary)] ${expanded ? 'left-2 rtl:left-auto rtl:right-2' : '-left-1 rtl:-right-1 rtl:left-auto'}`}
+            />
+          ) : null}
           <span
             className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
               isActive ? 'bg-transparent text-[var(--accent-primary)]' : 'bg-transparent text-current'

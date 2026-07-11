@@ -18,6 +18,7 @@ import Button from '../components/ui/Button';
 import PublicProfileEditor from '../components/profile/PublicProfileEditor';
 import ModalShell from '../components/ui/ModalShell';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import { PageContainer, PageHeader } from '../components/ui/PageLayout';
 import { useTheme } from '../components/ui/ThemeProvider';
 import { usePageLoading } from '../components/ui/PageLoading';
 import { toast } from '../components/ui/Toast';
@@ -1322,16 +1323,12 @@ export default function Settings({ user, onUserRefresh }) {
   };
 
   return (
-    <div className="space-y-5">
-      <section className="layout-grid-12">
-        <SurfaceCard elevated className="lg:col-span-12">
-          <p className="label-sm">Settings</p>
-          <h1 className="display-lg mt-2 text-[var(--text-primary)]">Workspace preferences</h1>
-          <p className="body-md mt-3 max-w-2xl">
-            Manage account details, public profile text, playback accessibility, and deployment feature visibility.
-          </p>
-        </SurfaceCard>
-      </section>
+    <PageContainer width="wide" gap="sm">
+      <PageHeader
+        eyebrow="Settings"
+        title="Workspace preferences"
+        description="Manage account details, public profile text, playback accessibility, and deployment feature visibility."
+      />
 
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2 2xl:grid-cols-3">
         <SettingsSection
@@ -2019,6 +2016,6 @@ export default function Settings({ user, onUserRefresh }) {
           )}
         </div>
       </ModalShell>
-    </div>
+    </PageContainer>
   );
 }
