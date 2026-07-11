@@ -17,10 +17,10 @@ const MOBILE_ITEMS = [
 ];
 
 function mobileItemClass(isActive) {
-  return `focus-ring flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-full px-1 py-2 text-[10px] font-semibold uppercase tracking-[0.1em] transition-all duration-200 ${
+  return `focus-ring relative flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-full px-1 py-2 text-[10px] font-semibold uppercase tracking-[0.1em] outline-offset-2 transition-all duration-200 ${
     isActive
-      ? 'scale-105 bg-[color:rgba(107,56,212,0.1)] text-[var(--accent-primary)] dark:bg-[color:rgba(208,188,255,0.18)]'
-      : 'text-[var(--outline)] hover:text-[var(--accent-primary)]'
+      ? 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)] shadow-[inset_0_0_0_1px_var(--accent-primary)]'
+      : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]'
   }`;
 }
 
@@ -62,8 +62,13 @@ export default function MobileBottomNav({ user }) {
             className={({ isActive }) => mobileItemClass(isActive)}
             aria-label={item.label}
           >
-            <Icon size={18} strokeWidth={2} />
-            <span>{item.label}</span>
+            {({ isActive }) => (
+              <>
+                {isActive ? <span aria-hidden="true" className="absolute top-1 h-1 w-5 rounded-full bg-[var(--accent-primary)]" /> : null}
+                <Icon size={18} strokeWidth={2} />
+                <span>{item.label}</span>
+              </>
+            )}
           </NavLink>
         );
       })}

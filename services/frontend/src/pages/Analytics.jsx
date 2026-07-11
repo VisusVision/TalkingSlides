@@ -24,8 +24,11 @@ import {
   fetchMyAnalyticsIntelligence,
 } from '../api';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
+import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import EmptyState from '../components/ui/EmptyState';
+import Select from '../components/ui/Select';
+import { PageContainer, PageHeader, PageToolbar } from '../components/ui/PageLayout';
 import { usePageLoading } from '../components/ui/PageLoading';
 import Skeleton from '../components/ui/Skeleton';
 import { canAccessStudio } from '../lib/auth';
@@ -1434,22 +1437,24 @@ export default function Analytics({ user }) {
   const showInitialAnalyticsSkeleton = loading && stats.isEmpty && !error;
 
   return (
-    <div className="space-y-7 pb-8" aria-busy={loading}>
-      <header className="flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 className="font-['Manrope'] text-4xl font-extrabold tracking-[-0.04em] text-[var(--text-primary)]">Performance Overview</h1>
-          <p className="mt-2 text-sm text-[var(--text-secondary)]">Real engagement signals from lesson progress, likes, and comments.</p>
-        </div>
+    <PageContainer width="wide" gap="lg" aria-busy={loading}>
+      <PageHeader
+        title="Performance Overview"
+        titleSize="headline"
+        description="Real engagement signals from lesson progress, likes, and comments."
+      />
 
-        <div className="flex flex-wrap items-center gap-2">
+      <PageToolbar aria-label="Analytics filters">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           {analyticsCategories.length > 0 && (
             <label className="focus-within:ring-focus inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-xs font-semibold text-[var(--text-secondary)]">
               <Filter size={14} />
               <span className="sr-only">Filter by category</span>
-              <select
+              <Select
                 value={categorySlug}
                 onChange={(event) => setCategorySlug(event.target.value)}
-                className="h-8 min-w-[10rem] rounded-full border-0 bg-[var(--surface-elevated)] px-1 text-xs font-semibold text-[var(--text-primary)] outline-none"
+                size="sm"
+                className="min-w-[10rem] rounded-full border-0 bg-[var(--surface-elevated)] px-1 text-xs font-semibold"
                 style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}
               >
                 <option value="" style={{ backgroundColor: 'var(--surface-elevated)', color: 'var(--text-primary)' }}>All categories</option>
@@ -1462,7 +1467,7 @@ export default function Analytics({ user }) {
                     {category.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           )}
 
@@ -1483,17 +1488,19 @@ export default function Analytics({ user }) {
             ))}
           </div>
 
-          <button
+          <Button
             type="button"
+            variant="secondary"
+            size="sm"
             onClick={() => setRefreshNonce((value) => value + 1)}
             disabled={loading}
-            className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)] disabled:cursor-wait disabled:opacity-60"
+            className="border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] text-xs hover:bg-[var(--surface-container-high)] disabled:cursor-wait"
           >
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
             Refresh
-          </button>
+          </Button>
         </div>
-      </header>
+      </PageToolbar>
 
       {error && (
         <SurfaceCard variant="danger" padding="sm">
@@ -2049,6 +2056,6 @@ export default function Analytics({ user }) {
         submitError={createError}
         onSubmit={handleCreateLesson}
       />
-    </div>
+    </PageContainer>
   );
 }

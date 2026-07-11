@@ -6,6 +6,7 @@ import SurfaceCard from '../components/ui/SurfaceCard';
 import Button from '../components/ui/Button';
 import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
+import { PageContainer, PageHeader, PageToolbar } from '../components/ui/PageLayout';
 import LessonActionButton from '../components/moderation/LessonActionButton';
 import { usePageLoading } from '../components/ui/PageLoading';
 import Skeleton from '../components/ui/Skeleton';
@@ -153,55 +154,54 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
   }, [lessons, searchQuery]);
 
   return (
-    <div className="space-y-6" aria-busy={loading}>
-      <section className="layout-grid-12">
-        <SurfaceCard elevated className="lg:col-span-8">
-          <p className="label-sm">Explore</p>
-          <h1 className="display-lg mt-2 text-[var(--text-primary)]">Browse The Catalog</h1>
-          <p className="body-md mt-3 max-w-2xl">
-            Curated lecture cards built for quick scanning, deep study, and smooth transition into player mode.
-          </p>
-        </SurfaceCard>
+    <PageContainer width="wide" aria-busy={loading}>
+      <PageHeader
+        eyebrow="Explore"
+        title="Browse The Catalog"
+        description="Curated lecture cards built for quick scanning, deep study, and smooth transition into player mode."
+        actions={(
+          <SurfaceCard className="w-full min-w-[11rem] md:w-auto" padding="sm">
+            <p className="label-sm">Results</p>
+            <p className="mt-3 text-4xl font-['Manrope'] font-bold tracking-[-0.04em] text-[var(--text-primary)]">
+              {filteredLessons.length}
+            </p>
+            <p className="body-md mt-2">items match your active category and search query.</p>
+          </SurfaceCard>
+        )}
+      />
 
-        <SurfaceCard className="lg:col-span-4">
-          <p className="label-sm">Results</p>
-          <p className="mt-3 text-4xl font-['Manrope'] font-bold tracking-[-0.04em] text-[var(--text-primary)]">
-            {filteredLessons.length}
-          </p>
-          <p className="body-md mt-2">items match your active category and search query.</p>
-        </SurfaceCard>
-      </section>
-
-      <SurfaceCard className="space-y-3">
-        <p className="label-sm">Categories</p>
-        <div className="rail-scroll flex gap-2 overflow-x-auto pb-1">
-          <button
-            type="button"
-            onClick={() => setActiveCategory('')}
-            className={`focus-ring rounded-full px-3 py-1.5 text-sm ${
-              !activeCategory
-                ? 'bg-[image:var(--accent-gradient)] text-[var(--accent-inverse)]'
-                : 'token-surface text-[var(--text-secondary)]'
-            }`}
-          >
-            All
-          </button>
-          {categories.map((category) => (
+      <PageToolbar aria-label="Browse category filters">
+        <div className="min-w-0 flex-1 space-y-3">
+          <p className="label-sm">Categories</p>
+          <div className="rail-scroll flex gap-2 overflow-x-auto pb-1">
             <button
-              key={category.id}
               type="button"
-              onClick={() => setActiveCategory(category.slug || '')}
+              onClick={() => setActiveCategory('')}
               className={`focus-ring rounded-full px-3 py-1.5 text-sm ${
-                activeCategory === (category.slug || '')
+                !activeCategory
                   ? 'bg-[image:var(--accent-gradient)] text-[var(--accent-inverse)]'
                   : 'token-surface text-[var(--text-secondary)]'
               }`}
             >
-              {category.name}
+              All
             </button>
-          ))}
+            {categories.map((category) => (
+              <button
+                key={category.id}
+                type="button"
+                onClick={() => setActiveCategory(category.slug || '')}
+                className={`focus-ring rounded-full px-3 py-1.5 text-sm ${
+                  activeCategory === (category.slug || '')
+                    ? 'bg-[image:var(--accent-gradient)] text-[var(--accent-inverse)]'
+                    : 'token-surface text-[var(--text-secondary)]'
+                }`}
+              >
+                {category.name}
+              </button>
+            ))}
+          </div>
         </div>
-      </SurfaceCard>
+      </PageToolbar>
 
       {loading && <BrowseCatalogSkeleton />}
 
@@ -261,6 +261,6 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
           ))}
         </section>
       )}
-    </div>
+    </PageContainer>
   );
 }
