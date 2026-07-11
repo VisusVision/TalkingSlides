@@ -6,6 +6,7 @@ import LearningLessonCard, { normalizeLearningRows } from '../components/library
 import { usePageLoading } from '../components/ui/PageLoading';
 import Skeleton from '../components/ui/Skeleton';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import EmptyState from '../components/ui/EmptyState';
 import { normalizeLesson } from '../lib/content';
 
 const LIBRARY_TABS = [
@@ -80,11 +81,12 @@ function filterPlaylists(items, query) {
 
 function EmptyPanel({ icon: Icon, title, body }) {
   return (
-    <SurfaceCard elevated className="text-center">
-      <Icon className="mx-auto text-[var(--text-secondary)]" size={21} />
-      <p className="title-lg mt-2 text-[var(--text-primary)]">{title}</p>
-      {body ? <p className="body-md mt-1">{body}</p> : null}
-    </SurfaceCard>
+    <EmptyState
+      icon={Icon}
+      title={title}
+      description={body}
+      className="rounded-lg bg-[color:var(--surface-muted)]/25"
+    />
   );
 }
 
@@ -298,9 +300,17 @@ export default function Library({ searchQuery }) {
   );
 
   const renderActivePanel = () => {
+    const hasSearchQuery = String(searchQuery || '').trim().length > 0;
+
     if (activeTab === 'history') {
       if (!visibleHistory.length) {
-        return <EmptyPanel icon={BookOpenText} title="No watched lessons yet." body="Lessons you start watching will appear here." />;
+        return (
+          <EmptyPanel
+            icon={BookOpenText}
+            title={hasSearchQuery && historyRows.length ? 'No watched lessons match your search.' : 'No watched lessons yet.'}
+            body={hasSearchQuery && historyRows.length ? 'Try another search term.' : 'Lessons you start watching will appear here.'}
+          />
+        );
       }
       return (
         <div className="grid gap-3">
@@ -313,7 +323,13 @@ export default function Library({ searchQuery }) {
 
     if (activeTab === 'liked') {
       if (!visibleLiked.length) {
-        return <EmptyPanel icon={Heart} title="No liked lessons yet." body="Liked lessons will appear here after you save them from Watch." />;
+        return (
+          <EmptyPanel
+            icon={Heart}
+            title={hasSearchQuery && likedRows.length ? 'No liked lessons match your search.' : 'No liked lessons yet.'}
+            body={hasSearchQuery && likedRows.length ? 'Try another search term.' : 'Liked lessons will appear here after you save them from Watch.'}
+          />
+        );
       }
       return (
         <div className="grid gap-3">
@@ -326,7 +342,13 @@ export default function Library({ searchQuery }) {
 
     if (activeTab === 'following') {
       if (!visibleFollowing.length) {
-        return <EmptyPanel icon={Users} title="You are not following any publishers yet." />;
+        return (
+          <EmptyPanel
+            icon={Users}
+            title={hasSearchQuery && followingRows.length ? 'No followed publishers match your search.' : 'You are not following any publishers yet.'}
+            body={hasSearchQuery && followingRows.length ? 'Try another search term.' : 'Publishers you follow will appear here.'}
+          />
+        );
       }
       return (
         <div className="grid gap-3">
@@ -338,7 +360,13 @@ export default function Library({ searchQuery }) {
     }
 
     if (!visibleSavedPlaylists.length) {
-      return <EmptyPanel icon={ListPlus} title="No saved playlists yet." />;
+      return (
+        <EmptyPanel
+          icon={ListPlus}
+          title={hasSearchQuery && savedPlaylistRows.length ? 'No saved playlists match your search.' : 'No saved playlists yet.'}
+          body={hasSearchQuery && savedPlaylistRows.length ? 'Try another search term.' : 'Saved playlists will appear here.'}
+        />
+      );
     }
     return (
       <div className="grid gap-3">
