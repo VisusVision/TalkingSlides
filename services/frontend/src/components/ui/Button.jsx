@@ -4,11 +4,11 @@ function joinClasses(...parts) {
 
 const VARIANT_STYLES = {
   primary:
-    'bg-[image:var(--accent-gradient)] text-white font-bold hover:scale-105 active:scale-95',
+    'bg-[image:var(--accent-gradient)] text-white font-bold shadow-token-xs enabled:hover:brightness-[1.02] enabled:hover:shadow-token-sm',
   secondary:
-    'bg-[var(--surface-container-highest)] text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)]',
+    'bg-[var(--surface-container-highest)] text-[var(--text-primary)] enabled:hover:bg-[color:var(--hover-surface-strong)]',
   ghost:
-    'bg-transparent text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]',
+    'bg-transparent text-[var(--text-secondary)] enabled:hover:bg-[color:var(--hover-surface)] enabled:hover:text-[var(--text-primary)]',
 };
 
 const SIZE_STYLES = {
@@ -30,7 +30,7 @@ export default function Button({
     <button
       type={type}
       className={joinClasses(
-        'focus-ring inline-flex items-center justify-center gap-2 rounded-pill font-medium transition duration-normal ease-standard disabled:cursor-not-allowed disabled:opacity-70 disabled:saturate-75 disabled:shadow-none disabled:hover:scale-100',
+        'focus-ring motion-interactive inline-flex items-center justify-center gap-2 rounded-pill font-medium enabled:active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-70 disabled:saturate-75 disabled:shadow-none',
         VARIANT_STYLES[variant] || VARIANT_STYLES.primary,
         SIZE_STYLES[size] || SIZE_STYLES.md,
         fullWidth && 'w-full',

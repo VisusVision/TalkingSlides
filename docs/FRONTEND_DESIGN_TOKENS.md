@@ -24,6 +24,8 @@ Prefer the existing semantic utility classes (`token-surface`, `token-surface-el
 
 Use Tailwind arbitrary values for existing semantic color tokens when needed, for example `bg-[var(--surface-container)]` or `text-[var(--text-primary)]`.
 Avoid introducing new arbitrary radii, shadows, transition timings, or control heights unless the token set is missing a reusable concept.
+For shared motion, use the token-backed motion utilities in `globals.css` before adding component-specific timings or easing. Keep primitive interaction motion fast, subtle, and limited to opacity, transform, color, border, background, filter, or small-surface shadow changes.
+Avoid `transition-all`, arbitrary `duration-*` values, custom easing curves, layout-property animation, and decorative looping motion unless a feature has a specific measured need.
 For dark-mode work, prefer semantic pairings such as `--bg`, `--surface-*`, `--border-subtle`, `--text-secondary`, `--outline`, `--hover-surface`, `--hover-accent-soft`, and `--modal-backdrop` instead of page-level `dark:` overrides or fixed white/black surfaces.
 Treat hard-coded `bg-white`, `bg-black`, `text-gray-*`, `border-gray-*`, and one-off rgba values as suspect unless they are part of real media overlays, charts, thumbnails, or brand artwork.
 
@@ -63,6 +65,7 @@ Use `--glass-overlay` and `--glass-stroke` for app chrome or translucent sticky 
 
 `prefers-reduced-motion: reduce` minimizes non-essential animation and transition duration.
 Progress and loading indicators remain visible as static feedback so users still receive functional state changes.
+Reduced-motion styles should also neutralize non-essential transforms while preserving visibility, focus behavior, live regions, and immediate access to dialogs, toasts, and controls.
 
 ## Adding Tokens
 

@@ -175,7 +175,7 @@ function Dialog({
   return createPortal(
     <div
       className={joinClasses(
-        'fixed inset-0 z-[80] flex items-center justify-center bg-[color:var(--modal-backdrop)] p-3 transition-opacity duration-fast ease-token-out motion-reduce:transition-none sm:p-4',
+        'motion-fade fixed inset-0 z-[80] flex items-center justify-center bg-[color:var(--modal-backdrop)] p-3 sm:p-4',
         overlayClassName,
       )}
       onMouseDown={handleBackdropMouseDown}
@@ -190,7 +190,7 @@ function Dialog({
         aria-label={ariaLabel}
         tabIndex={-1}
         className={joinClasses(
-          'flex max-h-[calc(100dvh-1.5rem)] w-full flex-col overflow-hidden rounded-dialog border border-[var(--border-subtle)] bg-[var(--surface-container)] text-start text-[var(--text-primary)] shadow-dialog outline-none transition duration-fast ease-token-out motion-reduce:transform-none motion-reduce:transition-none sm:max-h-[calc(100dvh-2rem)]',
+          'motion-scale-in flex max-h-[calc(100dvh-1.5rem)] w-full flex-col overflow-hidden rounded-dialog border border-[var(--border-subtle)] bg-[var(--surface-container)] text-start text-[var(--text-primary)] shadow-dialog outline-none sm:max-h-[calc(100dvh-2rem)]',
           SIZE_STYLES[size] || SIZE_STYLES.md,
           className,
         )}

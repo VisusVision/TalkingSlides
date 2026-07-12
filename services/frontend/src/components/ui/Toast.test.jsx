@@ -89,6 +89,30 @@ describe('ToastProvider', () => {
     expect(document.body).not.toHaveTextContent('Saved settings');
   });
 
+  it('applies shared toast motion classes during entrance and dismiss', async () => {
+    await act(async () => {
+      toast.info('Motion contract', { duration: Infinity });
+    });
+
+    const toastItem = document.body.querySelector('[data-toast-variant="info"]');
+    expect(toastItem.className).toContain('motion-slide-up');
+    expect(toastItem.className).not.toContain('motion-exit');
+
+    await act(async () => {
+      document.body.querySelector('button[aria-label="Dismiss info notification"]').click();
+    });
+
+    const dismissedToast = document.body.querySelector('[data-toast-variant="info"]');
+    expect(dismissedToast).toHaveAttribute('data-toast-dismissed', 'true');
+    expect(dismissedToast.className).toContain('motion-exit');
+
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+    });
+
+    expect(document.body).not.toHaveTextContent('Motion contract');
+  });
+
   it('supports keyboard dismiss without moving focus automatically', async () => {
     const trigger = document.createElement('button');
     trigger.type = 'button';
@@ -148,6 +172,7 @@ describe('ToastProvider', () => {
 
     expect(document.body.querySelector('.visus-toast-viewport').className).toContain('custom-viewport');
     expect(document.body.querySelector('[data-toast-variant="loading"]').className).toContain('custom-toast');
+    expect(document.body.querySelector('[data-toast-variant="loading"]').className).toContain('motion-slide-up');
     expect(document.body.querySelector('[data-toast-variant="loading"] [style*="40%"]')).toBeInTheDocument();
   });
 });

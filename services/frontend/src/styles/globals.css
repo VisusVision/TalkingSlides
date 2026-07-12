@@ -326,6 +326,30 @@
     --tw-ring-offset-color: var(--bg);
   }
 
+  .motion-interactive {
+    transition-property: background-color, border-color, color, box-shadow, filter, opacity, transform;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  .motion-fade {
+    animation: motion-fade var(--duration-fast) var(--ease-out) both;
+  }
+
+  .motion-scale-in {
+    animation: motion-scale-in var(--duration-fast) var(--ease-out) both;
+    transform-origin: center;
+  }
+
+  .motion-slide-up {
+    animation: motion-slide-up var(--duration-normal) var(--ease-out) both;
+  }
+
+  .motion-exit {
+    opacity: 0;
+    transform: translateY(4px) scale(0.99);
+  }
+
   .cinematic-fade {
     animation: cinematic-fade 0.65s var(--ease-out) both;
   }
@@ -370,7 +394,6 @@
   }
 
   .visus-toast {
-    animation: visus-toast-enter var(--duration-normal) var(--ease-out) both;
     transform-origin: bottom right;
   }
 
@@ -380,6 +403,40 @@
 
   .visus-toast-spin {
     animation: visus-toast-spin 0.9s linear infinite;
+  }
+}
+
+@keyframes motion-fade {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes motion-scale-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes motion-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.99);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -427,18 +484,6 @@
   }
 }
 
-@keyframes visus-toast-enter {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.98);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
-
 @keyframes visus-toast-spin {
   to {
     transform: rotate(360deg);
@@ -470,6 +515,17 @@
     animation: none !important;
     transform: none !important;
   }
+
+  .motion-interactive,
+  .motion-interactive:hover,
+  .motion-interactive:active,
+  .motion-fade,
+  .motion-scale-in,
+  .motion-slide-up,
+  .motion-exit {
+    animation: none !important;
+    transform: none !important;
+  }
 }
 
 @media (min-width: 640px) {
@@ -493,5 +549,15 @@
 }
 
 .reduced-motion .visus-loading-sheen::after {
+  transform: none !important;
+}
+
+.reduced-motion .motion-interactive,
+.reduced-motion .motion-interactive:hover,
+.reduced-motion .motion-interactive:active,
+.reduced-motion .motion-fade,
+.reduced-motion .motion-scale-in,
+.reduced-motion .motion-slide-up,
+.reduced-motion .motion-exit {
   transform: none !important;
 }

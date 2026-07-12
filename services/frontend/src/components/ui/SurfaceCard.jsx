@@ -39,10 +39,10 @@ function SurfaceCard({
   return (
     <Component
       className={joinClasses(
-        'rounded-card transition duration-normal ease-standard',
+        'rounded-card',
         VARIANT_STYLES[resolvedVariant] || VARIANT_STYLES.default,
         PADDING_STYLES[padding] ?? PADDING_STYLES.md,
-        interactive && !disabled && 'focus-ring hover:-translate-y-0.5 hover:shadow-token-sm',
+        interactive && !disabled && 'focus-ring motion-interactive hover:-translate-y-0.5 hover:shadow-token-md active:translate-y-0',
         disabled && 'pointer-events-none opacity-60',
         className,
       )}
