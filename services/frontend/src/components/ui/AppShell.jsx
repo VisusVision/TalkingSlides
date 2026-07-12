@@ -36,7 +36,7 @@ export default function AppShell({
 
       <MobileBottomNav user={user} />
 
-      <div className={`relative pl-0 transition-[padding] duration-300 ${railExpanded ? 'md:pl-[16rem] xl:pl-[18rem]' : 'md:pl-[5rem]'}`}>
+      <div className={`relative pl-0 transition-[padding] duration-slow ease-token-in-out ${railExpanded ? 'md:pl-[16rem] xl:pl-[18rem]' : 'md:pl-[5rem]'}`}>
         <main className="mx-auto max-w-[1700px] px-3 pb-20 sm:px-6 md:pb-16 lg:px-8">{children}</main>
       </div>
     </div>

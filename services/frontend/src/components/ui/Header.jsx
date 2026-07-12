@@ -195,7 +195,7 @@ export default function Header({
               <div ref={notificationRef} className="relative block">
                 <button
                   type="button"
-                  className="focus-ring relative inline-flex h-10 w-10 items-center justify-center rounded-full text-[var(--outline)] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
+                  className="focus-ring motion-interactive relative inline-flex h-10 w-10 items-center justify-center rounded-full text-[var(--outline)] hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)] active:scale-[0.98]"
                   aria-label="Notifications"
                   aria-expanded={notificationsOpen}
                   onClick={() => setNotificationsOpen((open) => !open)}
@@ -209,7 +209,7 @@ export default function Header({
                 </button>
 
                 {notificationsOpen && (
-                  <div className="fixed left-3 right-3 top-16 z-[60] w-auto overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-primary)] shadow-2xl md:absolute md:left-auto md:right-0 md:top-12 md:w-[22rem]">
+                  <div className="motion-popover-in fixed left-3 right-3 top-16 z-[60] w-auto overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-high)] text-[var(--text-primary)] shadow-2xl md:absolute md:left-auto md:right-0 md:top-12 md:w-[22rem]">
                     <div className="flex items-center justify-between border-b border-[color:var(--border-subtle)] px-4 py-3">
                       <div>
                         <p className="text-sm font-semibold">Notifications</p>
@@ -217,7 +217,7 @@ export default function Header({
                       </div>
                       <button
                         type="button"
-                        className="focus-ring inline-flex h-8 items-center gap-1.5 rounded-full px-2 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
+                        className="focus-ring motion-interactive inline-flex h-8 items-center gap-1.5 rounded-full px-2 text-xs font-semibold text-[var(--text-secondary)] hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-50"
                         onClick={handleMarkAllRead}
                         disabled={markAllLoading || unreadCount === 0}
                       >
@@ -234,7 +234,7 @@ export default function Header({
                             key={filter}
                             type="button"
                             onClick={() => setNotificationFilter(filter)}
-                            className={`focus-ring h-8 rounded-full px-3 text-xs font-semibold capitalize transition ${
+                            className={`focus-ring motion-interactive h-8 rounded-full px-3 text-xs font-semibold capitalize ${
                               selected
                                 ? 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]'
                                 : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]'
@@ -280,7 +280,7 @@ export default function Header({
                           <button
                             key={notification.id}
                             type="button"
-                            className={`focus-ring block w-full border-b border-[color:var(--border-subtle)] px-4 py-3 text-left transition last:border-b-0 hover:bg-[color:var(--hover-accent-soft)] ${unread ? 'bg-[color:var(--surface-container-low)]' : ''}`}
+                            className={`focus-ring motion-interactive block w-full border-b border-[color:var(--border-subtle)] px-4 py-3 text-left last:border-b-0 hover:bg-[color:var(--hover-accent-soft)] ${unread ? 'bg-[color:var(--surface-container-low)]' : ''}`}
                             onClick={() => handleNotificationClick(notification)}
                           >
                             <div className="flex items-start gap-3">
@@ -310,7 +310,7 @@ export default function Header({
                       <Link
                         to="/notifications"
                         onClick={() => setNotificationsOpen(false)}
-                        className="focus-ring flex h-9 items-center justify-center rounded-full text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-accent-soft)]"
+                        className="focus-ring motion-interactive flex h-9 items-center justify-center rounded-full text-sm font-semibold text-[var(--text-primary)] hover:bg-[color:var(--hover-accent-soft)]"
                       >
                         View all notifications
                       </Link>

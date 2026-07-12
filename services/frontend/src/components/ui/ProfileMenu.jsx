@@ -103,7 +103,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
         <button
           type="button"
           onClick={() => setOpen((prev) => !prev)}
-          className="focus-ring hidden max-w-[11rem] text-right sm:flex sm:flex-col sm:items-end"
+          className="focus-ring motion-interactive hidden max-w-[11rem] rounded-xl text-right sm:flex sm:flex-col sm:items-end"
           aria-label="Account menu"
           aria-expanded={open}
           aria-haspopup="menu"
@@ -115,7 +115,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
         <button
           type="button"
           onClick={() => setOpen((prev) => !prev)}
-          className="focus-ring inline-flex h-10 w-10 items-center justify-center overflow-hidden rounded-full"
+          className="focus-ring motion-interactive inline-flex h-10 w-10 items-center justify-center overflow-hidden rounded-full active:scale-[0.98]"
           aria-label="Open account menu"
           aria-expanded={open}
           aria-haspopup="menu"
@@ -141,13 +141,13 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
       {open && (
         <div
           role="menu"
-          className="absolute right-0 z-[70] mt-3 w-56 rounded-2xl border border-[color:var(--border-subtle)] bg-[var(--surface-container)] p-3 shadow-token-md"
+          className="motion-popover-in absolute right-0 z-[70] mt-3 w-56 rounded-2xl border border-[color:var(--border-subtle)] bg-[var(--surface-container)] p-3 shadow-token-md"
         >
           <Link
             to={ownChannelPath}
             role="menuitem"
             aria-label={ownChannelLabel}
-            className="focus-ring mb-2 block rounded-xl bg-[var(--surface-container-high)] px-3 py-2 transition hover:bg-[color:var(--hover-surface)]"
+            className="focus-ring motion-interactive mb-2 block rounded-xl bg-[var(--surface-container-high)] px-3 py-2 hover:bg-[color:var(--hover-surface)]"
             onClick={() => setOpen(false)}
           >
             <p className="label-sm">Your channel</p>
@@ -158,7 +158,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <Link
             to="/library"
             role="menuitem"
-            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring motion-interactive mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
             <BookOpen size={15} />
@@ -168,7 +168,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <Link
             to="/settings"
             role="menuitem"
-            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring motion-interactive mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
             <SettingsIcon size={15} />
@@ -178,7 +178,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <Link
             to="/help"
             role="menuitem"
-            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring motion-interactive mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
             <CircleHelp size={15} />
@@ -188,7 +188,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <button
             type="button"
             role="menuitem"
-            className="focus-ring flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring motion-interactive flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={async () => {
               setOpen(false);
               await onLogout();

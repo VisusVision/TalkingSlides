@@ -784,7 +784,7 @@ function CollapsibleAnalyticsSection({ title, count = 0, icon: Icon = Lightbulb,
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="focus-ring flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left"
+        className="focus-ring motion-interactive flex w-full items-center justify-between gap-3 rounded-2xl px-4 py-3 text-left hover:bg-[color:var(--surface-muted)]/20"
       >
         <span className="flex min-w-0 items-center gap-2">
           <Icon size={16} className="shrink-0 text-[var(--accent-primary)]" />
@@ -797,10 +797,10 @@ function CollapsibleAnalyticsSection({ title, count = 0, icon: Icon = Lightbulb,
         </span>
         <ChevronDown
           size={16}
-          className={`shrink-0 text-[var(--text-secondary)] transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`motion-disclosure shrink-0 text-[var(--text-secondary)] ${open ? 'rotate-180' : ''}`}
         />
       </button>
-      {open && <div className="space-y-2 px-4 pb-4">{children}</div>}
+      {open && <div className="motion-fade space-y-2 px-4 pb-4">{children}</div>}
     </section>
   );
 }
@@ -1437,14 +1437,15 @@ export default function Analytics({ user }) {
   const showInitialAnalyticsSkeleton = loading && stats.isEmpty && !error;
 
   return (
-    <PageContainer width="wide" gap="lg" aria-busy={loading}>
+    <PageContainer width="wide" gap="lg" motion="enter" aria-busy={loading}>
       <PageHeader
         title="Performance Overview"
         titleSize="headline"
         description="Real engagement signals from lesson progress, likes, and comments."
+        motion="fade"
       />
 
-      <PageToolbar aria-label="Analytics filters">
+      <PageToolbar motion="fade" aria-label="Analytics filters">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
           {analyticsCategories.length > 0 && (
             <label className="focus-within:ring-focus inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-xs font-semibold text-[var(--text-secondary)]">
@@ -1477,7 +1478,7 @@ export default function Analytics({ user }) {
                 key={option.key}
                 type="button"
                 onClick={() => setRangeKey(option.key)}
-                className={`focus-ring rounded-full px-4 py-2 text-xs font-semibold transition ${
+                className={`focus-ring motion-interactive rounded-full px-4 py-2 text-xs font-semibold active:scale-[0.98] ${
                   rangeKey === option.key
                     ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)]'
                     : 'text-[var(--text-secondary)] hover:bg-[var(--surface-container-high)] hover:text-[var(--text-primary)]'
@@ -1556,7 +1557,7 @@ export default function Analytics({ user }) {
           </SurfaceCard.Header>
           <Link
             to="/moderation"
-            className="focus-ring inline-flex h-10 items-center justify-center rounded-full bg-[image:var(--accent-gradient)] px-4 text-sm font-bold text-white transition hover:scale-105 active:scale-95"
+            className="focus-ring motion-interactive inline-flex h-10 items-center justify-center rounded-full bg-[image:var(--accent-gradient)] px-4 text-sm font-bold text-white active:scale-[0.98]"
           >
             Open Moderation
           </Link>
@@ -1747,7 +1748,7 @@ export default function Analytics({ user }) {
               <button
                 type="button"
                 onClick={() => setRecentActivityExpanded((value) => !value)}
-                className="focus-ring shrink-0 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)]"
+                className="focus-ring motion-interactive shrink-0 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-3 py-1.5 text-xs font-semibold text-[var(--text-primary)] hover:bg-[var(--surface-container-high)]"
               >
                 {recentActivityExpanded ? 'Show less' : `Show ${stats.recentActivity.length - 3} more`}
               </button>
@@ -1873,7 +1874,7 @@ export default function Analytics({ user }) {
               <button
                 type="button"
                 onClick={handleCopyIntelligence}
-                className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-xs font-semibold text-[var(--text-primary)] transition hover:bg-[var(--surface-container-high)]"
+                className="focus-ring motion-interactive inline-flex h-10 items-center gap-2 rounded-full border border-[color:var(--border-subtle)] bg-[var(--surface-elevated)] px-4 text-xs font-semibold text-[var(--text-primary)] hover:bg-[var(--surface-container-high)]"
               >
                 <Copy size={14} />
                 {intelligenceCopied ? 'Copied' : 'Copy'}
@@ -1883,7 +1884,7 @@ export default function Analytics({ user }) {
               type="button"
               onClick={() => handleAnalyzeAnalytics({ force: intelligenceStale })}
               disabled={intelligenceButtonDisabled}
-              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[image:var(--accent-gradient)] px-4 text-xs font-bold text-white transition hover:scale-105 active:scale-95 disabled:cursor-wait disabled:opacity-60 disabled:hover:scale-100"
+              className="focus-ring motion-interactive inline-flex h-10 items-center gap-2 rounded-full bg-[image:var(--accent-gradient)] px-4 text-xs font-bold text-white active:scale-[0.98] disabled:cursor-wait disabled:opacity-60"
             >
               <RefreshCw size={14} className={(intelligenceAnalyzing || intelligenceEnhancementPending) ? 'animate-spin' : ''} />
               {intelligenceButtonLabel}
