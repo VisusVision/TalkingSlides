@@ -40,7 +40,7 @@ describe('SurfaceCard', () => {
     expect(card.className).toContain('rounded-card');
     expect(card.className).toContain('token-surface');
     expect(card.className).toContain('p-5');
-    expect(card.className).toContain('duration-normal');
+    expect(card.className).not.toContain('motion-interactive');
   });
 
   it('keeps elevated compatibility while supporting explicit variants', async () => {
@@ -77,15 +77,19 @@ describe('SurfaceCard', () => {
     await render(
       <div>
         <SurfaceCard interactive data-testid="interactive">Interactive</SurfaceCard>
-        <SurfaceCard disabled data-testid="disabled">Disabled</SurfaceCard>
+        <SurfaceCard interactive disabled data-testid="disabled">Disabled</SurfaceCard>
       </div>,
     );
 
     const interactive = host.querySelector('[data-testid="interactive"]');
     const disabled = host.querySelector('[data-testid="disabled"]');
     expect(interactive.className).toContain('focus-ring');
+    expect(interactive.className).toContain('motion-interactive');
     expect(interactive.className).toContain('hover:-translate-y-0.5');
+    expect(interactive.className).toContain('hover:shadow-token-md');
     expect(disabled.className).toContain('pointer-events-none');
+    expect(disabled.className).not.toContain('motion-interactive');
+    expect(disabled.className).not.toContain('hover:-translate-y-0.5');
     expect(disabled).toHaveAttribute('aria-disabled', 'true');
   });
 

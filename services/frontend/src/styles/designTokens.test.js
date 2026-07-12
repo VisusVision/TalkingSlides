@@ -126,4 +126,16 @@ describe('frontend design tokens', () => {
     expect(globalsCss).toContain('.visus-page-progress');
     expect(globalsCss).toContain('.visus-loading-sheen::after');
   });
+
+  it('keeps shared motion utilities token-backed and reduced-motion safe', () => {
+    expect(globalsCss).toContain('.motion-interactive');
+    expect(globalsCss).toContain('transition-duration: var(--duration-fast)');
+    expect(globalsCss).toContain('animation: motion-fade var(--duration-fast) var(--ease-out) both');
+    expect(globalsCss).toContain('animation: motion-scale-in var(--duration-fast) var(--ease-out) both');
+    expect(globalsCss).toContain('animation: motion-slide-up var(--duration-normal) var(--ease-out) both');
+    expect(globalsCss).toContain('.motion-exit');
+    expect(globalsCss).toContain('.motion-interactive:hover');
+    expect(globalsCss).toContain('.motion-slide-up');
+    expect(globalsCss).toContain('transform: none !important');
+  });
 });

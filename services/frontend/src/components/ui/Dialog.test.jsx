@@ -157,10 +157,12 @@ describe('Dialog', () => {
 
     const panel = dialog();
     const body = document.body.querySelector('.custom-body');
+    expect(overlay().className).toContain('motion-fade');
     expect(panel.className).toContain('max-w-4xl');
     expect(panel.className).toContain('custom-panel');
     expect(panel.className).toContain('rounded-dialog');
     expect(panel.className).toContain('shadow-dialog');
+    expect(panel.className).toContain('motion-scale-in');
     expect(panel.className).toContain('text-start');
     expect(body.className).toContain('overflow-y-auto');
     expect(body).toHaveTextContent('Long body content');
