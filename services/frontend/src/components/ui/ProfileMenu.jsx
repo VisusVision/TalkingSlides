@@ -141,7 +141,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
       {open && (
         <div
           role="menu"
-          className="absolute right-0 z-[70] mt-3 w-56 rounded-2xl border border-[color:rgba(73,68,84,0.15)] bg-[var(--surface-container)] p-3"
+          className="absolute right-0 z-[70] mt-3 w-56 rounded-2xl border border-[color:var(--border-subtle)] bg-[var(--surface-container)] p-3 shadow-token-md"
         >
           <Link
             to={ownChannelPath}
@@ -158,7 +158,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <Link
             to="/library"
             role="menuitem"
-            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
             <BookOpen size={15} />
@@ -168,7 +168,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <Link
             to="/settings"
             role="menuitem"
-            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
             <SettingsIcon size={15} />
@@ -178,7 +178,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <Link
             to="/help"
             role="menuitem"
-            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={() => setOpen(false)}
           >
             <CircleHelp size={15} />
@@ -188,7 +188,7 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           <button
             type="button"
             role="menuitem"
-            className="focus-ring flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            className="focus-ring flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
             onClick={async () => {
               setOpen(false);
               await onLogout();

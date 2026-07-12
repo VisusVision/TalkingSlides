@@ -30,7 +30,7 @@ export default function Button({
     <button
       type={type}
       className={joinClasses(
-        'focus-ring inline-flex items-center justify-center gap-2 rounded-pill font-medium transition duration-normal ease-standard disabled:cursor-not-allowed disabled:opacity-60',
+        'focus-ring inline-flex items-center justify-center gap-2 rounded-pill font-medium transition duration-normal ease-standard disabled:cursor-not-allowed disabled:opacity-70 disabled:saturate-75 disabled:shadow-none disabled:hover:scale-100',
         VARIANT_STYLES[variant] || VARIANT_STYLES.primary,
         SIZE_STYLES[size] || SIZE_STYLES.md,
         fullWidth && 'w-full',

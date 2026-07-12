@@ -163,7 +163,7 @@ export default function Header({
   return (
     <>
       <header className="fixed top-0 z-50 w-full overflow-visible">
-        <div className="relative flex h-16 w-full items-center bg-[color:rgba(255,255,255,0.82)] px-3 backdrop-blur-3xl dark:bg-[color:rgba(17,19,23,0.8)] sm:px-5">
+        <div className="relative flex h-16 w-full items-center border-b border-[color:var(--glass-stroke)] bg-[color:var(--glass-overlay)] px-3 backdrop-blur-3xl sm:px-5">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <Link
               to="/"
@@ -195,7 +195,7 @@ export default function Header({
               <div ref={notificationRef} className="relative block">
                 <button
                   type="button"
-                  className="focus-ring relative inline-flex h-10 w-10 items-center justify-center rounded-full text-[#9ca3af] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
+                  className="focus-ring relative inline-flex h-10 w-10 items-center justify-center rounded-full text-[var(--outline)] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
                   aria-label="Notifications"
                   aria-expanded={notificationsOpen}
                   onClick={() => setNotificationsOpen((open) => !open)}
@@ -236,7 +236,7 @@ export default function Header({
                             onClick={() => setNotificationFilter(filter)}
                             className={`focus-ring h-8 rounded-full px-3 text-xs font-semibold capitalize transition ${
                               selected
-                                ? 'bg-[color:rgba(107,56,212,0.12)] text-[var(--text-primary)] dark:bg-[color:rgba(208,188,255,0.2)]'
+                                ? 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]'
                                 : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]'
                             }`}
                           >
@@ -255,7 +255,7 @@ export default function Header({
                       )}
 
                       {!notificationsLoading && notificationsError && (
-                        <div className="px-4 py-6 text-sm text-red-600">
+                        <div className="px-4 py-6 text-sm text-[color:var(--feedback-danger-fg)]">
                           <p className="font-semibold">Unable to load notifications</p>
                           <p className="mt-1 text-xs">{notificationsError}</p>
                         </div>

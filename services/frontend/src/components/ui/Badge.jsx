@@ -27,7 +27,7 @@ export default function Badge({
   return (
     <Component
       className={joinClasses(
-        'inline-flex w-fit max-w-full items-center gap-1.5 rounded-pill font-semibold leading-tight',
+        'inline-flex w-fit max-w-full items-center gap-1.5 rounded-pill font-semibold leading-tight ring-1 ring-inset ring-[color:var(--border-subtle)]',
         VARIANT_STYLES[variant] || VARIANT_STYLES.neutral,
         SIZE_STYLES[size] || SIZE_STYLES.sm,
         className,

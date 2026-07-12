@@ -31,7 +31,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
   return (
     <article
       className={`min-w-0 overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] p-3 transition sm:p-4 ${
-        unread ? 'border-[color:rgba(107,56,212,0.35)] bg-[color:rgba(107,56,212,0.06)] dark:bg-[color:rgba(208,188,255,0.09)]' : ''
+        unread ? 'border-[color:color-mix(in_srgb,var(--accent-primary),transparent_52%)] bg-[color:var(--hover-accent-soft)]' : ''
       }`}
     >
       <div className="flex gap-3">
@@ -242,7 +242,7 @@ export default function Notifications({ user }) {
                   onClick={() => setFilter(option.id)}
                   className={`focus-ring inline-flex h-9 items-center gap-2 rounded-full px-4 text-sm font-semibold transition ${
                     selected
-                      ? 'bg-[color:rgba(107,56,212,0.12)] text-[var(--text-primary)] dark:bg-[color:rgba(208,188,255,0.2)]'
+                      ? 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
                   }`}
                 >
@@ -263,7 +263,7 @@ export default function Notifications({ user }) {
         </PageToolbar>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200">
+          <div className="rounded-lg border border-[color:color-mix(in_srgb,var(--feedback-danger-fg),transparent_65%)] bg-[color:var(--feedback-danger-bg)] px-4 py-3 text-sm text-[color:var(--feedback-danger-fg)]">
             {error}
           </div>
         )}

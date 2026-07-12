@@ -24,6 +24,8 @@ Prefer the existing semantic utility classes (`token-surface`, `token-surface-el
 
 Use Tailwind arbitrary values for existing semantic color tokens when needed, for example `bg-[var(--surface-container)]` or `text-[var(--text-primary)]`.
 Avoid introducing new arbitrary radii, shadows, transition timings, or control heights unless the token set is missing a reusable concept.
+For dark-mode work, prefer semantic pairings such as `--bg`, `--surface-*`, `--border-subtle`, `--text-secondary`, `--outline`, `--hover-surface`, `--hover-accent-soft`, and `--modal-backdrop` instead of page-level `dark:` overrides or fixed white/black surfaces.
+Treat hard-coded `bg-white`, `bg-black`, `text-gray-*`, `border-gray-*`, and one-off rgba values as suspect unless they are part of real media overlays, charts, thumbnails, or brand artwork.
 
 ## Shared Primitives
 
@@ -48,6 +50,14 @@ Use `PageContainer`, `PageHeader`, and `PageToolbar` from `services/frontend/src
 `PageToolbar` owns filter/search/tab row spacing and optional surface treatment; keep toolbar control order aligned with DOM order so keyboard and RTL behavior remain predictable.
 Avoid duplicating page-level `max-w-* mx-auto`, header flex wrappers, and pill toolbar surface classes in new screens.
 Existing navigation should keep route-driven active states, `aria-current`, visible focus rings, and a non-color selected indicator.
+
+## Contrast And State Guidance
+
+Body copy should use `--text-primary`; supporting copy should use `--text-secondary`; labels, placeholders, and low-emphasis metadata should use `--outline` only when the content remains readable.
+Interactive controls should keep visible hover, focus-visible, and disabled states in both themes. Focus indicators should use the shared `focus-ring` treatment so the accent ring remains visible against page, card, and dialog surfaces.
+Disabled controls should not rely on opacity alone; combine opacity with semantic disabled backgrounds or foregrounds while preserving native disabled behavior.
+Status UI should use the existing feedback/status tokens for success, warning, danger, and info pairings. Do not communicate status by color alone; keep the existing icon or text label alongside the color treatment.
+Use `--glass-overlay` and `--glass-stroke` for app chrome or translucent sticky surfaces so dark mode does not duplicate light-only rgba values.
 
 ## Reduced Motion
 

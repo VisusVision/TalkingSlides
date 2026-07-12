@@ -55,7 +55,8 @@ describe('SurfaceCard', () => {
     const accent = host.querySelector('[data-testid="accent-card"]');
     expect(legacy.className).toContain('token-surface-elevated');
     expect(legacy.className).toContain('shadow-token-sm');
-    expect(accent.className).toContain('bg-[color:rgba(208,188,255,0.08)]');
+    expect(accent.className).toContain('bg-[color:var(--hover-accent-soft)]');
+    expect(accent.className).toContain('color-mix(in_srgb,var(--accent-primary),transparent_72%)');
     expect(accent.className).toContain('p-6');
   });
 

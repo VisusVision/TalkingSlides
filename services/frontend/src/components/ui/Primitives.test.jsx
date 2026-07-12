@@ -75,6 +75,8 @@ describe('shared UI primitives', () => {
     expect(input.className).toContain('rounded-control');
     expect(input.className).toContain('h-control-lg');
     expect(input.className).toContain('duration-normal');
+    expect(input.className).toContain('hover:border-[color:var(--outline)]');
+    expect(input.className).toContain('disabled:bg-[var(--surface-container-low)]');
     expect(input.className).toContain('placeholder:text-[var(--outline)]');
     expect(input.className).toContain('custom-input');
 
@@ -155,6 +157,7 @@ describe('shared UI primitives', () => {
     const [success, fallback] = host.querySelectorAll('span, strong');
     expect(success).toHaveTextContent('Ready');
     expect(success.className).toContain('rounded-pill');
+    expect(success.className).toContain('ring-[color:var(--border-subtle)]');
     expect(success.className).toContain('bg-[color:var(--status-success-bg)]');
     expect(success.className).toContain('custom-badge');
     expect(fallback.tagName).toBe('STRONG');

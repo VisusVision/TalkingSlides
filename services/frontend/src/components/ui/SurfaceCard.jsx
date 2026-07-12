@@ -6,7 +6,7 @@ const VARIANT_STYLES = {
   default: 'token-surface',
   elevated: 'token-surface-elevated shadow-token-sm',
   muted: 'token-surface bg-[color:var(--surface-muted)]/30',
-  accent: 'border border-[color:rgba(208,188,255,0.22)] bg-[color:rgba(208,188,255,0.08)]',
+  accent: 'border border-[color:color-mix(in_srgb,var(--accent-primary),transparent_72%)] bg-[color:var(--hover-accent-soft)]',
   danger: 'border border-[color:var(--feedback-danger-fg)] bg-[color:var(--feedback-danger-bg)]',
 };
 
