@@ -379,15 +379,16 @@ export default function Library({ searchQuery }) {
   };
 
   return (
-    <PageContainer width="standard" aria-busy={loading}>
+    <PageContainer width="standard" motion="enter" aria-busy={loading}>
       <PageHeader
         eyebrow="Library"
         title="Your Learning Hub"
         titleSize="headline"
         description="Continue watched lessons, revisit liked lessons, and keep up with publishers you follow."
+        motion="fade"
       />
 
-      <PageToolbar aria-label="Library sections">
+      <PageToolbar motion="fade" aria-label="Library sections">
         <div className="rail-scroll flex min-w-0 flex-1 gap-2 overflow-x-auto pb-1">
           {LIBRARY_TABS.map((tab) => {
             const Icon = tab.icon;
@@ -397,7 +398,7 @@ export default function Library({ searchQuery }) {
                 key={tab.key}
                 type="button"
                 onClick={() => setActiveTab(tab.key)}
-                className={`focus-ring inline-flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold transition ${
+                className={`focus-ring motion-interactive inline-flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 text-sm font-semibold active:scale-[0.98] ${
                   active
                     ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)]'
                     : 'token-surface text-[var(--text-secondary)] hover:text-[var(--text-primary)]'

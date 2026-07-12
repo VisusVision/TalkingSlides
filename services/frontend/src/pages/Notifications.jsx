@@ -30,7 +30,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
 
   return (
     <article
-      className={`min-w-0 overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] p-3 transition sm:p-4 ${
+      className={`motion-interactive min-w-0 overflow-hidden rounded-lg border border-[color:var(--border-subtle)] bg-[var(--surface-container-low)] p-3 sm:p-4 ${
         unread ? 'border-[color:color-mix(in_srgb,var(--accent-primary),transparent_52%)] bg-[color:var(--hover-accent-soft)]' : ''
       }`}
     >
@@ -70,7 +70,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
             <button
               type="button"
               onClick={() => onMarkRead(notification)}
-              className="focus-ring mt-3 inline-flex h-8 items-center gap-1.5 rounded-full bg-[var(--surface-container-high)] px-3 text-xs font-semibold text-[var(--text-secondary)] transition hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
+              className="focus-ring motion-interactive mt-3 inline-flex h-8 items-center gap-1.5 rounded-full bg-[var(--surface-container-high)] px-3 text-xs font-semibold text-[var(--text-secondary)] hover:bg-[color:var(--hover-accent-soft)] hover:text-[var(--text-primary)]"
             >
               <Check size={14} />
               Mark read
@@ -212,17 +212,18 @@ export default function Notifications({ user }) {
   const EmptyIcon = unreadOnly ? CheckCheck : Inbox;
 
   return (
-    <PageContainer width="standard" className="overflow-x-hidden">
+    <PageContainer width="standard" motion="enter" className="overflow-x-hidden">
       <PageHeader
         eyebrow="Notifications"
         title="Notification center"
         description="Review comments, followed publisher updates, and render status changes."
+        motion="fade"
         actions={(
           <button
             type="button"
             onClick={handleMarkAllRead}
             disabled={markAllLoading || unreadCount === 0}
-            className="focus-ring inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+            className="focus-ring motion-interactive inline-flex h-10 w-full items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
           >
             <CheckCheck size={16} />
             <span>{markAllLoading ? 'Updating...' : 'Mark all read'}</span>
@@ -231,7 +232,7 @@ export default function Notifications({ user }) {
       />
 
       <SurfaceCard className="min-w-0 space-y-4 overflow-hidden">
-        <PageToolbar surface={false} className="border-b border-[color:var(--border-subtle)] pb-4" aria-label="Notification filters">
+        <PageToolbar surface={false} motion="fade" className="border-b border-[color:var(--border-subtle)] pb-4" aria-label="Notification filters">
           <div className="inline-flex w-fit rounded-full bg-[var(--surface-container-high)] p-1">
             {FILTERS.map((option) => {
               const selected = filter === option.id;
@@ -240,7 +241,7 @@ export default function Notifications({ user }) {
                   key={option.id}
                   type="button"
                   onClick={() => setFilter(option.id)}
-                  className={`focus-ring inline-flex h-9 items-center gap-2 rounded-full px-4 text-sm font-semibold transition ${
+                  className={`focus-ring motion-interactive inline-flex h-9 items-center gap-2 rounded-full px-4 text-sm font-semibold active:scale-[0.98] ${
                     selected
                       ? 'bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)]'
                       : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -303,7 +304,7 @@ export default function Notifications({ user }) {
               type="button"
               onClick={() => loadNotifications({ reset: false })}
               disabled={loadingMore}
-              className="focus-ring inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50"
+              className="focus-ring motion-interactive inline-flex h-10 items-center justify-center gap-2 rounded-full bg-[var(--surface-container-highest)] px-4 text-sm font-semibold text-[var(--text-primary)] hover:bg-[color:var(--hover-surface-strong)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loadingMore ? <Loader2 size={16} className="animate-spin" /> : <Bell size={16} />}
               <span>{loadingMore ? 'Loading...' : 'Load more'}</span>

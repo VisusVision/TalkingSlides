@@ -19,10 +19,22 @@ const TITLE_STYLES = {
   headline: 'headline-md',
 };
 
+const MOTION_STYLES = {
+  enter: 'motion-page-enter',
+  fade: 'motion-fade',
+};
+
+function motionClass(motion) {
+  if (motion === true) return MOTION_STYLES.enter;
+  if (!motion) return '';
+  return MOTION_STYLES[motion] || '';
+}
+
 export function PageContainer({
   as: Component = 'div',
   width = 'wide',
   gap = 'md',
+  motion = false,
   className,
   children,
   ...props
@@ -33,6 +45,7 @@ export function PageContainer({
         'mx-auto flex w-full min-w-0 flex-col py-6 sm:py-8',
         WIDTH_STYLES[width] || WIDTH_STYLES.wide,
         GAP_STYLES[gap] || GAP_STYLES.md,
+        motionClass(motion),
         className,
       )}
       {...props}
@@ -50,6 +63,7 @@ export function PageHeader({
   titleSize = 'display',
   description,
   actions,
+  motion = false,
   className,
   children,
   ...props
@@ -58,6 +72,7 @@ export function PageHeader({
     <Component
       className={joinClasses(
         'flex min-w-0 flex-col gap-4 md:flex-row md:items-end md:justify-between',
+        motionClass(motion),
         className,
       )}
       {...props}
@@ -89,6 +104,7 @@ export function PageToolbar({
   as: Component = 'section',
   surface = true,
   sticky = false,
+  motion = false,
   className,
   children,
   ...props
@@ -99,6 +115,7 @@ export function PageToolbar({
         'min-w-0',
         surface && 'rounded-card border border-[var(--border-subtle)] bg-[var(--surface-container-low)] p-3 sm:p-4',
         sticky && 'sticky top-20 z-30 backdrop-blur-xl',
+        motionClass(motion),
         className,
       )}
       {...props}

@@ -154,11 +154,12 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
   }, [lessons, searchQuery]);
 
   return (
-    <PageContainer width="wide" aria-busy={loading}>
+    <PageContainer width="wide" motion="enter" aria-busy={loading}>
       <PageHeader
         eyebrow="Explore"
         title="Browse The Catalog"
         description="Curated lecture cards built for quick scanning, deep study, and smooth transition into player mode."
+        motion="fade"
         actions={(
           <SurfaceCard className="w-full min-w-[11rem] md:w-auto" padding="sm">
             <p className="label-sm">Results</p>
@@ -170,14 +171,14 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
         )}
       />
 
-      <PageToolbar aria-label="Browse category filters">
+      <PageToolbar motion="fade" aria-label="Browse category filters">
         <div className="min-w-0 flex-1 space-y-3">
           <p className="label-sm">Categories</p>
           <div className="rail-scroll flex gap-2 overflow-x-auto pb-1">
             <button
               type="button"
               onClick={() => setActiveCategory('')}
-              className={`focus-ring rounded-full px-3 py-1.5 text-sm ${
+              className={`focus-ring motion-interactive rounded-full px-3 py-1.5 text-sm ${
                 !activeCategory
                   ? 'bg-[image:var(--accent-gradient)] text-[var(--accent-inverse)]'
                   : 'token-surface text-[var(--text-secondary)]'
@@ -190,7 +191,7 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
                 key={category.id}
                 type="button"
                 onClick={() => setActiveCategory(category.slug || '')}
-                className={`focus-ring rounded-full px-3 py-1.5 text-sm ${
+                className={`focus-ring motion-interactive rounded-full px-3 py-1.5 text-sm ${
                   activeCategory === (category.slug || '')
                     ? 'bg-[image:var(--accent-gradient)] text-[var(--accent-inverse)]'
                     : 'token-surface text-[var(--text-secondary)]'

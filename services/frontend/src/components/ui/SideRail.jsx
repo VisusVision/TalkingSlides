@@ -35,13 +35,19 @@ function railItemClass(isActive, expanded) {
     ? 'mx-4 justify-start rounded-full px-4 py-3'
     : 'mx-auto h-12 w-12 justify-center rounded-full border border-[color:var(--border-subtle)] p-0';
 
-  return `group focus-ring relative flex items-center gap-3 outline-offset-2 transition-all duration-200 ${tone} ${layout}`;
+  return `group focus-ring motion-interactive relative flex items-center gap-3 outline-offset-2 active:scale-[0.98] ${tone} ${layout}`;
+}
+
+function railActiveMarkerClass(expanded) {
+  return `motion-nav-indicator absolute top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-[var(--accent-primary)] ${
+    expanded ? 'left-2 rtl:left-auto rtl:right-2' : '-left-1 rtl:-right-1 rtl:left-auto'
+  }`;
 }
 
 function RailTooltip({ label, rightOffset = true }) {
   return (
     <span
-      className={`pointer-events-none absolute top-1/2 hidden -translate-y-1/2 whitespace-nowrap rounded-full border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] opacity-0 transition group-hover:opacity-100 group-focus-visible:opacity-100 md:block ${
+      className={`pointer-events-none absolute top-1/2 hidden -translate-y-1/2 whitespace-nowrap rounded-full border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 py-1 text-xs font-medium text-[var(--text-primary)] opacity-0 motion-interactive group-hover:opacity-100 group-focus-visible:opacity-100 md:block ${
         rightOffset ? 'left-[calc(100%+0.55rem)]' : 'right-[calc(100%+0.55rem)]'
       }`}
     >
@@ -76,7 +82,7 @@ function RailNavItem({ to, label, icon: Icon, end = false, expanded, user }) {
           {isActive ? (
             <span
               aria-hidden="true"
-              className={`absolute top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-[var(--accent-primary)] ${expanded ? 'left-2 rtl:left-auto rtl:right-2' : '-left-1 rtl:-right-1 rtl:left-auto'}`}
+              className={railActiveMarkerClass(expanded)}
             />
           ) : null}
           <span
@@ -120,7 +126,7 @@ function RailHelpItem({ to, label, icon: Icon, expanded, user }) {
           {isActive ? (
             <span
               aria-hidden="true"
-              className={`absolute top-1/2 h-6 w-1 -translate-y-1/2 rounded-full bg-[var(--accent-primary)] ${expanded ? 'left-2 rtl:left-auto rtl:right-2' : '-left-1 rtl:-right-1 rtl:left-auto'}`}
+              className={railActiveMarkerClass(expanded)}
             />
           ) : null}
           <span
@@ -169,7 +175,7 @@ export default function SideRail({
 
   return (
     <aside
-      className={`fixed left-0 top-16 z-40 hidden h-[calc(100vh-4rem)] transition-[width] duration-300 md:block ${expanded ? 'md:w-[16rem] xl:w-[18rem]' : 'md:w-[5rem]'}`}
+      className={`fixed left-0 top-16 z-40 hidden h-[calc(100vh-4rem)] transition-[width] duration-slow ease-token-in-out md:block ${expanded ? 'md:w-[16rem] xl:w-[18rem]' : 'md:w-[5rem]'}`}
     >
       <div className="flex h-full flex-col border-r border-[color:var(--border-subtle)] bg-[var(--surface)] py-4">
         <div className="px-3 pb-4 lg:px-5">
@@ -187,7 +193,7 @@ export default function SideRail({
             <button
               type="button"
               onClick={onToggleCollapse}
-              className="focus-ring inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--surface-container-high)] text-[var(--outline)] transition hover:bg-[var(--surface-container-highest)] hover:text-[var(--text-primary)]"
+              className="focus-ring motion-interactive inline-flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--surface-container-high)] text-[var(--outline)] hover:bg-[var(--surface-container-highest)] hover:text-[var(--text-primary)] active:scale-[0.98]"
               title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             >
@@ -216,9 +222,9 @@ export default function SideRail({
               <button
                 type="button"
                 onClick={handleCreateLessonRequest}
-                className={`focus-ring relative mx-4 inline-flex h-11 w-[calc(100%-2rem)] items-center gap-2 transition ${expanded ? 'justify-start px-3' : 'justify-center'} ${
+                className={`focus-ring motion-interactive relative mx-4 inline-flex h-11 w-[calc(100%-2rem)] items-center gap-2 ${expanded ? 'justify-start px-3' : 'justify-center'} ${
                   isAnalyticsRoute
-                    ? 'rounded-xl bg-[image:var(--accent-gradient)] text-white font-bold hover:scale-105 active:scale-95'
+                    ? 'rounded-xl bg-[image:var(--accent-gradient)] text-white font-bold active:scale-[0.98]'
                     : 'rounded-xl border border-dashed border-[color:var(--outline-variant)] text-[var(--outline)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)]'
                 }`}
               >

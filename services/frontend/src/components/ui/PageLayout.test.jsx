@@ -42,6 +42,19 @@ describe('page layout primitives', () => {
     expect(page.className).toContain('gap-7');
     expect(page.className).toContain('py-6');
     expect(page.className).toContain('custom-page');
+    expect(page.className).not.toContain('motion-page-enter');
+  });
+
+  it('adds opt-in page entrance motion without changing the default container contract', async () => {
+    await render(
+      <PageContainer as="main" motion="enter" data-testid="page">
+        Animated content
+      </PageContainer>,
+    );
+
+    const page = host.querySelector('[data-testid="page"]');
+    expect(page.className).toContain('motion-page-enter');
+    expect(page.className).toContain('max-w-[1500px]');
   });
 
   it('renders semantic page headers with title, description, actions, and custom heading element', async () => {
@@ -52,6 +65,7 @@ describe('page layout primitives', () => {
         titleAs="h2"
         titleSize="headline"
         description="Continue watched lessons."
+        motion="fade"
         actions={<button type="button">New lesson</button>}
         data-testid="header"
       />,
@@ -61,6 +75,7 @@ describe('page layout primitives', () => {
     expect(header.tagName).toBe('HEADER');
     expect(host.querySelector('h2')).toHaveTextContent('Your Learning Hub');
     expect(host.querySelector('h2').className).toContain('headline-md');
+    expect(header.className).toContain('motion-fade');
     expect(header).toHaveTextContent('Library');
     expect(header).toHaveTextContent('Continue watched lessons.');
     expect(header.querySelector('button')).toHaveTextContent('New lesson');
@@ -68,7 +83,7 @@ describe('page layout primitives', () => {
 
   it('renders toolbars with surface, sticky, children, props, and class merging', async () => {
     await render(
-      <PageToolbar sticky className="custom-toolbar" aria-label="Filters">
+      <PageToolbar sticky motion="fade" className="custom-toolbar" aria-label="Filters">
         <div>Tabs</div>
         <p>12 results</p>
       </PageToolbar>,
@@ -78,6 +93,7 @@ describe('page layout primitives', () => {
     expect(toolbar.className).toContain('rounded-card');
     expect(toolbar.className).toContain('sticky');
     expect(toolbar.className).toContain('top-20');
+    expect(toolbar.className).toContain('motion-fade');
     expect(toolbar.className).toContain('custom-toolbar');
     expect(toolbar).toHaveTextContent('Tabs');
     expect(toolbar).toHaveTextContent('12 results');

@@ -26,6 +26,10 @@ Use Tailwind arbitrary values for existing semantic color tokens when needed, fo
 Avoid introducing new arbitrary radii, shadows, transition timings, or control heights unless the token set is missing a reusable concept.
 For shared motion, use the token-backed motion utilities in `globals.css` before adding component-specific timings or easing. Keep primitive interaction motion fast, subtle, and limited to opacity, transform, color, border, background, filter, or small-surface shadow changes.
 Avoid `transition-all`, arbitrary `duration-*` values, custom easing curves, layout-property animation, and decorative looping motion unless a feature has a specific measured need.
+Use `motion-page-enter` only on newly mounted route-level content, preferably through the opt-in `PageContainer motion="enter"` API. Do not add route keys, keep old routes mounted, delay navigation, or replay page entrance for local filter, tab, or pagination updates.
+Use `motion-nav-indicator` and `motion-interactive` for navigation active markers, icon/text state, hover, focus-visible, and press feedback. Active navigation must still use `aria-current` and a visible non-color selected indicator when motion is disabled.
+Use `motion-popover-in` for small existing menus or popovers that mount on open. Preserve outside-click, Escape, focus, stacking, and menu semantics; do not create a new popover system only for motion.
+Use `motion-disclosure` for compact disclosure affordances such as chevrons or small content fades. Avoid animating height, width, padding, margins, grid tracks, or large layout dimensions.
 For dark-mode work, prefer semantic pairings such as `--bg`, `--surface-*`, `--border-subtle`, `--text-secondary`, `--outline`, `--hover-surface`, `--hover-accent-soft`, and `--modal-backdrop` instead of page-level `dark:` overrides or fixed white/black surfaces.
 Treat hard-coded `bg-white`, `bg-black`, `text-gray-*`, `border-gray-*`, and one-off rgba values as suspect unless they are part of real media overlays, charts, thumbnails, or brand artwork.
 
@@ -48,6 +52,7 @@ Avoid page-level duplicate empty-state card markup for new surfaces.
 
 Use `PageContainer`, `PageHeader`, and `PageToolbar` from `services/frontend/src/components/ui/PageLayout.jsx` for new route-level screens and for representative migrations.
 `PageContainer` owns route-level width and vertical rhythm; choose `standard`, `wide`, or `full` only when the existing content density requires it.
+`PageContainer motion="enter"` is opt-in for route-level page entrance. Defaults remain static, and Studio, Watch, render, publish, upload, drag-and-drop, and editor workflows should not receive page motion without a separate focused review.
 `PageHeader` owns eyebrow, heading, description, and action wrapping while preserving semantic heading elements.
 `PageToolbar` owns filter/search/tab row spacing and optional surface treatment; keep toolbar control order aligned with DOM order so keyboard and RTL behavior remain predictable.
 Avoid duplicating page-level `max-w-* mx-auto`, header flex wrappers, and pill toolbar surface classes in new screens.
@@ -65,7 +70,8 @@ Use `--glass-overlay` and `--glass-stroke` for app chrome or translucent sticky 
 
 `prefers-reduced-motion: reduce` minimizes non-essential animation and transition duration.
 Progress and loading indicators remain visible as static feedback so users still receive functional state changes.
-Reduced-motion styles should also neutralize non-essential transforms while preserving visibility, focus behavior, live regions, and immediate access to dialogs, toasts, and controls.
+Reduced-motion styles should also neutralize non-essential transforms while preserving visibility, focus behavior, live regions, active navigation identification, tab/filter changes, panel open/close behavior, and immediate access to pages, dialogs, toasts, menus, and controls.
+The application `.reduced-motion` override must follow the same contract as system reduced motion.
 
 ## Adding Tokens
 

@@ -345,6 +345,27 @@
     animation: motion-slide-up var(--duration-normal) var(--ease-out) both;
   }
 
+  .motion-page-enter {
+    animation: motion-page-enter var(--duration-normal) var(--ease-out) both;
+  }
+
+  .motion-popover-in {
+    animation: motion-popover-in var(--duration-fast) var(--ease-out) both;
+    transform-origin: top center;
+  }
+
+  .motion-nav-indicator {
+    transition-property: background-color, opacity, transform;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  .motion-disclosure {
+    transition-property: background-color, color, opacity, transform;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
   .motion-exit {
     opacity: 0;
     transform: translateY(4px) scale(0.99);
@@ -440,6 +461,30 @@
   }
 }
 
+@keyframes motion-page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes motion-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 @keyframes cinematic-fade {
   from {
     opacity: 0;
@@ -522,6 +567,10 @@
   .motion-fade,
   .motion-scale-in,
   .motion-slide-up,
+  .motion-page-enter,
+  .motion-popover-in,
+  .motion-nav-indicator,
+  .motion-disclosure,
   .motion-exit {
     animation: none !important;
     transform: none !important;
@@ -558,6 +607,10 @@
 .reduced-motion .motion-fade,
 .reduced-motion .motion-scale-in,
 .reduced-motion .motion-slide-up,
+.reduced-motion .motion-page-enter,
+.reduced-motion .motion-popover-in,
+.reduced-motion .motion-nav-indicator,
+.reduced-motion .motion-disclosure,
 .reduced-motion .motion-exit {
   transform: none !important;
 }

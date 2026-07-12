@@ -133,9 +133,15 @@ describe('frontend design tokens', () => {
     expect(globalsCss).toContain('animation: motion-fade var(--duration-fast) var(--ease-out) both');
     expect(globalsCss).toContain('animation: motion-scale-in var(--duration-fast) var(--ease-out) both');
     expect(globalsCss).toContain('animation: motion-slide-up var(--duration-normal) var(--ease-out) both');
+    expect(globalsCss).toContain('animation: motion-page-enter var(--duration-normal) var(--ease-out) both');
+    expect(globalsCss).toContain('animation: motion-popover-in var(--duration-fast) var(--ease-out) both');
+    expect(globalsCss).toContain('.motion-nav-indicator');
+    expect(globalsCss).toContain('.motion-disclosure');
     expect(globalsCss).toContain('.motion-exit');
     expect(globalsCss).toContain('.motion-interactive:hover');
     expect(globalsCss).toContain('.motion-slide-up');
+    expect(globalsCss).toContain('.reduced-motion .motion-page-enter');
+    expect(globalsCss).toContain('.reduced-motion .motion-popover-in');
     expect(globalsCss).toContain('transform: none !important');
   });
 });

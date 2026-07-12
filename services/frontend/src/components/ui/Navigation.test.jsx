@@ -52,8 +52,11 @@ describe('navigation active states', () => {
 
     const libraryLink = host.querySelector('a[href="/library"]');
     expect(libraryLink).toHaveAttribute('aria-current', 'page');
+    expect(libraryLink.className).toContain('motion-interactive');
     expect(libraryLink.className).toContain('shadow-[inset_0_0_0_1px_var(--accent-primary)]');
-    expect(libraryLink.querySelector('span[aria-hidden="true"]')).toBeTruthy();
+    const marker = libraryLink.querySelector('span[aria-hidden="true"]');
+    expect(marker).toBeTruthy();
+    expect(marker.className).toContain('motion-nav-indicator');
   });
 
   it('marks the active mobile nav item as the current page with a visible selected marker', async () => {
@@ -61,8 +64,11 @@ describe('navigation active states', () => {
 
     const analyticsLink = host.querySelector('a[href="/analytics"]');
     expect(analyticsLink).toHaveAttribute('aria-current', 'page');
+    expect(analyticsLink.className).toContain('motion-interactive');
     expect(analyticsLink.className).toContain('shadow-[inset_0_0_0_1px_var(--accent-primary)]');
-    expect(analyticsLink.querySelector('span[aria-hidden="true"]')).toBeTruthy();
+    const marker = analyticsLink.querySelector('span[aria-hidden="true"]');
+    expect(marker).toBeTruthy();
+    expect(marker.className).toContain('motion-nav-indicator');
   });
 });
 
