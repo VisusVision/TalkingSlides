@@ -2,7 +2,12 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StudioRenderStatus, StudioSlideRail } from './StudioWorkspaceChrome';
+import {
+  StudioInspectorSection,
+  StudioRenderStatus,
+  StudioSaveStatus,
+  StudioSlideRail,
+} from './StudioWorkspaceChrome';
 import { studioWorkspaceCopy, studioWorkspaceLocale } from './studioWorkspaceCopy';
 
 describe('Studio workspace chrome', () => {
@@ -48,6 +53,7 @@ describe('Studio workspace chrome', () => {
     });
 
     expect(host.querySelector('[data-testid="studio-slide-rail"]')).toBeTruthy();
+    expect(host.querySelector('[data-selected="true"]').className).toContain('motion-studio-selection');
     const buttons = host.querySelectorAll('button[aria-label^="Select slide"]');
     expect(buttons[0]).toHaveAttribute('aria-current', 'true');
     await act(async () => buttons[1].click());
@@ -67,8 +73,10 @@ describe('Studio workspace chrome', () => {
       }));
     });
     expect(document.body.textContent).toContain('Delete');
+    expect(document.body.querySelector('[role="menu"]').className).toContain('motion-popover-in');
     const deleteItem = Array.from(document.body.querySelectorAll('[role="menuitem"]'))
       .find((item) => item.textContent.includes('Delete'));
+    expect(deleteItem.className).toContain('motion-interactive');
     await act(async () => deleteItem.click());
     expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ key: 'one' }), 0);
   });
@@ -83,5 +91,32 @@ describe('Studio workspace chrome', () => {
 
     await act(async () => root.render(<StudioRenderStatus renderStatus={{ status: 'processing' }} />));
     expect(host.textContent).toContain('Render durumu: İşleniyor');
+    const renderStatus = host.querySelector('[data-testid="studio-render-status"]');
+    expect(renderStatus).toHaveAttribute('data-state', 'active');
+    expect(renderStatus.className).toContain('motion-studio-status');
+  });
+
+  it('keeps save and disclosure state visible while adding Studio motion hooks', async () => {
+    await act(async () => {
+      root.render(
+        <>
+          <StudioSaveStatus saving lastSavedAt="10:30 AM" />
+          <StudioInspectorSection title="Scene background" summary="Selected slide controls">
+            <button type="button">Focusable control</button>
+          </StudioInspectorSection>
+        </>,
+      );
+    });
+
+    const saveStatus = host.querySelector('[data-state="saving"]');
+    expect(saveStatus.textContent).toContain('Saving');
+    expect(saveStatus.className).toContain('motion-studio-status');
+
+    const details = host.querySelector('details');
+    expect(details.open).toBe(true);
+    expect(details.className).toContain('motion-studio-status');
+    expect(host.querySelector('summary').className).toContain('motion-interactive');
+    expect(host.querySelector('.motion-studio-panel')).not.toBeNull();
+    expect(host.querySelector('button').textContent).toContain('Focusable control');
   });
 });

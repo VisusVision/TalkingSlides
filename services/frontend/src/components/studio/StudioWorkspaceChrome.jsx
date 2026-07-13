@@ -109,7 +109,7 @@ export function StudioSlideRail({
     <div
       role="menu"
       aria-label={copy.slideActions}
-      className="fixed z-50 w-52 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-1.5 shadow-xl"
+      className="motion-popover-in fixed z-50 w-52 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-1.5 shadow-xl"
       style={{ left: contextMenu.x, top: contextMenu.y }}
       onClick={(event) => event.stopPropagation()}
     >
@@ -178,7 +178,7 @@ export function StudioSlideRail({
             <h2 className="text-sm font-semibold text-[var(--text-primary)]">{copy.slides}</h2>
             <p className="text-[0.68rem] text-[var(--text-secondary)]">{copy.slidesHint}</p>
           </div>
-          <span className="ml-auto rounded-full bg-[var(--surface-container-high)] px-2 py-0.5 text-xs text-[var(--text-secondary)]">
+          <span className="ms-auto rounded-full bg-[var(--surface-container-high)] px-2 py-0.5 text-xs text-[var(--text-secondary)]">
             {scenes.length} {copy.slideCount}
           </span>
         </div>
@@ -237,7 +237,9 @@ export function StudioSlideRail({
                     setDragOverIndex(null);
                   }}
                   onContextMenu={(event) => openContextMenu(event, scene, index)}
-                  className={`group relative min-w-40 rounded-xl border transition xl:min-w-0 ${
+                  data-selected={selected ? 'true' : undefined}
+                  data-drop-target={dropTarget ? 'true' : undefined}
+                  className={`group motion-studio-selection relative min-w-40 rounded-xl border xl:min-w-0 ${
                     selected
                       ? 'border-[var(--accent-primary)] bg-[var(--surface-container-highest)] shadow-sm ring-2 ring-[color:var(--hover-accent-soft)]'
                       : dropTarget
@@ -247,7 +249,7 @@ export function StudioSlideRail({
                   title={copy.dragToReorder}
                 >
                   {selected && (
-                    <span className="absolute bottom-2 left-0 top-2 w-1 rounded-r-full bg-[var(--accent-primary)]" aria-hidden="true" />
+                    <span className="motion-nav-indicator absolute bottom-2 start-0 top-2 w-1 rounded-e-full bg-[var(--accent-primary)]" aria-hidden="true" />
                   )}
                   <button
                     type="button"
@@ -263,7 +265,7 @@ export function StudioSlideRail({
                         selectAdjacent(index, 'down');
                       }
                     }}
-                    className="focus-ring block w-full rounded-xl p-2 pl-3 text-left"
+                    className="focus-ring block w-full rounded-xl p-2 ps-3 text-start"
                   >
                     <div
                       className="relative aspect-video overflow-hidden rounded-lg bg-[var(--card-fallback)] bg-contain bg-center bg-no-repeat"
@@ -274,7 +276,7 @@ export function StudioSlideRail({
                           {index + 1}
                         </span>
                       )}
-                      <span className="absolute left-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[0.62rem] font-bold text-white">
+                      <span className="absolute start-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[0.62rem] font-bold text-white">
                         {index + 1}
                       </span>
                     </div>
@@ -290,7 +292,7 @@ export function StudioSlideRail({
                       {scene.text || scene.fullText || copy.noSlides}
                     </p>
                   </button>
-                  <div className="absolute right-2 top-2 flex gap-1 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                  <div className="motion-studio-status absolute end-2 top-2 flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
                     <IconActionButton
                       label={copy.moveUp}
                       disabled={actionDisabled || !canMoveUp}
@@ -334,7 +336,7 @@ function IconActionButton({ label, disabled = false, onClick, children }) {
         event.stopPropagation();
         onClick?.(event);
       }}
-      className="focus-ring inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm transition hover:bg-black/85 disabled:opacity-40"
+      className="focus-ring motion-interactive inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm hover:bg-black/85 enabled:active:scale-[0.96] disabled:opacity-40"
     >
       {children}
     </button>
@@ -349,7 +351,7 @@ function SlideMenuItem({ icon, label, disabled = false, title = '', danger = fal
       disabled={disabled}
       title={title || label}
       onClick={onClick}
-      className={`focus-ring flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`focus-ring motion-interactive flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-start text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
         danger
           ? 'text-[color:var(--status-danger-fg)] hover:bg-[color:var(--status-danger-bg)]'
           : 'text-[var(--text-primary)] hover:bg-[color:var(--hover-surface)]'
@@ -372,6 +374,7 @@ export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
   const active = ['running', 'processing', 'started'].includes(status);
   const queued = ['queued', 'pending'].includes(status);
   const ready = ['ready', 'done', 'completed', 'published'].includes(status);
+  const state = failed ? 'failed' : active ? 'active' : queued ? 'queued' : ready ? 'ready' : 'draft';
   const Icon = failed ? AlertTriangle : active ? LoaderCircle : queued ? Clock3 : CheckCircle2;
   const label = failed
     ? copy.renderFailed
@@ -395,7 +398,8 @@ export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
       aria-label={copy.renderStatus}
       aria-live="polite"
       data-testid="studio-render-status"
-      className={`flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2 ${
+      data-state={state}
+      className={`motion-studio-status flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2 ${
         failed
           ? 'border-[color:var(--status-danger-fg)] bg-[color:var(--status-danger-bg)]'
           : active || queued
@@ -403,7 +407,7 @@ export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
             : 'border-[var(--border-subtle)] bg-[var(--surface-container-high)]'
       }`}
     >
-      <Icon size={16} className={active ? 'animate-spin text-[color:var(--status-info-fg)]' : 'text-[var(--accent-primary)]'} />
+      <Icon size={16} className={active ? 'shrink-0 animate-spin text-[color:var(--status-info-fg)]' : 'shrink-0 text-[var(--accent-primary)]'} />
       <div className="min-w-0">
         <p className="text-xs font-semibold text-[var(--text-primary)]">
           {copy.renderStatus}: {label}
@@ -439,6 +443,7 @@ export function StudioSaveStatus({
 }) {
   const copy = studioWorkspaceCopy(useDocumentLocale());
   const Icon = error ? AlertTriangle : saving ? LoaderCircle : hasChanges ? Clock3 : CheckCircle2;
+  const state = error ? 'error' : saving ? 'saving' : hasChanges ? 'unsaved' : 'saved';
   const label = error
     ? error
     : saving
@@ -455,7 +460,8 @@ export function StudioSaveStatus({
   return (
     <div
       aria-live="polite"
-      className={`flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs ${
+      data-state={state}
+      className={`motion-studio-status flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs ${
         error
           ? 'border-[color:var(--status-danger-fg)] bg-[color:var(--status-danger-bg)] text-[color:var(--status-danger-fg)]'
           : hasChanges || saving
@@ -502,16 +508,16 @@ export function StudioInspectorSection({
   return (
     <details
       open={defaultOpen}
-      className={`group rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] ${className}`}
+      className={`group motion-studio-status rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] ${className}`}
     >
-      <summary className="focus-ring flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-3 py-3">
+      <summary className="focus-ring motion-interactive flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-3 py-3">
         <span className="min-w-0">
           <span className="block text-sm font-semibold text-[var(--text-primary)]">{title}</span>
           {summary && <span className="mt-0.5 block text-xs text-[var(--text-secondary)]">{summary}</span>}
         </span>
-        <ChevronDown size={16} className="shrink-0 text-[var(--text-secondary)] transition group-open:rotate-180" />
+        <ChevronDown size={16} className="motion-disclosure shrink-0 text-[var(--text-secondary)] group-open:rotate-180" />
       </summary>
-      <div className="space-y-3 border-t border-[var(--border-subtle)] px-3 py-3">
+      <div className="motion-studio-panel space-y-3 border-t border-[var(--border-subtle)] px-3 py-3">
         {children}
       </div>
     </details>
@@ -520,7 +526,7 @@ export function StudioInspectorSection({
 
 export function StudioToolbarGroup({ label, children }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 rounded-xl bg-[var(--surface-container-low)] p-1.5" aria-label={label}>
+    <div className="motion-studio-status flex flex-wrap items-center gap-2 rounded-xl bg-[var(--surface-container-low)] p-1.5" aria-label={label}>
       {children}
     </div>
   );
