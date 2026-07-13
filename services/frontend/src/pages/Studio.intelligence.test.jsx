@@ -162,6 +162,7 @@ describe('render analysis diagnostics', () => {
     const { host, root } = await renderRenderAnalysisPanel(analysis);
 
     expect(host.textContent).toContain('Last render analysis');
+    expect(host.querySelector('[data-testid="render-analysis-panel"]').className).toContain('motion-studio-status');
     expect(host.textContent).toContain('Diagnostic only');
     expect(host.textContent).toContain('Actual rendering may safely fall back.');
     expect(host.textContent).toContain('Visual-only recomposition');
@@ -220,6 +221,7 @@ describe('predicted rerender impact preview', () => {
     const { host, root } = await renderNode(<PredictedRerenderImpactPanel prediction={prediction} />);
 
     expect(host.textContent).toContain('Predicted rerender impact');
+    expect(host.querySelector('[data-testid="partial-render-preview-panel"]').className).toContain('motion-studio-status');
     expect(host.textContent).toContain('Prediction only');
     expect(host.textContent).toContain('Actual rendering may safely fall back.');
     expect(host.textContent).toContain('Source: Current editor payload');

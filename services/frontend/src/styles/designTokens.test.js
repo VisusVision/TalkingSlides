@@ -138,10 +138,16 @@ describe('frontend design tokens', () => {
     expect(globalsCss).toContain('.motion-nav-indicator');
     expect(globalsCss).toContain('.motion-disclosure');
     expect(globalsCss).toContain('.motion-exit');
+    expect(globalsCss).toContain('.motion-studio-selection');
+    expect(globalsCss).toContain('.motion-studio-panel');
+    expect(globalsCss).toContain('.motion-studio-status');
+    expect(globalsCss).toContain('.motion-studio-canvas');
     expect(globalsCss).toContain('.motion-interactive:hover');
     expect(globalsCss).toContain('.motion-slide-up');
     expect(globalsCss).toContain('.reduced-motion .motion-page-enter');
     expect(globalsCss).toContain('.reduced-motion .motion-popover-in');
+    expect(globalsCss).toContain('.reduced-motion .motion-studio-selection');
+    expect(globalsCss).toContain('.reduced-motion .motion-studio-canvas');
     expect(globalsCss).toContain('transform: none !important');
   });
 });

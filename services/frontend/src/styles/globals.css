@@ -371,6 +371,34 @@
     transform: translateY(4px) scale(0.99);
   }
 
+  .motion-studio-selection {
+    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  .motion-studio-selection:hover {
+    transform: translateY(-1px);
+  }
+
+  .motion-studio-selection:active {
+    transform: translateY(0) scale(0.99);
+  }
+
+  .motion-studio-panel {
+    animation: motion-studio-panel var(--duration-fast) var(--ease-out) both;
+  }
+
+  .motion-studio-status {
+    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  .motion-studio-canvas {
+    animation: motion-fade var(--duration-fast) var(--ease-out) both;
+  }
+
   .cinematic-fade {
     animation: cinematic-fade 0.65s var(--ease-out) both;
   }
@@ -485,6 +513,18 @@
   }
 }
 
+@keyframes motion-studio-panel {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes cinematic-fade {
   from {
     opacity: 0;
@@ -571,7 +611,13 @@
   .motion-popover-in,
   .motion-nav-indicator,
   .motion-disclosure,
-  .motion-exit {
+  .motion-exit,
+  .motion-studio-selection,
+  .motion-studio-selection:hover,
+  .motion-studio-selection:active,
+  .motion-studio-panel,
+  .motion-studio-status,
+  .motion-studio-canvas {
     animation: none !important;
     transform: none !important;
   }
@@ -611,6 +657,12 @@
 .reduced-motion .motion-popover-in,
 .reduced-motion .motion-nav-indicator,
 .reduced-motion .motion-disclosure,
-.reduced-motion .motion-exit {
+.reduced-motion .motion-exit,
+.reduced-motion .motion-studio-selection,
+.reduced-motion .motion-studio-selection:hover,
+.reduced-motion .motion-studio-selection:active,
+.reduced-motion .motion-studio-panel,
+.reduced-motion .motion-studio-status,
+.reduced-motion .motion-studio-canvas {
   transform: none !important;
 }
