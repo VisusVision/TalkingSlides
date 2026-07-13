@@ -102,7 +102,7 @@ function CaptionLayer({ text }) {
     <div
       data-testid="player-caption-layer"
       data-caption-layer="subtitles"
-      className="pointer-events-none absolute inset-x-3 bottom-14 flex justify-center px-2 text-center sm:bottom-16"
+      className="motion-watch-status pointer-events-none absolute inset-x-3 bottom-14 flex justify-center px-2 text-center sm:bottom-16"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions }}
     >
       <span className={CAPTION_PILL_CLASSNAME} style={{ textShadow: CAPTION_TEXT_SHADOW }}>
@@ -120,11 +120,29 @@ function PlayerShellFullscreenButton({ active, onClick }) {
       aria-label={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
       title={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
       onClick={onClick}
-      className="focus-ring absolute left-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm transition hover:bg-black/85"
+      className="focus-ring motion-watch-control absolute left-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm hover:bg-black/85"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.videoControls }}
     >
       {active ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
     </button>
+  );
+}
+
+function BufferingStatus({ active }) {
+  if (!active) return null;
+  return (
+    <div
+      data-testid="player-buffering-status"
+      role="status"
+      aria-live="polite"
+      className="motion-watch-status pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20 px-3 text-center"
+      style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.videoControls - 1 }}
+    >
+      <span className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/75 px-3 py-2 text-sm font-semibold text-white shadow-lg">
+        <span className="motion-watch-buffering-dot h-2 w-2 rounded-full bg-white" aria-hidden="true" />
+        <span>Buffering...</span>
+      </span>
+    </div>
   );
 }
 
@@ -186,6 +204,7 @@ export default function VideoStage({
   const [captionLoadFailed, setCaptionLoadFailed] = useState(false);
   const [activeCaptionText, setActiveCaptionText] = useState('');
   const [fullscreenActive, setFullscreenActive] = useState(false);
+  const [buffering, setBuffering] = useState(false);
   const selectionControlled = selectedSubtitleKey !== undefined;
   const selectedTrackKey = selectionControlled ? selectedSubtitleKey : internalSelectedTrackKey;
   const setSelectedTrackKeyValue = useCallback((nextKey) => {
@@ -325,10 +344,12 @@ export default function VideoStage({
   }, [onPlaybackStarted, selectedTrack]);
 
   const handleVideoPause = useCallback(() => {
+    setBuffering(false);
     onPlaybackStopped?.();
   }, [onPlaybackStopped]);
 
   const handleVideoEnded = useCallback(() => {
+    setBuffering(false);
     onPlaybackStopped?.();
     onPlaybackEnded?.();
   }, [onPlaybackEnded, onPlaybackStopped]);
@@ -336,6 +357,14 @@ export default function VideoStage({
   const handleVideoSeeked = useCallback((event) => {
     setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
   }, [selectedTrack]);
+
+  const handleBufferingStarted = useCallback(() => {
+    setBuffering(true);
+  }, []);
+
+  const handleBufferingSettled = useCallback(() => {
+    setBuffering(false);
+  }, []);
 
   const handleVideoTimeUpdate = useCallback((event) => {
     onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0));
@@ -366,7 +395,7 @@ export default function VideoStage({
   }, []);
 
   const playerShellClassName = [
-    'relative overflow-hidden bg-[color:var(--video-stage-bg)]',
+    'motion-watch-player relative overflow-hidden bg-[color:var(--video-stage-bg)]',
     fullscreenActive ? 'flex h-screen items-center justify-center rounded-none' : 'rounded-xl',
   ].join(' ');
   const videoClassName = fullscreenActive
@@ -406,6 +435,10 @@ export default function VideoStage({
               onEnded={handleVideoEnded}
               onSeeked={handleVideoSeeked}
               onTimeUpdate={handleVideoTimeUpdate}
+              onWaiting={handleBufferingStarted}
+              onStalled={handleBufferingStarted}
+              onPlaying={handleBufferingSettled}
+              onCanPlay={handleBufferingSettled}
             >
               {availableTracks.map((track) => (
                 <track
@@ -431,6 +464,7 @@ export default function VideoStage({
               />
             )}
             <CaptionLayer text={activeCaptionText} />
+            <BufferingStatus active={buffering} />
             <PlayerShellFullscreenButton
               active={fullscreenActive}
               onClick={handlePlayerShellFullscreenToggle}
@@ -450,11 +484,11 @@ export default function VideoStage({
       </div>
 
       {hasVideo && avatarProcessing && (
-        <p className="text-xs text-[var(--text-secondary)]">Avatar is being prepared.</p>
+        <p className="motion-watch-status text-xs text-[var(--text-secondary)]">Avatar is being prepared.</p>
       )}
 
       {hasVideo && showSubtitleControls && (
-        <div className="flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="motion-watch-status flex flex-col gap-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-muted)] px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <label className="flex min-w-0 items-center gap-2 text-sm text-[var(--text-secondary)]">
               <span className="shrink-0 font-medium text-[var(--text-primary)]">Subtitles</span>
@@ -462,7 +496,7 @@ export default function VideoStage({
                 value={selectedTrackKey}
                 onChange={handleSubtitleSelectionChange}
                 disabled={availableTracks.length === 0}
-                className="focus-ring h-9 min-w-[9rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
+                className="focus-ring motion-watch-control h-9 min-w-[9rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-2.5 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
               >
                 <option value="off">Off</option>
                 {availableTracks.map((track) => (
@@ -511,7 +545,7 @@ export default function VideoStage({
   }
 
   return (
-    <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
+    <SurfaceCard elevated className="motion-watch-player space-y-4 p-4 sm:p-5">
       {content}
     </SurfaceCard>
   );

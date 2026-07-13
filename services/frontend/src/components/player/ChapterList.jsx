@@ -20,19 +20,19 @@ export default function ChapterList({
           <button
             type="button"
             onClick={onToggle}
-            className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full token-surface text-[var(--text-secondary)]"
+            className="focus-ring motion-watch-control inline-flex h-8 w-8 items-center justify-center rounded-full token-surface text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface-strong)]"
             aria-label={collapsed ? 'Expand chapters' : 'Collapse chapters'}
           >
             <ChevronDown
               size={15}
-              className={`transition ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+              className={`motion-disclosure ${collapsed ? '-rotate-90' : 'rotate-0'}`}
             />
           </button>
         )}
       </div>
 
       {!collapsed && (
-        <div className="max-h-[13.5rem] space-y-2 overflow-y-auto pr-1">
+        <div className="motion-watch-status max-h-[13.5rem] space-y-2 overflow-y-auto pr-1">
         {chapters.map((chapter) => {
           const isActive = chapter.id === activeChapterId;
           return (
@@ -40,7 +40,7 @@ export default function ChapterList({
               key={chapter.id}
               type="button"
               onClick={() => onJump(chapter.startSeconds)}
-              className={`focus-ring w-full rounded-2xl border px-3 py-2 text-left transition ${
+              className={`focus-ring motion-watch-control w-full rounded-2xl border px-3 py-2 text-left ${
                 isActive
                   ? 'border-[color:color-mix(in_srgb,var(--accent-primary),transparent_40%)] bg-[color:color-mix(in_srgb,var(--accent-primary),transparent_86%)]'
                   : 'border-transparent bg-[color:var(--surface-muted)] hover:border-[var(--border-subtle)]'
@@ -55,7 +55,7 @@ export default function ChapterList({
       )}
 
       {collapsed && (
-        <p className="text-xs text-[var(--text-secondary)]">Collapsed</p>
+        <p className="motion-watch-status text-xs text-[var(--text-secondary)]">Collapsed</p>
       )}
     </SurfaceCard>
   );

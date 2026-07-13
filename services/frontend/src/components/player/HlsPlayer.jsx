@@ -122,7 +122,7 @@ function CaptionLayer({ text }) {
     <div
       data-testid="player-caption-layer"
       data-caption-layer="subtitles"
-      className="pointer-events-none absolute inset-x-3 bottom-14 flex justify-center px-2 text-center sm:bottom-16"
+      className="motion-watch-status pointer-events-none absolute inset-x-3 bottom-14 flex justify-center px-2 text-center sm:bottom-16"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions }}
     >
       <span className={CAPTION_PILL_CLASSNAME} style={{ textShadow: CAPTION_TEXT_SHADOW }}>
@@ -140,11 +140,29 @@ function PlayerShellFullscreenButton({ active, onClick }) {
       aria-label={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
       title={active ? 'Exit player fullscreen' : 'Enter player fullscreen'}
       onClick={onClick}
-      className="focus-ring absolute left-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm transition hover:bg-black/85"
+      className="focus-ring motion-watch-control absolute left-3 top-3 inline-flex h-9 w-9 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm hover:bg-black/85"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.videoControls }}
     >
       {active ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
     </button>
+  );
+}
+
+function BufferingStatus({ active }) {
+  if (!active) return null;
+  return (
+    <div
+      data-testid="player-buffering-status"
+      role="status"
+      aria-live="polite"
+      className="motion-watch-status pointer-events-none absolute inset-0 flex items-center justify-center bg-black/20 px-3 text-center"
+      style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.videoControls - 1 }}
+    >
+      <span className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-black/75 px-3 py-2 text-sm font-semibold text-white shadow-lg">
+        <span className="motion-watch-buffering-dot h-2 w-2 rounded-full bg-white" aria-hidden="true" />
+        <span>Buffering...</span>
+      </span>
+    </div>
   );
 }
 
@@ -180,6 +198,7 @@ export default function HlsPlayer({
   const [usingFallback, setUsingFallback] = useState(false);
   const [activeCaptionText, setActiveCaptionText] = useState('');
   const [fullscreenActive, setFullscreenActive] = useState(false);
+  const [buffering, setBuffering] = useState(false);
 
   const sourceUrl = usingFallback ? String(fallbackUrl || '').trim() : String(manifestUrl || '').trim();
   const canUseFallback = Boolean(fallbackAllowed && fallbackUrl);
@@ -220,6 +239,7 @@ export default function HlsPlayer({
   const selectedTrack = availableTracks.find((track) => track.key === selectedSubtitleKey) || null;
 
   const activateFallback = useCallback((reason) => {
+    setBuffering(false);
     if (!canUseFallback) {
       const message = 'Secure stream is not available for this lesson.';
       setPlaybackError(message);
@@ -283,6 +303,7 @@ export default function HlsPlayer({
   useEffect(() => {
     setPlaybackError('');
     setUsingFallback(false);
+    setBuffering(false);
   }, [lesson?.id, manifestUrl, fallbackUrl]);
 
   useEffect(() => {
@@ -327,6 +348,7 @@ export default function HlsPlayer({
   }, [activateFallback, activeVideoRef, mediaCrossOrigin, sourceUrl, usingFallback]);
 
   const handleVideoError = useCallback(() => {
+    setBuffering(false);
     if (!usingFallback) {
       activateFallback('video_source_error');
       return;
@@ -342,10 +364,12 @@ export default function HlsPlayer({
   }, [onPlaybackStarted, selectedTrack]);
 
   const handlePause = useCallback(() => {
+    setBuffering(false);
     onPlaybackStopped?.();
   }, [onPlaybackStopped]);
 
   const handleEnded = useCallback(() => {
+    setBuffering(false);
     onPlaybackStopped?.();
     onPlaybackEnded?.();
   }, [onPlaybackEnded, onPlaybackStopped]);
@@ -354,6 +378,14 @@ export default function HlsPlayer({
     onPlaybackTimeChange?.(Number(event.currentTarget.currentTime || 0));
     setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack));
   }, [onPlaybackTimeChange, selectedTrack]);
+
+  const handleBufferingStarted = useCallback(() => {
+    setBuffering(true);
+  }, []);
+
+  const handleBufferingSettled = useCallback(() => {
+    setBuffering(false);
+  }, []);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -379,7 +411,7 @@ export default function HlsPlayer({
   }, []);
 
   const playerShellClassName = [
-    'relative overflow-hidden bg-[color:var(--video-stage-bg)]',
+    'motion-watch-player relative overflow-hidden bg-[color:var(--video-stage-bg)]',
     fullscreenActive ? 'flex h-screen items-center justify-center rounded-none' : 'rounded-xl',
   ].join(' ');
   const videoClassName = fullscreenActive
@@ -387,7 +419,7 @@ export default function HlsPlayer({
     : 'visus-shell-video aspect-video w-full bg-black';
 
   return (
-    <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
+    <SurfaceCard elevated className="motion-watch-player space-y-4 p-4 sm:p-5">
       <div
         ref={playerShellRef}
         data-testid="player-fullscreen-shell"
@@ -416,6 +448,10 @@ export default function HlsPlayer({
               onEnded={handleEnded}
               onSeeked={(event) => setActiveCaptionText(captionTextForVideo(event.currentTarget, selectedTrack))}
               onTimeUpdate={handleTimeUpdate}
+              onWaiting={handleBufferingStarted}
+              onStalled={handleBufferingStarted}
+              onPlaying={handleBufferingSettled}
+              onCanPlay={handleBufferingSettled}
             >
               {availableTracks.map((track) => (
                 <track
@@ -440,6 +476,7 @@ export default function HlsPlayer({
               />
             )}
             <CaptionLayer text={activeCaptionText} />
+            <BufferingStatus active={buffering} />
             <PlayerShellFullscreenButton
               active={fullscreenActive}
               onClick={handlePlayerShellFullscreenToggle}
@@ -459,11 +496,11 @@ export default function HlsPlayer({
       </div>
 
       {usingFallback && (
-        <p className="text-xs text-[var(--text-secondary)]">Playing MP4 fallback allowed by this lesson.</p>
+        <p className="motion-watch-status text-xs text-[var(--text-secondary)]">Playing MP4 fallback allowed by this lesson.</p>
       )}
 
       {playbackError && (
-        <p className="text-sm font-medium text-[color:var(--feedback-danger-fg)]">{playbackError}</p>
+        <p className="motion-watch-status text-sm font-medium text-[color:var(--feedback-danger-fg)]">{playbackError}</p>
       )}
     </SurfaceCard>
   );

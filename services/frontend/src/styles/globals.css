@@ -399,6 +399,36 @@
     animation: motion-fade var(--duration-fast) var(--ease-out) both;
   }
 
+  .motion-watch-player {
+    animation: motion-fade var(--duration-fast) var(--ease-out) both;
+  }
+
+  .motion-watch-control {
+    transition-property: background-color, border-color, color, opacity, transform, box-shadow;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  .motion-watch-control:not(:disabled):active {
+    transform: scale(0.98);
+  }
+
+  .motion-watch-status {
+    animation: motion-fade var(--duration-fast) var(--ease-out) both;
+    transition-property: background-color, border-color, color, opacity, transform;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  .motion-watch-complete {
+    animation: motion-scale-in var(--duration-fast) var(--ease-out) both;
+    transform-origin: bottom center;
+  }
+
+  .motion-watch-buffering-dot {
+    animation: motion-watch-pulse var(--duration-slow) var(--ease-in-out) infinite;
+  }
+
   .cinematic-fade {
     animation: cinematic-fade 0.65s var(--ease-out) both;
   }
@@ -575,6 +605,19 @@
   }
 }
 
+@keyframes motion-watch-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.86);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .visus-page-progress {
   animation: visus-page-progress 1.05s var(--ease-in-out) infinite;
 }
@@ -617,7 +660,13 @@
   .motion-studio-selection:active,
   .motion-studio-panel,
   .motion-studio-status,
-  .motion-studio-canvas {
+  .motion-studio-canvas,
+  .motion-watch-player,
+  .motion-watch-control,
+  .motion-watch-control:not(:disabled):active,
+  .motion-watch-status,
+  .motion-watch-complete,
+  .motion-watch-buffering-dot {
     animation: none !important;
     transform: none !important;
   }
@@ -663,6 +712,12 @@
 .reduced-motion .motion-studio-selection:active,
 .reduced-motion .motion-studio-panel,
 .reduced-motion .motion-studio-status,
-.reduced-motion .motion-studio-canvas {
+.reduced-motion .motion-studio-canvas,
+.reduced-motion .motion-watch-player,
+.reduced-motion .motion-watch-control,
+.reduced-motion .motion-watch-control:not(:disabled):active,
+.reduced-motion .motion-watch-status,
+.reduced-motion .motion-watch-complete,
+.reduced-motion .motion-watch-buffering-dot {
   transform: none !important;
 }

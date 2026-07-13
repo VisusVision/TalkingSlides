@@ -442,7 +442,7 @@ function PublisherIdentity({ publisherId, publisherName, publisherAvatarUrl, pub
   return (
     <Link
       to={`/channel/${publisherId}`}
-      className="focus-ring inline-flex min-w-0 max-w-full items-center gap-2 rounded-full bg-[var(--surface-container-high)] py-1 pl-1 pr-3 text-sm transition hover:bg-[color:var(--hover-surface-strong)]"
+      className="focus-ring motion-watch-control inline-flex min-w-0 max-w-full items-center gap-2 rounded-full bg-[var(--surface-container-high)] py-1 pl-1 pr-3 text-sm hover:bg-[color:var(--hover-surface-strong)]"
     >
       {content}
     </Link>
@@ -1315,8 +1315,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       return (
         <Suspense
           fallback={(
-            <SurfaceCard elevated className="p-4 sm:p-5">
-              <p className="body-md">Loading secure player...</p>
+            <SurfaceCard elevated className="motion-watch-status p-4 sm:p-5">
+              <p className="body-md" role="status">Loading secure player...</p>
             </SurfaceCard>
           )}
         >
@@ -1354,7 +1354,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="motion-page-enter space-y-5">
       <SurfaceCard className="token-glass flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="label-sm">Watch</p>
@@ -1368,13 +1368,13 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
       </SurfaceCard>
 
       {loadingCatalog && (
-        <SurfaceCard elevated>
-          <p className="body-md">Loading lesson catalog...</p>
+        <SurfaceCard elevated className="motion-watch-status">
+          <p className="body-md" role="status">Loading lesson catalog...</p>
         </SurfaceCard>
       )}
 
       {lessonError && (
-        <SurfaceCard elevated>
+        <SurfaceCard elevated className="motion-watch-status">
           <p className="text-sm text-[color:var(--feedback-danger-fg)]">{lessonError}</p>
         </SurfaceCard>
       )}
@@ -1395,8 +1395,8 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
         >
           <div data-testid="watch-video-column" className={focusMode ? 'space-y-5' : 'lg:col-span-8 space-y-5'}>
             {loadingLesson ? (
-              <SurfaceCard elevated>
-                <p className="body-md">Loading lesson player...</p>
+              <SurfaceCard elevated className="motion-watch-status">
+                <p className="body-md" role="status">Loading lesson player...</p>
               </SurfaceCard>
             ) : (
               <>
@@ -1530,7 +1530,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                             setSelectedSubtitleKey(event.target.value);
                           }}
                           disabled={subtitleOptions.length === 0}
-                          className="focus-ring h-10 min-w-[12rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
+                          className="focus-ring motion-watch-control h-10 min-w-[12rem] rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
                         >
                           <option value="off">Off</option>
                           {subtitleOptions.map((option) => (
@@ -1538,12 +1538,12 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           ))}
                         </select>
                         {selectedSubtitleOption && (
-                          <span className="text-xs text-[var(--text-secondary)]">
+                          <span className="motion-watch-status text-xs text-[var(--text-secondary)]">
                             Showing {selectedSubtitleOption.label}
                           </span>
                         )}
                         {!selectedSubtitleOption && subtitleOptions.length === 0 && (
-                          <span className="text-xs text-[var(--text-secondary)]">No subtitle tracks available yet.</span>
+                          <span className="motion-watch-status text-xs text-[var(--text-secondary)]">No subtitle tracks available yet.</span>
                         )}
                       </div>
                     </div>
@@ -1556,7 +1556,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                           value={selectedRequestLanguage?.code || ''}
                           onChange={(event) => setRequestLanguageCode(event.target.value)}
                           disabled={requestingSubtitleLanguage || Boolean(pendingSubtitleRequest) || missingSubtitleLanguages.length === 0}
-                          className="focus-ring h-10 min-w-0 flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
+                          className="focus-ring motion-watch-control h-10 min-w-0 flex-1 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-elevated)] px-3 text-sm text-[var(--text-primary)] disabled:cursor-not-allowed disabled:opacity-55"
                         >
                           {missingSubtitleLanguages.length > 0 ? (
                             missingSubtitleLanguages.map((language) => (
@@ -1581,7 +1581,7 @@ export default function Watch({ searchQuery, user, onLoginRequest }) {
                     </div>
                   </div>
                   {subtitleRequestMessage && (
-                    <p className="text-xs text-[var(--text-secondary)]">{subtitleRequestMessage}</p>
+                    <p className="motion-watch-status text-xs text-[var(--text-secondary)]">{subtitleRequestMessage}</p>
                   )}
                 </SurfaceCard>
 
