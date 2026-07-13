@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { CloudUpload, FileText, Sparkles } from 'lucide-react';
 import Button from '../ui/Button';
 import SurfaceCard from '../ui/SurfaceCard';
+import TaskStatus from '../ui/TaskStatus';
 import { featureEnabled, useCapabilities } from '../../lib/capabilities';
 
 const ACCEPTED_TYPES = ['.pptx', '.pdf', '.docx', '.txt'];
@@ -168,6 +169,16 @@ export default function UploadComposer({ categories, submitting, submitError, on
             )}
           </div>
         </label>
+
+        {submitting && (
+          <TaskStatus
+            state="uploading"
+            title="Creating lesson draft"
+            description="Uploading source material and submitting the render job."
+            stage="uploading"
+            data-testid="upload-task-status"
+          />
+        )}
 
         {effectiveError && (
           <p className="rounded-2xl bg-[color:var(--feedback-danger-bg)] px-3 py-2 text-sm text-[color:var(--feedback-danger-fg)]">

@@ -89,11 +89,27 @@ describe('Studio workspace chrome', () => {
     await act(async () => root.render(<StudioSlideRail scenes={[]} />));
     expect(host.textContent).toContain('Henüz slayt yok');
 
-    await act(async () => root.render(<StudioRenderStatus renderStatus={{ status: 'processing' }} />));
+    await act(async () => root.render(<StudioRenderStatus renderStatus={{ status: 'processing', progress: 64 }} />));
     expect(host.textContent).toContain('Render durumu: İşleniyor');
     const renderStatus = host.querySelector('[data-testid="studio-render-status"]');
-    expect(renderStatus).toHaveAttribute('data-state', 'active');
+    expect(renderStatus).toHaveAttribute('data-state', 'processing');
+    expect(renderStatus).toHaveAttribute('data-render-state', 'active');
     expect(renderStatus.className).toContain('motion-studio-status');
+    expect(renderStatus.className).toContain('motion-task-active');
+    expect(host.querySelector('[role="progressbar"]')).toHaveAttribute('aria-valuenow', '64');
+
+    await act(async () => root.render(<StudioRenderStatus renderStatus={{ status: 'pending', progress: 0 }} />));
+    expect(host.querySelector('[data-testid="studio-render-status"]')).toHaveAttribute('data-state', 'queued');
+    expect(host.querySelector('[role="progressbar"]')).toBeNull();
+    expect(host.querySelector('.motion-task-progress')).not.toBeNull();
+
+    await act(async () => root.render(<StudioRenderStatus renderStatus={{ status: 'running', progress: 100 }} />));
+    expect(host.textContent).toContain('99%');
+    expect(host.querySelector('[role="progressbar"]')).toHaveAttribute('aria-valuenow', '99');
+
+    await act(async () => root.render(<StudioRenderStatus renderStatus={{ status: 'done', progress: 100 }} />));
+    expect(host.textContent).toContain('100%');
+    expect(host.querySelector('[role="progressbar"]')).toHaveAttribute('aria-valuenow', '100');
   });
 
   it('keeps save and disclosure state visible while adding Studio motion hooks', async () => {

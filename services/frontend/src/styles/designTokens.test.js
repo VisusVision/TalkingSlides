@@ -142,6 +142,11 @@ describe('frontend design tokens', () => {
     expect(globalsCss).toContain('.motion-studio-panel');
     expect(globalsCss).toContain('.motion-studio-status');
     expect(globalsCss).toContain('.motion-studio-canvas');
+    expect(globalsCss).toContain('.motion-task-active');
+    expect(globalsCss).toContain('.motion-task-progress');
+    expect(globalsCss).toContain('animation: motion-task-progress var(--duration-slow) var(--ease-in-out) infinite');
+    expect(globalsCss).toContain('.motion-task-complete');
+    expect(globalsCss).toContain('.motion-task-failed');
     expect(globalsCss).toContain('.motion-watch-player');
     expect(globalsCss).toContain('.motion-watch-control');
     expect(globalsCss).toContain('.motion-watch-status');
@@ -154,6 +159,7 @@ describe('frontend design tokens', () => {
     expect(globalsCss).toContain('.reduced-motion .motion-popover-in');
     expect(globalsCss).toContain('.reduced-motion .motion-studio-selection');
     expect(globalsCss).toContain('.reduced-motion .motion-studio-canvas');
+    expect(globalsCss).toContain('.reduced-motion .motion-task-progress::after');
     expect(globalsCss).toContain('.reduced-motion .motion-watch-control');
     expect(globalsCss).toContain('.reduced-motion .motion-watch-buffering-dot');
     expect(globalsCss).toContain('transform: none !important');
