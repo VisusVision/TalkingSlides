@@ -20,19 +20,19 @@ export default function TranscriptPanel({
           <button
             type="button"
             onClick={onToggle}
-            className="focus-ring inline-flex h-8 w-8 items-center justify-center rounded-full token-surface text-[var(--text-secondary)]"
+            className="focus-ring motion-watch-control inline-flex h-8 w-8 items-center justify-center rounded-full token-surface text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface-strong)]"
             aria-label={collapsed ? 'Expand transcript' : 'Collapse transcript'}
           >
             <ChevronDown
               size={15}
-              className={`transition ${collapsed ? '-rotate-90' : 'rotate-0'}`}
+              className={`motion-disclosure ${collapsed ? '-rotate-90' : 'rotate-0'}`}
             />
           </button>
         )}
       </div>
 
       {!collapsed && (
-        <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+        <div className="motion-watch-status max-h-[420px] space-y-2 overflow-y-auto pr-1">
         {lines.map((line) => {
           const active = playbackTime >= line.startSeconds && playbackTime < line.endSeconds;
 
@@ -41,7 +41,7 @@ export default function TranscriptPanel({
               key={line.id}
               type="button"
               onClick={() => onJump(line.startSeconds)}
-              className={`focus-ring w-full rounded-2xl border px-3 py-2 text-left transition ${
+              className={`focus-ring motion-watch-control w-full rounded-2xl border px-3 py-2 text-left ${
                 active
                   ? 'border-[color:color-mix(in_srgb,var(--accent-secondary),transparent_34%)] bg-[color:color-mix(in_srgb,var(--accent-secondary),transparent_84%)]'
                   : 'border-transparent bg-[color:var(--surface-muted)] hover:border-[var(--border-subtle)]'
@@ -56,7 +56,7 @@ export default function TranscriptPanel({
       )}
 
       {collapsed && (
-        <p className="text-xs text-[var(--text-secondary)]">Collapsed</p>
+        <p className="motion-watch-status text-xs text-[var(--text-secondary)]">Collapsed</p>
       )}
     </SurfaceCard>
   );

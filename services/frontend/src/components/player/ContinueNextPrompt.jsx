@@ -12,10 +12,10 @@ export default function ContinueNextPrompt({ prompt, onContinue, onCancel }) {
     <div
       data-testid="watch-autoplay-next"
       aria-live="polite"
-      className="pointer-events-none absolute inset-x-3 bottom-16 flex justify-center px-2 sm:bottom-20"
+      className="motion-watch-status pointer-events-none absolute inset-x-3 bottom-16 flex justify-center px-2 sm:bottom-20"
       style={{ zIndex: AVATAR_OVERLAY_Z_INDEX.captions + 20 }}
     >
-      <div className="pointer-events-auto w-full max-w-lg rounded-xl border border-white/15 bg-[color:rgba(8,12,20,0.9)] p-3 text-white shadow-2xl backdrop-blur sm:p-4">
+      <div className="motion-watch-complete pointer-events-auto w-full max-w-lg rounded-xl border border-white/15 bg-[color:rgba(8,12,20,0.9)] p-3 text-white shadow-2xl backdrop-blur sm:p-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/65">Up next</p>
@@ -27,10 +27,10 @@ export default function ContinueNextPrompt({ prompt, onContinue, onCancel }) {
             </p>
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
-            <Button size="sm" onClick={onContinue} className="bg-white text-slate-950 hover:scale-100 hover:bg-white/90">
+            <Button size="sm" onClick={onContinue} className="motion-watch-control bg-white text-slate-950 hover:scale-100 hover:bg-white/90">
               Continue now
             </Button>
-            <Button size="sm" variant="secondary" onClick={onCancel} className="bg-white/10 text-white hover:bg-white/20">
+            <Button size="sm" variant="secondary" onClick={onCancel} className="motion-watch-control bg-white/10 text-white hover:bg-white/20">
               Stay here
             </Button>
           </div>
