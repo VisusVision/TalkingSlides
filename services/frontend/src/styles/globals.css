@@ -395,6 +395,42 @@
     transition-timing-function: var(--ease-standard);
   }
 
+  .motion-task-active {
+    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-duration: var(--duration-fast);
+    transition-timing-function: var(--ease-standard);
+  }
+
+  .motion-task-progress {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .motion-task-progress::after {
+    content: '';
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 0;
+    width: 42%;
+    border-radius: inherit;
+    background: var(--accent-primary);
+    opacity: 0.76;
+    transform: translateX(-120%);
+    animation: motion-task-progress var(--duration-slow) var(--ease-in-out) infinite;
+  }
+
+  [dir="rtl"] .motion-task-progress::after {
+    animation-name: motion-task-progress-rtl;
+  }
+
+  .motion-task-complete {
+    animation: motion-scale-in var(--duration-fast) var(--ease-out) both;
+  }
+
+  .motion-task-failed {
+    animation: motion-fade var(--duration-fast) var(--ease-out) both;
+  }
+
   .motion-studio-canvas {
     animation: motion-fade var(--duration-fast) var(--ease-out) both;
   }
@@ -618,6 +654,26 @@
   }
 }
 
+@keyframes motion-task-progress {
+  0% {
+    transform: translateX(-120%);
+  }
+
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+@keyframes motion-task-progress-rtl {
+  0% {
+    transform: translateX(260%);
+  }
+
+  100% {
+    transform: translateX(-120%);
+  }
+}
+
 .visus-page-progress {
   animation: visus-page-progress 1.05s var(--ease-in-out) infinite;
 }
@@ -661,6 +717,10 @@
   .motion-studio-panel,
   .motion-studio-status,
   .motion-studio-canvas,
+  .motion-task-active,
+  .motion-task-progress::after,
+  .motion-task-complete,
+  .motion-task-failed,
   .motion-watch-player,
   .motion-watch-control,
   .motion-watch-control:not(:disabled):active,
@@ -669,6 +729,12 @@
   .motion-watch-buffering-dot {
     animation: none !important;
     transform: none !important;
+  }
+
+  .motion-task-progress::after {
+    opacity: 0.76;
+    transform: none !important;
+    width: 100%;
   }
 }
 
@@ -713,6 +779,10 @@
 .reduced-motion .motion-studio-panel,
 .reduced-motion .motion-studio-status,
 .reduced-motion .motion-studio-canvas,
+.reduced-motion .motion-task-active,
+.reduced-motion .motion-task-progress::after,
+.reduced-motion .motion-task-complete,
+.reduced-motion .motion-task-failed,
 .reduced-motion .motion-watch-player,
 .reduced-motion .motion-watch-control,
 .reduced-motion .motion-watch-control:not(:disabled):active,
@@ -720,4 +790,10 @@
 .reduced-motion .motion-watch-complete,
 .reduced-motion .motion-watch-buffering-dot {
   transform: none !important;
+}
+
+.reduced-motion .motion-task-progress::after {
+  opacity: 0.76;
+  transform: none !important;
+  width: 100%;
 }

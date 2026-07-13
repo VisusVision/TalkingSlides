@@ -16,6 +16,7 @@ import {
 import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { studioWorkspaceCopy } from './studioWorkspaceCopy';
+import TaskStatus from '../ui/TaskStatus';
 
 function useDocumentLocale() {
   const readLocale = () => (
@@ -367,6 +368,13 @@ function normalizedRenderStatus(renderStatus) {
   return String(renderStatus?.status || renderStatus || '').trim().toLowerCase();
 }
 
+function renderProgressValue(renderStatus, state) {
+  if (!renderStatus || typeof renderStatus !== 'object') return null;
+  if (state !== 'processing' && state !== 'completed') return null;
+  const progress = Number(renderStatus.progress);
+  return Number.isFinite(progress) ? progress : null;
+}
+
 export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
   const copy = studioWorkspaceCopy(useDocumentLocale());
   const status = normalizedRenderStatus(renderStatus) || String(projectStatus || '').toLowerCase();
@@ -374,8 +382,8 @@ export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
   const active = ['running', 'processing', 'started'].includes(status);
   const queued = ['queued', 'pending'].includes(status);
   const ready = ['ready', 'done', 'completed', 'published'].includes(status);
-  const state = failed ? 'failed' : active ? 'active' : queued ? 'queued' : ready ? 'ready' : 'draft';
-  const Icon = failed ? AlertTriangle : active ? LoaderCircle : queued ? Clock3 : CheckCircle2;
+  const state = failed ? 'failed' : active ? 'processing' : queued ? 'queued' : ready ? 'completed' : 'idle';
+  const dataState = failed ? 'failed' : active ? 'active' : queued ? 'queued' : ready ? 'ready' : 'draft';
   const label = failed
     ? copy.renderFailed
     : active
@@ -392,29 +400,24 @@ export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
       : ready
         ? copy.renderReadyHint
         : copy.renderIdleHint;
+  const progress = renderProgressValue(renderStatus, state);
+  const errorMessage = failed && typeof renderStatus === 'object'
+    ? String(renderStatus.error_message || '').trim()
+    : '';
+  const stage = status ? status.replace(/_/g, ' ') : '';
 
   return (
-    <section
-      aria-label={copy.renderStatus}
-      aria-live="polite"
+    <TaskStatus
       data-testid="studio-render-status"
-      data-state={state}
-      className={`motion-studio-status flex min-w-0 items-center gap-3 rounded-xl border px-3 py-2 ${
-        failed
-          ? 'border-[color:var(--status-danger-fg)] bg-[color:var(--status-danger-bg)]'
-          : active || queued
-            ? 'border-[color:var(--status-info-fg)] bg-[color:var(--status-info-bg)]'
-            : 'border-[var(--border-subtle)] bg-[var(--surface-container-high)]'
-      }`}
-    >
-      <Icon size={16} className={active ? 'shrink-0 animate-spin text-[color:var(--status-info-fg)]' : 'shrink-0 text-[var(--accent-primary)]'} />
-      <div className="min-w-0">
-        <p className="text-xs font-semibold text-[var(--text-primary)]">
-          {copy.renderStatus}: {label}
-        </p>
-        <p className="truncate text-[0.68rem] text-[var(--text-secondary)]">{hint}</p>
-      </div>
-    </section>
+      data-render-state={dataState}
+      aria-label={copy.renderStatus}
+      state={state}
+      title={`${copy.renderStatus}: ${label}`}
+      description={errorMessage || hint}
+      progress={progress}
+      stage={stage}
+      className="motion-studio-status"
+    />
   );
 }
 
