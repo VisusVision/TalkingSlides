@@ -4,12 +4,14 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   StudioCreatorHeader,
+  StudioFirstRunOnboarding,
   StudioInspectorHeading,
   StudioInspectorSection,
   StudioRenderStatus,
   StudioSaveStatus,
   StudioSlideRail,
   StudioSmartGuidance,
+  StudioStartOption,
   StudioWorkflowStrip,
 } from './StudioWorkspaceChrome';
 import { studioWorkspaceCopy, studioWorkspaceLocale } from './studioWorkspaceCopy';
@@ -546,5 +548,140 @@ describe('Studio workspace chrome', () => {
     expect(guidance.textContent).toContain(copy.guidanceStatusPublished);
     expect(guidance.outerHTML).not.toContain('Smart guidance');
     expect(guidance.outerHTML).not.toContain('Published');
+  });
+
+  it('renders first-run starting paths with real callbacks and dismiss semantics', async () => {
+    const copy = studioWorkspaceCopy('en');
+    const onUpload = vi.fn();
+    const onDraft = vi.fn();
+    const onDismiss = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <StudioFirstRunOnboarding
+          copy={copy}
+          options={[
+            {
+              key: 'upload',
+              title: copy.startUploadTitle,
+              description: copy.startUploadDescription,
+              badge: copy.startRecommendedBadge,
+              actionLabel: copy.startUploadAction,
+              onAction: onUpload,
+            },
+            {
+              key: 'draft',
+              title: copy.startLocalDraftTitle,
+              description: copy.startLocalDraftDescription,
+              actionLabel: copy.startLocalDraftAction,
+              onAction: onDraft,
+            },
+          ]}
+          onDismiss={onDismiss}
+        />,
+      );
+    });
+
+    const onboarding = host.querySelector('[data-testid="studio-first-run-onboarding"]');
+    expect(onboarding).toBeTruthy();
+    expect(onboarding).toHaveAttribute('aria-labelledby', 'studio-first-run-title');
+    expect(onboarding.textContent).toContain(copy.startUploadTitle);
+    expect(onboarding.textContent).toContain(copy.startLocalDraftTitle);
+    expect(onboarding.textContent).toContain(copy.firstRunStepContent);
+    expect(onboarding.textContent.toLowerCase()).not.toContain('template');
+    expect(onboarding.querySelector(`ul[aria-label="${copy.firstRunOptionsLabel}"]`)).toBeTruthy();
+    expect(onboarding.querySelector(`ol[aria-label="${copy.firstRunStepsLabel}"]`)).toBeTruthy();
+
+    const uploadButton = Array.from(onboarding.querySelectorAll('button'))
+      .find((button) => button.textContent.includes(copy.startUploadAction));
+    const draftButton = Array.from(onboarding.querySelectorAll('button'))
+      .find((button) => button.textContent.includes(copy.startLocalDraftAction));
+    const dismissButton = Array.from(onboarding.querySelectorAll('button'))
+      .find((button) => button.getAttribute('aria-label') === copy.firstRunDismiss);
+
+    await act(async () => uploadButton.click());
+    await act(async () => draftButton.click());
+    await act(async () => dismissButton.click());
+
+    expect(onUpload).toHaveBeenCalledTimes(1);
+    expect(onDraft).toHaveBeenCalledTimes(1);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps disabled first-run starting paths keyboard-safe', async () => {
+    const onAction = vi.fn();
+    await act(async () => {
+      root.render(
+        <ul>
+          <StudioStartOption
+            title="Open an existing lesson"
+            description="No lessons are available yet."
+            actionLabel="Browse lessons"
+            onAction={onAction}
+            disabled
+          />
+        </ul>,
+      );
+    });
+
+    const option = host.querySelector('button');
+    expect(option).toBeDisabled();
+    expect(option).toHaveAttribute('aria-describedby');
+    await act(async () => option.click());
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it('renders Turkish and Arabic first-run onboarding without normal-path English leakage', async () => {
+    document.documentElement.lang = 'tr-TR';
+    let copy = studioWorkspaceCopy('tr-TR');
+
+    await act(async () => {
+      root.render(
+        <StudioFirstRunOnboarding
+          copy={copy}
+          options={[{
+            key: 'upload',
+            title: copy.startUploadTitle,
+            description: copy.startUploadDescription,
+            actionLabel: copy.startUploadAction,
+            onAction: vi.fn(),
+          }]}
+        />,
+      );
+    });
+
+    let onboarding = host.querySelector('[data-testid="studio-first-run-onboarding"]');
+    expect(onboarding.textContent).toContain(copy.firstRunEyebrow);
+    expect(onboarding.textContent).toContain(copy.startUploadAction);
+    expect(onboarding.outerHTML).not.toContain('Start here');
+    expect(onboarding.outerHTML).not.toContain('Upload source');
+    expect(onboarding.outerHTML).not.toContain('template');
+
+    document.documentElement.lang = 'ar';
+    document.documentElement.dir = 'rtl';
+    copy = studioWorkspaceCopy('ar');
+    await act(async () => {
+      root.render(
+        <StudioFirstRunOnboarding
+          copy={copy}
+          options={[{
+            key: 'draft',
+            title: copy.startLocalDraftTitle,
+            description: copy.startLocalDraftDescription,
+            actionLabel: copy.startLocalDraftAction,
+            onAction: vi.fn(),
+          }]}
+          onDismiss={vi.fn()}
+        />,
+      );
+    });
+
+    onboarding = host.querySelector('[data-testid="studio-first-run-onboarding"]');
+    expect(onboarding.textContent).toContain(copy.firstRunEyebrow);
+    expect(onboarding.textContent).toContain(copy.startLocalDraftAction);
+    expect(onboarding.querySelector('button[aria-label]')).toHaveAttribute('aria-label', copy.firstRunDismiss);
+    expect(onboarding.outerHTML).not.toContain('Start here');
+    expect(onboarding.outerHTML).not.toContain('Start writing');
+    expect(onboarding.outerHTML).not.toContain('template');
   });
 });

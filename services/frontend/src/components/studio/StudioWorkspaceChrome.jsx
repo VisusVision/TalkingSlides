@@ -15,9 +15,10 @@ import {
   Pencil,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { studioWorkspaceCopy } from './studioWorkspaceCopy';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
@@ -984,6 +985,153 @@ export function StudioEmptyState({ kind = 'project', title = '', hint = '', chil
       <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{hint || defaultHint}</p>
       {children && <div className="mt-3">{children}</div>}
     </div>
+  );
+}
+
+export function StudioStartOption({
+  icon = null,
+  title = '',
+  description = '',
+  badge = '',
+  actionLabel = '',
+  onAction,
+  disabled = false,
+  compact = false,
+  className = '',
+}) {
+  const descriptionId = useId();
+
+  if (!title || !actionLabel) return null;
+
+  return (
+    <li className="min-w-0">
+      <button
+        type="button"
+        onClick={onAction}
+        disabled={disabled}
+        aria-describedby={description ? descriptionId : undefined}
+        className={`focus-ring motion-interactive group flex h-full w-full min-w-0 items-start gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] p-3 text-start enabled:hover:bg-[color:var(--hover-surface)] disabled:cursor-not-allowed disabled:opacity-65 ${compact ? 'sm:p-3' : 'sm:p-4'} ${className}`}
+      >
+        {icon && (
+          <span
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-[var(--surface-container-high)] text-[var(--accent-primary)] ring-1 ring-inset ring-[var(--border-subtle)]"
+            aria-hidden="true"
+          >
+            {icon}
+          </span>
+        )}
+        <span className="min-w-0 flex-1">
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-[var(--text-primary)]">{title}</span>
+            {badge && <Badge variant="accent">{badge}</Badge>}
+          </span>
+          {description && (
+            <span
+              id={descriptionId}
+              className="mt-1 block text-xs leading-5 text-[var(--text-secondary)]"
+            >
+              {description}
+            </span>
+          )}
+          <span className="mt-3 inline-flex text-xs font-semibold text-[var(--accent-primary)]">
+            {actionLabel}
+          </span>
+        </span>
+      </button>
+    </li>
+  );
+}
+
+export function StudioFirstRunOnboarding({
+  copy: providedCopy = null,
+  options = [],
+  onDismiss,
+  compact = false,
+  className = '',
+}) {
+  const documentCopy = useStudioWorkspaceCopy();
+  const copy = providedCopy || documentCopy;
+  const visibleOptions = options.filter((option) => option?.title && option?.actionLabel);
+  const steps = [
+    copy.firstRunStepContent,
+    copy.firstRunStepAvatarVoice,
+    copy.firstRunStepPreview,
+    copy.firstRunStepRenderPublish,
+  ].filter(Boolean);
+
+  if (visibleOptions.length === 0) return null;
+
+  return (
+    <section
+      data-testid="studio-first-run-onboarding"
+      aria-labelledby="studio-first-run-title"
+      className={`motion-studio-panel rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-4 shadow-token-sm sm:p-5 ${className}`}
+    >
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+            <Sparkles size={13} />
+            <span>{copy.firstRunEyebrow}</span>
+          </p>
+          <h2
+            id="studio-first-run-title"
+            className="mt-2 text-xl font-bold leading-snug text-[var(--text-primary)] sm:text-2xl"
+          >
+            {copy.firstRunTitle}
+          </h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">
+            {copy.firstRunDescription}
+          </p>
+        </div>
+        {onDismiss && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onDismiss}
+            title={copy.firstRunDismiss}
+            aria-label={copy.firstRunDismiss}
+            className="shrink-0"
+          >
+            <X size={14} />
+            <span>{copy.firstRunDismiss}</span>
+          </Button>
+        )}
+      </div>
+
+      <ul
+        aria-label={copy.firstRunOptionsLabel}
+        className={`mt-4 grid min-w-0 gap-3 ${compact ? 'lg:grid-cols-1' : 'lg:grid-cols-3'}`}
+      >
+        {visibleOptions.map(({ key, ...option }) => (
+          <StudioStartOption
+            key={key || option.title}
+            compact={compact}
+            {...option}
+          />
+        ))}
+      </ul>
+
+      {steps.length > 0 && (
+        <div className="mt-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] px-3 py-3">
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+            {copy.firstRunStepLabel}
+          </p>
+          <ol
+            aria-label={copy.firstRunStepsLabel}
+            className="mt-2 grid min-w-0 gap-2 text-sm text-[var(--text-secondary)] sm:grid-cols-2 xl:grid-cols-4"
+          >
+            {steps.map((step, index) => (
+              <li key={step} className="flex min-w-0 items-start gap-2">
+                <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-[var(--surface-container-high)] text-[0.68rem] font-bold text-[var(--accent-primary)]">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 leading-5">{step}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </section>
   );
 }
 
