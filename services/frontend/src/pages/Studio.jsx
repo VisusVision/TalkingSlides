@@ -5966,8 +5966,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   );
 
   const editorPanelLabel = (panel) => {
-    if (panel === 'tts') return 'TTS';
-    if (panel === 'intelligence') return 'Intelligence';
+    if (panel === 'transcript') return studioCopy.inspectorTranscriptPanel;
+    if (panel === 'slides') return studioCopy.inspectorSlidesPanel;
+    if (panel === 'moderation') return studioCopy.inspectorModerationPanel;
+    if (panel === 'intelligence') return studioCopy.inspectorIntelligencePanel;
+    if (panel === 'notes') return studioCopy.inspectorNotesPanel;
+    if (panel === 'tts') return studioCopy.inspectorTtsPanel;
     return panel.charAt(0).toUpperCase() + panel.slice(1);
   };
 
@@ -6098,6 +6102,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     || selectedLessonDirtyScope.moderationMessage
     || (selectedDraftBlocked ? selectedDraftStatusMessage : '')
   );
+  const inspectorAttentionCount = [
+    globalEditorError,
+    selectedLessonDirtyScope.moderationMessage,
+    selectedDraftBlocked ? selectedDraftStatusMessage : '',
+    creatorRenderFailed ? studioCopy.renderFailed : '',
+    partialRenderPreviewError,
+  ].filter(Boolean).length;
+  const activeEditorPanelLabel = editorPanelLabel(activeEditorPanel);
   const creatorNextActionTitle = !selectedLesson
     ? (sourceFile ? studioCopy.creatorCreateThisLesson : studioCopy.creatorAddSourceFile)
     : creatorBlockerDetail
@@ -7258,7 +7270,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 className="flex min-h-[72vh] min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:max-h-[calc(100vh-9rem)]"
               >
                 <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
-                  <StudioInspectorHeading projectTitle={selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'} />
+                  <StudioInspectorHeading
+                    projectTitle={selectedLesson ? selectedLesson.title || 'Selected lesson' : 'Local draft'}
+                    sceneLabel={selectedScene?.label || studioCopy.inspectorSceneFallback}
+                    sectionLabel={activeEditorPanelLabel}
+                    attentionCount={inspectorAttentionCount}
+                  />
                   <div className="flex min-w-0 flex-wrap justify-end gap-2">
                     <StudioSaveStatus
                       saving={Boolean(globalEditorActionBusy === 'save' || globalEditorActionBusy === 'rerender' || slideActionBusy)}
@@ -7385,9 +7402,15 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
                 <RenderAnalysisPanel analysis={selectedLesson?.latest_render_analysis} />
 
-                <div className="rail-scroll relative z-10 -mx-1 flex max-w-full shrink-0 gap-2 overflow-x-auto bg-[var(--bg-elevated)] px-1 py-1">
+                <div
+                  role="tablist"
+                  aria-label={studioCopy.inspectorTabsLabel}
+                  className="rail-scroll relative z-10 -mx-1 flex max-w-full shrink-0 gap-1.5 overflow-x-auto border-y border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] px-1 py-2"
+                >
                   {visibleEditorPanels.map((panel) => {
                     const selected = activeEditorPanel === panel;
+                    const tabId = `studio-inspector-tab-${panel}`;
+                    const panelId = `studio-inspector-panel-${panel}`;
                     const hasModerationWarning = (
                       (panel === 'transcript' && Object.keys(moderationPageWarnings).length > 0)
                       || (panel === 'slides' && (
@@ -7400,11 +7423,15 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       <button
                         key={panel}
                         type="button"
+                        id={tabId}
+                        role="tab"
+                        aria-selected={selected}
+                        aria-controls={panelId}
                         onClick={() => setActiveEditorPanel(panel)}
                         aria-current={selected ? 'page' : undefined}
-                        className={`focus-ring motion-studio-selection inline-flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-sm font-medium ${
+                        className={`focus-ring motion-studio-selection inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium ${
                           selected
-                            ? `border border-[var(--outline-variant)] bg-[var(--surface-container-highest)] ${hasModerationWarning ? 'text-[color:var(--status-warning-fg)] ring-1 ring-inset ring-[color:var(--status-warning-fg)]' : 'text-[var(--accent-primary)]'}`
+                            ? `border border-[var(--outline-variant)] bg-[var(--surface-container-highest)] shadow-token-xs ${hasModerationWarning ? 'text-[color:var(--status-warning-fg)] ring-1 ring-inset ring-[color:var(--status-warning-fg)]' : 'text-[var(--accent-primary)]'}`
                             : hasModerationWarning
                               ? 'border border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)] hover:text-[color:var(--status-warning-fg)]'
                               : 'token-surface text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -7419,7 +7446,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 </div>
 
                 <div className="rail-scroll min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto overflow-x-hidden px-1">
-                  <div className={activeEditorPanel === 'transcript' ? 'motion-studio-panel space-y-3' : 'hidden'}>
+                  <div
+                    id="studio-inspector-panel-transcript"
+                    role="tabpanel"
+                    aria-labelledby="studio-inspector-tab-transcript"
+                    className={activeEditorPanel === 'transcript' ? 'motion-studio-panel space-y-3' : 'hidden'}
+                  >
                       {selectedLesson ? (
                         <TranscriptEditorPanel
                           key={`transcript-${selectedLesson.id}-${editorResetNonce}`}
@@ -7458,7 +7490,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
                   </div>
 
-                  <div className={activeEditorPanel === 'slides' ? 'motion-studio-panel space-y-3' : 'hidden'}>
+                  <div
+                    id="studio-inspector-panel-slides"
+                    role="tabpanel"
+                    aria-labelledby="studio-inspector-tab-slides"
+                    className={activeEditorPanel === 'slides' ? 'motion-studio-panel space-y-3' : 'hidden'}
+                  >
                       <div>
                         <p className="title-lg text-[var(--text-primary)]">Slides</p>
                         <p className="text-xs text-[var(--text-secondary)]">Adjust the selected slide background and lesson cover. Select slides from the timeline below the preview.</p>
@@ -7477,8 +7514,23 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       )}
                       {selectedLesson && (
                         <StudioInspectorSection
-                          title="Lesson cover"
-                          summary="Update the cover used on lesson cards."
+                          icon={<ImagePlus size={15} />}
+                          title={studioCopy.inspectorLessonCover}
+                          description={studioCopy.inspectorLessonCoverDescription}
+                          status={(
+                            <>
+                              {hasDraftCover && (
+                                <span className="inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
+                                  {studioCopy.inspectorDraftCover}
+                                </span>
+                              )}
+                              {draftCoverRemoved && (
+                                <span className="inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
+                                  {studioCopy.inspectorDraftRemoval}
+                                </span>
+                              )}
+                            </>
+                          )}
                           defaultOpen={false}
                           className={`${
                           coverModerationWarningFlagged
@@ -7490,18 +7542,6 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         >
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div>
-                              <p className="text-sm font-semibold text-[var(--text-primary)]">Lesson cover</p>
-                              <p className="mt-1 text-xs text-[var(--text-secondary)]">Update the cover used on lesson cards.</p>
-                              {hasDraftCover && (
-                                <span className="mt-2 inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
-                                  Draft cover
-                                </span>
-                              )}
-                              {draftCoverRemoved && (
-                                <span className="mt-2 inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
-                                  Draft removal
-                                </span>
-                              )}
                               {hasDraftCover && !moderationAssetWarnings.cover && (
                                 <p className="mt-1 text-xs text-[var(--text-secondary)]">
                                   Draft cover saved. Public cover is unchanged until Save changes succeeds.
@@ -7535,7 +7575,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             </div>
                             <div className="flex gap-2">
                               {selectedLesson.cover_url && (
-                                <div className="space-y-1 text-right">
+                                <div className="space-y-1 text-end">
                                   <AuthenticatedMediaThumbnail
                                     src={selectedLesson.cover_url}
                                     alt="Public lesson cover"
@@ -7545,7 +7585,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                                 </div>
                               )}
                               {hasDraftCover && (
-                                <div className="space-y-1 text-right">
+                                <div className="space-y-1 text-end">
                                   <AuthenticatedMediaThumbnail
                                     src={draftCoverUrl}
                                     alt="Draft lesson cover"
@@ -7590,8 +7630,15 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
                       {selectedScene?.page && (
                         <StudioInspectorSection
-                          title="Scene background"
-                          summary={selectedScene?.label || 'Selected slide controls'}
+                          icon={<LayoutPanelTop size={15} />}
+                          title={studioCopy.inspectorSceneBackground}
+                          summary={selectedScene?.label || studioCopy.inspectorSceneFallback}
+                          description={studioCopy.inspectorSceneBackgroundDescription}
+                          status={selectedScene?.draftBackgroundDirty ? (
+                            <span className="inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
+                              {studioCopy.inspectorDraftBackground}
+                            </span>
+                          ) : null}
                           defaultOpen
                           className={`${
                           selectedSceneBackgroundWarningFlagged
@@ -7602,15 +7649,23 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         }`}
                         >
                           <div>
-                            <p className="text-sm font-semibold text-[var(--text-primary)]">Scene background</p>
-                            <p className="mt-1 text-xs text-[var(--text-secondary)]">
-                              Use the exported source slide, a source background, a whiteboard, or a custom image for this page.
-                            </p>
-                            {selectedScene?.draftBackgroundDirty && (
-                              <span className="mt-2 inline-flex rounded-md border border-[var(--border-subtle)] px-2 py-0.5 text-[0.68rem] font-semibold text-[var(--text-secondary)]">
-                                Draft background
-                              </span>
-                            )}
+                            <dl
+                              aria-label={studioCopy.inspectorSceneSummary}
+                              className="grid gap-2 rounded-lg bg-[var(--surface-container-low)] p-3 text-xs sm:grid-cols-3"
+                            >
+                              <div className="min-w-0">
+                                <dt className="font-semibold text-[var(--text-secondary)]">{studioCopy.inspectorModeLabel}</dt>
+                                <dd className="mt-0.5 truncate text-[var(--text-primary)]">{sceneModeLabel(selectedSceneMode)}</dd>
+                              </div>
+                              <div className="min-w-0">
+                                <dt className="font-semibold text-[var(--text-secondary)]">{studioCopy.inspectorBackgroundFitLabel}</dt>
+                                <dd className="mt-0.5 truncate text-[var(--text-primary)]">{selectedSceneFit}</dd>
+                              </div>
+                              <div className="min-w-0">
+                                <dt className="font-semibold text-[var(--text-secondary)]">{studioCopy.inspectorTimingLabel}</dt>
+                                <dd className="mt-0.5 truncate text-[var(--text-primary)]">{selectedScene?.timing || studioCopy.inspectorNoTiming}</dd>
+                              </div>
+                            </dl>
                             {selectedSceneBackgroundWarning && (
                               <p className={`mt-2 inline-flex items-start gap-1.5 rounded-lg px-2 py-1.5 text-xs font-semibold ${
                                 selectedSceneBackgroundWarningPending
@@ -7727,7 +7782,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             <span className="mt-1 block text-[0.68rem]">{selectedSceneTextScale.toFixed(2)}x</span>
                           </label>
 
-                          <div className="space-y-3 rounded-xl bg-[var(--surface-container-high)] p-3">
+                          <div className="space-y-3 border-t border-[var(--border-subtle)] pt-3">
                             <div className="flex flex-wrap items-center justify-between gap-2">
                               <p className="text-xs font-semibold text-[var(--text-secondary)]">Avatar layout</p>
                               <span className="text-[0.68rem] font-medium text-[var(--text-secondary)]">
@@ -7801,7 +7856,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                             </p>
                           </div>
 
-                          <div className="space-y-2 rounded-xl bg-[var(--surface-container-high)] p-3">
+                          <div className="space-y-2 border-t border-[var(--border-subtle)] pt-3">
                             <p className="text-xs font-semibold text-[var(--text-secondary)]">Highlight preview</p>
                             <label className="inline-flex items-center gap-2 text-xs text-[var(--text-secondary)]">
                               <input
@@ -7935,7 +7990,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       )}
                     </div>
 
-                  <div className={activeEditorPanel === 'moderation' ? 'motion-studio-panel' : 'hidden'}>
+                  <div
+                    id="studio-inspector-panel-moderation"
+                    role="tabpanel"
+                    aria-labelledby="studio-inspector-tab-moderation"
+                    className={activeEditorPanel === 'moderation' ? 'motion-studio-panel' : 'hidden'}
+                  >
                     {selectedLesson ? (
                       <ModerationPanel
                         project={selectedLesson}
@@ -7968,7 +8028,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   </div>
 
                   {intelligenceFeatureEnabled && (
-                  <div className={activeEditorPanel === 'intelligence' ? 'motion-studio-panel' : 'hidden'}>
+                  <div
+                    id="studio-inspector-panel-intelligence"
+                    role="tabpanel"
+                    aria-labelledby="studio-inspector-tab-intelligence"
+                    className={activeEditorPanel === 'intelligence' ? 'motion-studio-panel' : 'hidden'}
+                  >
                     {selectedLesson ? (
                       <LessonIntelligencePanel
                         project={selectedLesson}
@@ -7999,7 +8064,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   </div>
                   )}
 
-                  <div className={activeEditorPanel === 'notes' ? 'motion-studio-panel space-y-3' : 'hidden'}>
+                  <div
+                    id="studio-inspector-panel-notes"
+                    role="tabpanel"
+                    aria-labelledby="studio-inspector-tab-notes"
+                    className={activeEditorPanel === 'notes' ? 'motion-studio-panel space-y-3' : 'hidden'}
+                  >
                       <div>
                         <p className="title-lg text-[var(--text-primary)]">Notes</p>
                         <p className="text-xs text-[var(--text-secondary)]">Local publisher notes for this browser only; backend note persistence is not implemented yet.</p>
@@ -8029,7 +8099,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       </div>
                   </div>
 
-                  <div className={activeEditorPanel === 'tts' ? 'motion-studio-panel' : 'hidden'}>
+                  <div
+                    id="studio-inspector-panel-tts"
+                    role="tabpanel"
+                    aria-labelledby="studio-inspector-tab-tts"
+                    className={activeEditorPanel === 'tts' ? 'motion-studio-panel' : 'hidden'}
+                  >
                     <TtsSettingsPanel
                       key={`tts-${selectedLesson?.id || 'none'}-${editorResetNonce}`}
                       ref={ttsSettingsRef}
