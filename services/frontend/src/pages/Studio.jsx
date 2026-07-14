@@ -80,6 +80,7 @@ import {
   StudioFirstRunOnboarding,
   StudioSmartGuidance,
   StudioSlideRail,
+  StudioCompactWorkspaceSwitcher,
   StudioToolbarGroup,
   StudioWorkflowStrip,
   useStudioWorkspaceCopy,
@@ -3353,6 +3354,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         : 'transcript'
     ),
   );
+  const [compactWorkspace, setCompactWorkspace] = useState('canvas');
   const [transcriptPages, setTranscriptPages] = useState([]);
   const [selectedLessonDraftMetadata, setSelectedLessonDraftMetadata] = useState({});
   const [selectedPageKey, setSelectedPageKey] = useState(() => textValue(storedStudioPosition.selectedPageKey));
@@ -6212,6 +6214,29 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     partialRenderPreviewError,
   ].filter(Boolean).length;
   const activeEditorPanelLabel = editorPanelLabel(activeEditorPanel);
+  const compactWorkspaceOptions = [
+    {
+      key: 'slides',
+      label: studioCopy.compactWorkspaceScenes,
+      detail: `${sceneItems.length} ${studioCopy.slideCount}`,
+      controls: 'studio-compact-slides-workspace',
+    },
+    {
+      key: 'canvas',
+      label: studioCopy.compactWorkspaceCanvas,
+      detail: selectedScene?.label || studioCopy.inspectorSceneFallback,
+      controls: 'studio-compact-canvas-workspace',
+    },
+    {
+      key: 'inspector',
+      label: studioCopy.compactWorkspaceInspector,
+      detail: activeEditorPanelLabel,
+      controls: 'studio-compact-inspector-workspace',
+    },
+  ];
+  const compactWorkspaceVisibility = (workspace) => (
+    compactWorkspace === workspace ? 'block' : 'hidden xl:block'
+  );
   const creatorNextActionTitle = !selectedLesson
     ? (sourceFile ? studioCopy.creatorCreateThisLesson : studioCopy.creatorAddSourceFile)
     : creatorBlockerDetail
@@ -7375,12 +7400,22 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             blockers={studioGuidanceBlockers}
             nextAction={studioGuidanceNextAction}
             secondaryActions={creatorSecondaryActions}
+            compact
+            className="max-xl:p-3"
+          />
+          <StudioCompactWorkspaceSwitcher
+            copy={studioCopy}
+            activeWorkspace={compactWorkspace}
+            workspaces={compactWorkspaceOptions}
+            onWorkspaceChange={setCompactWorkspace}
+            className="xl:hidden"
           />
           <section
             data-testid="studio-editor-layout"
             className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[12rem_minmax(0,1.35fr)_minmax(18rem,22rem)] 2xl:grid-cols-[13rem_minmax(0,1.6fr)_24rem]"
           >
             <StudioSlideRail
+              id="studio-compact-slides-workspace"
               scenes={sceneItems}
               selectedSceneKey={selectedScene?.key}
               loading={loadingTranscript}
@@ -7394,15 +7429,19 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               actionBusy={Boolean(slideActionBusy || globalEditorActionBusy)}
               supportsDuplicate={false}
               supportsRename={false}
+              className={compactWorkspaceVisibility('slides')}
             />
-            <div className="min-w-0 space-y-4">
+            <div
+              id="studio-compact-canvas-workspace"
+              className={`min-w-0 space-y-4 ${compactWorkspaceVisibility('canvas')}`}
+            >
               <section
                 data-testid="studio-canvas-panel"
                 aria-labelledby="studio-canvas-heading"
-                className="motion-studio-panel min-w-0 space-y-4 overflow-hidden"
+                className="motion-studio-panel min-w-0 space-y-3 overflow-hidden sm:space-y-4"
               >
                 <h2 id="studio-canvas-heading" className="sr-only">Scene canvas</h2>
-                <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-2 shadow-token-xs sm:p-3">
+                <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-1.5 shadow-token-xs sm:p-3">
                   <div
                     key={selectedScene?.key || 'empty-scene-preview'}
                     data-testid="studio-canvas-stage"
@@ -7415,8 +7454,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     }`}
                     style={{
                       aspectRatio: '3 / 2',
-                      maxHeight: '76vh',
-                      width: 'min(100%, calc(76vh * 3 / 2))',
+                      maxHeight: 'min(76vh, 34rem)',
+                      width: 'min(100%, 51rem)',
                     }}
                   >
                     {selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
@@ -7444,18 +7483,18 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(5,8,14,0.02)_0%,rgba(5,8,14,0.2)_64%,rgba(5,8,14,0.42)_100%)]" />
                     )}
 
-                    <div className={`absolute inset-x-5 top-5 flex flex-wrap items-center justify-between gap-2 text-xs ${
+                    <div className={`absolute inset-x-3 top-3 flex flex-wrap items-center justify-between gap-1.5 text-[0.68rem] sm:inset-x-5 sm:top-5 sm:gap-2 sm:text-xs ${
                       selectedSceneMode === 'whiteboard' ? 'text-slate-700' : 'text-white/85'
                     }`}>
-                      <span className={`rounded-full px-3 py-1.5 ${
+                      <span className={`rounded-full px-2 py-1 sm:px-3 sm:py-1.5 ${
                         selectedSceneMode === 'whiteboard' ? 'bg-slate-100' : 'bg-black/35'
                       }`}>
                         {selectedScene?.label || 'No scene selected'}
                       </span>
-                      <span className={`rounded-full px-3 py-1.5 ${sceneStatusTone(selectedScene?.status || 'draft')}`}>
+                      <span className={`rounded-full px-2 py-1 sm:px-3 sm:py-1.5 ${sceneStatusTone(selectedScene?.status || 'draft')}`}>
                         {selectedScene?.status || 'draft'}
                       </span>
-                      <span className={`rounded-full px-3 py-1.5 ${
+                      <span className={`rounded-full px-2 py-1 sm:px-3 sm:py-1.5 ${
                         selectedSceneMode === 'whiteboard' ? 'bg-slate-100' : 'bg-black/35'
                       }`}>
                         {sceneModeLabel(selectedSceneMode)}
@@ -7463,7 +7502,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     </div>
 
                     {selectedSceneMode !== 'original' ? (
-                      <div className="absolute inset-x-6 bottom-16 top-16 flex items-center justify-center text-start">
+                      <div className="absolute inset-x-3 bottom-12 top-12 flex items-center justify-center text-start sm:inset-x-6 sm:bottom-16 sm:top-16">
                         <div
                           className={`max-h-full w-full overflow-hidden rounded-xl ${
                           selectedSceneMode === 'whiteboard'
@@ -7504,14 +7543,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         </div>
                       </div>
                     ) : (
-                      <div className="absolute inset-x-5 bottom-14 flex justify-center">
+                      <div className="absolute inset-x-3 bottom-12 flex justify-center sm:inset-x-5 sm:bottom-14">
                         <span className="max-w-[92%] rounded-full bg-black/55 px-3 py-1.5 text-center text-xs font-medium text-white shadow-sm">
                           Original mode displays the source screenshot. Source Background keeps slide design but replaces source text with editable text.
                         </span>
                       </div>
                     )}
 
-                    <div className="absolute inset-x-5 bottom-5 space-y-3">
+                    <div className="absolute inset-x-3 bottom-3 space-y-2 sm:inset-x-5 sm:bottom-5 sm:space-y-3">
                       <div className={`h-1 rounded-full ${selectedSceneMode === 'whiteboard' ? 'bg-slate-200' : 'bg-white/20'}`}>
                         <div
                           className="h-full rounded-full bg-[image:var(--accent-gradient)]"
@@ -7684,10 +7723,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               </section>
             </div>
 
-            <aside className="min-w-0 max-w-full xl:sticky xl:top-4 xl:self-start">
+            <aside
+              id="studio-compact-inspector-workspace"
+              className={`min-w-0 max-w-full xl:sticky xl:top-4 xl:self-start ${compactWorkspaceVisibility('inspector')}`}
+            >
               <SurfaceCard
                 elevated
-                className="flex min-h-[72vh] min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:max-h-[calc(100vh-9rem)]"
+                className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:min-h-[72vh] xl:max-h-[calc(100vh-9rem)]"
               >
                 <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
                   <StudioInspectorHeading
@@ -7849,7 +7891,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         aria-controls={panelId}
                         onClick={() => setActiveEditorPanel(panel)}
                         aria-current={selected ? 'page' : undefined}
-                        className={`focus-ring motion-studio-selection inline-flex shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium ${
+                        className={`focus-ring motion-studio-selection inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium xl:min-h-0 ${
                           selected
                             ? `border border-[var(--outline-variant)] bg-[var(--surface-container-highest)] shadow-token-xs ${hasModerationWarning ? 'text-[color:var(--status-warning-fg)] ring-1 ring-inset ring-[color:var(--status-warning-fg)]' : 'text-[var(--accent-primary)]'}`
                             : hasModerationWarning
@@ -7865,7 +7907,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   })}
                 </div>
 
-                <div className="rail-scroll min-h-0 min-w-0 max-w-full flex-1 overflow-y-auto overflow-x-hidden px-1">
+                <div className="rail-scroll min-w-0 max-w-full overflow-x-hidden px-1 xl:min-h-0 xl:flex-1 xl:overflow-y-auto">
                   <div
                     id="studio-inspector-panel-transcript"
                     role="tabpanel"

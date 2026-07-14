@@ -272,10 +272,34 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
   await page.setViewportSize({ width: 1180, height: 820 });
+  await expect(page.getByTestId('studio-compact-workspace-switcher')).toBeVisible();
   await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
   await page.setViewportSize({ width: 820, height: 1180 });
+  await expect(page.getByTestId('studio-compact-workspace-switcher')).toBeVisible();
+  await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
+  await expect(page.getByTestId('studio-slide-rail')).toBeHidden();
+  await page.locator('button[aria-controls="studio-compact-slides-workspace"]').click();
+  await expect(page.getByTestId('studio-slide-rail')).toBeVisible();
+  await expect(page.getByTestId('studio-canvas-panel')).toBeHidden();
+  await page.locator('button[aria-controls="studio-compact-inspector-workspace"]').click();
+  await expect(page.getByTestId('studio-inspector-heading')).toBeVisible();
+  await expect(page.getByTestId('studio-canvas-panel')).toBeHidden();
+  await page.locator('button[aria-controls="studio-compact-canvas-workspace"]').click();
+  await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByTestId('studio-compact-workspace-switcher')).toBeVisible();
+  await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
+  await page.locator('button[aria-controls="studio-compact-inspector-workspace"]').click();
+  await expect(page.getByTestId('studio-inspector-heading')).toBeVisible();
+  await page.locator('button[aria-controls="studio-compact-canvas-workspace"]').click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.setViewportSize({ width: 844, height: 390 });
+  await expect(page.getByTestId('studio-compact-workspace-switcher')).toBeVisible();
   await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
@@ -296,6 +320,8 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
     mimeType: 'text/plain',
     buffer: Buffer.from('Release gate source material.'),
   });
+  await page.locator('button[aria-controls="studio-compact-inspector-workspace"]').click();
+  await expect(page.getByRole('button', { name: 'Create Lesson Draft' })).toBeVisible();
   await page.getByRole('button', { name: 'Create Lesson Draft' }).click();
 
   await expect(page.getByRole('button', { name: 'Preview In Watch' }).first()).toBeVisible();

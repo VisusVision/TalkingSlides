@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   StudioCreatorHeader,
+  StudioCompactWorkspaceSwitcher,
   StudioFirstRunOnboarding,
   StudioInspectorHeading,
   StudioInspectorSection,
@@ -87,6 +88,74 @@ describe('Studio workspace chrome', () => {
     expect(deleteItem.className).toContain('motion-interactive');
     await act(async () => deleteItem.click());
     expect(onDelete).toHaveBeenCalledWith(expect.objectContaining({ key: 'one' }), 0);
+    expect(buttons[0].className).toContain('min-h-11');
+  });
+
+  it('renders a compact workspace switcher with localized active state', async () => {
+    document.documentElement.lang = 'tr-TR';
+    const copy = studioWorkspaceCopy('tr-TR');
+    const onWorkspaceChange = vi.fn();
+
+    await act(async () => {
+      root.render(
+        <StudioCompactWorkspaceSwitcher
+          copy={copy}
+          activeWorkspace="canvas"
+          workspaces={[
+            { key: 'slides', label: copy.compactWorkspaceScenes, detail: '2 slayt', controls: 'slides-panel' },
+            { key: 'canvas', label: copy.compactWorkspaceCanvas, detail: 'Slayt 1', controls: 'canvas-panel' },
+            { key: 'inspector', label: copy.compactWorkspaceInspector, detail: copy.inspectorTranscriptPanel, controls: 'inspector-panel' },
+          ]}
+          onWorkspaceChange={onWorkspaceChange}
+        />,
+      );
+    });
+
+    const switcher = host.querySelector('[data-testid="studio-compact-workspace-switcher"]');
+    expect(switcher).toHaveAttribute('aria-label', copy.compactWorkspaceLabel);
+    expect(switcher.textContent).toContain(copy.compactWorkspaceScenes);
+    expect(switcher.textContent).toContain(copy.compactWorkspaceCanvas);
+    expect(switcher.textContent).toContain(copy.compactWorkspaceInspector);
+    expect(switcher.outerHTML).not.toContain('Studio workspace sections');
+
+    const buttons = Array.from(switcher.querySelectorAll('button'));
+    expect(buttons).toHaveLength(3);
+    expect(buttons[1]).toHaveAttribute('aria-current', 'page');
+    expect(buttons[1]).toHaveAttribute('aria-controls', 'canvas-panel');
+    expect(buttons[1].className).toContain('min-h-11');
+
+    await act(async () => buttons[2].click());
+    expect(onWorkspaceChange).toHaveBeenCalledWith('inspector');
+  });
+
+  it('renders the Arabic compact switcher without English workspace leakage', async () => {
+    document.documentElement.lang = 'ar';
+    document.documentElement.dir = 'rtl';
+    const copy = studioWorkspaceCopy('ar');
+
+    await act(async () => {
+      root.render(
+        <StudioCompactWorkspaceSwitcher
+          copy={copy}
+          activeWorkspace="slides"
+          workspaces={[
+            { key: 'slides', label: copy.compactWorkspaceScenes, controls: 'slides-panel' },
+            { key: 'canvas', label: copy.compactWorkspaceCanvas, controls: 'canvas-panel' },
+            { key: 'inspector', label: copy.compactWorkspaceInspector, controls: 'inspector-panel' },
+          ]}
+          onWorkspaceChange={vi.fn()}
+        />,
+      );
+    });
+
+    const switcher = host.querySelector('[data-testid="studio-compact-workspace-switcher"]');
+    expect(switcher).toHaveAttribute('aria-label', copy.compactWorkspaceLabel);
+    expect(switcher.textContent).toContain(copy.compactWorkspaceScenes);
+    expect(switcher.textContent).toContain(copy.compactWorkspaceCanvas);
+    expect(switcher.textContent).toContain(copy.compactWorkspaceInspector);
+    ['Scenes', 'Canvas', 'Studio workspace sections'].forEach((literal) => {
+      expect(switcher.outerHTML).not.toContain(literal);
+    });
   });
 
   it('shows localized loading, empty, and render queue states', async () => {

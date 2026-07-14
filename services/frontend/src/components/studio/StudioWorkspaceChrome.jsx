@@ -55,6 +55,7 @@ function sceneStatusTone(status) {
 }
 
 export function StudioSlideRail({
+  id = undefined,
   scenes = [],
   selectedSceneKey = '',
   loading = false,
@@ -71,6 +72,7 @@ export function StudioSlideRail({
   canPaste = false,
   supportsDuplicate = false,
   supportsRename = false,
+  className = '',
 }) {
   const copy = studioWorkspaceCopy(useDocumentLocale());
   const [contextMenu, setContextMenu] = useState(null);
@@ -177,10 +179,11 @@ export function StudioSlideRail({
 
   return (
     <aside
+      id={id}
       aria-label={copy.slides}
       aria-busy={loading}
       data-testid="studio-slide-rail"
-      className="min-w-0 xl:sticky xl:top-4 xl:self-start"
+      className={`min-w-0 xl:sticky xl:top-4 xl:self-start ${className}`}
     >
       <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-2.5 shadow-token-xs">
         <div className="flex items-center gap-2">
@@ -276,7 +279,7 @@ export function StudioSlideRail({
                         selectAdjacent(index, 'down');
                       }
                     }}
-                    className="focus-ring block w-full rounded-xl p-2 ps-3 text-start"
+                    className="focus-ring block min-h-11 w-full rounded-xl p-2 ps-3 text-start"
                   >
                     <div
                       className="relative aspect-video overflow-hidden rounded-lg bg-[var(--card-fallback)] bg-contain bg-center bg-no-repeat"
@@ -303,7 +306,7 @@ export function StudioSlideRail({
                       {scene.text || scene.fullText || copy.noSlides}
                     </p>
                   </button>
-                  <div className="motion-studio-status absolute end-2 top-2 flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100">
+                  <div className="motion-studio-status absolute end-2 top-2 flex gap-1 opacity-100 xl:opacity-0 xl:group-hover:opacity-100 xl:group-focus-within:opacity-100">
                     <IconActionButton
                       label={copy.moveUp}
                       disabled={actionDisabled || !canMoveUp}
@@ -347,7 +350,7 @@ function IconActionButton({ label, disabled = false, onClick, children }) {
         event.stopPropagation();
         onClick?.(event);
       }}
-      className="focus-ring motion-interactive inline-flex h-7 w-7 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm hover:bg-black/85 enabled:active:scale-[0.96] disabled:opacity-40"
+      className="focus-ring motion-interactive inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/25 bg-black/70 text-white shadow-sm hover:bg-black/85 enabled:active:scale-[0.96] disabled:opacity-40 xl:h-7 xl:w-7"
     >
       {children}
     </button>
@@ -362,7 +365,7 @@ function SlideMenuItem({ icon, label, disabled = false, title = '', danger = fal
       disabled={disabled}
       title={title || label}
       onClick={onClick}
-      className={`focus-ring motion-interactive flex min-h-9 w-full items-center gap-2 rounded-lg px-2 text-start text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
+      className={`focus-ring motion-interactive flex min-h-11 w-full items-center gap-2 rounded-lg px-2 text-start text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50 ${
         danger
           ? 'text-[color:var(--status-danger-fg)] hover:bg-[color:var(--status-danger-bg)]'
           : 'text-[var(--text-primary)] hover:bg-[color:var(--hover-surface)]'
@@ -429,6 +432,55 @@ export function StudioRenderStatus({ copy: providedCopy = null, renderStatus, pr
       stage={stage}
       className="motion-studio-status"
     />
+  );
+}
+
+export function StudioCompactWorkspaceSwitcher({
+  copy: providedCopy = null,
+  activeWorkspace = 'canvas',
+  workspaces = [],
+  onWorkspaceChange,
+  className = '',
+}) {
+  const documentCopy = useStudioWorkspaceCopy();
+  const copy = providedCopy || documentCopy;
+  const visibleWorkspaces = workspaces.filter((workspace) => workspace?.key && workspace?.label);
+
+  if (visibleWorkspaces.length === 0) return null;
+
+  return (
+    <nav
+      aria-label={copy.compactWorkspaceLabel}
+      data-testid="studio-compact-workspace-switcher"
+      className={`rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-1.5 shadow-token-xs ${className}`}
+    >
+      <div className="grid min-w-0 grid-cols-3 gap-1">
+        {visibleWorkspaces.map((workspace) => {
+          const selected = workspace.key === activeWorkspace;
+          return (
+            <button
+              key={workspace.key}
+              type="button"
+              aria-current={selected ? 'page' : undefined}
+              aria-controls={workspace.controls}
+              onClick={() => onWorkspaceChange?.(workspace.key)}
+              className={`focus-ring motion-studio-selection flex min-h-11 min-w-0 flex-col items-center justify-center rounded-xl px-2 py-2 text-center text-xs font-semibold ${
+                selected
+                  ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)] shadow-token-xs ring-1 ring-inset ring-[var(--outline-variant)]'
+                  : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              <span className="max-w-full truncate">{workspace.label}</span>
+              {workspace.detail && (
+                <span className="mt-0.5 max-w-full truncate text-[0.65rem] font-medium opacity-80">
+                  {workspace.detail}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </nav>
   );
 }
 
