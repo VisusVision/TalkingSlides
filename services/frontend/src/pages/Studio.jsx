@@ -77,6 +77,7 @@ import {
   StudioEmptyState,
   StudioSlideRail,
   StudioToolbarGroup,
+  StudioWorkflowStrip,
 } from '../components/studio/StudioWorkspaceChrome';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -5966,6 +5967,49 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setStudioLocation('lessons', typeof created === 'number' ? created : selectedLesson?.id || null);
   };
 
+  const workflowHasChanges = selectedLesson
+    ? selectedLessonDirtyScope.hasChanges
+    : Boolean(editorCanvas || sourceFile || coverFile);
+  const workflowCanPublish = selectedLesson
+    ? projectCanPublishFromModeration(selectedLesson, selectedModeration)
+    : false;
+  const workflowRenderReady = selectedLesson ? projectRenderReady(selectedLesson) : false;
+  const workflowModerationStatus = selectedLesson
+    ? moderationStatusLabel(projectModerationStatus(selectedLesson, selectedModeration))
+    : 'After draft';
+  const studioWorkflowSteps = [
+    {
+      key: 'edit',
+      label: 'Edit',
+      status: workflowHasChanges || !selectedLesson ? 'active' : 'complete',
+      detail: workflowHasChanges ? 'Draft changes' : 'Saved',
+    },
+    {
+      key: 'review',
+      label: 'Review',
+      status: !selectedLesson ? 'pending' : workflowCanPublish ? 'complete' : 'blocked',
+      detail: workflowModerationStatus,
+    },
+    {
+      key: 'render',
+      label: 'Render',
+      status: !selectedLesson ? 'pending' : workflowRenderReady ? 'complete' : latestRenderStatus ? 'active' : 'pending',
+      detail: selectedLesson ? projectStatusLabel(selectedLesson) : 'Not queued',
+    },
+    {
+      key: 'publish',
+      label: 'Publish',
+      status: selectedLesson?.is_published ? 'complete' : workflowRenderReady && workflowCanPublish ? 'active' : 'pending',
+      detail: selectedLesson?.is_published ? 'Live' : 'Draft',
+    },
+    {
+      key: 'watch',
+      label: 'Watch',
+      status: workflowRenderReady ? 'active' : 'pending',
+      detail: workflowRenderReady ? 'Preview ready' : 'After render',
+    },
+  ];
+
   if (!user) {
     return (
       <SurfaceCard elevated className="mx-auto max-w-2xl space-y-4 text-center">
@@ -6012,8 +6056,11 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         <div className="min-w-0">
           <p className="label-sm">Studio Workspace</p>
           <h1 className="headline-md mt-1 text-[var(--text-primary)]">
-            {readOnlyReview ? 'Read-only Lesson Review' : 'Teacher Publishing Console'}
+            {readOnlyReview ? 'Read-only Lesson Review' : 'Lesson Studio'}
           </h1>
+          <p className="mt-1 max-w-2xl text-sm text-[var(--text-secondary)]">
+            Shape the script, scene, render, and release path without leaving the workspace.
+          </p>
         </div>
 
         {!readOnlyReview && (
@@ -6694,6 +6741,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         </section>
       ) : (
         <>
+          <StudioWorkflowStrip steps={studioWorkflowSteps} />
           <section
             data-testid="studio-editor-layout"
             className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[14rem_minmax(0,1fr)_minmax(20rem,24rem)] 2xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
@@ -6714,11 +6762,24 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               supportsRename={false}
             />
             <div className="min-w-0 space-y-5">
-              <SurfaceCard elevated className="space-y-4 p-4 sm:p-5">
-                <StudioRenderStatus
-                  renderStatus={latestRenderStatus}
-                  projectStatus={selectedLesson?.status}
-                />
+              <SurfaceCard elevated className="space-y-4 overflow-hidden p-4 sm:p-5">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <p className="label-sm">Scene canvas</p>
+                    <h2 className="mt-1 text-xl font-bold text-[var(--text-primary)]">
+                      {selectedScene?.label || selectedLesson?.title || 'Draft scene'}
+                    </h2>
+                    <p className="mt-1 text-sm text-[var(--text-secondary)]">
+                      Preview the selected scene before saving, rendering, and publishing.
+                    </p>
+                  </div>
+                  <div className="min-w-0 lg:w-72">
+                    <StudioRenderStatus
+                      renderStatus={latestRenderStatus}
+                      projectStatus={selectedLesson?.status}
+                    />
+                  </div>
+                </div>
                 <div className="grid gap-3 md:grid-cols-2">
                   <label className="block text-sm text-[var(--text-secondary)]">
                     Lesson title

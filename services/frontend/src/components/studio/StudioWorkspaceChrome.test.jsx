@@ -7,6 +7,7 @@ import {
   StudioRenderStatus,
   StudioSaveStatus,
   StudioSlideRail,
+  StudioWorkflowStrip,
 } from './StudioWorkspaceChrome';
 import { studioWorkspaceCopy, studioWorkspaceLocale } from './studioWorkspaceCopy';
 
@@ -134,5 +135,26 @@ describe('Studio workspace chrome', () => {
     expect(host.querySelector('summary').className).toContain('motion-interactive');
     expect(host.querySelector('.motion-studio-panel')).not.toBeNull();
     expect(host.querySelector('button').textContent).toContain('Focusable control');
+  });
+
+  it('renders the Studio workflow as an accessible production sequence', async () => {
+    await act(async () => {
+      root.render(
+        <StudioWorkflowStrip
+          steps={[
+            { key: 'edit', label: 'Edit', status: 'complete', detail: 'Saved' },
+            { key: 'review', label: 'Review', status: 'active', detail: 'Approved' },
+            { key: 'render', label: 'Render', status: 'pending', detail: 'Not queued' },
+          ]}
+        />,
+      );
+    });
+
+    const workflow = host.querySelector('[data-testid="studio-workflow-strip"]');
+    expect(workflow).toBeTruthy();
+    expect(workflow).toHaveAttribute('aria-label', 'Studio workflow');
+    expect(host.textContent).toContain('AI-assisted studio flow');
+    expect(host.textContent).toContain('Edit');
+    expect(host.querySelector('[aria-current="step"]').textContent).toContain('Review');
   });
 });
