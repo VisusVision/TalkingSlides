@@ -77,6 +77,7 @@ import {
   StudioSaveStatus,
   StudioEmptyState,
   StudioCreatorHeader,
+  StudioFirstRunOnboarding,
   StudioSmartGuidance,
   StudioSlideRail,
   StudioToolbarGroup,
@@ -1908,6 +1909,29 @@ function writeStudioSession(key, patch) {
   }
 }
 
+function studioFirstRunDismissKey(user) {
+  const userId = textValue(user?.id || user?.pk || user?.email || user?.username).trim();
+  return `visus-studio-first-run-onboarding-${userId || 'anonymous'}-v1`;
+}
+
+function readStudioFirstRunDismissed(key) {
+  if (!key || typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(key) === 'dismissed';
+  } catch {
+    return false;
+  }
+}
+
+function writeStudioFirstRunDismissed(key) {
+  if (!key || typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, 'dismissed');
+  } catch {
+    // Guidance dismissal is a convenience only; creation actions stay available.
+  }
+}
+
 function clearStudioSession(key) {
   if (!key || typeof window === 'undefined') return;
   window.sessionStorage.removeItem(key);
@@ -3288,11 +3312,14 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const previewSectionRef = useRef(null);
   const transcriptEditorRef = useRef(null);
   const ttsSettingsRef = useRef(null);
+  const localDraftTextareaRef = useRef(null);
+  const pendingLocalDraftFocusRef = useRef(false);
   const selectedLessonIdRef = useRef(null);
   const projectListCacheRef = useRef(new Map());
   const projectDetailCacheRef = useRef(new Map());
   const lessonNotesHydratedProjectRef = useRef(null);
   const studioLocalDraftScope = useMemo(() => localDraftScope(user), [user]);
+  const studioFirstRunStorageKey = useMemo(() => studioFirstRunDismissKey(user), [user]);
 
   const [projects, setProjects] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -3311,6 +3338,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [firstRunDismissed, setFirstRunDismissed] = useState(false);
+  const [firstRunHidden, setFirstRunHidden] = useState(false);
   const [selectedLessonId, setSelectedLessonId] = useState(
     () => requestedLessonId || storedSelectedLessonId,
   );
@@ -3431,6 +3460,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         ? 'playlists'
         : 'lessons';
   const isStudioUser = canAccessStudio(user);
+
+  useEffect(() => {
+    setFirstRunDismissed(readStudioFirstRunDismissed(studioFirstRunStorageKey));
+    setFirstRunHidden(false);
+  }, [studioFirstRunStorageKey]);
+
+  const dismissFirstRunGuidance = useCallback(() => {
+    setFirstRunDismissed(true);
+    writeStudioFirstRunDismissed(studioFirstRunStorageKey);
+  }, [studioFirstRunStorageKey]);
 
   useEffect(() => {
     if (hasDirectStudioLocation || loadingProjects || !projects.length || !storedStudioPosition.scrollY) return undefined;
@@ -4957,6 +4996,29 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     setSearchParams,
   ]);
 
+  const beginLocalDraft = useCallback(() => {
+    if (readOnlyReview) return;
+    pendingLocalDraftFocusRef.current = true;
+    setFirstRunHidden(true);
+    setActiveEditorPanel('transcript');
+    setStudioLocation('editor');
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        localDraftTextareaRef.current?.focus();
+      });
+    }
+  }, [readOnlyReview, setStudioLocation]);
+
+  useEffect(() => {
+    if (!pendingLocalDraftFocusRef.current || studioView !== 'editor' || selectedLesson) return;
+    pendingLocalDraftFocusRef.current = false;
+    if (typeof window !== 'undefined') {
+      window.requestAnimationFrame(() => {
+        localDraftTextareaRef.current?.focus();
+      });
+    }
+  }, [selectedLesson, studioView]);
+
   useEffect(() => onRouteReset('studio', () => {
     clearStudioSession(studioPositionStorageKey);
     setSearchParams(new URLSearchParams());
@@ -6468,6 +6530,44 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     showTitle: false,
     showDetail: false,
   };
+  const studioFirstRunOptions = [
+    {
+      key: 'upload-source',
+      icon: <Upload size={18} />,
+      title: studioCopy.startUploadTitle,
+      description: studioCopy.startUploadDescription,
+      badge: studioCopy.startRecommendedBadge,
+      actionLabel: studioCopy.startUploadAction,
+      onAction: () => setCreateModalOpen(true),
+      disabled: submitting,
+    },
+    {
+      key: 'local-draft',
+      icon: <FileText size={18} />,
+      title: studioCopy.startLocalDraftTitle,
+      description: studioCopy.startLocalDraftDescription,
+      actionLabel: studioCopy.startLocalDraftAction,
+      onAction: beginLocalDraft,
+    },
+    filteredProjects.length > 0
+      ? {
+        key: 'existing-lesson',
+        icon: <BookOpenText size={18} />,
+        title: studioCopy.startExistingTitle,
+        description: studioCopy.startExistingDescription,
+        actionLabel: studioCopy.startExistingAction,
+        onAction: () => setStudioLocation('lessons'),
+      }
+      : null,
+  ].filter(Boolean);
+  const showFirstRunGuidance = !readOnlyReview && !selectedLesson && !firstRunDismissed && !firstRunHidden;
+  const showLessonsFirstRunGuidance = showFirstRunGuidance
+    && studioView === 'lessons'
+    && !loadingProjects
+    && !projectsError
+    && filteredProjects.length === 0
+    && !activeProjectSearchQuery;
+  const showEditorFirstRunGuidance = showFirstRunGuidance && studioView === 'editor';
 
   if (!user) {
     return (
@@ -6603,6 +6703,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       ) : studioView === 'lessons' ? (
         <section className="grid min-w-0 max-w-full gap-5 overflow-x-hidden xl:grid-cols-[minmax(0,1fr)_minmax(24rem,29rem)] 2xl:grid-cols-[minmax(0,1fr)_30rem]">
           <div className="min-w-0 space-y-5">
+            {showLessonsFirstRunGuidance && (
+              <StudioFirstRunOnboarding
+                copy={studioCopy}
+                options={studioFirstRunOptions}
+                onDismiss={dismissFirstRunGuidance}
+              />
+            )}
             <SurfaceCard elevated className="overflow-hidden p-0">
               <div
                 className="relative min-h-[320px] overflow-hidden rounded-[1.5rem] bg-[var(--hero-fallback)] bg-cover bg-center sm:min-h-[360px]"
@@ -7136,7 +7243,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   )}
                   {filteredProjects.length === 0 ? (
                     <p className="rounded-2xl token-surface p-3 text-sm text-[var(--text-secondary)]">
-                      No lessons match the current search.
+                      {activeProjectSearchQuery ? 'No lessons match the current search.' : studioCopy.noProjectEmptyLessons}
                     </p>
                   ) : filteredProjects.map((project) => {
                     const projectModeration = moderationByProject[project.id] || null;
@@ -7238,6 +7345,13 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         </section>
       ) : (
         <>
+          {showEditorFirstRunGuidance && (
+            <StudioFirstRunOnboarding
+              copy={studioCopy}
+              options={studioFirstRunOptions}
+              onDismiss={dismissFirstRunGuidance}
+            />
+          )}
           <StudioCreatorHeader
             copy={studioCopy}
             title={selectedLesson ? editorTitle || selectedLesson.title : editorTitle || studioCopy.creatorNewLessonDraft}
@@ -7783,6 +7897,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         <label className="block text-sm text-[var(--text-secondary)]">
                           Local editing canvas
                           <textarea
+                            ref={localDraftTextareaRef}
                             value={editorCanvas}
                             onChange={(event) => setEditorCanvas(event.target.value)}
                             placeholder="Draft narration, section summaries, and production notes..."

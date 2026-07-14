@@ -206,8 +206,25 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
 
   await expect(page.getByRole('heading', { name: 'Lesson Studio' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Studio Editor' })).toBeVisible();
+  await expect(page.getByTestId('studio-first-run-onboarding')).toBeVisible();
+  await expect(page.getByTestId('studio-first-run-onboarding')).toContainText('Upload a presentation or document');
+  await expect(page.getByTestId('studio-first-run-onboarding')).not.toContainText('Template');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
   await page.goto('/studio?view=editor');
+  await expect(page.getByTestId('studio-first-run-onboarding')).toBeVisible();
+  await expect(page.getByTestId('studio-first-run-onboarding')).toContainText('Start here');
+  await expect(page.getByTestId('studio-first-run-onboarding')).toContainText('Upload source');
+  await page.getByTestId('studio-first-run-onboarding').getByRole('button', { name: /Upload source/ }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await expect(page.getByRole('dialog')).toContainText('Create A New Lesson Draft');
+  await page.getByRole('button', { name: 'Close create lesson' }).click();
+  await expect(page.getByRole('dialog')).toBeHidden();
+  await page.getByTestId('studio-first-run-onboarding').getByRole('button', { name: /Start writing/ }).click();
+  await expect(page.getByTestId('studio-first-run-onboarding')).toBeHidden();
+  await expect(page.getByLabel('Local editing canvas')).toBeFocused();
+  await page.reload();
+  await expect(page.getByTestId('studio-first-run-onboarding')).toBeVisible();
   await expect(page.getByTestId('studio-creator-header')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'New lesson draft' })).toBeVisible();
   await expect(page.getByText('Next best action')).toBeVisible();
@@ -224,10 +241,12 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByRole('heading', { name: 'Inspector' })).toBeVisible();
 
   await page.evaluate(() => document.documentElement.setAttribute('lang', 'tr-TR'));
+  await expect(page.getByTestId('studio-first-run-onboarding')).toContainText('Buradan başlayın');
+  await expect(page.getByTestId('studio-first-run-onboarding')).not.toContainText('Start here');
   await expect(page.getByTestId('studio-creator-header')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Yeni ders taslağı' })).toBeVisible();
   await expect(page.getByText('Sonraki en iyi adım')).toBeVisible();
-  await expect(page.getByText('Kaynak dosya ekle')).toBeVisible();
+  await expect(page.getByTestId('studio-creator-header').getByText('Kaynak dosya ekle')).toBeVisible();
   await expect(page.getByText('Taslak').first()).toBeVisible();
   await expect(page.getByText('Render durumu: Render edilmedi')).toBeVisible();
   await expect(page.getByTestId('studio-smart-guidance')).toContainText('Akilli rehberlik');
@@ -240,10 +259,12 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
     document.documentElement.setAttribute('lang', 'ar');
     document.documentElement.setAttribute('dir', 'rtl');
   });
+  await expect(page.getByTestId('studio-first-run-onboarding')).toContainText('ابدأ من هنا');
+  await expect(page.getByTestId('studio-first-run-onboarding')).not.toContainText('Start here');
   await expect(page.getByTestId('studio-creator-header')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'مسودة درس جديدة' })).toBeVisible();
   await expect(page.getByText('أفضل خطوة تالية')).toBeVisible();
-  await expect(page.getByText('إضافة ملف مصدر')).toBeVisible();
+  await expect(page.getByTestId('studio-creator-header').getByText('إضافة ملف مصدر')).toBeVisible();
   await expect(page.getByText('مسودة').first()).toBeVisible();
   await expect(page.getByText('حالة التصيير: غير مصير')).toBeVisible();
   await expect(page.getByTestId('studio-smart-guidance')).not.toContainText('Recommended action');
@@ -263,6 +284,11 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
     document.documentElement.removeAttribute('dir');
   });
 
+  await page.getByRole('button', { name: 'Skip guidance' }).click();
+  await expect(page.getByTestId('studio-first-run-onboarding')).toBeHidden();
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('visus-studio-first-run-onboarding-42-v1')
+  ))).toBe('dismissed');
   await page.getByLabel('Lesson title').fill('Release Gate Lesson');
   await page.getByLabel('Category').fill('Release QA');
   await page.locator('input[type="file"][accept*=".txt"]').setInputFiles({
