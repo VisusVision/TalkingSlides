@@ -227,7 +227,7 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByTestId('studio-first-run-onboarding')).toBeVisible();
   await expect(page.getByTestId('studio-creator-header')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'New lesson draft' })).toBeVisible();
-  await expect(page.getByText('Next best action')).toBeVisible();
+  await expect(page.getByTestId('studio-creator-header')).not.toContainText('Next best action');
   await expect(page.getByTestId('studio-workflow-strip')).toBeVisible();
   await expect(page.getByTestId('studio-smart-guidance')).toBeVisible();
   await expect(page.getByTestId('studio-smart-guidance').getByText('Recommended action')).toBeVisible();
@@ -245,8 +245,8 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByTestId('studio-first-run-onboarding')).not.toContainText('Start here');
   await expect(page.getByTestId('studio-creator-header')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Yeni ders taslağı' })).toBeVisible();
-  await expect(page.getByText('Sonraki en iyi adım')).toBeVisible();
-  await expect(page.getByTestId('studio-creator-header').getByText('Kaynak dosya ekle')).toBeVisible();
+  await expect(page.getByTestId('studio-creator-header')).not.toContainText('Sonraki en iyi adım');
+  await expect(page.getByTestId('studio-creator-header')).not.toContainText('Kaynak dosya ekle');
   await expect(page.getByText('Taslak').first()).toBeVisible();
   await expect(page.getByText('Render durumu: Render edilmedi')).toBeVisible();
   await expect(page.getByTestId('studio-smart-guidance')).toContainText('Akilli rehberlik');
@@ -263,8 +263,8 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByTestId('studio-first-run-onboarding')).not.toContainText('Start here');
   await expect(page.getByTestId('studio-creator-header')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'مسودة درس جديدة' })).toBeVisible();
-  await expect(page.getByText('أفضل خطوة تالية')).toBeVisible();
-  await expect(page.getByTestId('studio-creator-header').getByText('إضافة ملف مصدر')).toBeVisible();
+  await expect(page.getByTestId('studio-creator-header')).not.toContainText('أفضل خطوة تالية');
+  await expect(page.getByTestId('studio-creator-header')).not.toContainText('إضافة ملف مصدر');
   await expect(page.getByText('مسودة').first()).toBeVisible();
   await expect(page.getByText('حالة التصيير: غير مصير')).toBeVisible();
   await expect(page.getByTestId('studio-smart-guidance')).not.toContainText('Recommended action');

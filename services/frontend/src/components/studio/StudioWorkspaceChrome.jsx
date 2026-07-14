@@ -452,7 +452,7 @@ export function StudioCompactWorkspaceSwitcher({
     <nav
       aria-label={copy.compactWorkspaceLabel}
       data-testid="studio-compact-workspace-switcher"
-      className={`rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-1.5 shadow-token-xs ${className}`}
+      className={`rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-1 shadow-token-xs ${className}`}
     >
       <div className="grid min-w-0 grid-cols-3 gap-1">
         {visibleWorkspaces.map((workspace) => {
@@ -464,15 +464,15 @@ export function StudioCompactWorkspaceSwitcher({
               aria-current={selected ? 'page' : undefined}
               aria-controls={workspace.controls}
               onClick={() => onWorkspaceChange?.(workspace.key)}
-              className={`focus-ring motion-studio-selection flex min-h-11 min-w-0 flex-col items-center justify-center rounded-xl px-2 py-2 text-center text-xs font-semibold ${
+              className={`focus-ring motion-studio-selection flex min-h-10 min-w-0 flex-col items-center justify-center rounded-lg px-2 py-1.5 text-center text-xs font-semibold leading-tight ${
                 selected
                   ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)] shadow-token-xs ring-1 ring-inset ring-[var(--outline-variant)]'
                   : 'text-[var(--text-secondary)] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]'
               }`}
             >
-              <span className="max-w-full truncate">{workspace.label}</span>
+              <span className="max-w-full whitespace-normal break-words [overflow-wrap:anywhere]">{workspace.label}</span>
               {workspace.detail && (
-                <span className="mt-0.5 max-w-full truncate text-[0.65rem] font-medium opacity-80">
+                <span className="mt-0.5 max-w-full whitespace-normal break-words text-xs font-medium opacity-80 [overflow-wrap:anywhere]">
                   {workspace.detail}
                 </span>
               )}
@@ -589,9 +589,9 @@ export function StudioSmartGuidance({
       data-testid="studio-smart-guidance"
       data-status={status}
       aria-labelledby="studio-smart-guidance-title"
-      className={`motion-studio-panel rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-4 shadow-token-sm ${className}`}
+      className={`motion-studio-panel rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-3 shadow-token-xs sm:p-4 ${className}`}
     >
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+      <div className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Badge variant={statusVariant} size="md">
@@ -661,7 +661,7 @@ export function StudioSmartGuidance({
         )}
       </div>
 
-      <div className={`mt-4 grid min-w-0 gap-4 border-t border-[var(--border-subtle)] pt-4 ${compact ? 'lg:grid-cols-1' : 'lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'}`}>
+      <div className={`mt-3 grid min-w-0 gap-3 border-t border-[var(--border-subtle)] pt-3 ${compact ? 'lg:grid-cols-1' : 'lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'}`}>
         <div className="min-w-0">
           <p className="text-sm font-semibold text-[var(--text-primary)]">
             {copy.guidanceReadinessTitle}
@@ -704,7 +704,7 @@ export function StudioSmartGuidance({
                 return (
                   <li
                     key={blocker.key || blocker.title || blocker.detail}
-                    className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] p-3"
+                    className="rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-container-low)] p-2.5"
                   >
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
                       <Badge variant={blockerVariant}>{severityLabel}</Badge>
@@ -737,7 +737,7 @@ export function StudioSmartGuidance({
               })}
             </ul>
           ) : (
-            <p className="mt-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+            <p className="mt-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-container-low)] px-3 py-2 text-sm text-[var(--text-secondary)]">
               {copy.guidanceNoBlockers}
             </p>
           )}
@@ -752,7 +752,7 @@ export function StudioWorkflowStrip({ steps = [] }) {
     <section
       aria-label="Studio workflow"
       data-testid="studio-workflow-strip"
-      className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-3 shadow-token-xs"
+      className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-2.5 shadow-token-xs sm:p-3"
     >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
@@ -771,21 +771,21 @@ export function StudioWorkflowStrip({ steps = [] }) {
             return (
               <li key={step.key || step.label} className="flex shrink-0 items-center gap-2">
                 <div
-                  className={`motion-studio-status min-w-[7.5rem] rounded-xl border px-3 py-2 ${tone.shell}`}
+                  className={`motion-studio-status min-w-28 rounded-lg border px-3 py-2 ${tone.shell}`}
                   aria-current={step.status === 'active' ? 'step' : undefined}
                 >
                   <span className="flex items-center gap-2">
                     <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[0.65rem] font-bold ${tone.dot}`}>
                       {complete ? <CheckCircle2 size={12} /> : index + 1}
                     </span>
-                    <span className="text-sm font-semibold">{step.label}</span>
+                    <span className="text-sm font-semibold leading-tight">{step.label}</span>
                   </span>
                   {step.detail && (
-                    <span className="mt-1 block truncate text-[0.68rem] opacity-85">{step.detail}</span>
+                    <span className="mt-1 block max-w-36 truncate text-xs opacity-85">{step.detail}</span>
                   )}
                 </div>
                 {index < steps.length - 1 && (
-                  <ArrowRight size={14} className="shrink-0 text-[var(--text-secondary)]" aria-hidden="true" />
+                  <ArrowRight size={14} className="shrink-0 text-[var(--text-secondary)] rtl:rotate-180" aria-hidden="true" />
                 )}
               </li>
             );
@@ -808,18 +808,25 @@ export function StudioCreatorHeader({
   secondaryActions = [],
   renderStatus = null,
   projectStatus = '',
+  showNextAction = true,
 }) {
   const documentCopy = useStudioWorkspaceCopy();
   const copy = providedCopy || documentCopy;
   const visibleMetadata = metadata.filter((item) => item?.label && item?.value);
   const visibleChips = chips.filter((chip) => chip?.label);
   const visibleSecondaryActions = secondaryActions.filter((action) => action?.label);
+  const showActionRow = showNextAction && (
+    nextActionTitle
+    || nextActionDetail
+    || primaryAction?.label
+    || visibleSecondaryActions.length > 0
+  );
 
   return (
     <section
       data-testid="studio-creator-header"
       aria-labelledby="studio-creator-header-title"
-      className="motion-studio-panel rounded-2xl bg-[var(--surface-container-lowest)] px-4 py-4 shadow-token-sm sm:px-5 sm:py-5"
+      className="motion-studio-panel rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] px-4 py-4 shadow-token-xs sm:px-5"
     >
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] xl:items-start">
         <div className="min-w-0">
@@ -877,47 +884,49 @@ export function StudioCreatorHeader({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 border-t border-[var(--border-subtle)] pt-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-        <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
-            {copy.creatorNextBestAction}
-          </p>
-          <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
-            {nextActionTitle || copy.creatorContinueEditing}
-          </p>
-          {nextActionDetail && (
-            <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
-              {nextActionDetail}
+      {showActionRow && (
+        <div className="mt-4 grid gap-3 border-t border-[var(--border-subtle)] pt-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+              {copy.creatorNextBestAction}
             </p>
-          )}
-        </div>
+            <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+              {nextActionTitle || copy.creatorContinueEditing}
+            </p>
+            {nextActionDetail && (
+              <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                {nextActionDetail}
+              </p>
+            )}
+          </div>
 
-        <div className="flex min-w-0 flex-wrap gap-2 lg:justify-end">
-          {primaryAction?.label && (
-            <Button
-              variant={primaryAction.variant || 'primary'}
-              onClick={primaryAction.onClick}
-              disabled={primaryAction.disabled}
-              title={primaryAction.title || primaryAction.label}
-            >
-              {primaryAction.icon}
-              <span>{primaryAction.label}</span>
-            </Button>
-          )}
-          {visibleSecondaryActions.map((action) => (
-            <Button
-              key={action.key || action.label}
-              variant={action.variant || 'secondary'}
-              onClick={action.onClick}
-              disabled={action.disabled}
-              title={action.title || action.label}
-            >
-              {action.icon}
-              <span>{action.label}</span>
-            </Button>
-          ))}
+          <div className="flex min-w-0 flex-wrap gap-2 lg:justify-end">
+            {primaryAction?.label && (
+              <Button
+                variant={primaryAction.variant || 'primary'}
+                onClick={primaryAction.onClick}
+                disabled={primaryAction.disabled}
+                title={primaryAction.title || primaryAction.label}
+              >
+                {primaryAction.icon}
+                <span>{primaryAction.label}</span>
+              </Button>
+            )}
+            {visibleSecondaryActions.map((action) => (
+              <Button
+                key={action.key || action.label}
+                variant={action.variant || 'secondary'}
+                onClick={action.onClick}
+                disabled={action.disabled}
+                title={action.title || action.label}
+              >
+                {action.icon}
+                <span>{action.label}</span>
+              </Button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -1014,7 +1023,7 @@ export function StudioSaveStatus({
       <Icon size={15} className={saving ? 'shrink-0 animate-spin' : 'shrink-0'} />
       <div className="min-w-0">
         <p className="font-semibold">{label}</p>
-        <p className="truncate opacity-85">{detail}</p>
+        <p className="break-words opacity-85 [overflow-wrap:anywhere]">{detail}</p>
       </div>
     </div>
   );
@@ -1117,7 +1126,7 @@ export function StudioFirstRunOnboarding({
     <section
       data-testid="studio-first-run-onboarding"
       aria-labelledby="studio-first-run-title"
-      className={`motion-studio-panel rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-4 shadow-token-sm sm:p-5 ${className}`}
+      className={`motion-studio-panel rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-3 shadow-token-xs sm:p-4 ${className}`}
     >
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
@@ -1152,7 +1161,7 @@ export function StudioFirstRunOnboarding({
 
       <ul
         aria-label={copy.firstRunOptionsLabel}
-        className={`mt-4 grid min-w-0 gap-3 ${compact ? 'lg:grid-cols-1' : 'lg:grid-cols-3'}`}
+        className={`mt-3 grid min-w-0 gap-2 ${compact ? 'lg:grid-cols-1' : 'lg:grid-cols-3'}`}
       >
         {visibleOptions.map(({ key, ...option }) => (
           <StudioStartOption
@@ -1164,7 +1173,7 @@ export function StudioFirstRunOnboarding({
       </ul>
 
       {steps.length > 0 && (
-        <div className="mt-4 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] px-3 py-3">
+        <div className="mt-4 border-t border-[var(--border-subtle)] pt-3">
           <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
             {copy.firstRunStepLabel}
           </p>
@@ -1201,9 +1210,9 @@ export function StudioInspectorSection({
   return (
     <details
       open={defaultOpen}
-      className={`group motion-studio-status rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] ${className}`}
+      className={`group motion-studio-status rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)]/80 ${className}`}
     >
-      <summary className="focus-ring motion-interactive flex cursor-pointer list-none items-start justify-between gap-3 rounded-lg px-3 py-3">
+      <summary className="focus-ring motion-interactive flex cursor-pointer list-none items-start justify-between gap-3 rounded-xl px-3 py-2.5">
         <span className="flex min-w-0 flex-1 items-start gap-2.5">
           {icon && (
             <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[var(--surface-container-low)] text-[var(--text-secondary)]" aria-hidden="true">
@@ -1232,7 +1241,7 @@ export function StudioInspectorSection({
 
 export function StudioToolbarGroup({ label, children }) {
   return (
-    <div className="motion-studio-status flex flex-wrap items-center gap-2 rounded-xl bg-[var(--surface-container-low)] p-1.5" aria-label={label}>
+    <div className="motion-studio-status flex flex-wrap items-center gap-2 rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-1" aria-label={label}>
       {children}
     </div>
   );

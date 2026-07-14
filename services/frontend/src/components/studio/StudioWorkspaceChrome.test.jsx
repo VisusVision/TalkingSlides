@@ -122,7 +122,8 @@ describe('Studio workspace chrome', () => {
     expect(buttons).toHaveLength(3);
     expect(buttons[1]).toHaveAttribute('aria-current', 'page');
     expect(buttons[1]).toHaveAttribute('aria-controls', 'canvas-panel');
-    expect(buttons[1].className).toContain('min-h-11');
+    expect(buttons[1].className).toContain('min-h-10');
+    expect(buttons[1].querySelector('span').className).toContain('[overflow-wrap:anywhere]');
 
     await act(async () => buttons[2].click());
     expect(onWorkspaceChange).toHaveBeenCalledWith('inspector');
@@ -155,6 +156,32 @@ describe('Studio workspace chrome', () => {
     expect(switcher.textContent).toContain(copy.compactWorkspaceInspector);
     ['Scenes', 'Canvas', 'Studio workspace sections'].forEach((literal) => {
       expect(switcher.outerHTML).not.toContain(literal);
+    });
+  });
+
+  it('keeps compact workspace labels readable for long localized copy', async () => {
+    await act(async () => {
+      root.render(
+        <StudioCompactWorkspaceSwitcher
+          activeWorkspace="inspector"
+          workspaces={[
+            { key: 'slides', label: 'Szenenverwaltung', detail: '12 Produktionsszenen', controls: 'slides-panel' },
+            { key: 'canvas', label: 'Leinwand', detail: 'Szene mit sehr langem Titel', controls: 'canvas-panel' },
+            { key: 'inspector', label: 'Inspektoreinstellungen', detail: 'Stimme und Avatar', controls: 'inspector-panel' },
+          ]}
+          onWorkspaceChange={vi.fn()}
+        />,
+      );
+    });
+
+    const switcher = host.querySelector('[data-testid="studio-compact-workspace-switcher"]');
+    const buttons = Array.from(switcher.querySelectorAll('button'));
+    expect(buttons).toHaveLength(3);
+    expect(buttons[2]).toHaveAttribute('aria-current', 'page');
+    buttons.forEach((button) => {
+      expect(button.className).toContain('leading-tight');
+      expect(button.outerHTML).toContain('[overflow-wrap:anywhere]');
+      expect(button.outerHTML).not.toContain('truncate');
     });
   });
 
@@ -573,6 +600,32 @@ describe('Studio workspace chrome', () => {
 
     await act(async () => guidance.querySelector('button').click());
     expect(onRender).toHaveBeenCalledTimes(1);
+  });
+
+  it('lets the editor suppress duplicate Creator Header CTA ownership', async () => {
+    const onRender = vi.fn();
+    const copy = studioWorkspaceCopy('en');
+
+    await act(async () => {
+      root.render(
+        <StudioCreatorHeader
+          copy={copy}
+          title="Lesson"
+          nextActionTitle={copy.creatorRenderUpdatedVideo}
+          nextActionDetail={copy.creatorDetailRenderUpdated}
+          primaryAction={{ label: copy.creatorRender, onClick: onRender }}
+          renderStatus={{ status: 'ready', progress: 100 }}
+          showNextAction={false}
+        />,
+      );
+    });
+
+    const header = host.querySelector('[data-testid="studio-creator-header"]');
+    expect(header.textContent).toContain('Render status: Ready');
+    expect(header.textContent).not.toContain(copy.creatorNextBestAction);
+    expect(header.textContent).not.toContain(copy.creatorRenderUpdatedVideo);
+    expect(header.querySelectorAll('button')).toHaveLength(0);
+    expect(onRender).not.toHaveBeenCalled();
   });
 
   it('renders Turkish and Arabic Smart Guidance copy without normal-path English leakage', async () => {
