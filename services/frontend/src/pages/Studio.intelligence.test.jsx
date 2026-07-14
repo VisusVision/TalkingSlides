@@ -305,4 +305,17 @@ describe('predicted rerender impact preview', () => {
     expect(source).toContain("avatarLayoutSourceLabel(selectedSceneEffectiveAvatarLayout.sources?.position)");
     expect(source).toContain('effectiveAvatarLayout');
   });
+
+  it('keeps the avatar summary wired to existing visibility and retry callbacks', () => {
+    const source = readFileSync('src/pages/Studio.jsx', 'utf8');
+
+    expect(source).toContain('data-testid="studio-avatar-summary"');
+    expect(source).toContain('handleAvatarVisibilityToggle(selectedLesson, event.target.checked)');
+    expect(source).toContain('handleAvatarOnlyRerender');
+    expect(source).toContain('avatarProcessingStatus(selectedLesson)');
+    expect(source).toContain('avatarStatusLabel(selectedLesson, studioCopy)');
+    expect(source).toContain("avatarVisible(selectedLesson) ? 'start-6' : 'start-1'");
+    expect(source).not.toContain('avatar match score');
+    expect(source).not.toContain('voice match score');
+  });
 });
