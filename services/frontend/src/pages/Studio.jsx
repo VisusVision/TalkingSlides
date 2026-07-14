@@ -77,6 +77,7 @@ import {
   StudioSaveStatus,
   StudioEmptyState,
   StudioCreatorHeader,
+  StudioSmartGuidance,
   StudioSlideRail,
   StudioToolbarGroup,
   StudioWorkflowStrip,
@@ -6249,6 +6250,224 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       variant: 'secondary',
     }]
     : [];
+  const guidanceModerationStatus = selectedLesson ? projectModerationStatus(selectedLesson, selectedModeration) : '';
+  const guidanceModerationLabel = selectedLesson ? moderationStatusLabel(guidanceModerationStatus) : '';
+  const guidanceTranscriptReady = selectedLesson ? transcriptPages.length > 0 : Boolean(sourceFile);
+  const guidanceSubtitleGenerating = Boolean(pendingSubtitleGeneration) || Boolean(generatingSubtitleTrack);
+  const guidanceAvatarState = avatarTaskState(selectedLesson);
+  const studioGuidanceStatus = selectedLesson?.is_published && workflowRenderReady
+    ? 'published'
+    : creatorRenderFailed
+      ? 'failed'
+      : creatorRenderInFlight
+        ? 'rendering'
+        : creatorBlockerDetail || selectedDraftBlocked || (selectedLesson && workflowRenderReady && !workflowCanPublish)
+          ? 'blocked'
+          : creatorPublishReady || workflowRenderReady
+            ? 'ready'
+            : 'needs-attention';
+  const studioGuidanceSummary = studioCopy[
+    {
+      ready: 'guidanceSummaryReady',
+      'needs-attention': 'guidanceSummaryNeedsAttention',
+      blocked: 'guidanceSummaryBlocked',
+      rendering: 'guidanceSummaryRendering',
+      failed: 'guidanceSummaryFailed',
+      published: 'guidanceSummaryPublished',
+    }[studioGuidanceStatus]
+  ];
+  const guidancePanelAction = (key, label, icon) => ({
+    key,
+    label,
+    icon,
+    onClick: () => setActiveEditorPanel(key),
+    variant: 'secondary',
+  });
+  const studioGuidanceReadiness = [
+    !selectedLesson
+      ? {
+        key: 'source',
+        label: studioCopy.guidanceSourceLabel,
+        state: sourceFile ? 'ready' : 'needs-attention',
+        detail: sourceFile ? studioCopy.guidanceSourceReady : studioCopy.guidanceSourceMissing,
+      }
+      : null,
+    selectedLesson
+      ? {
+        key: 'transcript',
+        label: studioCopy.guidanceTranscriptLabel,
+        state: loadingTranscript ? 'in-progress' : guidanceTranscriptReady ? 'ready' : 'needs-attention',
+        detail: loadingTranscript
+          ? studioCopy.guidanceTranscriptLoading
+          : guidanceTranscriptReady
+            ? studioCopy.guidanceTranscriptReady
+            : studioCopy.guidanceTranscriptMissing,
+      }
+      : null,
+    selectedLesson && avatarFeatureEnabled
+      ? {
+        key: 'avatar',
+        label: studioCopy.guidanceAvatarLabel,
+        state: !projectAvatarEnabled(selectedLesson)
+          ? 'not-required'
+          : guidanceAvatarState === 'failed'
+            ? 'failed'
+            : ['queued', 'waiting', 'processing'].includes(guidanceAvatarState)
+              ? 'in-progress'
+              : guidanceAvatarState === 'completed'
+                ? 'ready'
+                : 'needs-attention',
+        detail: projectAvatarEnabled(selectedLesson)
+          ? avatarStatusLabel(selectedLesson, studioCopy)
+          : studioCopy.guidanceAvatarNotRequired,
+      }
+      : null,
+    selectedLesson
+      ? {
+        key: 'voice',
+        label: studioCopy.guidanceVoiceLabel,
+        state: guidanceTranscriptReady ? 'ready' : 'needs-attention',
+        detail: guidanceTranscriptReady
+          ? (creatorVoice || studioCopy.creatorAutoVoice)
+          : studioCopy.noNarrationHint,
+      }
+      : null,
+    selectedLesson
+      ? {
+        key: 'subtitles',
+        label: studioCopy.guidanceSubtitlesLabel,
+        state: guidanceSubtitleGenerating
+          ? 'in-progress'
+          : previewSubtitleSummary.labels.length > 0
+            ? 'ready'
+            : 'not-required',
+        detail: guidanceSubtitleGenerating
+          ? studioCopy.guidanceSubtitlesGenerating
+          : previewSubtitleSummary.labels.length > 0
+            ? `${studioCopy.guidanceSubtitlesReady} ${previewSubtitleSummary.labels.join(', ')}`
+            : studioCopy.guidanceSubtitlesWaiting,
+      }
+      : null,
+    selectedLesson
+      ? {
+        key: 'moderation',
+        label: studioCopy.guidanceModerationLabel,
+        state: workflowCanPublish
+          ? 'ready'
+          : ['pending', 'processing', 'running'].includes(guidanceModerationStatus)
+            ? 'in-progress'
+            : 'blocked',
+        detail: guidanceModerationLabel,
+      }
+      : null,
+    {
+      key: 'render',
+      label: studioCopy.guidanceRenderLabel,
+      state: creatorRenderFailed
+        ? 'failed'
+        : creatorRenderInFlight
+          ? 'in-progress'
+          : workflowRenderReady
+            ? 'ready'
+            : 'needs-attention',
+      detail: workflowRenderReady ? studioCopy.guidanceRenderReady : studioCopy.guidanceRenderNotReady,
+    },
+    {
+      key: 'publish',
+      label: studioCopy.guidancePublishLabel,
+      state: selectedLesson?.is_published || creatorPublishReady
+        ? 'ready'
+        : selectedLesson
+          ? 'blocked'
+          : 'needs-attention',
+      detail: selectedLesson?.is_published
+        ? studioCopy.guidancePublishedDetail
+        : creatorPublishReady
+          ? studioCopy.guidancePublishReady
+          : studioCopy.guidancePublishBlocked,
+    },
+  ].filter(Boolean);
+  const studioGuidanceBlockers = [
+    globalEditorError
+      ? {
+        key: 'editor-error',
+        severity: 'critical',
+        title: studioCopy.creatorNeedsAttention,
+        detail: globalEditorError,
+      }
+      : null,
+    selectedLessonDirtyScope.moderationMessage
+      ? {
+        key: 'moderation-rerender',
+        severity: 'critical',
+        title: studioCopy.guidanceModerationLabel,
+        detail: selectedLessonDirtyScope.moderationMessage,
+        status: guidanceModerationLabel,
+        action: guidancePanelAction('moderation', studioCopy.guidanceOpenModeration, <AlertTriangle size={14} />),
+      }
+      : null,
+    selectedDraftBlocked
+      ? {
+        key: 'draft-blocked',
+        severity: 'critical',
+        title: studioCopy.creatorResolveBlocker,
+        detail: selectedDraftStatusMessage,
+        status: guidanceModerationLabel,
+        action: guidancePanelAction('moderation', studioCopy.guidanceOpenModeration, <AlertTriangle size={14} />),
+      }
+      : null,
+    creatorRenderFailed
+      ? {
+        key: 'render-failed',
+        severity: 'critical',
+        title: studioCopy.renderFailed,
+        detail: studioCopy.renderFailedHint,
+      }
+      : null,
+    selectedLesson && !loadingTranscript && !guidanceTranscriptReady
+      ? {
+        key: 'transcript-missing',
+        severity: 'warning',
+        title: studioCopy.guidanceTranscriptLabel,
+        detail: studioCopy.guidanceTranscriptMissing,
+        action: guidancePanelAction('transcript', studioCopy.guidanceOpenTranscript, <FileText size={14} />),
+      }
+      : null,
+    selectedLesson && !workflowCanPublish && !selectedLessonDirtyScope.moderationMessage && !selectedDraftBlocked
+      ? {
+        key: 'moderation-blocked',
+        severity: 'critical',
+        title: studioCopy.guidanceModerationLabel,
+        detail: moderationMessage(selectedLesson, selectedModeration),
+        status: guidanceModerationLabel,
+        action: guidancePanelAction('moderation', studioCopy.guidanceOpenModeration, <AlertTriangle size={14} />),
+      }
+      : null,
+    selectedLesson && !workflowRenderReady && !creatorRenderInFlight && !creatorRenderFailed
+      ? {
+        key: 'render-needed',
+        severity: 'warning',
+        title: studioCopy.guidanceRenderLabel,
+        detail: studioCopy.guidanceRenderNotReady,
+      }
+      : null,
+    selectedLesson && avatarFeatureEnabled && projectAvatarEnabled(selectedLesson) && guidanceAvatarState === 'failed'
+      ? {
+        key: 'avatar-failed',
+        severity: 'warning',
+        title: studioCopy.guidanceAvatarLabel,
+        detail: avatarStatusLabel(selectedLesson, studioCopy),
+        action: guidancePanelAction('slides', studioCopy.guidanceOpenAvatar, <Sparkles size={14} />),
+      }
+      : null,
+  ].filter(Boolean);
+  const studioGuidanceNextAction = {
+    title: creatorNextActionTitle,
+    detail: creatorNextActionDetail,
+    action: !selectedLesson && !sourceFile ? null : creatorPrimaryAction,
+    showTitle: false,
+    showDetail: false,
+  };
 
   if (!user) {
     return (
@@ -7027,12 +7246,22 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             chips={creatorHeaderChips}
             nextActionTitle={creatorNextActionTitle}
             nextActionDetail={creatorNextActionDetail}
-            primaryAction={creatorPrimaryAction}
-            secondaryActions={creatorSecondaryActions}
+            primaryAction={null}
+            secondaryActions={[]}
             renderStatus={latestRenderStatus}
             projectStatus={selectedLesson?.status}
           />
           <StudioWorkflowStrip steps={studioWorkflowSteps} />
+          <StudioSmartGuidance
+            copy={studioCopy}
+            status={studioGuidanceStatus}
+            title={studioCopy.guidanceTitle}
+            summary={studioGuidanceSummary}
+            readiness={studioGuidanceReadiness}
+            blockers={studioGuidanceBlockers}
+            nextAction={studioGuidanceNextAction}
+            secondaryActions={creatorSecondaryActions}
+          />
           <section
             data-testid="studio-editor-layout"
             className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[12rem_minmax(0,1.35fr)_minmax(18rem,22rem)] 2xl:grid-cols-[13rem_minmax(0,1.6fr)_24rem]"

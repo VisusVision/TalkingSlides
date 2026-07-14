@@ -212,6 +212,9 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByRole('heading', { name: 'New lesson draft' })).toBeVisible();
   await expect(page.getByText('Next best action')).toBeVisible();
   await expect(page.getByTestId('studio-workflow-strip')).toBeVisible();
+  await expect(page.getByTestId('studio-smart-guidance')).toBeVisible();
+  await expect(page.getByTestId('studio-smart-guidance').getByText('Recommended action')).toBeVisible();
+  await expect(page.getByTestId('studio-creator-header').locator('button')).toHaveCount(0);
   await expect(page.getByTestId('studio-editor-layout')).toBeVisible();
   await expect(page.getByTestId('studio-slide-rail')).toBeVisible();
   await expect(page.getByTestId('studio-canvas-panel')).toBeVisible();
@@ -227,6 +230,8 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByText('Kaynak dosya ekle')).toBeVisible();
   await expect(page.getByText('Taslak').first()).toBeVisible();
   await expect(page.getByText('Render durumu: Render edilmedi')).toBeVisible();
+  await expect(page.getByTestId('studio-smart-guidance')).toContainText('Akilli rehberlik');
+  await expect(page.getByTestId('studio-smart-guidance')).not.toContainText('Recommended action');
   await expect(page.getByRole('heading', { name: 'Slaytlar' })).toBeVisible();
   await expect(page.getByText(/Render durumu:/).first()).toBeVisible();
   await expect(page.getByTestId('studio-creator-header')).not.toContainText('Next best action');
@@ -241,6 +246,7 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByText('إضافة ملف مصدر')).toBeVisible();
   await expect(page.getByText('مسودة').first()).toBeVisible();
   await expect(page.getByText('حالة التصيير: غير مصير')).toBeVisible();
+  await expect(page.getByTestId('studio-smart-guidance')).not.toContainText('Recommended action');
   await expect(page.getByTestId('studio-creator-header')).not.toContainText('Next best action');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
