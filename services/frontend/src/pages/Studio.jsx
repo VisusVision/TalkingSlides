@@ -503,7 +503,7 @@ export function RenderAnalysisPanel({ analysis }) {
 
       <div className="mt-3 grid gap-2 sm:grid-cols-3">
         {summaryItems.map((item) => (
-          <div key={item.key} className="border-l border-[var(--border-subtle)] pl-3">
+          <div key={item.key} className="border-s border-[var(--border-subtle)] ps-3">
             <p className="text-lg font-semibold text-[var(--text-primary)]">{item.value}</p>
             <p className="text-xs text-[var(--text-secondary)]">{item.label}</p>
           </div>
@@ -624,7 +624,7 @@ export function PredictedRerenderImpactPanel({ prediction, error = '' }) {
         <>
           <div className="mt-3 grid gap-2 sm:grid-cols-4">
             {summaryItems.map((item) => (
-              <div key={item.key} className="border-l border-[var(--border-subtle)] pl-3">
+              <div key={item.key} className="border-s border-[var(--border-subtle)] ps-3">
                 <p className="text-lg font-semibold text-[var(--text-primary)]">{item.value}</p>
                 <p className="text-xs text-[var(--text-secondary)]">{item.label}</p>
               </div>
@@ -6635,23 +6635,23 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }
 
   return (
-    <div className="min-w-0 max-w-full space-y-5 overflow-x-hidden">
-      <SurfaceCard className="token-surface-elevated flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden">
+    <div className="min-w-0 max-w-full space-y-4 overflow-x-hidden">
+      <section className="flex min-w-0 max-w-full flex-wrap items-center justify-between gap-3 overflow-x-hidden">
         <div className="min-w-0">
           <p className="label-sm">Studio Workspace</p>
-          <h1 className="headline-md mt-1 text-[var(--text-primary)]">
+          <h1 className="title-lg mt-1 text-[var(--text-primary)]">
             {readOnlyReview ? 'Read-only Lesson Review' : 'Lesson Studio'}
           </h1>
-          <p className="mt-1 max-w-2xl text-sm text-[var(--text-secondary)]">
+          <p className="mt-0.5 max-w-2xl text-xs text-[var(--text-secondary)]">
             Shape the script, scene, render, and release path without leaving the workspace.
           </p>
         </div>
 
         {!readOnlyReview && (
-        <div className="inline-flex max-w-full flex-wrap rounded-full token-surface p-1">
+        <div className="inline-flex max-w-full flex-wrap rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-1 shadow-token-xs">
           <button
             type="button"
-            className={`focus-ring motion-interactive rounded-full px-4 py-2 text-sm font-medium ${
+            className={`focus-ring motion-interactive rounded-lg px-3 py-1.5 text-sm font-medium ${
               studioView === 'lessons'
                 ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)]'
                 : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -6663,7 +6663,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           </button>
           <button
             type="button"
-            className={`focus-ring motion-interactive rounded-full px-4 py-2 text-sm font-medium ${
+            className={`focus-ring motion-interactive rounded-lg px-3 py-1.5 text-sm font-medium ${
               studioView === 'editor'
                 ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)]'
                 : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -6675,7 +6675,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           </button>
           <button
             type="button"
-            className={`focus-ring motion-interactive rounded-full px-4 py-2 text-sm font-medium ${
+            className={`focus-ring motion-interactive rounded-lg px-3 py-1.5 text-sm font-medium ${
               studioView === 'playlists'
                 ? 'bg-[var(--surface-container-highest)] text-[var(--accent-primary)]'
                 : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
@@ -6687,7 +6687,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           </button>
         </div>
         )}
-      </SurfaceCard>
+      </section>
 
       {readOnlyReview && (
         <>
@@ -7389,6 +7389,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             secondaryActions={[]}
             renderStatus={latestRenderStatus}
             projectStatus={selectedLesson?.status}
+            showNextAction={false}
           />
           <StudioWorkflowStrip steps={studioWorkflowSteps} />
           <StudioSmartGuidance
@@ -7441,7 +7442,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 className="motion-studio-panel min-w-0 space-y-3 overflow-hidden sm:space-y-4"
               >
                 <h2 id="studio-canvas-heading" className="sr-only">Scene canvas</h2>
-                <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-1.5 shadow-token-xs sm:p-3">
+                <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-2 shadow-token-xs sm:p-3">
                   <div
                     key={selectedScene?.key || 'empty-scene-preview'}
                     data-testid="studio-canvas-stage"
@@ -7652,7 +7653,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                           type="button"
                           onClick={() => handleSelectScene(scene, index)}
                           aria-current={selected ? 'true' : undefined}
-                          className={`focus-ring motion-studio-selection min-w-[14rem] rounded-xl p-2 text-start ${
+                          className={`focus-ring motion-studio-selection min-w-48 rounded-xl p-2 text-start ${
                             selected
                               ? `border ${hasModerationWarning ? 'border-[color:var(--status-warning-fg)]' : 'border-[color:rgba(208,188,255,0.55)]'} bg-[color:rgba(208,188,255,0.12)]`
                               : hasModerationWarning
@@ -7729,7 +7730,8 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
             >
               <SurfaceCard
                 elevated
-                className="flex min-w-0 max-w-full flex-col gap-4 overflow-hidden xl:min-h-[72vh] xl:max-h-[calc(100vh-9rem)]"
+                padding="sm"
+                className="flex min-w-0 max-w-full flex-col gap-3 overflow-hidden xl:min-h-[72vh] xl:max-h-[calc(100vh-9rem)]"
               >
                 <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
                   <StudioInspectorHeading
@@ -7738,7 +7740,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     sectionLabel={activeEditorPanelLabel}
                     attentionCount={inspectorAttentionCount}
                   />
-                  <div className="flex min-w-0 flex-wrap justify-end gap-2">
+                  <div className="flex min-w-0 flex-wrap justify-start gap-2 xl:justify-end">
                     <StudioSaveStatus
                       saving={Boolean(globalEditorActionBusy === 'save' || globalEditorActionBusy === 'rerender' || slideActionBusy)}
                       hasChanges={selectedLesson ? selectedLessonDirtyScope.hasChanges : Boolean(editorCanvas || sourceFile || coverFile)}
@@ -7867,7 +7869,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 <div
                   role="tablist"
                   aria-label={studioCopy.inspectorTabsLabel}
-                  className="rail-scroll relative z-10 -mx-1 flex max-w-full shrink-0 gap-1.5 overflow-x-auto border-y border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] px-1 py-2"
+                  className="rail-scroll relative z-10 -mx-1 flex max-w-full shrink-0 gap-1 overflow-x-auto border-y border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] px-1 py-1.5"
                 >
                   {visibleEditorPanels.map((panel) => {
                     const selected = activeEditorPanel === panel;
