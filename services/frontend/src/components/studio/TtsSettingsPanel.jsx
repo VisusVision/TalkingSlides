@@ -7,6 +7,9 @@ import {
   updateProjectTtsSettings,
 } from '../../api';
 import Button from '../ui/Button';
+import Badge from '../ui/Badge';
+import TaskStatus from '../ui/TaskStatus';
+import { useStudioWorkspaceCopy } from './StudioWorkspaceChrome';
 
 const DEFAULT_TTS_SETTINGS = {
   provider_preference: 'auto',
@@ -156,6 +159,20 @@ function canonicalSettings(value) {
   return cleanSettings(normalizeSettings(value));
 }
 
+export function ttsProviderDisplayLabel(providerPreference, copy = {}) {
+  const provider = String(providerPreference || '').trim().toLowerCase();
+  if (provider === 'xtts_v2') return 'XTTS v2';
+  if (provider === 'gtts') return 'gTTS';
+  return copy.ttsProviderAuto || '';
+}
+
+export function ttsPreviewLanguageLabel(language, copy = {}) {
+  const value = String(language || '').trim().toLowerCase();
+  if (value === 'tr') return copy.ttsLanguageTurkish || '';
+  if (value === 'en') return copy.ttsLanguageEnglish || '';
+  return copy.ttsLanguageAuto || '';
+}
+
 function pageKey(page, index) {
   return String(page?.page_key || page?.id || `page-${index}`);
 }
@@ -262,6 +279,7 @@ const TtsSettingsPanel = forwardRef(function TtsSettingsPanel({
   onRerender,
   onDirtyChange,
 }, ref) {
+  const copy = useStudioWorkspaceCopy();
   const replacementInputRefs = useRef({});
   const [draftSettings, setDraftSettings] = useState(() => normalizeSettings(project?.tts_settings));
   const [saving, setSaving] = useState(false);
@@ -330,6 +348,30 @@ const TtsSettingsPanel = forwardRef(function TtsSettingsPanel({
     () => settingsKey(cleanedDraftSettings) !== settingsKey(savedSettings),
     [cleanedDraftSettings, savedSettings],
   );
+  const previewTextAvailable = Boolean(String(previewText || '').trim());
+  const providerDisplay = ttsProviderDisplayLabel(cleanedDraftSettings.provider_preference, copy);
+  const previewLanguageDisplay = ttsPreviewLanguageLabel(previewLanguage, copy);
+  const previewStatusState = previewing || previewAudioing
+    ? 'processing'
+    : (previewError || previewAudioError)
+      ? 'failed'
+      : (previewResult || previewAudio?.audio_data_url)
+        ? 'completed'
+        : 'idle';
+  const previewStatusTitle = previewing
+    ? copy.ttsPreviewChecking
+    : previewAudioing
+      ? copy.ttsPreviewPreparingAudio
+      : previewError || previewAudioError
+        ? copy.ttsPreviewNeedsAttention
+        : previewResult || previewAudio?.audio_data_url
+          ? copy.ttsPreviewReady
+          : previewTextAvailable
+            ? copy.ttsPreviewAvailable
+            : copy.ttsPreviewNeedsText;
+  const previewStatusDescription = previewError
+    || previewAudioError
+    || (previewTextAvailable ? copy.ttsPreviewUsesDraft : copy.ttsPreviewNeedsTextDescription);
 
   useEffect(() => {
     onDirtyChange?.(hasUnsavedChanges);
@@ -901,6 +943,47 @@ const TtsSettingsPanel = forwardRef(function TtsSettingsPanel({
         </p>
       </div>
 
+      <section
+        aria-label={copy.ttsVoiceSummaryLabel}
+        data-testid="tts-voice-summary"
+        className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] p-3"
+      >
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase text-[var(--text-secondary)]">
+              {copy.ttsVoiceSummaryLabel}
+            </p>
+            <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+              {providerDisplay}
+            </p>
+            <dl className="mt-3 grid min-w-0 gap-2 text-xs sm:grid-cols-3">
+              <div className="min-w-0">
+                <dt className="font-semibold text-[var(--text-secondary)]">{copy.ttsProviderLabel}</dt>
+                <dd className="mt-0.5 truncate text-[var(--text-primary)]">{providerDisplay}</dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="font-semibold text-[var(--text-secondary)]">{copy.ttsPreviewLanguageLabel}</dt>
+                <dd className="mt-0.5 truncate text-[var(--text-primary)]">{previewLanguageDisplay}</dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="font-semibold text-[var(--text-secondary)]">{copy.ttsSpeechSpeedLabel}</dt>
+                <dd className="mt-0.5 truncate text-[var(--text-primary)]">
+                  {Number(cleanedDraftSettings.speech_speed).toFixed(2)}x
+                </dd>
+              </div>
+            </dl>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-1.5">
+            <Badge variant={hasUnsavedChanges ? 'warning' : 'success'}>
+              {hasUnsavedChanges ? copy.unsavedChanges : copy.upToDate}
+            </Badge>
+            <Badge variant={previewTextAvailable ? 'info' : 'neutral'}>
+              {previewTextAvailable ? copy.ttsPreviewAvailable : copy.ttsPreviewNeedsText}
+            </Badge>
+          </div>
+        </div>
+      </section>
+
       <div className="grid gap-3 md:grid-cols-2">
         <FieldLabel label="Provider preference">
           <select
@@ -1151,17 +1234,36 @@ const TtsSettingsPanel = forwardRef(function TtsSettingsPanel({
           className="focus-ring min-h-[120px] w-full resize-y rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 text-sm leading-relaxed text-[var(--text-primary)]"
         />
 
+        <TaskStatus
+          state={previewStatusState}
+          title={previewStatusTitle}
+          description={previewStatusDescription}
+          stage={providerDisplay}
+          live={previewing || previewAudioing ? 'polite' : 'off'}
+          className="bg-[var(--surface-container-low)]"
+        />
+
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="text-xs text-[var(--text-secondary)]">
-            Preview uses the current draft values, including unsaved override rows.
+            {copy.ttsPreviewUsesDraft}
           </p>
-          <Button variant="secondary" onClick={handlePreview} disabled={previewing || !String(previewText || '').trim()}>
+          <Button
+            variant="secondary"
+            onClick={handlePreview}
+            disabled={previewing || !String(previewText || '').trim()}
+            aria-label={copy.ttsPreviewPronunciationAction}
+          >
             <Eye size={16} />
-            <span>{previewing ? 'Previewing...' : 'Preview pronunciation'}</span>
+            <span>{previewing ? copy.ttsPreviewChecking : copy.ttsPreviewPronunciationAction}</span>
           </Button>
-          <Button variant="secondary" onClick={handlePreviewAudio} disabled={previewAudioing || !String(previewText || '').trim()}>
+          <Button
+            variant="secondary"
+            onClick={handlePreviewAudio}
+            disabled={previewAudioing || !String(previewText || '').trim()}
+            aria-label={copy.ttsListenPreviewAction}
+          >
             <Volume2 size={16} />
-            <span>{previewAudioing ? 'Preparing audio...' : 'Listen preview'}</span>
+            <span>{previewAudioing ? copy.ttsPreviewPreparingAudio : copy.ttsListenPreviewAction}</span>
           </Button>
         </div>
 

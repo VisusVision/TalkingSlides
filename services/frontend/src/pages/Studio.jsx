@@ -62,6 +62,8 @@ import { avatarRuntimeStatusMessage } from '../utils/avatarRuntimeSettings';
 import { adminReviewBackLabel, visualModerationRerenderMessage } from '../utils/studioModeration';
 import Button from '../components/ui/Button';
 import SurfaceCard from '../components/ui/SurfaceCard';
+import Badge from '../components/ui/Badge';
+import TaskStatus from '../components/ui/TaskStatus';
 import { usePageLoading } from '../components/ui/PageLoading';
 import { toast } from '../components/ui/Toast';
 import CreateLessonModal from '../components/studio/CreateLessonModal';
@@ -94,6 +96,7 @@ const STUDIO_PROJECT_PAGE_SIZE = 12;
 const STUDIO_PROJECT_CACHE_TTL_MS = 45 * 1000;
 const STUDIO_PROJECT_LIST_CACHE_MAX = 8;
 const STUDIO_PROJECT_DETAIL_CACHE_MAX = 24;
+const AVATAR_RERENDER_FALLBACK_LABEL = 'Rerender avatar only';
 const STUDIO_PROJECT_CACHE_WINDOW = 5;
 const UNSTABLE_JOB_STATUSES = new Set(['pending', 'running', 'processing', 'queued', 'started']);
 const STABLE_MODERATION_STATUSES = new Set(['approved', 'admin_approved', 'revision_required', 'needs_admin_review', 'admin_rejected', 'failed']);
@@ -1675,6 +1678,42 @@ function avatarStatusLabel(project, copy = null) {
     return copy.creatorAvatarReady;
   }
   return avatarRuntimeStatusMessage(project);
+}
+
+function avatarTaskState(project) {
+  if (!projectAvatarEnabled(project)) return 'idle';
+  const status = avatarProcessingStatus(project);
+  if (status === 'queued') return 'queued';
+  if (status === 'pending') return 'waiting';
+  if (status === 'processing') return 'processing';
+  if (status === 'failed') return 'failed';
+  if (status === 'ready' || status === 'completed') return 'completed';
+  return 'idle';
+}
+
+function avatarBadgeVariant(project) {
+  if (!projectAvatarEnabled(project)) return 'neutral';
+  const state = avatarTaskState(project);
+  if (state === 'completed') return 'success';
+  if (state === 'failed') return 'danger';
+  if (state === 'queued' || state === 'waiting' || state === 'processing') return 'info';
+  return 'warning';
+}
+
+function avatarIdentityLabel(project, copy = null) {
+  return textValue(
+    project?.teacher?.display_name
+      || project?.teacher?.username
+      || project?.user?.display_name
+      || project?.user?.username
+      || project?.owner_display_name
+      || project?.owner_name,
+  ) || copy?.avatarSummaryDefaultIdentity || '';
+}
+
+function avatarInitial(label) {
+  const cleaned = textValue(label).trim();
+  return cleaned ? cleaned.charAt(0).toLocaleUpperCase() : 'A';
 }
 
 function projectRenderReady(project) {
@@ -6391,13 +6430,43 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
 
                   {avatarFeatureEnabled && selectedLesson && !readOnlyReview && (
                     <div className="space-y-3 border-y border-[var(--border-subtle)] py-3">
-                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="min-w-0">
-                          <p className="text-sm font-semibold text-[var(--text-primary)]">Avatar</p>
-                          <p className="text-xs text-[var(--text-secondary)]">{avatarStatusLabel(selectedLesson)}</p>
+                      <div
+                        className="flex min-w-0 flex-col gap-3 rounded-xl bg-[var(--surface-container-low)] p-3 sm:flex-row sm:items-center sm:justify-between"
+                        data-testid="studio-avatar-summary"
+                      >
+                        <div className="flex min-w-0 items-start gap-3">
+                          <span
+                            className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-[var(--surface-container-high)] text-base font-bold text-[var(--text-primary)] ring-1 ring-inset ring-[var(--border-subtle)]"
+                            aria-hidden="true"
+                          >
+                            {avatarInitial(avatarIdentityLabel(selectedLesson, studioCopy))}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold uppercase text-[var(--text-secondary)]">
+                              {studioCopy.creatorAvatarLabel}
+                            </p>
+                            <p className="mt-1 truncate text-sm font-semibold text-[var(--text-primary)]">
+                              {avatarIdentityLabel(selectedLesson, studioCopy)}
+                            </p>
+                            <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
+                              <Badge variant={avatarBadgeVariant(selectedLesson)}>
+                                {avatarStatusLabel(selectedLesson, studioCopy)}
+                              </Badge>
+                              <Badge variant={projectAvatarEnabled(selectedLesson) ? 'success' : 'neutral'}>
+                                {projectAvatarEnabled(selectedLesson)
+                                  ? studioCopy.avatarSummaryEnabled
+                                  : studioCopy.avatarSummaryDisabled}
+                              </Badge>
+                              <Badge variant={avatarVisible(selectedLesson) ? 'info' : 'neutral'}>
+                                {avatarVisible(selectedLesson)
+                                  ? studioCopy.avatarSummaryVisible
+                                  : studioCopy.avatarSummaryHidden}
+                              </Badge>
+                            </div>
+                          </div>
                         </div>
-                        <label className="inline-flex items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
-                          <span>{avatarVisible(selectedLesson) ? 'Avatar visible' : 'Avatar hidden'}</span>
+                        <label className="inline-flex shrink-0 items-center gap-3 text-sm font-medium text-[var(--text-primary)]">
+                          <span>{avatarVisible(selectedLesson) ? studioCopy.avatarSummaryVisible : studioCopy.avatarSummaryHidden}</span>
                           <input
                             type="checkbox"
                             className="sr-only"
@@ -6411,22 +6480,30 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                               : 'bg-[var(--surface-container-highest)]'
                           }`}>
                             <span className={`absolute top-1 h-4 w-4 rounded-full bg-white transition ${
-                              avatarVisible(selectedLesson) ? 'left-6' : 'left-1'
+                              avatarVisible(selectedLesson) ? 'start-6' : 'start-1'
                             }`} />
                           </span>
                         </label>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2">
+                      {(['queued', 'processing', 'failed'].includes(avatarProcessingStatus(selectedLesson)) || avatarRerenderMessage) && (
+                        <TaskStatus
+                          state={avatarTaskState(selectedLesson)}
+                          title={avatarStatusLabel(selectedLesson, studioCopy)}
+                          description={avatarRerenderMessage || selectedLesson.avatar_processing_message || ''}
+                          stage={avatarProcessingStatus(selectedLesson)}
+                        />
+                      )}
+
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="min-w-0 text-xs leading-5 text-[var(--text-secondary)]">
+                          {studioCopy.avatarSummaryNextAction}
+                        </p>
                         <Button variant="secondary" onClick={handleAvatarOnlyRerender} disabled={avatarOnlyRerenderDisabled}>
                           <RefreshCcw size={16} />
-                          <span>{avatarRerendering ? 'Queueing' : 'Rerender avatar only'}</span>
+                          <span>{avatarRerendering ? studioCopy.avatarSummaryQueueing : (studioCopy.avatarSummaryRerender || AVATAR_RERENDER_FALLBACK_LABEL)}</span>
                         </Button>
                       </div>
-
-                      {avatarRerenderMessage && (
-                        <p className="text-xs font-medium text-[var(--text-primary)]">{avatarRerenderMessage}</p>
-                      )}
                     </div>
                   )}
 
