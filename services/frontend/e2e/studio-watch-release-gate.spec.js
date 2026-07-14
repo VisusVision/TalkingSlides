@@ -214,6 +214,9 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByTestId('studio-workflow-strip')).toBeVisible();
   await expect(page.getByTestId('studio-editor-layout')).toBeVisible();
   await expect(page.getByTestId('studio-slide-rail')).toBeVisible();
+  await expect(page.getByTestId('studio-canvas-panel')).toBeVisible();
+  await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
+  await expect(page.getByTestId('studio-canvas-timeline')).toBeVisible();
   await expect(page.getByTestId('studio-render-status')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Inspector' })).toBeVisible();
 
@@ -239,6 +242,14 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByText('مسودة').first()).toBeVisible();
   await expect(page.getByText('حالة التصيير: غير مصير')).toBeVisible();
   await expect(page.getByTestId('studio-creator-header')).not.toContainText('Next best action');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.setViewportSize({ width: 1180, height: 820 });
+  await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await expect(page.getByTestId('studio-canvas-stage')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 
   await page.evaluate(() => {

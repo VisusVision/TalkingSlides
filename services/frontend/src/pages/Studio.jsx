@@ -6946,7 +6946,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
           <StudioWorkflowStrip steps={studioWorkflowSteps} />
           <section
             data-testid="studio-editor-layout"
-            className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[14rem_minmax(0,1fr)_minmax(20rem,24rem)] 2xl:grid-cols-[16rem_minmax(0,1fr)_26rem]"
+            className="grid min-w-0 max-w-full gap-4 overflow-x-hidden xl:grid-cols-[12rem_minmax(0,1.35fr)_minmax(18rem,22rem)] 2xl:grid-cols-[13rem_minmax(0,1.6fr)_24rem]"
           >
             <StudioSlideRail
               scenes={sceneItems}
@@ -6963,20 +6963,140 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
               supportsDuplicate={false}
               supportsRename={false}
             />
-            <div className="min-w-0 space-y-5">
-              <SurfaceCard elevated className="space-y-4 overflow-hidden p-4 sm:p-5">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="min-w-0">
-                    <p className="label-sm">Scene canvas</p>
-                    <h2 className="mt-1 text-xl font-bold text-[var(--text-primary)]">
-                      {selectedScene?.label || selectedLesson?.title || 'Draft scene'}
-                    </h2>
-                    <p className="mt-1 text-sm text-[var(--text-secondary)]">
-                      Preview the selected scene before saving, rendering, and publishing.
-                    </p>
+            <div className="min-w-0 space-y-4">
+              <section
+                data-testid="studio-canvas-panel"
+                aria-labelledby="studio-canvas-heading"
+                className="motion-studio-panel min-w-0 space-y-4 overflow-hidden"
+              >
+                <h2 id="studio-canvas-heading" className="sr-only">Scene canvas</h2>
+                <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-high)] p-2 shadow-token-xs sm:p-3">
+                  <div
+                    key={selectedScene?.key || 'empty-scene-preview'}
+                    data-testid="studio-canvas-stage"
+                    role="group"
+                    aria-labelledby="studio-canvas-heading"
+                    className={`motion-studio-canvas relative mx-auto overflow-hidden rounded-xl ring-1 ring-[color:var(--border-subtle)] ${
+                      selectedSceneMode === 'whiteboard'
+                        ? 'bg-white'
+                        : 'bg-[var(--video-stage-bg)]'
+                    }`}
+                    style={{
+                      aspectRatio: '3 / 2',
+                      maxHeight: '76vh',
+                      width: 'min(100%, calc(76vh * 3 / 2))',
+                    }}
+                  >
+                    {selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
+                      <img
+                        src={selectedSceneBackgroundImageUrl || coverPreviewUrl}
+                        alt="Selected scene preview"
+                        className={`absolute inset-0 h-full w-full ${
+                          selectedSceneMode === 'custom' ? 'opacity-90' : 'opacity-100'
+                        }`}
+                        style={{ objectFit: backgroundObjectFit(selectedSceneFit) }}
+                      />
+                    ) : (
+                      <div className={`absolute inset-0 flex items-center justify-center ${
+                        selectedSceneMode === 'whiteboard'
+                          ? 'bg-white text-slate-500'
+                          : 'bg-[var(--surface-container-high)] text-[var(--text-secondary)]'
+                      }`}>
+                        <div className="text-center">
+                          <p className="text-5xl font-bold text-[var(--accent-primary)]">{selectedPageIndex + 1}</p>
+                          <p className="mt-2 text-sm font-semibold">{selectedScene?.label || 'No scene selected'}</p>
+                        </div>
+                      </div>
+                    )}
+                    {selectedSceneMode !== 'whiteboard' && (
+                      <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(5,8,14,0.02)_0%,rgba(5,8,14,0.2)_64%,rgba(5,8,14,0.42)_100%)]" />
+                    )}
+
+                    <div className={`absolute inset-x-5 top-5 flex flex-wrap items-center justify-between gap-2 text-xs ${
+                      selectedSceneMode === 'whiteboard' ? 'text-slate-700' : 'text-white/85'
+                    }`}>
+                      <span className={`rounded-full px-3 py-1.5 ${
+                        selectedSceneMode === 'whiteboard' ? 'bg-slate-100' : 'bg-black/35'
+                      }`}>
+                        {selectedScene?.label || 'No scene selected'}
+                      </span>
+                      <span className={`rounded-full px-3 py-1.5 ${sceneStatusTone(selectedScene?.status || 'draft')}`}>
+                        {selectedScene?.status || 'draft'}
+                      </span>
+                      <span className={`rounded-full px-3 py-1.5 ${
+                        selectedSceneMode === 'whiteboard' ? 'bg-slate-100' : 'bg-black/35'
+                      }`}>
+                        {sceneModeLabel(selectedSceneMode)}
+                      </span>
+                    </div>
+
+                    {selectedSceneMode !== 'original' ? (
+                      <div className="absolute inset-x-6 bottom-16 top-16 flex items-center justify-center text-start">
+                        <div
+                          className={`max-h-full w-full overflow-hidden rounded-xl ${
+                          selectedSceneMode === 'whiteboard'
+                            ? 'bg-transparent text-slate-900'
+                            : 'bg-black/45 text-white shadow-token-sm'
+                        }`}
+                          style={{
+                            maxWidth: selectedSceneTextLayout.maxWidth,
+                            padding: selectedSceneTextLayout.padding,
+                          }}
+                        >
+                          <p
+                            className={`whitespace-pre-wrap leading-snug ${
+                              selectedSceneMode === 'whiteboard' ? 'text-slate-900' : 'text-white'
+                            } ${
+                              selectedSceneActiveHighlightStyle === 'bold'
+                                ? 'font-extrabold tracking-[0.01em]'
+                                : 'font-semibold'
+                            } ${
+                              selectedSceneActiveHighlightStyle === 'box'
+                                ? `inline-block rounded-xl border-2 px-3 py-2 shadow-md ${
+                                  selectedSceneMode === 'whiteboard'
+                                    ? 'border-slate-400 bg-white/90'
+                                    : 'border-white/75 bg-black/35'
+                                }`
+                                : ''
+                            }`}
+                            dir={selectedSceneTextDirection}
+                            style={{
+                              direction: selectedSceneTextDirection,
+                              fontSize: selectedSceneTextLayout.fontSize,
+                              lineHeight: selectedSceneTextLayout.lineHeight,
+                              textAlign: selectedSceneTextDirection === 'rtl' ? 'right' : 'left',
+                            }}
+                          >
+                            {selectedSceneFullText || 'Select a transcript page or import a source file to start authoring scenes.'}
+                          </p>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="absolute inset-x-5 bottom-14 flex justify-center">
+                        <span className="max-w-[92%] rounded-full bg-black/55 px-3 py-1.5 text-center text-xs font-medium text-white shadow-sm">
+                          Original mode displays the source screenshot. Source Background keeps slide design but replaces source text with editable text.
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="absolute inset-x-5 bottom-5 space-y-3">
+                      <div className={`h-1 rounded-full ${selectedSceneMode === 'whiteboard' ? 'bg-slate-200' : 'bg-white/20'}`}>
+                        <div
+                          className="h-full rounded-full bg-[image:var(--accent-gradient)]"
+                          style={{ width: `${sceneItems.length ? ((selectedPageIndex + 1) / sceneItems.length) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <div className={`flex items-center justify-between text-xs ${
+                        selectedSceneMode === 'whiteboard' ? 'text-slate-600' : 'text-white/75'
+                      }`}>
+                        <span>{selectedScene?.timing || 'No timing yet'}</span>
+                        <span>{sceneItems.length} scenes</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div className="grid gap-3 md:grid-cols-2">
+
+                <div className="grid gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)]/80 p-3 md:grid-cols-2">
                   <label className="block text-sm text-[var(--text-secondary)]">
                     Lesson title
                     <input
@@ -7010,7 +7130,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                 </div>
 
                 {!selectedLesson && (
-                  <div className="grid gap-3 rounded-2xl token-surface p-3 md:grid-cols-2">
+                  <div className="grid gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)]/70 p-3 md:grid-cols-2">
                     <label className="block text-sm text-[var(--text-secondary)]">
                       Source file
                       <input
@@ -7039,128 +7159,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                   </div>
                 )}
 
-                <div
-                  key={selectedScene?.key || 'empty-scene-preview'}
-                  className={`motion-studio-canvas relative mx-auto overflow-hidden rounded-2xl ${
-                    selectedSceneMode === 'whiteboard'
-                      ? 'bg-white'
-                      : 'bg-[var(--video-stage-bg)]'
-                  }`}
-                  style={{
-                    aspectRatio: '3 / 2',
-                    maxHeight: '72vh',
-                    width: 'min(100%, calc(72vh * 3 / 2))',
-                  }}
-                >
-                  {selectedSceneBackgroundImageUrl || (!selectedLesson && coverPreviewUrl) ? (
-                    <img
-                      src={selectedSceneBackgroundImageUrl || coverPreviewUrl}
-                      alt="Selected scene preview"
-                      className={`absolute inset-0 h-full w-full ${
-                        selectedSceneMode === 'custom' ? 'opacity-90' : 'opacity-100'
-                      }`}
-                      style={{ objectFit: backgroundObjectFit(selectedSceneFit) }}
-                    />
-                  ) : (
-                    <div className={`absolute inset-0 flex items-center justify-center ${
-                      selectedSceneMode === 'whiteboard'
-                        ? 'bg-white text-slate-500'
-                        : 'bg-[var(--surface-container-high)] text-[var(--text-secondary)]'
-                    }`}>
-                      <div className="text-center">
-                        <p className="text-5xl font-bold text-[var(--accent-primary)]">{selectedPageIndex + 1}</p>
-                        <p className="mt-2 text-sm font-semibold">{selectedScene?.label || 'No scene selected'}</p>
-                      </div>
-                    </div>
-                  )}
-                  {selectedSceneMode !== 'whiteboard' && (
-                    <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(5,8,14,0.02)_0%,rgba(5,8,14,0.2)_64%,rgba(5,8,14,0.42)_100%)]" />
-                  )}
-
-                  <div className={`absolute inset-x-5 top-5 flex flex-wrap items-center justify-between gap-2 text-xs ${
-                    selectedSceneMode === 'whiteboard' ? 'text-slate-700' : 'text-white/85'
-                  }`}>
-                    <span className={`rounded-full px-3 py-1.5 ${
-                      selectedSceneMode === 'whiteboard' ? 'bg-slate-100' : 'bg-black/35'
-                    }`}>
-                      {selectedScene?.label || 'No scene selected'}
-                    </span>
-                    <span className={`rounded-full px-3 py-1.5 ${sceneStatusTone(selectedScene?.status || 'draft')}`}>
-                      {selectedScene?.status || 'draft'}
-                    </span>
-                    <span className={`rounded-full px-3 py-1.5 ${
-                      selectedSceneMode === 'whiteboard' ? 'bg-slate-100' : 'bg-black/35'
-                    }`}>
-                      {sceneModeLabel(selectedSceneMode)}
-                    </span>
-                  </div>
-
-                  {selectedSceneMode !== 'original' ? (
-                    <div className="absolute inset-x-6 bottom-16 top-16 flex items-center justify-center text-left">
-                      <div
-                        className={`max-h-full w-full overflow-hidden rounded-2xl ${
-                        selectedSceneMode === 'whiteboard'
-                          ? 'bg-transparent text-slate-900'
-                          : 'bg-black/45 text-white shadow-lg backdrop-blur-sm'
-                      }`}
-                        style={{
-                          maxWidth: selectedSceneTextLayout.maxWidth,
-                          padding: selectedSceneTextLayout.padding,
-                        }}
-                      >
-                        <p
-                          className={`whitespace-pre-wrap leading-snug ${
-                            selectedSceneMode === 'whiteboard' ? 'text-slate-900' : 'text-white'
-                          } ${
-                            selectedSceneActiveHighlightStyle === 'bold'
-                              ? 'font-extrabold tracking-[0.01em]'
-                              : 'font-semibold'
-                          } ${
-                            selectedSceneActiveHighlightStyle === 'box'
-                              ? `inline-block rounded-xl border-2 px-3 py-2 shadow-md ${
-                                selectedSceneMode === 'whiteboard'
-                                  ? 'border-slate-400 bg-white/90'
-                                  : 'border-white/75 bg-black/35'
-                              }`
-                              : ''
-                          }`}
-                          dir={selectedSceneTextDirection}
-                          style={{
-                            direction: selectedSceneTextDirection,
-                            fontSize: selectedSceneTextLayout.fontSize,
-                            lineHeight: selectedSceneTextLayout.lineHeight,
-                            textAlign: selectedSceneTextDirection === 'rtl' ? 'right' : 'left',
-                          }}
-                        >
-                          {selectedSceneFullText || 'Select a transcript page or import a source file to start authoring scenes.'}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="absolute inset-x-5 bottom-14 flex justify-center">
-                      <span className="max-w-[92%] rounded-full bg-black/55 px-3 py-1.5 text-center text-xs font-medium text-white shadow-sm backdrop-blur-sm">
-                        Original mode displays the source screenshot. Source Background keeps slide design but replaces source text with editable text.
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="absolute bottom-5 left-5 right-5 space-y-3">
-                    <div className={`h-1 rounded-full ${selectedSceneMode === 'whiteboard' ? 'bg-slate-200' : 'bg-white/20'}`}>
-                      <div
-                        className="h-full rounded-full bg-[image:var(--accent-gradient)]"
-                        style={{ width: `${sceneItems.length ? ((selectedPageIndex + 1) / sceneItems.length) * 100 : 0}%` }}
-                      />
-                    </div>
-                    <div className={`flex items-center justify-between text-xs ${
-                      selectedSceneMode === 'whiteboard' ? 'text-slate-600' : 'text-white/75'
-                    }`}>
-                      <span>{selectedScene?.timing || 'No timing yet'}</span>
-                      <span>{sceneItems.length} scenes</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-[color:rgba(73,68,84,0.15)] bg-[var(--surface-container-high)] p-3">
+                <div data-testid="studio-canvas-timeline" className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)]/70 p-2.5">
                   <div className="flex items-center justify-between">
                     <p className="label-sm">Timeline</p>
                     <span className="text-xs text-[var(--text-secondary)]">{sceneItems.length} blocks</span>
@@ -7250,7 +7249,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     Selected: {selectedScene?.label || 'No scene selected'}
                   </p>
                 </div>
-              </SurfaceCard>
+              </section>
             </div>
 
             <aside className="min-w-0 max-w-full xl:sticky xl:top-4 xl:self-start">
