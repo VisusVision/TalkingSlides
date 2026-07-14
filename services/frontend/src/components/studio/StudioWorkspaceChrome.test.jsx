@@ -27,11 +27,13 @@ describe('Studio workspace chrome', () => {
     await act(async () => root.unmount());
     host.remove();
     document.documentElement.lang = '';
+    document.documentElement.dir = '';
   });
 
   it('falls back expanded and unsupported locales safely', () => {
     expect(studioWorkspaceLocale('tr-TR')).toBe('tr');
-    expect(studioWorkspaceLocale('de-DE')).toBe('en');
+    expect(studioWorkspaceLocale('de-DE')).toBe('de');
+    expect(studioWorkspaceLocale('ar')).toBe('ar');
     expect(studioWorkspaceCopy('tr-TR').slides).toBe('Slaytlar');
   });
 
@@ -159,11 +161,13 @@ describe('Studio workspace chrome', () => {
     expect(host.querySelector('[aria-current="step"]').textContent).toContain('Review');
   });
 
-  it('renders the AI creator header with metadata, chips, CTA, and render status', async () => {
+  it('renders the English AI creator header with metadata, chips, CTA, and render status', async () => {
     const onRender = vi.fn();
+    const copy = studioWorkspaceCopy('en');
     await act(async () => {
       root.render(
         <StudioCreatorHeader
+          copy={copy}
           title="Creator Header Lesson"
           description="A concise lesson summary."
           metadata={[
@@ -195,5 +199,127 @@ describe('Studio workspace chrome', () => {
     const button = Array.from(host.querySelectorAll('button')).find((item) => item.textContent.includes('Render'));
     await act(async () => button.click());
     expect(onRender).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the Turkish AI creator header without hard-coded English leakage', async () => {
+    const onRender = vi.fn();
+    const onPreview = vi.fn();
+    const copy = studioWorkspaceCopy('tr-TR');
+
+    await act(async () => {
+      root.render(
+        <StudioCreatorHeader
+          copy={copy}
+          title={copy.creatorNewLessonDraft}
+          description={copy.creatorDescriptionFallback}
+          metadata={[
+            { key: 'avatar', label: copy.creatorAvatarLabel, value: copy.creatorAvatarReady },
+            { key: 'voice', label: copy.creatorVoiceLabel, value: copy.creatorAutoVoice },
+            { key: 'duration', label: copy.creatorDurationLabel, value: '2:41' },
+          ]}
+          chips={[
+            { key: 'ready', label: copy.creatorStatusReady, variant: 'success' },
+            { key: 'publish-ready', label: copy.creatorPublishReady, variant: 'success' },
+          ]}
+          nextActionTitle={copy.creatorRenderUpdatedVideo}
+          nextActionDetail={copy.creatorDetailRenderUpdated}
+          primaryAction={{ label: copy.creatorRender, onClick: onRender }}
+          secondaryActions={[{ key: 'preview', label: copy.creatorPreviewDraft, onClick: onPreview }]}
+          renderStatus={{ status: 'ready', progress: 100 }}
+        />,
+      );
+    });
+
+    const header = host.querySelector('[data-testid="studio-creator-header"]');
+    expect(header.textContent).toContain('Yapay zeka üretim alanı');
+    expect(header.textContent).toContain('Sonraki en iyi adım');
+    expect(header.textContent).toContain('Yayına hazır');
+    expect(header.textContent).toContain('Render durumu: Hazır');
+    expect(header.querySelector('dl')).toHaveAttribute('aria-label', 'Üretici metadatası');
+    expect(header.querySelector('[aria-label="Üretici özeti"]')).toBeTruthy();
+
+    const leakedEnglish = [
+      'AI creator workspace',
+      'Next best action',
+      'Continue editing',
+      'Untitled lesson',
+      'Creator metadata',
+      'Creator summary',
+      'Avatar ready.',
+      'Auto voice',
+      'Publish Ready',
+      'Needs Attention',
+    ];
+    const headerMarkup = header.outerHTML;
+    leakedEnglish.forEach((literal) => {
+      expect(headerMarkup).not.toContain(literal);
+    });
+
+    const buttons = Array.from(host.querySelectorAll('button'));
+    await act(async () => buttons.find((item) => item.textContent.includes(copy.creatorRender)).click());
+    await act(async () => buttons.find((item) => item.textContent.includes(copy.creatorPreviewDraft)).click());
+    expect(onRender).toHaveBeenCalledTimes(1);
+    expect(onPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the Arabic AI creator header with RTL-safe logical classes and no English leakage', async () => {
+    document.documentElement.lang = 'ar';
+    document.documentElement.dir = 'rtl';
+    const copy = studioWorkspaceCopy('ar');
+
+    await act(async () => {
+      root.render(
+        <StudioCreatorHeader
+          copy={copy}
+          title={copy.creatorNewLessonDraft}
+          description={copy.creatorDescriptionFallback}
+          metadata={[
+            { key: 'avatar', label: copy.creatorAvatarLabel, value: copy.creatorAvatarReady },
+            { key: 'voice', label: copy.creatorVoiceLabel, value: 'XTTS v2' },
+            { key: 'language', label: copy.creatorLanguageLabel, value: 'العربية' },
+          ]}
+          chips={[
+            { key: 'draft', label: copy.creatorStatusDraft, variant: 'warning' },
+            { key: 'needs-attention', label: copy.creatorNeedsAttention, variant: 'danger' },
+          ]}
+          nextActionTitle={copy.creatorContinueEditing}
+          nextActionDetail={copy.creatorDetailContinueEditing}
+          primaryAction={{ label: copy.creatorSaveChanges, onClick: vi.fn() }}
+          renderStatus={{ status: 'pending', progress: 0 }}
+        />,
+      );
+    });
+
+    const header = host.querySelector('[data-testid="studio-creator-header"]');
+    expect(header.textContent).toContain('مساحة منشئ بالذكاء الاصطناعي');
+    expect(header.textContent).toContain('أفضل خطوة تالية');
+    expect(header.textContent).toContain('يتطلب الانتباه');
+    expect(header.textContent).toContain('حالة التصيير: في قائمة الانتظار');
+    expect(header.querySelector('dl')).toHaveAttribute('aria-label', 'بيانات المنشئ');
+    expect(header.querySelector('[aria-label="ملخص المنشئ"]')).toBeTruthy();
+    expect(header.querySelectorAll('dl > div')[1].className).toContain('border-s');
+    expect(header.querySelectorAll('dl > div')[1].className).toContain('ps-3');
+
+    const leakedEnglish = [
+      'AI creator workspace',
+      'Next best action',
+      'Continue editing',
+      'Untitled lesson',
+      'Creator metadata',
+      'Creator summary',
+      'Avatar',
+      'Voice',
+      'Language',
+      'Ready',
+      'Draft',
+      'AI Ready',
+      'Publish Ready',
+      'Needs Attention',
+      'Auto voice',
+    ];
+    const headerMarkup = header.outerHTML;
+    leakedEnglish.forEach((literal) => {
+      expect(headerMarkup).not.toContain(literal);
+    });
   });
 });

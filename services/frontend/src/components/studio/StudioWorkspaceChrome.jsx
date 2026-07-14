@@ -38,6 +38,10 @@ function useDocumentLocale() {
   return locale;
 }
 
+export function useStudioWorkspaceCopy() {
+  return studioWorkspaceCopy(useDocumentLocale());
+}
+
 function sceneStatusTone(status) {
   const value = String(status || '').toLowerCase();
   if (value === 'ready' || value === 'done' || value === 'completed') return 'text-[color:var(--status-success-fg)]';
@@ -379,8 +383,9 @@ function renderProgressValue(renderStatus, state) {
   return Number.isFinite(progress) ? progress : null;
 }
 
-export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
-  const copy = studioWorkspaceCopy(useDocumentLocale());
+export function StudioRenderStatus({ copy: providedCopy = null, renderStatus, projectStatus = '' }) {
+  const documentCopy = useStudioWorkspaceCopy();
+  const copy = providedCopy || documentCopy;
   const status = normalizedRenderStatus(renderStatus) || String(projectStatus || '').toLowerCase();
   const failed = status.includes('fail') || status.includes('error');
   const active = ['running', 'processing', 'started'].includes(status);
@@ -500,6 +505,7 @@ export function StudioWorkflowStrip({ steps = [] }) {
 }
 
 export function StudioCreatorHeader({
+  copy: providedCopy = null,
   title = '',
   description = '',
   metadata = [],
@@ -511,6 +517,8 @@ export function StudioCreatorHeader({
   renderStatus = null,
   projectStatus = '',
 }) {
+  const documentCopy = useStudioWorkspaceCopy();
+  const copy = providedCopy || documentCopy;
   const visibleMetadata = metadata.filter((item) => item?.label && item?.value);
   const visibleChips = chips.filter((chip) => chip?.label);
   const visibleSecondaryActions = secondaryActions.filter((action) => action?.label);
@@ -525,13 +533,13 @@ export function StudioCreatorHeader({
         <div className="min-w-0">
           <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
             <Sparkles size={13} />
-            <span>AI creator workspace</span>
+            <span>{copy.creatorEyebrow}</span>
           </p>
           <h2
             id="studio-creator-header-title"
             className="mt-2 break-words text-2xl font-bold leading-tight text-[var(--text-primary)] sm:text-3xl"
           >
-            {title || 'Untitled lesson'}
+            {title || copy.creatorUntitledLesson}
           </h2>
           {description && (
             <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">
@@ -541,7 +549,7 @@ export function StudioCreatorHeader({
 
           {visibleMetadata.length > 0 && (
             <dl
-              aria-label="Creator metadata"
+              aria-label={copy.creatorMetadataLabel}
               className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-[var(--text-secondary)]"
             >
               {visibleMetadata.map((item, index) => (
@@ -559,7 +567,7 @@ export function StudioCreatorHeader({
 
         <div className="min-w-0 space-y-3 xl:text-end">
           {visibleChips.length > 0 && (
-            <div className="flex flex-wrap gap-2 xl:justify-end" aria-label="Creator summary">
+            <div className="flex flex-wrap gap-2 xl:justify-end" aria-label={copy.creatorSummaryLabel}>
               {visibleChips.map((chip) => (
                 <Badge
                   key={chip.key || chip.label}
@@ -573,17 +581,17 @@ export function StudioCreatorHeader({
               ))}
             </div>
           )}
-          <StudioRenderStatus renderStatus={renderStatus} projectStatus={projectStatus} />
+          <StudioRenderStatus copy={copy} renderStatus={renderStatus} projectStatus={projectStatus} />
         </div>
       </div>
 
       <div className="mt-4 grid gap-3 border-t border-[var(--border-subtle)] pt-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
-            Next best action
+            {copy.creatorNextBestAction}
           </p>
           <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
-            {nextActionTitle || 'Continue editing'}
+            {nextActionTitle || copy.creatorContinueEditing}
           </p>
           {nextActionDetail && (
             <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">

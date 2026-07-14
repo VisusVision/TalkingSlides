@@ -78,6 +78,7 @@ import {
   StudioSlideRail,
   StudioToolbarGroup,
   StudioWorkflowStrip,
+  useStudioWorkspaceCopy,
 } from '../components/studio/StudioWorkspaceChrome';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -1659,8 +1660,20 @@ function avatarVisible(project) {
   return project?.avatar_visible !== false;
 }
 
-function avatarStatusLabel(project) {
-  if (!projectAvatarEnabled(project)) return 'Avatar disabled.';
+function avatarStatusLabel(project, copy = null) {
+  if (!projectAvatarEnabled(project)) return copy?.creatorAvatarDisabled || 'Avatar disabled.';
+  if (!copy) return avatarRuntimeStatusMessage(project);
+  const status = avatarProcessingStatus(project);
+  const runtimeStatus = project?.avatar_runtime_status || {};
+  if (status === 'queued' || status === 'processing') return copy.creatorAvatarProcessing;
+  if (status === 'failed') return copy.creatorAvatarFailed;
+  if (runtimeStatus.warning) return runtimeStatus.warning;
+  if (status === 'ready') {
+    if (runtimeStatus.musetalk_only_used) return copy.creatorAvatarMotionFallback;
+    if (runtimeStatus.static_fallback_used) return copy.creatorAvatarStaticFallback;
+    if (runtimeStatus.liveportrait_used) return copy.creatorAvatarMotionReady;
+    return copy.creatorAvatarReady;
+  }
   return avatarRuntimeStatusMessage(project);
 }
 
@@ -2009,10 +2022,10 @@ function creatorLanguageLabel(subtitleSummary = {}) {
   return labels.slice(0, 2).join(', ');
 }
 
-function ttsProviderLabel(settings) {
+function ttsProviderLabel(settings, copy = null) {
   const provider = String(settings?.provider_preference || '').trim().toLowerCase();
   if (!provider) return '';
-  if (provider === 'auto') return 'Auto voice';
+  if (provider === 'auto') return copy?.creatorAutoVoice || '';
   if (provider === 'xtts_v2') return 'XTTS v2';
   if (provider === 'gtts') return 'gTTS';
   return provider.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -3190,6 +3203,7 @@ function LessonIntelligencePanel({
 }
 
 export default function Studio({ user, searchQuery = '', onLoginRequest }) {
+  const studioCopy = useStudioWorkspaceCopy();
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
@@ -6050,12 +6064,12 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     || creatorRenderFailed
   );
   const creatorStageChip = selectedLesson?.is_published
-    ? { key: 'published', label: 'Published', variant: 'success', icon: <Eye size={13} /> }
+    ? { key: 'published', label: studioCopy.creatorStatusPublished, variant: 'success', icon: <Eye size={13} /> }
     : creatorRenderInFlight
-      ? { key: 'rendering', label: 'Rendering', variant: 'info', icon: <RefreshCcw size={13} /> }
+      ? { key: 'rendering', label: studioCopy.creatorStatusRendering, variant: 'info', icon: <RefreshCcw size={13} /> }
       : workflowRenderReady
-        ? { key: 'ready', label: 'Ready', variant: 'success', icon: <Check size={13} /> }
-        : { key: 'draft', label: 'Draft', variant: 'warning', icon: <FileText size={13} /> };
+        ? { key: 'ready', label: studioCopy.creatorStatusReady, variant: 'success', icon: <Check size={13} /> }
+        : { key: 'draft', label: studioCopy.creatorStatusDraft, variant: 'warning', icon: <FileText size={13} /> };
   const creatorAiReady = Boolean(
     selectedLesson
     && avatarFeatureEnabled
@@ -6064,20 +6078,20 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   );
   const creatorPublishReady = Boolean(selectedLesson && workflowRenderReady && workflowCanPublish && !selectedLesson.is_published);
   const creatorHeaderChips = [
-    selectedLesson ? creatorStageChip : { key: 'local-draft', label: 'Draft', variant: 'warning', icon: <FileText size={13} /> },
-    creatorAiReady ? { key: 'ai-ready', label: 'AI Ready', variant: 'accent', icon: <Sparkles size={13} /> } : null,
-    creatorPublishReady ? { key: 'publish-ready', label: 'Publish Ready', variant: 'success', icon: <Check size={13} /> } : null,
-    creatorNeedsAttention ? { key: 'needs-attention', label: 'Needs Attention', variant: 'danger', icon: <AlertTriangle size={13} /> } : null,
+    selectedLesson ? creatorStageChip : { key: 'local-draft', label: studioCopy.creatorStatusDraft, variant: 'warning', icon: <FileText size={13} /> },
+    creatorAiReady ? { key: 'ai-ready', label: studioCopy.creatorAiReady, variant: 'accent', icon: <Sparkles size={13} /> } : null,
+    creatorPublishReady ? { key: 'publish-ready', label: studioCopy.creatorPublishReady, variant: 'success', icon: <Check size={13} /> } : null,
+    creatorNeedsAttention ? { key: 'needs-attention', label: studioCopy.creatorNeedsAttention, variant: 'danger', icon: <AlertTriangle size={13} /> } : null,
   ].filter(Boolean);
   const creatorDuration = creatorDurationLabel(selectedLesson, transcriptPages, previewLesson);
   const creatorLanguage = creatorLanguageLabel(previewSubtitleSummary);
-  const creatorVoice = ttsProviderLabel(selectedLesson?.tts_settings);
+  const creatorVoice = ttsProviderLabel(selectedLesson?.tts_settings, studioCopy);
   const creatorMetadata = [
-    avatarFeatureEnabled && selectedLesson ? { key: 'avatar', label: 'Avatar', value: avatarStatusLabel(selectedLesson) } : null,
-    creatorVoice ? { key: 'voice', label: 'Voice', value: creatorVoice } : null,
-    creatorLanguage ? { key: 'language', label: 'Language', value: creatorLanguage } : null,
-    creatorDuration ? { key: 'duration', label: 'Duration', value: creatorDuration } : null,
-    editorLastSavedAt ? { key: 'last-saved', label: 'Last saved', value: editorLastSavedAt } : null,
+    avatarFeatureEnabled && selectedLesson ? { key: 'avatar', label: studioCopy.creatorAvatarLabel, value: avatarStatusLabel(selectedLesson, studioCopy) } : null,
+    creatorVoice ? { key: 'voice', label: studioCopy.creatorVoiceLabel, value: creatorVoice } : null,
+    creatorLanguage ? { key: 'language', label: studioCopy.creatorLanguageLabel, value: creatorLanguage } : null,
+    creatorDuration ? { key: 'duration', label: studioCopy.creatorDurationLabel, value: creatorDuration } : null,
+    editorLastSavedAt ? { key: 'last-saved', label: studioCopy.lastSaved, value: editorLastSavedAt } : null,
   ].filter(Boolean);
   const creatorBlockerDetail = (
     globalEditorError
@@ -6085,48 +6099,48 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
     || (selectedDraftBlocked ? selectedDraftStatusMessage : '')
   );
   const creatorNextActionTitle = !selectedLesson
-    ? (sourceFile ? 'Create this lesson' : 'Add a source file')
+    ? (sourceFile ? studioCopy.creatorCreateThisLesson : studioCopy.creatorAddSourceFile)
     : creatorBlockerDetail
-      ? 'Resolve the blocker'
+      ? studioCopy.creatorResolveBlocker
       : selectedLessonDirtyScope.canSaveRerender
-        ? 'Render the updated video'
+        ? studioCopy.creatorRenderUpdatedVideo
         : selectedLessonDirtyScope.hasChanges
-          ? 'Save current edits'
+          ? studioCopy.creatorSaveCurrentEdits
           : creatorPublishReady
-            ? 'Publish the ready lesson'
+            ? studioCopy.creatorPublishReadyLesson
             : selectedLesson.is_published && workflowRenderReady
-              ? 'Watch the published lesson'
+              ? studioCopy.creatorWatchPublishedLesson
               : workflowRenderReady
-                ? 'Preview the draft'
-                : 'Continue editing';
+                ? studioCopy.creatorPreviewDraft
+                : studioCopy.creatorContinueEditing;
   const creatorNextActionDetail = creatorBlockerDetail || (
     !selectedLesson
-      ? 'Use the draft controls to create a lesson from the selected source.'
+      ? studioCopy.creatorDetailCreateLesson
       : selectedLessonDirtyScope.canSaveRerender
-        ? 'The transcript, slide, or voice changes require a fresh render before publishing.'
+        ? studioCopy.creatorDetailRenderUpdated
         : selectedLessonDirtyScope.hasChanges
-          ? 'Save draft changes before rendering or publishing.'
+          ? studioCopy.creatorDetailSaveChanges
           : creatorPublishReady
-            ? 'Rendering and moderation are ready for release.'
+            ? studioCopy.creatorDetailPublishReady
             : selectedLesson.is_published && workflowRenderReady
-              ? 'The public lesson is live and ready to review in Watch.'
+              ? studioCopy.creatorDetailWatchPublished
               : workflowRenderReady
-                ? 'A rendered draft is available for owner preview.'
-                : 'Work in the canvas until the lesson is ready to render.'
+                ? studioCopy.creatorDetailPreviewDraft
+                : studioCopy.creatorDetailContinueEditing
   );
   let creatorPrimaryAction = null;
   if (!selectedLesson) {
     creatorPrimaryAction = sourceFile
       ? {
         key: 'create',
-        label: submitting ? 'Creating...' : 'Create Lesson',
+        label: submitting ? studioCopy.creatorCreating : studioCopy.creatorCreateLesson,
         icon: <Upload size={16} />,
         onClick: publishFromEditor,
         disabled: submitting || !sourceFile,
       }
       : {
         key: 'save-local',
-        label: 'Save Local Draft',
+        label: studioCopy.creatorSaveLocalDraft,
         icon: <Save size={16} />,
         onClick: persistEditorDraft,
         variant: 'secondary',
@@ -6134,18 +6148,18 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   } else if (selectedLessonDirtyScope.canSaveRerender) {
     creatorPrimaryAction = {
       key: 'render',
-      label: globalEditorActionBusy === 'rerender' ? 'Saving...' : 'Render',
+      label: globalEditorActionBusy === 'rerender' ? studioCopy.saving : studioCopy.creatorRender,
       icon: <RefreshCcw size={16} />,
       onClick: () => handleGlobalEditorSave({ triggerRerender: true }),
       disabled: Boolean(globalEditorActionBusy) || !selectedLessonDirtyScope.canSaveRerender,
       title: selectedLessonDirtyScope.canSaveRerender
-        ? 'Save changes and queue a video rerender.'
+        ? studioCopy.creatorRenderRerenderTitle
         : selectedLessonDirtyScope.rerenderDisabledReason,
     };
   } else if (selectedLessonDirtyScope.hasChanges) {
     creatorPrimaryAction = {
       key: 'save',
-      label: globalEditorActionBusy === 'save' ? 'Saving...' : 'Save changes',
+      label: globalEditorActionBusy === 'save' ? studioCopy.saving : studioCopy.creatorSaveChanges,
       icon: <Save size={16} />,
       onClick: () => handleGlobalEditorSave({ triggerRerender: false }),
       disabled: Boolean(globalEditorActionBusy),
@@ -6153,7 +6167,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   } else if (creatorPublishReady) {
     creatorPrimaryAction = {
       key: 'publish',
-      label: 'Publish',
+      label: studioCopy.creatorPublish,
       icon: <Eye size={16} />,
       onClick: () => handlePublishToggle(selectedLesson, true),
       disabled: !projectCanPublishFromModeration(selectedLesson, selectedModeration),
@@ -6161,7 +6175,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   } else if (selectedLesson?.is_published && workflowRenderReady) {
     creatorPrimaryAction = {
       key: 'watch',
-      label: 'Watch',
+      label: studioCopy.creatorWatch,
       icon: <Eye size={16} />,
       onClick: () => openPreviewForProject(selectedLesson),
       variant: 'primary',
@@ -6169,7 +6183,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   } else if (workflowRenderReady) {
     creatorPrimaryAction = {
       key: 'preview',
-      label: 'Preview Draft',
+      label: studioCopy.creatorPreviewDraft,
       icon: <Eye size={16} />,
       onClick: () => openPreviewForProject(selectedLesson),
       variant: 'secondary',
@@ -6178,7 +6192,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   const creatorSecondaryActions = selectedLesson && workflowRenderReady && creatorPrimaryAction?.key !== 'preview' && creatorPrimaryAction?.key !== 'watch'
     ? [{
       key: 'preview',
-      label: selectedLesson.is_published ? 'Preview In Watch' : 'Preview Draft',
+      label: selectedLesson.is_published ? studioCopy.creatorPreviewInWatch : studioCopy.creatorPreviewDraft,
       icon: <Eye size={16} />,
       onClick: () => openPreviewForProject(selectedLesson),
       variant: 'secondary',
@@ -6917,8 +6931,9 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       ) : (
         <>
           <StudioCreatorHeader
-            title={selectedLesson ? editorTitle || selectedLesson.title : editorTitle || 'New lesson draft'}
-            description={selectedLesson?.description || 'Shape the script, scene, render, and release path from one creator workspace.'}
+            copy={studioCopy}
+            title={selectedLesson ? editorTitle || selectedLesson.title : editorTitle || studioCopy.creatorNewLessonDraft}
+            description={selectedLesson?.description || studioCopy.creatorDescriptionFallback}
             metadata={creatorMetadata}
             chips={creatorHeaderChips}
             nextActionTitle={creatorNextActionTitle}
