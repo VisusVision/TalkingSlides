@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, BookOpenText, Heart, History, ListPlus, PlayCircle, Users } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { fetchLikedLessons, fetchUserHistory, getFollowingPublishers, getSavedPlaylists } from '../api';
 import LearningLessonCard, { normalizeLearningRows } from '../components/library/LearningLessonCard';
 import { usePageLoading } from '../components/ui/PageLoading';
@@ -8,6 +8,8 @@ import Skeleton from '../components/ui/Skeleton';
 import SurfaceCard from '../components/ui/SurfaceCard';
 import EmptyState from '../components/ui/EmptyState';
 import { PageContainer, PageHeader, PageToolbar } from '../components/ui/PageLayout';
+import ProductGuidance from '../components/guidance/ProductGuidance';
+import { useProductGuidanceCopy } from '../components/guidance/productGuidanceCopy';
 import { normalizeLesson } from '../lib/content';
 
 const LIBRARY_TABS = [
@@ -246,6 +248,8 @@ function PublisherCard({ publisher }) {
 }
 
 export default function Library({ searchQuery }) {
+  const navigate = useNavigate();
+  const guidanceCopy = useProductGuidanceCopy();
   const [activeTab, setActiveTab] = useState('history');
   const [historyRows, setHistoryRows] = useState([]);
   const [likedRows, setLikedRows] = useState([]);
@@ -299,6 +303,72 @@ export default function Library({ searchQuery }) {
     () => filterPlaylists(savedPlaylistRows, searchQuery),
     [savedPlaylistRows, searchQuery],
   );
+  const latestIncompleteHistory = useMemo(() => historyRows.reduce((latest, item) => {
+    const progress = Number(item?.progressPct || 0);
+    if (!item?.lesson?.id || progress <= 0 || progress >= 100) return latest;
+    if (!latest) return item;
+    const itemTime = Date.parse(item.timestamp || '') || 0;
+    const latestTime = Date.parse(latest.timestamp || '') || 0;
+    return itemTime > latestTime ? item : latest;
+  }, null), [historyRows]);
+
+  const libraryGuidance = useMemo(() => {
+    if (latestIncompleteHistory) {
+      return {
+        status: 'ready',
+        title: guidanceCopy.libraryContinueTitle,
+        description: guidanceCopy.libraryContinueDescription,
+        primaryAction: {
+          label: guidanceCopy.libraryContinueAction,
+          onClick: () => navigate('/watch?lesson=' + latestIncompleteHistory.lesson.id + '&resume=1'),
+        },
+        items: [{
+          key: 'continue-history',
+          status: 'ready',
+          title: guidanceCopy.libraryContinueItemTitle,
+          description: guidanceCopy.libraryContinueItemDescription,
+        }],
+      };
+    }
+
+    if (likedRows.length > 0) {
+      return {
+        status: 'ready',
+        title: guidanceCopy.libraryLikedTitle,
+        description: guidanceCopy.libraryLikedDescription,
+        primaryAction: { label: guidanceCopy.libraryLikedAction, onClick: () => setActiveTab('liked') },
+        items: [],
+      };
+    }
+
+    if (followingRows.length > 0) {
+      return {
+        status: 'neutral',
+        title: guidanceCopy.libraryFollowingTitle,
+        description: guidanceCopy.libraryFollowingDescription,
+        primaryAction: { label: guidanceCopy.libraryFollowingAction, onClick: () => setActiveTab('following') },
+        items: [],
+      };
+    }
+
+    if (savedPlaylistRows.length > 0) {
+      return {
+        status: 'ready',
+        title: guidanceCopy.libraryPlaylistsTitle,
+        description: guidanceCopy.libraryPlaylistsDescription,
+        primaryAction: { label: guidanceCopy.libraryPlaylistsAction, onClick: () => setActiveTab('playlists') },
+        items: [],
+      };
+    }
+
+    return {
+      status: 'neutral',
+      title: guidanceCopy.libraryEmptyTitle,
+      description: guidanceCopy.libraryEmptyDescription,
+      primaryAction: { label: guidanceCopy.libraryEmptyAction, onClick: () => navigate('/browse') },
+      items: [],
+    };
+  }, [followingRows.length, guidanceCopy, latestIncompleteHistory, likedRows.length, navigate, savedPlaylistRows.length]);
 
   const renderActivePanel = () => {
     const hasSearchQuery = String(searchQuery || '').trim().length > 0;
@@ -412,6 +482,17 @@ export default function Library({ searchQuery }) {
         </div>
       </PageToolbar>
 
+
+      {!loading && !error && (
+        <ProductGuidance
+          status={libraryGuidance.status}
+          eyebrow={guidanceCopy.libraryEyebrow}
+          title={libraryGuidance.title}
+          description={libraryGuidance.description}
+          primaryAction={libraryGuidance.primaryAction}
+          items={libraryGuidance.items}
+        />
+      )}
       <SurfaceCard className="space-y-5">
         {loading ? (
           <LibraryPanelSkeleton tab={activeTab} />

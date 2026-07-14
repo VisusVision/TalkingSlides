@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Bell, Check, CheckCheck, Inbox, Loader2 } from 'lucide-react';
 import {
@@ -10,6 +10,8 @@ import {
 import SurfaceCard from '../components/ui/SurfaceCard';
 import EmptyState from '../components/ui/EmptyState';
 import { PageContainer, PageHeader, PageToolbar } from '../components/ui/PageLayout';
+import ProductGuidance from '../components/guidance/ProductGuidance';
+import { useProductGuidanceCopy } from '../components/guidance/productGuidanceCopy';
 import {
   formatNotificationTime,
   isSafeNotificationActionUrl,
@@ -19,6 +21,10 @@ import {
 import NotificationTypeIcon from '../components/ui/NotificationTypeIcon';
 
 const PAGE_SIZE = 20;
+const FAILURE_EVENT_TYPES = new Set([
+  'publisher_lesson_render_failed',
+  'publisher_avatar_render_failed',
+]);
 const FILTERS = [
   { id: 'all', label: 'All' },
   { id: 'unread', label: 'Unread' },
@@ -84,6 +90,7 @@ function NotificationRow({ notification, onOpen, onMarkRead }) {
 
 export default function Notifications({ user }) {
   const navigate = useNavigate();
+  const guidanceCopy = useProductGuidanceCopy();
   const [filter, setFilter] = useState('all');
   const [notifications, setNotifications] = useState([]);
   const [pageInfo, setPageInfo] = useState({ count: 0, hasMore: false, nextOffset: null });
@@ -210,6 +217,69 @@ export default function Notifications({ user }) {
     ? 'Everything visible here has been read.'
     : 'New lesson activity, comments, and render updates will appear here.';
   const EmptyIcon = unreadOnly ? CheckCheck : Inbox;
+  const notificationsGuidance = useMemo(() => {
+    const unreadNotifications = notifications.filter((notification) => !notification.is_read);
+    const failedUnread = unreadNotifications.find((notification) => FAILURE_EVENT_TYPES.has(String(notification.event_type || '')));
+    const latestUnread = failedUnread || unreadNotifications[0] || null;
+
+    if (failedUnread) {
+      return {
+        status: 'failed',
+        title: guidanceCopy.notificationsFailedTitle,
+        description: guidanceCopy.notificationsFailedDescription,
+        primaryAction: {
+          label: guidanceCopy.notificationsOpenAction,
+          onClick: () => handleOpenNotification(failedUnread),
+        },
+        items: [{
+          key: 'failed-unread-' + failedUnread.id,
+          status: 'failed',
+          title: guidanceCopy.notificationsFailureItemTitle,
+          description: guidanceCopy.notificationsFailedDescription,
+        }],
+      };
+    }
+
+    if (unreadCount > 0) {
+      return {
+        status: 'needs-attention',
+        title: guidanceCopy.notificationsUnreadTitle,
+        description: guidanceCopy.notificationsUnreadDescription,
+        primaryAction: latestUnread
+          ? {
+              label: guidanceCopy.notificationsOpenAction,
+              onClick: () => handleOpenNotification(latestUnread),
+            }
+          : null,
+        items: latestUnread
+          ? [{
+              key: 'unread-' + latestUnread.id,
+              status: 'needs-attention',
+              title: guidanceCopy.notificationsUnreadItemTitle,
+              description: guidanceCopy.notificationsUnreadDescription,
+            }]
+          : [],
+      };
+    }
+
+    if (pageInfo.count > 0) {
+      return {
+        status: 'completed',
+        title: guidanceCopy.notificationsCaughtUpTitle,
+        description: guidanceCopy.notificationsCaughtUpDescription,
+        primaryAction: null,
+        items: [],
+      };
+    }
+
+    return {
+      status: 'neutral',
+      title: guidanceCopy.notificationsEmptyTitle,
+      description: guidanceCopy.notificationsEmptyDescription,
+      primaryAction: null,
+      items: [],
+    };
+  }, [guidanceCopy, handleOpenNotification, notifications, pageInfo.count, unreadCount]);
 
   return (
     <PageContainer width="standard" motion="enter" className="overflow-x-hidden">
@@ -231,6 +301,17 @@ export default function Notifications({ user }) {
         )}
       />
 
+
+      {!loading && !error && (
+        <ProductGuidance
+          status={notificationsGuidance.status}
+          eyebrow={guidanceCopy.notificationsEyebrow}
+          title={notificationsGuidance.title}
+          description={notificationsGuidance.description}
+          primaryAction={notificationsGuidance.primaryAction}
+          items={notificationsGuidance.items}
+        />
+      )}
       <SurfaceCard className="min-w-0 space-y-4 overflow-hidden">
         <PageToolbar surface={false} motion="fade" className="border-b border-[color:var(--border-subtle)] pb-4" aria-label="Notification filters">
           <div className="inline-flex w-fit rounded-full bg-[var(--surface-container-high)] p-1">

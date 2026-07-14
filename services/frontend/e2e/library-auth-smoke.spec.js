@@ -155,6 +155,7 @@ test('authenticated Library renders mocked learning collections', async ({ page 
   await expect(page.getByRole('button', { name: 'Following' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Playlists' })).toBeVisible();
 
+  await expect(page.getByText('Continue where you left off.')).toBeVisible();
   await expect(page.getByText('Library Smoke History Lesson')).toBeVisible();
   await expect(page.getByText('64% watched')).toBeVisible();
   await expect(page.getByText('Continue from 64%')).toBeVisible();

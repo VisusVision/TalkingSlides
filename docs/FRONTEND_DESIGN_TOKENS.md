@@ -53,6 +53,12 @@ Compose it with `Dialog.Header`, `Dialog.Title`, `Dialog.Description`, `Dialog.B
 Disable backdrop or Escape closing for destructive, dirty, or submitting workflows that must force an explicit cancel or completion path.
 Existing `ModalShell` callers keep their legacy props, but new dialog work should avoid duplicating modal markup in pages.
 
+
+Use `ProductGuidance` from `services/frontend/src/components/guidance/ProductGuidance.jsx` for cross-app, non-Studio guidance that summarizes already-loaded page state. It should receive derived presentation data only: a truthful status, concise copy, one contextual primary action, optional secondary actions, and at most a few real items. Do not put recommendation scoring, ranking, polling, AI requests, or backend calls inside the primitive.
+Cross-app guidance should explain what deserves attention, what can continue, what changed, or which existing item is ready, incomplete, processing, failed, completed, or neutral. Every claim must map to existing data such as unread notifications, saved watch progress, a selected category filter, or a real failure status. Do not invent quality scores, readiness percentages, popularity predictions, best-project labels, AI recommendations, urgency, or estimated completion.
+CTA ownership should stay clear: `PageHeader` owns global page actions, `ProductGuidance` owns the contextual next action, item cards own item-specific actions, and `EmptyState` owns the successful no-content path. If guidance and the header would perform the same action, keep only one visually primary treatment.
+`TaskStatus` remains the primitive for long-running task progress, processing, completion, failure, and retry detail. `EmptyState` remains the primitive for loaded zero-data views. `ProductGuidance` should not replace either one; it gives a compact page-level summary while preserving existing filters, tabs, ordering, routes, callbacks, localization, RTL, and reduced-motion behavior.
+
 Use `EmptyState` from `services/frontend/src/components/ui/EmptyState.jsx` when a loaded surface has no meaningful content to show.
 Empty states should say what is empty, why it may be empty, and what the user can do next when a real next action exists.
 Keep loading, empty, and error states separate: loading should use `Skeleton` or status text, failed requests should keep error UI, and `EmptyState` should render only after a successful zero-result or no-data response.

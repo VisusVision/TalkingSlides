@@ -84,6 +84,7 @@ test('renders the public browse route with an empty catalog', async ({ page }) =
 
   await expect(page.getByRole('heading', { name: 'Browse The Catalog' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'All' })).toBeVisible();
+  await expect(page.getByText('No published lessons are visible yet.')).toBeVisible();
   await expect(page.getByText('No lessons found')).toBeVisible();
   expectNoBrowserErrors();
 });
