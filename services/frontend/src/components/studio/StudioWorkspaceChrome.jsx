@@ -630,14 +630,52 @@ export function StudioCreatorHeader({
   );
 }
 
-export function StudioInspectorHeading({ projectTitle = '' }) {
-  const copy = studioWorkspaceCopy(useDocumentLocale());
+export function StudioInspectorHeading({ projectTitle = '', ...props }) {
   return (
-    <div className="min-w-0">
-      <h2 className="text-base font-bold tracking-[-0.01em] text-[var(--text-primary)]">{copy.inspector}</h2>
+    <StudioInspectorContextHeading projectTitle={projectTitle} {...props} />
+  );
+}
+
+export function StudioInspectorContextHeading({
+  projectTitle = '',
+  sceneLabel = '',
+  sectionLabel = '',
+  attentionCount = 0,
+}) {
+  const copy = studioWorkspaceCopy(useDocumentLocale());
+  const attentionValue = Number(attentionCount) > 0
+    ? `${copy.inspectorAttentionLabel}: ${attentionCount}`
+    : copy.inspectorNoAttention;
+  const contextItems = [
+    sceneLabel ? { key: 'scene', label: copy.inspectorSceneLabel, value: sceneLabel } : null,
+    sectionLabel ? { key: 'section', label: copy.inspectorSectionLabel, value: sectionLabel } : null,
+    { key: 'attention', label: copy.inspectorAttentionLabel, value: attentionValue },
+  ].filter(Boolean);
+
+  return (
+    <div data-testid="studio-inspector-heading" className="min-w-0">
+      <h2 className="text-base font-bold text-[var(--text-primary)]">{copy.inspector}</h2>
       <p className="mt-0.5 text-xs text-[var(--text-secondary)]">
         {projectTitle || copy.inspectorHint}
       </p>
+      <dl
+        aria-label={copy.inspectorContextLabel}
+        className="mt-3 flex min-w-0 flex-wrap items-center gap-2 text-xs"
+      >
+        {contextItems.map((item) => (
+          <div
+            key={item.key}
+            className={`inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2.5 py-1 ${
+              item.key === 'attention' && Number(attentionCount) > 0
+                ? 'border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]'
+                : 'border-[var(--border-subtle)] bg-[var(--surface-container-low)] text-[var(--text-secondary)]'
+            }`}
+          >
+            <dt className="sr-only">{item.label}</dt>
+            <dd className="max-w-[12rem] truncate font-medium">{item.value}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }
@@ -711,8 +749,12 @@ export function StudioEmptyState({ kind = 'project', title = '', hint = '', chil
 }
 
 export function StudioInspectorSection({
+  icon = null,
   title,
   summary = '',
+  description = '',
+  status = null,
+  actions = null,
   defaultOpen = true,
   className = '',
   children,
@@ -720,14 +762,27 @@ export function StudioInspectorSection({
   return (
     <details
       open={defaultOpen}
-      className={`group motion-studio-status rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] ${className}`}
+      className={`group motion-studio-status rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] ${className}`}
     >
-      <summary className="focus-ring motion-interactive flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-3 py-3">
-        <span className="min-w-0">
-          <span className="block text-sm font-semibold text-[var(--text-primary)]">{title}</span>
-          {summary && <span className="mt-0.5 block text-xs text-[var(--text-secondary)]">{summary}</span>}
+      <summary className="focus-ring motion-interactive flex cursor-pointer list-none items-start justify-between gap-3 rounded-lg px-3 py-3">
+        <span className="flex min-w-0 flex-1 items-start gap-2.5">
+          {icon && (
+            <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[var(--surface-container-low)] text-[var(--text-secondary)]" aria-hidden="true">
+              {icon}
+            </span>
+          )}
+          <span className="min-w-0">
+            <span className="block text-sm font-semibold text-[var(--text-primary)]">{title}</span>
+            {(description || summary) && (
+              <span className="mt-0.5 block text-xs leading-5 text-[var(--text-secondary)]">{description || summary}</span>
+            )}
+            {status && <span className="mt-2 flex min-w-0 flex-wrap gap-1.5">{status}</span>}
+          </span>
         </span>
-        <ChevronDown size={16} className="motion-disclosure shrink-0 text-[var(--text-secondary)] group-open:rotate-180" />
+        <span className="flex shrink-0 items-center gap-2">
+          {actions}
+          <ChevronDown size={16} className="motion-disclosure text-[var(--text-secondary)] group-open:rotate-180" />
+        </span>
       </summary>
       <div className="motion-studio-panel space-y-3 border-t border-[var(--border-subtle)] px-3 py-3">
         {children}

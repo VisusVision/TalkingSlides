@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   StudioCreatorHeader,
+  StudioInspectorHeading,
   StudioInspectorSection,
   StudioRenderStatus,
   StudioSaveStatus,
@@ -116,12 +117,23 @@ describe('Studio workspace chrome', () => {
     expect(host.querySelector('[role="progressbar"]')).toHaveAttribute('aria-valuenow', '100');
   });
 
-  it('keeps save and disclosure state visible while adding Studio motion hooks', async () => {
+  it('renders localized Inspector context without changing section disclosure behavior', async () => {
     await act(async () => {
       root.render(
         <>
+          <StudioInspectorHeading
+            projectTitle="Scene polish"
+            sceneLabel="Slide 2"
+            sectionLabel="Slides"
+            attentionCount={1}
+          />
           <StudioSaveStatus saving lastSavedAt="10:30 AM" />
-          <StudioInspectorSection title="Scene background" summary="Selected slide controls">
+          <StudioInspectorSection
+            icon={<span data-testid="section-icon" />}
+            title="Scene background"
+            description="Selected slide controls"
+            status={<span>Ready</span>}
+          >
             <button type="button">Focusable control</button>
           </StudioInspectorSection>
         </>,
@@ -132,12 +144,61 @@ describe('Studio workspace chrome', () => {
     expect(saveStatus.textContent).toContain('Saving');
     expect(saveStatus.className).toContain('motion-studio-status');
 
+    const heading = host.querySelector('[data-testid="studio-inspector-heading"]');
+    expect(heading.textContent).toContain('Inspector');
+    expect(heading.textContent).toContain('Scene polish');
+    expect(heading.textContent).toContain('Slide 2');
+    expect(heading.textContent).toContain('Slides');
+    expect(heading.textContent).toContain('Needs attention: 1');
+    expect(heading.querySelector('dl')).toHaveAttribute('aria-label', 'Inspector context');
+    expect(host.querySelector('[data-testid="section-icon"]')).toBeTruthy();
+
     const details = host.querySelector('details');
     expect(details.open).toBe(true);
     expect(details.className).toContain('motion-studio-status');
     expect(host.querySelector('summary').className).toContain('motion-interactive');
     expect(host.querySelector('.motion-studio-panel')).not.toBeNull();
+    expect(host.textContent).toContain('Ready');
     expect(host.querySelector('button').textContent).toContain('Focusable control');
+  });
+
+  it('renders Turkish and Arabic Inspector context from localized copy', async () => {
+    document.documentElement.lang = 'tr-TR';
+    await act(async () => {
+      root.render(
+        <StudioInspectorHeading
+          projectTitle="Ders"
+          sceneLabel="Sahne 1"
+          sectionLabel={studioWorkspaceCopy('tr-TR').inspectorSlidesPanel}
+          attentionCount={0}
+        />,
+      );
+    });
+
+    let heading = host.querySelector('[data-testid="studio-inspector-heading"]');
+    expect(heading.textContent).toContain('Denetleyici');
+    expect(heading.textContent).toContain('Engel yok');
+    expect(heading.outerHTML).not.toContain('No blockers');
+    expect(heading.querySelector('dl')).toHaveAttribute('aria-label', 'Denetleyici bağlamı');
+
+    document.documentElement.lang = 'ar';
+    document.documentElement.dir = 'rtl';
+    await act(async () => {
+      root.render(
+        <StudioInspectorHeading
+          projectTitle="درس"
+          sceneLabel="المشهد 1"
+          sectionLabel={studioWorkspaceCopy('ar').inspectorSlidesPanel}
+          attentionCount={2}
+        />,
+      );
+    });
+
+    heading = host.querySelector('[data-testid="studio-inspector-heading"]');
+    expect(heading.textContent).toContain('المشهد 1');
+    expect(heading.textContent).toContain('يتطلب الانتباه: 2');
+    expect(heading.outerHTML).not.toContain('Needs attention');
+    expect(heading.querySelector('dl')).toHaveAttribute('aria-label', 'سياق المفتش');
   });
 
   it('renders the Studio workflow as an accessible production sequence', async () => {
