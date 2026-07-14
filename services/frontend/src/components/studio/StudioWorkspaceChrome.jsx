@@ -18,6 +18,8 @@ import {
 import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { studioWorkspaceCopy } from './studioWorkspaceCopy';
+import Badge from '../ui/Badge';
+import Button from '../ui/Button';
 import TaskStatus from '../ui/TaskStatus';
 
 function useDocumentLocale() {
@@ -492,6 +494,129 @@ export function StudioWorkflowStrip({ steps = [] }) {
             );
           })}
         </ol>
+      </div>
+    </section>
+  );
+}
+
+export function StudioCreatorHeader({
+  title = '',
+  description = '',
+  metadata = [],
+  chips = [],
+  nextActionTitle = '',
+  nextActionDetail = '',
+  primaryAction = null,
+  secondaryActions = [],
+  renderStatus = null,
+  projectStatus = '',
+}) {
+  const visibleMetadata = metadata.filter((item) => item?.label && item?.value);
+  const visibleChips = chips.filter((chip) => chip?.label);
+  const visibleSecondaryActions = secondaryActions.filter((action) => action?.label);
+
+  return (
+    <section
+      data-testid="studio-creator-header"
+      aria-labelledby="studio-creator-header-title"
+      className="motion-studio-panel rounded-2xl bg-[var(--surface-container-lowest)] px-4 py-4 shadow-token-sm sm:px-5 sm:py-5"
+    >
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)] xl:items-start">
+        <div className="min-w-0">
+          <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+            <Sparkles size={13} />
+            <span>AI creator workspace</span>
+          </p>
+          <h2
+            id="studio-creator-header-title"
+            className="mt-2 break-words text-2xl font-bold leading-tight text-[var(--text-primary)] sm:text-3xl"
+          >
+            {title || 'Untitled lesson'}
+          </h2>
+          {description && (
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">
+              {description}
+            </p>
+          )}
+
+          {visibleMetadata.length > 0 && (
+            <dl
+              aria-label="Creator metadata"
+              className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-[var(--text-secondary)]"
+            >
+              {visibleMetadata.map((item, index) => (
+                <div
+                  key={item.key || item.label}
+                  className={`flex min-w-0 items-center gap-1.5 ${index > 0 ? 'border-s border-[var(--border-subtle)] ps-3' : ''}`}
+                >
+                  <dt className="shrink-0 font-semibold text-[var(--text-primary)]">{item.label}</dt>
+                  <dd className="min-w-0 truncate">{item.value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </div>
+
+        <div className="min-w-0 space-y-3 xl:text-end">
+          {visibleChips.length > 0 && (
+            <div className="flex flex-wrap gap-2 xl:justify-end" aria-label="Creator summary">
+              {visibleChips.map((chip) => (
+                <Badge
+                  key={chip.key || chip.label}
+                  variant={chip.variant || 'neutral'}
+                  size="md"
+                  title={chip.title || chip.label}
+                >
+                  {chip.icon}
+                  <span>{chip.label}</span>
+                </Badge>
+              ))}
+            </div>
+          )}
+          <StudioRenderStatus renderStatus={renderStatus} projectStatus={projectStatus} />
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 border-t border-[var(--border-subtle)] pt-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+            Next best action
+          </p>
+          <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+            {nextActionTitle || 'Continue editing'}
+          </p>
+          {nextActionDetail && (
+            <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+              {nextActionDetail}
+            </p>
+          )}
+        </div>
+
+        <div className="flex min-w-0 flex-wrap gap-2 lg:justify-end">
+          {primaryAction?.label && (
+            <Button
+              variant={primaryAction.variant || 'primary'}
+              onClick={primaryAction.onClick}
+              disabled={primaryAction.disabled}
+              title={primaryAction.title || primaryAction.label}
+            >
+              {primaryAction.icon}
+              <span>{primaryAction.label}</span>
+            </Button>
+          )}
+          {visibleSecondaryActions.map((action) => (
+            <Button
+              key={action.key || action.label}
+              variant={action.variant || 'secondary'}
+              onClick={action.onClick}
+              disabled={action.disabled}
+              title={action.title || action.label}
+            >
+              {action.icon}
+              <span>{action.label}</span>
+            </Button>
+          ))}
+        </div>
       </div>
     </section>
   );

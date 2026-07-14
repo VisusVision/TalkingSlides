@@ -3,6 +3,7 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  StudioCreatorHeader,
   StudioInspectorSection,
   StudioRenderStatus,
   StudioSaveStatus,
@@ -156,5 +157,43 @@ describe('Studio workspace chrome', () => {
     expect(host.textContent).toContain('AI-assisted studio flow');
     expect(host.textContent).toContain('Edit');
     expect(host.querySelector('[aria-current="step"]').textContent).toContain('Review');
+  });
+
+  it('renders the AI creator header with metadata, chips, CTA, and render status', async () => {
+    const onRender = vi.fn();
+    await act(async () => {
+      root.render(
+        <StudioCreatorHeader
+          title="Creator Header Lesson"
+          description="A concise lesson summary."
+          metadata={[
+            { key: 'avatar', label: 'Avatar', value: 'Avatar ready' },
+            { key: 'voice', label: 'Voice', value: 'XTTS v2' },
+            { key: 'duration', label: 'Duration', value: '2:41' },
+          ]}
+          chips={[
+            { key: 'ready', label: 'Ready', variant: 'success' },
+            { key: 'publish-ready', label: 'Publish Ready', variant: 'success' },
+          ]}
+          nextActionTitle="Render the updated video"
+          nextActionDetail="The transcript changes require a fresh render."
+          primaryAction={{ label: 'Render', onClick: onRender }}
+          renderStatus={{ status: 'ready', progress: 100 }}
+        />,
+      );
+    });
+
+    const header = host.querySelector('[data-testid="studio-creator-header"]');
+    expect(header).toBeTruthy();
+    expect(header).toHaveAttribute('aria-labelledby', 'studio-creator-header-title');
+    expect(host.textContent).toContain('Creator Header Lesson');
+    expect(host.textContent).toContain('Avatar ready');
+    expect(host.textContent).toContain('Publish Ready');
+    expect(host.textContent).toContain('Render status: Ready');
+    expect(host.textContent).toContain('Next best action');
+
+    const button = Array.from(host.querySelectorAll('button')).find((item) => item.textContent.includes('Render'));
+    await act(async () => button.click());
+    expect(onRender).toHaveBeenCalledTimes(1);
   });
 });
