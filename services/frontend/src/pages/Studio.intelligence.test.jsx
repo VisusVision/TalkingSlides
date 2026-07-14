@@ -318,4 +318,20 @@ describe('predicted rerender impact preview', () => {
     expect(source).not.toContain('avatar match score');
     expect(source).not.toContain('voice match score');
   });
+
+  it('feeds Smart Guidance from existing Studio readiness and action state only', () => {
+    const source = readFileSync('src/pages/Studio.jsx', 'utf8');
+
+    expect(source).toContain('StudioSmartGuidance');
+    expect(source).toContain('workflowRenderReady');
+    expect(source).toContain('workflowCanPublish');
+    expect(source).toContain('creatorPrimaryAction');
+    expect(source).toContain('creatorSecondaryActions');
+    expect(source).toContain('projectCanPublishFromModeration(selectedLesson, selectedModeration)');
+    expect(source).toContain('projectRenderReady(selectedLesson)');
+    expect(source).not.toContain('publish score');
+    expect(source).not.toContain('quality score');
+    expect(source).not.toContain('readiness percentage');
+    expect(source).not.toContain('AI confidence');
+  });
 });

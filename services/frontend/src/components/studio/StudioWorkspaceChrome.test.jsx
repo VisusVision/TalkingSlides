@@ -9,6 +9,7 @@ import {
   StudioRenderStatus,
   StudioSaveStatus,
   StudioSlideRail,
+  StudioSmartGuidance,
   StudioWorkflowStrip,
 } from './StudioWorkspaceChrome';
 import { studioWorkspaceCopy, studioWorkspaceLocale } from './studioWorkspaceCopy';
@@ -382,5 +383,168 @@ describe('Studio workspace chrome', () => {
     leakedEnglish.forEach((literal) => {
       expect(headerMarkup).not.toContain(literal);
     });
+  });
+
+  it('renders Smart Guidance as a truthful checklist without scores or invented actions', async () => {
+    const onPublish = vi.fn();
+    const onModeration = vi.fn();
+    const copy = studioWorkspaceCopy('en');
+
+    await act(async () => {
+      root.render(
+        <StudioSmartGuidance
+          copy={copy}
+          status="blocked"
+          title={copy.guidanceTitle}
+          summary={copy.guidanceSummaryBlocked}
+          readiness={[
+            { key: 'transcript', label: copy.guidanceTranscriptLabel, state: 'ready', detail: copy.guidanceTranscriptReady },
+            { key: 'moderation', label: copy.guidanceModerationLabel, state: 'blocked', detail: 'Needs revision' },
+            { key: 'publish', label: copy.guidancePublishLabel, state: 'blocked', detail: copy.guidancePublishBlocked },
+          ]}
+          blockers={[
+            {
+              key: 'moderation',
+              severity: 'critical',
+              title: copy.guidanceModerationLabel,
+              detail: 'Text changed in Studio. Moderation needs to scan the updated text.',
+              action: { label: copy.guidanceOpenModeration, onClick: onModeration },
+            },
+          ]}
+          nextAction={{
+            title: copy.creatorPublishReadyLesson,
+            detail: copy.creatorDetailPublishReady,
+            action: { label: copy.creatorPublish, onClick: onPublish, disabled: true },
+          }}
+        />,
+      );
+    });
+
+    const guidance = host.querySelector('[data-testid="studio-smart-guidance"]');
+    expect(guidance).toHaveAttribute('data-status', 'blocked');
+    expect(guidance).toHaveAttribute('aria-labelledby', 'studio-smart-guidance-title');
+    expect(guidance.textContent).toContain(copy.guidanceStatusBlocked);
+    expect(guidance.textContent).toContain(copy.guidanceItemReady);
+    expect(guidance.textContent).toContain(copy.guidanceItemBlocked);
+    expect(guidance.querySelector(`ul[aria-label="${copy.guidanceReadinessLabel}"]`)).toBeTruthy();
+    expect(guidance.querySelector(`ul[aria-label="${copy.guidanceBlockersLabel}"]`)).toBeTruthy();
+    expect(guidance.textContent).not.toContain('%');
+    expect(guidance.textContent.toLowerCase()).not.toContain('score');
+
+    const publishButton = Array.from(guidance.querySelectorAll('button'))
+      .find((button) => button.textContent.includes(copy.creatorPublish));
+    expect(publishButton).toBeDisabled();
+
+    const moderationButton = Array.from(guidance.querySelectorAll('button'))
+      .find((button) => button.textContent.includes(copy.guidanceOpenModeration));
+    await act(async () => moderationButton.click());
+    expect(onModeration).toHaveBeenCalledTimes(1);
+    expect(onPublish).not.toHaveBeenCalled();
+  });
+
+  it('supports ready, needs-attention, rendering, failed, and published Smart Guidance states', async () => {
+    const copy = studioWorkspaceCopy('en');
+    const states = ['ready', 'needs-attention', 'rendering', 'failed', 'published'];
+
+    for (const state of states) {
+      await act(async () => {
+        root.render(
+          <StudioSmartGuidance
+            copy={copy}
+            status={state}
+            summary={copy.guidanceSummaryReady}
+            readiness={[{ key: 'render', label: copy.guidanceRenderLabel, state: state === 'rendering' ? 'in-progress' : 'ready' }]}
+            blockers={[]}
+          />,
+        );
+      });
+
+      expect(host.querySelector('[data-testid="studio-smart-guidance"]')).toHaveAttribute('data-status', state);
+      expect(host.textContent).toContain(copy.guidanceNoBlockers);
+    }
+  });
+
+  it('keeps the Creator Header compact when Smart Guidance owns the primary CTA', async () => {
+    const onRender = vi.fn();
+    const copy = studioWorkspaceCopy('en');
+
+    await act(async () => {
+      root.render(
+        <>
+          <StudioCreatorHeader
+            copy={copy}
+            title="Lesson"
+            nextActionTitle={copy.creatorRenderUpdatedVideo}
+            nextActionDetail={copy.creatorDetailRenderUpdated}
+            primaryAction={null}
+            secondaryActions={[]}
+          />
+          <StudioSmartGuidance
+            copy={copy}
+            status="needs-attention"
+            summary={copy.guidanceSummaryNeedsAttention}
+            readiness={[{ key: 'render', label: copy.guidanceRenderLabel, state: 'needs-attention' }]}
+            blockers={[]}
+            nextAction={{
+              title: copy.creatorRenderUpdatedVideo,
+              detail: copy.creatorDetailRenderUpdated,
+              action: { label: copy.creatorRender, onClick: onRender },
+            }}
+          />
+        </>,
+      );
+    });
+
+    const header = host.querySelector('[data-testid="studio-creator-header"]');
+    const guidance = host.querySelector('[data-testid="studio-smart-guidance"]');
+    expect(header.querySelectorAll('button')).toHaveLength(0);
+    expect(guidance.querySelectorAll('button')).toHaveLength(1);
+
+    await act(async () => guidance.querySelector('button').click());
+    expect(onRender).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders Turkish and Arabic Smart Guidance copy without normal-path English leakage', async () => {
+    document.documentElement.lang = 'tr-TR';
+    let copy = studioWorkspaceCopy('tr-TR');
+
+    await act(async () => {
+      root.render(
+        <StudioSmartGuidance
+          copy={copy}
+          status="needs-attention"
+          summary={copy.guidanceSummaryNeedsAttention}
+          readiness={[{ key: 'source', label: copy.guidanceSourceLabel, state: 'needs-attention', detail: copy.guidanceSourceMissing }]}
+          blockers={[]}
+        />,
+      );
+    });
+
+    let guidance = host.querySelector('[data-testid="studio-smart-guidance"]');
+    expect(guidance.textContent).toContain(copy.guidanceEyebrow);
+    expect(guidance.textContent).toContain(copy.guidanceStatusNeedsAttention);
+    expect(guidance.outerHTML).not.toContain('Smart guidance');
+    expect(guidance.outerHTML).not.toContain('Needs attention');
+
+    document.documentElement.lang = 'ar';
+    document.documentElement.dir = 'rtl';
+    copy = studioWorkspaceCopy('ar');
+    await act(async () => {
+      root.render(
+        <StudioSmartGuidance
+          copy={copy}
+          status="published"
+          summary={copy.guidanceSummaryPublished}
+          readiness={[{ key: 'publish', label: copy.guidancePublishLabel, state: 'ready', detail: copy.guidancePublishedDetail }]}
+          blockers={[]}
+        />,
+      );
+    });
+
+    guidance = host.querySelector('[data-testid="studio-smart-guidance"]');
+    expect(guidance.textContent).toContain(copy.guidanceEyebrow);
+    expect(guidance.textContent).toContain(copy.guidanceStatusPublished);
+    expect(guidance.outerHTML).not.toContain('Smart guidance');
+    expect(guidance.outerHTML).not.toContain('Published');
   });
 });

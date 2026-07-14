@@ -3,6 +3,7 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUp,
+  Check,
   CheckCircle2,
   ChevronDown,
   Clipboard,
@@ -453,6 +454,244 @@ function workflowStepTone(status) {
     shell: 'border-transparent bg-[var(--surface-container-low)] text-[var(--text-secondary)]',
     dot: 'bg-[var(--surface-container-highest)] text-[var(--text-secondary)]',
   };
+}
+
+const GUIDANCE_STATUS_VARIANTS = {
+  ready: 'success',
+  'needs-attention': 'warning',
+  blocked: 'danger',
+  rendering: 'info',
+  failed: 'danger',
+  published: 'success',
+};
+
+const GUIDANCE_ITEM_VARIANTS = {
+  ready: 'success',
+  'needs-attention': 'warning',
+  blocked: 'danger',
+  'in-progress': 'info',
+  'not-required': 'neutral',
+  failed: 'danger',
+};
+
+const GUIDANCE_STATUS_ICONS = {
+  ready: CheckCircle2,
+  'needs-attention': AlertTriangle,
+  blocked: AlertTriangle,
+  rendering: LoaderCircle,
+  failed: AlertTriangle,
+  published: CheckCircle2,
+};
+
+const GUIDANCE_STATUS_COPY_KEYS = {
+  ready: 'guidanceStatusReady',
+  'needs-attention': 'guidanceStatusNeedsAttention',
+  blocked: 'guidanceStatusBlocked',
+  rendering: 'guidanceStatusRendering',
+  failed: 'guidanceStatusFailed',
+  published: 'guidanceStatusPublished',
+};
+
+const GUIDANCE_ITEM_COPY_KEYS = {
+  ready: 'guidanceItemReady',
+  'needs-attention': 'guidanceItemNeedsAttention',
+  blocked: 'guidanceItemBlocked',
+  'in-progress': 'guidanceItemInProgress',
+  'not-required': 'guidanceItemNotRequired',
+  failed: 'guidanceItemFailed',
+};
+
+function guidanceStatusIcon(status) {
+  return GUIDANCE_STATUS_ICONS[status] || Sparkles;
+}
+
+function visibleGuidanceActions(actions = []) {
+  return actions.filter((action) => action?.label);
+}
+
+export function StudioSmartGuidance({
+  copy: providedCopy = null,
+  status = 'needs-attention',
+  title = '',
+  summary = '',
+  readiness = [],
+  blockers = [],
+  nextAction = null,
+  secondaryActions = [],
+  compact = false,
+  className = '',
+}) {
+  const documentCopy = useStudioWorkspaceCopy();
+  const copy = providedCopy || documentCopy;
+  const visibleReadiness = readiness.filter((item) => item?.label && item?.state);
+  const visibleBlockers = blockers.filter((item) => item?.title || item?.detail);
+  const visibleSecondaryActions = visibleGuidanceActions(secondaryActions);
+  const primaryAction = nextAction?.action?.label ? nextAction.action : null;
+  const StatusIcon = guidanceStatusIcon(status);
+  const statusVariant = GUIDANCE_STATUS_VARIANTS[status] || 'warning';
+  const statusLabel = copy[GUIDANCE_STATUS_COPY_KEYS[status]] || copy.guidanceStatusNeedsAttention;
+
+  return (
+    <section
+      data-testid="studio-smart-guidance"
+      data-status={status}
+      aria-labelledby="studio-smart-guidance-title"
+      className={`motion-studio-panel rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-4 shadow-token-sm ${className}`}
+    >
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Badge variant={statusVariant} size="md">
+              <StatusIcon size={14} className={status === 'rendering' ? 'motion-safe:animate-spin' : ''} />
+              <span>{statusLabel}</span>
+            </Badge>
+            <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+              {copy.guidanceEyebrow}
+            </p>
+          </div>
+          <h2
+            id="studio-smart-guidance-title"
+            className="mt-2 text-lg font-bold leading-snug text-[var(--text-primary)]"
+          >
+            {title || copy.guidanceTitle}
+          </h2>
+          {summary && (
+            <p className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">
+              {summary}
+            </p>
+          )}
+        </div>
+
+        {(nextAction?.title || primaryAction || visibleSecondaryActions.length > 0) && (
+          <div className="min-w-0 space-y-2 xl:min-w-[16rem] xl:max-w-[22rem] xl:text-end">
+            <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+              {copy.guidanceActionTitle || copy.creatorNextBestAction}
+            </p>
+            {nextAction?.title && nextAction.showTitle !== false && (
+              <p className="text-sm font-semibold text-[var(--text-primary)]">
+                {nextAction.title}
+              </p>
+            )}
+            {nextAction?.detail && nextAction.showDetail !== false && (
+              <p className="text-xs leading-5 text-[var(--text-secondary)]">
+                {nextAction.detail}
+              </p>
+            )}
+            <div className="flex min-w-0 flex-wrap gap-2 xl:justify-end">
+              {primaryAction && (
+                <Button
+                  variant={primaryAction.variant || 'primary'}
+                  size="sm"
+                  onClick={primaryAction.onClick}
+                  disabled={primaryAction.disabled}
+                  title={primaryAction.title || primaryAction.label}
+                >
+                  {primaryAction.icon}
+                  <span>{primaryAction.label}</span>
+                </Button>
+              )}
+              {visibleSecondaryActions.map((action) => (
+                <Button
+                  key={action.key || action.label}
+                  variant={action.variant || 'secondary'}
+                  size="sm"
+                  onClick={action.onClick}
+                  disabled={action.disabled}
+                  title={action.title || action.label}
+                >
+                  {action.icon}
+                  <span>{action.label}</span>
+                </Button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className={`mt-4 grid min-w-0 gap-4 border-t border-[var(--border-subtle)] pt-4 ${compact ? 'lg:grid-cols-1' : 'lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]'}`}>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">
+            {copy.guidanceReadinessTitle}
+          </p>
+          <ul className="mt-2 space-y-2" aria-label={copy.guidanceReadinessLabel}>
+            {visibleReadiness.map((item) => {
+              const itemVariant = GUIDANCE_ITEM_VARIANTS[item.state] || 'neutral';
+              const stateLabel = item.stateLabel || copy[GUIDANCE_ITEM_COPY_KEYS[item.state]] || item.state;
+              return (
+                <li key={item.key || item.label} className="flex min-w-0 items-start gap-2 text-sm">
+                  <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border border-[var(--border-subtle)] bg-[var(--surface-container-low)] text-[var(--text-secondary)]" aria-hidden="true">
+                    {item.state === 'ready' ? <Check size={12} /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 flex-wrap items-center gap-2">
+                      <span className="font-medium text-[var(--text-primary)]">{item.label}</span>
+                      <Badge variant={itemVariant}>{stateLabel}</Badge>
+                    </span>
+                    {item.detail && (
+                      <span className="mt-0.5 block text-xs leading-5 text-[var(--text-secondary)]">
+                        {item.detail}
+                      </span>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-[var(--text-primary)]">
+            {copy.guidanceBlockersTitle}
+          </p>
+          {visibleBlockers.length > 0 ? (
+            <ul className="mt-2 space-y-2" aria-label={copy.guidanceBlockersLabel}>
+              {visibleBlockers.map((blocker) => {
+                const blockerVariant = blocker.severity === 'critical' ? 'danger' : blocker.severity === 'info' ? 'info' : 'warning';
+                const severityLabel = blocker.severityLabel || (blocker.severity === 'critical' ? copy.guidanceCriticalBlocker : copy.guidanceWarning);
+                return (
+                  <li
+                    key={blocker.key || blocker.title || blocker.detail}
+                    className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] p-3"
+                  >
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <Badge variant={blockerVariant}>{severityLabel}</Badge>
+                      {blocker.status && (
+                        <span className="min-w-0 text-xs font-medium text-[var(--text-secondary)]">{blocker.status}</span>
+                      )}
+                    </div>
+                    {blocker.title && (
+                      <p className="mt-2 text-sm font-semibold text-[var(--text-primary)]">{blocker.title}</p>
+                    )}
+                    {blocker.detail && (
+                      <p className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">{blocker.detail}</p>
+                    )}
+                    {blocker.action?.label && (
+                      <div className="mt-2">
+                        <Button
+                          variant={blocker.action.variant || 'secondary'}
+                          size="sm"
+                          onClick={blocker.action.onClick}
+                          disabled={blocker.action.disabled}
+                          title={blocker.action.title || blocker.action.label}
+                        >
+                          {blocker.action.icon}
+                          <span>{blocker.action.label}</span>
+                        </Button>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <p className="mt-2 rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+              {copy.guidanceNoBlockers}
+            </p>
+          )}
+        </div>
+      </div>
+    </section>
+  );
 }
 
 export function StudioWorkflowStrip({ steps = [] }) {
