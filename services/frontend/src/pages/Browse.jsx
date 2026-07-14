@@ -8,6 +8,8 @@ import Badge from '../components/ui/Badge';
 import EmptyState from '../components/ui/EmptyState';
 import { PageContainer, PageHeader, PageToolbar } from '../components/ui/PageLayout';
 import LessonActionButton from '../components/moderation/LessonActionButton';
+import ProductGuidance from '../components/guidance/ProductGuidance';
+import { useProductGuidanceCopy } from '../components/guidance/productGuidanceCopy';
 import { usePageLoading } from '../components/ui/PageLoading';
 import Skeleton from '../components/ui/Skeleton';
 import { normalizeLesson, formatDuration, formatViews } from '../lib/content';
@@ -46,6 +48,7 @@ function BrowseCatalogSkeleton() {
 export default function Browse({ searchQuery, user, onLoginRequest }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const guidanceCopy = useProductGuidanceCopy();
   const directCategory = useMemo(() => {
     const params = new URLSearchParams(location.search || '');
     return String(params.get('category') || '').trim();
@@ -152,6 +155,60 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
       return blob.includes(q);
     });
   }, [lessons, searchQuery]);
+  const activeCategoryName = useMemo(() => {
+    if (!activeCategory) return '';
+    return categories.find((category) => category.slug === activeCategory)?.name || activeCategory;
+  }, [activeCategory, categories]);
+
+  const browseGuidance = useMemo(() => {
+    const firstLesson = filteredLessons[0] || null;
+    const hasSearchQuery = String(searchQuery || '').trim().length > 0;
+    const categoryItem = activeCategoryName
+      ? {
+          key: 'active-category',
+          status: 'neutral',
+          title: guidanceCopy.browseCategoryItemTitle,
+          description: activeCategoryName,
+          metadata: guidanceCopy.browseCategoryItemDescription,
+        }
+      : null;
+
+    if (firstLesson) {
+      return {
+        status: 'ready',
+        title: guidanceCopy.browseReadyTitle,
+        description: guidanceCopy.browseReadyDescription,
+        primaryAction: {
+          label: guidanceCopy.browseReadyAction,
+          onClick: () => navigate('/watch?lesson=' + firstLesson.id),
+        },
+        items: [categoryItem].filter(Boolean),
+      };
+    }
+
+    if (activeCategory || hasSearchQuery) {
+      return {
+        status: 'needs-attention',
+        title: guidanceCopy.browseFilteredTitle,
+        description: guidanceCopy.browseFilteredDescription,
+        primaryAction: activeCategory
+          ? {
+              label: guidanceCopy.browseFilteredAction,
+              onClick: () => setActiveCategory(''),
+            }
+          : null,
+        items: [categoryItem].filter(Boolean),
+      };
+    }
+
+    return {
+      status: 'neutral',
+      title: guidanceCopy.browseEmptyTitle,
+      description: guidanceCopy.browseEmptyDescription,
+      primaryAction: null,
+      items: [],
+    };
+  }, [activeCategory, activeCategoryName, filteredLessons, guidanceCopy, navigate, searchQuery]);
 
   return (
     <PageContainer width="wide" motion="enter" aria-busy={loading}>
@@ -204,6 +261,17 @@ export default function Browse({ searchQuery, user, onLoginRequest }) {
         </div>
       </PageToolbar>
 
+
+      {!loading && !error && (
+        <ProductGuidance
+          status={browseGuidance.status}
+          eyebrow={guidanceCopy.browseEyebrow}
+          title={browseGuidance.title}
+          description={browseGuidance.description}
+          primaryAction={browseGuidance.primaryAction}
+          items={browseGuidance.items}
+        />
+      )}
       {loading && <BrowseCatalogSkeleton />}
 
       {error && (

@@ -99,6 +99,7 @@ test('authenticated Notifications renders list and marks an item read', async ({
   await expect(page.getByRole('button', { name: /Mark all read/ })).toBeVisible();
   await expect(page.getByRole('button', { name: 'All', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: /^Unread/ })).toBeVisible();
+  await expect(page.getByText('Unread notifications are waiting.')).toBeVisible();
 
   await expect(page.getByRole('heading', { name: 'Render complete' })).toBeVisible();
   await expect(page.getByText('Notification smoke lesson is ready to watch.')).toBeVisible();
