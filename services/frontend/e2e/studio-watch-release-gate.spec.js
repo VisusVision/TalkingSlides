@@ -207,7 +207,10 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByRole('heading', { name: 'Lesson Studio' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Studio Editor' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Studio Editor' }).click();
+  await page.goto('/studio?view=editor');
+  await expect(page.getByTestId('studio-creator-header')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'New lesson draft' })).toBeVisible();
+  await expect(page.getByText('Next best action')).toBeVisible();
   await expect(page.getByTestId('studio-workflow-strip')).toBeVisible();
   await expect(page.getByTestId('studio-editor-layout')).toBeVisible();
   await expect(page.getByTestId('studio-slide-rail')).toBeVisible();
@@ -215,9 +218,33 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
   await expect(page.getByRole('heading', { name: 'Inspector' })).toBeVisible();
 
   await page.evaluate(() => document.documentElement.setAttribute('lang', 'tr-TR'));
+  await expect(page.getByTestId('studio-creator-header')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Yeni ders taslağı' })).toBeVisible();
+  await expect(page.getByText('Sonraki en iyi adım')).toBeVisible();
+  await expect(page.getByText('Kaynak dosya ekle')).toBeVisible();
+  await expect(page.getByText('Taslak').first()).toBeVisible();
+  await expect(page.getByText('Render durumu: Render edilmedi')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Slaytlar' })).toBeVisible();
   await expect(page.getByText(/Render durumu:/).first()).toBeVisible();
-  await page.evaluate(() => document.documentElement.setAttribute('lang', 'en'));
+  await expect(page.getByTestId('studio-creator-header')).not.toContainText('Next best action');
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('lang', 'ar');
+    document.documentElement.setAttribute('dir', 'rtl');
+  });
+  await expect(page.getByTestId('studio-creator-header')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'مسودة درس جديدة' })).toBeVisible();
+  await expect(page.getByText('أفضل خطوة تالية')).toBeVisible();
+  await expect(page.getByText('إضافة ملف مصدر')).toBeVisible();
+  await expect(page.getByText('مسودة').first()).toBeVisible();
+  await expect(page.getByText('حالة التصيير: غير مصير')).toBeVisible();
+  await expect(page.getByTestId('studio-creator-header')).not.toContainText('Next best action');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('lang', 'en');
+    document.documentElement.removeAttribute('dir');
+  });
 
   await page.getByLabel('Lesson title').fill('Release Gate Lesson');
   await page.getByLabel('Category').fill('Release QA');

@@ -72,12 +72,13 @@ import {
   StudioInspectorHeading,
   StudioInspectorSection,
   StudioMoreActionsLabel,
-  StudioRenderStatus,
   StudioSaveStatus,
   StudioEmptyState,
+  StudioCreatorHeader,
   StudioSlideRail,
   StudioToolbarGroup,
   StudioWorkflowStrip,
+  useStudioWorkspaceCopy,
 } from '../components/studio/StudioWorkspaceChrome';
 import VideoStage from '../components/player/VideoStage';
 import { copyTextToClipboard } from '../utils/clipboard';
@@ -1659,8 +1660,20 @@ function avatarVisible(project) {
   return project?.avatar_visible !== false;
 }
 
-function avatarStatusLabel(project) {
-  if (!projectAvatarEnabled(project)) return 'Avatar disabled.';
+function avatarStatusLabel(project, copy = null) {
+  if (!projectAvatarEnabled(project)) return copy?.creatorAvatarDisabled || 'Avatar disabled.';
+  if (!copy) return avatarRuntimeStatusMessage(project);
+  const status = avatarProcessingStatus(project);
+  const runtimeStatus = project?.avatar_runtime_status || {};
+  if (status === 'queued' || status === 'processing') return copy.creatorAvatarProcessing;
+  if (status === 'failed') return copy.creatorAvatarFailed;
+  if (runtimeStatus.warning) return runtimeStatus.warning;
+  if (status === 'ready') {
+    if (runtimeStatus.musetalk_only_used) return copy.creatorAvatarMotionFallback;
+    if (runtimeStatus.static_fallback_used) return copy.creatorAvatarStaticFallback;
+    if (runtimeStatus.liveportrait_used) return copy.creatorAvatarMotionReady;
+    return copy.creatorAvatarReady;
+  }
   return avatarRuntimeStatusMessage(project);
 }
 
@@ -1985,6 +1998,37 @@ function formatSeconds(value) {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60).toString().padStart(2, '0');
   return `${minutes}:${rest}`;
+}
+
+function creatorDurationLabel(project, transcriptPages = [], previewLesson = null) {
+  const directSeconds = Number(previewLesson?.duration_seconds ?? project?.duration_seconds);
+  if (Number.isFinite(directSeconds) && directSeconds > 0) return formatSeconds(directSeconds);
+
+  const pageSeconds = (transcriptPages || []).reduce((total, page) => {
+    const seconds = Number(page?.duration_seconds);
+    return Number.isFinite(seconds) && seconds > 0 ? total + seconds : total;
+  }, 0);
+  if (pageSeconds > 0) return formatSeconds(pageSeconds);
+
+  const minutes = Number(previewLesson?.duration_minutes ?? project?.duration_minutes);
+  if (Number.isFinite(minutes) && minutes > 0) return `${Math.round(minutes)}m`;
+
+  return '';
+}
+
+function creatorLanguageLabel(subtitleSummary = {}) {
+  const labels = Array.isArray(subtitleSummary.labels) ? subtitleSummary.labels : [];
+  if (!labels.length) return '';
+  return labels.slice(0, 2).join(', ');
+}
+
+function ttsProviderLabel(settings, copy = null) {
+  const provider = String(settings?.provider_preference || '').trim().toLowerCase();
+  if (!provider) return '';
+  if (provider === 'auto') return copy?.creatorAutoVoice || '';
+  if (provider === 'xtts_v2') return 'XTTS v2';
+  if (provider === 'gtts') return 'gTTS';
+  return provider.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function sceneTimingLabel(page) {
@@ -3159,6 +3203,7 @@ function LessonIntelligencePanel({
 }
 
 export default function Studio({ user, searchQuery = '', onLoginRequest }) {
+  const studioCopy = useStudioWorkspaceCopy();
   const navigate = useNavigate();
   const { capabilities } = useCapabilities();
   const avatarFeatureEnabled = featureEnabled(capabilities, 'avatar');
@@ -6009,6 +6054,150 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
       detail: workflowRenderReady ? 'Preview ready' : 'After render',
     },
   ];
+  const creatorRenderState = normalizedStatus(latestRenderStatus) || projectRawStatus(selectedLesson);
+  const creatorRenderInFlight = ['queued', 'pending', 'running', 'processing', 'started'].includes(creatorRenderState);
+  const creatorRenderFailed = creatorRenderState.includes('fail') || creatorRenderState.includes('error');
+  const creatorNeedsAttention = Boolean(
+    globalEditorError
+    || selectedLessonDirtyScope.moderationMessage
+    || selectedDraftBlocked
+    || creatorRenderFailed
+  );
+  const creatorStageChip = selectedLesson?.is_published
+    ? { key: 'published', label: studioCopy.creatorStatusPublished, variant: 'success', icon: <Eye size={13} /> }
+    : creatorRenderInFlight
+      ? { key: 'rendering', label: studioCopy.creatorStatusRendering, variant: 'info', icon: <RefreshCcw size={13} /> }
+      : workflowRenderReady
+        ? { key: 'ready', label: studioCopy.creatorStatusReady, variant: 'success', icon: <Check size={13} /> }
+        : { key: 'draft', label: studioCopy.creatorStatusDraft, variant: 'warning', icon: <FileText size={13} /> };
+  const creatorAiReady = Boolean(
+    selectedLesson
+    && avatarFeatureEnabled
+    && projectAvatarEnabled(selectedLesson)
+    && !avatarJobInFlight
+  );
+  const creatorPublishReady = Boolean(selectedLesson && workflowRenderReady && workflowCanPublish && !selectedLesson.is_published);
+  const creatorHeaderChips = [
+    selectedLesson ? creatorStageChip : { key: 'local-draft', label: studioCopy.creatorStatusDraft, variant: 'warning', icon: <FileText size={13} /> },
+    creatorAiReady ? { key: 'ai-ready', label: studioCopy.creatorAiReady, variant: 'accent', icon: <Sparkles size={13} /> } : null,
+    creatorPublishReady ? { key: 'publish-ready', label: studioCopy.creatorPublishReady, variant: 'success', icon: <Check size={13} /> } : null,
+    creatorNeedsAttention ? { key: 'needs-attention', label: studioCopy.creatorNeedsAttention, variant: 'danger', icon: <AlertTriangle size={13} /> } : null,
+  ].filter(Boolean);
+  const creatorDuration = creatorDurationLabel(selectedLesson, transcriptPages, previewLesson);
+  const creatorLanguage = creatorLanguageLabel(previewSubtitleSummary);
+  const creatorVoice = ttsProviderLabel(selectedLesson?.tts_settings, studioCopy);
+  const creatorMetadata = [
+    avatarFeatureEnabled && selectedLesson ? { key: 'avatar', label: studioCopy.creatorAvatarLabel, value: avatarStatusLabel(selectedLesson, studioCopy) } : null,
+    creatorVoice ? { key: 'voice', label: studioCopy.creatorVoiceLabel, value: creatorVoice } : null,
+    creatorLanguage ? { key: 'language', label: studioCopy.creatorLanguageLabel, value: creatorLanguage } : null,
+    creatorDuration ? { key: 'duration', label: studioCopy.creatorDurationLabel, value: creatorDuration } : null,
+    editorLastSavedAt ? { key: 'last-saved', label: studioCopy.lastSaved, value: editorLastSavedAt } : null,
+  ].filter(Boolean);
+  const creatorBlockerDetail = (
+    globalEditorError
+    || selectedLessonDirtyScope.moderationMessage
+    || (selectedDraftBlocked ? selectedDraftStatusMessage : '')
+  );
+  const creatorNextActionTitle = !selectedLesson
+    ? (sourceFile ? studioCopy.creatorCreateThisLesson : studioCopy.creatorAddSourceFile)
+    : creatorBlockerDetail
+      ? studioCopy.creatorResolveBlocker
+      : selectedLessonDirtyScope.canSaveRerender
+        ? studioCopy.creatorRenderUpdatedVideo
+        : selectedLessonDirtyScope.hasChanges
+          ? studioCopy.creatorSaveCurrentEdits
+          : creatorPublishReady
+            ? studioCopy.creatorPublishReadyLesson
+            : selectedLesson.is_published && workflowRenderReady
+              ? studioCopy.creatorWatchPublishedLesson
+              : workflowRenderReady
+                ? studioCopy.creatorPreviewDraft
+                : studioCopy.creatorContinueEditing;
+  const creatorNextActionDetail = creatorBlockerDetail || (
+    !selectedLesson
+      ? studioCopy.creatorDetailCreateLesson
+      : selectedLessonDirtyScope.canSaveRerender
+        ? studioCopy.creatorDetailRenderUpdated
+        : selectedLessonDirtyScope.hasChanges
+          ? studioCopy.creatorDetailSaveChanges
+          : creatorPublishReady
+            ? studioCopy.creatorDetailPublishReady
+            : selectedLesson.is_published && workflowRenderReady
+              ? studioCopy.creatorDetailWatchPublished
+              : workflowRenderReady
+                ? studioCopy.creatorDetailPreviewDraft
+                : studioCopy.creatorDetailContinueEditing
+  );
+  let creatorPrimaryAction = null;
+  if (!selectedLesson) {
+    creatorPrimaryAction = sourceFile
+      ? {
+        key: 'create',
+        label: submitting ? studioCopy.creatorCreating : studioCopy.creatorCreateLesson,
+        icon: <Upload size={16} />,
+        onClick: publishFromEditor,
+        disabled: submitting || !sourceFile,
+      }
+      : {
+        key: 'save-local',
+        label: studioCopy.creatorSaveLocalDraft,
+        icon: <Save size={16} />,
+        onClick: persistEditorDraft,
+        variant: 'secondary',
+      };
+  } else if (selectedLessonDirtyScope.canSaveRerender) {
+    creatorPrimaryAction = {
+      key: 'render',
+      label: globalEditorActionBusy === 'rerender' ? studioCopy.saving : studioCopy.creatorRender,
+      icon: <RefreshCcw size={16} />,
+      onClick: () => handleGlobalEditorSave({ triggerRerender: true }),
+      disabled: Boolean(globalEditorActionBusy) || !selectedLessonDirtyScope.canSaveRerender,
+      title: selectedLessonDirtyScope.canSaveRerender
+        ? studioCopy.creatorRenderRerenderTitle
+        : selectedLessonDirtyScope.rerenderDisabledReason,
+    };
+  } else if (selectedLessonDirtyScope.hasChanges) {
+    creatorPrimaryAction = {
+      key: 'save',
+      label: globalEditorActionBusy === 'save' ? studioCopy.saving : studioCopy.creatorSaveChanges,
+      icon: <Save size={16} />,
+      onClick: () => handleGlobalEditorSave({ triggerRerender: false }),
+      disabled: Boolean(globalEditorActionBusy),
+    };
+  } else if (creatorPublishReady) {
+    creatorPrimaryAction = {
+      key: 'publish',
+      label: studioCopy.creatorPublish,
+      icon: <Eye size={16} />,
+      onClick: () => handlePublishToggle(selectedLesson, true),
+      disabled: !projectCanPublishFromModeration(selectedLesson, selectedModeration),
+    };
+  } else if (selectedLesson?.is_published && workflowRenderReady) {
+    creatorPrimaryAction = {
+      key: 'watch',
+      label: studioCopy.creatorWatch,
+      icon: <Eye size={16} />,
+      onClick: () => openPreviewForProject(selectedLesson),
+      variant: 'primary',
+    };
+  } else if (workflowRenderReady) {
+    creatorPrimaryAction = {
+      key: 'preview',
+      label: studioCopy.creatorPreviewDraft,
+      icon: <Eye size={16} />,
+      onClick: () => openPreviewForProject(selectedLesson),
+      variant: 'secondary',
+    };
+  }
+  const creatorSecondaryActions = selectedLesson && workflowRenderReady && creatorPrimaryAction?.key !== 'preview' && creatorPrimaryAction?.key !== 'watch'
+    ? [{
+      key: 'preview',
+      label: selectedLesson.is_published ? studioCopy.creatorPreviewInWatch : studioCopy.creatorPreviewDraft,
+      icon: <Eye size={16} />,
+      onClick: () => openPreviewForProject(selectedLesson),
+      variant: 'secondary',
+    }]
+    : [];
 
   if (!user) {
     return (
@@ -6741,6 +6930,19 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
         </section>
       ) : (
         <>
+          <StudioCreatorHeader
+            copy={studioCopy}
+            title={selectedLesson ? editorTitle || selectedLesson.title : editorTitle || studioCopy.creatorNewLessonDraft}
+            description={selectedLesson?.description || studioCopy.creatorDescriptionFallback}
+            metadata={creatorMetadata}
+            chips={creatorHeaderChips}
+            nextActionTitle={creatorNextActionTitle}
+            nextActionDetail={creatorNextActionDetail}
+            primaryAction={creatorPrimaryAction}
+            secondaryActions={creatorSecondaryActions}
+            renderStatus={latestRenderStatus}
+            projectStatus={selectedLesson?.status}
+          />
           <StudioWorkflowStrip steps={studioWorkflowSteps} />
           <section
             data-testid="studio-editor-layout"
@@ -6772,12 +6974,6 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     <p className="mt-1 text-sm text-[var(--text-secondary)]">
                       Preview the selected scene before saving, rendering, and publishing.
                     </p>
-                  </div>
-                  <div className="min-w-0 lg:w-72">
-                    <StudioRenderStatus
-                      renderStatus={latestRenderStatus}
-                      projectStatus={selectedLesson?.status}
-                    />
                   </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
