@@ -204,10 +204,11 @@ test('authenticated Studio to Watch release gate surfaces core flow', async ({ p
 
   await page.goto('/studio');
 
-  await expect(page.getByRole('heading', { name: 'Teacher Publishing Console' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Lesson Studio' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Studio Editor' })).toBeVisible();
 
   await page.getByRole('button', { name: 'Studio Editor' }).click();
+  await expect(page.getByTestId('studio-workflow-strip')).toBeVisible();
   await expect(page.getByTestId('studio-editor-layout')).toBeVisible();
   await expect(page.getByTestId('studio-slide-rail')).toBeVisible();
   await expect(page.getByTestId('studio-render-status')).toBeVisible();

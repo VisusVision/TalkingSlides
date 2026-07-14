@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   ArrowDown,
+  ArrowRight,
   ArrowUp,
   CheckCircle2,
   ChevronDown,
@@ -11,6 +12,7 @@ import {
   MoreVertical,
   PanelsTopLeft,
   Pencil,
+  Sparkles,
   Trash2,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
@@ -172,7 +174,7 @@ export function StudioSlideRail({
       data-testid="studio-slide-rail"
       className="min-w-0 xl:sticky xl:top-4 xl:self-start"
     >
-      <div className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-elevated)] p-3 shadow-soft">
+      <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-2.5 shadow-token-xs">
         <div className="flex items-center gap-2">
           <PanelsTopLeft size={16} className="text-[var(--accent-primary)]" />
           <div className="min-w-0">
@@ -421,6 +423,80 @@ export function StudioRenderStatus({ renderStatus, projectStatus = '' }) {
   );
 }
 
+function workflowStepTone(status) {
+  if (status === 'complete') {
+    return {
+      shell: 'border-[color:var(--status-success-fg)] bg-[color:var(--status-success-bg)] text-[color:var(--status-success-fg)]',
+      dot: 'bg-[color:var(--status-success-fg)] text-[var(--surface-container-lowest)]',
+    };
+  }
+  if (status === 'active') {
+    return {
+      shell: 'border-[color:var(--accent-primary)] bg-[color:var(--hover-accent-soft)] text-[var(--accent-primary)] shadow-token-xs',
+      dot: 'bg-[var(--accent-primary)] text-[var(--accent-inverse)]',
+    };
+  }
+  if (status === 'blocked') {
+    return {
+      shell: 'border-[color:var(--status-warning-fg)] bg-[color:var(--status-warning-bg)] text-[color:var(--status-warning-fg)]',
+      dot: 'bg-[color:var(--status-warning-fg)] text-[var(--surface-container-lowest)]',
+    };
+  }
+  return {
+    shell: 'border-transparent bg-[var(--surface-container-low)] text-[var(--text-secondary)]',
+    dot: 'bg-[var(--surface-container-highest)] text-[var(--text-secondary)]',
+  };
+}
+
+export function StudioWorkflowStrip({ steps = [] }) {
+  return (
+    <section
+      aria-label="Studio workflow"
+      data-testid="studio-workflow-strip"
+      className="rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] p-3 shadow-token-xs"
+    >
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.08em] text-[var(--accent-primary)]">
+            <Sparkles size={13} />
+            <span>AI-assisted studio flow</span>
+          </p>
+          <p className="mt-1 text-sm text-[var(--text-secondary)]">
+            Write, choose avatar, preview, render, publish, and share from one workspace.
+          </p>
+        </div>
+        <ol className="rail-scroll flex min-w-0 gap-2 overflow-x-auto pb-1 lg:justify-end lg:pb-0" aria-label="Production steps">
+          {steps.map((step, index) => {
+            const tone = workflowStepTone(step.status);
+            const complete = step.status === 'complete';
+            return (
+              <li key={step.key || step.label} className="flex shrink-0 items-center gap-2">
+                <div
+                  className={`motion-studio-status min-w-[7.5rem] rounded-xl border px-3 py-2 ${tone.shell}`}
+                  aria-current={step.status === 'active' ? 'step' : undefined}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-[0.65rem] font-bold ${tone.dot}`}>
+                      {complete ? <CheckCircle2 size={12} /> : index + 1}
+                    </span>
+                    <span className="text-sm font-semibold">{step.label}</span>
+                  </span>
+                  {step.detail && (
+                    <span className="mt-1 block truncate text-[0.68rem] opacity-85">{step.detail}</span>
+                  )}
+                </div>
+                {index < steps.length - 1 && (
+                  <ArrowRight size={14} className="shrink-0 text-[var(--text-secondary)]" aria-hidden="true" />
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
 export function StudioInspectorHeading({ projectTitle = '' }) {
   const copy = studioWorkspaceCopy(useDocumentLocale());
   return (
@@ -511,7 +587,7 @@ export function StudioInspectorSection({
   return (
     <details
       open={defaultOpen}
-      className={`group motion-studio-status rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] ${className}`}
+      className={`group motion-studio-status rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-container-lowest)] ${className}`}
     >
       <summary className="focus-ring motion-interactive flex cursor-pointer list-none items-center justify-between gap-3 rounded-xl px-3 py-3">
         <span className="min-w-0">
