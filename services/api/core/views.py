@@ -6169,6 +6169,7 @@ def _avatar_layout_by_page_from_sidecar(
 
 def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dict[str, Any]:
     storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+    avatar_burned_in = bool(sidecar.get("avatar_burned_in")) if isinstance(sidecar, dict) else False
     avatar_payload = sidecar.get("avatar") if isinstance(sidecar, dict) else None
     avatar_payload = avatar_payload if isinstance(avatar_payload, dict) else {}
 
@@ -6200,7 +6201,7 @@ def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dic
 
     status_ready = str(getattr(project, "avatar_processing_status", "") or "") == "ready"
     visible = bool(getattr(project, "avatar_visible", True))
-    available = bool(visible and status_ready and preferred_rel)
+    available = bool(visible and status_ready and preferred_rel and not avatar_burned_in)
     enhanced_pending = bool(avatar_payload.get("enhanced_pending")) and not restored_exists
     updated_at = str(avatar_payload.get("updated_at") or "")
     version = str(avatar_payload.get("version") or "") or _avatar_file_version(storage_root, preferred_rel)
@@ -6220,8 +6221,9 @@ def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dic
         "updated_at": updated_at,
         "track_fast_rel_path": fast_rel if fast_exists else "",
         "track_restored_rel_path": restored_rel if restored_exists else "",
-        "rel_paths": sorted(set(rel_paths)),
+        "rel_paths": [] if avatar_burned_in else sorted(set(rel_paths)),
         "layout_by_page": _avatar_layout_by_page_from_sidecar(sidecar, project=project),
+        "burned_in": avatar_burned_in,
     }
 
 

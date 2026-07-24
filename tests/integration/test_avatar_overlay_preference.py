@@ -692,6 +692,54 @@ def test_playback_token_returns_fast_avatar_without_restoration_pending(tmp_path
     assert rel_path == fast_rel
 
 
+def test_playback_token_suppresses_overlay_when_final_media_has_avatar_burned_in(tmp_path):
+    lesson, _job, fast_rel, _restored_rel = _create_avatar_playback_fixture(tmp_path, restored=False, pending=False)
+    sidecar_path = tmp_path / str(lesson.id) / "playback_assets.json"
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    sidecar["avatar_burned_in"] = True
+    sidecar["avatar"]["layout_by_page"] = [
+        {
+            "index": 0,
+            "page_key": "slide-1",
+            "effective_avatar_layout": {
+                "position": "bottom-right",
+                "size": "large",
+                "visible": True,
+            },
+            "avatar_layout_source": "publisher",
+        }
+    ]
+    sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
+
+    factory = APIRequestFactory()
+    request = _with_session(factory.get(f"/api/v1/projects/{lesson.id}/playback-token/"))
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        response = views.PlaybackTokenView.as_view()(request, project_id=lesson.id)
+
+    assert response.status_code == 200
+    overlay = response.data["avatar_overlay"]
+    assert overlay["enabled"] is False
+    assert overlay["stream_url"] == ""
+    assert overlay["quality"] == "fast"
+    assert overlay["layout_by_page"] == [
+        {
+            "index": 0,
+            "page_key": "slide-1",
+            "position": "bottom-right",
+            "size": "large",
+            "visible": True,
+            "source": "publisher",
+            "sources": {
+                "position": "publisher",
+                "size": "publisher",
+                "visible": "publisher",
+            },
+        }
+    ]
+    assert response.data["avatar_available"] is False
+    assert fast_rel not in overlay["stream_url"]
+
+
 def test_playback_token_prefers_restored_avatar_when_available(tmp_path):
     lesson, _job, _fast_rel, restored_rel = _create_avatar_playback_fixture(tmp_path, restored=True, pending=False)
 
