@@ -10001,7 +10001,7 @@ def process_pptx_to_video(
         if not target_slides:
             target_slides = slides
 
-        pipeline_queue = _render_queue_name()
+        pipeline_queue = _queue_for_avatar_options(avatar_cfg)
         base_avatar_cfg = dict(avatar_cfg)
         base_avatar_cfg["enabled"] = False
         visual_only_recompose_decision: dict[str, Any] = {"eligible": False, "fallback_reasons": []}
@@ -10099,7 +10099,7 @@ def process_pptx_to_video(
                     artifacts,
                 ).set(queue=pipeline_queue, link_error=errback)
             return synthesize_and_render_slide.s(
-                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, base_avatar_cfg, tts_settings
+                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, avatar_cfg, tts_settings
             ).set(queue=pipeline_queue, link_error=errback)
 
         slide_tasks = group(

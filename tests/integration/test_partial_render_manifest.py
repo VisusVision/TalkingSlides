@@ -2163,6 +2163,58 @@ def _patch_process_dispatch_dependencies(monkeypatch, slides, old_sidecar):
     monkeypatch.setattr(worker_tasks, "_read_playback_sidecar", lambda _project_id: old_sidecar)
 
 
+@pytest.mark.django_db
+def test_process_full_render_dispatches_enabled_avatar_to_slide_tasks(tmp_path, monkeypatch):
+    owner = _make_user("full_render_avatar_dispatch_owner")
+    project = Project.objects.create(title="Full render avatar dispatch", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+
+    slide = {
+        "index": 0,
+        "slide_num": 1,
+        "page_key": "s1-p1",
+        "image_path": str(tmp_path / "images" / "slide_001.png"),
+        "notes_text": "A lesson slide.",
+        "audio_out": str(tmp_path / "audio" / "slide_001.mp3"),
+        "part_out": str(tmp_path / "parts" / "part_001.mp4"),
+    }
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, [slide], old_sidecar={})
+    avatar_options = {
+        "enabled": True,
+        "requested": True,
+        "teacher_id": owner.id,
+        "source_image_rel_path": "avatars/teacher.png",
+        "avatar_source_valid": True,
+        "avatar_visible": True,
+        "lipsync_engine": "liveportrait+musetalk",
+    }
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        avatar_options,
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+    )
+
+    assert result["status"] == "dispatched"
+    assert captured["header"][0].task == "worker.tasks.synthesize_and_render_slide"
+    assert captured["header"][0].options["queue"] == "avatar"
+    assert captured["callback"].options["queue"] == "avatar"
+    assert captured["apply_async_kwargs"]["queue"] == "avatar"
+    dispatched_avatar_options = captured["header"][0].args[6]
+    assert dispatched_avatar_options["enabled"] is True
+    assert dispatched_avatar_options["teacher_id"] == owner.id
+    assert dispatched_avatar_options["source_image_rel_path"] == "avatars/teacher.png"
+
+
 def _old_sidecar_for_visual_recompose(
     project_id: int,
     *,
