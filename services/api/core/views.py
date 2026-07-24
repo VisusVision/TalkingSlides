@@ -5948,10 +5948,12 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     lesson_engine = selected_engine
     composite_fallback_allowed = _composite_fallback_allowed()
     runtime_settings = project_avatar_runtime_settings(project)
+    avatar_visible = bool(getattr(project, "avatar_visible", True))
 
     return {
         "requested": bool(avatar_requested),
         "enabled": bool(avatar_requested and is_ready and not disable_reason),
+        "avatar_visible": avatar_visible,
         "teacher_id": int(teacher.id),
         "source_image_rel_path": profile.avatar_image_processed or profile.avatar_image_original,
         "source_image_original_rel_path": profile.avatar_image_original or profile.avatar_image_processed,
@@ -5982,7 +5984,7 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
         "lesson_avatar_layout": None,
         "default_position": publisher_layout["position"],
         "default_size": publisher_layout["size"],
-        "default_visible": publisher_layout["visible"],
+        "default_visible": bool(avatar_visible and publisher_layout["visible"]),
         "composite_configured": composite_ready,
         "composite_lesson_enabled": _composite_lesson_enabled(),
         "composite_fallback_allowed": composite_fallback_allowed,

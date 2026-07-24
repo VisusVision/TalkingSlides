@@ -197,6 +197,8 @@ def test_project_upload_dispatches_avatar_options_with_composite_fallback_flag(t
     assert "composite_fallback_allowed" in avatar_options
     assert isinstance(avatar_options["composite_fallback_allowed"], bool)
     assert avatar_options["composite_fallback_allowed"] is True
+    assert avatar_options["avatar_visible"] is True
+    assert avatar_options["default_visible"] is True
 
 
 @pytest.mark.django_db
