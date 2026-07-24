@@ -495,6 +495,84 @@ def test_concat_finalize_records_avatar_warning_without_failure(tmp_path, monkey
     assert sidecar_payload["final_segments"][0]["avatar_clip"] == ""
 
 
+def test_concat_finalize_blocks_required_visible_avatar_failure_before_publish(tmp_path, monkeypatch):
+    ffmpeg_helpers = importlib.import_module("scripts.ffmpeg_helpers")
+    updates: list[dict] = []
+    concat_calls: list[tuple] = []
+
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "DRM_STREAMING_ENABLED", False)
+    monkeypatch.setattr(worker_tasks, "_update_job", lambda _project_id, **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(worker_tasks, "_sync_lesson_segments", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_notify_render_failed", lambda *_args, **_kwargs: None)
+
+    def fake_concat_videos(part_paths, output_path):
+        concat_calls.append((part_paths, output_path))
+        Path(output_path).write_bytes(b"partial-avatar-video")
+
+    monkeypatch.setattr(ffmpeg_helpers, "concat_videos", fake_concat_videos)
+
+    project_dir = tmp_path / "130"
+    part = project_dir / "parts" / "part_002.mp4"
+    slide = project_dir / "images" / "slide_002.png"
+    audio = project_dir / "audio" / "slide_002.mp3"
+    final = project_dir / "130.mp4"
+    for path in [part, slide, audio, final]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"previous-video" if path == final else b"x")
+
+    with pytest.raises(RuntimeError, match="avatar_required_failed:slide 2"):
+        worker_tasks.concat_and_finalize.run(
+            [
+                {
+                    "index": 1,
+                    "slide_num": 2,
+                    "page_key": "p2",
+                    "part_path": str(part),
+                    "duration": 1.25,
+                    "pause_seconds": 0.0,
+                    "text": "Slide",
+                    "slide_path": str(slide),
+                    "tts_audio_path": str(audio),
+                    "subtitle_chunks": ["Slide"],
+                    "avatar_applied": False,
+                    "avatar_visible": True,
+                    "avatar_composited": False,
+                    "avatar_attempted": True,
+                    "avatar_skipped": False,
+                    "avatar_failed": True,
+                    "avatar_status": "avatar_failed",
+                    "avatar_error": "strict_validation_failed:invalid_eye_motion",
+                    "avatar_failure_reason": "strict_validation_failed:invalid_eye_motion",
+                    "avatar_motion_validation": {"failure_reason": "invalid_eye_motion"},
+                    "avatar_segment_rel_path": "",
+                    "avatar_engine_used": "liveportrait+musetalk",
+                    "avatar_fallback_chain": ["liveportrait", "musetalk"],
+                }
+            ],
+            project_id="130",
+            avatar_options={
+                "requested": True,
+                "enabled": True,
+                "avatar_visible": True,
+                "teacher_id": 2,
+                "source_image_rel_path": "avatars/teacher.png",
+                "avatar_source_valid": True,
+                "avatar_preview_stale": False,
+                "lipsync_engine": "liveportrait+musetalk",
+            },
+        )
+
+    assert concat_calls == []
+    assert any(update.get("status") == "failed" for update in updates)
+    assert any(
+        "avatar_required_failed:slide 2: strict_validation_failed:invalid_eye_motion" in str(update.get("error_message"))
+        for update in updates
+    )
+    assert final.read_bytes() == b"previous-video"
+    assert not (project_dir / "playback_assets.json").exists()
+
+
 def test_concat_finalize_queues_avatar_after_base_video_without_blocking(tmp_path, monkeypatch):
     ffmpeg_helpers = importlib.import_module("scripts.ffmpeg_helpers")
     updates: list[dict] = []

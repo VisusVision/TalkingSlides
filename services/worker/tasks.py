@@ -9027,6 +9027,40 @@ def concat_and_finalize(
     try:
         # Sort by index — Celery preserves group order since v4, but defensive
         ordered         = sorted(results, key=lambda r: r["index"])
+        avatar_required_for_publish = bool(
+            avatar_options
+            and avatar_options.get("requested")
+            and avatar_options.get("enabled")
+            and avatar_options.get("avatar_visible", True)
+        )
+        blocking_avatar_failures: list[dict[str, Any]] = []
+        if avatar_required_for_publish:
+            for result in ordered:
+                if not result.get("avatar_failed") or not result.get("avatar_visible", True):
+                    continue
+                status = str(result.get("avatar_status") or "avatar_failed")
+                if status in {"avatar_source_invalid", "avatar_preview_stale"}:
+                    continue
+                blocking_avatar_failures.append(
+                    {
+                        "index": int(result.get("index") or 0),
+                        "slide_num": int(result.get("slide_num") or 0),
+                        "page_key": str(result.get("page_key") or ""),
+                        "status": status,
+                        "reason": str(result.get("avatar_error") or result.get("avatar_failure_reason") or "avatar_failed"),
+                    }
+                )
+        if blocking_avatar_failures:
+            compact_failures = []
+            for failure in blocking_avatar_failures[:5]:
+                label = failure.get("slide_num") or (int(failure.get("index") or 0) + 1)
+                compact_failures.append(f"slide {label}: {failure.get('reason') or 'avatar_failed'}")
+            if len(blocking_avatar_failures) > 5:
+                compact_failures.append(f"+{len(blocking_avatar_failures) - 5} more")
+            message = "avatar_required_failed:" + "; ".join(compact_failures)
+            _update_render_job(project_id, job_id, status="failed", progress=100, error_message=message)
+            raise RuntimeError(message)
+
         part_paths      = [r["part_path"] for r in ordered]
         slide_durations = [r["duration"]  for r in ordered]
         _sync_lesson_segments(project_id, ordered)
