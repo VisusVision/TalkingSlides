@@ -8522,6 +8522,7 @@ def synthesize_and_render_slide(
     try:
         from scripts.tts_client import synthesize_text_with_metadata
         from scripts.ffmpeg_helpers import (
+            compose_slide_with_avatar,
             create_slide_video,
             get_audio_duration,
             trim_trailing_silence,
@@ -8686,11 +8687,14 @@ def synthesize_and_render_slide(
         avatar_engine_used = "none"
         avatar_fallback_chain: list[str] = []
         avatar_rel_path = ""
+        avatar_abs_path = ""
         avatar_failure_reason = ""
         avatar_validation = {}
         avatar_attempted = False
         avatar_skipped = False
         avatar_status_override = ""
+        avatar_composited = False
+        avatar_composition_error = ""
 
         try:
             avatar_has_source = bool(
@@ -8762,6 +8766,7 @@ def synthesize_and_render_slide(
                     avatar_output_path = str(avatar_payload.get("output_path") or "")
                     if avatar_output_path and Path(avatar_output_path).exists():
                         avatar_applied = True
+                        avatar_abs_path = avatar_output_path
                         avatar_rel_path = _safe_rel_path(_avatar_storage_root(), avatar_output_path)
                     else:
                         avatar_failure_reason = "missing_avatar_output"
@@ -8787,8 +8792,39 @@ def synthesize_and_render_slide(
                 avatar_failure_reason or "validation_rejected_or_no_usable_avatar",
             )
 
-        # Slide and audio are always rendered as their own track; avatar remains separate.
-        create_slide_video(render_image_path, audio_out, part_out, duration_sec=total_duration)
+        avatar_visible_for_render = bool(avatar_state.get("avatar_visible", True)) and bool(
+            _semantic_avatar_layout(effective_avatar_layout).get("visible", True)
+        )
+        if avatar_applied and avatar_visible_for_render:
+            temp_part_out = str(
+                Path(part_out).with_name(
+                    f".{Path(part_out).stem}.avatar-compose.{os.getpid()}.{time.time_ns()}{Path(part_out).suffix}"
+                )
+            )
+            try:
+                compose_slide_with_avatar(
+                    render_image_path,
+                    avatar_abs_path,
+                    audio_out,
+                    temp_part_out,
+                    duration_sec=total_duration,
+                    avatar_layout=effective_avatar_layout,
+                )
+                Path(temp_part_out).replace(part_out)
+                avatar_composited = True
+            except Exception as exc:
+                with contextlib.suppress(FileNotFoundError):
+                    Path(temp_part_out).unlink()
+                avatar_composition_error = _concise_error_text(exc, fallback="avatar_composition_failed")
+                logger.exception(
+                    "Avatar composition failed for project=%s slide=%s error=%s",
+                    project_id,
+                    slide_num,
+                    avatar_composition_error,
+                )
+                raise RuntimeError(avatar_composition_error) from exc
+        else:
+            create_slide_video(render_image_path, audio_out, part_out, duration_sec=total_duration)
 
         try:
             if avatar_state.get("enabled") and avatar_state.get("teacher_id"):
@@ -8886,6 +8922,9 @@ def synthesize_and_render_slide(
             "avatar_engine_used": avatar_engine_used,
             "avatar_fallback_chain": avatar_fallback_chain,
             "avatar_segment_rel_path": avatar_rel_path,
+            "avatar_visible": avatar_visible_for_render,
+            "avatar_composited": avatar_composited,
+            "avatar_composition_error": avatar_composition_error,
             "avatar_attempted": bool(avatar_attempted),
             "avatar_skipped": bool(avatar_skipped),
             "avatar_failed": bool(avatar_required and not avatar_applied),
@@ -8988,6 +9027,40 @@ def concat_and_finalize(
     try:
         # Sort by index — Celery preserves group order since v4, but defensive
         ordered         = sorted(results, key=lambda r: r["index"])
+        avatar_required_for_publish = bool(
+            avatar_options
+            and avatar_options.get("requested")
+            and avatar_options.get("enabled")
+            and avatar_options.get("avatar_visible", True)
+        )
+        blocking_avatar_failures: list[dict[str, Any]] = []
+        if avatar_required_for_publish:
+            for result in ordered:
+                if not result.get("avatar_failed") or not result.get("avatar_visible", True):
+                    continue
+                status = str(result.get("avatar_status") or "avatar_failed")
+                if status in {"avatar_source_invalid", "avatar_preview_stale"}:
+                    continue
+                blocking_avatar_failures.append(
+                    {
+                        "index": int(result.get("index") or 0),
+                        "slide_num": int(result.get("slide_num") or 0),
+                        "page_key": str(result.get("page_key") or ""),
+                        "status": status,
+                        "reason": str(result.get("avatar_error") or result.get("avatar_failure_reason") or "avatar_failed"),
+                    }
+                )
+        if blocking_avatar_failures:
+            compact_failures = []
+            for failure in blocking_avatar_failures[:5]:
+                label = failure.get("slide_num") or (int(failure.get("index") or 0) + 1)
+                compact_failures.append(f"slide {label}: {failure.get('reason') or 'avatar_failed'}")
+            if len(blocking_avatar_failures) > 5:
+                compact_failures.append(f"+{len(blocking_avatar_failures) - 5} more")
+            message = "avatar_required_failed:" + "; ".join(compact_failures)
+            _update_render_job(project_id, job_id, status="failed", progress=100, error_message=message)
+            raise RuntimeError(message)
+
         part_paths      = [r["part_path"] for r in ordered]
         slide_durations = [r["duration"]  for r in ordered]
         _sync_lesson_segments(project_id, ordered)
@@ -9145,6 +9218,7 @@ def concat_and_finalize(
                 for item in ordered
             ],
             "avatar_clips": [str(item.get("avatar_segment_rel_path") or "") for item in ordered],
+            "avatar_burned_in": any(bool(item.get("avatar_composited")) for item in ordered),
             "avatar_layout_pages": avatar_layout_pages,
             "avatar_failures": avatar_failures,
             "avatar_slide_metadata": [
@@ -9159,6 +9233,9 @@ def concat_and_finalize(
                     "avatar_status": str(item.get("avatar_status") or ("avatar_failed" if item.get("avatar_failed") else ("ready" if item.get("avatar_applied") else "none"))),
                     "avatar_error": str(item.get("avatar_error") or item.get("avatar_failure_reason") or ""),
                     "avatar_segment_rel_path": str(item.get("avatar_segment_rel_path") or ""),
+                    "avatar_visible": bool(item.get("avatar_visible", True)),
+                    "avatar_composited": bool(item.get("avatar_composited")),
+                    "avatar_composition_error": str(item.get("avatar_composition_error") or ""),
                     "avatar_engine_used": str(item.get("avatar_engine_used") or "none"),
                     "avatar_engine_selected": str(item.get("avatar_engine_selected") or item.get("avatar_engine_used") or "none"),
                     "avatar_fallback_chain": list(item.get("avatar_fallback_chain") or []),
@@ -9193,6 +9270,9 @@ def concat_and_finalize(
                 "transcript": playback_assets["transcript"][idx],
                 "tts_audio": playback_assets["tts_audio"][idx],
                 "avatar_clip": playback_assets["avatar_clips"][idx],
+                "avatar_visible": bool(item.get("avatar_visible", True)),
+                "avatar_composited": bool(item.get("avatar_composited")),
+                "avatar_composition_error": str(item.get("avatar_composition_error") or ""),
                 "avatar_attempted": bool(item.get("avatar_attempted")),
                 "avatar_skipped": bool(item.get("avatar_skipped")),
                 "avatar_applied": bool(item.get("avatar_applied")),
@@ -9216,7 +9296,7 @@ def concat_and_finalize(
             for idx, item in enumerate(ordered)
         ]
 
-        if avatar_segments:
+        if avatar_segments and not playback_assets["avatar_burned_in"]:
             try:
                 avatar_track_dir = output_dir / "avatar"
                 avatar_track_dir.mkdir(parents=True, exist_ok=True)
@@ -9332,6 +9412,8 @@ def concat_and_finalize(
         background_avatar = {"status": "none", "queued": False}
         if skip_background_avatar_overlay and reused_avatar_payload:
             background_avatar = {"status": "reused", "queued": False}
+        elif playback_assets["avatar_burned_in"]:
+            background_avatar = {"status": "baked", "queued": False}
         elif avatar_options is not None:
             background_avatar = _queue_lesson_avatar_overlay_after_base_render(
                 project_id=project_id,
@@ -9626,6 +9708,9 @@ def merge_and_finalize_segments(
                 "avatar_engine_used": str(previous_segment.get("avatar_engine_selected") or ("cached" if avatar_rel else "none")),
                 "avatar_fallback_chain": [],
                 "avatar_segment_rel_path": avatar_rel,
+                "avatar_visible": True,
+                "avatar_composited": bool(previous_segment.get("avatar_composited")),
+                "avatar_composition_error": "",
                 "avatar_attempted": bool(avatar_rel),
                 "avatar_failed": False,
                 "avatar_status": "ready" if avatar_rel else "none",
@@ -9950,7 +10035,7 @@ def process_pptx_to_video(
         if not target_slides:
             target_slides = slides
 
-        pipeline_queue = _render_queue_name()
+        pipeline_queue = _queue_for_avatar_options(avatar_cfg)
         base_avatar_cfg = dict(avatar_cfg)
         base_avatar_cfg["enabled"] = False
         visual_only_recompose_decision: dict[str, Any] = {"eligible": False, "fallback_reasons": []}
@@ -10048,7 +10133,7 @@ def process_pptx_to_video(
                     artifacts,
                 ).set(queue=pipeline_queue, link_error=errback)
             return synthesize_and_render_slide.s(
-                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, base_avatar_cfg, tts_settings
+                slide, project_id, voice_id, pause_sec, resolved_lang, tts_mode, avatar_cfg, tts_settings
             ).set(queue=pipeline_queue, link_error=errback)
 
         slide_tasks = group(

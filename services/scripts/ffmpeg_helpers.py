@@ -215,6 +215,7 @@ def compose_slide_with_avatar(
     *,
     duration_sec: float,
     resolution: tuple[int, int] = (1920, 1080),
+    avatar_layout: dict | None = None,
 ) -> str:
     """
     Compose a slide background and an animated talking-avatar inset into one MP4.
@@ -225,6 +226,18 @@ def compose_slide_with_avatar(
     """
     Path(out_video_path).parent.mkdir(parents=True, exist_ok=True)
     w, h = resolution
+    layout = avatar_layout if isinstance(avatar_layout, dict) else {}
+    size = str(layout.get("size") or "medium").strip().lower()
+    position = str(layout.get("position") or "top-right").strip().lower()
+    avatar_width = {
+        "small": 346,
+        "medium": 461,
+        "large": 576,
+    }.get(size, 461)
+    margin_x = max(24, round(w * 0.04))
+    margin_y = max(24, round(h * 0.08))
+    x_expr = str(margin_x) if position.endswith("left") else f"W-w-{margin_x}"
+    y_expr = str(margin_y) if position.startswith("top") else f"H-h-{margin_y}"
 
     cmd = [
         "ffmpeg", "-y",
@@ -236,9 +249,9 @@ def compose_slide_with_avatar(
         "-filter_complex",
         (
             f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2[bg];"
-            "[1:v]scale=540:-2[avatar];"
+            f"[1:v]scale={avatar_width}:-2[avatar];"
             "[avatar]format=rgba,colorchannelmixer=aa=0.98[avatar_rgba];"
-            "[bg][avatar_rgba]overlay=W-w-48:H-h-48:format=auto[v]"
+            f"[bg][avatar_rgba]overlay={x_expr}:{y_expr}:format=auto[v]"
         ),
         "-map", "[v]",
         "-map", "2:a:0",

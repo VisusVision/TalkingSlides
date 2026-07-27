@@ -278,6 +278,75 @@ def test_synthesize_prefers_xtts_when_voice_id_is_available(monkeypatch, tmp_pat
     assert xtts_inputs[0][1]
 
 
+def test_synthesize_auto_prefers_xtts_when_voice_id_is_available(monkeypatch, tmp_path):
+    tts_main = importlib.import_module("main")
+
+    out_file = tmp_path / "auto-xtts.mp3"
+    monkeypatch.setattr(tts_main, "_new_audio_path", lambda: out_file)
+
+    xtts_inputs = []
+
+    def fake_xtts(_text, voice_id, _lang, out_path, chunks=None, chunk_pause_ms=None):
+        xtts_inputs.append({"voice_id": voice_id, "chunks": chunks, "chunk_pause_ms": chunk_pause_ms})
+        out_path.write_bytes(b"xtts")
+        return 1.5
+
+    def fail_gtts(*_args, **_kwargs):
+        raise AssertionError("auto should not use gTTS when XTTS succeeds")
+
+    monkeypatch.setattr(tts_main, "_synthesize_xtts_v2", fake_xtts)
+    monkeypatch.setattr(tts_main, "_synthesize_gtts", fail_gtts)
+
+    req = tts_main.SynthesizeRequest(
+        text="Hello world.",
+        voice_id="voice1",
+        language="en",
+        provider_preference="auto",
+    )
+    data = tts_main.synthesize(req)
+
+    assert data["provider"] == "xtts_v2"
+    assert data["provider_preference"] == "auto"
+    assert data["fallback_used"] is False
+    assert xtts_inputs == [{"voice_id": "voice1", "chunks": ["Hello world."], "chunk_pause_ms": [0]}]
+
+
+def test_synthesize_explicit_gtts_skips_xtts_when_voice_id_is_available(monkeypatch, tmp_path):
+    tts_main = importlib.import_module("main")
+
+    out_file = tmp_path / "explicit-gtts.mp3"
+    monkeypatch.setattr(tts_main, "_new_audio_path", lambda: out_file)
+
+    def fail_xtts(*_args, **_kwargs):
+        raise AssertionError("explicit gTTS must not attempt XTTS")
+
+    gtts_inputs = []
+
+    def fake_gtts(text, lang, out_path):
+        gtts_inputs.append({"text": text, "lang": lang})
+        out_path.write_bytes(b"gtts")
+        return 1.25
+
+    monkeypatch.setattr(tts_main, "_synthesize_xtts_v2", fail_xtts)
+    monkeypatch.setattr(tts_main, "_synthesize_gtts", fake_gtts)
+
+    req = tts_main.SynthesizeRequest(
+        text="Hello world.",
+        voice_id="voice1",
+        language="en",
+        provider_preference="gtts",
+    )
+    data = tts_main.synthesize(req)
+
+    assert data["provider"] == "gTTS"
+    assert data["provider_preference"] == "gtts"
+    assert data["fallback_used"] is False
+    assert data["fallback_reason"] == ""
+    assert "xtts_attempts" not in data
+    assert gtts_inputs == [{"text": "Hello world.", "lang": "en"}]
+    assert out_file.read_bytes() == b"gtts"
+
+
 def test_synthesize_preprocesses_text_before_xtts(monkeypatch, tmp_path):
     tts_main = importlib.import_module("main")
 

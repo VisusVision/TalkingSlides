@@ -5948,10 +5948,12 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
     lesson_engine = selected_engine
     composite_fallback_allowed = _composite_fallback_allowed()
     runtime_settings = project_avatar_runtime_settings(project)
+    avatar_visible = bool(getattr(project, "avatar_visible", True))
 
     return {
         "requested": bool(avatar_requested),
         "enabled": bool(avatar_requested and is_ready and not disable_reason),
+        "avatar_visible": avatar_visible,
         "teacher_id": int(teacher.id),
         "source_image_rel_path": profile.avatar_image_processed or profile.avatar_image_original,
         "source_image_original_rel_path": profile.avatar_image_original or profile.avatar_image_processed,
@@ -5982,7 +5984,7 @@ def _resolve_avatar_options_for_project(project: Project, request) -> dict:
         "lesson_avatar_layout": None,
         "default_position": publisher_layout["position"],
         "default_size": publisher_layout["size"],
-        "default_visible": publisher_layout["visible"],
+        "default_visible": bool(avatar_visible and publisher_layout["visible"]),
         "composite_configured": composite_ready,
         "composite_lesson_enabled": _composite_lesson_enabled(),
         "composite_fallback_allowed": composite_fallback_allowed,
@@ -6167,6 +6169,7 @@ def _avatar_layout_by_page_from_sidecar(
 
 def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dict[str, Any]:
     storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+    avatar_burned_in = bool(sidecar.get("avatar_burned_in")) if isinstance(sidecar, dict) else False
     avatar_payload = sidecar.get("avatar") if isinstance(sidecar, dict) else None
     avatar_payload = avatar_payload if isinstance(avatar_payload, dict) else {}
 
@@ -6198,7 +6201,7 @@ def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dic
 
     status_ready = str(getattr(project, "avatar_processing_status", "") or "") == "ready"
     visible = bool(getattr(project, "avatar_visible", True))
-    available = bool(visible and status_ready and preferred_rel)
+    available = bool(visible and status_ready and preferred_rel and not avatar_burned_in)
     enhanced_pending = bool(avatar_payload.get("enhanced_pending")) and not restored_exists
     updated_at = str(avatar_payload.get("updated_at") or "")
     version = str(avatar_payload.get("version") or "") or _avatar_file_version(storage_root, preferred_rel)
@@ -6218,8 +6221,9 @@ def _avatar_artifact_state(project: Project, sidecar: dict | None = None) -> dic
         "updated_at": updated_at,
         "track_fast_rel_path": fast_rel if fast_exists else "",
         "track_restored_rel_path": restored_rel if restored_exists else "",
-        "rel_paths": sorted(set(rel_paths)),
+        "rel_paths": [] if avatar_burned_in else sorted(set(rel_paths)),
         "layout_by_page": _avatar_layout_by_page_from_sidecar(sidecar, project=project),
+        "burned_in": avatar_burned_in,
     }
 
 

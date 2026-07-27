@@ -28,7 +28,7 @@ Run the fast checks first:
 .\.venv\Scripts\python.exe -m pytest tests\integration\test_lesson_publishing_flow.py -q
 ```
 
-Add feature-specific tests for the release. For avatar changes, include avatar overlay/non-blocking tests. For moderation changes, include the moderation integration subset.
+Add feature-specific tests for the release. For Studio, avatar, voice, TTS, render, Watch, API schema, autosave, project state, Docker/GPU worker config, or shared Studio UI changes, include the avatar/voice media gates in section 10. For moderation changes, include the moderation integration subset.
 
 ## 3. Migrations
 
@@ -146,16 +146,30 @@ For `drm_protected` later:
 - browser/player matrix is verified
 - missing DRM config fails closed with a clear message
 
-## 10. Avatar Smoke Optional
+## 10. Avatar and Voice Media Gates
 
-Run only on a validated GPU environment:
+These gates are mandatory for every PR or release touching Studio, avatar, voice, TTS, render, Watch, API schemas, autosave, project state, Docker/GPU worker config, or shared Studio UI components.
 
-- avatar source upload and validation
-- avatar preview status reaches ready or a clear failure state
-- base lesson render completes without waiting for avatar
-- avatar overlay job queues separately
-- avatar failure does not block playback
-- avatar-only rerender does not create a new base render job
+- Avatar-enabled final render visibly contains the avatar in the final media output; job completion or file existence alone is not enough.
+- Avatar-disabled or avatar-hidden final render omits the avatar.
+- XTTS voice-clone render produces audible expected speech and uses the selected provider, voice, and language.
+- gTTS fallback behavior remains correct and is not silently used when valid XTTS cloning should succeed.
+- Studio avatar and voice state survives tab changes, workspace changes, compact/mobile switching, and Inspector switching.
+- Autosave persists the latest avatar enabled, avatar visible, selected avatar, provider, voice, and language values.
+- Render request payloads match the visible Studio state for avatar and voice fields.
+- Watch uses the latest rendered artifact and does not mask a missing final-media avatar with mocked UI-only checks.
+- Mocked Playwright passing and green CI are not accepted as media-pipeline validation by themselves.
+
+Run on a validated GPU environment when avatar or XTTS output is in scope:
+
+- Record environment, branch/SHA, avatar input, voice/provider, render job ID, final artifact path or safe identifier, worker errors, and extracted frame timestamps checked.
+- Inspect final media with `ffprobe`/`ffmpeg` or equivalent: video stream, audio stream, plausible duration, non-silent narration, and representative frames.
+- Verify avatar source upload and validation.
+- Verify avatar preview reaches ready or a clear failure state.
+- Verify avatar-enabled render contains the avatar.
+- Verify avatar-hidden or avatar-disabled render omits the avatar.
+- Verify avatar-only rerender behavior matches the latest saved state.
+- Verify XTTS cloned voice output, or record the exact infrastructure blocker and owner follow-up.
 
 ## 11. HLS Smoke
 

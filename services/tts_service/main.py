@@ -1072,6 +1072,13 @@ def _public_xtts_failure_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _normalize_provider_preference(value: str | None) -> str:
+    normalized = str(value or "auto").strip().lower()
+    if normalized in {"auto", "xtts_v2", "gtts"}:
+        return normalized
+    return "auto"
+
+
 def _synthesize_xtts_v2_with_recovery(
     text: str,
     voice_id: str,
@@ -1138,8 +1145,7 @@ def _attach_request_tts_metadata(response: dict[str, Any], req: SynthesizeReques
         response["normalization_mode"] = req.normalization_mode
     if req.unknown_word_strategy is not None:
         response["unknown_word_strategy"] = req.unknown_word_strategy
-    if req.provider_preference is not None:
-        response["provider_preference"] = req.provider_preference
+    response["provider_preference"] = _normalize_provider_preference(req.provider_preference)
     if req.technical_overrides or req.abbreviation_overrides or req.mixed_word_overrides:
         response["applied_overrides"] = _request_override_summary(req)
     response["spoken_text"] = prepared.spoken_text
@@ -1230,10 +1236,13 @@ def synthesize(req: SynthesizeRequest) -> dict:
             prepared.tts_normalization_rules_applied,
         )
 
+    provider_preference = _normalize_provider_preference(req.provider_preference)
+    should_attempt_xtts = provider_preference in {"auto", "xtts_v2"} and bool(req.voice_id)
+
     # ---- Attempt 1: XTTS v2 ---------------------------------------------
     out_path = _new_audio_path()
     xtts_metadata: dict[str, Any] = {}
-    if req.voice_id:
+    if should_attempt_xtts:
         duration, xtts_metadata = _synthesize_xtts_v2_with_recovery(
             tts_text,
             req.voice_id,
@@ -1259,6 +1268,8 @@ def synthesize(req: SynthesizeRequest) -> dict:
             response["fallback_reason"] = ""
             return _attach_request_tts_metadata(response, req, prepared)
         fallback_reason = str(xtts_metadata.get("fallback_reason") or "xtts_v2_failed")
+    elif provider_preference == "gtts":
+        fallback_reason = ""
     else:
         fallback_reason = _format_xtts_fallback_reason("no voice_id provided", transient=False)
 
