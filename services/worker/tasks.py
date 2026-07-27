@@ -74,6 +74,16 @@ from .partial_render_manifest import (  # noqa: E402
     get_narration_only_recompose_eligibility,
     get_visual_only_recompose_eligibility,
 )
+from core.render_planner import (  # noqa: E402
+    DEFAULT_REQUIRED_ARTIFACTS as PLANNER_REQUIRED_ARTIFACTS,
+    REASON_MISSING_BASELINE,
+    REASON_MISSING_ARTIFACT,
+    RENDER_PIPELINE_VERSION,
+    build_render_planner_manifest,
+    manifest_from_playback_sidecar,
+    plan_render_dirty_slides,
+    render_fingerprint,
+)
 from core.avatar_placement import (  # noqa: E402
     avatar_layout_from_profile,
     normalize_avatar_layout_defaults,
@@ -603,7 +613,10 @@ def _dispatch_claimed_render_followup_intent(project_id: str | int, completed_jo
                 rerender_page_keys,
                 _render_followup_tts_settings(project, use_draft=use_draft),
             ]
-            task_kwargs = {"job_id": int(job.id)}
+            task_kwargs = {
+                "job_id": int(job.id),
+                "render_mode": "full" if intent.mode == RenderFollowUpIntent.MODE_FULL or use_draft else "selected",
+            }
             if use_draft:
                 task_kwargs["use_draft"] = True
             queue = _avatar_queue_name() if bool(avatar_options.get("enabled")) else _render_queue_name()
@@ -1563,6 +1576,345 @@ def _write_playback_sidecar(project_id: str | int, payload: dict[str, Any]) -> s
 
 def _read_playback_sidecar(project_id: str | int) -> dict[str, Any]:
     return _read_json_sidecar(project_id, "playback_assets.json")
+
+
+def _render_plan_rel_path(project_id: str | int, job_id: str | int | None) -> Path:
+    job_part = str(job_id or "unknown").strip() or "unknown"
+    return Path("projects") / str(project_id) / "renders" / job_part / "render_plan.json"
+
+
+def _write_render_plan(project_id: str | int, job_id: str | int | None, payload: dict[str, Any]) -> str:
+    from core.storage_json import write_json_metadata_file
+
+    return write_json_metadata_file(
+        storage_root=STORAGE_ROOT,
+        relative_path=_render_plan_rel_path(project_id, job_id),
+        payload=payload,
+    )
+
+
+def _read_render_plan(project_id: str | int, job_id: str | int | None) -> dict[str, Any]:
+    path = Path(STORAGE_ROOT) / _render_plan_rel_path(project_id, job_id)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("Failed to read render plan project=%s job=%s", project_id, job_id, exc_info=True)
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _normalize_render_mode(value: Any, *, has_selected_pages: bool = False) -> str:
+    mode = str(value or "").strip().lower().replace("-", "_")
+    if mode in {"full", "force_full", "full_render", "complete", "recovery"}:
+        return "full"
+    if mode in {"selected", "targeted", "partial"}:
+        return "selected"
+    if mode in {"auto", "dirty", "incremental", ""}:
+        return "selected" if has_selected_pages else "auto"
+    return "auto"
+
+
+def _planner_provider_preference(tts_settings: dict[str, Any] | None) -> str:
+    summary = canonicalize_tts_settings(tts_settings if isinstance(tts_settings, dict) else {})
+    return str(summary.get("provider_preference") or "auto")
+
+
+def _planner_avatar_payload(avatar_options: dict[str, Any] | None) -> dict[str, Any]:
+    options = dict(avatar_options or {})
+    requested = bool(options.get("requested", options.get("enabled", False)))
+    enabled = bool(options.get("enabled"))
+    if not requested or not enabled:
+        return {"requested": requested, "enabled": False, "avatar_visible": bool(options.get("avatar_visible", True))}
+    publisher_layout = options.get("publisher_avatar_layout") or options.get("avatar_layout") or {
+        "position": options.get("default_position"),
+        "size": options.get("default_size"),
+        "visible": options.get("default_visible", True),
+    }
+    return {
+        "requested": requested,
+        "enabled": enabled,
+        "avatar_visible": bool(options.get("avatar_visible", True)),
+        "publisher_layout": publisher_layout,
+        "placement": options.get("avatar_placement") or publisher_layout,
+        "source_hash": str(options.get("avatar_source_hash") or ""),
+        "preview_source_hash": str(options.get("avatar_preview_source_hash") or ""),
+        "source_valid": bool(options.get("avatar_source_valid", True)),
+        "preview_stale": bool(options.get("avatar_preview_stale")),
+        "moderation_status": str(options.get("avatar_moderation_status") or ""),
+        "model_version": str(options.get("model_version") or ""),
+        "motion_preset": str(options.get("motion_preset") or ""),
+        "quality_preset": str(options.get("quality_preset") or ""),
+        "lipsync_engine": str(options.get("lipsync_engine") or options.get("avatar_engine_selected") or ""),
+        "reference_type": str(options.get("avatar_reference_type") or ""),
+        "avatar_runtime_settings": dict(options.get("avatar_runtime_settings") or {}),
+        "restoration_enabled": bool(options.get("restoration_enabled")),
+        "liveportrait_enabled": bool(options.get("liveportrait_enabled", True)),
+    }
+
+
+def _planner_artifacts_by_page_key(playback_assets: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    artifacts = _playback_artifacts_by_page_key(playback_assets)
+    result: dict[str, dict[str, Any]] = {}
+    for page_key, page_artifacts in artifacts.items():
+        if not page_key:
+            continue
+        result[page_key] = {
+            name: {
+                "path": rel_path,
+                "rel_path": rel_path,
+                "project_id": str((playback_assets or {}).get("project_id") or ""),
+                "page_key": page_key,
+            }
+            for name, rel_path in page_artifacts.items()
+            if rel_path
+        }
+    return result
+
+
+def _planner_manifest_from_render_results(
+    *,
+    project_id: str | int,
+    slides: list[dict[str, Any]],
+    voice_id: str,
+    effective_language: str,
+    tts_settings: dict[str, Any] | None,
+    avatar_options: dict[str, Any] | None,
+    artifacts_by_page_key: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    provider_preference = _planner_provider_preference(tts_settings)
+    return build_render_planner_manifest(
+        project_id=project_id,
+        slides=slides,
+        voice={"voice_id": voice_id, "language": effective_language, "provider": provider_preference},
+        language=effective_language,
+        tts_provider=provider_preference,
+        tts_settings=tts_settings if isinstance(tts_settings, dict) else {},
+        avatar=_planner_avatar_payload(avatar_options),
+        pipeline_version=RENDER_PIPELINE_VERSION,
+        artifacts_by_page_key=artifacts_by_page_key or {},
+    )
+
+
+def _safe_storage_artifact_path(rel_path: Any, *, storage_root: str | Path | None = None) -> Path | None:
+    text = str(rel_path or "").strip().replace("\\", "/").lstrip("/")
+    if not text or ".." in text.split("/") or re.match(r"^[A-Za-z]:/", text) or text.startswith("/"):
+        return None
+    return Path(storage_root or STORAGE_ROOT) / text
+
+
+def _validate_reusable_slide_artifacts(
+    *,
+    previous_manifest: dict[str, Any] | None,
+    current_manifest: dict[str, Any],
+    playback_assets: dict[str, Any] | None,
+    planned_reusable_page_keys: set[str],
+    baseline_job_id: int | None,
+) -> tuple[set[str], dict[str, list[str]]]:
+    previous_pages = previous_manifest.get("pages") if isinstance(previous_manifest, dict) else {}
+    current_pages = current_manifest.get("pages") if isinstance(current_manifest, dict) else {}
+    final_segments = _playback_final_segments_by_page_key(playback_assets)
+    accepted: set[str] = set()
+    rejected: dict[str, list[str]] = {}
+
+    for page_key in sorted(planned_reusable_page_keys):
+        reasons: list[str] = []
+        previous_page = previous_pages.get(page_key) if isinstance(previous_pages, dict) else None
+        current_page = current_pages.get(page_key) if isinstance(current_pages, dict) else None
+        if not isinstance(previous_page, dict) or not isinstance(current_page, dict):
+            reasons.append("manifest_entry_missing")
+        elif str(previous_page.get("fingerprint") or "") != str(current_page.get("fingerprint") or ""):
+            reasons.append("fingerprint_mismatch")
+        if not baseline_job_id:
+            reasons.append("baseline_job_missing")
+        segment = final_segments.get(page_key)
+        if not isinstance(segment, dict):
+            reasons.append("final_segment_missing")
+        elif str(segment.get("page_key") or "") != page_key:
+            reasons.append("page_key_mismatch")
+        artifacts = previous_page.get("artifacts") if isinstance(previous_page, dict) else {}
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+        for artifact_name in PLANNER_REQUIRED_ARTIFACTS:
+            artifact = artifacts.get(artifact_name)
+            rel_path = artifact.get("rel_path") or artifact.get("path") if isinstance(artifact, dict) else artifact
+            path = _safe_storage_artifact_path(rel_path)
+            if path is None:
+                reasons.append(f"{artifact_name}_path_missing")
+                continue
+            try:
+                if not path.is_file() or path.stat().st_size <= 0:
+                    reasons.append(f"{artifact_name}_file_invalid")
+            except OSError:
+                reasons.append(f"{artifact_name}_file_invalid")
+        if isinstance(previous_page, dict) and isinstance(current_page, dict):
+            previous_avatar = ((previous_page.get("inputs") or {}).get("avatar") or {})
+            current_avatar = ((current_page.get("inputs") or {}).get("avatar") or {})
+            if isinstance(previous_avatar, dict) and isinstance(current_avatar, dict):
+                if bool(previous_avatar.get("enabled")) != bool(current_avatar.get("enabled")):
+                    reasons.append("avatar_enabled_mismatch")
+                if bool((previous_avatar.get("layout") or {}).get("visible", True)) != bool(
+                    (current_avatar.get("layout") or {}).get("visible", True)
+                ):
+                    reasons.append("avatar_visibility_mismatch")
+        if reasons:
+            rejected[page_key] = sorted(dict.fromkeys(reasons))
+        else:
+            accepted.add(page_key)
+    return accepted, rejected
+
+
+def _baseline_job_from_playback_assets(project_id: str | int, playback_assets: dict[str, Any] | None):
+    if not isinstance(playback_assets, dict) or not playback_assets:
+        return None
+    try:
+        from core.models import Job
+    except Exception:
+        return None
+    raw_job_id = playback_assets.get("job_id") or playback_assets.get("base_job_id")
+    candidates = Job.objects.filter(project_id=int(project_id), job_type="video_export", status="done")
+    if raw_job_id:
+        try:
+            raw_job_pk = int(raw_job_id)
+        except (TypeError, ValueError):
+            raw_job_pk = None
+        job = candidates.filter(pk=raw_job_pk).first() if raw_job_pk is not None else None
+        if job is not None:
+            return job
+    mp4_rel_path = str(playback_assets.get("mp4_rel_path") or "").strip()
+    if mp4_rel_path:
+        return candidates.filter(result_url=mp4_rel_path).order_by("-created_at", "-id").first()
+    return candidates.order_by("-created_at", "-id").first()
+
+
+def _build_dirty_dispatch_plan(
+    *,
+    project_id: str | int,
+    job_id: str | int | None,
+    requested_mode: str,
+    slides: list[dict[str, Any]],
+    voice_id: str,
+    effective_language: str,
+    tts_settings: dict[str, Any] | None,
+    avatar_options: dict[str, Any] | None,
+    selected_page_keys: set[str],
+    previous_playback_assets: dict[str, Any] | None,
+) -> dict[str, Any]:
+    mode = _normalize_render_mode(requested_mode, has_selected_pages=bool(selected_page_keys))
+    previous_manifest = manifest_from_playback_sidecar(previous_playback_assets)
+    baseline_job = _baseline_job_from_playback_assets(project_id, previous_playback_assets)
+    artifacts_by_page_key = _planner_artifacts_by_page_key(previous_playback_assets)
+    current_manifest = _planner_manifest_from_render_results(
+        project_id=project_id,
+        slides=slides,
+        voice_id=voice_id,
+        effective_language=effective_language,
+        tts_settings=tts_settings,
+        avatar_options=avatar_options,
+        artifacts_by_page_key=artifacts_by_page_key,
+    )
+    page_numbers_by_key = {
+        str(page.get("page_key") or key): int(page.get("slide_number") or 0)
+        for key, page in (current_manifest.get("pages") or {}).items()
+        if isinstance(page, dict)
+    }
+    ordered_page_keys = [str(key) for key in current_manifest.get("page_order") or []]
+    fallback_reason = ""
+    planner_output: dict[str, Any] = {
+        "dirty_slides": [int(slide.get("slide_num") or 0) for slide in slides],
+        "reusable_slides": [],
+        "reasons": {},
+        "global_reasons": [],
+        "slides": [],
+    }
+
+    if mode == "full":
+        fallback_reason = "ForcedFull"
+        dirty_page_keys = set(ordered_page_keys)
+        reusable_page_keys: set[str] = set()
+    elif mode == "selected":
+        dirty_page_keys = {key for key in selected_page_keys if key in set(ordered_page_keys)}
+        if not dirty_page_keys:
+            dirty_page_keys = set(ordered_page_keys)
+            fallback_reason = "SelectedTargetsMissing"
+        reusable_page_keys = set(ordered_page_keys) - dirty_page_keys
+    elif previous_manifest is None or baseline_job is None:
+        fallback_reason = "MissingBaseline"
+        dirty_page_keys = set(ordered_page_keys)
+        reusable_page_keys = set()
+        planner_output["reasons"] = {
+            str(page_numbers_by_key.get(page_key) or page_key): [REASON_MISSING_BASELINE]
+            for page_key in ordered_page_keys
+        }
+    else:
+        try:
+            planner_output = plan_render_dirty_slides(
+                previous_manifest=previous_manifest,
+                current_manifest=current_manifest,
+                storage_root=STORAGE_ROOT,
+            )
+            dirty_numbers = {int(item) for item in planner_output.get("dirty_slides") or []}
+            reusable_numbers = {int(item) for item in planner_output.get("reusable_slides") or []}
+            dirty_page_keys = {key for key, number in page_numbers_by_key.items() if number in dirty_numbers}
+            reusable_page_keys = {key for key, number in page_numbers_by_key.items() if number in reusable_numbers}
+            if mode == "selected":
+                dirty_page_keys.update(selected_page_keys)
+                reusable_page_keys.difference_update(selected_page_keys)
+            accepted, rejected = _validate_reusable_slide_artifacts(
+                previous_manifest=previous_manifest,
+                current_manifest=current_manifest,
+                playback_assets=previous_playback_assets,
+                planned_reusable_page_keys=reusable_page_keys,
+                baseline_job_id=int(baseline_job.id) if baseline_job else None,
+            )
+            for page_key, reasons in rejected.items():
+                reusable_page_keys.discard(page_key)
+                dirty_page_keys.add(page_key)
+                slide_number = page_numbers_by_key.get(page_key)
+                if slide_number:
+                    planner_output.setdefault("reasons", {}).setdefault(str(slide_number), [])
+                    planner_output["reasons"][str(slide_number)].extend([REASON_MISSING_ARTIFACT, *reasons])
+            reusable_page_keys = accepted
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Render planner failed; falling back to full project=%s job=%s", project_id, job_id, exc_info=True)
+            fallback_reason = "PlannerError"
+            dirty_page_keys = set(ordered_page_keys)
+            reusable_page_keys = set()
+            planner_output["planner_error"] = _concise_error_text(exc, fallback="planner_error")
+
+    dirty_page_keys = {key for key in dirty_page_keys if key in set(ordered_page_keys)}
+    reusable_page_keys = {key for key in reusable_page_keys if key in set(ordered_page_keys) and key not in dirty_page_keys}
+    dirty_slide_numbers = [page_numbers_by_key[key] for key in ordered_page_keys if key in dirty_page_keys]
+    reusable_slide_numbers = [page_numbers_by_key[key] for key in ordered_page_keys if key in reusable_page_keys]
+    effective_mode = "full" if fallback_reason in {"ForcedFull", "MissingBaseline", "PlannerError"} else mode
+    return {
+        "version": 1,
+        "schema": "industrial_render_dispatch_plan.v1",
+        "project_id": int(project_id),
+        "job_id": int(job_id) if job_id else None,
+        "render_mode": mode,
+        "effective_mode": effective_mode,
+        "authoritative_final": effective_mode == "full",
+        "baseline_job_id": int(baseline_job.id) if baseline_job else None,
+        "baseline_result_url": str(getattr(baseline_job, "result_url", "") or ""),
+        "baseline_srt_url": str(getattr(baseline_job, "srt_url", "") or ""),
+        "planner_manifest_hash": str(current_manifest.get("manifest_hash") or render_fingerprint(current_manifest)),
+        "current_manifest": current_manifest,
+        "previous_manifest_hash": str((previous_manifest or {}).get("manifest_hash") or ""),
+        "dirty_page_keys": [key for key in ordered_page_keys if key in dirty_page_keys],
+        "reusable_page_keys": [key for key in ordered_page_keys if key in reusable_page_keys],
+        "dirty_slide_numbers": dirty_slide_numbers,
+        "reusable_slide_numbers": reusable_slide_numbers,
+        "expected_ordered_page_keys": ordered_page_keys,
+        "fallback_reason": fallback_reason,
+        "invalidation_reasons": planner_output.get("reasons") or {},
+        "global_reasons": planner_output.get("global_reasons") or [],
+        "pipeline_version": RENDER_PIPELINE_VERSION,
+        "selected_page_keys": sorted(selected_page_keys),
+        "captured_at_unix": int(time.time()),
+        "stage_results": {},
+    }
 
 
 def _is_partial_render_manifest_available(value: Any) -> bool:
@@ -9339,6 +9691,35 @@ def concat_and_finalize(
             playback_assets=playback_assets,
             avatar_options=avatar_options,
         )
+        playback_assets["job_id"] = int(job_id) if job_id else None
+        playback_assets["project_id"] = int(project_id)
+        try:
+            manifest_artifacts = _planner_artifacts_by_page_key(playback_assets)
+            first_tts_settings = next(
+                (dict(item.get("tts_settings") or {}) for item in ordered if isinstance(item.get("tts_settings"), dict)),
+                {},
+            )
+            first_voice_id = str(first_tts_settings.get("voice_id") or "")
+            first_language = next(
+                (str(item.get("tts_normalization_language") or "") for item in ordered if item.get("tts_normalization_language")),
+                "",
+            )
+            playback_assets["render_planner_manifest"] = _planner_manifest_from_render_results(
+                project_id=project_id,
+                slides=ordered,
+                voice_id=first_voice_id,
+                effective_language=first_language or "auto",
+                tts_settings=first_tts_settings,
+                avatar_options=avatar_options,
+                artifacts_by_page_key=manifest_artifacts,
+            )
+        except Exception:
+            logger.warning(
+                "Render planner manifest persistence failed project=%s job_id=%s",
+                project_id,
+                job_id,
+                exc_info=True,
+            )
         try:
             playback_assets["partial_render_analysis"] = _build_partial_render_analysis_report(
                 previous_playback_assets=previous_playback_assets,
@@ -9767,6 +10148,97 @@ def mark_project_render_failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return {"status": "failed", "project_id": project_id, "job_id": job_id, "error_message": error_message}
 
 
+@app.task(name="worker.tasks.record_dirty_render_dispatch_result", max_retries=0)
+def record_dirty_render_dispatch_result(
+    dirty_results: list[dict[str, Any]],
+    project_id: str,
+    render_plan: dict[str, Any],
+    avatar_options: dict[str, Any] | None = None,
+    job_id: int | str | None = None,
+) -> dict[str, Any]:
+    """Record Phase 2 dirty-slide outputs without promoting a new final video."""
+    if not _is_current_render_job(project_id, job_id):
+        _mark_stale_render_job_skipped(job_id)
+        logger.warning("Dirty render dispatch result skipped for stale job project=%s job=%s", project_id, job_id)
+        return {
+            "status": "stale",
+            "project_id": int(project_id),
+            "job_id": int(job_id) if job_id else None,
+            "skipped": True,
+        }
+
+    plan = copy.deepcopy(render_plan if isinstance(render_plan, dict) else {})
+    dirty_results = [dict(item) for item in dirty_results or [] if isinstance(item, dict)]
+    dirty_page_keys = {str(key) for key in plan.get("dirty_page_keys") or [] if str(key)}
+    completed_page_keys = {str(item.get("page_key") or "") for item in dirty_results if str(item.get("page_key") or "")}
+    missing = sorted(dirty_page_keys - completed_page_keys)
+    if missing:
+        message = f"dirty_slide_results_missing:{','.join(missing[:10])}"
+        _update_render_job(project_id, job_id, status="failed", progress=100, error_message=message)
+        _notify_render_failed(project_id)
+        raise RuntimeError(message)
+
+    result_artifacts = {
+        str(item.get("page_key") or ""): {
+            "slide_num": int(item.get("slide_num") or 0),
+            "part_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("part_path"))) if item.get("part_path") else "",
+            "tts_audio_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("tts_audio_path"))) if item.get("tts_audio_path") else "",
+            "slide_rel_path": _safe_rel_path(STORAGE_ROOT, str(item.get("slide_path"))) if item.get("slide_path") else "",
+            "avatar_segment_rel_path": str(item.get("avatar_segment_rel_path") or ""),
+            "avatar_composited": bool(item.get("avatar_composited")),
+            "duration": float(item.get("duration") or 0.0),
+        }
+        for item in dirty_results
+        if str(item.get("page_key") or "")
+    }
+    plan["authoritative_final"] = False
+    plan["stage_results"] = {
+        **dict(plan.get("stage_results") or {}),
+        "dirty_slide_results": result_artifacts,
+        "dirty_slide_result_count": len(result_artifacts),
+        "completed_at_unix": int(time.time()),
+    }
+    _write_render_plan(project_id, job_id, plan)
+
+    baseline_result_url = str(plan.get("baseline_result_url") or "")
+    baseline_srt_url = str(plan.get("baseline_srt_url") or "")
+    if not baseline_result_url:
+        message = "dirty_dispatch_baseline_output_missing"
+        _update_render_job(project_id, job_id, status="failed", progress=100, error_message=message)
+        _notify_render_failed(project_id)
+        raise RuntimeError(message)
+
+    _update_render_job(
+        project_id,
+        job_id,
+        status="done",
+        progress=100,
+        result_url=baseline_result_url,
+        srt_url=baseline_srt_url,
+        error_message="dirty_dispatch_recorded; authoritative final unchanged",
+    )
+    _notify_render_completed(project_id)
+    logger.info(
+        "Dirty render dispatch recorded project=%s job=%s dirty_count=%s reusable_count=%s authoritative_final=false",
+        project_id,
+        job_id,
+        len(plan.get("dirty_page_keys") or []),
+        len(plan.get("reusable_page_keys") or []),
+    )
+    return {
+        "status": "dirty_dispatch_recorded",
+        "project_id": int(project_id),
+        "job_id": int(job_id) if job_id else None,
+        "dirty_page_keys": list(plan.get("dirty_page_keys") or []),
+        "reusable_page_keys": list(plan.get("reusable_page_keys") or []),
+        "authoritative_final": False,
+        "avatar": {
+            "enabled": bool((avatar_options or {}).get("enabled")),
+            "requested": bool((avatar_options or {}).get("requested", (avatar_options or {}).get("enabled", False))),
+        },
+    }
+
+
 @app.task(
     bind=True,
     name="worker.tasks.process_pptx_to_video",
@@ -9786,6 +10258,7 @@ def process_pptx_to_video(
     tts_settings: dict[str, Any] | None = None,
     use_draft: bool = False,
     job_id: int | str | None = None,
+    render_mode: str = "auto",
 ) -> dict[str, Any]:
     """
     Orchestrate the full PPTX → lesson MP4 pipeline.
@@ -10030,18 +10503,94 @@ def process_pptx_to_video(
         # ------------------------------------------------------------------
         # Step 2: Build and dispatch parallel chord
         # ------------------------------------------------------------------
-        rerender_set = set() if use_draft else {str(key) for key in (rerender_page_keys or []) if str(key)}
-        target_slides = [slide for slide in slides if not rerender_set or str(slide.get("page_key") or "") in rerender_set]
-        if not target_slides:
-            target_slides = slides
-
         pipeline_queue = _queue_for_avatar_options(avatar_cfg)
+        rerender_set = set() if use_draft else {str(key) for key in (rerender_page_keys or []) if str(key)}
+        effective_render_mode = _normalize_render_mode(render_mode, has_selected_pages=bool(rerender_set))
+        previous_playback_assets = _read_playback_sidecar(project_id)
+        captured_plan = _build_dirty_dispatch_plan(
+            project_id=project_id,
+            job_id=render_job_id,
+            requested_mode=effective_render_mode,
+            slides=slides,
+            voice_id=voice_id,
+            effective_language=resolved_lang,
+            tts_settings=tts_settings,
+            avatar_options=avatar_cfg,
+            selected_page_keys=rerender_set,
+            previous_playback_assets=previous_playback_assets,
+        )
+        if use_draft:
+            captured_plan["effective_mode"] = "full"
+            captured_plan["render_mode"] = "full"
+            captured_plan["fallback_reason"] = captured_plan.get("fallback_reason") or "DraftRender"
+            captured_plan["dirty_page_keys"] = [str(slide.get("page_key") or "") for slide in slides if str(slide.get("page_key") or "")]
+            captured_plan["reusable_page_keys"] = []
+            captured_plan["dirty_slide_numbers"] = [int(slide.get("slide_num") or 0) for slide in slides]
+            captured_plan["reusable_slide_numbers"] = []
+            captured_plan["authoritative_final"] = True
+        _write_render_plan(project_id, render_job_id, captured_plan)
+        dirty_page_keys = {str(key) for key in captured_plan.get("dirty_page_keys") or [] if str(key)}
+        reusable_page_keys = {str(key) for key in captured_plan.get("reusable_page_keys") or [] if str(key)}
+        target_slides = [slide for slide in slides if str(slide.get("page_key") or "") in dirty_page_keys]
+        if captured_plan.get("effective_mode") == "full" or not dirty_page_keys:
+            if captured_plan.get("effective_mode") == "full":
+                target_slides = slides
+            elif not dirty_page_keys and captured_plan.get("baseline_result_url"):
+                captured_plan["stage_results"] = {
+                    **dict(captured_plan.get("stage_results") or {}),
+                    "zero_dirty": True,
+                    "completed_at_unix": int(time.time()),
+                }
+                _write_render_plan(project_id, render_job_id, captured_plan)
+                _update_render_job(
+                    project_id,
+                    render_job_id,
+                    status="done",
+                    progress=100,
+                    result_url=str(captured_plan.get("baseline_result_url") or ""),
+                    srt_url=str(captured_plan.get("baseline_srt_url") or ""),
+                    error_message="zero_dirty_noop; authoritative final unchanged",
+                )
+                _notify_render_completed(project_id)
+                logger.info(
+                    "Render plan zero dirty project=%s job=%s mode=%s reusable=%s",
+                    project_id,
+                    render_job_id,
+                    captured_plan.get("render_mode"),
+                    len(reusable_page_keys),
+                )
+                return {
+                    "status": "zero_dirty_noop",
+                    "project_id": project_id,
+                    "job_id": render_job_id,
+                    "render_mode": captured_plan.get("render_mode"),
+                    "dirty_page_keys": [],
+                    "reusable_page_keys": list(captured_plan.get("reusable_page_keys") or []),
+                    "authoritative_final": False,
+                }
+            else:
+                captured_plan["effective_mode"] = "full"
+                captured_plan["fallback_reason"] = captured_plan.get("fallback_reason") or "MissingBaseline"
+                target_slides = slides
+                _write_render_plan(project_id, render_job_id, captured_plan)
+
+        logger.info(
+            "Render plan created project=%s job=%s mode=%s effective_mode=%s baseline_job=%s dirty=%s reusable=%s fallback=%s",
+            project_id,
+            render_job_id,
+            captured_plan.get("render_mode"),
+            captured_plan.get("effective_mode"),
+            captured_plan.get("baseline_job_id"),
+            len(target_slides),
+            len(reusable_page_keys),
+            captured_plan.get("fallback_reason") or "",
+        )
+        _update_render_job(project_id, render_job_id, progress=15)
         base_avatar_cfg = dict(avatar_cfg)
         base_avatar_cfg["enabled"] = False
         visual_only_recompose_decision: dict[str, Any] = {"eligible": False, "fallback_reasons": []}
         narration_only_recompose_decision: dict[str, Any] = {"eligible": False, "fallback_reasons": []}
-        if rerender_set:
-            previous_playback_assets = _read_playback_sidecar(project_id)
+        if rerender_set and captured_plan.get("effective_mode") == "selected":
             visual_only_recompose_decision = _build_visual_only_recompose_runtime_decision(
                 project_id=project_id,
                 job_id=render_job_id,
@@ -10140,7 +10689,7 @@ def process_pptx_to_video(
             _slide_render_signature(slide)
             for slide in target_slides
         )
-        if rerender_set:
+        if rerender_set and captured_plan.get("effective_mode") == "selected":
             callback = merge_and_finalize_segments.s(
                 project_id,
                 slides,
@@ -10148,6 +10697,13 @@ def process_pptx_to_video(
                 avatar_cfg,
                 render_job_id,
                 bool(visual_only_recompose_decision.get("eligible")),
+            ).set(queue=pipeline_queue)
+        elif captured_plan.get("effective_mode") == "auto":
+            callback = record_dirty_render_dispatch_result.s(
+                project_id,
+                captured_plan,
+                avatar_cfg,
+                render_job_id,
             ).set(queue=pipeline_queue)
         else:
             callback = concat_and_finalize.s(project_id, bool(use_draft), avatar_cfg, render_job_id).set(queue=pipeline_queue)
@@ -10168,6 +10724,11 @@ def process_pptx_to_video(
             "job_id": render_job_id,
             "language_detection": language_detection,
             "rerender_page_keys": list(rerender_set),
+            "render_mode": captured_plan.get("render_mode"),
+            "effective_render_mode": captured_plan.get("effective_mode"),
+            "dirty_page_keys": list(captured_plan.get("dirty_page_keys") or []),
+            "reusable_page_keys": list(captured_plan.get("reusable_page_keys") or []),
+            "fallback_reason": str(captured_plan.get("fallback_reason") or ""),
             "use_draft": bool(use_draft),
             "tts_settings": tts_settings_summary,
             "avatar": {
