@@ -2341,9 +2341,9 @@ def test_auto_render_dispatches_only_dirty_slide_and_records_non_authoritative_p
 
 
 @pytest.mark.django_db
-def test_auto_render_controlled_failure_hook_is_scoped_to_dirty_slide(tmp_path, monkeypatch):
-    owner = _make_user("auto_dirty_failure_hook_owner")
-    project = Project.objects.create(title="Auto dirty failure hook", user=owner, status="processing")
+def test_auto_render_dirty_slide_failure_errback_preserves_authoritative_output(tmp_path, monkeypatch):
+    owner = _make_user("auto_dirty_failure_errback_owner")
+    project = Project.objects.create(title="Auto dirty failure errback", user=owner, status="processing")
     baseline_job = Job.objects.create(
         project=project,
         job_type="video_export",
@@ -2362,17 +2362,13 @@ def test_auto_render_controlled_failure_hook_is_scoped_to_dirty_slide(tmp_path, 
     current_slides = [dict(item) for item in old_results]
     current_slides[1] = {**current_slides[1], "narration_text": "Edited narration 2", "text": "Edited narration 2", "notes_text": "Edited narration 2"}
     old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(old_sidecar, sort_keys=True), encoding="utf-8")
+    sidecar_before = sidecar_path.read_bytes()
     captured = _dispatch_capture(monkeypatch)
     _patch_process_dispatch_dependencies(monkeypatch, current_slides, old_sidecar)
-    avatar_options = {
-        "enabled": False,
-        "requested": False,
-        "_controlled_failure": {
-            "slide_numbers": [2],
-            "stage": "pre_tts",
-            "reason": "controlled_dirty_slide_failure",
-        },
-    }
+    monkeypatch.setattr(worker_tasks, "_notify_render_failed", lambda *_args, **_kwargs: None)
 
     result = worker_tasks.process_pptx_to_video.run(
         str(project.id),
@@ -2382,7 +2378,7 @@ def test_auto_render_controlled_failure_hook_is_scoped_to_dirty_slide(tmp_path, 
         "en",
         "service",
         False,
-        avatar_options,
+        {"enabled": False, "requested": False},
         [],
         {"provider_preference": "gtts"},
         job_id=job.id,
@@ -2391,17 +2387,35 @@ def test_auto_render_controlled_failure_hook_is_scoped_to_dirty_slide(tmp_path, 
 
     assert result["dirty_page_keys"] == ["s2-p1"]
     assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s2-p1"]
-    dispatched_avatar_options = captured["header"][0].args[6]
-    assert dispatched_avatar_options["_controlled_failure"]["slide_numbers"] == [2]
-    message = worker_tasks._controlled_slide_failure_for_verification(
-        slide_meta=captured["header"][0].args[0],
-        avatar_options=dispatched_avatar_options,
+    dirty_signature = captured["header"][0]
+    assert all(not str(key).startswith("_controlled") for key in dirty_signature.args[6])
+    link_error = dirty_signature.options["link_error"]
+    assert link_error.task == "worker.tasks.mark_project_render_failed"
+    assert list(link_error.args) == [str(project.id), job.id]
+
+    slide_failure = RuntimeError("dirty_slide_task_failed:slide_2:page_key=s2-p1")
+    errback_result = worker_tasks.mark_project_render_failed.run(
+        "slide-task-id",
+        slide_failure,
+        str(project.id),
+        job.id,
     )
-    assert message == "controlled_dirty_slide_failure:slide_2:page_key=s2-p1:stage=pre_tts"
-    assert worker_tasks._controlled_slide_failure_for_verification(
-        slide_meta={"slide_num": 1, "page_key": "s1-p1"},
-        avatar_options=dispatched_avatar_options,
-    ) == ""
+
+    job.refresh_from_db()
+    baseline_job.refresh_from_db()
+    plan = worker_tasks._read_render_plan(project.id, job.id)
+    assert errback_result["status"] == "failed"
+    assert errback_result["job_id"] == job.id
+    assert job.status == "failed"
+    assert job.status != "done"
+    assert job.result_url in {"", None}
+    assert "page_key=s2-p1" in job.error_message
+    assert baseline_job.status == "done"
+    assert baseline_job.result_url == f"{project.id}/{project.id}.mp4"
+    assert baseline_job.srt_url == f"{project.id}/{project.id}.srt"
+    assert sidecar_path.read_bytes() == sidecar_before
+    assert plan["authoritative_final"] is False
+    assert "dirty_slide_results" not in plan.get("stage_results", {})
 
 
 @pytest.mark.django_db

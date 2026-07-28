@@ -139,42 +139,6 @@ def _queue_for_avatar_options(avatar_options: dict[str, Any] | None) -> str:
     return _avatar_queue_name() if bool((avatar_options or {}).get("enabled")) else _render_queue_name()
 
 
-def _controlled_slide_failure_for_verification(
-    *,
-    slide_meta: dict[str, Any],
-    avatar_options: dict[str, Any] | None,
-) -> str:
-    """Return a controlled failure message for isolated verification runs."""
-    hook = (avatar_options or {}).get("_controlled_failure") if isinstance(avatar_options, dict) else None
-    if not isinstance(hook, dict):
-        return ""
-    try:
-        from django.conf import settings
-
-        hook_allowed = bool(getattr(settings, "DEBUG", False))
-    except Exception:
-        hook_allowed = False
-    hook_allowed = hook_allowed or os.environ.get("ENABLE_RENDER_FAILURE_TEST_HOOK", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    hook_allowed = hook_allowed or "pytest" in sys.modules
-    if not hook_allowed:
-        return ""
-
-    slide_num = int(slide_meta.get("slide_num") or 0)
-    page_key = str(slide_meta.get("page_key") or "")
-    slide_numbers = {int(item) for item in hook.get("slide_numbers") or [] if str(item).strip().isdigit()}
-    page_keys = {str(item) for item in hook.get("page_keys") or [] if str(item)}
-    if slide_num not in slide_numbers and page_key not in page_keys:
-        return ""
-    stage = str(hook.get("stage") or "pre_tts").strip() or "pre_tts"
-    reason = str(hook.get("reason") or "controlled_dirty_slide_failure").strip() or "controlled_dirty_slide_failure"
-    return f"{reason}:slide_{slide_num}:page_key={page_key}:stage={stage}"
-
-
 def _env_enabled(name: str, default: bool = False) -> bool:
     raw = str(os.environ.get(name, "")).strip().lower()
     if not raw:
@@ -9011,18 +8975,6 @@ def synthesize_and_render_slide(
     logger.info(
         "synthesize_and_render_slide START slide=%d project=%s", slide_num, project_id
     )
-    controlled_failure = _controlled_slide_failure_for_verification(
-        slide_meta=slide_meta,
-        avatar_options=avatar_options,
-    )
-    if controlled_failure:
-        logger.error(
-            "Controlled render verification failure requested slide=%d project=%s reason=%s",
-            slide_num,
-            project_id,
-            controlled_failure,
-        )
-        raise RuntimeError(controlled_failure)
     self.update_state(
         state="PROGRESS",
         meta={"step": "tts", "slide": slide_num, "project_id": project_id},
