@@ -2341,6 +2341,70 @@ def test_auto_render_dispatches_only_dirty_slide_and_records_non_authoritative_p
 
 
 @pytest.mark.django_db
+def test_auto_render_controlled_failure_hook_is_scoped_to_dirty_slide(tmp_path, monkeypatch):
+    owner = _make_user("auto_dirty_failure_hook_owner")
+    project = Project.objects.create(title="Auto dirty failure hook", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 3)
+    old_results = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(3)
+    ]
+    current_slides = [dict(item) for item in old_results]
+    current_slides[1] = {**current_slides[1], "narration_text": "Edited narration 2", "text": "Edited narration 2", "notes_text": "Edited narration 2"}
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, current_slides, old_sidecar)
+    avatar_options = {
+        "enabled": False,
+        "requested": False,
+        "_controlled_failure": {
+            "slide_numbers": [2],
+            "stage": "pre_tts",
+            "reason": "controlled_dirty_slide_failure",
+        },
+    }
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        avatar_options,
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    assert result["dirty_page_keys"] == ["s2-p1"]
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s2-p1"]
+    dispatched_avatar_options = captured["header"][0].args[6]
+    assert dispatched_avatar_options["_controlled_failure"]["slide_numbers"] == [2]
+    message = worker_tasks._controlled_slide_failure_for_verification(
+        slide_meta=captured["header"][0].args[0],
+        avatar_options=dispatched_avatar_options,
+    )
+    assert message == "controlled_dirty_slide_failure:slide_2:page_key=s2-p1:stage=pre_tts"
+    assert worker_tasks._controlled_slide_failure_for_verification(
+        slide_meta={"slide_num": 1, "page_key": "s1-p1"},
+        avatar_options=dispatched_avatar_options,
+    ) == ""
+
+
+@pytest.mark.django_db
 def test_auto_render_zero_dirty_dispatches_no_slide_tasks(tmp_path, monkeypatch):
     owner = _make_user("auto_zero_dirty_owner")
     project = Project.objects.create(title="Auto zero dirty", user=owner, status="processing")
