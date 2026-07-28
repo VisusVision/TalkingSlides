@@ -10753,7 +10753,7 @@ def process_pptx_to_video(
 
         logger.info(
             "Chord dispatched: chord_id=%s n_slides=%d project=%s queue=%s",
-            async_result.id, n_slides, project_id, pipeline_queue,
+            async_result.id, len(target_slides), project_id, pipeline_queue,
         )
 
         return {
