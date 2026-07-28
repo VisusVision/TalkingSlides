@@ -1697,6 +1697,39 @@ def _planner_manifest_from_render_results(
     )
 
 
+def _planner_manifest_with_captured_inputs(
+    *,
+    project_id: str | int,
+    job_id: str | int | None,
+    artifacts_by_page_key: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Return the pre-dispatch planner manifest with finalized artifacts attached.
+
+    Render results contain derived media paths and durations. Persisting those
+    as planner inputs makes the next auto render see unchanged slides as dirty.
+    The captured pre-dispatch manifest is the authoritative input fingerprint;
+    finalization only adds artifact references needed for reuse eligibility.
+    """
+
+    captured_plan = _read_render_plan(project_id, job_id)
+    current_manifest = captured_plan.get("current_manifest") if isinstance(captured_plan, dict) else None
+    if not isinstance(current_manifest, dict) or not isinstance(current_manifest.get("pages"), dict):
+        return None
+
+    manifest = copy.deepcopy(current_manifest)
+    artifacts = artifacts_by_page_key if isinstance(artifacts_by_page_key, dict) else {}
+    pages = manifest.get("pages")
+    if isinstance(pages, dict):
+        for page_key, page in pages.items():
+            if not isinstance(page, dict):
+                continue
+            page["artifacts"] = copy.deepcopy(dict(artifacts.get(str(page_key)) or {}))
+    manifest["manifest_hash"] = render_fingerprint(
+        {key: value for key, value in manifest.items() if key != "manifest_hash"}
+    )
+    return manifest
+
+
 def _safe_storage_artifact_path(rel_path: Any, *, storage_root: str | Path | None = None) -> Path | None:
     text = str(rel_path or "").strip().replace("\\", "/").lstrip("/")
     if not text or ".." in text.split("/") or re.match(r"^[A-Za-z]:/", text) or text.startswith("/"):
@@ -9704,14 +9737,21 @@ def concat_and_finalize(
                 (str(item.get("tts_normalization_language") or "") for item in ordered if item.get("tts_normalization_language")),
                 "",
             )
-            playback_assets["render_planner_manifest"] = _planner_manifest_from_render_results(
-                project_id=project_id,
-                slides=ordered,
-                voice_id=first_voice_id,
-                effective_language=first_language or "auto",
-                tts_settings=first_tts_settings,
-                avatar_options=avatar_options,
-                artifacts_by_page_key=manifest_artifacts,
+            playback_assets["render_planner_manifest"] = (
+                _planner_manifest_with_captured_inputs(
+                    project_id=project_id,
+                    job_id=job_id,
+                    artifacts_by_page_key=manifest_artifacts,
+                )
+                or _planner_manifest_from_render_results(
+                    project_id=project_id,
+                    slides=ordered,
+                    voice_id=first_voice_id,
+                    effective_language=first_language or "auto",
+                    tts_settings=first_tts_settings,
+                    avatar_options=avatar_options,
+                    artifacts_by_page_key=manifest_artifacts,
+                )
             )
         except Exception:
             logger.warning(

@@ -2202,6 +2202,92 @@ def _planner_baseline_sidecar(project: Project, job: Job, old_results: list[dict
     return sidecar
 
 
+def test_finalized_planner_manifest_preserves_captured_input_identity(tmp_path, monkeypatch):
+    project_id = 42
+    job_id = 77
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project_id, 2)
+
+    captured_slides = [
+        {
+            "index": 0,
+            "slide_num": 1,
+            "page_key": "s1-p1",
+            "source_slide_index": 0,
+            "split_index": 0,
+            "narration_text": "Narration one",
+            "display_text": "Visible one",
+            "subtitle_chunks": ["Narration one"],
+            "rich_text_html": "Visible one",
+            "image_path": "",
+            "whiteboard_mode": True,
+        },
+        {
+            "index": 1,
+            "slide_num": 2,
+            "page_key": "s2-p1",
+            "source_slide_index": 1,
+            "split_index": 0,
+            "narration_text": "Narration two",
+            "display_text": "Visible two",
+            "subtitle_chunks": ["Narration two"],
+            "rich_text_html": "Visible two",
+            "image_path": "",
+            "whiteboard_mode": True,
+        },
+    ]
+    captured_manifest = worker_tasks._planner_manifest_from_render_results(
+        project_id=project_id,
+        slides=captured_slides,
+        voice_id="voice",
+        effective_language="en",
+        tts_settings={"provider_preference": "gtts"},
+        avatar_options={"enabled": False, "requested": False},
+    )
+    worker_tasks._write_render_plan(
+        project_id,
+        job_id,
+        {"current_manifest": captured_manifest},
+    )
+
+    finalized_sidecar = _playback_assets(project_id)
+    artifacts = worker_tasks._planner_artifacts_by_page_key(finalized_sidecar)
+    finalized_manifest = worker_tasks._planner_manifest_with_captured_inputs(
+        project_id=project_id,
+        job_id=job_id,
+        artifacts_by_page_key=artifacts,
+    )
+    assert finalized_manifest is not None
+    assert finalized_manifest["pages"]["s1-p1"]["fingerprint"] == captured_manifest["pages"]["s1-p1"]["fingerprint"]
+    assert finalized_manifest["pages"]["s1-p1"]["inputs"]["image"]["image_token"] == ""
+    assert finalized_manifest["pages"]["s1-p1"]["inputs"]["timing"]["duration_seconds"] is None
+    assert finalized_manifest["pages"]["s1-p1"]["inputs"]["transcript"]["rich_text_html"] == "Visible one"
+    assert finalized_manifest["pages"]["s1-p1"]["artifacts"]["tts_audio"]["rel_path"] == f"{project_id}/audio/slide_001.mp3"
+
+    current_slides = [dict(slide) for slide in captured_slides]
+    current_slides[1] = {
+        **current_slides[1],
+        "narration_text": "Edited narration two",
+        "subtitle_chunks": ["Edited narration two"],
+    }
+    current_manifest = worker_tasks._planner_manifest_from_render_results(
+        project_id=project_id,
+        slides=current_slides,
+        voice_id="voice",
+        effective_language="en",
+        tts_settings={"provider_preference": "gtts"},
+        avatar_options={"enabled": False, "requested": False},
+        artifacts_by_page_key=artifacts,
+    )
+    plan = worker_tasks.plan_render_dirty_slides(
+        previous_manifest=finalized_manifest,
+        current_manifest=current_manifest,
+        storage_root=tmp_path,
+    )
+    assert plan["dirty_slides"] == [2]
+    assert plan["reusable_slides"] == [1]
+
+
 @pytest.mark.django_db
 def test_auto_render_dispatches_only_dirty_slide_and_records_non_authoritative_plan(tmp_path, monkeypatch):
     owner = _make_user("auto_dirty_dispatch_owner")
