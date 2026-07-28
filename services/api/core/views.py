@@ -5357,6 +5357,30 @@ def _render_job_response_avatar_fields(data: dict, avatar_options: dict | None) 
     return data
 
 
+def _request_render_mode(request, *, default: str = "auto", selected: bool = False) -> str:
+    raw = (
+        request.data.get("render_mode")
+        or request.data.get("mode")
+        or request.data.get("renderMode")
+        or ""
+    )
+    force_full = (
+        request.data.get("force_full")
+        or request.data.get("full_render")
+        or request.data.get("forceFull")
+    )
+    if str(force_full or "").strip().lower() in {"1", "true", "yes", "on"}:
+        return "full"
+    mode = str(raw or "").strip().lower().replace("-", "_")
+    if mode in {"full", "force_full", "full_render", "complete", "recovery"}:
+        return "full"
+    if mode in {"selected", "targeted", "partial"}:
+        return "selected"
+    if mode in {"auto", "dirty", "incremental"}:
+        return "auto"
+    return "selected" if selected else default
+
+
 def _active_render_job_response(job: Job, avatar_options: dict | None = None) -> dict:
     data = JobSerializer(job).data
     _render_job_response_avatar_fields(data, avatar_options)
@@ -6689,6 +6713,7 @@ class ProjectUploadView(APIView):
         async_result = _dispatch_celery_task(
             _PROCESS_PROJECT_RENDER_TASK,
             args=task_args,
+            kwargs={"render_mode": "full"},
             queue=_render_queue_name(),
         )
         job.celery_task_id = async_result.id
@@ -6983,6 +7008,7 @@ def _reserve_transcript_rerender_job(
         _project_render_tts_settings(project, use_draft=use_draft),
     ]
     task_kwargs = {"use_draft": True} if use_draft else {}
+    task_kwargs["render_mode"] = "full" if full_rerender or use_draft else "selected"
     render_queue = _queue_for_avatar_options(avatar_options)
     return job, avatar_options, task_args, task_kwargs, render_queue
 
@@ -10971,6 +10997,7 @@ class ProjectRerenderView(APIView):
             job = Job.objects.create(project=project, job_type="video_export", status="pending")
             avatar_options = _resolve_avatar_options_for_project(project, request)
             avatar_options = {**avatar_options, "base_job_id": job.id}
+            requested_render_mode = _request_render_mode(request, default="auto")
             task_args = [
                 str(project.id),
                 saved_path,
@@ -10984,6 +11011,7 @@ class ProjectRerenderView(APIView):
                 _project_render_tts_settings(project, use_draft=use_draft),
             ]
             task_kwargs = {"use_draft": True} if use_draft else {}
+            task_kwargs["render_mode"] = "full" if use_draft else requested_render_mode
             render_queue = _queue_for_avatar_options(avatar_options)
 
         _dispatch_render_job(

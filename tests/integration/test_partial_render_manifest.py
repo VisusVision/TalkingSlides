@@ -2163,6 +2163,503 @@ def _patch_process_dispatch_dependencies(monkeypatch, slides, old_sidecar):
     monkeypatch.setattr(worker_tasks, "_read_playback_sidecar", lambda _project_id: old_sidecar)
 
 
+def _touch_render_artifacts(storage_root: Path, project_id: int, count: int) -> None:
+    for index in range(count):
+        for rel_path in (
+            f"{project_id}/parts/part_{index + 1:03d}.mp4",
+            f"{project_id}/audio/slide_{index + 1:03d}.mp3",
+            f"{project_id}/images/slide_{index + 1:03d}.png",
+        ):
+            path = storage_root / rel_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"artifact-{index}".encode("ascii"))
+
+
+def _planner_baseline_sidecar(project: Project, job: Job, old_results: list[dict], *, avatar_options: dict | None = None) -> dict:
+    sidecar = _old_sidecar_for_results(
+        project.id,
+        old_results,
+        avatar_options=avatar_options or {"enabled": False, "requested": False},
+        effective_language="en",
+    )
+    sidecar.update(
+        {
+            "job_id": job.id,
+            "project_id": project.id,
+            "mp4_rel_path": job.result_url,
+            "srt_rel_path": job.srt_url,
+        }
+    )
+    sidecar["render_planner_manifest"] = worker_tasks._planner_manifest_from_render_results(
+        project_id=project.id,
+        slides=old_results,
+        voice_id="voice",
+        effective_language="en",
+        tts_settings={"provider_preference": "gtts"},
+        avatar_options=avatar_options or {"enabled": False, "requested": False},
+        artifacts_by_page_key=worker_tasks._planner_artifacts_by_page_key(sidecar),
+    )
+    return sidecar
+
+
+def test_finalized_planner_manifest_preserves_captured_input_identity(tmp_path, monkeypatch):
+    project_id = 42
+    job_id = 77
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project_id, 2)
+
+    captured_slides = [
+        {
+            "index": 0,
+            "slide_num": 1,
+            "page_key": "s1-p1",
+            "source_slide_index": 0,
+            "split_index": 0,
+            "narration_text": "Narration one",
+            "display_text": "Visible one",
+            "subtitle_chunks": ["Narration one"],
+            "rich_text_html": "Visible one",
+            "image_path": "",
+            "whiteboard_mode": True,
+        },
+        {
+            "index": 1,
+            "slide_num": 2,
+            "page_key": "s2-p1",
+            "source_slide_index": 1,
+            "split_index": 0,
+            "narration_text": "Narration two",
+            "display_text": "Visible two",
+            "subtitle_chunks": ["Narration two"],
+            "rich_text_html": "Visible two",
+            "image_path": "",
+            "whiteboard_mode": True,
+        },
+    ]
+    captured_manifest = worker_tasks._planner_manifest_from_render_results(
+        project_id=project_id,
+        slides=captured_slides,
+        voice_id="voice",
+        effective_language="en",
+        tts_settings={"provider_preference": "gtts"},
+        avatar_options={"enabled": False, "requested": False},
+    )
+    worker_tasks._write_render_plan(
+        project_id,
+        job_id,
+        {"current_manifest": captured_manifest},
+    )
+
+    finalized_sidecar = _playback_assets(project_id)
+    artifacts = worker_tasks._planner_artifacts_by_page_key(finalized_sidecar)
+    finalized_manifest = worker_tasks._planner_manifest_with_captured_inputs(
+        project_id=project_id,
+        job_id=job_id,
+        artifacts_by_page_key=artifacts,
+    )
+    assert finalized_manifest is not None
+    assert finalized_manifest["pages"]["s1-p1"]["fingerprint"] == captured_manifest["pages"]["s1-p1"]["fingerprint"]
+    assert finalized_manifest["pages"]["s1-p1"]["inputs"]["image"]["image_token"] == ""
+    assert finalized_manifest["pages"]["s1-p1"]["inputs"]["timing"]["duration_seconds"] is None
+    assert finalized_manifest["pages"]["s1-p1"]["inputs"]["transcript"]["rich_text_html"] == "Visible one"
+    assert finalized_manifest["pages"]["s1-p1"]["artifacts"]["tts_audio"]["rel_path"] == f"{project_id}/audio/slide_001.mp3"
+
+    current_slides = [dict(slide) for slide in captured_slides]
+    current_slides[1] = {
+        **current_slides[1],
+        "narration_text": "Edited narration two",
+        "subtitle_chunks": ["Edited narration two"],
+    }
+    current_manifest = worker_tasks._planner_manifest_from_render_results(
+        project_id=project_id,
+        slides=current_slides,
+        voice_id="voice",
+        effective_language="en",
+        tts_settings={"provider_preference": "gtts"},
+        avatar_options={"enabled": False, "requested": False},
+        artifacts_by_page_key=artifacts,
+    )
+    plan = worker_tasks.plan_render_dirty_slides(
+        previous_manifest=finalized_manifest,
+        current_manifest=current_manifest,
+        storage_root=tmp_path,
+    )
+    assert plan["dirty_slides"] == [2]
+    assert plan["reusable_slides"] == [1]
+
+
+@pytest.mark.django_db
+def test_auto_render_dispatches_only_dirty_slide_and_records_non_authoritative_plan(tmp_path, monkeypatch):
+    owner = _make_user("auto_dirty_dispatch_owner")
+    project = Project.objects.create(title="Auto dirty dispatch", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 5)
+    old_results = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(5)
+    ]
+    current_slides = [dict(item) for item in old_results]
+    current_slides[1] = {**current_slides[1], "narration_text": "Edited narration 2", "text": "Edited narration 2", "notes_text": "Edited narration 2"}
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, current_slides, old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    assert result["status"] == "dispatched"
+    assert result["effective_render_mode"] == "auto"
+    assert result["dirty_page_keys"] == ["s2-p1"]
+    assert result["reusable_page_keys"] == ["s1-p1", "s3-p1", "s4-p1", "s5-p1"]
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s2-p1"]
+    assert captured["header"][0].task == "worker.tasks.synthesize_and_render_slide"
+    assert captured["callback"].task == "worker.tasks.record_dirty_render_dispatch_result"
+    plan = worker_tasks._read_render_plan(project.id, job.id)
+    assert plan["authoritative_final"] is False
+    assert plan["baseline_job_id"] == baseline_job.id
+
+
+@pytest.mark.django_db
+def test_auto_render_dirty_slide_failure_errback_preserves_authoritative_output(tmp_path, monkeypatch):
+    owner = _make_user("auto_dirty_failure_errback_owner")
+    project = Project.objects.create(title="Auto dirty failure errback", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 3)
+    old_results = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(3)
+    ]
+    current_slides = [dict(item) for item in old_results]
+    current_slides[1] = {**current_slides[1], "narration_text": "Edited narration 2", "text": "Edited narration 2", "notes_text": "Edited narration 2"}
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(old_sidecar, sort_keys=True), encoding="utf-8")
+    sidecar_before = sidecar_path.read_bytes()
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, current_slides, old_sidecar)
+    monkeypatch.setattr(worker_tasks, "_notify_render_failed", lambda *_args, **_kwargs: None)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    assert result["dirty_page_keys"] == ["s2-p1"]
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s2-p1"]
+    dirty_signature = captured["header"][0]
+    assert all(not str(key).startswith("_controlled") for key in dirty_signature.args[6])
+    link_error = dirty_signature.options["link_error"]
+    assert link_error.task == "worker.tasks.mark_project_render_failed"
+    assert list(link_error.args) == [str(project.id), job.id]
+
+    slide_failure = RuntimeError("dirty_slide_task_failed:slide_2:page_key=s2-p1")
+    errback_result = worker_tasks.mark_project_render_failed.run(
+        "slide-task-id",
+        slide_failure,
+        str(project.id),
+        job.id,
+    )
+
+    job.refresh_from_db()
+    baseline_job.refresh_from_db()
+    plan = worker_tasks._read_render_plan(project.id, job.id)
+    assert errback_result["status"] == "failed"
+    assert errback_result["job_id"] == job.id
+    assert job.status == "failed"
+    assert job.status != "done"
+    assert job.result_url in {"", None}
+    assert "page_key=s2-p1" in job.error_message
+    assert baseline_job.status == "done"
+    assert baseline_job.result_url == f"{project.id}/{project.id}.mp4"
+    assert baseline_job.srt_url == f"{project.id}/{project.id}.srt"
+    assert sidecar_path.read_bytes() == sidecar_before
+    assert plan["authoritative_final"] is False
+    assert "dirty_slide_results" not in plan.get("stage_results", {})
+
+
+@pytest.mark.django_db
+def test_auto_render_zero_dirty_dispatches_no_slide_tasks(tmp_path, monkeypatch):
+    owner = _make_user("auto_zero_dirty_owner")
+    project = Project.objects.create(title="Auto zero dirty", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "_notify_render_completed", lambda *_args, **_kwargs: None)
+    _touch_render_artifacts(tmp_path, project.id, 2)
+    old_results = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(2)
+    ]
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, [dict(item) for item in old_results], old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    job.refresh_from_db()
+    assert result["status"] == "zero_dirty_noop"
+    assert "header" not in captured
+    assert job.status == "done"
+    assert job.result_url == baseline_job.result_url
+    assert worker_tasks._read_render_plan(project.id, job.id)["stage_results"]["zero_dirty"] is True
+
+
+@pytest.mark.django_db
+def test_auto_render_missing_baseline_falls_back_to_full_dispatch(tmp_path, monkeypatch):
+    owner = _make_user("auto_missing_baseline_owner")
+    project = Project.objects.create(title="Auto missing baseline", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    slides = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(3)
+    ]
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, slides, {})
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    assert result["status"] == "dispatched"
+    assert result["effective_render_mode"] == "full"
+    assert result["fallback_reason"] == "MissingBaseline"
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s1-p1", "s2-p1", "s3-p1"]
+    assert captured["callback"].task == "worker.tasks.concat_and_finalize"
+
+
+@pytest.mark.django_db
+def test_auto_render_missing_reusable_artifact_dirties_that_slide(tmp_path, monkeypatch):
+    owner = _make_user("auto_missing_artifact_owner")
+    project = Project.objects.create(title="Auto missing artifact", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 3)
+    missing_audio = tmp_path / f"{project.id}/audio/slide_002.mp3"
+    missing_audio.unlink()
+    old_results = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(3)
+    ]
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, [dict(item) for item in old_results], old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    assert result["dirty_page_keys"] == ["s2-p1"]
+    assert result["reusable_page_keys"] == ["s1-p1", "s3-p1"]
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s2-p1"]
+
+
+@pytest.mark.django_db
+def test_forced_full_render_dispatches_all_slides_even_with_clean_baseline(tmp_path, monkeypatch):
+    owner = _make_user("forced_full_dispatch_owner")
+    project = Project.objects.create(title="Forced full dispatch", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 2)
+    old_results = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(2)
+    ]
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, [dict(item) for item in old_results], old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="full",
+    )
+
+    assert result["effective_render_mode"] == "full"
+    assert result["fallback_reason"] == "ForcedFull"
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s1-p1", "s2-p1"]
+    assert captured["callback"].task == "worker.tasks.concat_and_finalize"
+
+
+@pytest.mark.django_db
+def test_selected_render_dispatches_selected_slide_and_existing_merge_callback(tmp_path, monkeypatch):
+    owner = _make_user("selected_dirty_dispatch_owner")
+    project = Project.objects.create(title="Selected dirty dispatch", user=owner, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    slides = [
+        _without_avatar(_render_result(index=i, page_key=f"s{i + 1}-p1", display_text=f"Slide {i + 1}", narration_text=f"Narration {i + 1}", project_id=project.id))
+        for i in range(3)
+    ]
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, slides, {})
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        ["s2-p1"],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="selected",
+    )
+
+    assert result["effective_render_mode"] == "selected"
+    assert result["dirty_page_keys"] == ["s2-p1"]
+    assert result["reusable_page_keys"] == ["s1-p1", "s3-p1"]
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s2-p1"]
+    assert captured["callback"].task == "worker.tasks.merge_and_finalize_segments"
+
+
+@pytest.mark.django_db
+def test_dirty_dispatch_missing_slide_result_fails_without_promoting_baseline(tmp_path, monkeypatch):
+    owner = _make_user("dirty_dispatch_failure_owner")
+    project = Project.objects.create(title="Dirty dispatch failure", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=50)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "_notify_render_failed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_is_current_render_job", lambda *_args, **_kwargs: True)
+    plan = {
+        "dirty_page_keys": ["s2-p1"],
+        "reusable_page_keys": ["s1-p1"],
+        "baseline_job_id": baseline_job.id,
+        "baseline_result_url": baseline_job.result_url,
+        "baseline_srt_url": baseline_job.srt_url,
+        "stage_results": {},
+    }
+
+    with pytest.raises(RuntimeError, match="dirty_slide_results_missing"):
+        worker_tasks.record_dirty_render_dispatch_result.run([], str(project.id), plan, {"enabled": False}, job.id)
+
+    job.refresh_from_db()
+    baseline_job.refresh_from_db()
+    assert job.status == "failed"
+    assert job.result_url in {"", None}
+    assert baseline_job.status == "done"
+    assert baseline_job.result_url == f"{project.id}/{project.id}.mp4"
+
+
 @pytest.mark.django_db
 def test_process_full_render_dispatches_enabled_avatar_to_slide_tasks(tmp_path, monkeypatch):
     owner = _make_user("full_render_avatar_dispatch_owner")

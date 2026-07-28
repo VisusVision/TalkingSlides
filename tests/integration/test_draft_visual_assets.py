@@ -374,7 +374,7 @@ def test_unsafe_custom_background_ignored_when_whiteboard_selected_allows_rerend
     assert whiteboard_response.data["moderation"] is None
     assert "moderation_status" not in project.draft_data["metadata"]
     assert "draft_moderation" not in project.moderation_summary
-    assert dispatch_calls[0]["task_kwargs"] == {"use_draft": True}
+    assert dispatch_calls[0]["task_kwargs"] == {"use_draft": True, "render_mode": "full"}
 
     slides = worker_tasks._build_render_slides_from_draft(
         project.id,

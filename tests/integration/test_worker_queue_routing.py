@@ -126,6 +126,7 @@ def test_non_avatar_upload_enqueues_render_queue(tmp_path, monkeypatch):
     assert response.status_code == 202
     assert captured.sent[0]["name"] == "worker.tasks.process_pptx_to_video"
     assert captured.sent[0]["options"]["queue"] == "render"
+    assert captured.sent[0]["kwargs"]["render_mode"] == "full"
     assert captured.sent[0]["args"][7]["enabled"] is False
 
 
@@ -146,7 +147,30 @@ def test_avatar_enabled_project_rerender_enqueues_avatar_queue(tmp_path, monkeyp
     assert response.status_code == 202
     assert captured.sent[0]["name"] == "worker.tasks.process_pptx_to_video"
     assert captured.sent[0]["options"]["queue"] == "avatar"
+    assert captured.sent[0]["kwargs"]["render_mode"] == "auto"
     assert captured.sent[0]["args"][7]["enabled"] is True
+
+
+@pytest.mark.django_db
+def test_project_rerender_force_full_mode_is_preserved(tmp_path, monkeypatch):
+    teacher = _make_teacher("queue_rerender_force_full_teacher")
+    project = Project.objects.create(title="Force full queue rerender", user=teacher)
+    _prepare_lesson_upload(tmp_path, project)
+    captured = _capture_apply_async(monkeypatch)
+    _force_avatar_options(monkeypatch, False)
+
+    request = APIRequestFactory().post(
+        f"/api/v1/projects/{project.id}/rerender/",
+        {"force_full": True},
+        format="json",
+    )
+    force_authenticate(request, user=teacher)
+
+    with override_settings(STORAGE_ROOT=str(tmp_path), CELERY_RENDER_QUEUE="render", CELERY_AVATAR_QUEUE="avatar"):
+        response = views.ProjectRerenderView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 202
+    assert captured.sent[0]["kwargs"]["render_mode"] == "full"
 
 
 @pytest.mark.django_db
@@ -182,6 +206,7 @@ def test_transcript_rerender_enqueues_render_queue_when_avatar_disabled(tmp_path
 
     assert response.status_code == 200
     assert captured.sent[0]["options"]["queue"] == "render"
+    assert captured.sent[0]["kwargs"]["render_mode"] == "selected"
     assert captured.sent[0]["args"][8] == ["s1-p1"]
 
 
@@ -227,4 +252,5 @@ def test_structural_transcript_rerender_uses_queue_for_avatar_state(
     assert response.status_code == 200
     assert response.data["rerender_strategy"] == "full"
     assert captured.sent[0]["options"]["queue"] == expected_queue
+    assert captured.sent[0]["kwargs"]["render_mode"] == "full"
     assert captured.sent[0]["args"][8] == []

@@ -135,7 +135,11 @@ def test_save_and_rerender_queues_draft_mode_without_mutating_active_page(tmp_pa
     assert response.status_code == 200
     assert response.data["rerender_strategy"] == "draft_full"
     assert sent_tasks
-    assert sent_tasks[0][1]["kwargs"] == {"use_draft": True, "job_id": response.data["rerender_job"]["id"]}
+    assert sent_tasks[0][1]["kwargs"] == {
+        "use_draft": True,
+        "job_id": response.data["rerender_job"]["id"],
+        "render_mode": "full",
+    }
     page.refresh_from_db()
     assert page.narration_text == "Active queue text"
 
@@ -533,4 +537,7 @@ def test_non_draft_trigger_rerender_path_still_updates_active_page(tmp_path, mon
     page.refresh_from_db()
     assert response.status_code == 200
     assert page.narration_text == "Active direct rerender"
-    assert sent_tasks[0][1].get("kwargs") == {"job_id": response.data["rerender_job"]["id"]}
+    assert sent_tasks[0][1].get("kwargs") == {
+        "job_id": response.data["rerender_job"]["id"],
+        "render_mode": "selected",
+    }
