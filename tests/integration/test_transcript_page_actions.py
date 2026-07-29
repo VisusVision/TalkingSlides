@@ -666,6 +666,48 @@ def test_worker_sync_reorder_preserves_split_page_source_identity():
 
 
 @pytest.mark.django_db
+def test_finalized_timeline_reorder_preserves_existing_split_page_source_identity():
+    _ensure_transcript_table()
+    from worker import tasks as worker_tasks
+
+    teacher = _make_teacher("timeline_split_reorder_teacher")
+    project = Project.objects.create(title="Timeline split reorder", user=teacher)
+    split_page = _make_page(
+        project,
+        order=4,
+        page_key="s2-p1-x1",
+        original_text="",
+        narration_text="Inserted narration",
+        source_slide_index=1,
+        split_index=1,
+    )
+
+    worker_tasks._update_transcript_timeline(
+        project.id,
+        [
+            {
+                "order": 0,
+                "page_key": split_page.page_key,
+                "source_slide_index": 0,
+                "split_index": 0,
+                "start": 0.0,
+                "end": 3.5,
+                "duration": 3.5,
+                "chunk_timeline": [{"start": 0.0, "end": 3.0, "text": "Inserted narration"}],
+            }
+        ],
+    )
+
+    split_page.refresh_from_db()
+    assert split_page.order == 0
+    assert split_page.source_slide_index == 1
+    assert split_page.split_index == 1
+    assert split_page.start_seconds == 0.0
+    assert split_page.end_seconds == 3.5
+    assert split_page.duration_seconds == 3.5
+
+
+@pytest.mark.django_db
 def test_worker_sync_merge_excludes_soft_deleted_merged_page():
     _ensure_transcript_table()
     from worker import tasks as worker_tasks

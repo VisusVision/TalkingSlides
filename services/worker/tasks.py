@@ -6451,6 +6451,7 @@ def _update_transcript_timeline(project_id: str | int, page_timeline: list[dict[
         page = existing.get(page_key)
         if page is not None and (not bool(getattr(page, "is_active", True)) or getattr(page, "deleted_at", None) is not None):
             continue
+        is_new_page = page is None
         if page is None:
             page = TranscriptPage(
                 project=project,
@@ -6460,8 +6461,9 @@ def _update_transcript_timeline(project_id: str | int, page_timeline: list[dict[
                 split_index=int(item.get("split_index") or 0),
             )
         page.order = int(item.get("order") or 0)
-        page.source_slide_index = int(item.get("source_slide_index") or 0)
-        page.split_index = int(item.get("split_index") or 0)
+        if is_new_page:
+            page.source_slide_index = int(item.get("source_slide_index") or 0)
+            page.split_index = int(item.get("split_index") or 0)
         page.is_active = True
         page.deleted_at = None
         page.start_seconds = float(item.get("start") or 0.0)
