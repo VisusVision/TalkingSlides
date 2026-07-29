@@ -262,6 +262,9 @@ def plan_render_dirty_slides(
     previous_pages = _manifest_pages(previous_manifest) if _valid_manifest(previous_manifest) else {}
     previous_valid = _valid_manifest(previous_manifest)
     current_valid = _valid_manifest(current_manifest)
+    current_order = _ordered_current_page_keys(current_manifest, current_pages)
+    previous_order = _ordered_current_page_keys(previous_manifest, previous_pages) if previous_valid else []
+    sequence_changed = bool(previous_valid and current_valid and previous_order != current_order)
     required = tuple(str(item) for item in required_artifacts if str(item))
 
     rows: list[dict[str, Any]] = []
@@ -269,7 +272,7 @@ def plan_render_dirty_slides(
     reusable: list[int] = []
     reasons_by_slide: dict[str, list[str]] = {}
 
-    for page_key in _ordered_current_page_keys(current_manifest, current_pages):
+    for page_key in current_order:
         current_page = current_pages[page_key]
         previous_page = previous_pages.get(page_key)
         reasons: list[str] = []
@@ -281,8 +284,6 @@ def plan_render_dirty_slides(
             reasons.append(REASON_NEW_SLIDE)
         else:
             reasons.extend(_input_change_reasons(previous_page, current_page))
-            if _page_position(previous_page) != _page_position(current_page):
-                reasons.append(REASON_SLIDE_ORDER_CHANGED)
             reasons.extend(
                 _artifact_reasons(
                     previous_page,
@@ -347,6 +348,7 @@ def plan_render_dirty_slides(
         "reasons": reasons_by_slide,
         "global_reasons": _ordered_reasons(global_reasons),
         "slides": rows,
+        "sequence_changed": sequence_changed,
         "actual_behavior_changed": False,
     }
 

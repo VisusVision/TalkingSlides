@@ -2341,6 +2341,76 @@ def test_auto_render_dispatches_only_dirty_slide_and_records_non_authoritative_p
 
 
 @pytest.mark.django_db
+def test_auto_insert_dispatches_only_inserted_page_and_reuses_shifted_pages(tmp_path, monkeypatch):
+    owner = _make_user("auto_insert_dispatch_owner")
+    project = Project.objects.create(title="Auto insert dispatch", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 3)
+    old_results = [
+        _without_avatar(
+            _render_result(
+                index=i,
+                page_key=f"s{i + 1}-p1",
+                display_text=f"Slide {i + 1}",
+                narration_text=f"Narration {i + 1}",
+                project_id=project.id,
+            )
+        )
+        for i in range(3)
+    ]
+    inserted = _without_avatar(
+        _render_result(
+            index=1,
+            page_key="s1-p2",
+            display_text="Inserted slide",
+            narration_text="Inserted narration",
+            project_id=project.id,
+        )
+    )
+    current_slides = [dict(old_results[0]), inserted, dict(old_results[1]), dict(old_results[2])]
+    for index, slide in enumerate(current_slides):
+        slide["index"] = index
+        slide["slide_num"] = index + 1
+        slide["slide_number"] = index + 1
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, current_slides, old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    assert result["status"] == "dispatched"
+    assert result["dirty_page_keys"] == ["s1-p2"]
+    assert result["reusable_page_keys"] == ["s1-p1", "s2-p1", "s3-p1"]
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s1-p2"]
+    assert captured["callback"].task == "worker.tasks.record_dirty_render_dispatch_result"
+    plan = worker_tasks._read_render_plan(project.id, job.id)
+    assert plan["assembly_required"] is True
+    assert plan["expected_ordered_page_keys"] == ["s1-p1", "s1-p2", "s2-p1", "s3-p1"]
+
+
+@pytest.mark.django_db
 def test_auto_render_dirty_slide_failure_errback_preserves_authoritative_output(tmp_path, monkeypatch):
     owner = _make_user("auto_dirty_failure_errback_owner")
     project = Project.objects.create(title="Auto dirty failure errback", user=owner, status="processing")
@@ -2463,6 +2533,77 @@ def test_auto_render_zero_dirty_dispatches_no_slide_tasks(tmp_path, monkeypatch)
     assert job.status == "done"
     assert job.result_url == baseline_job.result_url
     assert worker_tasks._read_render_plan(project.id, job.id)["stage_results"]["zero_dirty"] is True
+
+
+@pytest.mark.django_db
+def test_auto_reorder_dispatches_assembly_without_slide_tasks(tmp_path, monkeypatch):
+    owner = _make_user("auto_reorder_assembly_owner")
+    project = Project.objects.create(title="Auto reorder assembly", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 3)
+    old_results = [
+        _without_avatar(
+            _render_result(
+                index=i,
+                page_key=f"s{i + 1}-p1",
+                display_text=f"Slide {i + 1}",
+                narration_text=f"Narration {i + 1}",
+                project_id=project.id,
+            )
+        )
+        for i in range(3)
+    ]
+    current_slides = [dict(old_results[1]), dict(old_results[0]), dict(old_results[2])]
+    for index, slide in enumerate(current_slides):
+        slide["index"] = index
+        slide["slide_num"] = index + 1
+        slide["slide_number"] = index + 1
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    _patch_process_dispatch_dependencies(monkeypatch, current_slides, old_sidecar)
+    captured: dict[str, Any] = {}
+
+    def fake_apply_async(*, args, queue):
+        captured["args"] = args
+        captured["queue"] = queue
+        return SimpleNamespace(id="assembly-only-task")
+
+    monkeypatch.setattr(worker_tasks.record_dirty_render_dispatch_result, "apply_async", fake_apply_async)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        [],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="auto",
+    )
+
+    assert result["status"] == "assembly_only_dispatched"
+    assert result["dirty_page_keys"] == []
+    assert result["reusable_page_keys"] == ["s2-p1", "s1-p1", "s3-p1"]
+    assert result["assembly_required"] is True
+    assert captured["args"][0] == []
+    assert captured["args"][1] == str(project.id)
+    assert captured["args"][-1] == job.id
+    plan = worker_tasks._read_render_plan(project.id, job.id)
+    assert plan["assembly_required"] is True
+    assert plan["expected_ordered_page_keys"] == ["s2-p1", "s1-p1", "s3-p1"]
+    assert plan["stage_results"]["assembly_only"] is True
 
 
 @pytest.mark.django_db

@@ -2057,10 +2057,22 @@ def _build_dirty_dispatch_plan(
                 current_manifest=current_manifest,
                 storage_root=STORAGE_ROOT,
             )
-            dirty_numbers = {int(item) for item in planner_output.get("dirty_slides") or []}
-            reusable_numbers = {int(item) for item in planner_output.get("reusable_slides") or []}
-            dirty_page_keys = {key for key, number in page_numbers_by_key.items() if number in dirty_numbers}
-            reusable_page_keys = {key for key, number in page_numbers_by_key.items() if number in reusable_numbers}
+            current_page_key_set = set(ordered_page_keys)
+            planner_rows = [
+                row
+                for row in planner_output.get("slides") or []
+                if isinstance(row, dict) and str(row.get("page_key") or "") in current_page_key_set
+            ]
+            dirty_page_keys = {
+                str(row.get("page_key"))
+                for row in planner_rows
+                if str(row.get("status") or "") == "dirty"
+            }
+            reusable_page_keys = {
+                str(row.get("page_key"))
+                for row in planner_rows
+                if str(row.get("status") or "") == "reusable"
+            }
             if mode == "selected":
                 dirty_page_keys.update(selected_page_keys)
                 reusable_page_keys.difference_update(selected_page_keys)
@@ -2110,6 +2122,7 @@ def _build_dirty_dispatch_plan(
         "dirty_slide_numbers": dirty_slide_numbers,
         "reusable_slide_numbers": reusable_slide_numbers,
         "expected_ordered_page_keys": ordered_page_keys,
+        "assembly_required": bool(planner_output.get("sequence_changed")),
         "fallback_reason": fallback_reason,
         "invalidation_reasons": planner_output.get("reasons") or {},
         "global_reasons": planner_output.get("global_reasons") or [],
@@ -10991,6 +11004,42 @@ def process_pptx_to_video(
         if captured_plan.get("effective_mode") == "full" or not dirty_page_keys:
             if captured_plan.get("effective_mode") == "full":
                 target_slides = slides
+            elif (
+                not dirty_page_keys
+                and captured_plan.get("baseline_result_url")
+                and captured_plan.get("assembly_required")
+                and reusable_page_keys
+            ):
+                captured_plan["stage_results"] = {
+                    **dict(captured_plan.get("stage_results") or {}),
+                    "assembly_only": True,
+                    "dispatched_at_unix": int(time.time()),
+                }
+                _write_render_plan(project_id, render_job_id, captured_plan)
+                _update_render_job(project_id, render_job_id, progress=15)
+                async_result = record_dirty_render_dispatch_result.apply_async(
+                    args=[[], project_id, captured_plan, avatar_cfg, render_job_id],
+                    queue=pipeline_queue,
+                )
+                logger.info(
+                    "Render plan assembly only project=%s job=%s mode=%s reusable=%s task_id=%s",
+                    project_id,
+                    render_job_id,
+                    captured_plan.get("render_mode"),
+                    len(reusable_page_keys),
+                    async_result.id,
+                )
+                return {
+                    "status": "assembly_only_dispatched",
+                    "task_id": async_result.id,
+                    "project_id": project_id,
+                    "job_id": render_job_id,
+                    "render_mode": captured_plan.get("render_mode"),
+                    "dirty_page_keys": [],
+                    "reusable_page_keys": list(captured_plan.get("reusable_page_keys") or []),
+                    "authoritative_final": False,
+                    "assembly_required": True,
+                }
             elif not dirty_page_keys and captured_plan.get("baseline_result_url"):
                 captured_plan["stage_results"] = {
                     **dict(captured_plan.get("stage_results") or {}),
