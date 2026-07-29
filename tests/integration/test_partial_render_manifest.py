@@ -2404,6 +2404,9 @@ def test_auto_insert_dispatches_only_inserted_page_and_reuses_shifted_pages(tmp_
     assert result["dirty_page_keys"] == ["s1-p2"]
     assert result["reusable_page_keys"] == ["s1-p1", "s2-p1", "s3-p1"]
     assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s1-p2"]
+    dirty_slide = captured["header"][0].args[0]
+    assert dirty_slide["part_out"].startswith(str(tmp_path / str(project.id) / "renders" / str(job.id) / "parts"))
+    assert dirty_slide["audio_out"].startswith(str(tmp_path / str(project.id) / "renders" / str(job.id) / "audio"))
     assert captured["callback"].task == "worker.tasks.record_dirty_render_dispatch_result"
     plan = worker_tasks._read_render_plan(project.id, job.id)
     assert plan["assembly_required"] is True

@@ -1620,6 +1620,29 @@ def _job_render_final_rel_prefix(project_id: str | int, job_id: str | int | None
     return f"{project_id}/renders/{job_part}/final"
 
 
+def _job_scoped_dirty_slide_outputs(
+    *,
+    project_id: str | int,
+    job_id: str | int | None,
+    slide: dict[str, Any],
+) -> dict[str, Any]:
+    """Keep partial outputs from overwriting reusable position-based artifacts."""
+    page_key = str(slide.get("page_key") or "page").strip() or "page"
+    safe_page_key = re.sub(r"[^A-Za-z0-9._-]+", "-", page_key).strip(".-") or "page"
+    page_digest = hashlib.sha256(page_key.encode("utf-8")).hexdigest()[:10]
+    output_stem = f"{safe_page_key}-{page_digest}"
+    job_part = str(job_id or "unknown").strip() or "unknown"
+    output_root = Path(STORAGE_ROOT) / str(project_id) / "renders" / job_part
+    audio_dir = output_root / "audio"
+    parts_dir = output_root / "parts"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    scoped = dict(slide)
+    scoped["audio_out"] = str(audio_dir / f"{output_stem}.mp3")
+    scoped["part_out"] = str(parts_dir / f"{output_stem}.mp4")
+    return scoped
+
+
 def _ffprobe_media_contract(path: str | Path) -> dict[str, Any]:
     media_path = Path(path)
     cmd = [
@@ -11078,6 +11101,20 @@ def process_pptx_to_video(
                 captured_plan["fallback_reason"] = captured_plan.get("fallback_reason") or "MissingBaseline"
                 target_slides = slides
                 _write_render_plan(project_id, render_job_id, captured_plan)
+
+        if (
+            captured_plan.get("effective_mode") in {"auto", "selected"}
+            and captured_plan.get("baseline_job_id")
+            and target_slides
+        ):
+            target_slides = [
+                _job_scoped_dirty_slide_outputs(
+                    project_id=project_id,
+                    job_id=render_job_id,
+                    slide=slide,
+                )
+                for slide in target_slides
+            ]
 
         logger.info(
             "Render plan created project=%s job=%s mode=%s effective_mode=%s baseline_job=%s dirty=%s reusable=%s fallback=%s",
