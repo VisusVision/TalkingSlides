@@ -46,6 +46,17 @@ def _cv2_without_cascade():
     )
 
 
+def test_api_opencv_requirement_excludes_incompatible_major_version():
+    requirements = (API_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    opencv_requirement = next(
+        line.replace(" ", "")
+        for line in requirements
+        if line.strip().startswith("opencv-python-headless")
+    )
+
+    assert opencv_requirement == "opencv-python-headless>=4.10,<5"
+
+
 @pytest.mark.django_db
 def test_blank_active_avatar_source_fails_validation_and_readiness(tmp_path, monkeypatch):
     from avatar import simple_input
