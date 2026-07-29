@@ -3703,6 +3703,15 @@ def _semantic_avatar_layout(layout: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _avatar_output_visible(avatar_options: dict[str, Any] | None) -> bool:
+    options = dict(avatar_options or {})
+    if "avatar_visible" in options:
+        return bool(options.get("avatar_visible"))
+    if "default_visible" in options:
+        return bool(options.get("default_visible"))
+    return bool(_publisher_avatar_layout_from_options(options)["visible"])
+
+
 def _result_avatar_layout(
     result: dict[str, Any],
     avatar_options: dict[str, Any] | None,
@@ -3711,6 +3720,18 @@ def _result_avatar_layout(
     if isinstance(raw, dict) and raw:
         return dict(raw)
     return _resolve_slide_avatar_layout(result, avatar_options)
+
+
+def _effective_result_avatar_layout(
+    result: dict[str, Any],
+    avatar_options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    effective = _semantic_avatar_layout(_result_avatar_layout(result, avatar_options))
+    if "avatar_visible" in result:
+        effective["visible"] = bool(result.get("avatar_visible"))
+    elif not _avatar_output_visible(avatar_options):
+        effective["visible"] = False
+    return effective
 
 
 def _normalize_scene_mode_for_render(
@@ -9753,7 +9774,7 @@ def concat_and_finalize(
                         "fallback_chain": list(result.get("avatar_fallback_chain") or []),
                         "segment_rel_path": str(result.get("avatar_segment_rel_path") or ""),
                         "avatar_layout": _result_avatar_layout(result, avatar_options),
-                        "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(result, avatar_options)),
+                        "effective_avatar_layout": _effective_result_avatar_layout(result, avatar_options),
                         "duration": round(duration, 3),
                     }
                 )
@@ -9809,7 +9830,7 @@ def concat_and_finalize(
                 "slide_num": int(item.get("slide_num") or 0),
                 "page_key": str(item.get("page_key") or ""),
                 "avatar_layout": _result_avatar_layout(item, avatar_options),
-                "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_options)),
+                "effective_avatar_layout": _effective_result_avatar_layout(item, avatar_options),
                 "avatar_layout_source": str(_result_avatar_layout(item, avatar_options).get("source_level") or "system"),
                 "avatar_layout_sources": dict(_result_avatar_layout(item, avatar_options).get("sources") or {}),
             }
@@ -9885,7 +9906,7 @@ def concat_and_finalize(
                     "avatar_fallback_chain": list(item.get("avatar_fallback_chain") or []),
                     "avatar_motion_validation": dict(item.get("avatar_motion_validation") or {}),
                     "avatar_layout": _result_avatar_layout(item, avatar_options),
-                    "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_options)),
+                    "effective_avatar_layout": _effective_result_avatar_layout(item, avatar_options),
                 }
                 for item in ordered
             ],
@@ -9938,7 +9959,7 @@ def concat_and_finalize(
                 "avatar_failure_reason": str(item.get("avatar_failure_reason") or item.get("avatar_error") or ""),
                 "avatar_engine_selected": str(item.get("avatar_engine_selected") or item.get("avatar_engine_used") or "none"),
                 "avatar_layout": _result_avatar_layout(item, avatar_options),
-                "effective_avatar_layout": _semantic_avatar_layout(_result_avatar_layout(item, avatar_options)),
+                "effective_avatar_layout": _effective_result_avatar_layout(item, avatar_options),
                 "source_render_method": str(item.get("source_render_method") or ""),
                 "source_render_warnings": list(item.get("source_render_warnings") or []),
                 "source_render_details": _details_list_from_value(item.get("source_render_details")),
@@ -9952,7 +9973,7 @@ def concat_and_finalize(
             for idx, item in enumerate(ordered)
         ]
 
-        if avatar_segments and not playback_assets["avatar_burned_in"]:
+        if avatar_segments and not playback_assets["avatar_burned_in"] and _avatar_output_visible(avatar_options):
             try:
                 avatar_track_dir = output_dir / "avatar"
                 avatar_track_dir.mkdir(parents=True, exist_ok=True)
@@ -9972,7 +9993,7 @@ def concat_and_finalize(
                         "track_rel_path": f"{output_rel_prefix}/avatar/avatar_track.mp4",
                         "default_position": publisher_avatar_layout["position"],
                         "default_size": publisher_avatar_layout["size"],
-                        "default_visible": bool(publisher_avatar_layout["visible"]),
+                        "default_visible": _avatar_output_visible(avatar_options),
                         "publisher_avatar_layout": publisher_avatar_layout,
                         "layout_by_page": avatar_layout_pages,
                         "segments": avatar_segments,
@@ -10141,6 +10162,15 @@ def concat_and_finalize(
             background_avatar = {"status": "reused", "queued": False}
         elif playback_assets["avatar_burned_in"]:
             background_avatar = {"status": "baked", "queued": False}
+        elif avatar_options is not None and not _avatar_output_visible(avatar_options):
+            _mark_project_avatar_state(
+                project_id,
+                status="none",
+                message="",
+                job_id="",
+                clear_output=True,
+            )
+            background_avatar = {"status": "hidden", "queued": False}
         elif avatar_options is not None:
             background_avatar = _queue_lesson_avatar_overlay_after_base_render(
                 project_id=project_id,
