@@ -1634,6 +1634,78 @@ def test_catalog_detail_secure_stream_without_hls_exposes_authorized_mp4_fallbac
 
 
 @pytest.mark.django_db
+def test_catalog_detail_ignores_sidecar_from_newer_uncompleted_job(tmp_path):
+    cache.clear()
+    teacher = _make_teacher("sidecar_split_teacher")
+    project = Project.objects.create(
+        title="Sidecar split brain guard",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    old_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        result_url=f"{project.id}/renders/{project.id}/final/{project.id}.mp4",
+        srt_url=f"{project.id}/renders/{project.id}/final/{project.id}.srt",
+    )
+    newer_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="running",
+        result_url="",
+        srt_url="",
+    )
+    project_dir = tmp_path / str(project.id)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "playback_assets.json").write_text(
+        json.dumps(
+            {
+                "job_id": newer_job.id,
+                "mp4_rel_path": f"{project.id}/renders/{newer_job.id}/final/{project.id}.mp4",
+                "hls": {
+                    "enabled": True,
+                    "manifest_rel_path": f"{project.id}/renders/{newer_job.id}/final/drm/hls/index.m3u8",
+                    "encrypted": False,
+                    "packaging_status": "packaged",
+                },
+                "avatar": {
+                    "track_rel_path": f"{project.id}/renders/{newer_job.id}/final/avatar/avatar_track.mp4",
+                    "default_position": "top-right",
+                    "default_size": "medium",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    request = APIRequestFactory().get(f"/api/v1/catalog/{project.id}/")
+    request.session = _DummyRequest._DummySession()
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+        LESSON_PROTECTION_ALLOW_MP4_FALLBACK=True,
+        ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+    ):
+        response = views.CatalogDetailView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 200
+    assert response.data["stream_url"].startswith("http://testserver/api/v1/stream/")
+    assert response.data["streaming"]["hls"]["enabled"] is False
+    assert response.data["streaming"]["hls"]["manifest_url"] == ""
+    assert response.data["avatar_overlay"]["enabled"] is False
+
+    token = response.data["stream_url"].rstrip("/").split("/")[-1]
+    token_job_id, file_type, rel_path, _grant_id, _bind_key = views.validate_media_token(token)
+    assert token_job_id == old_job.id
+    assert file_type == "video"
+    assert rel_path == ""
+
+
+@pytest.mark.django_db
 def test_catalog_detail_reuses_same_session_grant_for_rapid_duplicate_requests(tmp_path):
     cache.clear()
     student = User.objects.create_user(username="same_session_student", password="pw")
