@@ -10032,7 +10032,42 @@ def concat_and_finalize(
         if skip_background_avatar_overlay:
             reused_avatar_payload = _copy_reused_avatar_sidecar_state(playback_assets, previous_playback_assets)
 
+        if not _is_current_render_job(project_id, job_id):
+            _mark_stale_render_job_skipped(job_id)
+            logger.warning(
+                "concat_and_finalize promotion rejected before sidecar write as stale project_id=%s job_id=%s celery_task_id=%s",
+                project_id,
+                job_id,
+                celery_task_id,
+            )
+            return {
+                "status": "stale",
+                "skipped": True,
+                "project_id": int(project_id),
+                "job_id": int(job_id) if job_id else None,
+                "reason": "stale_render_job_before_promotion",
+                "final_video": final_video,
+            }
+
         _write_playback_sidecar(project_id, playback_assets)
+
+        if not _is_current_render_job(project_id, job_id):
+            _mark_stale_render_job_skipped(job_id)
+            logger.warning(
+                "concat_and_finalize promotion rejected after sidecar write as stale project_id=%s job_id=%s celery_task_id=%s",
+                project_id,
+                job_id,
+                celery_task_id,
+            )
+            return {
+                "status": "stale",
+                "skipped": True,
+                "project_id": int(project_id),
+                "job_id": int(job_id) if job_id else None,
+                "reason": "stale_render_job_after_sidecar",
+                "final_video": final_video,
+            }
+
         background_avatar = {"status": "none", "queued": False}
         if skip_background_avatar_overlay and reused_avatar_payload:
             background_avatar = {"status": "reused", "queued": False}

@@ -2154,3 +2154,67 @@ def test_media_stream_view_allows_browser_like_grant_bound_request(tmp_path, mon
         response = views.MediaStreamView.as_view()(request, token=token)
 
     assert response.status_code == 200
+
+@pytest.mark.django_db
+def test_concat_finalize_late_stale_before_sidecar_preserves_previous_authority(tmp_path, monkeypatch):
+    teacher = _make_teacher("late_stale_teacher")
+    project = Project.objects.create(title="Late stale lesson", user=teacher, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    part_path = tmp_path / str(project.id) / "parts" / "slide-1.mp4"
+    audio_path = tmp_path / str(project.id) / "audio" / "slide-1.wav"
+    slide_path = tmp_path / str(project.id) / "images" / "slide-1.png"
+    for path in (part_path, audio_path, slide_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+
+    import scripts.ffmpeg_helpers as ffmpeg_helpers
+
+    def fake_concat(_parts, out_path):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"not-a-real-mp4")
+        return out_path
+
+    current_checks = []
+
+    def fake_is_current(_project_id, _job_id):
+        current_checks.append((_project_id, _job_id))
+        return len(current_checks) == 1
+
+    monkeypatch.setattr(ffmpeg_helpers, "concat_videos", fake_concat)
+    monkeypatch.setattr(worker_tasks, "_is_current_render_job", fake_is_current)
+    monkeypatch.setattr(worker_tasks, "_write_playback_sidecar", lambda *_args, **_kwargs: pytest.fail("stale job must not write playback sidecar"))
+    monkeypatch.setattr(worker_tasks, "_sync_lesson_segments", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_update_transcript_timeline", lambda *_args, **_kwargs: None)
+
+    render_result = {
+        "index": 0,
+        "slide_num": 1,
+        "page_key": "slide-1",
+        "part_path": str(part_path),
+        "slide_path": str(slide_path),
+        "tts_audio_path": str(audio_path),
+        "duration": 1.0,
+        "pause_seconds": 0.0,
+        "text": "Safe narration.",
+        "original_text": "Safe narration.",
+        "subtitle_chunks": ["Safe narration."],
+        "tts_settings": {},
+    }
+
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        result = worker_tasks.concat_and_finalize.run(
+            [render_result],
+            str(project.id),
+            job_id=job.id,
+            job_scoped_output=True,
+            validate_media_contract=False,
+        )
+
+    assert result["status"] == "stale"
+    assert result["reason"] == "stale_render_job_before_promotion"
+    job.refresh_from_db()
+    assert job.status == "failed"
+    assert job.result_url == ""
+    assert job.srt_url == ""
+    assert job.error_message == "stale_render_job_skipped"
+    assert not (tmp_path / str(project.id) / "playback_assets.json").exists()
