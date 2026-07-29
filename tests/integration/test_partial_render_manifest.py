@@ -2625,6 +2625,66 @@ def test_selected_render_dispatches_selected_slide_and_existing_merge_callback(t
 
 
 @pytest.mark.django_db
+def test_selected_render_with_reusable_baseline_uses_atomic_assembly_callback(tmp_path, monkeypatch):
+    owner = _make_user("selected_atomic_dispatch_owner")
+    project = Project.objects.create(title="Selected atomic dispatch", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="pending", progress=0)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    _touch_render_artifacts(tmp_path, project.id, 3)
+    old_results = [
+        _without_avatar(
+            _render_result(
+                index=i,
+                page_key=f"s{i + 1}-p1",
+                display_text=f"Slide {i + 1}",
+                narration_text=f"Narration {i + 1}",
+                project_id=project.id,
+            )
+        )
+        for i in range(3)
+    ]
+    current_slides = [dict(item) for item in old_results]
+    current_slides[1] = {
+        **current_slides[1],
+        "narration_text": "Edited narration 2",
+        "text": "Edited narration 2",
+        "notes_text": "Edited narration 2",
+    }
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    captured = _dispatch_capture(monkeypatch)
+    _patch_process_dispatch_dependencies(monkeypatch, current_slides, old_sidecar)
+
+    result = worker_tasks.process_pptx_to_video.run(
+        str(project.id),
+        str(tmp_path / "lesson.txt"),
+        "voice",
+        0.25,
+        "en",
+        "service",
+        False,
+        {"enabled": False, "requested": False},
+        ["s2-p1"],
+        {"provider_preference": "gtts"},
+        job_id=job.id,
+        render_mode="selected",
+    )
+
+    assert result["effective_render_mode"] == "selected"
+    assert result["dirty_page_keys"] == ["s2-p1"]
+    assert result["reusable_page_keys"] == ["s1-p1", "s3-p1"]
+    assert [signature.args[0]["page_key"] for signature in captured["header"]] == ["s2-p1"]
+    assert captured["callback"].task == "worker.tasks.record_dirty_render_dispatch_result"
+
+
+@pytest.mark.django_db
 def test_dirty_dispatch_missing_slide_result_fails_without_promoting_baseline(tmp_path, monkeypatch):
     owner = _make_user("dirty_dispatch_failure_owner")
     project = Project.objects.create(title="Dirty dispatch failure", user=owner, status="processing")

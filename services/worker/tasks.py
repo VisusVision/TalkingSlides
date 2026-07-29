@@ -11145,7 +11145,19 @@ def process_pptx_to_video(
             _slide_render_signature(slide)
             for slide in target_slides
         )
-        if rerender_set and captured_plan.get("effective_mode") == "selected":
+        selected_atomic_partial = bool(
+            captured_plan.get("effective_mode") == "selected"
+            and captured_plan.get("baseline_job_id")
+            and reusable_page_keys
+        )
+        if selected_atomic_partial:
+            callback = record_dirty_render_dispatch_result.s(
+                project_id,
+                captured_plan,
+                avatar_cfg,
+                render_job_id,
+            ).set(queue=pipeline_queue)
+        elif rerender_set and captured_plan.get("effective_mode") == "selected":
             callback = merge_and_finalize_segments.s(
                 project_id,
                 slides,
