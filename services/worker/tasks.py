@@ -1748,8 +1748,16 @@ def _render_result_from_reusable_segment(
     audio_abs = _resolve_existing_artifact_path(segment.get("tts_audio"), storage_root=storage_root)
     transcript = _manifest_page_input(page, "inputs", "transcript", default={})
     transcript = transcript if isinstance(transcript, dict) else {}
+    page_index = page.get("index")
+    segment_index = segment.get("index")
     return {
-        "index": int(page.get("index") or segment.get("index") or 0),
+        "index": int(
+            page_index
+            if _is_finite_number(page_index)
+            else segment_index
+            if _is_finite_number(segment_index)
+            else 0
+        ),
         "slide_num": int(page.get("slide_number") or 0),
         "page_key": page_key,
         "source_slide_index": int(segment.get("source_slide_index") or page.get("index") or 0),

@@ -2984,6 +2984,84 @@ def test_dirty_dispatch_assembles_new_authoritative_partial_output(tmp_path, mon
 
 
 @pytest.mark.django_db
+def test_assembly_only_reorder_preserves_page_order_when_first_reused_index_is_zero(tmp_path, monkeypatch):
+    owner = _make_user("assembly_only_reorder_zero_index_owner")
+    project = Project.objects.create(title="Assembly-only reorder zero index", user=owner, status="processing")
+    baseline_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        progress=100,
+        result_url=f"{project.id}/{project.id}.mp4",
+        srt_url=f"{project.id}/{project.id}.srt",
+    )
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=50)
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "_is_current_render_job", lambda *_args, **_kwargs: True)
+    _patch_atomic_assembly_media(monkeypatch, tmp_path)
+    _touch_render_artifacts(tmp_path, project.id, 3)
+    old_results = [
+        _without_avatar(
+            _render_result(
+                index=i,
+                page_key=f"s{i + 1}-p1",
+                display_text=f"Slide {i + 1}",
+                narration_text=f"Narration {i + 1}",
+                project_id=project.id,
+            )
+        )
+        for i in range(3)
+    ]
+    old_sidecar = _planner_baseline_sidecar(project, baseline_job, old_results)
+    sidecar_path = tmp_path / str(project.id) / "playback_assets.json"
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_path.write_text(json.dumps(old_sidecar), encoding="utf-8")
+    current_slides = [dict(old_results[2]), dict(old_results[0]), dict(old_results[1])]
+    for index, slide in enumerate(current_slides):
+        slide["index"] = index
+        slide["slide_num"] = index + 1
+        slide["slide_number"] = index + 1
+    current_manifest = worker_tasks._planner_manifest_from_render_results(
+        project_id=project.id,
+        slides=current_slides,
+        voice_id="voice",
+        effective_language="en",
+        tts_settings={"provider_preference": "gtts"},
+        avatar_options={"enabled": False, "requested": False},
+        artifacts_by_page_key=worker_tasks._planner_artifacts_by_page_key(old_sidecar),
+    )
+    plan = {
+        "project_id": project.id,
+        "job_id": job.id,
+        "baseline_job_id": baseline_job.id,
+        "baseline_result_url": baseline_job.result_url,
+        "baseline_srt_url": baseline_job.srt_url,
+        "current_manifest": current_manifest,
+        "planner_manifest_hash": current_manifest["manifest_hash"],
+        "pipeline_version": worker_tasks.RENDER_PIPELINE_VERSION,
+        "dirty_page_keys": [],
+        "reusable_page_keys": ["s3-p1", "s1-p1", "s2-p1"],
+        "expected_ordered_page_keys": ["s3-p1", "s1-p1", "s2-p1"],
+        "stage_results": {},
+    }
+
+    result = worker_tasks.record_dirty_render_dispatch_result.run(
+        [],
+        str(project.id),
+        plan,
+        {"enabled": False, "requested": False},
+        job.id,
+    )
+
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    final_path = tmp_path / str(project.id) / "renders" / str(job.id) / "final" / f"{project.id}.mp4"
+    assert result["status"] == "atomic_partial_promoted"
+    assert final_path.read_bytes() == b"final:artifact-2|artifact-0|artifact-1"
+    assert [segment["page_key"] for segment in sidecar["timeline"]] == ["s3-p1", "s1-p1", "s2-p1"]
+    assert [part["page_key"] for part in sidecar["atomic_assembly"]["ordered_parts"]] == ["s3-p1", "s1-p1", "s2-p1"]
+
+
+@pytest.mark.django_db
 def test_dirty_dispatch_rejects_corrupt_reusable_part_without_sidecar_promotion(tmp_path, monkeypatch):
     owner = _make_user("dirty_dispatch_corrupt_reuse_owner")
     project = Project.objects.create(title="Dirty dispatch corrupt reuse", user=owner, status="processing")
