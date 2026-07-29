@@ -3778,10 +3778,32 @@ def _sync_transcript_pages_from_export(project_id: str | int, slides: list[dict[
         if page is None:
             page = TranscriptPage(project=project, page_key=page_key)
 
+        incoming_source_slide_index = int(
+            slide_payload.get("source_slide_index") or slide_payload.get("index") or order
+        )
+        incoming_split_index = int(slide_payload.get("split_index") or 0)
+        if (
+            not is_new_page
+            and (
+                int(page.source_slide_index or 0) != incoming_source_slide_index
+                or int(page.split_index or 0) != incoming_split_index
+            )
+        ):
+            logger.info(
+                "Preserving transcript source identity during sync project=%s page_key=%s persisted=%s:%s incoming=%s:%s",
+                project_id,
+                page_key,
+                int(page.source_slide_index or 0),
+                int(page.split_index or 0),
+                incoming_source_slide_index,
+                incoming_split_index,
+            )
+            continue
+
         if is_new_page:
             page.order = int(slide_payload.get("index") or order)
-        page.source_slide_index = int(slide_payload.get("source_slide_index") or slide_payload.get("index") or order)
-        page.split_index = int(slide_payload.get("split_index") or 0)
+            page.source_slide_index = incoming_source_slide_index
+            page.split_index = incoming_split_index
         if hasattr(page, "is_active"):
             page.is_active = True
         if hasattr(page, "deleted_at"):

@@ -607,6 +607,65 @@ def test_worker_sync_split_includes_new_split_page():
 
 
 @pytest.mark.django_db
+def test_worker_sync_reorder_preserves_split_page_source_identity():
+    _ensure_transcript_table()
+    from worker import tasks as worker_tasks
+
+    teacher = _make_teacher("action_worker_split_reorder_teacher")
+    project = Project.objects.create(title="Worker split reorder", user=teacher)
+    base_page = _make_page(
+        project,
+        order=0,
+        page_key="s2-p1",
+        original_text="Solar source",
+        narration_text="Solar narration",
+        source_slide_index=1,
+        split_index=0,
+    )
+    split_page = _make_page(
+        project,
+        order=1,
+        page_key="s2-p1-x1",
+        original_text="",
+        narration_text="Inserted narration",
+        source_slide_index=1,
+        split_index=1,
+    )
+    solar_export = _export_slide(
+        base_page,
+        index=0,
+        image_path="solar.png",
+        notes_text="Solar source",
+    )
+    wrongly_positioned_split_export = {
+        **_export_slide(
+            split_page,
+            index=1,
+            image_path="forest.png",
+            notes_text="Forest source",
+        ),
+        "source_slide_index": 2,
+        "split_index": 0,
+    }
+
+    synced = worker_tasks._sync_transcript_pages_from_export(
+        project.id,
+        [solar_export, wrongly_positioned_split_export],
+    )
+
+    split_page.refresh_from_db()
+    assert split_page.source_slide_index == 1
+    assert split_page.split_index == 1
+    assert split_page.original_text == ""
+    assert split_page.narration_text == "Inserted narration"
+    synced_split = next(item for item in synced if item["page_key"] == split_page.page_key)
+    assert synced_split["image_path"] == "solar.png"
+    assert synced_split["display_text"] == "Solar source"
+    assert synced_split["source_slide_index"] == 1
+    assert synced_split["split_index"] == 1
+
+
+@pytest.mark.django_db
 def test_worker_sync_merge_excludes_soft_deleted_merged_page():
     _ensure_transcript_table()
     from worker import tasks as worker_tasks
