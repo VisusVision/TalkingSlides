@@ -22,4 +22,5 @@ urlpatterns = [
     path("api/v1/ready/", ready, name="api-ready"),
     path("api/v1/system/metrics/prometheus/", prometheus_metrics_response, name="prometheus-metrics"),
     path("api/v1/", include("core.urls")),
+    path("api/v2/digital-twins/", include("core.digital_twin_urls")),
 ]

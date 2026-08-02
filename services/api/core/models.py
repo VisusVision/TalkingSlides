@@ -19,6 +19,8 @@ After updating this file run:
     python manage.py makemigrations && python manage.py migrate
 """
 
+import uuid
+
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import F, Q
@@ -63,6 +65,8 @@ class UserProfile(models.Model):
     avatar_video_original = models.CharField(max_length=500, blank=True)
     avatar_video_processed = models.CharField(max_length=500, blank=True)
     avatar_reference_type = models.CharField(max_length=20, default="image")
+    avatar_name = models.CharField(max_length=120, blank=True)
+    avatar_voice_source = models.CharField(max_length=20, default="existing")
     avatar_image_status = models.CharField(max_length=30, default="idle")
     avatar_model_version = models.CharField(max_length=80, default="liveportrait+musetalk:v1")
     avatar_enabled = models.BooleanField(default=False)
@@ -1026,6 +1030,159 @@ class AvatarOverlayPreference(models.Model):
 
     def __str__(self):
         return f"AvatarOverlayPreference user={self.user_id} lesson={self.lesson_id}"
+
+
+class DigitalTwin(models.Model):
+    """Consent-gated identity, voice and motion packages for one real person."""
+
+    STATUS_CHOICES = [
+        ("draft", "Draft"),
+        ("verifying_consent", "Verifying consent"),
+        ("training", "Training"),
+        ("validating", "Validating"),
+        ("ready", "Ready"),
+        ("failed", "Failed"),
+        ("revoked", "Revoked"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="digital_twins")
+    display_name = models.CharField(max_length=120)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default="draft", db_index=True)
+    capabilities = models.JSONField(default=list, blank=True)
+    locale = models.CharField(max_length=16, default="tr-TR")
+    idempotency_key = models.CharField(max_length=128, null=True, blank=True, unique=True)
+    consent_status = models.CharField(max_length=32, default="missing", db_index=True)
+    consent_decision = models.JSONField(default=dict, blank=True)
+    reference_analysis = models.JSONField(default=dict, blank=True)
+    identity_package = models.JSONField(default=dict, blank=True)
+    voice_package = models.JSONField(default=dict, blank=True)
+    motion_style_package = models.JSONField(default=dict, blank=True)
+    look_packages = models.JSONField(default=list, blank=True)
+    model_versions = models.JSONField(default=dict, blank=True)
+    failure_code = models.CharField(max_length=80, blank=True)
+    failure_message = models.TextField(blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["owner", "status"], name="dtwin_owner_status_idx")]
+
+
+class DigitalTwinConsentSession(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("pending_review", "Pending review"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+        ("expired", "Expired"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    twin = models.ForeignKey(DigitalTwin, on_delete=models.CASCADE, related_name="consent_sessions")
+    challenge_text = models.TextField()
+    challenge_nonce_hash = models.CharField(max_length=64)
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default="pending", db_index=True)
+    consent_video_path = models.CharField(max_length=500, blank=True)
+    decision = models.JSONField(default=dict, blank=True)
+    expires_at = models.DateTimeField()
+    verified_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["twin", "status"], name="dtconsent_twin_status_idx")]
+
+
+class DigitalTwinTrainingRun(models.Model):
+    STATUS_CHOICES = [
+        ("pending_consent", "Pending consent"),
+        ("queued", "Queued"),
+        ("running", "Running"),
+        ("done", "Done"),
+        ("failed", "Failed"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    twin = models.ForeignKey(DigitalTwin, on_delete=models.CASCADE, related_name="training_runs")
+    consent_session = models.ForeignKey(
+        DigitalTwinConsentSession,
+        on_delete=models.PROTECT,
+        related_name="training_runs",
+    )
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default="pending_consent", db_index=True)
+    stage = models.CharField(max_length=64, default="waiting_for_consent")
+    idempotency_key = models.CharField(max_length=128, null=True, blank=True, unique=True)
+    input_manifest = models.JSONField(default=dict, blank=True)
+    output_manifest = models.JSONField(default=dict, blank=True)
+    task_id = models.CharField(max_length=255, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["twin", "status"], name="dttrain_twin_status_idx")]
+
+
+class DigitalTwinRender(models.Model):
+    STATUS_CHOICES = [
+        ("queued", "Queued"),
+        ("running", "Running"),
+        ("ready", "Ready"),
+        ("quality_failed", "Quality failed"),
+        ("failed", "Failed"),
+        ("cancelled", "Cancelled"),
+    ]
+    MODE_CHOICES = [("portrait", "Portrait"), ("full_body", "Full body")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    twin = models.ForeignKey(DigitalTwin, on_delete=models.CASCADE, related_name="renders")
+    status = models.CharField(max_length=32, choices=STATUS_CHOICES, default="queued", db_index=True)
+    render_mode = models.CharField(max_length=20, choices=MODE_CHOICES, default="portrait")
+    request_payload = models.JSONField(default=dict, blank=True)
+    motion_plan = models.JSONField(default=dict, blank=True)
+    output_path = models.CharField(max_length=500, blank=True)
+    quality_report = models.JSONField(default=dict, blank=True)
+    engine_trace = models.JSONField(default=list, blank=True)
+    watermark_required = models.BooleanField(default=True)
+    idempotency_key = models.CharField(max_length=128, null=True, blank=True, unique=True)
+    task_id = models.CharField(max_length=255, blank=True)
+    error_code = models.CharField(max_length=80, blank=True)
+    error_message = models.TextField(blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["twin", "status"], name="dtrender_twin_status_idx")]
+
+
+class DigitalTwinAuditEvent(models.Model):
+    twin = models.ForeignKey(
+        DigitalTwin,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+    )
+    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    event = models.CharField(max_length=80, db_index=True)
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["twin", "created_at"], name="dtaudit_twin_created_idx")]
 
 
 class LessonSegment(models.Model):

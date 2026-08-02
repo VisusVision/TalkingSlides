@@ -1215,6 +1215,117 @@ def _select_calm_template_window_start(
     return dict(choices[0])
 
 
+def _performance_window_selection_enabled() -> bool:
+    """Return whether real-person driving clips should be searched for a useful window."""
+    return _truthy(os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_ENABLED"), "1")
+
+
+def _deterministic_performance_window_seed(
+    *,
+    segment_index: int,
+    audio_hash: str,
+    page_key: str,
+    source_video: Path,
+) -> int:
+    raw = "|".join(
+        [
+            str(int(segment_index)),
+            str(audio_hash or "").strip(),
+            str(page_key or "").strip(),
+            _safe_path_label(source_video),
+            str(os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_CACHE_VERSION", "1") or "1"),
+        ]
+    )
+    return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12], 16)
+
+
+def _select_performance_window(
+    *,
+    source_video: Path,
+    target_duration_seconds: float,
+    segment_index: int = 0,
+    audio_hash: str = "",
+    page_key: str = "",
+) -> dict[str, object]:
+    """Pick a balanced-motion window from a personal driving recording.
+
+    A real-person source often starts with a few neutral setup seconds. Always
+    trimming from zero makes every generated segment reuse that least expressive
+    part. This lightweight probe uses frame-difference energy to choose a window
+    with visible but not extreme motion. LivePortrait still performs the actual
+    face/keypoint transfer; this function only chooses the source interval.
+    """
+    source_duration = float(_probe_duration_seconds(source_video, stream_selector="v:0"))
+    target_duration = max(float(target_duration_seconds or 0.0), 0.5)
+    default_choice = {
+        "start_seconds": 0.0,
+        "duration_seconds": round(float(target_duration), 6),
+        "mean_mad": 0.0,
+        "source": "default_start",
+    }
+    if (
+        not _performance_window_selection_enabled()
+        or source_duration <= target_duration + 0.5
+    ):
+        return default_choice
+
+    preferred_min_mad = max(
+        float(os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_MIN_MAD", "0.40")),
+        0.0,
+    )
+    preferred_max_mad = max(
+        float(os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_MAX_MAD", "1.60")),
+        preferred_min_mad,
+    )
+    target_mad = min(
+        max(float(os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_TARGET_MAD", "0.80")), preferred_min_mad),
+        preferred_max_mad,
+    )
+    step_seconds = max(
+        float(os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_STEP_SECONDS", "1.5")),
+        0.5,
+    )
+    max_start = max(source_duration - target_duration, 0.0)
+    scored: list[tuple[float, float, float]] = []
+    offset = 0.0
+    while offset <= max_start + 1e-6:
+        mean_mad = _probe_clip_mean_mad_segment(
+            source_video=source_video,
+            start_seconds=offset,
+            duration_seconds=target_duration,
+        )
+        if preferred_min_mad <= mean_mad <= preferred_max_mad:
+            band_penalty = 0.0
+        elif mean_mad < preferred_min_mad:
+            band_penalty = 10.0 + (preferred_min_mad - mean_mad)
+        else:
+            band_penalty = 5.0 + (mean_mad - preferred_max_mad)
+        scored.append((band_penalty + abs(mean_mad - target_mad), float(offset), float(mean_mad)))
+        offset += step_seconds
+
+    if not scored:
+        return default_choice
+
+    ranked = sorted(scored, key=lambda item: (item[0], item[1]))
+    best_score = ranked[0][0]
+    # Rotate among similarly good windows so consecutive lesson segments do not
+    # repeat the exact same nod/blink pattern while remaining deterministic.
+    eligible = [item for item in ranked if item[0] <= best_score + 0.20] or [ranked[0]]
+    seed = _deterministic_performance_window_seed(
+        segment_index=int(segment_index),
+        audio_hash=str(audio_hash or ""),
+        page_key=str(page_key or ""),
+        source_video=source_video,
+    )
+    _score, selected_offset, selected_mad = eligible[seed % len(eligible)]
+    return {
+        "start_seconds": round(float(selected_offset), 6),
+        "duration_seconds": round(float(target_duration), 6),
+        "mean_mad": round(float(selected_mad), 6),
+        "source": "personal_performance_window",
+    }
+
+
 def _ensure_driving_clip_contract(
     *,
     source_video: Path,
@@ -1517,6 +1628,9 @@ def main() -> int:
         _calm_template_min_mad_value = _calm_template_min_mad()
         _calm_template_window_source = "default_start"
         _calm_template_failure_reason = ""
+        _performance_window_start = 0.0
+        _performance_window_mean_mad = 0.0
+        _performance_window_source = "default_start"
         _vetted_template_path = _VETTED_IMAGE_TEMPLATE_NAME
         _vetted_template_missing = False
         _vetted_template_failed = False
@@ -2052,12 +2166,23 @@ def main() -> int:
             raise RuntimeError("liveportrait_input_kind_video_missing_source_video")
 
         if input_kind == "video":
+            _performance_window = _select_performance_window(
+                source_video=source_video,
+                target_duration_seconds=float(_target_contract_duration_seconds),
+                segment_index=int(os.environ.get("AVATAR_SEGMENT_INDEX", "0") or 0),
+                audio_hash=str(os.environ.get("AVATAR_AUDIO_HASH", "") or ""),
+                page_key=str(os.environ.get("AVATAR_PAGE_KEY", "") or ""),
+            )
+            _performance_window_start = float(_performance_window.get("start_seconds") or 0.0)
+            _performance_window_mean_mad = float(_performance_window.get("mean_mad") or 0.0)
+            _performance_window_source = str(_performance_window.get("source") or "default_start")
             source_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
                 source_video=source_video,
                 target_duration_seconds=float(_target_contract_duration_seconds),
                 work_dir=temp_dir,
                 target_fps=0.0,
                 output_name="video_input_drive_contract.mp4",
+                start_offset_seconds=float(_performance_window_start),
             )
             _motion_source = "real_video"
             _driver_source = "source_video"
@@ -2123,6 +2248,9 @@ def main() -> int:
             f"target_duration_seconds={_target_contract_duration_seconds:.4f} "
             f"expected_duration_seconds={_expected_duration_seconds:.4f} "
             f"driving_duration_seconds={_resolved_driving_duration_seconds:.4f} "
+            f"liveportrait_performance_window_start={_performance_window_start:.6f} "
+            f"liveportrait_performance_window_mean_mad={_performance_window_mean_mad:.6f} "
+            f"liveportrait_performance_window_source={_performance_window_source} "
             f"resolved_source_path={_resolved_source_path} "
             f"resolved_motion_source_path={source_video} "
             f"liveportrait_template_motion_strength={_template_motion_strength or 'none'} "

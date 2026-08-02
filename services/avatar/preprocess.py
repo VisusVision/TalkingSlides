@@ -21,9 +21,13 @@ from .hashing import sha256_bytes, sha256_file
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
 MIN_FACE_DIMENSION = 256
-MIN_FACE_AREA_RATIO = 0.06
+MIN_FACE_AREA_RATIO = 0.02
 MAX_FACE_AREA_RATIO = 0.62
-MIN_FACE_BLUR_SCORE = 70.0
+# MediaRecorder webcam frames are compressed before they reach the API. Haar
+# still detects a stable face in these frames, but the Laplacian score is much
+# lower than it is for an uploaded still image. Keep this threshold video-only;
+# still portraits retain their stricter quality check below.
+MIN_VIDEO_FACE_BLUR_SCORE = 15.0
 
 
 def _preview_reference_size() -> int:
@@ -64,7 +68,10 @@ def _extract_reference_frame_from_video(video_path: Path) -> tuple[bytes, dict[s
     if not cap.isOpened():
         raise AvatarValidationError("Unable to open avatar video. Please upload a valid portrait video.")
 
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    raw_frame_count = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    frame_count = int(raw_frame_count) if 0 < raw_frame_count <= 1_000_000 else 0
+    raw_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+    effective_fps = raw_fps if 1.0 <= raw_fps <= 120.0 else 30.0
     if frame_count > 0:
         sample_count = min(14, max(6, frame_count // 24))
         candidate_indices = [
@@ -72,7 +79,7 @@ def _extract_reference_frame_from_video(video_path: Path) -> tuple[bytes, dict[s
             for i in range(sample_count)
         ]
     else:
-        candidate_indices = [0, 10, 20, 30, 45, 60]
+        candidate_indices = []
 
     best = None
     best_face = None
@@ -84,15 +91,39 @@ def _extract_reference_frame_from_video(video_path: Path) -> tuple[bytes, dict[s
     frontal = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     profile = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
 
-    for idx in candidate_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    candidate_index_set = set(candidate_indices)
+    max_candidate_index = max(candidate_indices) if candidate_indices else None
+    unknown_count_stride = max(1, int(round(effective_fps * 0.5)))
+    max_scan_frames = int(round(effective_fps * 60.0))
+    max_evaluated_frames = len(candidate_indices) if candidate_indices else 120
+    decoded_frames = 0
+    evaluated_frames = 0
+
+    # Decode sequentially. Random CAP_PROP_POS_FRAMES seeking is unreliable for
+    # MediaRecorder WebM/VP8/VP9 files and can skip every useful keyframe.
+    while evaluated_frames < max_evaluated_frames:
         ok, frame = cap.read()
         if not ok or frame is None:
-            rejected_frames += 1
+            break
+
+        idx = decoded_frames
+        decoded_frames += 1
+        if max_candidate_index is not None and idx > max_candidate_index:
+            break
+        should_evaluate = (
+            idx in candidate_index_set
+            if candidate_indices
+            else idx % unknown_count_stride == 0
+        )
+        if not should_evaluate:
+            if not candidate_indices and decoded_frames >= max_scan_frames:
+                break
             continue
 
+        evaluated_frames += 1
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = frontal.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(120, 120))
+        faces = frontal.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(80, 80))
         if faces is None or len(faces) == 0:
             rejected_frames += 1
             continue
@@ -105,13 +136,13 @@ def _extract_reference_frame_from_video(video_path: Path) -> tuple[bytes, dict[s
         face_aspect = w / float(max(h, 1))
         face_crop = gray[max(0, y):min(frame_h, y + h), max(0, x):min(frame_w, x + w)]
         blur_score = _opencv_blur_score(face_crop if face_crop.size else gray)
-        profile_hits = profile.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(120, 120)) if profile is not None else []
+        profile_hits = profile.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4, minSize=(80, 80)) if profile is not None else []
         profile_penalty = 0.35 if profile_hits is not None and len(profile_hits) > 0 else 0.0
 
         if area_ratio < MIN_FACE_AREA_RATIO:
             rejected_frames += 1
             continue
-        if blur_score < MIN_FACE_BLUR_SCORE:
+        if blur_score < MIN_VIDEO_FACE_BLUR_SCORE:
             rejected_frames += 1
             continue
         if cx < 0.18 or cx > 0.82:
@@ -136,6 +167,9 @@ def _extract_reference_frame_from_video(video_path: Path) -> tuple[bytes, dict[s
                 "profile_hits": int(len(profile_hits) if profile_hits is not None else 0),
             }
 
+        if not candidate_indices and decoded_frames >= max_scan_frames:
+            break
+
     cap.release()
 
     if best is None:
@@ -157,6 +191,8 @@ def _extract_reference_frame_from_video(video_path: Path) -> tuple[bytes, dict[s
         **best_meta,
         "accepted_frames": int(accepted_frames),
         "rejected_frames": int(rejected_frames),
+        "decoded_frames": int(decoded_frames),
+        "evaluated_frames": int(evaluated_frames),
         "detected_face_bbox": list(best_face) if best_face else None,
     }
 
