@@ -43,6 +43,34 @@ AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK=1
 
 Head-motion tuning remains an area for polish. The goal is professional teaching posture, natural blinking, and stable low-motion output rather than exaggerated movement. Calm template media should live under local or object storage, such as `storage_local/avatar_templates/`, and must not be committed.
 
+### Personal performance video
+
+For a verified personal avatar, a video reference is used as the real
+LivePortrait driving source. The capture flow records 30 seconds and asks for a
+small nod, a brief smile, natural blinking, gentle eyebrow motion, and a return
+to a neutral expression. This gives the driver enough variation to preserve the
+person's characteristic face and head performance after MuseTalk replaces the
+mouth motion with the lesson audio.
+
+When the reference is longer than a generated segment, the runner probes
+candidate intervals with FFmpeg frame-difference energy and deterministically
+chooses a balanced-motion window. It avoids always reusing the neutral opening
+seconds and avoids selecting an excessively active interval. The behavior is
+controlled by:
+
+```text
+AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_ENABLED=1
+AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_MIN_MAD=0.40
+AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_TARGET_MAD=0.80
+AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_MAX_MAD=1.60
+AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_STEP_SECONDS=1.5
+AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_CACHE_VERSION=1
+```
+
+This stage transfers face expression and head pose; it does not synthesize hand,
+arm, or full-body gestures. Those require a separate pose-conditioned full-body
+renderer and a compositing contract beyond the current overlay pipeline.
+
 ## MuseTalk
 
 MuseTalk provides lip sync against generated lesson audio. The worker can route MuseTalk through a persistent service first, with standalone fallback intentionally disabled by default in the template.

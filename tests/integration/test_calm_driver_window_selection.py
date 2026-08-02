@@ -74,6 +74,53 @@ def test_select_calm_template_window_is_deterministic_for_same_seed_inputs(tmp_p
     assert first == second
 
 
+def test_select_performance_window_prefers_balanced_personal_motion(tmp_path, monkeypatch):
+    recording = tmp_path / "personal-performance.mp4"
+    recording.write_bytes(b"video")
+
+    monkeypatch.setattr(runner, "_probe_duration_seconds", lambda *_args, **_kwargs: 30.0)
+
+    def fake_probe_segment(**kwargs):
+        start = float(kwargs.get("start_seconds") or 0.0)
+        if start == pytest.approx(6.0):
+            return 0.82
+        if start >= 12.0:
+            return 2.40
+        return 0.12
+
+    monkeypatch.setattr(runner, "_probe_clip_mean_mad_segment", fake_probe_segment)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_ENABLED", "1")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_STEP_SECONDS", "2")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_TARGET_MAD", "0.80")
+
+    choice = runner._select_performance_window(
+        source_video=recording,
+        target_duration_seconds=8.0,
+        segment_index=2,
+        audio_hash="audio-b",
+        page_key="page-2",
+    )
+
+    assert choice["source"] == "personal_performance_window"
+    assert float(choice["start_seconds"]) == pytest.approx(6.0)
+    assert float(choice["mean_mad"]) == pytest.approx(0.82)
+
+
+def test_select_performance_window_can_be_disabled(tmp_path, monkeypatch):
+    recording = tmp_path / "personal-performance.mp4"
+    recording.write_bytes(b"video")
+    monkeypatch.setattr(runner, "_probe_duration_seconds", lambda *_args, **_kwargs: 30.0)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_ENABLED", "0")
+
+    choice = runner._select_performance_window(
+        source_video=recording,
+        target_duration_seconds=8.0,
+    )
+
+    assert choice["source"] == "default_start"
+    assert float(choice["start_seconds"]) == 0.0
+
+
 def test_musetalk_stage_cache_key_changes_when_handoff_hash_changes(tmp_path):
     class _Req:
         source_image_path = str(tmp_path / "face.png")
@@ -143,6 +190,32 @@ def test_liveportrait_stage_cache_key_changes_when_calm_window_version_changes(t
     assert first["liveportrait_calm_window_cache_version"] == "1"
     assert second["liveportrait_calm_window_cache_version"] == "2"
     assert first != second
+
+
+def test_liveportrait_stage_cache_binds_personal_video_and_window_version(tmp_path, monkeypatch):
+    class _Req:
+        source_image_path = str(tmp_path / "face.png")
+        source_image_original_path = str(tmp_path / "face.png")
+        source_video_path = str(tmp_path / "performance.mp4")
+        audio_path = str(tmp_path / "audio.wav")
+        lipsync_engine = "liveportrait+musetalk"
+        avatar_reference_type = "video"
+        target_frame_count = 0
+        target_duration_seconds = 7.6
+        cache_text_hash = ""
+
+    (tmp_path / "face.png").write_bytes(b"face")
+    (tmp_path / "audio.wav").write_bytes(b"audio")
+    (tmp_path / "performance.mp4").write_bytes(b"performance-a")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_CACHE_VERSION", "4")
+
+    first = canonical_pipeline._liveportrait_stage_cache_keys(_Req(), "liveportrait+musetalk")
+    (tmp_path / "performance.mp4").write_bytes(b"performance-b")
+    second = canonical_pipeline._liveportrait_stage_cache_keys(_Req(), "liveportrait+musetalk")
+
+    assert first["liveportrait_performance_window_cache_version"] == "4"
+    assert first["avatar_reference_type"] == "video"
+    assert first["source_video_hash"] != second["source_video_hash"]
 
 
 def _calm_stage_cache_keys() -> dict[str, str]:

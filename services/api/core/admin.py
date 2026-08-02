@@ -4,6 +4,11 @@ from django.contrib.auth.models import User
 from .models import (
     AvatarRenderJob,
     Category,
+    DigitalTwin,
+    DigitalTwinAuditEvent,
+    DigitalTwinConsentSession,
+    DigitalTwinRender,
+    DigitalTwinTrainingRun,
     Job,
     LessonComment,
     LessonIntelligenceReport,
@@ -72,6 +77,47 @@ class UserAdmin(BaseUserAdmin):
 # Re-register UserAdmin
 admin.site.unregister(User)
 admin.site.register(User, UserAdmin)
+
+
+@admin.register(DigitalTwin)
+class DigitalTwinAdmin(admin.ModelAdmin):
+    list_display = ("display_name", "owner", "status", "consent_status", "created_at")
+    list_filter = ("status", "consent_status", "created_at")
+    search_fields = ("display_name", "owner__username")
+    raw_id_fields = ("owner",)
+    readonly_fields = ("created_at", "updated_at", "revoked_at")
+
+
+@admin.register(DigitalTwinConsentSession)
+class DigitalTwinConsentSessionAdmin(admin.ModelAdmin):
+    list_display = ("twin", "status", "expires_at", "verified_at", "created_at")
+    list_filter = ("status", "created_at")
+    raw_id_fields = ("twin",)
+    readonly_fields = ("challenge_nonce_hash", "created_at", "updated_at")
+
+
+@admin.register(DigitalTwinTrainingRun)
+class DigitalTwinTrainingRunAdmin(admin.ModelAdmin):
+    list_display = ("twin", "status", "stage", "task_id", "created_at")
+    list_filter = ("status", "stage", "created_at")
+    raw_id_fields = ("twin", "consent_session")
+    readonly_fields = ("created_at", "updated_at", "started_at", "finished_at")
+
+
+@admin.register(DigitalTwinRender)
+class DigitalTwinRenderAdmin(admin.ModelAdmin):
+    list_display = ("twin", "render_mode", "status", "task_id", "created_at")
+    list_filter = ("render_mode", "status", "created_at")
+    raw_id_fields = ("twin",)
+    readonly_fields = ("created_at", "updated_at", "started_at", "finished_at")
+
+
+@admin.register(DigitalTwinAuditEvent)
+class DigitalTwinAuditEventAdmin(admin.ModelAdmin):
+    list_display = ("event", "twin", "actor", "created_at")
+    list_filter = ("event", "created_at")
+    raw_id_fields = ("twin", "actor")
+    readonly_fields = ("event", "twin", "actor", "payload", "created_at")
 
 
 @admin.register(VoiceProfile)

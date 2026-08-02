@@ -596,6 +596,7 @@ _STAGE_CACHE_PROVENANCE_STRING_FIELDS = [
     "liveportrait_template_used",
     "liveportrait_calm_template_path",
     "liveportrait_calm_template_window_source",
+    "liveportrait_performance_window_source",
     "liveportrait_calm_template_failure_reason",
     "liveportrait_vetted_template_path",
     "liveportrait_fallback_driver_source",
@@ -630,6 +631,8 @@ _STAGE_CACHE_PROVENANCE_FLOAT_FIELDS = [
     "liveportrait_calm_template_window_mean_mad",
     "liveportrait_calm_template_window_materialized_mean_mad",
     "liveportrait_calm_template_min_mad",
+    "liveportrait_performance_window_start",
+    "liveportrait_performance_window_mean_mad",
 ]
 _STAGE_CACHE_PROVENANCE_INT_FIELDS = [
     "liveportrait_driver_unique_frames",
@@ -822,7 +825,9 @@ def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[
         "audio_hash",
         "source_image_hash",
         "source_image_original_hash",
+        "source_video_hash",
         "request_source_key",
+        "avatar_reference_type",
         "target_frame_count",
         "target_duration_seconds",
         "liveportrait_motion_preset",
@@ -832,6 +837,7 @@ def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[
         "liveportrait_calm_template_path_marker",
         "liveportrait_calm_template_min_mad",
         "liveportrait_calm_window_cache_version",
+        "liveportrait_performance_window_cache_version",
         "liveportrait_vetted_template_fallback_allowed",
         "liveportrait_composer_fallback_allowed",
         "liveportrait_vetted_image_template_hash",
@@ -854,6 +860,7 @@ def _musetalk_stage_cache_keys(
         "audio_hash",
         "source_image_hash",
         "source_image_original_hash",
+        "source_video_hash",
         "target_frame_count",
         "target_duration_seconds",
         "liveportrait_driver_source_policy",
@@ -861,6 +868,7 @@ def _musetalk_stage_cache_keys(
         "liveportrait_calm_template_path_marker",
         "liveportrait_calm_template_min_mad",
         "liveportrait_calm_window_cache_version",
+        "liveportrait_performance_window_cache_version",
         "liveportrait_calm_template_hash",
         "liveportrait_vetted_template_fallback_allowed",
         "liveportrait_composer_fallback_allowed",
@@ -1878,6 +1886,10 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
             os.environ.get("AVATAR_LIVEPORTRAIT_CALM_WINDOW_CACHE_VERSION", "1") or "1"
         ).strip()
         or "1",
+        "liveportrait_performance_window_cache_version": str(
+            os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_CACHE_VERSION", "1") or "1"
+        ).strip()
+        or "1",
         "musetalk_preview_fast_mode": "1" if _env_enabled("MUSETALK_PREVIEW_FAST_MODE", False) else "0",
         "musetalk_auto_downscale": "1" if _env_enabled("MUSETALK_AUTO_DOWNSCALE", True) else "0",
         "musetalk_preview_max_width": str(int(os.environ.get("MUSETALK_PREVIEW_MAX_WIDTH", "512") or 512)),
@@ -2137,6 +2149,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_template_used",
         "liveportrait_calm_template_path",
         "liveportrait_calm_template_window_source",
+        "liveportrait_performance_window_source",
         "liveportrait_calm_template_window_materialized_mean_mad",
         "liveportrait_calm_template_failure_reason",
         "liveportrait_vetted_template_path",
@@ -2176,6 +2189,8 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_calm_template_window_mean_mad",
         "liveportrait_calm_template_window_materialized_mean_mad",
         "liveportrait_calm_template_min_mad",
+        "liveportrait_performance_window_start",
+        "liveportrait_performance_window_mean_mad",
     ]:
         stage_paths[key] = _stderr_float_token(stderr, key, float(stage_paths.get(key) or 0.0))
     for key in [

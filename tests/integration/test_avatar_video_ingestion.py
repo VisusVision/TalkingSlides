@@ -1,7 +1,9 @@
 import io
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 from PIL import Image
 
 
@@ -77,3 +79,62 @@ def test_preprocess_avatar_video_reuses_hash_package(tmp_path, monkeypatch):
     assert calls["count"] == 1
     assert first["processed_rel_path"] == second["processed_rel_path"]
     assert first["identity_package_rel_path"] == second["identity_package_rel_path"]
+
+
+def test_video_frame_extraction_decodes_unknown_length_webm_sequentially(monkeypatch, tmp_path):
+    class FakeCapture:
+        def __init__(self):
+            self.index = 0
+            self.released = False
+
+        def isOpened(self):
+            return True
+
+        def get(self, prop):
+            if prop == 1:
+                return -9.223372036854776e18
+            if prop == 2:
+                return 1000.0
+            return 0
+
+        def read(self):
+            if self.index >= 75:
+                return False, None
+            self.index += 1
+            return True, np.zeros((400, 400, 3), dtype=np.uint8)
+
+        def set(self, *_args):
+            raise AssertionError("Random frame seeking must not be used for MediaRecorder WebM")
+
+        def release(self):
+            self.released = True
+
+    class FakeCascade:
+        def __init__(self, profile=False):
+            self.profile = profile
+
+        def detectMultiScale(self, *_args, **_kwargs):
+            return [] if self.profile else [(100, 100, 60, 60)]
+
+    capture = FakeCapture()
+    fake_cv2 = SimpleNamespace(
+        CAP_PROP_FRAME_COUNT=1,
+        CAP_PROP_FPS=2,
+        COLOR_BGR2GRAY=3,
+        data=SimpleNamespace(haarcascades="/fake/"),
+        VideoCapture=lambda _path: capture,
+        CascadeClassifier=lambda path: FakeCascade("profileface" in path),
+        cvtColor=lambda _frame, _mode: np.zeros((400, 400), dtype=np.uint8),
+        imencode=lambda _ext, _frame: (True, np.array([1, 2, 3], dtype=np.uint8)),
+    )
+    monkeypatch.setattr(avatar_preprocess, "cv2", fake_cv2)
+    # Typical compressed 720p webcam face crops score in the 20-35 range.
+    monkeypatch.setattr(avatar_preprocess, "_opencv_blur_score", lambda _gray: 25.0)
+
+    frame_bytes, metadata = avatar_preprocess._extract_reference_frame_from_video(tmp_path / "capture.webm")
+
+    assert frame_bytes == b"\x01\x02\x03"
+    assert metadata["face_area_ratio"] == 0.0225
+    assert metadata["accepted_frames"] > 0
+    assert metadata["decoded_frames"] > metadata["evaluated_frames"]
+    assert capture.released is True

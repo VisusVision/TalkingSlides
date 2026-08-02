@@ -42,6 +42,9 @@ app.config_from_object("django.conf:settings", namespace="CELERY")
 
 render_queue = str(os.environ.get("CELERY_RENDER_QUEUE", "render") or "render").strip() or "render"
 avatar_queue = str(os.environ.get("CELERY_AVATAR_QUEUE", "avatar") or "avatar").strip() or "avatar"
+digital_twin_train_queue = str(os.environ.get("CELERY_DIGITAL_TWIN_TRAIN_QUEUE", "avatar-train") or "avatar-train").strip() or "avatar-train"
+digital_twin_render_queue = str(os.environ.get("CELERY_DIGITAL_TWIN_RENDER_QUEUE", "avatar-render") or "avatar-render").strip() or "avatar-render"
+digital_twin_verify_queue = str(os.environ.get("CELERY_DIGITAL_TWIN_VERIFY_QUEUE", "avatar-verify") or "avatar-verify").strip() or "avatar-verify"
 intelligence_queue = str(
     os.environ.get("INTELLIGENCE_CELERY_QUEUE")
     or os.environ.get("CELERY_INTELLIGENCE_QUEUE")
@@ -62,7 +65,7 @@ app.conf.task_default_queue = str(os.environ.get("CELERY_TASK_DEFAULT_QUEUE", re
 app.conf.task_queues = tuple(
     Queue(queue_name)
     for queue_name in dict.fromkeys(
-        [render_queue, avatar_queue, intelligence_queue, lesson_intelligence_queue, analytics_intelligence_queue, legacy_queue]
+        [render_queue, avatar_queue, digital_twin_verify_queue, digital_twin_train_queue, digital_twin_render_queue, intelligence_queue, lesson_intelligence_queue, analytics_intelligence_queue, legacy_queue]
     )
 )
 app.conf.task_routes = {
@@ -80,6 +83,9 @@ app.conf.task_routes = {
     "worker.tasks.fallback_avatar_render": {"queue": avatar_queue},
     "worker.tasks.avatar_cache_cleanup": {"queue": avatar_queue},
     "worker.tasks.cleanup_avatar_cache": {"queue": avatar_queue},
+    "worker.digital_twin.train": {"queue": digital_twin_train_queue},
+    "worker.digital_twin.render": {"queue": digital_twin_render_queue},
+    "worker.digital_twin.verify_consent": {"queue": digital_twin_verify_queue},
     "worker.tasks.schedule_lesson_intelligence": {"queue": lesson_intelligence_queue},
     "worker.tasks.schedule_creator_analytics_intelligence": {"queue": analytics_intelligence_queue},
     "worker.tasks.enhance_lesson_intelligence_report": {"queue": lesson_intelligence_queue},
@@ -88,3 +94,6 @@ app.conf.task_routes = {
 
 # Step 4 — discover tasks.py in the worker package
 app.autodiscover_tasks(["worker"])
+
+# This module intentionally lives outside the already-large tasks.py file.
+from worker import digital_twin_tasks  # noqa: E402,F401

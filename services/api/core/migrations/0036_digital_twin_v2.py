@@ -1,0 +1,120 @@
+import uuid
+
+import django.db.models.deletion
+from django.conf import settings
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ("core", "0035_userprofile_avatar_identity_details"),
+        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+    ]
+
+    operations = [
+        migrations.CreateModel(
+            name="DigitalTwin",
+            fields=[
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("display_name", models.CharField(max_length=120)),
+                ("status", models.CharField(choices=[("draft", "Draft"), ("verifying_consent", "Verifying consent"), ("training", "Training"), ("validating", "Validating"), ("ready", "Ready"), ("failed", "Failed"), ("revoked", "Revoked")], db_index=True, default="draft", max_length=32)),
+                ("capabilities", models.JSONField(blank=True, default=list)),
+                ("locale", models.CharField(default="tr-TR", max_length=16)),
+                ("idempotency_key", models.CharField(blank=True, max_length=128, null=True, unique=True)),
+                ("consent_status", models.CharField(db_index=True, default="missing", max_length=32)),
+                ("consent_decision", models.JSONField(blank=True, default=dict)),
+                ("reference_analysis", models.JSONField(blank=True, default=dict)),
+                ("identity_package", models.JSONField(blank=True, default=dict)),
+                ("voice_package", models.JSONField(blank=True, default=dict)),
+                ("motion_style_package", models.JSONField(blank=True, default=dict)),
+                ("look_packages", models.JSONField(blank=True, default=list)),
+                ("model_versions", models.JSONField(blank=True, default=dict)),
+                ("failure_code", models.CharField(blank=True, max_length=80)),
+                ("failure_message", models.TextField(blank=True)),
+                ("revoked_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("owner", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="digital_twins", to=settings.AUTH_USER_MODEL)),
+            ],
+            options={"ordering": ["-created_at"]},
+        ),
+        migrations.CreateModel(
+            name="DigitalTwinConsentSession",
+            fields=[
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("challenge_text", models.TextField()),
+                ("challenge_nonce_hash", models.CharField(max_length=64)),
+                ("status", models.CharField(choices=[("pending", "Pending"), ("pending_review", "Pending review"), ("approved", "Approved"), ("rejected", "Rejected"), ("expired", "Expired")], db_index=True, default="pending", max_length=32)),
+                ("consent_video_path", models.CharField(blank=True, max_length=500)),
+                ("decision", models.JSONField(blank=True, default=dict)),
+                ("expires_at", models.DateTimeField()),
+                ("verified_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("twin", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="consent_sessions", to="core.digitaltwin")),
+            ],
+            options={"ordering": ["-created_at"]},
+        ),
+        migrations.CreateModel(
+            name="DigitalTwinTrainingRun",
+            fields=[
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("status", models.CharField(choices=[("pending_consent", "Pending consent"), ("queued", "Queued"), ("running", "Running"), ("done", "Done"), ("failed", "Failed"), ("cancelled", "Cancelled")], db_index=True, default="pending_consent", max_length=32)),
+                ("stage", models.CharField(default="waiting_for_consent", max_length=64)),
+                ("idempotency_key", models.CharField(blank=True, max_length=128, null=True, unique=True)),
+                ("input_manifest", models.JSONField(blank=True, default=dict)),
+                ("output_manifest", models.JSONField(blank=True, default=dict)),
+                ("task_id", models.CharField(blank=True, max_length=255)),
+                ("error_code", models.CharField(blank=True, max_length=80)),
+                ("error_message", models.TextField(blank=True)),
+                ("started_at", models.DateTimeField(blank=True, null=True)),
+                ("finished_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("consent_session", models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name="training_runs", to="core.digitaltwinconsentsession")),
+                ("twin", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="training_runs", to="core.digitaltwin")),
+            ],
+            options={"ordering": ["-created_at"]},
+        ),
+        migrations.CreateModel(
+            name="DigitalTwinRender",
+            fields=[
+                ("id", models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
+                ("status", models.CharField(choices=[("queued", "Queued"), ("running", "Running"), ("ready", "Ready"), ("quality_failed", "Quality failed"), ("failed", "Failed"), ("cancelled", "Cancelled")], db_index=True, default="queued", max_length=32)),
+                ("render_mode", models.CharField(choices=[("portrait", "Portrait"), ("full_body", "Full body")], default="portrait", max_length=20)),
+                ("request_payload", models.JSONField(blank=True, default=dict)),
+                ("motion_plan", models.JSONField(blank=True, default=dict)),
+                ("output_path", models.CharField(blank=True, max_length=500)),
+                ("quality_report", models.JSONField(blank=True, default=dict)),
+                ("engine_trace", models.JSONField(blank=True, default=list)),
+                ("watermark_required", models.BooleanField(default=True)),
+                ("idempotency_key", models.CharField(blank=True, max_length=128, null=True, unique=True)),
+                ("task_id", models.CharField(blank=True, max_length=255)),
+                ("error_code", models.CharField(blank=True, max_length=80)),
+                ("error_message", models.TextField(blank=True)),
+                ("started_at", models.DateTimeField(blank=True, null=True)),
+                ("finished_at", models.DateTimeField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("twin", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="renders", to="core.digitaltwin")),
+            ],
+            options={"ordering": ["-created_at"]},
+        ),
+        migrations.CreateModel(
+            name="DigitalTwinAuditEvent",
+            fields=[
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                ("event", models.CharField(db_index=True, max_length=80)),
+                ("payload", models.JSONField(blank=True, default=dict)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("actor", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to=settings.AUTH_USER_MODEL)),
+                ("twin", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="audit_events", to="core.digitaltwin")),
+            ],
+            options={"ordering": ["-created_at"]},
+        ),
+        migrations.AddIndex(model_name="digitaltwin", index=models.Index(fields=["owner", "status"], name="dtwin_owner_status_idx")),
+        migrations.AddIndex(model_name="digitaltwinconsentsession", index=models.Index(fields=["twin", "status"], name="dtconsent_twin_status_idx")),
+        migrations.AddIndex(model_name="digitaltwintrainingrun", index=models.Index(fields=["twin", "status"], name="dttrain_twin_status_idx")),
+        migrations.AddIndex(model_name="digitaltwinrender", index=models.Index(fields=["twin", "status"], name="dtrender_twin_status_idx")),
+        migrations.AddIndex(model_name="digitaltwinauditevent", index=models.Index(fields=["twin", "created_at"], name="dtaudit_twin_created_idx")),
+    ]
