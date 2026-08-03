@@ -907,6 +907,17 @@ export async function uploadVoiceSample(userId, file) {
   return res.json();
 }
 
+export async function fetchVoiceSample(userId) {
+  const res = await fetch(`${API_BASE_URL}/users/${userId}/voice/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(avatarSetupErrorMessage(data, "Failed to fetch voice sample"));
+  }
+  return res.blob();
+}
+
 export async function fetchAvatarProfile(userId) {
   const res = await fetch(`${API_BASE_URL}/users/${userId}/avatar/`, {
     headers: authHeaders(),
@@ -925,6 +936,8 @@ export async function uploadAvatarImage(userId, file, settings = {}) {
   if (settings.avatar_motion_preset) formData.append("avatar_motion_preset", settings.avatar_motion_preset);
   if (settings.avatar_lipsync_engine) formData.append("avatar_lipsync_engine", settings.avatar_lipsync_engine);
   if (settings.avatar_quality_preset) formData.append("avatar_quality_preset", settings.avatar_quality_preset);
+  if (settings.avatar_name) formData.append("avatar_name", settings.avatar_name);
+  if (settings.avatar_voice_source) formData.append("avatar_voice_source", settings.avatar_voice_source);
   if (typeof settings.composite_fallback_allowed === "boolean") {
     formData.append("composite_fallback_allowed", settings.composite_fallback_allowed ? "1" : "0");
   }
@@ -948,6 +961,8 @@ export async function uploadAvatarVideo(userId, file, settings = {}) {
   if (settings.avatar_motion_preset) formData.append("avatar_motion_preset", settings.avatar_motion_preset);
   if (settings.avatar_lipsync_engine) formData.append("avatar_lipsync_engine", settings.avatar_lipsync_engine);
   if (settings.avatar_quality_preset) formData.append("avatar_quality_preset", settings.avatar_quality_preset);
+  if (settings.avatar_name) formData.append("avatar_name", settings.avatar_name);
+  if (settings.avatar_voice_source) formData.append("avatar_voice_source", settings.avatar_voice_source);
   if (typeof settings.composite_fallback_allowed === "boolean") {
     formData.append("composite_fallback_allowed", settings.composite_fallback_allowed ? "1" : "0");
   }

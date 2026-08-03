@@ -136,9 +136,10 @@ export function avatarSetupErrorMessage(payload = {}, fallback = 'Avatar setup n
   );
   const status = normalizeAvatarSetupStatus(payload);
   const raw = String(payload.error || payload.detail || payload.message || '').trim();
-  if (hasSetupPayload && status.message) return status.message;
   if (/missing_|source validation|processed reference|processed avatar/i.test(raw)) {
     return 'Avatar needs to be prepared again.';
   }
-  return raw || fallback;
+  if (raw) return raw;
+  if (hasSetupPayload && status.message) return status.message;
+  return fallback;
 }

@@ -6,6 +6,7 @@ import {
   Settings,
   ShieldCheck,
   SlidersHorizontal,
+  UserRound,
   Plus,
 } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
@@ -21,6 +22,7 @@ const PRIMARY_ITEMS = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
   { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
+  { to: '/avatar', label: 'Avatar', icon: UserRound, signedInOnly: true },
   { to: '/analytics', label: 'Analytics', icon: BarChart3, analyticsOnly: true },
   { to: '/moderation', label: 'Moderation', icon: ShieldCheck, moderationOnly: true },
 ];
