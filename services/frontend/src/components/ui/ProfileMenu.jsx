@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { BookOpen, CircleHelp, LogIn, LogOut, Settings as SettingsIcon } from 'lucide-react';
+import { BookOpen, CircleHelp, LogIn, LogOut, Settings as SettingsIcon, UserRound } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { fetchAuthenticatedMediaBlobUrl } from '../../api';
 import { displayNameFromUser, initialsFromUser, profilePhotoFromUser } from '../../utils/profileIdentity';
@@ -163,6 +163,16 @@ export default function ProfileMenu({ user, authLoading, onLoginRequest, onLogou
           >
             <BookOpen size={15} />
             <span>Library</span>
+          </Link>
+
+          <Link
+            to="/avatar"
+            role="menuitem"
+            className="focus-ring mb-1 flex items-center gap-2 rounded-xl px-3 py-2 text-sm text-[#9ca3af] hover:bg-[color:var(--hover-surface)] hover:text-[var(--text-primary)]"
+            onClick={() => setOpen(false)}
+          >
+            <UserRound size={15} />
+            <span>Avatar</span>
           </Link>
 
           <Link

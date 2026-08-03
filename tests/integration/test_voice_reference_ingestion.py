@@ -128,6 +128,13 @@ def _upload_voice(user, tmp_path, *, name: str, content: bytes):
         return views.VoiceUploadView.as_view()(request, user_id=user.id)
 
 
+def _fetch_voice(request_user, target_user, tmp_path):
+    request = APIRequestFactory().get(f"/api/v1/users/{target_user.id}/voice/")
+    force_authenticate(request, user=request_user)
+    with override_settings(STORAGE_ROOT=str(tmp_path)):
+        return views.VoiceUploadView.as_view()(request, user_id=target_user.id)
+
+
 def _assert_canonical_wav(path: Path):
     assert path.exists()
     with wave.open(str(path), "rb") as wav_file:
@@ -232,6 +239,21 @@ def test_too_short_upload_is_rejected(tmp_path, monkeypatch):
 
 
 @pytest.mark.django_db
+def test_browser_audio_just_under_minimum_is_accepted_with_encoder_tolerance(tmp_path, monkeypatch):
+    teacher = _make_teacher("voice_browser_tolerance")
+    _install_fake_audio_tools(monkeypatch, duration_seconds=9.85)
+    monkeypatch.setattr(views, "avatar_enabled", lambda: True)
+
+    response = _upload_voice(teacher, tmp_path, name="recorded.webm", content=b"browser-audio")
+
+    assert response.status_code == 200
+    assert response.data["status"] == "ready"
+    assert response.data["audio"]["duration_seconds"] == pytest.approx(9.85, abs=0.01)
+    profile = VoiceProfile.objects.get(user=teacher)
+    assert (tmp_path / "voices" / f"{profile.voice_id}.wav").exists()
+
+
+@pytest.mark.django_db
 @pytest.mark.parametrize(
     ("duration_seconds", "error_code"),
     [
@@ -285,6 +307,36 @@ def test_render_voice_lookup_returns_current_canonical_voice(tmp_path, monkeypat
     profile = VoiceProfile.objects.get(user=teacher)
     assert views._get_voice_id(teacher) == profile.voice_id
     assert (tmp_path / "voices" / f"{profile.voice_id}.wav").exists()
+
+
+@pytest.mark.django_db
+def test_teacher_can_fetch_current_voice_sample_for_preview(tmp_path, monkeypatch):
+    teacher = _make_teacher("voice_preview")
+    voice_id = "voice_preview_fixture"
+    voice_path = tmp_path / "voices" / f"{voice_id}.wav"
+    voice_path.parent.mkdir(parents=True, exist_ok=True)
+    voice_path.write_bytes(b"RIFF-preview-audio")
+    VoiceProfile.objects.create(user=teacher, provider="xtts_v2", voice_id=voice_id)
+    monkeypatch.setattr(views, "avatar_enabled", lambda: True)
+
+    response = _fetch_voice(teacher, teacher, tmp_path)
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "audio/wav"
+    assert response["Cache-Control"] == "private, no-store"
+    assert b"".join(response.streaming_content) == b"RIFF-preview-audio"
+
+
+@pytest.mark.django_db
+def test_teacher_cannot_fetch_another_teachers_voice_sample(tmp_path, monkeypatch):
+    teacher = _make_teacher("voice_preview_owner")
+    other_teacher = _make_teacher("voice_preview_other")
+    VoiceProfile.objects.create(user=other_teacher, provider="xtts_v2", voice_id="voice_private")
+    monkeypatch.setattr(views, "avatar_enabled", lambda: True)
+
+    response = _fetch_voice(teacher, other_teacher, tmp_path)
+
+    assert response.status_code == 403
 
 
 @pytest.mark.django_db

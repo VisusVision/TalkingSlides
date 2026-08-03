@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 VOICE_REFERENCE_SAMPLE_RATE = 24000
 VOICE_REFERENCE_CHANNELS = 1
 VOICE_REFERENCE_MIN_DURATION_SEC = 10.0
+VOICE_REFERENCE_MIN_DURATION_TOLERANCE_SEC = 0.35
 VOICE_REFERENCE_MAX_DURATION_SEC = 60.0
 VOICE_REFERENCE_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 VOICE_REFERENCE_PROCESS_TIMEOUT_SEC = 90
@@ -122,10 +123,15 @@ def _probe_voice_reference(path: Path) -> VoiceReferenceMetadata:
             "voice_duration_invalid",
             "The voice sample has no measurable audio duration.",
         )
-    if duration < VOICE_REFERENCE_MIN_DURATION_SEC:
+    if duration + VOICE_REFERENCE_MIN_DURATION_TOLERANCE_SEC < VOICE_REFERENCE_MIN_DURATION_SEC:
         raise VoiceReferenceIngestionError(
             "voice_sample_too_short",
             f"Voice sample must be at least {int(VOICE_REFERENCE_MIN_DURATION_SEC)} seconds long.",
+        )
+    if duration < VOICE_REFERENCE_MIN_DURATION_SEC:
+        logger.info(
+            "voice_reference_duration_within_encoder_tolerance",
+            extra={"voice_duration_seconds": round(duration, 3)},
         )
     if duration > VOICE_REFERENCE_MAX_DURATION_SEC:
         raise VoiceReferenceIngestionError(

@@ -1,4 +1,4 @@
-import { BarChart3, BookOpenText, LayoutDashboard, ShieldCheck, SlidersHorizontal } from 'lucide-react';
+import { BarChart3, BookOpenText, LayoutDashboard, ShieldCheck, SlidersHorizontal, UserRound } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
   canAccessAnalytics,
@@ -12,6 +12,7 @@ const MOBILE_ITEMS = [
   { to: '/', label: 'Home', icon: LayoutDashboard, end: true },
   { to: '/library', label: 'Library', icon: BookOpenText, signedInOnly: true },
   { to: '/studio', label: 'Studio', icon: SlidersHorizontal, studioOnly: true },
+  { to: '/avatar', label: 'Avatar', icon: UserRound, signedInOnly: true },
   { to: '/analytics', label: 'Insights', icon: BarChart3, analyticsOnly: true },
   { to: '/moderation', label: 'Review', icon: ShieldCheck, moderationOnly: true },
 ];

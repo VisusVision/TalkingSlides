@@ -829,6 +829,8 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "avatar_video_original",
             "avatar_video_processed",
             "avatar_reference_type",
+            "avatar_name",
+            "avatar_voice_source",
             "avatar_image_status",
             "avatar_model_version",
             "avatar_enabled",

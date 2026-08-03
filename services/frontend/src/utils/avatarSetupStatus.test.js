@@ -102,4 +102,16 @@ describe('avatar setup status helpers', () => {
 
     expect(message).toBe('Avatar needs to be prepared again.');
   });
+
+  it('keeps an explicit upload validation error instead of masking it with stale setup state', () => {
+    const message = avatarSetupErrorMessage({
+      error: 'No clear front-facing frame was found in the video.',
+      avatar_setup_status: {
+        state: 'missing_consent',
+        message: 'Confirm avatar consent before preparing or generating an avatar.',
+      },
+    });
+
+    expect(message).toBe('No clear front-facing frame was found in the video.');
+  });
 });

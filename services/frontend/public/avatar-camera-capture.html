@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VISUS Avatar Kamera Kaydı</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      body { margin: 0; min-height: 100vh; background: #09090b; color: #fff; }
+      main { min-height: 100vh; display: grid; grid-template-rows: auto 1fr auto; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 18px 24px; border-bottom: 1px solid #27272a; background: rgba(9,9,11,.92); }
+      .brand { font-weight: 900; letter-spacing: -.02em; }
+      .badge { border-radius: 999px; padding: 7px 12px; background: #27272a; color: #d4d4d8; font-size: 12px; font-weight: 800; }
+      .stage-wrap { display: grid; place-items: center; padding: 22px; }
+      .stage { position: relative; width: min(100%, 980px); aspect-ratio: 16/9; overflow: hidden; border: 1px solid #3f3f46; border-radius: 26px; background: #18181b; box-shadow: 0 30px 80px rgba(0,0,0,.45); }
+      video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+      .shade { pointer-events: none; position: absolute; inset: 0; z-index: 1; background: rgba(5,8,8,.24); opacity: 0; transition: opacity .2s ease; }
+      .empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 30px; text-align: center; color: #a1a1aa; }
+      .frame { pointer-events: none; position: absolute; left: 50%; top: 50%; width: 44%; height: 72%; transform: translate(-50%,-50%); border: 2px dashed rgba(255,255,255,.7); border-radius: 45%; box-shadow: 0 0 0 999px rgba(0,0,0,.1); }
+      .prompt { pointer-events: none; position: absolute; z-index: 2; left: 50%; top: 48px; width: min(88%, 760px); transform: translate(-50%,0); transition: transform .25s linear; border: 1px solid rgba(255,255,255,.12); border-radius: 22px; padding: 18px 24px; background: rgba(15,15,15,.66); text-align: center; box-shadow: 0 18px 50px rgba(0,0,0,.28); backdrop-filter: blur(12px); }
+      .prompt small { display: block; margin-bottom: 5px; color: #c4b5fd; font-weight: 900; letter-spacing: .13em; text-transform: uppercase; }
+      .prompt p { margin: 0; font-size: clamp(14px,2vw,18px); line-height: 1.5; font-weight: 750; }
+      footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 12px; padding: 18px 24px 24px; }
+      button { min-height: 46px; border: 0; border-radius: 999px; padding: 0 22px; cursor: pointer; background: #7c3aed; color: white; font: inherit; font-weight: 900; box-shadow: 0 12px 30px rgba(124,58,237,.28); }
+      button:hover { background: #8b5cf6; }
+      button.secondary { background: #fff; color: #18181b; box-shadow: none; }
+      button:disabled { cursor: wait; opacity: .55; }
+      #status { min-width: 250px; color: #d4d4d8; font-size: 13px; font-weight: 700; text-align: center; }
+      .recording { color: #fca5a5 !important; }
+      .recording-hud { position: fixed; z-index: 20; right: 28px; top: 20px; display: flex; align-items: center; gap: 12px; }
+      .timer-pill { display: inline-flex; min-height: 38px; align-items: center; gap: 9px; border: 1px solid rgba(255,255,255,.12); border-radius: 999px; padding: 0 15px; background: rgba(20,24,23,.68); color: white; font-size: 14px; font-weight: 900; box-shadow: 0 12px 35px rgba(0,0,0,.22); backdrop-filter: blur(10px); }
+      .timer-dot { width: 11px; height: 11px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 4px rgba(239,68,68,.12); animation: pulse 1s ease-in-out infinite; }
+      .finish-button { display: grid; min-height: 38px; width: 38px; place-items: center; border: 1px solid rgba(255,255,255,.12); padding: 0; background: rgba(20,24,23,.68); box-shadow: 0 12px 35px rgba(0,0,0,.22); font-size: 25px; font-weight: 300; line-height: 1; backdrop-filter: blur(10px); }
+      .finish-button:hover { background: rgba(38,42,41,.9); }
+      @keyframes pulse { 50% { opacity: .45; transform: scale(.88); } }
+      body.recording-mode { overflow: hidden; }
+      body.recording-mode main { display: block; min-height: 100vh; }
+      body.recording-mode header, body.recording-mode footer { display: none; }
+      body.recording-mode .stage-wrap { position: fixed; inset: 0; display: block; padding: 0; }
+      body.recording-mode .stage { width: 100vw; height: 100vh; aspect-ratio: auto; border: 0; border-radius: 0; box-shadow: none; }
+      body.recording-mode .shade { opacity: 1; }
+      body.recording-mode .frame { display: none; }
+      body.recording-mode .prompt { top: 10px; width: min(42vw, 800px); padding: 22px 32px; border-radius: 24px; background: rgba(18,15,14,.65); }
+      body.recording-mode .prompt small { display: none; }
+      body.recording-mode .prompt p { font-size: clamp(18px,1.55vw,28px); line-height: 1.5; font-weight: 850; }
+      @media (max-width: 760px) {
+        body.recording-mode .prompt { top: 62px; width: calc(100vw - 32px); padding: 16px 18px; }
+        body.recording-mode .prompt p { font-size: 16px; }
+        .recording-hud { right: 14px; top: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand">VISUS Avatar Kamera Kaydı</div>
+        <div class="badge">Kayıt yalnızca ana avatar ekranına aktarılır</div>
+      </header>
+      <div class="stage-wrap">
+        <section class="stage" aria-label="Avatar kamera önizlemesi">
+          <video id="preview" autoplay muted playsinline hidden></video>
+          <div class="shade"></div>
+          <div id="empty" class="empty">Kamerayı açmak için aşağıdaki düğmeye basın.</div>
+          <div id="frame" class="frame" hidden></div>
+          <div id="prompt" class="prompt" hidden>
+            <small id="promptTitle">Kayıt sırasında bu metni oku</small>
+            <p id="promptText">Merhaba, dijital avatarımı oluşturuyorum. Kameraya bakarak açık, doğal ve sakin bir şekilde konuşuyorum. Bu avatarı derslerimi anlaşılır, akıcı ve etkileyici biçimde anlatmak için kullanacağım.</p>
+          </div>
+        </section>
+      </div>
+      <footer>
+        <span id="status">Kamera açılmaya hazır.</span>
+        <button id="enable" type="button">Kamera ve mikrofonu aç</button>
+        <button id="start" type="button" hidden>30 saniyelik performans kaydını başlat</button>
+        <button id="stop" class="secondary" type="button" hidden>Kaydı tamamla</button>
+      </footer>
+      <div id="recordingHud" class="recording-hud" hidden>
+        <div class="timer-pill"><span class="timer-dot"></span><span id="recordingTimer">0:00</span></div>
+        <button id="finishRecording" class="finish-button" type="button" aria-label="Kaydı tamamla ve kapat">×</button>
+      </div>
+    </main>
+    <script>
+      const MAX_SECONDS = 30;
+      const params = new URLSearchParams(window.location.search);
+      const locale = params.get('locale') === 'en' ? 'en' : 'tr';
+      const expectedParentOrigin = `${window.location.protocol}//localhost${window.location.port ? `:${window.location.port}` : ''}`;
+      const parentOrigin = params.get('parentOrigin') === expectedParentOrigin ? expectedParentOrigin : '';
+      const copy = locale === 'en' ? {
+        title: 'VISUS Avatar Camera Recording', privacy: 'The recording is sent only to the main avatar screen',
+        empty: 'Press the button below to open your camera.', ready: 'Ready to open camera.', enable: 'Open camera and microphone',
+        start: 'Start 30-second performance recording', stop: 'Finish recording', recording: 'Recording', transferred: 'Recording transferred to the avatar screen.',
+        promptTitle: 'Read and perform this naturally', promptText: 'Hello, I am creating my digital avatar. I speak naturally while looking into the camera. I give a small nod, briefly smile, blink normally, and lift my eyebrows gently. Then I return to a calm, neutral expression and continue explaining my lesson clearly.',
+      } : {
+        title: 'VISUS Avatar Kamera Kaydı', privacy: 'Kayıt yalnızca ana avatar ekranına aktarılır',
+        empty: 'Kamerayı açmak için aşağıdaki düğmeye basın.', ready: 'Kamera açılmaya hazır.', enable: 'Kamera ve mikrofonu aç',
+        start: '30 saniyelik performans kaydını başlat', stop: 'Kaydı tamamla', recording: 'Kayıt yapılıyor', transferred: 'Kayıt avatar ekranına aktarıldı.',
+        promptTitle: 'Metni doğal mimiklerle oku', promptText: 'Merhaba, dijital avatarımı oluşturuyorum. Kameraya bakarak doğal biçimde konuşuyorum. Hafifçe başımı sallıyor, kısa bir an gülümsüyor, normal şekilde göz kırpıyor ve kaşlarımı nazikçe kaldırıyorum. Sonra sakin ve nötr ifademe dönüp dersimi açık bir şekilde anlatmaya devam ediyorum.',
+      };
+
+      document.title = copy.title;
+      document.querySelector('.brand').textContent = copy.title;
+      document.querySelector('.badge').textContent = copy.privacy;
+      const preview = document.querySelector('#preview');
+      const empty = document.querySelector('#empty');
+      const frame = document.querySelector('#frame');
+      const prompt = document.querySelector('#prompt');
+      const status = document.querySelector('#status');
+      const enableButton = document.querySelector('#enable');
+      const startButton = document.querySelector('#start');
+      const stopButton = document.querySelector('#stop');
+      const recordingHud = document.querySelector('#recordingHud');
+      const recordingTimer = document.querySelector('#recordingTimer');
+      const finishRecordingButton = document.querySelector('#finishRecording');
+      empty.textContent = copy.empty;
+      status.textContent = copy.ready;
+      enableButton.textContent = copy.enable;
+      startButton.textContent = copy.start;
+      stopButton.textContent = copy.stop;
+      document.querySelector('#promptTitle').textContent = copy.promptTitle;
+      document.querySelector('#promptText').textContent = copy.promptText;
+
+      let stream = null;
+      let recorder = null;
+      let chunks = [];
+      let timer = null;
+      let startedAt = 0;
+
+      function stopTracks() {
+        stream?.getTracks?.().forEach((track) => track.stop());
+        stream = null;
+      }
+
+      function preferredOptions() {
+        const types = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/webm;codecs=vp9,opus'];
+        const mimeType = types.find((type) => window.MediaRecorder?.isTypeSupported?.(type));
+        return mimeType ? { mimeType } : undefined;
+      }
+
+      enableButton.addEventListener('click', async () => {
+        enableButton.disabled = true;
+        status.textContent = locale === 'en' ? 'Waiting for Chrome permission...' : 'Chrome izni bekleniyor...';
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+          });
+          preview.srcObject = stream;
+          preview.hidden = false;
+          empty.hidden = true;
+          frame.hidden = false;
+          prompt.hidden = false;
+          enableButton.hidden = true;
+          startButton.hidden = false;
+          status.textContent = `${locale === 'en' ? 'Camera ready' : 'Kamera hazır'}: ${stream.getVideoTracks()[0]?.label || 'Camera'}`;
+        } catch (error) {
+          enableButton.disabled = false;
+          status.textContent = `${error.name}: ${error.message}`;
+        }
+      });
+
+      startButton.addEventListener('click', () => {
+        if (!stream) return;
+        chunks = [];
+        recorder = new MediaRecorder(stream, preferredOptions());
+        recorder.addEventListener('dataavailable', (event) => { if (event.data?.size) chunks.push(event.data); });
+        recorder.addEventListener('error', () => {
+          document.body.classList.remove('recording-mode');
+          recordingHud.hidden = true;
+          status.textContent = locale === 'en' ? 'Recording failed. Please try again.' : 'Kayıt başarısız oldu. Lütfen tekrar deneyin.';
+        });
+        recorder.addEventListener('stop', () => {
+          window.clearInterval(timer);
+          document.body.classList.remove('recording-mode');
+          recordingHud.hidden = true;
+          const mimeType = recorder.mimeType || chunks[0]?.type || 'video/webm';
+          const blob = new Blob(chunks, { type: mimeType });
+          if (!parentOrigin || !window.opener) {
+            status.textContent = locale === 'en' ? 'The main avatar screen could not be reached.' : 'Ana avatar ekranına ulaşılamadı.';
+            return;
+          }
+          window.opener.postMessage({ type: 'visus-avatar-camera-recording', blob, mimeType }, parentOrigin);
+          status.classList.remove('recording');
+          status.textContent = copy.transferred;
+          stopTracks();
+          window.setTimeout(() => window.close(), 700);
+        });
+        recorder.start(250);
+        startedAt = Date.now();
+        document.body.classList.add('recording-mode');
+        recordingHud.hidden = false;
+        recordingTimer.textContent = '0:00';
+        startButton.hidden = true;
+        stopButton.hidden = false;
+        status.classList.add('recording');
+        timer = window.setInterval(() => {
+          const elapsed = Math.min(MAX_SECONDS, (Date.now() - startedAt) / 1000);
+          const remaining = Math.max(0, Math.ceil(MAX_SECONDS - elapsed));
+          const elapsedWhole = Math.min(MAX_SECONDS, Math.floor(elapsed));
+          prompt.style.transform = `translate(-50%, ${Math.round((elapsed / MAX_SECONDS) * 92)}px)`;
+          recordingTimer.textContent = `0:${String(elapsedWhole).padStart(2, '0')}`;
+          status.textContent = `${copy.recording} · 00:${String(remaining).padStart(2, '0')}`;
+          if (elapsed >= MAX_SECONDS && recorder?.state === 'recording') recorder.stop();
+        }, 200);
+      });
+
+      stopButton.addEventListener('click', () => {
+        if (recorder?.state === 'recording') recorder.stop();
+      });
+
+      finishRecordingButton.addEventListener('click', () => {
+        if (recorder?.state === 'recording') recorder.stop();
+      });
+
+      window.addEventListener('beforeunload', () => {
+        window.clearInterval(timer);
+        stopTracks();
+      });
+    </script>
+  </body>
+</html>

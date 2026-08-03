@@ -15,6 +15,7 @@ const History = lazy(() => import('../pages/History'));
 const Notifications = lazy(() => import('../pages/Notifications'));
 const Help = lazy(() => import('../pages/Help'));
 const Analytics = lazy(() => import('../pages/Analytics'));
+const Avatar = lazy(() => import('../pages/Avatar'));
 const ModerationDashboard = lazy(() => import('../pages/ModerationDashboard'));
 const Settings = lazy(() => import('../pages/Settings'));
 
@@ -56,6 +57,18 @@ export default function AppRouter({
           )}
         />
         <Route path="/playlist/:playlistId" element={<Playlist user={user} onLoginRequest={onLoginRequest} />} />
+        <Route
+          path="/avatar"
+          element={(
+            <ProtectedRoute
+              user={user}
+              onLoginRequest={onLoginRequest}
+              redirectUnauthorizedTo="/"
+            >
+              <Avatar user={user} />
+            </ProtectedRoute>
+          )}
+        />
         <Route
           path="/analytics"
           element={(

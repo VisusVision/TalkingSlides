@@ -58,6 +58,7 @@ from typing import Any
 from celery import Celery
 from django.conf import settings
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.files import File as DjangoFile
 from django.db import IntegrityError, transaction
 from django.db.models import Avg, Count, Exists, F, Max, OuterRef, Prefetch, Q
 from django.core.cache import cache
@@ -11267,6 +11268,40 @@ class VoiceUploadView(APIView):
     parser_classes = [MultiPartParser, FormParser]
     permission_classes = [permissions.IsAuthenticated]
 
+    def get(self, request, user_id):
+        if not avatar_enabled():
+            return _feature_disabled_response("Avatar")
+        if not (_is_staff_user(request.user) or request.user.id == int(user_id)):
+            return Response({"error": "Forbidden."}, status=status.HTTP_403_FORBIDDEN)
+
+        user = User.objects.filter(pk=int(user_id)).first()
+        if user is None:
+            return Response({"error": "User not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not _can_use_avatar_preferences(user):
+            return Response(
+                {"error": "Only teacher, publisher, or staff accounts can access voices."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        voice_profile = VoiceProfile.objects.filter(user=user).first()
+        voice_id = str(getattr(voice_profile, "voice_id", "") or "").strip()
+        if not voice_id:
+            return Response({"error": "Voice sample not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        voices_dir = (Path(getattr(settings, "STORAGE_ROOT", "storage_local")) / "voices").resolve()
+        voice_path = (voices_dir / f"{voice_id}.wav").resolve()
+        try:
+            voice_path.relative_to(voices_dir)
+        except ValueError:
+            return Response({"error": "Voice sample not found."}, status=status.HTTP_404_NOT_FOUND)
+        if not voice_path.is_file():
+            return Response({"error": "Voice sample not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        response = FileResponse(open(voice_path, "rb"), content_type="audio/wav")
+        response["Content-Disposition"] = 'inline; filename="voice-sample.wav"'
+        response["Cache-Control"] = "private, no-store"
+        return response
+
     def post(self, request, user_id):
         if not avatar_enabled():
             return _feature_disabled_response("Avatar")
@@ -11447,6 +11482,19 @@ class AvatarProfileView(APIView):
         if avatar_file is None and avatar_video_file is None:
             return Response({"error": "avatar_video_file (preferred) or avatar_file is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        requested_avatar_name = str(request.data.get("avatar_name") or "").strip()
+        requested_voice_source = str(request.data.get("avatar_voice_source") or "").strip().lower()
+        if "avatar_name" in request.data and not requested_avatar_name:
+            return Response({"error": "Avatar name is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if len(requested_avatar_name) > 120:
+            return Response({"error": "Avatar name must be 120 characters or fewer."}, status=status.HTTP_400_BAD_REQUEST)
+        if requested_voice_source and requested_voice_source not in {"existing", "video"}:
+            return Response({"error": "avatar_voice_source must be existing or video."}, status=status.HTTP_400_BAD_REQUEST)
+        if requested_voice_source == "video" and avatar_video_file is None:
+            return Response({"error": "Video voice can only be used with an avatar video."}, status=status.HTTP_400_BAD_REQUEST)
+        if requested_voice_source == "existing" and not VoiceProfile.objects.filter(user=user, voice_id__gt="").exists():
+            return Response({"error": "Create a voice in My voices before selecting the saved voice option."}, status=status.HTTP_400_BAD_REQUEST)
+
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
         consent_value = str(request.data.get("avatar_consent_confirmed", "")).strip().lower()
         if consent_value not in {"1", "true", "yes", "on"}:
@@ -11464,9 +11512,20 @@ class AvatarProfileView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Consent has already been explicitly validated above. Persist it before
+        # preprocessing so validation/moderation failures do not incorrectly
+        # report the setup state as missing consent.
+        profile.avatar_consent_confirmed = True
         profile.avatar_image_status = "processing"
         profile.avatar_preview_error = ""
-        profile.save(update_fields=["avatar_image_status", "avatar_preview_error", "updated_at"])
+        profile.save(
+            update_fields=[
+                "avatar_consent_confirmed",
+                "avatar_image_status",
+                "avatar_preview_error",
+                "updated_at",
+            ]
+        )
 
         upload_dir = Path(storage_root) / "avatars" / str(user.id) / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
@@ -11474,6 +11533,7 @@ class AvatarProfileView(APIView):
         rel_video_original = profile.avatar_video_original
         result_warnings = []
         reference_type = "image"
+        saved_video = None
 
         if avatar_video_file is not None:
             reference_type = "video"
@@ -11639,6 +11699,30 @@ class AvatarProfileView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        if requested_voice_source == "video":
+            new_voice_id = f"voice_{uuid.uuid4().hex[:12]}"
+            try:
+                with open(saved_video, "rb") as video_handle:
+                    voice_metadata = ingest_voice_reference(
+                        DjangoFile(video_handle, name=saved_video.name),
+                        storage_root=Path(storage_root),
+                        voice_id=new_voice_id,
+                    )
+            except VoiceReferenceIngestionError as exc:
+                return Response(
+                    {"error": exc.message, "error_code": exc.code, "status": "rejected"},
+                    status=exc.http_status,
+                )
+            try:
+                voice_profile, _ = VoiceProfile.objects.get_or_create(user=user)
+                voice_profile.voice_id = new_voice_id
+                voice_profile.provider = "xtts_v2"
+                voice_profile.save(update_fields=["voice_id", "provider"])
+            except Exception:
+                voice_metadata.path.unlink(missing_ok=True)
+                raise
+            result_warnings.append("voice_created_from_avatar_video")
+
         profile.avatar_image_status = "ready"
         profile.avatar_model_version = f"{requested_engine}:v1"
         profile.avatar_enabled = True
@@ -11648,6 +11732,10 @@ class AvatarProfileView(APIView):
         profile.avatar_quality_preset = str(request.data.get("avatar_quality_preset") or profile.avatar_quality_preset or "high")
         profile.avatar_engine_primary = requested_engine
         profile.avatar_engine_fallback = ""
+        if requested_avatar_name:
+            profile.avatar_name = requested_avatar_name
+        if requested_voice_source:
+            profile.avatar_voice_source = requested_voice_source
         profile.save(
             update_fields=[
                 "avatar_image_original",
@@ -11657,6 +11745,8 @@ class AvatarProfileView(APIView):
                 "avatar_image_status",
                 "avatar_model_version",
                 "avatar_reference_type",
+                "avatar_name",
+                "avatar_voice_source",
                 "avatar_enabled",
                 "avatar_consent_confirmed",
                 "avatar_motion_preset",

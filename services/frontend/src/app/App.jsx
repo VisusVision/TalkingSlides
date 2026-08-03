@@ -33,6 +33,7 @@ export function searchScopeForPathname(pathname) {
   const matches = (prefix) => path === prefix || path.startsWith(`${prefix}/`);
   if (matches('/moderation')) return 'moderation';
   if (matches('/studio')) return 'studio';
+  if (matches('/avatar')) return 'avatar';
   if (matches('/analytics')) return 'analytics';
   if (matches('/browse')) return 'browse';
   if (matches('/watch')) return 'watch';
@@ -176,7 +177,7 @@ function AppWithRouter() {
     await refreshCapabilities({ force: true });
     setUser(null);
 
-    if (['/studio', '/analytics', '/moderation', '/library', '/my-lessons', '/history'].includes(location.pathname)) {
+    if (['/studio', '/avatar', '/analytics', '/moderation', '/library', '/my-lessons', '/history'].includes(location.pathname)) {
       navigate('/', { replace: true });
     }
   };

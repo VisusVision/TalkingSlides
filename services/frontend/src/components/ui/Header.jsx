@@ -17,7 +17,7 @@ import {
 import NotificationTypeIcon from './NotificationTypeIcon';
 import ProfileMenu from './ProfileMenu';
 
-const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/analytics', '/notifications']);
+const SEARCH_HIDDEN_PATHS = new Set(['/help', '/settings', '/avatar', '/analytics', '/notifications']);
 const NOTIFICATION_DROPDOWN_LIMIT = 5;
 
 export default function Header({
