@@ -36,12 +36,14 @@ import Avatar from './Avatar';
 
 const user = { id: 42, role: 'teacher', profile: { role: 'teacher' } };
 
-function profilePayload({ portrait = false, voice = false } = {}) {
+function profilePayload({ portrait = false, voice = false, preview = false, qualityReport = {} } = {}) {
   return {
     profile: {
       avatar_enabled: portrait && voice,
       avatar_consent_confirmed: portrait,
       avatar_image_original: portrait ? '/media/avatar/person.png' : '',
+      avatar_preview_video: preview ? '/media/avatar/preview.mp4' : '',
+      avatar_preview_quality_report: qualityReport,
     },
     avatar_setup_status: {
       state: portrait ? (voice ? 'needs_prepare' : 'missing_voice') : 'missing_consent',
@@ -179,5 +181,40 @@ describe('Avatar page', () => {
 
     expect(apiMocks.uploadVoiceSample).toHaveBeenCalledWith(42, voice);
     expect(host.textContent).toContain('Sesiniz başarıyla yüklendi');
+  });
+
+  it('shows structured quality scores for the latest real render', async () => {
+    apiMocks.fetchAvatarProfile.mockResolvedValue(profilePayload({
+      portrait: true,
+      voice: true,
+      preview: true,
+      qualityReport: {
+        decision: 'review_required',
+        identity: { passed: true, score: 0.84 },
+        lip_sync: { passed: true, score: 0.91 },
+        temporal: { passed: true, score: 1 },
+        technical: { strict_validation_passed: true },
+        engine_trace: { engine_used: 'liveportrait+musetalk' },
+      },
+    }));
+
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await act(async () => {
+      root.render(<Avatar user={user} />);
+    });
+    await flush();
+
+    await act(async () => {
+      buttonWithText(host, 'Setup guide').click();
+    });
+    await flush();
+
+    expect(host.querySelector('[data-testid="avatar-quality-report"]')).toBeTruthy();
+    expect(host.textContent).toContain('Render quality');
+    expect(host.textContent).toContain('Review recommended');
+    expect(host.textContent).toContain('84%');
+    expect(host.textContent).toContain('91%');
+    expect(host.textContent).toContain('liveportrait+musetalk');
   });
 });
