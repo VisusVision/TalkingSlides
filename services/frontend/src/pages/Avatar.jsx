@@ -81,6 +81,19 @@ const COPY = {
     loading: 'Loading your avatar...',
     currentPreview: 'Current preview',
     queued: 'Preview generation was queued.',
+    qualityTitle: 'Render quality',
+    qualityPassed: 'Quality passed',
+    qualityReview: 'Review recommended',
+    qualityFailed: 'Quality check failed',
+    qualityUnavailable: 'Quality result unavailable',
+    identityQuality: 'Identity match',
+    lipSyncQuality: 'Lip sync',
+    temporalQuality: 'Motion stability',
+    technicalQuality: 'Technical validation',
+    qualityVerified: 'Verified',
+    qualityNeedsReview: 'Needs review',
+    qualityEngine: 'Render engine',
+    qualityDisclaimer: 'Preview measurements help you spot issues before using the avatar in a lesson.',
   },
   tr: {
     myAvatars: 'Avatarlarım',
@@ -119,6 +132,19 @@ const COPY = {
     loading: 'Avatarın yükleniyor...',
     currentPreview: 'Güncel önizleme',
     queued: 'Avatar önizlemesi sıraya alındı.',
+    qualityTitle: 'Render kalitesi',
+    qualityPassed: 'Kalite kontrolü geçti',
+    qualityReview: 'İnceleme öneriliyor',
+    qualityFailed: 'Kalite kontrolü başarısız',
+    qualityUnavailable: 'Kalite sonucu alınamadı',
+    identityQuality: 'Kimlik benzerliği',
+    lipSyncQuality: 'Dudak senkronu',
+    temporalQuality: 'Hareket stabilitesi',
+    technicalQuality: 'Teknik doğrulama',
+    qualityVerified: 'Doğrulandı',
+    qualityNeedsReview: 'İnceleme gerekli',
+    qualityEngine: 'Render motoru',
+    qualityDisclaimer: 'Önizleme ölçümleri, avatarı derste kullanmadan önce sorunları fark etmene yardımcı olur.',
   },
 };
 
@@ -165,6 +191,69 @@ function previewUrl(payload) {
     || profile.avatar_last_preview_path
     || payload?.avatar_summary?.last_preview_path
     || '',
+  );
+}
+
+function qualityScore(signal) {
+  if (signal?.score === null || signal?.score === undefined || signal?.score === '') return '';
+  const score = Number(signal?.score);
+  return Number.isFinite(score) ? `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%` : '';
+}
+
+function AvatarQualityReport({ report, copy }) {
+  if (!report || !Object.keys(report).length) return null;
+
+  const decision = String(report.decision || 'unavailable').toLowerCase();
+  const decisionLabel = decision === 'passed'
+    ? copy.qualityPassed
+    : decision === 'review_required'
+      ? copy.qualityReview
+      : decision === 'failed'
+        ? copy.qualityFailed
+        : copy.qualityUnavailable;
+  const decisionClasses = decision === 'passed'
+    ? 'bg-[var(--status-success-bg)] text-[var(--status-success-fg)]'
+    : decision === 'failed'
+      ? 'bg-[var(--status-danger-bg)] text-[var(--status-danger-fg)]'
+      : 'bg-[var(--status-warning-bg)] text-[var(--status-warning-fg)]';
+  const signals = [
+    { key: 'identity', label: copy.identityQuality, value: report.identity },
+    { key: 'lip-sync', label: copy.lipSyncQuality, value: report.lip_sync },
+    { key: 'temporal', label: copy.temporalQuality, value: report.temporal },
+    {
+      key: 'technical',
+      label: copy.technicalQuality,
+      value: {
+        passed: report.technical?.strict_validation_passed,
+        score: report.technical?.strict_validation_passed ? 1 : 0,
+      },
+    },
+  ];
+  const engine = String(report.engine_trace?.engine_used || report.engine_trace?.engine_chain?.join(' + ') || '').trim();
+
+  return (
+    <div className="mt-4 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface-container-low)] p-4" data-testid="avatar-quality-report">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-bold text-[var(--text-primary)]">{copy.qualityTitle}</p>
+        <span className={`rounded-full px-3 py-1 text-xs font-bold ${decisionClasses}`}>{decisionLabel}</span>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {signals.map(({ key, label, value }) => {
+          const score = qualityScore(value);
+          const passed = value?.passed === true;
+          return (
+            <div key={key} className="rounded-xl bg-[var(--surface-container-high)] px-3 py-3">
+              <p className="text-xs font-semibold text-[var(--outline)]">{label}</p>
+              <p className="mt-1 text-sm font-bold text-[var(--text-primary)]">
+                {score || (passed ? copy.qualityVerified : copy.qualityNeedsReview)}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      {engine ? <p className="mt-3 text-xs text-[var(--text-secondary)]">{copy.qualityEngine}: <span className="font-semibold">{engine}</span></p> : null}
+      <p className="mt-2 text-xs leading-5 text-[var(--outline)]">{copy.qualityDisclaimer}</p>
+    </div>
   );
 }
 
@@ -280,7 +369,7 @@ export default function Avatar({ user }) {
         const status = await fetchAvatarPreviewStatus(user.id, previewJobId);
         if (!active) return;
         const state = String(status?.preview_status || status?.status || '').toLowerCase();
-        if (['ready', 'completed', 'succeeded', 'failed'].includes(state)) {
+        if (['ready', 'warning', 'completed', 'succeeded', 'failed'].includes(state)) {
           setPreviewJobId('');
           await loadProfile();
         }
@@ -633,6 +722,7 @@ export default function Avatar({ user }) {
                 <div className="mt-6 border-t border-[var(--border-subtle)] pt-5">
                   <p className="label-sm mb-3">{copy.currentPreview}</p>
                   <video src={currentPreviewUrl} controls playsInline className="max-h-[28rem] w-full rounded-2xl bg-black object-contain" />
+                  <AvatarQualityReport report={profilePayload?.profile?.avatar_preview_quality_report} copy={copy} />
                 </div>
               ) : null}
             </SurfaceCard>

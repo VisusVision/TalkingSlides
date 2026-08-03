@@ -507,6 +507,7 @@ def _set_current_avatar_preview_profile_state(
     image_status: str,
     clear_preview: bool = False,
     preview_source_hash: str | None = None,
+    quality_report: dict[str, Any] | None = None,
 ) -> bool:
     """Update preview profile fields only when this job is still current."""
 
@@ -543,12 +544,14 @@ def _set_current_avatar_preview_profile_state(
         if clear_preview:
             locked_profile.avatar_preview_video = ""
             locked_profile.avatar_last_preview_path = ""
+            locked_profile.avatar_preview_quality_report = {}
             locked_profile.avatar_preview_source_hash = ""
             locked_profile.avatar_preview_stale = False
             update_fields.extend(
                 [
                     "avatar_preview_video",
                     "avatar_last_preview_path",
+                    "avatar_preview_quality_report",
                     "avatar_preview_source_hash",
                     "avatar_preview_stale",
                 ]
@@ -561,8 +564,58 @@ def _set_current_avatar_preview_profile_state(
             locked_profile.avatar_preview_source_hash = str(preview_source_hash or "")
             locked_profile.avatar_preview_stale = False
             update_fields.extend(["avatar_preview_source_hash", "avatar_preview_stale"])
+        if quality_report is not None:
+            locked_profile.avatar_preview_quality_report = dict(quality_report)
+            update_fields.append("avatar_preview_quality_report")
         locked_profile.save(update_fields=update_fields)
         return True
+
+
+def _evaluate_preview_quality(
+    *,
+    source_image: str,
+    output_video: Path,
+    audio_path: Path,
+    render_result: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a durable quality summary without discarding an otherwise playable preview."""
+
+    try:
+        from avatar.digital_twin.render_quality import evaluate_render_quality
+
+        report = evaluate_render_quality(
+            source_image=source_image,
+            output_video=output_video,
+            audio_path=audio_path,
+            render_info=render_result,
+        ).as_dict()
+    except Exception as exc:
+        logger.exception("Avatar preview quality evaluation failed output=%s", output_video)
+        report = {
+            "decision": "unavailable",
+            "publish_allowed": False,
+            "strict_gate": False,
+            "identity": {
+                "name": "identity_similarity",
+                "passed": None,
+                "score": None,
+                "assurance": "unavailable",
+            },
+            "lip_sync": {"name": "lip_sync", "passed": None, "score": None, "assurance": "unavailable"},
+            "temporal": {"name": "temporal_stability", "passed": None, "score": None, "assurance": "unavailable"},
+            "technical": {"strict_validation_passed": False},
+            "reasons": ["quality_evaluation_unavailable"],
+            "error": str(exc or "quality_evaluation_unavailable")[:500],
+        }
+
+    stage_paths = dict(render_result.get("stage_paths") or {})
+    report["engine_trace"] = {
+        "engine_used": str(render_result.get("engine_used") or ""),
+        "engine_chain": list(render_result.get("final_avatar_engine_chain") or []),
+        "fallback_used": bool(stage_paths.get("liveportrait_fallback_used")),
+        "restoration_succeeded": bool(stage_paths.get("restoration_succeeded")),
+    }
+    return report
 
 
 def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int | None = None) -> dict[str, Any]:
@@ -587,6 +640,7 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
         image_status: str,
         clear_preview: bool = False,
         preview_source_hash: str | None = None,
+        quality_report: dict[str, Any] | None = None,
     ) -> None:
         _set_current_avatar_preview_profile_state(
             profile_id=int(profile.id),
@@ -598,6 +652,7 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
             image_status=image_status,
             clear_preview=clear_preview,
             preview_source_hash=preview_source_hash,
+            quality_report=quality_report,
         )
 
     def _set_job(*, status: str, progress: int, result_url: str = "", error_message: str = "") -> None:
@@ -910,6 +965,16 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
             raise RuntimeError("preview_output_not_current_run")
 
         preview_usable = bool(render_result.get("preview_usable", True)) and bool(current_run_playable_returned)
+        quality_report = _evaluate_preview_quality(
+            source_image=source_image_abs or source_image_original_abs,
+            output_video=output_mp4,
+            audio_path=audio_wav,
+            render_result=render_result,
+        )
+        if str(quality_report.get("decision") or "") in {"failed", "unavailable"}:
+            preview_status = "warning"
+            if not preview_warning:
+                preview_warning = "preview_quality_review_required"
 
         _set_profile_state(
             status=preview_status,
@@ -917,6 +982,7 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
             preview_rel_path=preview_rel_path,
             image_status="ready",
             preview_source_hash=str(profile.avatar_source_hash or ""),
+            quality_report=quality_report,
         )
         _set_job(
             status="done",
@@ -951,6 +1017,7 @@ def render_avatar_preview_canonical(task: Any, *, teacher_id: int, job_id: int |
             "preview_audio_source_rel_path": _safe_rel_path(storage_root, source_mp3),
             "preview_audio_contract_rel_path": _safe_rel_path(storage_root, audio_wav),
             "motion_validation": dict(render_result.get("motion_validation") or {}),
+            "quality_report": quality_report,
             "stage_paths": stage_paths,
             "stage_outputs": list(render_result.get("stage_outputs") or []),
         }

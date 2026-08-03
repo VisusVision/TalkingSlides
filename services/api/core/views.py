@@ -12041,7 +12041,19 @@ class AvatarPreviewRegenerateView(APIView):
             profile.avatar_last_preview_path = ""
             profile.avatar_preview_video = ""
             profile.avatar_preview_error = ""
-            profile.save(update_fields=["avatar_image_status", "avatar_last_preview_status", "avatar_last_preview_job_id", "avatar_last_preview_path", "avatar_preview_video", "avatar_preview_error", "updated_at"])
+            profile.avatar_preview_quality_report = {}
+            profile.save(
+                update_fields=[
+                    "avatar_image_status",
+                    "avatar_last_preview_status",
+                    "avatar_last_preview_job_id",
+                    "avatar_last_preview_path",
+                    "avatar_preview_video",
+                    "avatar_preview_error",
+                    "avatar_preview_quality_report",
+                    "updated_at",
+                ]
+            )
 
         async_result = _dispatch_celery_task(
             _AVATAR_PREVIEW_TASK,
@@ -12294,6 +12306,11 @@ class AvatarPreviewStatusView(APIView):
             ui_returned_playable_file = str(payload.get("result_url") or "").strip() or preview_rel_path
         payload["preview_rel_path"] = preview_rel_path
         payload["ui_returned_playable_file"] = ui_returned_playable_file
+        payload["quality_report"] = (
+            dict(profile.avatar_preview_quality_report or {})
+            if str(profile.avatar_last_preview_job_id or "") == str(job.id) and payload["preview_status"] in {"ready", "warning"}
+            else {}
+        )
 
         playable_path = str(payload.get("ui_returned_playable_file") or "").strip()
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
@@ -12411,7 +12428,17 @@ class AvatarPreviewDeleteView(APIView):
         profile.avatar_preview_video = ""
         profile.avatar_last_preview_status = "deleted"
         profile.avatar_preview_error = ""
-        profile.save(update_fields=["avatar_last_preview_path", "avatar_preview_video", "avatar_last_preview_status", "avatar_preview_error", "updated_at"])
+        profile.avatar_preview_quality_report = {}
+        profile.save(
+            update_fields=[
+                "avatar_last_preview_path",
+                "avatar_preview_video",
+                "avatar_last_preview_status",
+                "avatar_preview_error",
+                "avatar_preview_quality_report",
+                "updated_at",
+            ]
+        )
         return Response({"status": "deleted"})
 
 

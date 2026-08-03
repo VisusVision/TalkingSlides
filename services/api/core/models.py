@@ -85,6 +85,7 @@ class UserProfile(models.Model):
     avatar_last_preview_job_id = models.CharField(max_length=255, blank=True)
     avatar_last_preview_path = models.CharField(max_length=500, blank=True)
     avatar_preview_error = models.TextField(blank=True)
+    avatar_preview_quality_report = models.JSONField(default=dict, blank=True)
     avatar_version_hash = models.CharField(max_length=80, blank=True)
     avatar_source_valid = models.BooleanField(default=False)
     avatar_source_validation_error = models.TextField(blank=True)

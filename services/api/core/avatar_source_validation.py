@@ -165,6 +165,7 @@ def clear_stale_avatar_preview(profile: UserProfile) -> None:
     profile.avatar_preview_video = ""
     profile.avatar_last_preview_path = ""
     profile.avatar_last_preview_status = "stale"
+    profile.avatar_preview_quality_report = {}
     profile.avatar_preview_source_hash = ""
     profile.avatar_preview_stale = True
 
@@ -228,6 +229,7 @@ def refresh_avatar_source_validation(
                     "avatar_preview_video",
                     "avatar_last_preview_path",
                     "avatar_last_preview_status",
+                    "avatar_preview_quality_report",
                     "avatar_preview_source_hash",
                 ]
             )

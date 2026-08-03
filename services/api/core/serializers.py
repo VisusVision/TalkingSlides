@@ -849,6 +849,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             "avatar_last_preview_job_id",
             "avatar_last_preview_path",
             "avatar_preview_error",
+            "avatar_preview_quality_report",
             "avatar_version_hash",
             "avatar_source_valid",
             "avatar_source_validation_error",

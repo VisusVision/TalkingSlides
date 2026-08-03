@@ -98,6 +98,7 @@ def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
         avatar_image_original="avatars/1/hash/original.png",
         avatar_last_preview_path="avatars/old/preview/preview.mp4",
         avatar_preview_video="avatars/old/preview/preview.mp4",
+        avatar_preview_quality_report={"decision": "passed"},
         avatar_consent_confirmed=True,
         avatar_enabled=True,
     )
@@ -165,6 +166,7 @@ def test_avatar_preview_regenerate_enqueues_fast_job(monkeypatch):
     assert profile.avatar_last_preview_status == "queued"
     assert profile.avatar_last_preview_path == ""
     assert profile.avatar_preview_video == ""
+    assert profile.avatar_preview_quality_report == {}
 
 
 def test_avatar_preview_regenerate_reuses_pending_preview_job(monkeypatch):
@@ -472,6 +474,10 @@ def test_avatar_preview_status_polling_returns_job_state():
         avatar_last_preview_status="done",
         avatar_last_preview_job_id="",
         avatar_last_preview_path="avatars/2/preview/preview.mp4",
+        avatar_preview_quality_report={
+            "decision": "review_required",
+            "identity": {"score": 0.84, "passed": True},
+        },
     )
     job = Job.objects.create(job_type="avatar_render", status="done", progress=100, result_url=profile.avatar_last_preview_path)
     profile.avatar_last_preview_job_id = str(job.id)
@@ -490,6 +496,50 @@ def test_avatar_preview_status_polling_returns_job_state():
     assert response.data["action_required"] == response.data["avatar_setup_status"]["action_required"]
     assert response.data["normalized_engine"] == "liveportrait+musetalk"
     assert response.data["avatar_engine_selected"] == "liveportrait+musetalk"
+    assert response.data["quality_report"]["decision"] == "review_required"
+    assert response.data["quality_report"]["identity"]["score"] == 0.84
+
+
+def test_avatar_preview_quality_report_includes_engine_trace(monkeypatch, tmp_path):
+    from avatar.digital_twin import render_quality
+
+    monkeypatch.setattr(
+        render_quality,
+        "evaluate_render_quality",
+        lambda **_kwargs: SimpleNamespace(
+            as_dict=lambda: {
+                "decision": "review_required",
+                "publish_allowed": True,
+                "identity": {"score": 0.84, "passed": True},
+                "lip_sync": {"score": 0.91, "passed": True},
+                "temporal": {"score": 1.0, "passed": True},
+                "technical": {"strict_validation_passed": True},
+                "reasons": ["strong_identity_or_lipsync_metric_pending"],
+            }
+        ),
+    )
+
+    report = avatar_preview_flow._evaluate_preview_quality(
+        source_image=str(tmp_path / "source.png"),
+        output_video=tmp_path / "preview.mp4",
+        audio_path=tmp_path / "preview.wav",
+        render_result={
+            "engine_used": "liveportrait+musetalk",
+            "final_avatar_engine_chain": ["liveportrait", "musetalk"],
+            "stage_paths": {
+                "liveportrait_fallback_used": False,
+                "restoration_succeeded": True,
+            },
+        },
+    )
+
+    assert report["decision"] == "review_required"
+    assert report["engine_trace"] == {
+        "engine_used": "liveportrait+musetalk",
+        "engine_chain": ["liveportrait", "musetalk"],
+        "fallback_used": False,
+        "restoration_succeeded": True,
+    }
 
 
 def test_avatar_preview_status_hides_preview_path_for_non_current_job():
