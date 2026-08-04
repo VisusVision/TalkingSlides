@@ -1087,6 +1087,39 @@ def _playback_sidecar_for_job(storage_root: str, project_id: int) -> dict:
         return {}
 
 
+def _playback_sidecar_matches_job(sidecar: dict, job: Job | None) -> bool:
+    if not isinstance(sidecar, dict) or job is None:
+        return False
+    sidecar_job_id = sidecar.get("job_id")
+    if sidecar_job_id not in (None, ""):
+        try:
+            return int(sidecar_job_id) == int(job.id)
+        except (TypeError, ValueError):
+            return False
+    sidecar_mp4 = str(sidecar.get("mp4_rel_path") or "").strip().lstrip("/")
+    job_mp4 = str(getattr(job, "result_url", "") or "").strip().lstrip("/")
+    if sidecar_mp4 and job_mp4:
+        return sidecar_mp4 == job_mp4
+    return not sidecar_mp4
+
+
+def _playback_sidecar_for_completed_job(storage_root: str, project_id: int, job: Job | None) -> dict:
+    sidecar = _playback_sidecar_for_job(storage_root, project_id)
+    if not sidecar:
+        return {}
+    if _playback_sidecar_matches_job(sidecar, job):
+        return sidecar
+    logger.warning(
+        "Ignoring playback sidecar that does not match selected job project_id=%s selected_job_id=%s sidecar_job_id=%s sidecar_mp4=%s job_mp4=%s",
+        project_id,
+        getattr(job, "id", None),
+        sidecar.get("job_id") if isinstance(sidecar, dict) else None,
+        sidecar.get("mp4_rel_path") if isinstance(sidecar, dict) else None,
+        getattr(job, "result_url", ""),
+    )
+    return {}
+
+
 _PARTIAL_RENDER_ARTIFACT_NAMES = frozenset({"tts_audio", "avatar_clip", "composed_segment", "slide_image"})
 
 
@@ -1232,7 +1265,8 @@ def _sanitize_partial_render_analysis(value: Any) -> dict[str, Any] | None:
 
 def _latest_render_analysis_for_project(project: Project) -> dict[str, Any] | None:
     storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-    sidecar = _playback_sidecar_for_job(storage_root, int(project.id))
+    latest_job = _latest_completed_video_export_job(project)
+    sidecar = _playback_sidecar_for_completed_job(storage_root, int(project.id), latest_job)
     if not isinstance(sidecar, Mapping):
         return None
     return _sanitize_partial_render_analysis(sidecar.get("partial_render_analysis"))
@@ -3984,7 +4018,7 @@ class MediaStreamView(APIView):
         except Job.DoesNotExist:
             return _stream_error_response(file_type=requested_type, status_code=status.HTTP_404_NOT_FOUND, reason="job_not_found")
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, job.project_id)
+        sidecar = _playback_sidecar_for_completed_job(storage_root, job.project_id, job)
         stream_project = getattr(job, "project", None)
         if stream_project:
             protection_mode, mode_debug, lesson_is_public = _resolve_playback_mode_for_project(stream_project, sidecar)
@@ -4169,7 +4203,7 @@ class PlaybackTokenView(APIView):
             return Response({"error": "No ready video for this project."}, status=status.HTTP_404_NOT_FOUND)
 
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+        sidecar = _playback_sidecar_for_completed_job(storage_root, project.id, job)
         protection_mode, mode_debug, _lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
 
         allow_mp4_fallback = bool(getattr(settings, "LESSON_PROTECTION_ALLOW_MP4_FALLBACK", True))
@@ -4336,7 +4370,7 @@ def _shared_lesson_playback_payload(request, share_link: LessonShareLink) -> Res
         return Response({"error": "No ready video for this lesson.", "reason": "video_not_ready"}, status=status.HTTP_404_NOT_FOUND)
 
     storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-    sidecar = _playback_sidecar_for_job(storage_root, project.id)
+    sidecar = _playback_sidecar_for_completed_job(storage_root, project.id, job)
     protection_mode, mode_debug, _lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
     if protection_mode == "public":
         protection_mode = "secure_stream"
@@ -4599,7 +4633,7 @@ class StudioPreviewTokenView(APIView):
             return Response({"error": "No ready video for this project."}, status=status.HTTP_404_NOT_FOUND)
 
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+        sidecar = _playback_sidecar_for_completed_job(storage_root, project.id, job)
 
         # Force a non-DRM, secure stream mode for Studio preview
         protection_mode = "secure_stream"
@@ -4721,7 +4755,7 @@ class ProjectSubtitleTrackListView(APIView):
 
         latest_job = _latest_completed_video_export_job(project)
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+        sidecar = _playback_sidecar_for_completed_job(storage_root, project.id, latest_job)
         language_payload = _language_detection_sidecar_for_job(storage_root, project.id)
         source_language = str(
             language_payload.get("resolved_language")
@@ -4855,8 +4889,12 @@ class ProjectSubtitleTrackListView(APIView):
             .first()
         )
         if existing_track is not None:
-            sidecar = _playback_sidecar_for_job(getattr(settings, "STORAGE_ROOT", "storage_local"), project.id)
             stream_job = existing_track.job if existing_track.job_id and existing_track.job and existing_track.job.srt_url else latest_job
+            sidecar = _playback_sidecar_for_completed_job(
+                getattr(settings, "STORAGE_ROOT", "storage_local"),
+                project.id,
+                stream_job,
+            )
             _protection_mode, ttl_seconds, grant_id, bind_key = (
                 _subtitle_playback_token_context(request, project, stream_job, sidecar)
                 if stream_job
@@ -4888,8 +4926,12 @@ class ProjectSubtitleTrackListView(APIView):
             .first()
         )
         if processing_track is not None:
-            sidecar = _playback_sidecar_for_job(getattr(settings, "STORAGE_ROOT", "storage_local"), project.id)
             stream_job = processing_track.job if processing_track.job_id and processing_track.job and processing_track.job.srt_url else latest_job
+            sidecar = _playback_sidecar_for_completed_job(
+                getattr(settings, "STORAGE_ROOT", "storage_local"),
+                project.id,
+                stream_job,
+            )
             _protection_mode, ttl_seconds, grant_id, bind_key = (
                 _subtitle_playback_token_context(request, project, stream_job, sidecar)
                 if stream_job
@@ -5018,9 +5060,9 @@ class ProjectSubtitleTrackListView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, project.id)
         stream_job = track.job if track.job_id and track.job and track.job.srt_url else latest_job
+        storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
+        sidecar = _playback_sidecar_for_completed_job(storage_root, project.id, stream_job)
         _protection_mode, ttl_seconds, grant_id, bind_key = (
             _subtitle_playback_token_context(request, project, stream_job, sidecar)
             if stream_job
@@ -5066,7 +5108,7 @@ class PlaybackSessionHeartbeatView(APIView):
             return Response({"error": "No ready video for this project."}, status=status.HTTP_404_NOT_FOUND)
 
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+        sidecar = _playback_sidecar_for_completed_job(storage_root, project.id, job)
         protection_mode, mode_debug, _lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
 
         identity = _playback_identity(request)
@@ -6923,7 +6965,8 @@ class ProjectPartialRenderPreviewView(APIView):
             return Response(_partial_render_preview_unavailable(source, source_notes))
 
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, int(project.id))
+        latest_job = _latest_completed_video_export_job(project)
+        sidecar = _playback_sidecar_for_completed_job(storage_root, int(project.id), latest_job)
         try:
             analysis, analysis_notes = _partial_render_preview_analysis(
                 project=project,
@@ -11066,7 +11109,7 @@ class ProjectAvatarRerenderView(APIView):
             )
 
         storage_root = Path(getattr(settings, "STORAGE_ROOT", "storage_local"))
-        sidecar = _playback_sidecar_for_job(str(storage_root), project.id)
+        sidecar = _playback_sidecar_for_completed_job(str(storage_root), project.id, base_job)
         if not sidecar:
             return Response(
                 {
@@ -14013,7 +14056,7 @@ class CatalogDetailView(APIView):
             return Response({"error": "Lesson video not ready."}, status=status.HTTP_404_NOT_FOUND)
 
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
-        sidecar = _playback_sidecar_for_job(storage_root, project.id)
+        sidecar = _playback_sidecar_for_completed_job(storage_root, project.id, job)
         protection_mode, mode_debug, _lesson_is_public = _resolve_playback_mode_for_project(project, sidecar)
 
         allow_mp4_fallback = bool(getattr(settings, "LESSON_PROTECTION_ALLOW_MP4_FALLBACK", True))
