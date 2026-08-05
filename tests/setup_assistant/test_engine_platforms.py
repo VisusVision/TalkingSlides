@@ -81,7 +81,8 @@ def test_invalid_repository_is_clear_failure(tmp_path: Path) -> None:
     run = CheckEngine(MappingRunner()).run(repository=tmp_path)
     result = by_id(run.results, "repository.discovery")
     assert result.status is CheckStatus.FAILURE
-    assert "Missing markers" in result.technical_details
+    assert "Missing identity markers" in result.technical_details
+    assert "README.md" in result.technical_details
 
 
 def test_windows_wsl_absent_and_nvidia_absent(monkeypatch, talking_slides_repo: Path, tmp_path: Path) -> None:
