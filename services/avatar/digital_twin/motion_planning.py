@@ -17,6 +17,10 @@ _STYLE_PRESETS = {
     "natural": "natural_visible",
     "expressive": "natural_visible",
 }
+_STYLE_RANK = {"calm": 0, "natural": 1, "expressive": 2}
+_RANK_STYLE = {rank: style for style, rank in _STYLE_RANK.items()}
+_PROSODY_VERSION = "prosody-v1"
+_MAX_PROSODY_SEGMENTS = 32
 
 
 def _finite(value: Any, default: float = 0.0) -> float:
@@ -102,11 +106,120 @@ def _valid_intervals(package: Mapping[str, Any], style: str) -> list[dict[str, A
     return candidates
 
 
+def _prosody_biased_style(raw_style: str, base_style: str, *, pause: bool, emphasis: bool) -> str:
+    if pause:
+        return "calm"
+    prosody_rank = _STYLE_RANK.get(raw_style, 1)
+    base_rank = _STYLE_RANK.get(base_style, 1)
+    rank = int(round(prosody_rank * 0.70 + base_rank * 0.30))
+    if emphasis:
+        rank = max(rank, 1)
+    return _RANK_STYLE[max(0, min(rank, 2))]
+
+
+def _candidate_for_timeline_segment(
+    package: Mapping[str, Any],
+    *,
+    style: str,
+    base_style: str,
+    seed: int,
+    index: int,
+) -> tuple[dict[str, Any], str]:
+    choices = list(dict.fromkeys([style, base_style, "natural", "calm", "expressive"]))
+    for candidate_style in choices:
+        candidates = _valid_intervals(package, candidate_style)
+        if candidates:
+            selected = dict(candidates[(seed + index * 104729) % len(candidates)])
+            return selected, candidate_style
+    return {}, ""
+
+
+def _performance_timeline(
+    package: Mapping[str, Any],
+    prosody_profile: Mapping[str, Any],
+    *,
+    base_style: str,
+    seed: int,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    reasons: list[str] = []
+    if str(prosody_profile.get("version") or "") != _PROSODY_VERSION:
+        return [], ["prosody_v1_missing"]
+    if not bool(prosody_profile.get("accepted")):
+        warnings = prosody_profile.get("warnings")
+        if isinstance(warnings, Sequence) and not isinstance(warnings, (str, bytes)) and warnings:
+            return [], [str(warnings[0])[:120]]
+        return [], ["prosody_not_accepted"]
+    raw_segments = prosody_profile.get("segments")
+    if not isinstance(raw_segments, Sequence) or isinstance(raw_segments, (str, bytes)):
+        return [], ["prosody_segments_missing"]
+
+    timeline: list[dict[str, Any]] = []
+    output_cursor = 0.0
+    for index, raw in enumerate(raw_segments[:_MAX_PROSODY_SEGMENTS]):
+        if not isinstance(raw, Mapping):
+            continue
+        duration = _finite(raw.get("duration_seconds"), 0.0)
+        if duration < 0.20:
+            continue
+        raw_style = str(raw.get("style") or "natural").strip().lower()
+        if raw_style not in _STYLE_RANK:
+            raw_style = "natural"
+        pause = bool(raw.get("pause"))
+        emphasis = bool(raw.get("emphasis"))
+        desired_style = _prosody_biased_style(
+            raw_style,
+            base_style,
+            pause=pause,
+            emphasis=emphasis,
+        )
+        remaining = duration
+        while remaining > 1e-6:
+            if len(timeline) >= _MAX_PROSODY_SEGMENTS:
+                return [], ["prosody_timeline_segment_limit_exceeded"]
+            interval, interval_style = _candidate_for_timeline_segment(
+                package,
+                style=desired_style,
+                base_style=base_style,
+                seed=seed,
+                index=len(timeline),
+            )
+            if not interval:
+                reasons.append(f"prosody_segment_{index}_interval_unavailable")
+                return [], reasons
+            capacity = max(float(interval["duration_seconds"]) - 0.15, 0.20)
+            chunk_duration = min(remaining, capacity)
+            if remaining - chunk_duration < 0.20:
+                chunk_duration = remaining
+            timeline.append(
+                {
+                    "index": len(timeline),
+                    "output_start_seconds": round(output_cursor, 4),
+                    "duration_seconds": round(chunk_duration, 4),
+                    "style": interval_style,
+                    "requested_style": desired_style,
+                    "source_start_seconds": interval["start_seconds"],
+                    "source_interval_duration_seconds": interval["duration_seconds"],
+                    "profile_score": interval["score"],
+                    "energy": round(_clamp(raw.get("energy")), 5),
+                    "pause": pause,
+                    "emphasis": emphasis,
+                }
+            )
+            output_cursor += chunk_duration
+            remaining -= chunk_duration
+    if not timeline:
+        return [], ["prosody_segments_missing"]
+    if len(timeline) == 1:
+        return [], ["prosody_timeline_not_varied"]
+    return timeline, reasons
+
+
 def build_personal_motion_plan(
     motion_style_package: Mapping[str, Any] | None,
     request_payload: Mapping[str, Any] | None,
     *,
     seed_material: Any,
+    prosody_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Choose a personal performance interval without claiming model inference."""
 
@@ -134,6 +247,22 @@ def build_personal_motion_plan(
 
     personal_window = bool(selected_interval)
     source = "motion_style_v2" if personal_window else "performance_window_v1_fallback"
+    resolved_prosody = dict(prosody_profile or {})
+    performance_timeline: list[dict[str, Any]] = []
+    prosody_fallback_reasons: list[str] = []
+    if personal_window:
+        performance_timeline, prosody_fallback_reasons = _performance_timeline(
+            package,
+            resolved_prosody,
+            base_style=style,
+            seed=seed,
+        )
+    prosody_summary = resolved_prosody.get("summary")
+    if not isinstance(prosody_summary, Mapping):
+        prosody_summary = {}
+    prosody_warnings = resolved_prosody.get("warnings")
+    if not isinstance(prosody_warnings, Sequence) or isinstance(prosody_warnings, (str, bytes)):
+        prosody_warnings = []
     return {
         "version": MOTION_PLAN_VERSION,
         "source": source,
@@ -154,6 +283,25 @@ def build_personal_motion_plan(
             "duration_seconds": selected_interval.get("duration_seconds", 0.0),
             "profile_score": selected_interval.get("score", 0.0),
         },
+        "prosody": {
+            "version": str(resolved_prosody.get("version") or ""),
+            "status": str(resolved_prosody.get("status") or "unavailable"),
+            "accepted": bool(resolved_prosody.get("accepted")),
+            "duration_seconds": round(max(_finite(resolved_prosody.get("duration_seconds")), 0.0), 4),
+            "summary": dict(prosody_summary),
+            "warnings": [str(warning)[:160] for warning in prosody_warnings],
+        },
+        "prosody_timeline_selected": bool(performance_timeline),
+        "performance_timeline": {
+            "enabled": bool(performance_timeline),
+            "source": "prosody_v1" if performance_timeline else "",
+            "duration_seconds": round(
+                sum(float(segment["duration_seconds"]) for segment in performance_timeline),
+                4,
+            ),
+            "segments": performance_timeline,
+        },
+        "prosody_fallback_reasons": list(dict.fromkeys(prosody_fallback_reasons)),
         "profile_snapshot": {
             "coverage": dict(package.get("coverage") or {}),
             "motion": dict(package.get("motion") or {}),

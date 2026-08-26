@@ -86,9 +86,27 @@ def test_render_binds_personal_motion_plan_to_liveportrait(tmp_path, settings, m
     hardware_module = importlib.import_module("avatar.digital_twin.hardware")
     quality_module = importlib.import_module("avatar.digital_twin.render_quality")
     pipeline_module = importlib.import_module("avatar.pipeline")
+    prosody_module = importlib.import_module("avatar.digital_twin.prosody")
     tts_module = importlib.import_module("scripts.tts_client")
     monkeypatch.setattr(hardware_module, "apply_local_inference_profile", lambda: hardware)
     monkeypatch.setattr(quality_module, "evaluate_render_quality", lambda **_kwargs: quality)
+    monkeypatch.setattr(
+        prosody_module,
+        "analyze_audio_prosody",
+        lambda *_args, **_kwargs: {
+            "version": "prosody-v1",
+            "status": "ready",
+            "accepted": True,
+            "duration_seconds": 6.0,
+            "summary": {"speech_ratio": 0.7, "emphasis_count": 1},
+            "warnings": [],
+            "segments": [
+                {"duration_seconds": 2.0, "style": "calm", "pause": True, "energy": 0.0},
+                {"duration_seconds": 2.0, "style": "natural", "energy": 0.5},
+                {"duration_seconds": 2.0, "style": "expressive", "energy": 0.9, "emphasis": True},
+            ],
+        },
+    )
 
     def fake_tts(_voice_id, _script, output_path, **_kwargs):
         path = tmp_path / str(output_path).replace(str(tmp_path), "").lstrip("/\\")
@@ -108,6 +126,11 @@ def test_render_binds_personal_motion_plan_to_liveportrait(tmp_path, settings, m
                 "liveportrait_performance_window_style": "expressive",
                 "liveportrait_performance_window_start": 8.0,
                 "liveportrait_performance_window_profile_score": 0.82,
+                "liveportrait_prosody_timeline_source": "prosody_v1",
+                "liveportrait_prosody_timeline_segment_count": 3,
+                "liveportrait_prosody_timeline_duration": 6.0,
+                "liveportrait_prosody_timeline_materialized": True,
+                "liveportrait_prosody_timeline_failure_reason": "",
             },
         }
 
@@ -128,15 +151,22 @@ def test_render_binds_personal_motion_plan_to_liveportrait(tmp_path, settings, m
     assert request.motion_preset == "natural_visible"
     assert request.performance_window["source"] == "motion_style_v2"
     assert request.performance_window["start_seconds"] == 8.0
+    assert request.performance_timeline["source"] == "prosody_v1"
+    assert len(request.performance_timeline["segments"]) == 3
     assert render.motion_plan["version"] == "motion-plan-v2"
     assert render.motion_plan["style"] == "expressive"
     assert render.motion_plan["personal_window_selected"] is True
     assert render.motion_plan["execution"]["window_source"] == "motion_style_v2_expressive"
-    assert render.engine_trace[2]["stage"] == "motion_plan"
+    assert render.motion_plan["execution"]["prosody_timeline_materialized"] is True
+    assert render.engine_trace[2]["stage"] == "prosody"
+    assert render.engine_trace[3]["stage"] == "motion_plan"
     render_dir = tmp_path / "digital_twins" / str(twin.id) / "renders" / str(render.id)
     provenance = json.loads((render_dir / "provenance.json").read_text())
     assert provenance["motion_plan"]["version"] == "motion-plan-v2"
     stored_plan = json.loads((render_dir / "motion-plan.json").read_text())
     assert stored_plan == render.motion_plan
+    stored_prosody = json.loads((render_dir / "prosody-profile.json").read_text())
+    assert stored_prosody["version"] == "prosody-v1"
     audit = DigitalTwinAuditEvent.objects.get(twin=twin, event="render.completed")
     assert audit.payload["personal_window_selected"] is True
+    assert audit.payload["prosody_timeline_materialized"] is True

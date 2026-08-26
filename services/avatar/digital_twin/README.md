@@ -11,6 +11,8 @@ digital twin. It separates lifecycle policy from GPU implementation:
   expression and motion coverage for the versioned `motion-style-v2` package.
 - `motion_planning.py`: deterministic emotion/intensity routing to a personal
   calm, natural, or expressive interval with a safe legacy-window fallback.
+- `prosody.py`: lightweight PCM energy, speech-activity, pause, and emphasis
+  analysis for versioned `prosody-v1` render timing.
 
 The current LivePortrait + MuseTalk pipeline should be connected through a
 `PortraitRenderer` adapter. A future video-reference diffusion model connects
@@ -36,3 +38,10 @@ selected interval, seed, style, renderer preset, fallback reason, and executed
 LivePortrait window are persisted on the render and in its engine trace. This
 makes repeated renders reproducible and prevents cache reuse across different
 personal motion windows.
+
+Prosody-Aware Motion Timing V1 analyzes the synthesized speech after TTS and
+adds a bounded personal performance timeline to the motion plan. LivePortrait
+materializes the calm/natural/expressive source intervals as a duration-matched
+crossfaded driving montage. The audio analyzer and montage are fail-open: when
+decoding, timing validation, or montage generation fails, the single-window
+Motion Planner V2 path remains active and the fallback reason is persisted.

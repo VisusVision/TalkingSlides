@@ -315,6 +315,7 @@ def _apply_ai_watermark(source: Path, target: Path) -> None:
 def render_digital_twin(self, *, render_id: str) -> dict:
     from avatar.digital_twin.hardware import apply_local_inference_profile
     from avatar.digital_twin.motion_planning import build_personal_motion_plan
+    from avatar.digital_twin.prosody import analyze_audio_prosody
     from avatar.digital_twin.render_quality import evaluate_render_quality
     from avatar.pipeline import AvatarRenderRequest, render_avatar_segment_local
     from core.models import DigitalTwinAuditEvent, DigitalTwinRender
@@ -348,10 +349,20 @@ def render_digital_twin(self, *, render_id: str) -> dict:
             mode="service",
             lang=str(render.request_payload.get("language") or twin.locale),
         )
+        prosody_profile = analyze_audio_prosody(
+            audio_path,
+            duration_hint=_finite_float(tts.get("duration")),
+        )
+        prosody_profile_path = output_dir / "prosody-profile.json"
+        prosody_profile_path.write_text(
+            json.dumps(prosody_profile, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
         motion_plan = build_personal_motion_plan(
             twin.motion_style_package,
             render.request_payload,
             seed_material=str(render.id),
+            prosody_profile=prosody_profile,
         )
         motion_plan_path = output_dir / "motion-plan.json"
         motion_plan_path.write_text(
@@ -374,6 +385,7 @@ def render_digital_twin(self, *, render_id: str) -> dict:
             liveportrait_enabled=True,
             enforce_exact_audio_duration=True,
             performance_window=dict(motion_plan.get("performance_window") or {}),
+            performance_timeline=dict(motion_plan.get("performance_timeline") or {}),
         )
         info = render_avatar_segment_local(request)
         stage_paths = dict(info.get("stage_paths") or {})
@@ -383,6 +395,11 @@ def render_digital_twin(self, *, render_id: str) -> dict:
             "window_start_seconds": _finite_float(stage_paths.get("liveportrait_performance_window_start")),
             "profile_score": _finite_float(stage_paths.get("liveportrait_performance_window_profile_score")),
             "renderer_motion_preset": str(info.get("liveportrait_motion_preset") or request.motion_preset),
+            "prosody_timeline_source": str(stage_paths.get("liveportrait_prosody_timeline_source") or ""),
+            "prosody_timeline_segment_count": int(max(_finite_float(stage_paths.get("liveportrait_prosody_timeline_segment_count")), 0.0)),
+            "prosody_timeline_duration_seconds": _finite_float(stage_paths.get("liveportrait_prosody_timeline_duration")),
+            "prosody_timeline_materialized": bool(stage_paths.get("liveportrait_prosody_timeline_materialized")),
+            "prosody_timeline_failure_reason": str(stage_paths.get("liveportrait_prosody_timeline_failure_reason") or ""),
         }
         motion_plan_path.write_text(
             json.dumps(motion_plan, ensure_ascii=False, indent=2, allow_nan=False),
@@ -426,6 +443,8 @@ def render_digital_twin(self, *, render_id: str) -> dict:
                 "source": motion_plan.get("source"),
                 "style": motion_plan.get("style"),
                 "seed": motion_plan.get("seed"),
+                "prosody_version": (motion_plan.get("prosody") or {}).get("version"),
+                "prosody_timeline_selected": motion_plan.get("prosody_timeline_selected"),
             },
         }
         (output_dir / "provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
@@ -435,6 +454,7 @@ def render_digital_twin(self, *, render_id: str) -> dict:
         render.engine_trace = [
             {"stage": "hardware", "profile": hardware_profile.as_dict()},
             {"stage": "tts", "provider": tts.get("provider")},
+            {"stage": "prosody", "profile": prosody_profile},
             {"stage": "motion_plan", "plan": motion_plan},
             {"stage": "portrait", "engine": info.get("engine_used", "liveportrait+musetalk")},
             {"stage": "provenance", "watermark": "AI AVATAR"},
@@ -451,6 +471,8 @@ def render_digital_twin(self, *, render_id: str) -> dict:
                 "motion_plan_version": motion_plan.get("version"),
                 "motion_style": motion_plan.get("style"),
                 "personal_window_selected": motion_plan.get("personal_window_selected"),
+                "prosody_timeline_selected": motion_plan.get("prosody_timeline_selected"),
+                "prosody_timeline_materialized": (motion_plan.get("execution") or {}).get("prosody_timeline_materialized"),
             },
         )
         return {"status": "ready", "render_id": str(render.id), "output_path": render.output_path}
