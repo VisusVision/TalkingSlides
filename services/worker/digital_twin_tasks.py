@@ -136,6 +136,7 @@ def verify_digital_twin_consent(self, *, training_run_id: str) -> dict:
 @app.task(bind=True, name="worker.digital_twin.train", acks_late=True)
 def train_digital_twin(self, *, training_run_id: str) -> dict:
     from avatar.digital_twin.hardware import apply_local_inference_profile
+    from avatar.digital_twin.motion_analysis import analyze_performance_motion
     from avatar.preprocess import preprocess_avatar_video
     from core.models import DigitalTwinAuditEvent, DigitalTwinTrainingRun
 
@@ -186,32 +187,51 @@ def train_digital_twin(self, *, training_run_id: str) -> dict:
 
         run.stage = "motion_style_package"
         run.save(update_fields=["stage", "updated_at"])
+        motion_analysis = analyze_performance_motion(performance_path)
         motion_dir = _storage_root() / "digital_twins" / str(twin.id) / "packages"
         motion_dir.mkdir(parents=True, exist_ok=True)
         motion_manifest = motion_dir / "motion-style.json"
         motion_payload = {
-            "version": "motion-style-v1",
+            **motion_analysis,
             "reference_video_path": run.input_manifest["performance_video_path"],
-            "motion_presets": ["natural", "expressive", "calm"],
-            "note": "Current adapter selects learned performance windows; trainable motion encoder is a V3 component.",
+            "source_hash": result.get("source_hash", ""),
+            "motion_presets": ["calm", "natural", "expressive"],
         }
-        motion_manifest.write_text(json.dumps(motion_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        motion_manifest.write_text(
+            json.dumps(motion_payload, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
         motion_package = {**motion_payload, "manifest_path": _relative(motion_manifest)}
+        motion_summary = {
+            key: motion_analysis.get(key)
+            for key in (
+                "version", "status", "accepted", "usable_for_motion_planning",
+                "duration_seconds", "frames_sampled", "analyzer", "coverage",
+                "head_pose", "gaze", "blink", "expression", "motion",
+                "selected_intervals", "warnings",
+            )
+        }
+        training_warnings = list(dict.fromkeys([
+            *result.get("warnings", []),
+            *hardware_profile.warnings,
+            *list(motion_analysis.get("warnings") or []),
+        ]))
 
         twin.status = "validating"
         twin.identity_package = identity_package
         twin.voice_package = voice_package
         twin.motion_style_package = motion_package
         twin.reference_analysis = {
-            "warnings": [*result.get("warnings", []), *hardware_profile.warnings],
+            "warnings": training_warnings,
             "reference_type": "video",
             "hardware_profile": hardware_profile.as_dict(),
+            "motion_style": motion_summary,
         }
         twin.model_versions = {
             "identity": "avatar-preprocess-v2",
             "portrait_renderer": "liveportrait+musetalk:v1",
             "voice": "xtts-compatible-reference:v1",
-            "motion": "performance-window:v1",
+            "motion": "motion-style-v2",
         }
         twin.save(update_fields=[
             "status", "identity_package", "voice_package", "motion_style_package",
@@ -232,7 +252,15 @@ def train_digital_twin(self, *, training_run_id: str) -> dict:
         }
         run.finished_at = timezone.now()
         run.save(update_fields=["status", "stage", "output_manifest", "finished_at", "updated_at"])
-        DigitalTwinAuditEvent.objects.create(twin=twin, event="training.completed", payload={"run_id": str(run.id)})
+        DigitalTwinAuditEvent.objects.create(
+            twin=twin,
+            event="training.completed",
+            payload={
+                "run_id": str(run.id),
+                "motion_status": motion_analysis.get("status"),
+                "warnings": training_warnings,
+            },
+        )
         return {"status": "ready", "twin_id": str(twin.id), "training_run_id": str(run.id)}
     except Exception as exc:
         safe_error = str(exc)[:1000]

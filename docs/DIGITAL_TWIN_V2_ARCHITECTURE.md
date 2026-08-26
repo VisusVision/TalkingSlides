@@ -244,8 +244,13 @@ session to authenticated staff review instead of approving it.
 
 The first renderer adapter is the existing `TTS -> LivePortrait -> MuseTalk ->
 restoration` path. It consumes the verified performance video, creates separate
-identity/voice/motion manifests, selects personal performance windows, and adds
-a visible `AI AVATAR` watermark plus provenance JSON. Full-body requests fail
+identity/voice/motion manifests, and adds a visible `AI AVATAR` watermark plus
+provenance JSON. Motion Style V2 samples the performance recording and stores
+face/landmark coverage, head pose, gaze, blinks, expression intensity, motion
+intensity, and ranked calm/natural/expressive temporal intervals. Missing
+landmark infrastructure is reported as `limited`; it is never presented as a
+learned motion model. Binding those personal intervals and statistics to the
+render-time motion planner is the next adapter phase. Full-body requests fail
 explicitly until a body renderer is installed; they never degrade silently to
 a talking head.
 

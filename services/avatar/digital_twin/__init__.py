@@ -21,6 +21,7 @@ from .domain import (
 )
 from .orchestrator import DigitalTwinOrchestrator, QualityGateError, TwinNotReadyError
 from .hardware import GpuSnapshot, InferenceProfile, apply_local_inference_profile, probe_nvidia_gpu
+from .motion_analysis import MOTION_STYLE_VERSION, analyze_performance_motion, build_motion_style_profile
 from .render_quality import RenderQualityReport, evaluate_render_quality
 from .verification import ConsentVerificationReport, VerificationSignal, verify_consent_evidence
 
@@ -30,6 +31,7 @@ __all__ = [
     "DigitalTwin",
     "DigitalTwinOrchestrator",
     "MotionPlan",
+    "MOTION_STYLE_VERSION",
     "QualityGateError",
     "QualityReport",
     "ReferenceAnalysis",
@@ -43,6 +45,8 @@ __all__ = [
     "GpuSnapshot",
     "InferenceProfile",
     "apply_local_inference_profile",
+    "analyze_performance_motion",
+    "build_motion_style_profile",
     "probe_nvidia_gpu",
     "ConsentVerificationReport",
     "RenderQualityReport",
