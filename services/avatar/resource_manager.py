@@ -29,10 +29,15 @@ def _safe_int(value: Any, default: int) -> int:
 
 
 def _history_path() -> Path:
-    raw = str(os.environ.get("AVATAR_ORCH_METRICS_FILE", "storage_local/avatar_stage_metrics.json")).strip()
-    if not raw:
-        raw = "storage_local/avatar_stage_metrics.json"
-    return Path(raw)
+    raw = str(os.environ.get("AVATAR_ORCH_METRICS_FILE", "")).strip()
+    if raw:
+        return Path(raw)
+    storage_root = str(
+        os.environ.get("AVATAR_STORAGE_ROOT")
+        or os.environ.get("STORAGE_ROOT")
+        or "storage_local"
+    ).strip()
+    return Path(storage_root or "storage_local") / "avatar_stage_metrics.json"
 
 
 def _history_limit() -> int:

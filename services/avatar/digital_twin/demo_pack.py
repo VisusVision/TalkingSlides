@@ -142,11 +142,15 @@ def materialize_motion_execution(plan: Mapping[str, Any], render_info: Mapping[s
 
     resolved = dict(plan)
     stage_paths = dict(render_info.get("stage_paths") or {})
+    window_materialized = bool(stage_paths.get("liveportrait_performance_window_materialized"))
+    prosody_materialized = bool(stage_paths.get("liveportrait_prosody_timeline_materialized"))
     resolved["execution"] = {
         "window_source": str(stage_paths.get("liveportrait_performance_window_source") or ""),
         "window_style": str(stage_paths.get("liveportrait_performance_window_style") or ""),
         "window_start_seconds": float(stage_paths.get("liveportrait_performance_window_start") or 0.0),
         "profile_score": float(stage_paths.get("liveportrait_performance_window_profile_score") or 0.0),
+        "window_materialized": window_materialized,
+        "personal_motion_materialized": bool(window_materialized or prosody_materialized),
         "renderer_motion_preset": str(
             render_info.get("liveportrait_motion_preset") or resolved.get("motion_preset") or ""
         ),
@@ -157,9 +161,7 @@ def materialize_motion_execution(plan: Mapping[str, Any], render_info: Mapping[s
         "prosody_timeline_duration_seconds": float(
             stage_paths.get("liveportrait_prosody_timeline_duration") or 0.0
         ),
-        "prosody_timeline_materialized": bool(
-            stage_paths.get("liveportrait_prosody_timeline_materialized")
-        ),
+        "prosody_timeline_materialized": prosody_materialized,
         "prosody_timeline_failure_reason": str(
             stage_paths.get("liveportrait_prosody_timeline_failure_reason") or ""
         ),

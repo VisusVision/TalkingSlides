@@ -1849,6 +1849,7 @@ def main() -> int:
         _performance_window_profile_score = 0.0
         _performance_window_style = ""
         _performance_window_source = "default_start"
+        _performance_window_materialized = False
         _prosody_timeline_source = ""
         _prosody_timeline_segment_count = 0
         _prosody_timeline_duration = 0.0
@@ -2427,13 +2428,20 @@ def main() -> int:
                 else:
                     _prosody_timeline_failure_reason = _materialization_failure
             if not _prosody_timeline_materialized:
+                _personal_window_selected = _performance_window_source != "default_start"
                 source_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
                     source_video=source_video,
                     target_duration_seconds=float(_target_contract_duration_seconds),
                     work_dir=temp_dir,
                     target_fps=0.0,
                     output_name="video_input_drive_contract.mp4",
+                    always_materialize=bool(_personal_window_selected),
                     start_offset_seconds=float(_performance_window_start),
+                )
+                _performance_window_materialized = bool(
+                    _personal_window_selected
+                    and _driving_action == "contract_materialized"
+                    and source_video.name == "video_input_drive_contract.mp4"
                 )
             _motion_source = "real_video_prosody_timeline" if _prosody_timeline_materialized else "real_video"
             _driver_source = "source_video"
@@ -2505,6 +2513,7 @@ def main() -> int:
             f"liveportrait_performance_window_profile_score={_performance_window_profile_score:.6f} "
             f"liveportrait_performance_window_style={_performance_window_style or 'none'} "
             f"liveportrait_performance_window_source={_performance_window_source} "
+            f"liveportrait_performance_window_materialized={int(bool(_performance_window_materialized))} "
             f"liveportrait_prosody_timeline_source={_prosody_timeline_source or 'none'} "
             f"liveportrait_prosody_timeline_segment_count={_prosody_timeline_segment_count} "
             f"liveportrait_prosody_timeline_duration={_prosody_timeline_duration:.6f} "

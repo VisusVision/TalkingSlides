@@ -116,11 +116,18 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
     )
     personal_window = bool(motion_plan.get("personal_window_selected"))
     personal_execution_reported = "window_source" in execution
+    explicit_personal_materialization = execution.get("personal_motion_materialized")
+    legacy_window_source = str(execution.get("window_source") or "")
     personal_window_materialized = bool(
         personal_window
         and (
-            not personal_execution_reported
-            or str(execution.get("window_source") or "") == "motion_style_v2"
+            bool(explicit_personal_materialization)
+            if explicit_personal_materialization is not None
+            else (
+                not personal_execution_reported
+                or legacy_window_source == "motion_style_v2"
+                or legacy_window_source.startswith("motion_style_v2_")
+            )
         )
     )
     prosody_materialized = bool(
