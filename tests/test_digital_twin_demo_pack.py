@@ -9,6 +9,7 @@ import pytest
 from avatar.digital_twin.demo_pack import (
     DemoPackContractError,
     build_demo_input_fingerprint,
+    build_demo_variant_render_inputs,
     build_demo_variant_plans,
     compose_side_by_side_video,
     run_demo_pack,
@@ -133,6 +134,37 @@ def test_variant_plans_fail_before_render_when_personal_evidence_is_unavailable(
         )
 
 
+def test_generic_render_input_withholds_the_personal_performance_video(tmp_path):
+    source_image, source_video, _audio = _write_inputs(tmp_path)
+
+    generic = build_demo_variant_render_inputs(
+        kind="generic",
+        source_image=source_image,
+        source_video=source_video,
+    )
+    personal = build_demo_variant_render_inputs(
+        kind="personal",
+        source_image=source_image,
+        source_video=source_video,
+    )
+    prosody = build_demo_variant_render_inputs(
+        kind="prosody",
+        source_image=source_image,
+        source_video=source_video,
+    )
+
+    assert generic == {
+        "source_image_path": str(source_image),
+        "source_video_path": "",
+        "avatar_reference_type": "image",
+        "motion_source_policy": "generic_non_personal",
+    }
+    assert personal["source_video_path"] == str(source_video)
+    assert personal["avatar_reference_type"] == "video"
+    assert personal["motion_source_policy"] == "personal_performance"
+    assert prosody == personal
+
+
 def test_fingerprint_changes_when_an_invariant_input_changes(tmp_path):
     source_image, source_video, audio = _write_inputs(tmp_path)
     first = build_demo_input_fingerprint(
@@ -248,6 +280,9 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
         output_path.write_bytes((kind.encode("utf-8") + b"-") * 1_000)
         active -= 1
         stage_paths = {
+            "avatar_reference_type": "image" if kind == "generic" else "video",
+            "request_source_video_path": "" if kind == "generic" else str(source_video),
+            "liveportrait_driver_source": "vetted_template" if kind == "generic" else "source_video",
             "liveportrait_performance_window_source": (
                 "motion_style_v2" if kind in {"personal", "prosody"} else ""
             ),
@@ -307,7 +342,11 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
         model_versions={"liveportrait": "test"},
         script_hash="a" * 64,
         quality_preset="high",
-        render_contract={"lipsync_engine": "musetalk", "restoration_enabled": True},
+        render_contract={
+            "lipsync_engine": "musetalk",
+            "restoration_enabled": True,
+            "generic_motion_source_policy": "generic_non_personal",
+        },
         render_variant=render_variant,
         evaluate_quality=lambda *_args: _quality_report(),
         compose_comparison=compose_comparison,
@@ -317,11 +356,16 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
     assert calls == ["generic", "personal", "prosody"]
     assert result["pack"]["execution"]["mode"] == "sequential"
     assert result["pack"]["execution"]["parallel_gpu_renders"] == 1
+    assert result["pack"]["experiment"]["render_contract"]["generic_motion_source_policy"] == (
+        "generic_non_personal"
+    )
     assert result["report"]["recommendation"] == "prosody"
     variants = {item["kind"]: item for item in result["report"]["variants"]}
     assert variants["personal"]["personal_window_materialized"] is True
     assert variants["prosody"]["personal_window_materialized"] is True
     assert variants["prosody"]["prosody_timeline_materialized"] is True
+    assert variants["generic"]["generic_baseline_isolated"] is True
+    assert result["report"]["automated_claims"]["generic_baseline_isolated"] is True
     public_dir = output_dir / "portfolio"
     assert sorted(path.name for path in public_dir.iterdir()) == sorted(
         [

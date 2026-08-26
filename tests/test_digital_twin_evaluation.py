@@ -59,7 +59,12 @@ def _variant(
         "motion_plan": {
             "personal_window_selected": personal,
             "prosody_timeline_selected": prosody,
-            "execution": {"prosody_timeline_materialized": prosody},
+            "execution": {
+                "prosody_timeline_materialized": prosody,
+                "renderer_driver_source": "source_video" if personal else "vetted_template",
+                "renderer_reference_type": "video" if personal else "image",
+                "personal_source_video_supplied": personal,
+            },
         },
         "runtime": {"render_seconds": 12.0, "peak_vram_mb": 5_500.0},
         "artifacts": {"video_path": f"artifacts/{kind}.mp4"},
@@ -113,6 +118,50 @@ def test_missing_personal_evidence_prevents_unsupported_recommendation():
     assert report["recommendation"] == "generic"
     assert report["variants"][1]["expected_evidence_present"] is False
     assert report["variants"][2]["eligible"] is False
+
+
+@pytest.mark.parametrize(
+    ("personal_source_video_supplied", "renderer_driver_source", "renderer_reference_type"),
+    [
+        (True, "source_video", "video"),
+        (False, "source_video", "image"),
+        (False, "vetted_template", "video"),
+    ],
+)
+def test_generic_baseline_with_a_personal_video_driver_is_not_eligible(
+    personal_source_video_supplied,
+    renderer_driver_source,
+    renderer_reference_type,
+):
+    manifest = _manifest()
+    manifest["variants"][0]["motion_plan"]["execution"].update(
+        {
+            "renderer_driver_source": renderer_driver_source,
+            "renderer_reference_type": renderer_reference_type,
+            "personal_source_video_supplied": personal_source_video_supplied,
+        }
+    )
+
+    report = evaluate_avatar_variants(manifest)
+
+    assert report["recommendation"] == "inconclusive"
+    assert report["fair_comparison"] is False
+    assert report["variants"][0]["generic_baseline_isolated"] is False
+    assert report["variants"][0]["expected_evidence_present"] is False
+    assert report["variants"][0]["eligible"] is False
+    assert report["automated_claims"]["generic_baseline_isolated"] is False
+
+
+def test_generic_baseline_without_isolation_evidence_is_not_eligible():
+    manifest = _manifest()
+    manifest["variants"][0]["motion_plan"]["execution"] = {}
+
+    report = evaluate_avatar_variants(manifest)
+
+    assert report["recommendation"] == "inconclusive"
+    assert report["fair_comparison"] is False
+    assert report["variants"][0]["generic_baseline_isolated"] is False
+    assert report["variants"][0]["expected_evidence_present"] is False
 
 
 def test_planned_but_unmaterialized_personal_window_is_not_eligible():

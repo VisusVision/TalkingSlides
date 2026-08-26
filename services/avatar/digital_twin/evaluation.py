@@ -134,13 +134,32 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
         execution.get("prosody_timeline_materialized")
         or variant.get("prosody_timeline_materialized")
     )
+    generic_isolation_reported = all(
+        key in execution
+        for key in (
+            "personal_source_video_supplied",
+            "renderer_driver_source",
+            "renderer_reference_type",
+        )
+    )
+    renderer_driver_source = str(execution.get("renderer_driver_source") or "").strip().lower()
+    renderer_reference_type = str(execution.get("renderer_reference_type") or "").strip().lower()
+    generic_baseline_isolated = bool(
+        kind != "generic"
+        or (
+            generic_isolation_reported
+            and not bool(execution.get("personal_source_video_supplied"))
+            and renderer_driver_source != "source_video"
+            and renderer_reference_type == "image"
+        )
+    )
     capability_coverage = 0.0
     if personal_window:
         capability_coverage += 0.5
     if prosody_materialized:
         capability_coverage += 0.5
     expected_evidence = bool(
-        kind == "generic"
+        (kind == "generic" and generic_baseline_isolated)
         or (kind == "personal" and personal_window_materialized)
         or (kind == "prosody" and personal_window_materialized and prosody_materialized)
     )
@@ -183,6 +202,7 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
         "personal_window_selected": personal_window,
         "personal_window_materialized": personal_window_materialized,
         "prosody_timeline_materialized": prosody_materialized,
+        "generic_baseline_isolated": generic_baseline_isolated if kind == "generic" else None,
         "capability_coverage": round(capability_coverage, 2),
         "expected_evidence_present": expected_evidence,
         "ready_for_comparison": ready,
@@ -324,8 +344,10 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "improvements": _improvements(prosody, personal),
         },
     }
+    generic_eligible = bool(generic["ready_for_comparison"] and generic["expected_evidence_present"])
     personal_eligible = bool(
-        personal["ready_for_comparison"]
+        generic_eligible
+        and personal["ready_for_comparison"]
         and personal["expected_evidence_present"]
         and not comparisons["personal_vs_generic"]["regressions"]
     )
@@ -335,7 +357,6 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
         and personal_eligible
         and not comparisons["prosody_vs_personal"]["regressions"]
     )
-    generic_eligible = bool(generic["ready_for_comparison"])
     generic["eligible"] = generic_eligible
     personal["eligible"] = personal_eligible
     prosody["eligible"] = prosody_eligible
@@ -356,8 +377,10 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
             if str(variant[signal_name]["assurance"]) not in {"strong", "biometric", "verified"}
         }
     )
+    fair_comparison = bool(generic["generic_baseline_isolated"])
     automated_claims = {
-        "fair_input_contract": True,
+        "fair_input_contract": fair_comparison,
+        "generic_baseline_isolated": bool(generic["generic_baseline_isolated"]),
         "personal_motion_bound": bool(personal["personal_window_materialized"]),
         "prosody_timing_materialized": bool(prosody["prosody_timeline_materialized"]),
         "personal_quality_non_regression": not bool(comparisons["personal_vs_generic"]["regressions"]),
@@ -384,7 +407,7 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "version": EVALUATION_VERSION,
         "suite_id": str(payload.get("suite_id") or "avatar-evaluation").strip()[:120],
-        "fair_comparison": True,
+        "fair_comparison": fair_comparison,
         "input_fingerprint": next(iter(fingerprints)),
         "context": report_context,
         "recommendation": recommendation,
