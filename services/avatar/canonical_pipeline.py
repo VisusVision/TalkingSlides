@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -540,6 +541,36 @@ def _request_source_key(request: Any) -> str:
     ).strip().lower()
 
 
+def _request_performance_window(request: Any) -> dict[str, str]:
+    raw = getattr(request, "performance_window", {}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    source = str(raw.get("source") or "").strip().lower()
+    style = str(raw.get("style") or "").strip().lower()
+    try:
+        start_seconds = float(raw.get("start_seconds") or 0.0)
+        duration_seconds = float(raw.get("duration_seconds") or 0.0)
+        profile_score = float(raw.get("profile_score") or 0.0)
+        if not all(math.isfinite(value) for value in (start_seconds, duration_seconds, profile_score)):
+            raise ValueError("personal performance window values must be finite")
+        start_seconds = max(start_seconds, 0.0)
+        duration_seconds = max(duration_seconds, 0.0)
+        profile_score = max(0.0, min(profile_score, 1.0))
+    except (TypeError, ValueError):
+        start_seconds = duration_seconds = profile_score = 0.0
+    enabled = bool(raw.get("enabled")) and source == "motion_style_v2" and duration_seconds > 0.0
+    if style not in {"calm", "natural", "expressive"}:
+        style = ""
+    return {
+        "enabled": "1" if enabled else "0",
+        "source": source if enabled else "",
+        "style": style if enabled else "",
+        "start_seconds": f"{start_seconds:.6f}" if enabled else "0.000000",
+        "duration_seconds": f"{duration_seconds:.6f}" if enabled else "0.000000",
+        "profile_score": f"{profile_score:.6f}" if enabled else "0.000000",
+    }
+
+
 def _path_hash(path_value: str) -> str:
     path = Path(str(path_value or ""))
     if not path.exists() or not path.is_file():
@@ -597,6 +628,7 @@ _STAGE_CACHE_PROVENANCE_STRING_FIELDS = [
     "liveportrait_calm_template_path",
     "liveportrait_calm_template_window_source",
     "liveportrait_performance_window_source",
+    "liveportrait_performance_window_style",
     "liveportrait_calm_template_failure_reason",
     "liveportrait_vetted_template_path",
     "liveportrait_fallback_driver_source",
@@ -633,6 +665,8 @@ _STAGE_CACHE_PROVENANCE_FLOAT_FIELDS = [
     "liveportrait_calm_template_min_mad",
     "liveportrait_performance_window_start",
     "liveportrait_performance_window_mean_mad",
+    "liveportrait_performance_window_planned_duration",
+    "liveportrait_performance_window_profile_score",
 ]
 _STAGE_CACHE_PROVENANCE_INT_FIELDS = [
     "liveportrait_driver_unique_frames",
@@ -838,6 +872,11 @@ def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[
         "liveportrait_calm_template_min_mad",
         "liveportrait_calm_window_cache_version",
         "liveportrait_performance_window_cache_version",
+        "personal_performance_window_source",
+        "personal_performance_window_style",
+        "personal_performance_window_start_seconds",
+        "personal_performance_window_duration_seconds",
+        "personal_performance_window_profile_score",
         "liveportrait_vetted_template_fallback_allowed",
         "liveportrait_composer_fallback_allowed",
         "liveportrait_vetted_image_template_hash",
@@ -1144,6 +1183,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
     liveportrait_vetted_template_motion = _liveportrait_vetted_template_motion_settings()
     liveportrait_composer_fallback_allowed = _liveportrait_allow_composer_fallback()
     liveportrait_vetted_template_fallback_allowed = _liveportrait_allow_vetted_template_fallback()
+    personal_window = _request_performance_window(request)
     preview_max_width_default = "384" if is_preview else "512"
     default_batch_size = 2 if is_preview else 8
 
@@ -1188,6 +1228,11 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_LIVEPORTRAIT_VETTED_IMAGE_TEMPLATE": liveportrait_vetted_image_template,
         "AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK": "1" if liveportrait_composer_fallback_allowed else "0",
         "AVATAR_LIVEPORTRAIT_ALLOW_VETTED_TEMPLATE_FALLBACK": "1" if liveportrait_vetted_template_fallback_allowed else "0",
+        "AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_SOURCE": personal_window["source"],
+        "AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_STYLE": personal_window["style"],
+        "AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_START_SECONDS": personal_window["start_seconds"],
+        "AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_DURATION_SECONDS": personal_window["duration_seconds"],
+        "AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_PROFILE_SCORE": personal_window["profile_score"],
         "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_MOTION_STRENGTH": liveportrait_vetted_template_motion["motion_strength"],
         "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_TEMPORAL_SMOOTHING": liveportrait_vetted_template_motion["temporal_smoothing"],
         "AVATAR_LIVEPORTRAIT_VETTED_TEMPLATE_SPEED": liveportrait_vetted_template_motion["speed"],
@@ -1838,6 +1883,7 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     )
     liveportrait_enabled = _liveportrait_enabled_for_request(request)
     restoration_enabled = _restore_enabled(_is_preview_request(request), request)
+    personal_window = _request_performance_window(request)
     return {
         "audio_hash": sha256_file(audio_path) if audio_path and Path(audio_path).exists() else "",
         "source_image_hash": sha256_file(source_image_path) if Path(source_image_path).exists() else "",
@@ -1890,6 +1936,11 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
             os.environ.get("AVATAR_LIVEPORTRAIT_PERFORMANCE_WINDOW_CACHE_VERSION", "1") or "1"
         ).strip()
         or "1",
+        "personal_performance_window_source": personal_window["source"],
+        "personal_performance_window_style": personal_window["style"],
+        "personal_performance_window_start_seconds": personal_window["start_seconds"],
+        "personal_performance_window_duration_seconds": personal_window["duration_seconds"],
+        "personal_performance_window_profile_score": personal_window["profile_score"],
         "musetalk_preview_fast_mode": "1" if _env_enabled("MUSETALK_PREVIEW_FAST_MODE", False) else "0",
         "musetalk_auto_downscale": "1" if _env_enabled("MUSETALK_AUTO_DOWNSCALE", True) else "0",
         "musetalk_preview_max_width": str(int(os.environ.get("MUSETALK_PREVIEW_MAX_WIDTH", "512") or 512)),
@@ -2150,6 +2201,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_calm_template_path",
         "liveportrait_calm_template_window_source",
         "liveportrait_performance_window_source",
+        "liveportrait_performance_window_style",
         "liveportrait_calm_template_window_materialized_mean_mad",
         "liveportrait_calm_template_failure_reason",
         "liveportrait_vetted_template_path",
@@ -2191,6 +2243,8 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_calm_template_min_mad",
         "liveportrait_performance_window_start",
         "liveportrait_performance_window_mean_mad",
+        "liveportrait_performance_window_planned_duration",
+        "liveportrait_performance_window_profile_score",
     ]:
         stage_paths[key] = _stderr_float_token(stderr, key, float(stage_paths.get(key) or 0.0))
     for key in [
@@ -2895,6 +2949,11 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_calm_template_window_duration": float(cached_stage_paths.get("liveportrait_calm_template_window_duration") or 0.0),
         "liveportrait_calm_template_window_mean_mad": float(cached_stage_paths.get("liveportrait_calm_template_window_mean_mad") or 0.0),
         "liveportrait_calm_template_window_materialized_mean_mad": float(cached_stage_paths.get("liveportrait_calm_template_window_materialized_mean_mad") or 0.0),
+        "liveportrait_performance_window_source": str(cached_stage_paths.get("liveportrait_performance_window_source") or ""),
+        "liveportrait_performance_window_style": str(cached_stage_paths.get("liveportrait_performance_window_style") or ""),
+        "liveportrait_performance_window_start": float(cached_stage_paths.get("liveportrait_performance_window_start") or 0.0),
+        "liveportrait_performance_window_planned_duration": float(cached_stage_paths.get("liveportrait_performance_window_planned_duration") or 0.0),
+        "liveportrait_performance_window_profile_score": float(cached_stage_paths.get("liveportrait_performance_window_profile_score") or 0.0),
         "liveportrait_vetted_template_path": str(cached_stage_paths.get("liveportrait_vetted_template_path") or ""),
         "liveportrait_vetted_template_missing": bool(cached_stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(cached_stage_paths.get("liveportrait_vetted_template_failed")),
@@ -2995,6 +3054,11 @@ def _write_meta(
         "liveportrait_calm_template_window_duration": float(stage_paths.get("liveportrait_calm_template_window_duration") or 0.0),
         "liveportrait_calm_template_window_mean_mad": float(stage_paths.get("liveportrait_calm_template_window_mean_mad") or 0.0),
         "liveportrait_calm_template_window_materialized_mean_mad": float(stage_paths.get("liveportrait_calm_template_window_materialized_mean_mad") or 0.0),
+        "liveportrait_performance_window_source": str(stage_paths.get("liveportrait_performance_window_source") or ""),
+        "liveportrait_performance_window_style": str(stage_paths.get("liveportrait_performance_window_style") or ""),
+        "liveportrait_performance_window_start": float(stage_paths.get("liveportrait_performance_window_start") or 0.0),
+        "liveportrait_performance_window_planned_duration": float(stage_paths.get("liveportrait_performance_window_planned_duration") or 0.0),
+        "liveportrait_performance_window_profile_score": float(stage_paths.get("liveportrait_performance_window_profile_score") or 0.0),
         "liveportrait_vetted_template_path": str(stage_paths.get("liveportrait_vetted_template_path") or ""),
         "liveportrait_vetted_template_missing": bool(stage_paths.get("liveportrait_vetted_template_missing")),
         "liveportrait_vetted_template_failed": bool(stage_paths.get("liveportrait_vetted_template_failed")),
