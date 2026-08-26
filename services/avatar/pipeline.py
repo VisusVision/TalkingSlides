@@ -621,6 +621,64 @@ def _is_calm_template_subtle_validation_context(
     return float(quality.get("eye_movement_score") or 0.0) >= strong_eye_threshold
 
 
+def _is_detector_limited_blink_evidence_context(
+    *,
+    validation_context: dict[str, Any],
+    quality: dict[str, Any],
+    min_eye: float,
+    blink_threshold: float,
+) -> bool:
+    if "frames_sampled" not in quality or (
+        "eye_roi_frames" not in quality and "landmark_valid_frames" not in quality
+    ):
+        return False
+    frames_sampled = int(quality.get("frames_sampled") or 0)
+    eye_observations = int(quality.get("eye_roi_frames") or quality.get("landmark_valid_frames") or 0)
+    min_sampled_frames = int(os.environ.get("AVATAR_BLINK_EVIDENCE_MIN_SAMPLED_FRAMES", "32"))
+    min_observations = int(os.environ.get("AVATAR_BLINK_EVIDENCE_MIN_OBSERVATIONS", "8"))
+    reliable_observations = int(os.environ.get("AVATAR_BLINK_EVIDENCE_RELIABLE_OBSERVATIONS", "16"))
+    reliable_coverage = float(os.environ.get("AVATAR_BLINK_EVIDENCE_RELIABLE_COVERAGE", "0.25"))
+    coverage = eye_observations / float(max(frames_sampled, 1))
+    evidence_reliable = bool(
+        eye_observations >= reliable_observations and coverage >= reliable_coverage
+    )
+    if frames_sampled < min_sampled_frames or eye_observations < min_observations or evidence_reliable:
+        return False
+
+    if not _truthy(validation_context.get("liveportrait_succeeded")):
+        return False
+    if _truthy(validation_context.get("liveportrait_fallback_used")):
+        return False
+    if str(validation_context.get("musetalk_source_kind") or "").strip().lower() != "liveportrait":
+        return False
+    if _truthy(validation_context.get("whole_frame_drift")) or bool(quality.get("drift_detected")):
+        return False
+    if (
+        bool(quality.get("glitch_detected"))
+        or bool(quality.get("mouth_artifact_detected"))
+        or bool(quality.get("eye_artifact_detected"))
+        or bool(quality.get("face_artifact_detected"))
+        or bool(quality.get("structural_face_artifact_detected"))
+        or bool(quality.get("face_warp_detected"))
+        or not bool(quality.get("landmark_stable", True))
+    ):
+        return False
+
+    blink = float(quality.get("eye_blink_change") or 0.0)
+    min_blink_ratio = float(os.environ.get("AVATAR_BLINK_EVIDENCE_MIN_THRESHOLD_RATIO", "0.80"))
+    if blink < float(blink_threshold) * min_blink_ratio:
+        return False
+    strong_eye_multiplier = float(os.environ.get("AVATAR_BLINK_EVIDENCE_EYE_STRONG_MARGIN_MULTIPLIER", "4.0"))
+    strong_eye_threshold = max(float(min_eye) * strong_eye_multiplier, float(min_eye) + 0.5)
+    return float(quality.get("eye_movement_score") or 0.0) >= strong_eye_threshold
+
+
+def _eye_blink_is_accepted(quality: dict[str, Any]) -> bool:
+    blink = float(quality.get("eye_blink_change") or 0.0)
+    threshold = float(quality.get("min_eye_blink_change") or 0.0)
+    return bool(blink >= threshold or quality.get("eye_blink_evidence_warning"))
+
+
 def _apply_avatar_validation_profile(
     quality: dict[str, Any],
     *,
@@ -653,6 +711,30 @@ def _apply_avatar_validation_profile(
     low_blink_under_used = blink < threshold_used
     low_mouth = mouth_open < min_mouth_open
     structural_artifact = bool(adjusted.get("structural_face_artifact_detected"))
+    evidence_reported = bool(
+        "frames_sampled" in adjusted
+        and ("eye_roi_frames" in adjusted or "landmark_valid_frames" in adjusted)
+    )
+    frames_sampled = int(adjusted.get("frames_sampled") or 0)
+    eye_observations = int(adjusted.get("eye_roi_frames") or adjusted.get("landmark_valid_frames") or 0)
+    evidence_coverage = eye_observations / float(max(frames_sampled, 1)) if evidence_reported else 0.0
+    reliable_observations = int(os.environ.get("AVATAR_BLINK_EVIDENCE_RELIABLE_OBSERVATIONS", "16"))
+    reliable_coverage = float(os.environ.get("AVATAR_BLINK_EVIDENCE_RELIABLE_COVERAGE", "0.25"))
+    evidence_reliable = bool(
+        evidence_reported
+        and eye_observations >= reliable_observations
+        and evidence_coverage >= reliable_coverage
+    )
+    evidence_warning = bool(
+        profile == "strict"
+        and low_blink_under_used
+        and _is_detector_limited_blink_evidence_context(
+            validation_context=context,
+            quality=adjusted,
+            min_eye=min_eye,
+            blink_threshold=threshold_used,
+        )
+    )
 
     adjusted["avatar_validation_profile"] = profile
     adjusted["min_eye_blink_change_strict"] = round(strict_blink_threshold, 6)
@@ -660,10 +742,24 @@ def _apply_avatar_validation_profile(
     adjusted["eye_blink_threshold_used"] = round(threshold_used, 6)
     adjusted["low_eye_blink_change"] = bool(low_blink_under_used)
     adjusted["low_eye_blink_change_warning"] = bool(
-        profile in {"composer_subtle_motion", "calm_template_subtle_motion"}
-        and low_blink_under_strict
-        and not low_blink_under_used
+        (
+            profile in {"composer_subtle_motion", "calm_template_subtle_motion"}
+            and low_blink_under_strict
+            and not low_blink_under_used
+        )
+        or evidence_warning
     )
+    adjusted["eye_blink_observation_count"] = eye_observations
+    adjusted["eye_landmark_coverage_ratio"] = round(evidence_coverage, 6)
+    adjusted["eye_blink_evidence_reliable"] = evidence_reliable
+    adjusted["eye_blink_evidence_warning"] = evidence_warning
+    adjusted["eye_blink_evidence_status"] = (
+        "not_reported"
+        if not evidence_reported
+        else ("unavailable" if eye_observations < 2 else ("reliable" if evidence_reliable else "low_detector_coverage"))
+    )
+    adjusted["eye_blink_min_reliable_observations"] = reliable_observations
+    adjusted["eye_blink_min_reliable_coverage_ratio"] = round(reliable_coverage, 6)
     adjusted["low_mouth_openness_change"] = bool(low_mouth)
     adjusted["face_artifact_detected"] = bool(structural_artifact)
     adjusted["face_roi_artifact_source"] = (
@@ -1349,7 +1445,7 @@ def validate_avatar_animation(video_path: str, *, validation_context: dict[str, 
         and float(quality.get("lip_movement_score") or 0.0) >= min_lip
         and float(quality.get("eye_movement_score") or 0.0) >= min_eye
         and float(quality.get("mouth_openness_change") or 0.0) >= float(quality.get("min_mouth_open_change") or 0.0)
-        and float(quality.get("eye_blink_change") or 0.0) >= float(quality.get("min_eye_blink_change") or 0.0)
+        and _eye_blink_is_accepted(quality)
         and not bool(quality.get("loop_detected"))
         and not bool(quality.get("drift_detected"))
         and not bool(quality.get("glitch_detected"))
@@ -1375,6 +1471,10 @@ def validate_avatar_animation(video_path: str, *, validation_context: dict[str, 
         "avatar_validation_profile": str(quality.get("avatar_validation_profile") or "strict"),
         "eye_blink_threshold_used": float(quality.get("eye_blink_threshold_used") or quality.get("min_eye_blink_change") or 0.0),
         "low_eye_blink_change_warning": bool(quality.get("low_eye_blink_change_warning")),
+        "eye_blink_evidence_reliable": bool(quality.get("eye_blink_evidence_reliable")),
+        "eye_blink_evidence_warning": bool(quality.get("eye_blink_evidence_warning")),
+        "eye_blink_evidence_status": str(quality.get("eye_blink_evidence_status") or "not_reported"),
+        "eye_landmark_coverage_ratio": float(quality.get("eye_landmark_coverage_ratio") or 0.0),
         "face_roi_artifact_source": str(quality.get("face_roi_artifact_source") or "none"),
         "invalid_eye_motion_source": "none",
     }
@@ -1414,7 +1514,7 @@ def validate_avatar_render_with_audio(
     )
     eye_valid = bool(
         float(quality.get("eye_movement_score") or 0.0) >= float(metrics.get("min_eye_movement") or 0.0)
-        and float(quality.get("eye_blink_change") or 0.0) >= float(quality.get("min_eye_blink_change") or 0.0)
+        and _eye_blink_is_accepted(quality)
     )
     artifact_detected = bool(
         quality.get("face_artifact_detected")
@@ -1429,16 +1529,22 @@ def validate_avatar_render_with_audio(
     invalid_eye_motion_source = "none"
     if float(quality.get("eye_movement_score") or 0.0) < float(metrics.get("min_eye_movement") or 0.0):
         invalid_eye_motion_source = "eye_movement"
-    elif float(quality.get("eye_blink_change") or 0.0) < float(quality.get("min_eye_blink_change") or 0.0):
+    elif not _eye_blink_is_accepted(quality):
         invalid_eye_motion_source = "blink_amplitude"
     metrics["invalid_eye_motion_source"] = invalid_eye_motion_source
     metrics["face_roi_artifact_source"] = str(quality.get("face_roi_artifact_source") or ("actual_roi" if artifact_detected else "none"))
     metrics["avatar_validation_profile"] = str(quality.get("avatar_validation_profile") or "strict")
     metrics["eye_blink_threshold_used"] = float(quality.get("eye_blink_threshold_used") or quality.get("min_eye_blink_change") or 0.0)
     metrics["low_eye_blink_change_warning"] = bool(quality.get("low_eye_blink_change_warning"))
+    metrics["eye_blink_evidence_reliable"] = bool(quality.get("eye_blink_evidence_reliable"))
+    metrics["eye_blink_evidence_warning"] = bool(quality.get("eye_blink_evidence_warning"))
+    metrics["eye_blink_evidence_status"] = str(quality.get("eye_blink_evidence_status") or "not_reported")
+    metrics["eye_landmark_coverage_ratio"] = float(quality.get("eye_landmark_coverage_ratio") or 0.0)
     warnings = list(metrics.get("validation_warnings") or [])
     if bool(metrics["low_eye_blink_change_warning"]) and "low_eye_blink_change" not in warnings:
         warnings.append("low_eye_blink_change")
+    if bool(metrics["eye_blink_evidence_warning"]) and "eye_blink_evidence_insufficient" not in warnings:
+        warnings.append("eye_blink_evidence_insufficient")
     metrics["validation_warnings"] = warnings
     if not lip_valid or not eye_valid or artifact_detected:
         metrics["animated"] = False
@@ -1478,7 +1584,7 @@ def validate_avatar_render_with_audio(
         reason_parts.append("landmark_instability")
     if float(quality.get("mouth_openness_change") or 0.0) < float(quality.get("min_mouth_open_change") or 0.0):
         reason_parts.append("low_mouth_openness_change")
-    if float(quality.get("eye_blink_change") or 0.0) < float(quality.get("min_eye_blink_change") or 0.0):
+    if not _eye_blink_is_accepted(quality):
         reason_parts.append("low_eye_blink_change")
     if bool(metrics.get("duration_mismatch")):
         reason_parts.append("duration_mismatch")
@@ -1521,7 +1627,7 @@ def _lesson_segment_validation_is_warning_only(metrics: dict[str, Any]) -> bool:
         and not bool(quality.get("eye_artifact_detected"))
         and not bool(quality.get("face_warp_detected"))
         and float(quality.get("mouth_openness_change") or 0.0) >= float(quality.get("min_mouth_open_change") or 0.0)
-        and float(quality.get("eye_blink_change") or 0.0) >= float(quality.get("min_eye_blink_change") or 0.0)
+        and _eye_blink_is_accepted(quality)
     )
 
 
@@ -1589,7 +1695,7 @@ def has_valid_eye_motion(video_path: str) -> bool:
     metrics = validate_avatar_animation(video_path)
     quality = metrics.get("quality_checks") or {}
     eye_ok = float(quality.get("eye_movement_score") or 0.0) >= float(metrics.get("min_eye_movement") or 0.0)
-    blink_ok = float(quality.get("eye_blink_change") or 0.0) >= float(quality.get("min_eye_blink_change") or 0.0)
+    blink_ok = _eye_blink_is_accepted(quality)
     return bool(eye_ok and blink_ok)
 
 
