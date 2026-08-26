@@ -127,6 +127,30 @@ def test_planned_but_unmaterialized_personal_window_is_not_eligible():
     assert report["automated_claims"]["personal_motion_bound"] is False
 
 
+def test_explicit_personal_materialization_evidence_overrides_legacy_source_label():
+    manifest = _manifest()
+    execution = manifest["variants"][1]["motion_plan"]["execution"]
+    execution["window_source"] = "motion_style_v2_natural"
+    execution["personal_motion_materialized"] = True
+
+    report = evaluate_avatar_variants(manifest)
+
+    assert report["variants"][1]["personal_window_materialized"] is True
+    assert report["automated_claims"]["personal_motion_bound"] is True
+
+
+def test_explicit_failed_materialization_cannot_be_hidden_by_legacy_source_label():
+    manifest = _manifest()
+    execution = manifest["variants"][1]["motion_plan"]["execution"]
+    execution["window_source"] = "motion_style_v2_natural"
+    execution["personal_motion_materialized"] = False
+
+    report = evaluate_avatar_variants(manifest)
+
+    assert report["variants"][1]["personal_window_materialized"] is False
+    assert report["automated_claims"]["personal_motion_bound"] is False
+
+
 def test_missing_quality_signal_prevents_unsupported_recommendation():
     manifest = _manifest()
     manifest["variants"][1]["quality_report"]["identity"] = {}

@@ -2,7 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except ImportError:  # pragma: no cover - exercised by the Python 3.10 avatar image
+    from enum import Enum
+
+    class StrEnum(str, Enum):
+        """Python 3.10-compatible subset of enum.StrEnum."""
+
+        def __str__(self) -> str:
+            return str(self.value)
+
+
 from typing import Any
 from uuid import uuid4
 

@@ -256,6 +256,7 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
                 "start_seconds", 0.0
             ),
             "liveportrait_performance_window_profile_score": 0.9,
+            "liveportrait_performance_window_materialized": kind == "personal",
             "liveportrait_prosody_timeline_source": "prosody_v1" if kind == "prosody" else "",
             "liveportrait_prosody_timeline_segment_count": 3 if kind == "prosody" else 0,
             "liveportrait_prosody_timeline_duration": 6.0 if kind == "prosody" else 0.0,
@@ -317,6 +318,10 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
     assert result["pack"]["execution"]["mode"] == "sequential"
     assert result["pack"]["execution"]["parallel_gpu_renders"] == 1
     assert result["report"]["recommendation"] == "prosody"
+    variants = {item["kind"]: item for item in result["report"]["variants"]}
+    assert variants["personal"]["personal_window_materialized"] is True
+    assert variants["prosody"]["personal_window_materialized"] is True
+    assert variants["prosody"]["prosody_timeline_materialized"] is True
     public_dir = output_dir / "portfolio"
     assert sorted(path.name for path in public_dir.iterdir()) == sorted(
         [

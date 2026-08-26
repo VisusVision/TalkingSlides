@@ -718,6 +718,7 @@ _STAGE_CACHE_PROVENANCE_BOOL_FIELDS = [
     "liveportrait_vetted_template_fallback_used",
     "liveportrait_composer_used",
     "liveportrait_composer_fallback_used",
+    "liveportrait_performance_window_materialized",
     "liveportrait_prosody_timeline_materialized",
     "liveportrait_template_calm_profile",
     "liveportrait_calm_template_window_accepted_by_profile",
@@ -2316,6 +2317,7 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_vetted_template_failed",
         "liveportrait_vetted_template_fallback_used",
         "liveportrait_composer_fallback_used",
+        "liveportrait_performance_window_materialized",
         "liveportrait_prosody_timeline_materialized",
         "liveportrait_template_calm_profile",
     ]:
@@ -2382,8 +2384,15 @@ def _musetalk_chunk_count(duration_seconds: float) -> tuple[int, float]:
 
 
 def _musetalk_history_file() -> Path:
-    raw = str(os.environ.get("AVATAR_ORCH_METRICS_FILE", "storage_local/avatar_stage_metrics.json")).strip()
-    return Path(raw or "storage_local/avatar_stage_metrics.json")
+    raw = str(os.environ.get("AVATAR_ORCH_METRICS_FILE", "")).strip()
+    if raw:
+        return Path(raw)
+    storage_root = str(
+        os.environ.get("AVATAR_STORAGE_ROOT")
+        or os.environ.get("STORAGE_ROOT")
+        or "storage_local"
+    ).strip()
+    return Path(storage_root or "storage_local") / "avatar_stage_metrics.json"
 
 
 def _safe_json_file(path: Path) -> dict[str, Any]:
@@ -3045,6 +3054,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_performance_window_start": float(cached_stage_paths.get("liveportrait_performance_window_start") or 0.0),
         "liveportrait_performance_window_planned_duration": float(cached_stage_paths.get("liveportrait_performance_window_planned_duration") or 0.0),
         "liveportrait_performance_window_profile_score": float(cached_stage_paths.get("liveportrait_performance_window_profile_score") or 0.0),
+        "liveportrait_performance_window_materialized": bool(cached_stage_paths.get("liveportrait_performance_window_materialized")),
         "liveportrait_prosody_timeline_source": str(cached_stage_paths.get("liveportrait_prosody_timeline_source") or ""),
         "liveportrait_prosody_timeline_segment_count": int(cached_stage_paths.get("liveportrait_prosody_timeline_segment_count") or 0),
         "liveportrait_prosody_timeline_duration": float(cached_stage_paths.get("liveportrait_prosody_timeline_duration") or 0.0),
@@ -3155,6 +3165,7 @@ def _write_meta(
         "liveportrait_performance_window_start": float(stage_paths.get("liveportrait_performance_window_start") or 0.0),
         "liveportrait_performance_window_planned_duration": float(stage_paths.get("liveportrait_performance_window_planned_duration") or 0.0),
         "liveportrait_performance_window_profile_score": float(stage_paths.get("liveportrait_performance_window_profile_score") or 0.0),
+        "liveportrait_performance_window_materialized": bool(stage_paths.get("liveportrait_performance_window_materialized")),
         "liveportrait_prosody_timeline_source": str(stage_paths.get("liveportrait_prosody_timeline_source") or ""),
         "liveportrait_prosody_timeline_segment_count": int(stage_paths.get("liveportrait_prosody_timeline_segment_count") or 0),
         "liveportrait_prosody_timeline_duration": float(stage_paths.get("liveportrait_prosody_timeline_duration") or 0.0),

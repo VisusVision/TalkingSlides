@@ -235,6 +235,40 @@ def test_invalid_prosody_timeline_is_rejected_without_touching_video(monkeypatch
     assert failure == "prosody_timeline_json_invalid"
 
 
+def test_personal_window_forces_a_materialized_driver_even_when_duration_matches(tmp_path, monkeypatch):
+    recording = tmp_path / "personal-performance.mp4"
+    recording.write_bytes(b"recording")
+    captured: dict[str, list[str]] = {}
+
+    def fake_probe(path, stream_selector="v:0"):
+        return 6.0
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        Path(command[-1]).write_bytes(b"window")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner, "_probe_duration_seconds", fake_probe)
+    monkeypatch.setattr(runner, "_probe_video_fps", lambda _path: 25.0)
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    output, action, duration = runner._ensure_driving_clip_contract(
+        source_video=recording,
+        target_duration_seconds=6.0,
+        work_dir=tmp_path,
+        target_fps=25.0,
+        output_name="personal-window.mp4",
+        always_materialize=True,
+        start_offset_seconds=4.0,
+    )
+
+    assert output == tmp_path / "personal-window.mp4"
+    assert action == "contract_materialized"
+    assert duration == 6.0
+    assert captured["command"][captured["command"].index("-ss") + 1] == "4.000000"
+    assert captured["command"][-1] == str(output)
+
+
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
 def test_prosody_timeline_materializes_a_real_duration_matched_video(tmp_path):
     recording = tmp_path / "personal-performance.mp4"
