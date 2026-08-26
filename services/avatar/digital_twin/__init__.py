@@ -19,6 +19,12 @@ from .domain import (
     TwinCapability,
     TwinStatus,
 )
+from .evaluation import (
+    EVALUATION_VERSION,
+    EvaluationContractError,
+    evaluate_avatar_variants,
+    render_evaluation_markdown,
+)
 from .orchestrator import DigitalTwinOrchestrator, QualityGateError, TwinNotReadyError
 from .hardware import GpuSnapshot, InferenceProfile, apply_local_inference_profile, probe_nvidia_gpu
 from .motion_analysis import MOTION_STYLE_VERSION, analyze_performance_motion, build_motion_style_profile
@@ -32,6 +38,8 @@ __all__ = [
     "ConsentDecision",
     "DigitalTwin",
     "DigitalTwinOrchestrator",
+    "EVALUATION_VERSION",
+    "EvaluationContractError",
     "MotionPlan",
     "MOTION_STYLE_VERSION",
     "MOTION_PLAN_VERSION",
@@ -59,5 +67,7 @@ __all__ = [
     "RenderQualityReport",
     "VerificationSignal",
     "evaluate_render_quality",
+    "evaluate_avatar_variants",
+    "render_evaluation_markdown",
     "verify_consent_evidence",
 ]

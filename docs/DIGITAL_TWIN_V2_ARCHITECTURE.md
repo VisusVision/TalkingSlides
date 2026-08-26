@@ -64,6 +64,7 @@ services/avatar/
     ports.py           # interfaces for every swappable engine
     orchestrator.py    # consent-gated training and render DAG
     quality.py         # minimum production acceptance policy
+    evaluation.py      # reproducible variant comparisons and claim boundaries
   adapters/            # next phase
     django_repository.py
     celery_workflow.py
@@ -212,6 +213,14 @@ Production evaluation needs a fixed benchmark with held-out scripts, languages,
 emotions, durations, camera crops and scene styles. Automated metrics alone are
 not a release gate: use pairwise human preference tests and a real-vs-generated
 avatar Turing-style evaluation.
+
+Avatar Evaluation Lab V1 implements the first reproducible comparison slice.
+It requires generic, personal-motion, and prosody-motion evidence generated
+from the same input fingerprint, reports candidate-minus-baseline deltas, and
+blocks promotion on quality regressions or missing capability evidence. Its
+Markdown scorecard requires blind human review for naturalness and emotion-fit
+claims. The protocol and CLI are documented in
+`docs/AVATAR_EVALUATION_LAB_V1.md`.
 
 ## API shape
 

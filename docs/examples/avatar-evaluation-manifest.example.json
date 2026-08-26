@@ -1,0 +1,30 @@
+{
+  "suite_id": "portfolio-case-001",
+  "context": {
+    "case_id": "case-001",
+    "script_hash": "replace-with-script-sha256",
+    "seed": 42,
+    "quality_preset": "replace-with-preset",
+    "example_only": true
+  },
+  "variants": [
+    {
+      "id": "case-001-generic",
+      "kind": "generic",
+      "input_fingerprint": "replace-with-the-same-input-sha256",
+      "evidence_path": "../../artifacts/evaluation/case-001/generic-evidence.json"
+    },
+    {
+      "id": "case-001-personal",
+      "kind": "personal",
+      "input_fingerprint": "replace-with-the-same-input-sha256",
+      "evidence_path": "../../artifacts/evaluation/case-001/personal-evidence.json"
+    },
+    {
+      "id": "case-001-prosody",
+      "kind": "prosody",
+      "input_fingerprint": "replace-with-the-same-input-sha256",
+      "evidence_path": "../../artifacts/evaluation/case-001/prosody-evidence.json"
+    }
+  ]
+}

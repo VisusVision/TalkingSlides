@@ -13,6 +13,8 @@ digital twin. It separates lifecycle policy from GPU implementation:
   calm, natural, or expressive interval with a safe legacy-window fallback.
 - `prosody.py`: lightweight PCM energy, speech-activity, pause, and emphasis
   analysis for versioned `prosody-v1` render timing.
+- `evaluation.py`: fair-input comparison, non-regression checks, numeric
+  deltas, and blind-review scaffolding for `avatar-evaluation-v1`.
 
 The current LivePortrait + MuseTalk pipeline should be connected through a
 `PortraitRenderer` adapter. A future video-reference diffusion model connects
@@ -45,3 +47,9 @@ materializes the calm/natural/expressive source intervals as a duration-matched
 crossfaded driving montage. The audio analyzer and montage are fail-open: when
 decoding, timing validation, or montage generation fails, the single-window
 Motion Planner V2 path remains active and the fallback reason is persisted.
+
+Avatar Evaluation Lab V1 compares generic, personal, and prosody render
+evidence under one input fingerprint. It writes stable JSON and Markdown,
+rejects unsupported recommendations, and leaves perceptual naturalness claims
+to a blind human review. See `docs/AVATAR_EVALUATION_LAB_V1.md` for the capture
+contract and CLI workflow.
