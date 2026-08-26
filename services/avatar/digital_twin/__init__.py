@@ -25,6 +25,13 @@ from .evaluation import (
     evaluate_avatar_variants,
     render_evaluation_markdown,
 )
+from .demo_pack import (
+    DEMO_PACK_VERSION,
+    DemoPackContractError,
+    build_demo_input_fingerprint,
+    build_demo_variant_plans,
+    run_demo_pack,
+)
 from .orchestrator import DigitalTwinOrchestrator, QualityGateError, TwinNotReadyError
 from .hardware import GpuSnapshot, InferenceProfile, apply_local_inference_profile, probe_nvidia_gpu
 from .motion_analysis import MOTION_STYLE_VERSION, analyze_performance_motion, build_motion_style_profile
@@ -38,6 +45,8 @@ __all__ = [
     "ConsentDecision",
     "DigitalTwin",
     "DigitalTwinOrchestrator",
+    "DEMO_PACK_VERSION",
+    "DemoPackContractError",
     "EVALUATION_VERSION",
     "EvaluationContractError",
     "MotionPlan",
@@ -59,6 +68,8 @@ __all__ = [
     "apply_local_inference_profile",
     "analyze_performance_motion",
     "build_motion_style_profile",
+    "build_demo_input_fingerprint",
+    "build_demo_variant_plans",
     "build_personal_motion_plan",
     "analyze_audio_prosody",
     "build_prosody_profile",
@@ -69,5 +80,6 @@ __all__ = [
     "evaluate_render_quality",
     "evaluate_avatar_variants",
     "render_evaluation_markdown",
+    "run_demo_pack",
     "verify_consent_evidence",
 ]

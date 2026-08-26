@@ -115,6 +115,14 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
         2,
     )
     personal_window = bool(motion_plan.get("personal_window_selected"))
+    personal_execution_reported = "window_source" in execution
+    personal_window_materialized = bool(
+        personal_window
+        and (
+            not personal_execution_reported
+            or str(execution.get("window_source") or "") == "motion_style_v2"
+        )
+    )
     prosody_materialized = bool(
         execution.get("prosody_timeline_materialized")
         or variant.get("prosody_timeline_materialized")
@@ -126,8 +134,8 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
         capability_coverage += 0.5
     expected_evidence = bool(
         kind == "generic"
-        or (kind == "personal" and personal_window)
-        or (kind == "prosody" and personal_window and prosody_materialized)
+        or (kind == "personal" and personal_window_materialized)
+        or (kind == "prosody" and personal_window_materialized and prosody_materialized)
     )
     missing_signals = [
         name
@@ -166,6 +174,7 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
         "loop_detected": loop_detected,
         "landmark_stable": landmark_stable,
         "personal_window_selected": personal_window,
+        "personal_window_materialized": personal_window_materialized,
         "prosody_timeline_materialized": prosody_materialized,
         "capability_coverage": round(capability_coverage, 2),
         "expected_evidence_present": expected_evidence,
@@ -342,7 +351,7 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
     )
     automated_claims = {
         "fair_input_contract": True,
-        "personal_motion_bound": bool(personal["personal_window_selected"]),
+        "personal_motion_bound": bool(personal["personal_window_materialized"]),
         "prosody_timing_materialized": bool(prosody["prosody_timeline_materialized"]),
         "personal_quality_non_regression": not bool(comparisons["personal_vs_generic"]["regressions"]),
         "prosody_quality_non_regression": not bool(comparisons["prosody_vs_personal"]["regressions"]),
@@ -415,7 +424,7 @@ def render_evaluation_markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Automated evidence",
         "",
-        "| Variant | Quality | Motion | Identity | Lip sync | Temporal | Duration delta | Personal | Prosody | Eligible |",
+        "| Variant | Quality | Motion | Identity | Lip sync | Temporal | Duration delta | Personal exec | Prosody exec | Eligible |",
         "|---|---:|---:|---:|---:|---:|---:|:---:|:---:|:---:|",
     ]
     for variant in variants:
@@ -428,7 +437,7 @@ def render_evaluation_markdown(report: Mapping[str, Any]) -> str:
                 lip="n/a" if variant.get("lip_sync", {}).get("score") is None else f"{float(variant['lip_sync']['score']):.3f}",
                 temporal="n/a" if variant.get("temporal", {}).get("score") is None else f"{float(variant['temporal']['score']):.3f}",
                 duration=float(variant.get("duration_delta_seconds") or 0.0),
-                personal="yes" if variant.get("personal_window_selected") else "no",
+                personal="yes" if variant.get("personal_window_materialized") else "no",
                 prosody="yes" if variant.get("prosody_timeline_materialized") else "no",
                 eligible="yes" if variant.get("eligible") else "no",
             )
