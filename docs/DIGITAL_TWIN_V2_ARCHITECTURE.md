@@ -65,6 +65,7 @@ services/avatar/
     orchestrator.py    # consent-gated training and render DAG
     quality.py         # minimum production acceptance policy
     evaluation.py      # reproducible variant comparisons and claim boundaries
+    demo_pack.py       # sequential portfolio experiment and artifact separation
   adapters/            # next phase
     django_repository.py
     celery_workflow.py
@@ -221,6 +222,13 @@ blocks promotion on quality regressions or missing capability evidence. Its
 Markdown scorecard requires blind human review for naturalness and emotion-fit
 claims. The protocol and CLI are documented in
 `docs/AVATAR_EVALUATION_LAB_V1.md`.
+
+Avatar Demo Pack V1 supplies the artifact-producing layer above that evaluator.
+It runs generic, personal-window, and prosody-timeline renders sequentially,
+records runtime and best-effort total GPU-memory measurements, verifies actual
+motion materialization, and emits a synchronized three-panel video with an
+`AI AVATAR DEMO` disclosure. Private individual renders and publishable
+portfolio artifacts use separate directories. See `docs/AVATAR_DEMO_PACK_V1.md`.
 
 ## API shape
 

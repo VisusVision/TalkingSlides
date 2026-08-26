@@ -115,6 +115,18 @@ def test_missing_personal_evidence_prevents_unsupported_recommendation():
     assert report["variants"][2]["eligible"] is False
 
 
+def test_planned_but_unmaterialized_personal_window_is_not_eligible():
+    manifest = _manifest()
+    manifest["variants"][1]["motion_plan"]["execution"]["window_source"] = ""
+
+    report = evaluate_avatar_variants(manifest)
+
+    assert report["recommendation"] == "generic"
+    assert report["variants"][1]["personal_window_selected"] is True
+    assert report["variants"][1]["personal_window_materialized"] is False
+    assert report["automated_claims"]["personal_motion_bound"] is False
+
+
 def test_missing_quality_signal_prevents_unsupported_recommendation():
     manifest = _manifest()
     manifest["variants"][1]["quality_report"]["identity"] = {}

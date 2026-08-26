@@ -124,6 +124,7 @@ unfavorable manual result with the automated recommendation.
   natural or more like the subject.
 - Heuristic identity and lip-sync providers are not biometric-grade evidence.
 - V1 compares already-produced artifacts; it does not schedule all three
-  renders or build a public demo page.
+  renders itself. `AVATAR_DEMO_PACK_V1.md` supplies the local sequential runner
+  and comparison artifact layer.
 - The report supports an honest engineering claim about reproducibility and
   non-regression, not a HeyGen-equivalence claim.

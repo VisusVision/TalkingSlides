@@ -1,0 +1,24 @@
+{
+  "suite_id": "portfolio-case-001",
+  "inputs": {
+    "source_image": "D:/avatar-demo-inputs/portrait.png",
+    "source_video": "D:/avatar-demo-inputs/performance.mp4",
+    "audio_path": "D:/avatar-demo-inputs/speech.wav",
+    "motion_style_path": "D:/avatar-demo-inputs/motion-style.json",
+    "script_path": "D:/avatar-demo-inputs/script.txt"
+  },
+  "request": {
+    "emotion": "neutral",
+    "motion_intensity": 0.5
+  },
+  "model_versions": {
+    "liveportrait": "replace-with-installed-version",
+    "musetalk": "replace-with-installed-version",
+    "restoration": "replace-with-installed-version"
+  },
+  "render": {
+    "quality_preset": "high",
+    "lipsync_engine": "musetalk",
+    "restoration_enabled": true
+  }
+}
