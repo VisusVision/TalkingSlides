@@ -1280,6 +1280,17 @@ def _patch_final_validation_inputs(monkeypatch, quality):
     monkeypatch.setattr(avatar_pipeline, "_analyze_avatar_motion_quality", lambda _path: dict(quality))
 
 
+def _with_eye_evidence(quality, *, frames_sampled=64, eye_roi_frames=11):
+    return {
+        **quality,
+        "frames_sampled": frames_sampled,
+        "face_detection_frames": eye_roi_frames,
+        "mouth_roi_frames": eye_roi_frames,
+        "eye_roi_frames": eye_roi_frames,
+        "landmark_valid_frames": eye_roi_frames,
+    }
+
+
 def _composer_subtle_context(**overrides):
     context = {
         "liveportrait_driver_source": "composer",
@@ -1305,6 +1316,102 @@ def _calm_template_subtle_context(**overrides):
     }
     context.update(overrides)
     return context
+
+
+def test_detector_limited_blink_evidence_is_warning_with_strong_safe_motion(monkeypatch):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _with_eye_evidence(_final_quality(eye_blink_change=0.002258, eye_movement_score=5.2311)),
+    )
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "personal-motion.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(liveportrait_driver_source="source_video"),
+    )
+
+    assert result["avatar_validation_profile"] == "strict"
+    assert result["eye_blink_threshold_used"] == pytest.approx(0.0025)
+    assert result["eye_blink_evidence_reliable"] is False
+    assert result["eye_blink_evidence_warning"] is True
+    assert result["eye_blink_evidence_status"] == "low_detector_coverage"
+    assert result["eye_landmark_coverage_ratio"] == pytest.approx(11 / 64, abs=1e-6)
+    assert result["low_eye_blink_change_warning"] is True
+    assert "low_eye_blink_change" in result["validation_warnings"]
+    assert "eye_blink_evidence_insufficient" in result["validation_warnings"]
+    assert result["failure_reason"] == ""
+    assert result["eye_motion_valid"] is True
+    assert result["invalid_eye_motion_source"] == "none"
+    assert avatar_pipeline.accept_avatar_render(result) is True
+
+
+@pytest.mark.parametrize(
+    ("eye_roi_frames", "eye_blink_change", "eye_movement_score"),
+    [
+        (32, 0.002258, 5.2311),
+        (3, 0.002258, 5.2311),
+        (11, 0.0015, 5.2311),
+        (11, 0.002258, 0.3),
+    ],
+)
+def test_detector_limited_blink_evidence_keeps_unsafe_cases_fatal(
+    monkeypatch,
+    eye_roi_frames,
+    eye_blink_change,
+    eye_movement_score,
+):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _with_eye_evidence(
+            _final_quality(
+                eye_blink_change=eye_blink_change,
+                eye_movement_score=eye_movement_score,
+            ),
+            eye_roi_frames=eye_roi_frames,
+        ),
+    )
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "unsafe-motion.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(liveportrait_driver_source="source_video"),
+    )
+
+    assert result["eye_blink_evidence_warning"] is False
+    assert "low_eye_blink_change" in result["failure_reason"]
+    assert result["invalid_eye_motion_source"] == "blink_amplitude"
+    assert avatar_pipeline.accept_avatar_render(result) is False
+
+
+@pytest.mark.parametrize(
+    "context_overrides",
+    [
+        {"liveportrait_succeeded": False},
+        {"liveportrait_fallback_used": True},
+        {"musetalk_source_kind": "static_fallback"},
+    ],
+)
+def test_detector_limited_blink_evidence_requires_verified_generation_provenance(
+    monkeypatch,
+    context_overrides,
+):
+    _patch_final_validation_inputs(
+        monkeypatch,
+        _with_eye_evidence(_final_quality(eye_blink_change=0.002258, eye_movement_score=5.2311)),
+    )
+
+    result = avatar_pipeline.validate_avatar_render_with_audio(
+        "unverified-motion.mp4",
+        "preview.wav",
+        validation_context=_composer_subtle_context(
+            liveportrait_driver_source="source_video",
+            **context_overrides,
+        ),
+    )
+
+    assert result["eye_blink_evidence_warning"] is False
+    assert "low_eye_blink_change" in result["failure_reason"]
+    assert avatar_pipeline.accept_avatar_render(result) is False
 
 
 def test_composer_subtle_profile_accepts_low_blink_with_strong_eye_motion(monkeypatch):
