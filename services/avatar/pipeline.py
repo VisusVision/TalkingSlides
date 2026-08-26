@@ -49,6 +49,7 @@ class AvatarRenderRequest:
     preview_job_id: int = 0
     preview_source_meta: dict[str, Any] = field(default_factory=dict)
     performance_window: dict[str, Any] = field(default_factory=dict)
+    performance_timeline: dict[str, Any] = field(default_factory=dict)
 
 
 def preprocess_teacher_avatar_image(

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import json
 from pathlib import Path
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -168,6 +171,118 @@ def test_non_finite_personal_window_falls_back_to_legacy_selection(tmp_path, mon
     assert choice["start_seconds"] == 0.0
 
 
+def test_prosody_timeline_is_validated_and_materialized_with_crossfades(tmp_path, monkeypatch):
+    recording = tmp_path / "personal-performance.mp4"
+    recording.write_bytes(b"video")
+    segments = [
+        {
+            "duration_seconds": 3.0,
+            "style": "calm",
+            "source_start_seconds": 0.0,
+            "source_interval_duration_seconds": 8.0,
+            "profile_score": 0.3,
+            "energy": 0.1,
+            "pause": True,
+        },
+        {
+            "duration_seconds": 3.0,
+            "style": "expressive",
+            "source_start_seconds": 16.0,
+            "source_interval_duration_seconds": 8.0,
+            "profile_score": 0.8,
+            "energy": 0.9,
+            "emphasis": True,
+        },
+    ]
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_SOURCE", "prosody_v1")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_JSON", json.dumps(segments))
+
+    planned, failure = runner._planned_prosody_timeline(source_duration=30.0, target_duration=6.0)
+
+    assert failure == ""
+    assert [segment["style"] for segment in planned] == ["calm", "expressive"]
+    captured = {}
+
+    def fake_run(command, **_kwargs):
+        captured["command"] = command
+        Path(command[-1]).write_bytes(b"rendered")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+    monkeypatch.setattr(runner, "_probe_duration_seconds", lambda *_args, **_kwargs: 6.0)
+    output, duration, materialization_failure = runner._materialize_prosody_timeline_driver(
+        source_video=recording,
+        segments=planned,
+        target_duration_seconds=6.0,
+        work_dir=tmp_path,
+    )
+
+    assert materialization_failure == ""
+    assert output == tmp_path / "prosody_timeline_drive.mp4"
+    assert duration == 6.0
+    filter_graph = captured["command"][captured["command"].index("-filter_complex") + 1]
+    assert "xfade=transition=fade" in filter_graph
+    assert captured["command"].count(str(recording)) == 2
+
+
+def test_invalid_prosody_timeline_is_rejected_without_touching_video(monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_SOURCE", "prosody_v1")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_JSON", "not-json")
+
+    planned, failure = runner._planned_prosody_timeline(source_duration=30.0, target_duration=6.0)
+
+    assert planned == []
+    assert failure == "prosody_timeline_json_invalid"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required")
+def test_prosody_timeline_materializes_a_real_duration_matched_video(tmp_path):
+    recording = tmp_path / "personal-performance.mp4"
+    generated = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=96x96:rate=12:duration=8",
+            "-pix_fmt",
+            "yuv420p",
+            str(recording),
+        ],
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    assert generated.returncode == 0
+    segments = [
+        {
+            "duration_seconds": 1.0,
+            "source_start_seconds": 0.0,
+            "source_interval_duration_seconds": 3.0,
+        },
+        {
+            "duration_seconds": 1.0,
+            "source_start_seconds": 4.0,
+            "source_interval_duration_seconds": 3.0,
+        },
+    ]
+
+    output, duration, failure = runner._materialize_prosody_timeline_driver(
+        source_video=recording,
+        segments=segments,
+        target_duration_seconds=2.0,
+        work_dir=tmp_path,
+    )
+
+    assert failure == ""
+    assert output is not None and output.exists() and output.stat().st_size > 0
+    assert duration == pytest.approx(2.0, abs=0.1)
+
+
 def test_personal_window_is_forwarded_to_stage_env_and_cache_key(tmp_path):
     face = tmp_path / "face.png"
     video = tmp_path / "source.mp4"
@@ -189,6 +304,30 @@ def test_personal_window_is_forwarded_to_stage_env_and_cache_key(tmp_path):
             "duration_seconds": 8.0,
             "profile_score": 0.52,
         },
+        performance_timeline={
+            "enabled": True,
+            "source": "prosody_v1",
+            "segments": [
+                {
+                    "duration_seconds": 3.0,
+                    "style": "calm",
+                    "source_start_seconds": 0.0,
+                    "source_interval_duration_seconds": 8.0,
+                    "profile_score": 0.3,
+                    "energy": 0.1,
+                    "pause": True,
+                },
+                {
+                    "duration_seconds": 3.0,
+                    "style": "expressive",
+                    "source_start_seconds": 16.0,
+                    "source_interval_duration_seconds": 8.0,
+                    "profile_score": 0.8,
+                    "energy": 0.9,
+                    "emphasis": True,
+                },
+            ],
+        },
     )
     canonical_input = SimpleNamespace(selected_source_key="video", source_kind="video", normalized_input_path=str(video), metrics={})
 
@@ -200,11 +339,25 @@ def test_personal_window_is_forwarded_to_stage_env_and_cache_key(tmp_path):
     assert stage_env["AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_PROFILE_SCORE"] == "0.520000"
     assert cache_keys["personal_performance_window_style"] == "natural"
     assert cache_keys["personal_performance_window_start_seconds"] == "8.000000"
+    assert stage_env["AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_SOURCE"] == "prosody_v1"
+    assert len(json.loads(stage_env["AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_JSON"])) == 2
+    assert cache_keys["personal_performance_timeline_segment_count"] == "2"
+    assert cache_keys["personal_performance_timeline_hash"]
 
     request.performance_window = {**request.performance_window, "start_seconds": 16.0}
     changed_cache_keys = canonical_pipeline._liveportrait_stage_cache_keys(request, "liveportrait+musetalk")
     assert changed_cache_keys["personal_performance_window_start_seconds"] == "16.000000"
     assert changed_cache_keys != cache_keys
+
+    original_timeline_hash = changed_cache_keys["personal_performance_timeline_hash"]
+    request.performance_timeline["segments"][1]["source_start_seconds"] = 8.0
+    timeline_changed_keys = canonical_pipeline._liveportrait_stage_cache_keys(request, "liveportrait+musetalk")
+    assert timeline_changed_keys["personal_performance_timeline_hash"] != original_timeline_hash
+
+    request.performance_timeline["segments"][1]["source_start_seconds"] = float("nan")
+    invalid_timeline_env = canonical_pipeline._build_stage_env(canonical_input, request)
+    assert invalid_timeline_env["AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_SOURCE"] == ""
+    assert invalid_timeline_env["AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_JSON"] == "[]"
 
     request.performance_window = {**request.performance_window, "start_seconds": float("nan")}
     invalid_stage_env = canonical_pipeline._build_stage_env(canonical_input, request)

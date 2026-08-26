@@ -102,3 +102,88 @@ def test_personal_motion_plan_rejects_invalid_candidate_intervals():
     assert plan["style"] == "natural"
     assert plan["personal_window_selected"] is False
     assert plan["fallback_reasons"] == ["natural_interval_unavailable"]
+
+
+def _prosody_profile() -> dict:
+    return {
+        "version": "prosody-v1",
+        "status": "ready",
+        "accepted": True,
+        "duration_seconds": 6.0,
+        "summary": {"speech_ratio": 0.7, "emphasis_count": 1},
+        "warnings": [],
+        "segments": [
+            {"duration_seconds": 2.0, "style": "calm", "pause": True, "energy": 0.0},
+            {"duration_seconds": 2.0, "style": "natural", "pause": False, "energy": 0.5},
+            {
+                "duration_seconds": 2.0,
+                "style": "expressive",
+                "pause": False,
+                "energy": 0.9,
+                "emphasis": True,
+            },
+        ],
+    }
+
+
+def test_personal_motion_plan_builds_audio_timed_personal_segments():
+    plan = build_personal_motion_plan(
+        _package(),
+        {"emotion": "happy", "motion_intensity": 0.8},
+        seed_material="prosody-render",
+        prosody_profile=_prosody_profile(),
+    )
+
+    timeline = plan["performance_timeline"]
+    assert plan["prosody_timeline_selected"] is True
+    assert timeline["enabled"] is True
+    assert timeline["source"] == "prosody_v1"
+    assert timeline["duration_seconds"] == 6.0
+    assert [segment["style"] for segment in timeline["segments"]] == [
+        "calm",
+        "natural",
+        "expressive",
+    ]
+    assert [segment["output_start_seconds"] for segment in timeline["segments"]] == [0.0, 2.0, 4.0]
+    assert plan["prosody_fallback_reasons"] == []
+
+
+def test_unavailable_prosody_preserves_motion_planner_v2_fallback():
+    plan = build_personal_motion_plan(
+        _package(),
+        {"motion_intensity": 0.5},
+        seed_material="prosody-unavailable",
+        prosody_profile={
+            "version": "prosody-v1",
+            "status": "unavailable",
+            "accepted": False,
+            "warnings": ["prosody_audio_near_silent"],
+        },
+    )
+
+    assert plan["personal_window_selected"] is True
+    assert plan["prosody_timeline_selected"] is False
+    assert plan["performance_timeline"]["enabled"] is False
+    assert plan["prosody_fallback_reasons"] == ["prosody_audio_near_silent"]
+
+
+def test_long_prosody_region_is_split_to_stay_inside_personal_intervals():
+    prosody = _prosody_profile()
+    prosody["duration_seconds"] = 12.0
+    prosody["segments"] = [
+        {"duration_seconds": 10.0, "style": "expressive", "energy": 0.9, "emphasis": True},
+        {"duration_seconds": 2.0, "style": "calm", "pause": True, "energy": 0.0},
+    ]
+
+    plan = build_personal_motion_plan(
+        _package(),
+        {"emotion": "happy", "motion_intensity": 0.8},
+        seed_material="prosody-long",
+        prosody_profile=prosody,
+    )
+
+    segments = plan["performance_timeline"]["segments"]
+    assert plan["prosody_timeline_selected"] is True
+    assert len(segments) == 3
+    assert max(segment["duration_seconds"] for segment in segments) <= 7.85
+    assert sum(segment["duration_seconds"] for segment in segments) == 12.0

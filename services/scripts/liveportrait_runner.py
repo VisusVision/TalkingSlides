@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import math
 import os
 import re
@@ -1279,6 +1280,174 @@ def _planned_performance_window(
     }
 
 
+def _planned_prosody_timeline(
+    *,
+    source_duration: float,
+    target_duration: float,
+) -> tuple[list[dict[str, object]], str]:
+    source = str(os.environ.get("AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_SOURCE") or "").strip().lower()
+    if not source:
+        return [], ""
+    if source != "prosody_v1":
+        return [], "prosody_timeline_source_invalid"
+    raw_json = str(os.environ.get("AVATAR_LIVEPORTRAIT_PROSODY_TIMELINE_JSON") or "")
+    if not raw_json or len(raw_json) > 65536:
+        return [], "prosody_timeline_payload_invalid"
+    try:
+        raw_segments = json.loads(raw_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return [], "prosody_timeline_json_invalid"
+    if not isinstance(raw_segments, list) or not 2 <= len(raw_segments) <= 32:
+        return [], "prosody_timeline_segment_count_invalid"
+    if not math.isfinite(source_duration) or not math.isfinite(target_duration):
+        return [], "prosody_timeline_duration_invalid"
+
+    segments: list[dict[str, object]] = []
+    output_cursor = 0.0
+    for index, raw in enumerate(raw_segments):
+        if not isinstance(raw, dict):
+            return [], f"prosody_timeline_segment_{index}_invalid"
+        try:
+            duration = float(raw.get("duration_seconds") or 0.0)
+            source_start = float(raw.get("source_start_seconds") or 0.0)
+            source_interval_duration = float(raw.get("source_interval_duration_seconds") or 0.0)
+            profile_score = float(raw.get("profile_score") or 0.0)
+            energy = float(raw.get("energy") or 0.0)
+        except (TypeError, ValueError):
+            return [], f"prosody_timeline_segment_{index}_numeric_invalid"
+        if not all(
+            math.isfinite(value)
+            for value in (duration, source_start, source_interval_duration, profile_score, energy)
+        ):
+            return [], f"prosody_timeline_segment_{index}_non_finite"
+        style = str(raw.get("style") or "").strip().lower()
+        if (
+            duration < 0.20
+            or source_start < 0.0
+            or source_interval_duration < 1.0
+            or source_start >= source_duration
+            or source_start + source_interval_duration > source_duration + 0.25
+            or style not in {"calm", "natural", "expressive"}
+        ):
+            return [], f"prosody_timeline_segment_{index}_contract_invalid"
+        segments.append(
+            {
+                "index": index,
+                "output_start_seconds": round(output_cursor, 6),
+                "duration_seconds": round(duration, 6),
+                "style": style,
+                "source_start_seconds": round(source_start, 6),
+                "source_interval_duration_seconds": round(source_interval_duration, 6),
+                "profile_score": round(max(0.0, min(profile_score, 1.0)), 6),
+                "energy": round(max(0.0, min(energy, 1.0)), 6),
+                "pause": bool(raw.get("pause")),
+                "emphasis": bool(raw.get("emphasis")),
+            }
+        )
+        output_cursor += duration
+
+    tolerance = max(0.25, target_duration * 0.03)
+    delta = target_duration - output_cursor
+    if abs(delta) > tolerance:
+        return [], "prosody_timeline_target_duration_mismatch"
+    adjusted_last = float(segments[-1]["duration_seconds"]) + delta
+    if adjusted_last < 0.20:
+        return [], "prosody_timeline_last_segment_too_short"
+    segments[-1]["duration_seconds"] = round(adjusted_last, 6)
+    cursor = 0.0
+    for segment in segments:
+        segment["output_start_seconds"] = round(cursor, 6)
+        cursor += float(segment["duration_seconds"])
+    return segments, ""
+
+
+def _materialize_prosody_timeline_driver(
+    *,
+    source_video: Path,
+    segments: list[dict[str, object]],
+    target_duration_seconds: float,
+    work_dir: Path,
+    output_name: str = "prosody_timeline_drive.mp4",
+) -> tuple[Path | None, float, str]:
+    if len(segments) < 2 or target_duration_seconds <= 0.0:
+        return None, 0.0, "prosody_timeline_not_materializable"
+    transition_seconds = 0.12
+    command = ["ffmpeg", "-y", "-hide_banner", "-nostdin", "-loglevel", "error"]
+    for segment in segments:
+        command.extend(
+            [
+                "-ss",
+                f"{float(segment['source_start_seconds']):.6f}",
+                "-i",
+                str(source_video),
+            ]
+        )
+
+    filters: list[str] = []
+    for index, segment in enumerate(segments):
+        requested_duration = float(segment["duration_seconds"])
+        extraction_duration = requested_duration + (transition_seconds if index < len(segments) - 1 else 0.0)
+        if extraction_duration > float(segment["source_interval_duration_seconds"]) + 0.02:
+            return None, 0.0, f"prosody_timeline_segment_{index}_source_too_short"
+        filters.append(
+            f"[{index}:v]trim=duration={extraction_duration:.6f},"
+            "setpts=PTS-STARTPTS,settb=AVTB,"
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
+            f"[prosody_{index}]"
+        )
+    current_label = "prosody_0"
+    elapsed = float(segments[0]["duration_seconds"])
+    for index in range(1, len(segments)):
+        output_label = f"prosody_mix_{index}"
+        filters.append(
+            f"[{current_label}][prosody_{index}]"
+            f"xfade=transition=fade:duration={transition_seconds:.6f}:offset={elapsed:.6f}"
+            f"[{output_label}]"
+        )
+        current_label = output_label
+        elapsed += float(segments[index]["duration_seconds"])
+
+    output_path = work_dir / output_name
+    command.extend(
+        [
+            "-filter_complex",
+            ";".join(filters),
+            "-map",
+            f"[{current_label}]",
+            "-t",
+            f"{float(target_duration_seconds):.6f}",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "18",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            str(output_path),
+        ]
+    )
+    try:
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=max(150.0, float(target_duration_seconds) * 5.0),
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, 0.0, f"prosody_timeline_ffmpeg_{type(exc).__name__.lower()}"
+    if process.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
+        return None, 0.0, f"prosody_timeline_ffmpeg_failed_{int(process.returncode)}"
+    duration = float(_probe_duration_seconds(output_path, stream_selector="v:0") or 0.0)
+    if duration <= 0.0 or abs(duration - target_duration_seconds) > max(0.25, target_duration_seconds * 0.03):
+        return None, duration, "prosody_timeline_output_duration_invalid"
+    return output_path, duration, ""
+
+
 def _select_performance_window(
     *,
     source_video: Path,
@@ -1680,6 +1849,11 @@ def main() -> int:
         _performance_window_profile_score = 0.0
         _performance_window_style = ""
         _performance_window_source = "default_start"
+        _prosody_timeline_source = ""
+        _prosody_timeline_segment_count = 0
+        _prosody_timeline_duration = 0.0
+        _prosody_timeline_materialized = False
+        _prosody_timeline_failure_reason = ""
         _vetted_template_path = _VETTED_IMAGE_TEMPLATE_NAME
         _vetted_template_missing = False
         _vetted_template_failed = False
@@ -2228,15 +2402,40 @@ def main() -> int:
             _performance_window_profile_score = float(_performance_window.get("profile_score") or 0.0)
             _performance_window_style = str(_performance_window.get("style") or "")
             _performance_window_source = str(_performance_window.get("source") or "default_start")
-            source_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
-                source_video=source_video,
-                target_duration_seconds=float(_target_contract_duration_seconds),
-                work_dir=temp_dir,
-                target_fps=0.0,
-                output_name="video_input_drive_contract.mp4",
-                start_offset_seconds=float(_performance_window_start),
+            _prosody_timeline, _prosody_timeline_failure_reason = _planned_prosody_timeline(
+                source_duration=float(_probe_duration_seconds(source_video, stream_selector="v:0")),
+                target_duration=float(_target_contract_duration_seconds),
             )
-            _motion_source = "real_video"
+            _prosody_timeline_segment_count = len(_prosody_timeline)
+            _prosody_timeline_duration = sum(
+                float(segment.get("duration_seconds") or 0.0)
+                for segment in _prosody_timeline
+            )
+            if _prosody_timeline:
+                _prosody_driver, _prosody_duration, _materialization_failure = _materialize_prosody_timeline_driver(
+                    source_video=source_video,
+                    segments=_prosody_timeline,
+                    target_duration_seconds=float(_target_contract_duration_seconds),
+                    work_dir=temp_dir,
+                )
+                if _prosody_driver is not None:
+                    source_video = _prosody_driver
+                    _resolved_driving_duration_seconds = float(_prosody_duration)
+                    _driving_action = "prosody_timeline_materialized"
+                    _prosody_timeline_source = "prosody_v1"
+                    _prosody_timeline_materialized = True
+                else:
+                    _prosody_timeline_failure_reason = _materialization_failure
+            if not _prosody_timeline_materialized:
+                source_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
+                    source_video=source_video,
+                    target_duration_seconds=float(_target_contract_duration_seconds),
+                    work_dir=temp_dir,
+                    target_fps=0.0,
+                    output_name="video_input_drive_contract.mp4",
+                    start_offset_seconds=float(_performance_window_start),
+                )
+            _motion_source = "real_video_prosody_timeline" if _prosody_timeline_materialized else "real_video"
             _driver_source = "source_video"
 
         assert source_video is not None
@@ -2306,6 +2505,11 @@ def main() -> int:
             f"liveportrait_performance_window_profile_score={_performance_window_profile_score:.6f} "
             f"liveportrait_performance_window_style={_performance_window_style or 'none'} "
             f"liveportrait_performance_window_source={_performance_window_source} "
+            f"liveportrait_prosody_timeline_source={_prosody_timeline_source or 'none'} "
+            f"liveportrait_prosody_timeline_segment_count={_prosody_timeline_segment_count} "
+            f"liveportrait_prosody_timeline_duration={_prosody_timeline_duration:.6f} "
+            f"liveportrait_prosody_timeline_materialized={int(bool(_prosody_timeline_materialized))} "
+            f"liveportrait_prosody_timeline_failure_reason={_prosody_timeline_failure_reason or 'none'} "
             f"resolved_source_path={_resolved_source_path} "
             f"resolved_motion_source_path={source_video} "
             f"liveportrait_template_motion_strength={_template_motion_strength or 'none'} "

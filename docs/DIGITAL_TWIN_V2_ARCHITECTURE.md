@@ -256,6 +256,16 @@ profile is limited or invalid, the existing frame-difference window selector is
 used as an explicit fallback. Full-body requests fail explicitly until a body
 renderer is installed; they never degrade silently to a talking head.
 
+Prosody-Aware Motion Timing V1 runs after TTS. It decodes the generated speech
+to mono PCM, derives a bounded pause/energy/emphasis timeline, biases that
+timeline with the requested emotion, and assigns each output segment to a
+validated personal Motion Style V2 interval. The LivePortrait adapter builds a
+crossfaded, audio-duration-matched driving montage and includes the timeline
+hash in its stage cache key. `prosody-profile.json`, `motion-plan.json`, engine
+trace, provenance, and render audit fields retain intended and executed timing.
+This is deterministic signal-based timing, not a learned semantic gesture or
+phoneme-to-motion model.
+
 Provider commands are shell-free argument templates and must emit one JSON
 object on stdout. Face/liveness providers return `passed`, normalized `score`,
 and `assurance`; the ASR provider returns `transcript` and `assurance`. The

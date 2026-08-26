@@ -23,6 +23,7 @@ from .orchestrator import DigitalTwinOrchestrator, QualityGateError, TwinNotRead
 from .hardware import GpuSnapshot, InferenceProfile, apply_local_inference_profile, probe_nvidia_gpu
 from .motion_analysis import MOTION_STYLE_VERSION, analyze_performance_motion, build_motion_style_profile
 from .motion_planning import MOTION_PLAN_VERSION, build_personal_motion_plan
+from .prosody import PROSODY_PROFILE_VERSION, analyze_audio_prosody, build_prosody_profile
 from .render_quality import RenderQualityReport, evaluate_render_quality
 from .verification import ConsentVerificationReport, VerificationSignal, verify_consent_evidence
 
@@ -34,6 +35,7 @@ __all__ = [
     "MotionPlan",
     "MOTION_STYLE_VERSION",
     "MOTION_PLAN_VERSION",
+    "PROSODY_PROFILE_VERSION",
     "QualityGateError",
     "QualityReport",
     "ReferenceAnalysis",
@@ -50,6 +52,8 @@ __all__ = [
     "analyze_performance_motion",
     "build_motion_style_profile",
     "build_personal_motion_plan",
+    "analyze_audio_prosody",
+    "build_prosody_profile",
     "probe_nvidia_gpu",
     "ConsentVerificationReport",
     "RenderQualityReport",
