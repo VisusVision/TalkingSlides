@@ -8,6 +8,13 @@ audio, script hash, model versions, request, and quality preset:
 2. `personal`: one deterministic Motion Style V2 window;
 3. `prosody`: the same personal base selection plus a Prosody V1 timeline.
 
+The performance video is part of the shared experiment fingerprint, but the
+generic renderer does not receive it as a driving source. Generic uses the same
+portrait through the configured non-personal template/composer path; personal
+and prosody receive the performance video. This isolation is recorded in the
+motion execution evidence and is required before the generic baseline is
+eligible for comparison.
+
 The GPU renders run strictly in that order. V1 never starts concurrent GPU
 renders, which makes it suitable for constrained local GPUs and makes the
 recorded memory measurements easier to interpret. This is not a guarantee that

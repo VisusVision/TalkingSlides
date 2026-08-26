@@ -14,6 +14,7 @@ if str(SERVICES_ROOT) not in sys.path:
 
 from avatar.digital_twin.demo_pack import (  # noqa: E402
     DemoPackContractError,
+    build_demo_variant_render_inputs,
     run_demo_pack,
 )
 
@@ -106,6 +107,11 @@ def main() -> int:
         raise DemoPackContractError(f"demo_prosody_audio_not_accepted:{reasons or 'unknown'}")
 
     def render_variant(kind: str, motion_plan: dict[str, Any], output_path: Path) -> dict[str, Any]:
+        render_inputs = build_demo_variant_render_inputs(
+            kind=kind,
+            source_image=source_image,
+            source_video=source_video,
+        )
         performance_window = (
             dict(motion_plan.get("performance_window") or {}) if kind != "generic" else {}
         )
@@ -113,10 +119,10 @@ def main() -> int:
             dict(motion_plan.get("performance_timeline") or {}) if kind == "prosody" else {}
         )
         request = AvatarRenderRequest(
-            source_image_path=str(source_image),
+            source_image_path=render_inputs["source_image_path"],
             source_image_original_path=str(source_image),
-            source_video_path=str(source_video),
-            avatar_reference_type="video",
+            source_video_path=render_inputs["source_video_path"],
+            avatar_reference_type=render_inputs["avatar_reference_type"],
             audio_path=str(audio_path),
             output_path=str(output_path),
             motion_preset=str(motion_plan.get("motion_preset") or "natural"),
@@ -155,6 +161,7 @@ def main() -> int:
             "restoration_enabled": bool(render_options.get("restoration_enabled", True)),
             "liveportrait_enabled": True,
             "enforce_exact_audio_duration": True,
+            "generic_motion_source_policy": "generic_non_personal",
         },
         render_variant=render_variant,
         evaluate_quality=quality_evaluator,

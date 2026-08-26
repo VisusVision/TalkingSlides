@@ -137,6 +137,32 @@ def build_demo_variant_plans(
     ]
 
 
+def build_demo_variant_render_inputs(
+    *,
+    kind: str,
+    source_image: str | Path,
+    source_video: str | Path,
+) -> dict[str, str]:
+    """Keep the generic baseline isolated from the personal performance driver."""
+
+    normalized_kind = str(kind or "").strip().lower()
+    if normalized_kind not in DEMO_VARIANTS:
+        raise DemoPackContractError(f"demo_variant_kind_invalid:{normalized_kind or 'missing'}")
+    if normalized_kind == "generic":
+        return {
+            "source_image_path": str(source_image),
+            "source_video_path": "",
+            "avatar_reference_type": "image",
+            "motion_source_policy": "generic_non_personal",
+        }
+    return {
+        "source_image_path": str(source_image),
+        "source_video_path": str(source_video),
+        "avatar_reference_type": "video",
+        "motion_source_policy": "personal_performance",
+    }
+
+
 def materialize_motion_execution(plan: Mapping[str, Any], render_info: Mapping[str, Any]) -> dict[str, Any]:
     """Persist what LivePortrait actually executed, not only what was planned."""
 
@@ -151,6 +177,9 @@ def materialize_motion_execution(plan: Mapping[str, Any], render_info: Mapping[s
         "profile_score": float(stage_paths.get("liveportrait_performance_window_profile_score") or 0.0),
         "window_materialized": window_materialized,
         "personal_motion_materialized": bool(window_materialized or prosody_materialized),
+        "renderer_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
+        "renderer_reference_type": str(stage_paths.get("avatar_reference_type") or ""),
+        "personal_source_video_supplied": bool(stage_paths.get("request_source_video_path")),
         "renderer_motion_preset": str(
             render_info.get("liveportrait_motion_preset") or resolved.get("motion_preset") or ""
         ),
@@ -498,6 +527,7 @@ def run_demo_pack(
             "restoration_enabled",
             "liveportrait_enabled",
             "enforce_exact_audio_duration",
+            "generic_motion_source_policy",
         )
         if key in render_contract
     }

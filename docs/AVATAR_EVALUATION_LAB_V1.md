@@ -26,6 +26,11 @@ Change only the motion capability under test:
 | `personal` | Yes | No |
 | `prosody` | Yes | Yes |
 
+For Demo Pack evidence, the generic variant must also report that the personal
+performance video was not supplied to the renderer. The shared video remains
+fingerprinted as the candidate capability input, while the generic baseline
+uses the configured non-personal template/composer motion source.
+
 Use a fixed seed when the engine supports one. Preserve the render manifest,
 motion plan, validation output, model versions, and artifact hashes alongside
 each video. For a portfolio demo, repeat the suite with multiple scripts and
