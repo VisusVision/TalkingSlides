@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,6 +120,96 @@ def test_select_performance_window_can_be_disabled(tmp_path, monkeypatch):
 
     assert choice["source"] == "default_start"
     assert float(choice["start_seconds"]) == 0.0
+
+
+def test_motion_style_v2_window_overrides_legacy_mad_probe(tmp_path, monkeypatch):
+    recording = tmp_path / "personal-performance.mp4"
+    recording.write_bytes(b"video")
+    monkeypatch.setattr(runner, "_probe_duration_seconds", lambda *_args, **_kwargs: 30.0)
+    monkeypatch.setattr(
+        runner,
+        "_probe_clip_mean_mad_segment",
+        lambda **_kwargs: pytest.fail("semantic window must bypass the legacy MAD scan"),
+    )
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_SOURCE", "motion_style_v2")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_STYLE", "expressive")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_START_SECONDS", "12.5")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_DURATION_SECONDS", "8.0")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_PROFILE_SCORE", "0.81")
+
+    choice = runner._select_performance_window(
+        source_video=recording,
+        target_duration_seconds=6.0,
+    )
+
+    assert choice["source"] == "motion_style_v2_expressive"
+    assert choice["style"] == "expressive"
+    assert choice["start_seconds"] == 12.5
+    assert choice["planned_duration_seconds"] == 8.0
+    assert choice["duration_seconds"] == 6.0
+    assert choice["profile_score"] == 0.81
+
+
+def test_non_finite_personal_window_falls_back_to_legacy_selection(tmp_path, monkeypatch):
+    recording = tmp_path / "personal-performance.mp4"
+    recording.write_bytes(b"video")
+    monkeypatch.setattr(runner, "_probe_duration_seconds", lambda *_args, **_kwargs: 4.0)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_SOURCE", "motion_style_v2")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_STYLE", "natural")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_START_SECONDS", "nan")
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_DURATION_SECONDS", "8.0")
+
+    choice = runner._select_performance_window(
+        source_video=recording,
+        target_duration_seconds=4.0,
+    )
+
+    assert choice["source"] == "default_start"
+    assert choice["start_seconds"] == 0.0
+
+
+def test_personal_window_is_forwarded_to_stage_env_and_cache_key(tmp_path):
+    face = tmp_path / "face.png"
+    video = tmp_path / "source.mp4"
+    audio = tmp_path / "audio.wav"
+    for path in (face, video, audio):
+        path.write_bytes(path.name.encode("utf-8"))
+    request = SimpleNamespace(
+        source_image_path=str(face),
+        source_image_original_path=str(face),
+        source_video_path=str(video),
+        audio_path=str(audio),
+        avatar_reference_type="video",
+        motion_preset="natural_visible",
+        performance_window={
+            "enabled": True,
+            "source": "motion_style_v2",
+            "style": "natural",
+            "start_seconds": 8.0,
+            "duration_seconds": 8.0,
+            "profile_score": 0.52,
+        },
+    )
+    canonical_input = SimpleNamespace(selected_source_key="video", source_kind="video", normalized_input_path=str(video), metrics={})
+
+    stage_env = canonical_pipeline._build_stage_env(canonical_input, request)
+    cache_keys = canonical_pipeline._liveportrait_stage_cache_keys(request, "liveportrait+musetalk")
+
+    assert stage_env["AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_SOURCE"] == "motion_style_v2"
+    assert stage_env["AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_START_SECONDS"] == "8.000000"
+    assert stage_env["AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_PROFILE_SCORE"] == "0.520000"
+    assert cache_keys["personal_performance_window_style"] == "natural"
+    assert cache_keys["personal_performance_window_start_seconds"] == "8.000000"
+
+    request.performance_window = {**request.performance_window, "start_seconds": 16.0}
+    changed_cache_keys = canonical_pipeline._liveportrait_stage_cache_keys(request, "liveportrait+musetalk")
+    assert changed_cache_keys["personal_performance_window_start_seconds"] == "16.000000"
+    assert changed_cache_keys != cache_keys
+
+    request.performance_window = {**request.performance_window, "start_seconds": float("nan")}
+    invalid_stage_env = canonical_pipeline._build_stage_env(canonical_input, request)
+    assert invalid_stage_env["AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_SOURCE"] == ""
+    assert invalid_stage_env["AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_START_SECONDS"] == "0.000000"
 
 
 def test_musetalk_stage_cache_key_changes_when_handoff_hash_changes(tmp_path):

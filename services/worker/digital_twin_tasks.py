@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -26,6 +27,14 @@ def _absolute(relative_path: str) -> Path:
 
 def _relative(path: Path) -> str:
     return str(path.resolve().relative_to(_storage_root())).replace("\\", "/")
+
+
+def _finite_float(value: object, default: float = 0.0) -> float:
+    try:
+        number = float(value or 0.0)
+    except (TypeError, ValueError):
+        return float(default)
+    return number if math.isfinite(number) else float(default)
 
 
 def _run(command: list[str], error_code: str) -> None:
@@ -305,6 +314,7 @@ def _apply_ai_watermark(source: Path, target: Path) -> None:
 @app.task(bind=True, name="worker.digital_twin.render", acks_late=True)
 def render_digital_twin(self, *, render_id: str) -> dict:
     from avatar.digital_twin.hardware import apply_local_inference_profile
+    from avatar.digital_twin.motion_planning import build_personal_motion_plan
     from avatar.digital_twin.render_quality import evaluate_render_quality
     from avatar.pipeline import AvatarRenderRequest, render_avatar_segment_local
     from core.models import DigitalTwinAuditEvent, DigitalTwinRender
@@ -338,6 +348,18 @@ def render_digital_twin(self, *, render_id: str) -> dict:
             mode="service",
             lang=str(render.request_payload.get("language") or twin.locale),
         )
+        motion_plan = build_personal_motion_plan(
+            twin.motion_style_package,
+            render.request_payload,
+            seed_material=str(render.id),
+        )
+        motion_plan_path = output_dir / "motion-plan.json"
+        motion_plan_path.write_text(
+            json.dumps(motion_plan, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+        render.motion_plan = motion_plan
+        render.save(update_fields=["motion_plan", "updated_at"])
         request = AvatarRenderRequest(
             source_image_path=str(_absolute(twin.identity_package["processed_portrait_path"])),
             source_image_original_path=str(_absolute(twin.identity_package["processed_portrait_path"])),
@@ -345,14 +367,29 @@ def render_digital_twin(self, *, render_id: str) -> dict:
             avatar_reference_type="video",
             audio_path=str(audio_path),
             output_path=str(raw_path),
-            motion_preset="natural",
+            motion_preset=str(motion_plan["motion_preset"]),
             quality_preset=str(render.request_payload.get("quality_preset") or "high"),
             lipsync_engine="musetalk",
             restoration_enabled=True,
             liveportrait_enabled=True,
             enforce_exact_audio_duration=True,
+            performance_window=dict(motion_plan.get("performance_window") or {}),
         )
         info = render_avatar_segment_local(request)
+        stage_paths = dict(info.get("stage_paths") or {})
+        motion_plan["execution"] = {
+            "window_source": str(stage_paths.get("liveportrait_performance_window_source") or ""),
+            "window_style": str(stage_paths.get("liveportrait_performance_window_style") or ""),
+            "window_start_seconds": _finite_float(stage_paths.get("liveportrait_performance_window_start")),
+            "profile_score": _finite_float(stage_paths.get("liveportrait_performance_window_profile_score")),
+            "renderer_motion_preset": str(info.get("liveportrait_motion_preset") or request.motion_preset),
+        }
+        motion_plan_path.write_text(
+            json.dumps(motion_plan, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
+        render.motion_plan = motion_plan
+        render.save(update_fields=["motion_plan", "updated_at"])
         if not raw_path.exists() or raw_path.stat().st_size <= 1024:
             raise RuntimeError("renderer_output_missing")
         quality_report = evaluate_render_quality(
@@ -384,6 +421,12 @@ def render_digital_twin(self, *, render_id: str) -> dict:
             "model_versions": twin.model_versions,
             "quality_decision": quality_report.decision,
             "quality_review_required": quality_report.decision == "review_required",
+            "motion_plan": {
+                "version": motion_plan.get("version"),
+                "source": motion_plan.get("source"),
+                "style": motion_plan.get("style"),
+                "seed": motion_plan.get("seed"),
+            },
         }
         (output_dir / "provenance.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
         render.status = "ready"
@@ -392,19 +435,24 @@ def render_digital_twin(self, *, render_id: str) -> dict:
         render.engine_trace = [
             {"stage": "hardware", "profile": hardware_profile.as_dict()},
             {"stage": "tts", "provider": tts.get("provider")},
+            {"stage": "motion_plan", "plan": motion_plan},
             {"stage": "portrait", "engine": info.get("engine_used", "liveportrait+musetalk")},
             {"stage": "provenance", "watermark": "AI AVATAR"},
         ]
-        render.motion_plan = {
-            "emotion": render.request_payload.get("emotion", "neutral"),
-            "intensity": render.request_payload.get("motion_intensity", 0.5),
-            "source": "personal_performance_window",
-        }
         render.finished_at = timezone.now()
         render.save(update_fields=[
             "status", "output_path", "quality_report", "engine_trace", "motion_plan", "finished_at", "updated_at",
         ])
-        DigitalTwinAuditEvent.objects.create(twin=twin, event="render.completed", payload={"render_id": str(render.id)})
+        DigitalTwinAuditEvent.objects.create(
+            twin=twin,
+            event="render.completed",
+            payload={
+                "render_id": str(render.id),
+                "motion_plan_version": motion_plan.get("version"),
+                "motion_style": motion_plan.get("style"),
+                "personal_window_selected": motion_plan.get("personal_window_selected"),
+            },
+        )
         return {"status": "ready", "render_id": str(render.id), "output_path": render.output_path}
     except Exception as exc:
         render.status = "quality_failed" if str(exc).startswith("quality_gate_failed") else "failed"

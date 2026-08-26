@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 import re
 import signal
@@ -1239,6 +1240,45 @@ def _deterministic_performance_window_seed(
     return int(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12], 16)
 
 
+def _planned_performance_window(
+    *,
+    source_duration: float,
+    target_duration: float,
+) -> dict[str, object] | None:
+    source = str(os.environ.get("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_SOURCE") or "").strip().lower()
+    style = str(os.environ.get("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_STYLE") or "").strip().lower()
+    if source != "motion_style_v2" or style not in {"calm", "natural", "expressive"}:
+        return None
+    try:
+        start = float(os.environ.get("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_START_SECONDS") or 0.0)
+        planned_duration = float(os.environ.get("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_DURATION_SECONDS") or 0.0)
+        profile_score = float(os.environ.get("AVATAR_LIVEPORTRAIT_PERSONAL_WINDOW_PROFILE_SCORE") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not all(
+        math.isfinite(value)
+        for value in (start, planned_duration, profile_score, source_duration, target_duration)
+    ):
+        return None
+    if (
+        start < 0.0
+        or planned_duration <= 0.0
+        or source_duration <= 0.0
+        or target_duration <= 0.0
+        or start >= source_duration
+    ):
+        return None
+    return {
+        "start_seconds": round(start, 6),
+        "duration_seconds": round(target_duration, 6),
+        "planned_duration_seconds": round(planned_duration, 6),
+        "mean_mad": 0.0,
+        "profile_score": round(max(0.0, min(profile_score, 1.0)), 6),
+        "style": style,
+        "source": f"motion_style_v2_{style}",
+    }
+
+
 def _select_performance_window(
     *,
     source_video: Path,
@@ -1263,6 +1303,12 @@ def _select_performance_window(
         "mean_mad": 0.0,
         "source": "default_start",
     }
+    planned_choice = _planned_performance_window(
+        source_duration=source_duration,
+        target_duration=target_duration,
+    )
+    if planned_choice is not None:
+        return planned_choice
     if (
         not _performance_window_selection_enabled()
         or source_duration <= target_duration + 0.5
@@ -1630,6 +1676,9 @@ def main() -> int:
         _calm_template_failure_reason = ""
         _performance_window_start = 0.0
         _performance_window_mean_mad = 0.0
+        _performance_window_planned_duration = 0.0
+        _performance_window_profile_score = 0.0
+        _performance_window_style = ""
         _performance_window_source = "default_start"
         _vetted_template_path = _VETTED_IMAGE_TEMPLATE_NAME
         _vetted_template_missing = False
@@ -2175,6 +2224,9 @@ def main() -> int:
             )
             _performance_window_start = float(_performance_window.get("start_seconds") or 0.0)
             _performance_window_mean_mad = float(_performance_window.get("mean_mad") or 0.0)
+            _performance_window_planned_duration = float(_performance_window.get("planned_duration_seconds") or 0.0)
+            _performance_window_profile_score = float(_performance_window.get("profile_score") or 0.0)
+            _performance_window_style = str(_performance_window.get("style") or "")
             _performance_window_source = str(_performance_window.get("source") or "default_start")
             source_video, _driving_action, _resolved_driving_duration_seconds = _ensure_driving_clip_contract(
                 source_video=source_video,
@@ -2250,6 +2302,9 @@ def main() -> int:
             f"driving_duration_seconds={_resolved_driving_duration_seconds:.4f} "
             f"liveportrait_performance_window_start={_performance_window_start:.6f} "
             f"liveportrait_performance_window_mean_mad={_performance_window_mean_mad:.6f} "
+            f"liveportrait_performance_window_planned_duration={_performance_window_planned_duration:.6f} "
+            f"liveportrait_performance_window_profile_score={_performance_window_profile_score:.6f} "
+            f"liveportrait_performance_window_style={_performance_window_style or 'none'} "
             f"liveportrait_performance_window_source={_performance_window_source} "
             f"resolved_source_path={_resolved_source_path} "
             f"resolved_motion_source_path={source_video} "

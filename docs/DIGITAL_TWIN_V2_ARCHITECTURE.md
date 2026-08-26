@@ -249,10 +249,12 @@ provenance JSON. Motion Style V2 samples the performance recording and stores
 face/landmark coverage, head pose, gaze, blinks, expression intensity, motion
 intensity, and ranked calm/natural/expressive temporal intervals. Missing
 landmark infrastructure is reported as `limited`; it is never presented as a
-learned motion model. Binding those personal intervals and statistics to the
-render-time motion planner is the next adapter phase. Full-body requests fail
-explicitly until a body renderer is installed; they never degrade silently to
-a talking head.
+learned motion model. Motion Planner V2 deterministically maps render emotion
+and intensity to one of those personal intervals, passes its start time to the
+LivePortrait driver, and records both the intended and executed window. If the
+profile is limited or invalid, the existing frame-difference window selector is
+used as an explicit fallback. Full-body requests fail explicitly until a body
+renderer is installed; they never degrade silently to a talking head.
 
 Provider commands are shell-free argument templates and must emit one JSON
 object on stdout. Face/liveness providers return `passed`, normalized `score`,

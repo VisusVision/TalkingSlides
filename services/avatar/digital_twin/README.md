@@ -9,6 +9,8 @@ digital twin. It separates lifecycle policy from GPU implementation:
 - `quality.py`: production acceptance thresholds.
 - `motion_analysis.py`: sampled face landmarks, head pose, gaze, blink,
   expression and motion coverage for the versioned `motion-style-v2` package.
+- `motion_planning.py`: deterministic emotion/intensity routing to a personal
+  calm, natural, or expressive interval with a safe legacy-window fallback.
 
 The current LivePortrait + MuseTalk pipeline should be connected through a
 `PortraitRenderer` adapter. A future video-reference diffusion model connects
@@ -28,3 +30,9 @@ behavioral signals. Run it directly during capture/debugging with:
 ```powershell
 python services/scripts/analyze_performance_video.py path/to/performance.mp4 --output motion-style.json
 ```
+
+Digital Twin renders consume the resulting profile as `motion-plan-v2`. The
+selected interval, seed, style, renderer preset, fallback reason, and executed
+LivePortrait window are persisted on the render and in its engine trace. This
+makes repeated renders reproducible and prevents cache reuse across different
+personal motion windows.
