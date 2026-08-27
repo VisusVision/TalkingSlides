@@ -734,6 +734,7 @@ def _stage_cache_meta_path(artifact_path: Path) -> Path:
 _STAGE_CACHE_PROVENANCE_STRING_FIELDS = [
     "liveportrait_driver_source_policy",
     "liveportrait_driver_source",
+    "liveportrait_appearance_source_policy",
     "liveportrait_template_used",
     "liveportrait_calm_template_path",
     "liveportrait_calm_template_window_source",
@@ -985,6 +986,7 @@ def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[
         "liveportrait_motion_preset",
         "liveportrait_motion_strength",
         "liveportrait_motion_strength_source",
+        "liveportrait_appearance_source_policy",
         "liveportrait_driver_source_policy",
         "liveportrait_calm_template_hash",
         "liveportrait_calm_template_basename",
@@ -1082,6 +1084,42 @@ def _normalize_source_key(source_key: str) -> str:
     return normalized
 
 
+def _personal_video_appearance_binding(request: Any) -> dict[str, str]:
+    source_key = _request_source_key(request)
+    reference_type = str(getattr(request, "avatar_reference_type", "image") or "image").strip().lower()
+    video_requested = source_key in {"video", "video_frame"} or reference_type == "video"
+    if not video_requested:
+        return {"source_key": "", "source_path": "", "policy": "image_reference"}
+
+    candidates = [
+        (
+            "image_original",
+            str(getattr(request, "source_image_original_path", "") or "").strip(),
+            "personal_image_original_identity_video_motion_v1",
+        ),
+        (
+            "image_processed",
+            str(getattr(request, "source_image_path", "") or "").strip(),
+            "personal_image_processed_identity_video_motion_v1",
+        ),
+    ]
+    seen_paths: set[str] = set()
+    for candidate_key, candidate_path, policy in candidates:
+        if not candidate_path:
+            continue
+        path_obj = Path(candidate_path)
+        try:
+            dedupe_key = str(path_obj.resolve())
+        except Exception:
+            dedupe_key = candidate_path
+        if dedupe_key in seen_paths:
+            continue
+        seen_paths.add(dedupe_key)
+        if path_obj.exists() and path_obj.is_file():
+            return {"source_key": candidate_key, "source_path": candidate_path, "policy": policy}
+    return {"source_key": "video", "source_path": "", "policy": "video_frame_identity_video_motion_legacy"}
+
+
 def _resolve_requested_inputs(request: Any, *, allow_image_fallback: bool = False) -> dict[str, str]:
     source_key = _request_source_key(request)
     source_image_processed_path = str(getattr(request, "source_image_path", "") or "")
@@ -1092,11 +1130,21 @@ def _resolve_requested_inputs(request: Any, *, allow_image_fallback: bool = Fals
     if source_key in {"video", "video_frame"} or avatar_reference_type == "video":
         if not source_video_path or not Path(source_video_path).exists():
             raise RuntimeError("avatar_input_source_missing:video")
+        appearance_binding = _personal_video_appearance_binding(request)
+        if appearance_binding["source_path"]:
+            return {
+                "requested_source_key": source_key or "video",
+                "resolved_source_key": appearance_binding["source_key"],
+                "source_image_primary": appearance_binding["source_path"],
+                "source_video_primary": source_video_path,
+                "appearance_source_policy": appearance_binding["policy"],
+            }
         return {
             "requested_source_key": source_key or "video",
             "resolved_source_key": "video",
             "source_image_primary": "",
             "source_video_primary": source_video_path,
+            "appearance_source_policy": appearance_binding["policy"],
         }
 
     if source_key in {"image_original", "original_image"}:
@@ -1180,7 +1228,9 @@ def _resolve_liveportrait_source_candidates(
     is_preview_request: bool,
 ) -> list[dict[str, str]]:
     resolved_source_key = _normalize_source_key(str(resolved_inputs.get("resolved_source_key") or ""))
-    if (not is_preview_request) or resolved_source_key in {"video"}:
+    if (not is_preview_request) or resolved_source_key in {"video"} or str(
+        resolved_inputs.get("source_video_primary") or ""
+    ).strip():
         return [dict(resolved_inputs)]
 
     preview_source_meta = dict(getattr(request, "preview_source_meta", {}) or {})
@@ -1350,6 +1400,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_LIVEPORTRAIT_FPS": str(int(derived_fps)),
         "AVATAR_LIVEPORTRAIT_MOTION_STRENGTH": liveportrait_motion_strength,
         "AVATAR_LIVEPORTRAIT_MOTION_STRENGTH_SOURCE": liveportrait_motion_strength_source,
+        "AVATAR_LIVEPORTRAIT_APPEARANCE_SOURCE_POLICY": _personal_video_appearance_binding(request)["policy"],
         "AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING": liveportrait_temporal_smoothing,
         "AVATAR_LIVEPORTRAIT_MOTION_PRESET": liveportrait_motion_preset,
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
@@ -2045,6 +2096,7 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "liveportrait_motion_preset": liveportrait_motion_preset,
         "liveportrait_motion_strength": resolved_motion_strength,
         "liveportrait_motion_strength_source": motion_strength_source,
+        "liveportrait_appearance_source_policy": _personal_video_appearance_binding(request)["policy"],
         "liveportrait_enabled": "1" if liveportrait_enabled else "0",
         "restoration_enabled": "1" if restoration_enabled else "0",
         "liveportrait_boosted_retry_allowed": "1" if liveportrait_boosted_retry_allowed else "0",
@@ -3103,6 +3155,7 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_motion_preset": str(cached_stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(cached_stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(cached_stage_paths.get("liveportrait_driver_source") or ""),
+        "liveportrait_appearance_source_policy": str(cached_stage_paths.get("liveportrait_appearance_source_policy") or ""),
         "liveportrait_template_used": str(cached_stage_paths.get("liveportrait_template_used") or ""),
         "liveportrait_calm_template_path": str(cached_stage_paths.get("liveportrait_calm_template_path") or ""),
         "liveportrait_calm_template_used": bool(cached_stage_paths.get("liveportrait_calm_template_used")),
@@ -3216,6 +3269,7 @@ def _write_meta(
         "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
+        "liveportrait_appearance_source_policy": str(stage_paths.get("liveportrait_appearance_source_policy") or ""),
         "liveportrait_template_used": str(stage_paths.get("liveportrait_template_used") or ""),
         "liveportrait_calm_template_path": str(stage_paths.get("liveportrait_calm_template_path") or ""),
         "liveportrait_calm_template_used": bool(stage_paths.get("liveportrait_calm_template_used")),
@@ -3339,6 +3393,7 @@ def _final_payload(
         "liveportrait_motion_preset": str(stage_paths.get("liveportrait_motion_preset") or _liveportrait_motion_preset_for_request(request)),
         "liveportrait_motion_profile": str(stage_paths.get("liveportrait_motion_profile") or ""),
         "liveportrait_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
+        "liveportrait_appearance_source_policy": str(stage_paths.get("liveportrait_appearance_source_policy") or ""),
         "liveportrait_template_used": str(stage_paths.get("liveportrait_template_used") or ""),
         "liveportrait_calm_template_path": str(stage_paths.get("liveportrait_calm_template_path") or ""),
         "liveportrait_calm_template_used": bool(stage_paths.get("liveportrait_calm_template_used")),
@@ -3540,6 +3595,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             "source_key": str(candidate.get("resolved_source_key") or ""),
             "source_image_path": str(candidate.get("source_image_primary") or ""),
             "source_video_path": str(candidate.get("source_video_primary") or ""),
+            "appearance_source_policy": str(candidate.get("appearance_source_policy") or ""),
             "reason": str(candidate.get("candidate_reason") or ""),
         }
         for candidate in source_candidates
@@ -3637,6 +3693,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_low_motion_fallback_to_static": bool(lp_low_motion_fallback_to_static),
         "liveportrait_motion_preset": liveportrait_motion_preset,
         "liveportrait_motion_profile": "",
+        "liveportrait_appearance_source_policy": str(resolved_inputs.get("appearance_source_policy") or ""),
         "liveportrait_driver_source_policy": "",
         "liveportrait_driver_source": "",
         "liveportrait_template_used": "",
@@ -4076,6 +4133,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 "source_key": candidate_source_key,
                 "source_image_path": candidate_source_image,
                 "source_video_path": candidate_source_video,
+                "appearance_source_policy": str(candidate.get("appearance_source_policy") or ""),
                 "reason": str(candidate.get("candidate_reason") or ""),
             }
             liveportrait_attempts.append(attempt_payload)
@@ -4443,6 +4501,9 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
             stage_paths["liveportrait_selected_attempt"] = int(attempt_index)
             stage_paths["liveportrait_selected_source_key"] = str(source_key_for_canonical)
             stage_paths["liveportrait_selected_source_image_path"] = str(source_image_primary)
+            stage_paths["liveportrait_appearance_source_policy"] = str(
+                candidate.get("appearance_source_policy") or ""
+            )
             stage_paths["liveportrait_succeeded"] = True
             stage_paths["liveportrait_failed"] = False
             stage_paths["liveportrait_failure_reason"] = ""
