@@ -500,6 +500,72 @@ def test_personal_motion_strength_cap_is_part_of_liveportrait_stage_cache(tmp_pa
     assert tuned_keys != default_keys
 
 
+def test_video_reference_uses_clean_image_for_identity_and_video_for_motion(tmp_path):
+    original = tmp_path / "identity-original.png"
+    processed = tmp_path / "identity-processed.png"
+    video = tmp_path / "performance.mp4"
+    audio = tmp_path / "speech.wav"
+    for path in (original, processed, video, audio):
+        path.write_bytes(path.name.encode("utf-8"))
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(processed),
+        source_image_original_path=str(original),
+        source_video_path=str(video),
+        avatar_reference_type="video",
+        audio_path=str(audio),
+        output_path=str(tmp_path / "avatar.mp4"),
+    )
+
+    resolved = avatar_canonical_pipeline._resolve_requested_inputs(request)
+    preview_candidates = avatar_canonical_pipeline._resolve_liveportrait_source_candidates(
+        request=request,
+        resolved_inputs=resolved,
+        is_preview_request=True,
+    )
+    cache_keys = avatar_canonical_pipeline._liveportrait_stage_cache_keys(request, CANONICAL_ENGINE)
+
+    assert resolved == {
+        "requested_source_key": "video",
+        "resolved_source_key": "image_original",
+        "source_image_primary": str(original),
+        "source_video_primary": str(video),
+        "appearance_source_policy": "personal_image_original_identity_video_motion_v1",
+    }
+    assert preview_candidates == [resolved]
+    assert cache_keys["liveportrait_appearance_source_policy"] == (
+        "personal_image_original_identity_video_motion_v1"
+    )
+
+    original.unlink()
+    processed_only = avatar_canonical_pipeline._resolve_requested_inputs(request)
+    assert processed_only["resolved_source_key"] == "image_processed"
+    assert processed_only["source_image_primary"] == str(processed)
+    assert processed_only["source_video_primary"] == str(video)
+    assert processed_only["appearance_source_policy"] == (
+        "personal_image_processed_identity_video_motion_v1"
+    )
+
+
+def test_video_reference_falls_back_to_video_frame_when_identity_image_is_unavailable(tmp_path):
+    video = tmp_path / "performance.mp4"
+    video.write_bytes(b"video")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(tmp_path / "missing-processed.png"),
+        source_image_original_path=str(tmp_path / "missing-original.png"),
+        source_video_path=str(video),
+        avatar_reference_type="video",
+        audio_path=str(tmp_path / "speech.wav"),
+        output_path=str(tmp_path / "avatar.mp4"),
+    )
+
+    resolved = avatar_canonical_pipeline._resolve_requested_inputs(request)
+
+    assert resolved["resolved_source_key"] == "video"
+    assert resolved["source_image_primary"] == ""
+    assert resolved["source_video_primary"] == str(video)
+    assert resolved["appearance_source_policy"] == "video_frame_identity_video_motion_legacy"
+
+
 def test_stage_env_auto_selects_calm_template_when_valid(tmp_path, monkeypatch):
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
