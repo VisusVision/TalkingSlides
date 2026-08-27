@@ -385,7 +385,7 @@ def test_non_preview_liveportrait_motion_strength_preserves_env_value(tmp_path, 
 
 @pytest.mark.parametrize(
     ("style", "expected_strength"),
-    [("calm", "0.55"), ("natural", "0.65"), ("expressive", "0.8")],
+    [("calm", "0.4"), ("natural", "0.45"), ("expressive", "0.65")],
 )
 def test_personal_motion_style_caps_liveportrait_strength(
     tmp_path,
@@ -494,7 +494,7 @@ def test_personal_motion_strength_cap_is_part_of_liveportrait_stage_cache(tmp_pa
     monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_MOTION_STRENGTH_NATURAL", "0.6")
     tuned_keys = avatar_canonical_pipeline._liveportrait_stage_cache_keys(request, CANONICAL_ENGINE)
 
-    assert default_keys["liveportrait_motion_strength"] == "0.65"
+    assert default_keys["liveportrait_motion_strength"] == "0.45"
     assert default_keys["liveportrait_motion_strength_source"] == "motion_style_v2_natural_cap"
     assert tuned_keys["liveportrait_motion_strength"] == "0.6"
     assert tuned_keys != default_keys
