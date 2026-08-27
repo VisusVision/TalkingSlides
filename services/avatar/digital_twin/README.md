@@ -60,3 +60,35 @@ Avatar Demo Pack V1 drives the real local render boundary three times with one
 fingerprinted input contract, then creates a labeled and watermarked comparison
 video and runs the evaluation lab. It keeps source paths and individual renders
 out of the public artifact directory. See `docs/AVATAR_DEMO_PACK_V1.md`.
+
+## Strong local identity metric
+
+Render quality can use OpenCV YuNet face detection and aligned SFace embeddings
+instead of the legacy appearance-correlation heuristic. Install the pinned,
+checksum-verified model pack into private storage:
+
+```powershell
+python services/scripts/install_avatar_identity_models.py
+```
+
+Then configure both model paths:
+
+```text
+DIGITAL_TWIN_YUNET_MODEL_PATH=/app/storage_local/models/identity/face_detection_yunet_2023mar.onnx
+DIGITAL_TWIN_SFACE_MODEL_PATH=/app/storage_local/models/identity/face_recognition_sface_2021dec.onnx
+```
+
+The provider samples the rendered video, aligns faces using five landmarks,
+and gates on the tenth-percentile cosine similarity plus minimum face coverage.
+Its default cosine threshold (`0.363`) follows the upstream OpenCV SFace
+reference. Model hashes, source revision, OpenCV version, frame coverage, and
+score distribution are persisted in the quality signal. Configuring only one
+model, using modified weights, or providing insufficient face evidence fails
+closed. The metric measures render identity consistency; it is not liveness,
+consent, or authentication evidence.
+
+Run the metric against existing renders without re-rendering:
+
+```powershell
+python services/scripts/evaluate_avatar_identity.py source.png generic.mp4 personal.mp4 prosody.mp4
+```

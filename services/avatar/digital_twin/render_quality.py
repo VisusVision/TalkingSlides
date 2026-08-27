@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
+from .identity_sface import evaluate_sface_identity
 from .verification import VerificationSignal, _provider_signal, _run_json_provider, analyze_video_evidence, enforce_signal_threshold
 
 try:
@@ -106,6 +107,8 @@ def evaluate_render_quality(
     }
 
     identity_template = str(env.get("DIGITAL_TWIN_IDENTITY_VERIFY_CMD") or "").strip()
+    yunet_model = str(env.get("DIGITAL_TWIN_YUNET_MODEL_PATH") or "").strip()
+    sface_model = str(env.get("DIGITAL_TWIN_SFACE_MODEL_PATH") or "").strip()
     if identity_template:
         try:
             identity = enforce_signal_threshold(
@@ -118,6 +121,23 @@ def evaluate_render_quality(
             )
         except Exception as exc:
             identity = VerificationSignal("identity_similarity", None, None, "unavailable", "configured_identity_provider", {}, str(exc))
+    elif yunet_model or sface_model:
+        if not yunet_model or not sface_model:
+            identity = VerificationSignal(
+                "identity_similarity", False, None, "strong", "opencv_yunet_sface", {},
+                "identity_model_configuration_incomplete",
+            )
+        else:
+            identity = evaluate_sface_identity(
+                source_image=source_image,
+                output_video=output_video,
+                yunet_model=yunet_model,
+                sface_model=sface_model,
+                min_cosine=float(env.get("DIGITAL_TWIN_IDENTITY_MIN_COSINE") or 0.363),
+                min_face_coverage=float(env.get("DIGITAL_TWIN_IDENTITY_MIN_FACE_COVERAGE") or 0.60),
+                min_face_frames=int(env.get("DIGITAL_TWIN_IDENTITY_MIN_FACE_FRAMES") or 6),
+                max_samples=int(env.get("DIGITAL_TWIN_IDENTITY_MAX_SAMPLES") or 24),
+            )
     else:
         score = _identity_proxy(source_image, output_video)
         identity = VerificationSignal(
