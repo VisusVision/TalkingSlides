@@ -1866,6 +1866,8 @@ def main() -> int:
         _template_temporal_smoothing = ""
         _template_speed = "1.0"
         _template_calm_profile = False
+        _effective_motion_strength = ""
+        _motion_strength_source = "configured"
 
         _audio_path = Path(str(args.audio_path)) if str(args.audio_path or "").strip() else None
         _duration_contract = _derive_duration_contract(
@@ -2476,6 +2478,17 @@ def main() -> int:
         if not bool(_driver_metrics.get("valid")):
             raise RuntimeError(f"liveportrait_invalid_driving_clip:{_format_driver_metrics(_driver_metrics)}")
 
+        if _template_calm_profile:
+            _effective_motion_strength = str(_template_motion_strength or "").strip()
+            _motion_strength_source = "vetted_template"
+        else:
+            _effective_motion_strength = str(
+                os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "0.35")
+            ).strip()
+            _motion_strength_source = str(
+                os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH_SOURCE", "configured")
+            ).strip() or "configured"
+
         print(
             "[LivePortrait] "
             f"motion_source={_motion_source} "
@@ -2521,6 +2534,8 @@ def main() -> int:
             f"liveportrait_prosody_timeline_failure_reason={_prosody_timeline_failure_reason or 'none'} "
             f"resolved_source_path={_resolved_source_path} "
             f"resolved_motion_source_path={source_video} "
+            f"liveportrait_motion_strength={_effective_motion_strength or 'none'} "
+            f"liveportrait_motion_strength_source={_motion_strength_source} "
             f"liveportrait_template_motion_strength={_template_motion_strength or 'none'} "
             f"liveportrait_template_temporal_smoothing={_template_temporal_smoothing or 'none'} "
             f"liveportrait_template_speed={_template_speed} "
@@ -2552,7 +2567,7 @@ def main() -> int:
             help_text,
             cmd,
             fps=float(args.fps),
-            motion_strength=(_template_motion_strength if _template_calm_profile else None),
+            motion_strength=_effective_motion_strength,
             temporal_smoothing=(_template_temporal_smoothing if _template_calm_profile else None),
         )
 

@@ -383,6 +383,123 @@ def test_non_preview_liveportrait_motion_strength_preserves_env_value(tmp_path, 
     assert env["AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING"] == "0.000004"
 
 
+@pytest.mark.parametrize(
+    ("style", "expected_strength"),
+    [("calm", "0.55"), ("natural", "0.65"), ("expressive", "0.8")],
+)
+def test_personal_motion_style_caps_liveportrait_strength(
+    tmp_path,
+    monkeypatch,
+    style,
+    expected_strength,
+):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")
+    image = tmp_path / "face.png"
+    video = tmp_path / "performance.mp4"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    video.write_bytes(b"video")
+    audio.write_bytes(b"audio")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        source_video_path=str(video),
+        avatar_reference_type="video",
+        audio_path=str(audio),
+        output_path=str(tmp_path / "segment.mp4"),
+        performance_window={
+            "enabled": True,
+            "source": "motion_style_v2",
+            "style": style,
+            "start_seconds": 4.0,
+            "duration_seconds": 8.0,
+            "profile_score": 0.7,
+        },
+    )
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input_for_source_key(tmp_path, image, "video"),
+        request,
+    )
+
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == expected_strength
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH_SOURCE"] == f"motion_style_v2_{style}_cap"
+
+
+def test_personal_motion_strength_respects_lower_operator_value_and_invalid_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "0.4")
+    image = tmp_path / "face.png"
+    video = tmp_path / "performance.mp4"
+    audio = tmp_path / "a.wav"
+    image.write_bytes(b"image")
+    video.write_bytes(b"video")
+    audio.write_bytes(b"audio")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(image),
+        source_video_path=str(video),
+        avatar_reference_type="video",
+        audio_path=str(audio),
+        output_path=str(tmp_path / "segment.mp4"),
+        performance_window={
+            "enabled": True,
+            "source": "motion_style_v2",
+            "style": "natural",
+            "duration_seconds": 8.0,
+        },
+    )
+
+    env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input_for_source_key(tmp_path, image, "video"),
+        request,
+    )
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "0.4"
+    assert env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH_SOURCE"] == "configured_at_or_below_natural_cap"
+
+    request.avatar_reference_type = "image"
+    image_reference_env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input_for_source_key(tmp_path, image, "image"),
+        request,
+    )
+    assert image_reference_env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "0.4"
+    assert image_reference_env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH_SOURCE"] == "configured"
+
+    request.avatar_reference_type = "video"
+    request.performance_window = {**request.performance_window, "enabled": False}
+    unplanned_env = avatar_canonical_pipeline._build_stage_env(
+        _stub_canonical_input_for_source_key(tmp_path, image, "video"),
+        request,
+    )
+    assert unplanned_env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH"] == "0.4"
+    assert unplanned_env["AVATAR_LIVEPORTRAIT_MOTION_STRENGTH_SOURCE"] == "configured"
+
+
+def test_personal_motion_strength_cap_is_part_of_liveportrait_stage_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")
+    request = avatar_pipeline.AvatarRenderRequest(
+        source_image_path=str(tmp_path / "face.png"),
+        source_video_path=str(tmp_path / "performance.mp4"),
+        avatar_reference_type="video",
+        audio_path=str(tmp_path / "a.wav"),
+        output_path=str(tmp_path / "segment.mp4"),
+        performance_window={
+            "enabled": True,
+            "source": "motion_style_v2",
+            "style": "natural",
+            "duration_seconds": 8.0,
+        },
+    )
+    for path in (request.source_image_path, request.source_video_path, request.audio_path):
+        Path(path).write_bytes(b"input")
+
+    default_keys = avatar_canonical_pipeline._liveportrait_stage_cache_keys(request, CANONICAL_ENGINE)
+    monkeypatch.setenv("AVATAR_LIVEPORTRAIT_PERSONAL_MOTION_STRENGTH_NATURAL", "0.6")
+    tuned_keys = avatar_canonical_pipeline._liveportrait_stage_cache_keys(request, CANONICAL_ENGINE)
+
+    assert default_keys["liveportrait_motion_strength"] == "0.65"
+    assert default_keys["liveportrait_motion_strength_source"] == "motion_style_v2_natural_cap"
+    assert tuned_keys["liveportrait_motion_strength"] == "0.6"
+    assert tuned_keys != default_keys
+
+
 def test_stage_env_auto_selects_calm_template_when_valid(tmp_path, monkeypatch):
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_DRIVER_SOURCE_POLICY", raising=False)
     monkeypatch.delenv("AVATAR_LIVEPORTRAIT_ALLOW_COMPOSER_FALLBACK", raising=False)
@@ -634,6 +751,8 @@ def test_liveportrait_stderr_records_vetted_template_calm_profile():
             "liveportrait_calm_template_failed=0 "
             "liveportrait_vetted_template_fallback_used=1 "
             "liveportrait_composer_fallback_used=0 "
+            "liveportrait_motion_strength=0.45 "
+            "liveportrait_motion_strength_source=vetted_template "
             "liveportrait_template_motion_strength=0.45 "
             "liveportrait_template_temporal_smoothing=1e-4 "
             "liveportrait_template_speed=0.75 "
@@ -648,6 +767,8 @@ def test_liveportrait_stderr_records_vetted_template_calm_profile():
     assert stage_paths["liveportrait_calm_template_failed"] is False
     assert stage_paths["liveportrait_vetted_template_fallback_used"] is True
     assert stage_paths["liveportrait_composer_fallback_used"] is False
+    assert stage_paths["liveportrait_motion_strength"] == "0.45"
+    assert stage_paths["liveportrait_motion_strength_source"] == "vetted_template"
     assert stage_paths["liveportrait_template_temporal_smoothing"] == "1e-4"
     assert stage_paths["liveportrait_template_speed"] == "0.75"
     assert stage_paths["liveportrait_template_calm_profile"] is True
