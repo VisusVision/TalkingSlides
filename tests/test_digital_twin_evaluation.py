@@ -64,6 +64,12 @@ def _variant(
                 "renderer_driver_source": "source_video" if personal else "vetted_template",
                 "renderer_reference_type": "video" if personal else "image",
                 "personal_source_video_supplied": personal,
+                "appearance_source_policy": (
+                    "personal_image_original_identity_video_motion_v1"
+                    if personal
+                    else "image_reference"
+                ),
+                "identity_motion_decoupled": personal,
             },
         },
         "runtime": {"render_seconds": 12.0, "peak_vram_mb": 5_500.0},
@@ -92,7 +98,9 @@ def test_evaluation_recommends_prosody_only_without_quality_regression():
     assert report["comparisons"]["prosody_vs_personal"]["regressions"] == []
     assert report["comparisons"]["personal_vs_generic"]["deltas"]["motion_score"] == 0.12
     assert report["automated_claims"]["personal_motion_bound"] is True
+    assert report["automated_claims"]["personal_identity_motion_decoupled"] is True
     assert report["automated_claims"]["prosody_timing_materialized"] is True
+    assert report["automated_claims"]["prosody_identity_motion_decoupled"] is True
     assert report["automated_claims"]["naturalness_improved"] == "manual_review_required"
     assert report["manual_review"]["minimum_reviewers"] == 3
 
@@ -118,6 +126,27 @@ def test_missing_personal_evidence_prevents_unsupported_recommendation():
     assert report["recommendation"] == "generic"
     assert report["variants"][1]["expected_evidence_present"] is False
     assert report["variants"][2]["eligible"] is False
+
+
+@pytest.mark.parametrize(
+    "execution_update",
+    [
+        {"identity_motion_decoupled": False},
+        {"appearance_source_policy": "video_frame_identity_video_motion_legacy"},
+        {"appearance_source_policy": ""},
+    ],
+)
+def test_personal_identity_motion_binding_must_be_proven(execution_update):
+    manifest = _manifest()
+    manifest["variants"][1]["motion_plan"]["execution"].update(execution_update)
+
+    report = evaluate_avatar_variants(manifest)
+
+    assert report["recommendation"] == "generic"
+    assert report["variants"][1]["identity_motion_decoupled"] is False
+    assert report["variants"][1]["expected_evidence_present"] is False
+    assert report["variants"][1]["eligible"] is False
+    assert report["automated_claims"]["personal_identity_motion_decoupled"] is False
 
 
 @pytest.mark.parametrize(
@@ -236,6 +265,7 @@ def test_markdown_keeps_automated_and_human_claims_separate():
     assert "| prosody |" in rendered
     assert "## Manual blind review" in rendered
     assert "transition smoothness" in rendered
+    assert "Identity/motion split" in rendered
     assert "do not prove human-perceived naturalness" in rendered
     assert "Automated recommendation: `prosody`" in rendered
 

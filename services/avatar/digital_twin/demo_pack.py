@@ -170,6 +170,13 @@ def materialize_motion_execution(plan: Mapping[str, Any], render_info: Mapping[s
     stage_paths = dict(render_info.get("stage_paths") or {})
     window_materialized = bool(stage_paths.get("liveportrait_performance_window_materialized"))
     prosody_materialized = bool(stage_paths.get("liveportrait_prosody_timeline_materialized"))
+    appearance_source_policy = str(
+        stage_paths.get("liveportrait_appearance_source_policy") or ""
+    ).strip()
+    identity_motion_decoupled = appearance_source_policy in {
+        "personal_image_original_identity_video_motion_v1",
+        "personal_image_processed_identity_video_motion_v1",
+    }
     resolved["execution"] = {
         "window_source": str(stage_paths.get("liveportrait_performance_window_source") or ""),
         "window_style": str(stage_paths.get("liveportrait_performance_window_style") or ""),
@@ -180,6 +187,8 @@ def materialize_motion_execution(plan: Mapping[str, Any], render_info: Mapping[s
         "renderer_driver_source": str(stage_paths.get("liveportrait_driver_source") or ""),
         "renderer_reference_type": str(stage_paths.get("avatar_reference_type") or ""),
         "personal_source_video_supplied": bool(stage_paths.get("request_source_video_path")),
+        "appearance_source_policy": appearance_source_policy,
+        "identity_motion_decoupled": identity_motion_decoupled,
         "renderer_motion_preset": str(
             render_info.get("liveportrait_motion_preset") or resolved.get("motion_preset") or ""
         ),
