@@ -283,6 +283,11 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
             "avatar_reference_type": "image" if kind == "generic" else "video",
             "request_source_video_path": "" if kind == "generic" else str(source_video),
             "liveportrait_driver_source": "vetted_template" if kind == "generic" else "source_video",
+            "liveportrait_appearance_source_policy": (
+                "image_reference"
+                if kind == "generic"
+                else "personal_image_original_identity_video_motion_v1"
+            ),
             "liveportrait_performance_window_source": (
                 "motion_style_v2" if kind in {"personal", "prosody"} else ""
             ),
@@ -364,8 +369,12 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
     assert variants["personal"]["personal_window_materialized"] is True
     assert variants["prosody"]["personal_window_materialized"] is True
     assert variants["prosody"]["prosody_timeline_materialized"] is True
+    assert variants["personal"]["identity_motion_decoupled"] is True
+    assert variants["prosody"]["identity_motion_decoupled"] is True
     assert variants["generic"]["generic_baseline_isolated"] is True
     assert result["report"]["automated_claims"]["generic_baseline_isolated"] is True
+    assert result["report"]["automated_claims"]["personal_identity_motion_decoupled"] is True
+    assert result["report"]["automated_claims"]["prosody_identity_motion_decoupled"] is True
     public_dir = output_dir / "portfolio"
     assert sorted(path.name for path in public_dir.iterdir()) == sorted(
         [

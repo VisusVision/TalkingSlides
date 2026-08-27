@@ -153,6 +153,20 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
             and renderer_reference_type == "image"
         )
     )
+    appearance_source_policy = str(execution.get("appearance_source_policy") or "").strip()
+    identity_motion_evidence_reported = all(
+        key in execution for key in ("appearance_source_policy", "identity_motion_decoupled")
+    )
+    identity_motion_decoupled = bool(
+        kind in {"personal", "prosody"}
+        and identity_motion_evidence_reported
+        and bool(execution.get("identity_motion_decoupled"))
+        and appearance_source_policy
+        in {
+            "personal_image_original_identity_video_motion_v1",
+            "personal_image_processed_identity_video_motion_v1",
+        }
+    )
     capability_coverage = 0.0
     if personal_window:
         capability_coverage += 0.5
@@ -160,8 +174,13 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
         capability_coverage += 0.5
     expected_evidence = bool(
         (kind == "generic" and generic_baseline_isolated)
-        or (kind == "personal" and personal_window_materialized)
-        or (kind == "prosody" and personal_window_materialized and prosody_materialized)
+        or (kind == "personal" and personal_window_materialized and identity_motion_decoupled)
+        or (
+            kind == "prosody"
+            and personal_window_materialized
+            and prosody_materialized
+            and identity_motion_decoupled
+        )
     )
     missing_signals = [
         name
@@ -203,6 +222,8 @@ def _variant_metrics(raw_variant: Mapping[str, Any]) -> dict[str, Any]:
         "personal_window_materialized": personal_window_materialized,
         "prosody_timeline_materialized": prosody_materialized,
         "generic_baseline_isolated": generic_baseline_isolated if kind == "generic" else None,
+        "appearance_source_policy": appearance_source_policy,
+        "identity_motion_decoupled": identity_motion_decoupled if kind != "generic" else None,
         "capability_coverage": round(capability_coverage, 2),
         "expected_evidence_present": expected_evidence,
         "ready_for_comparison": ready,
@@ -382,7 +403,9 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
         "fair_input_contract": fair_comparison,
         "generic_baseline_isolated": bool(generic["generic_baseline_isolated"]),
         "personal_motion_bound": bool(personal["personal_window_materialized"]),
+        "personal_identity_motion_decoupled": bool(personal["identity_motion_decoupled"]),
         "prosody_timing_materialized": bool(prosody["prosody_timeline_materialized"]),
+        "prosody_identity_motion_decoupled": bool(prosody["identity_motion_decoupled"]),
         "personal_quality_non_regression": not bool(comparisons["personal_vs_generic"]["regressions"]),
         "prosody_quality_non_regression": not bool(comparisons["prosody_vs_personal"]["regressions"]),
         "naturalness_improved": "manual_review_required",
@@ -454,12 +477,12 @@ def render_evaluation_markdown(report: Mapping[str, Any]) -> str:
         "",
         "## Automated evidence",
         "",
-        "| Variant | Quality | Motion | Identity | Lip sync | Temporal | Duration delta | Personal exec | Prosody exec | Eligible |",
-        "|---|---:|---:|---:|---:|---:|---:|:---:|:---:|:---:|",
+        "| Variant | Quality | Motion | Identity | Lip sync | Temporal | Duration delta | Identity/motion split | Personal exec | Prosody exec | Eligible |",
+        "|---|---:|---:|---:|---:|---:|---:|:---:|:---:|:---:|:---:|",
     ]
     for variant in variants:
         lines.append(
-            "| {kind} | {quality:.2f} | {motion:.3f} | {identity} | {lip} | {temporal} | {duration:.3f}s | {personal} | {prosody} | {eligible} |".format(
+            "| {kind} | {quality:.2f} | {motion:.3f} | {identity} | {lip} | {temporal} | {duration:.3f}s | {identity_motion} | {personal} | {prosody} | {eligible} |".format(
                 kind=str(variant.get("kind") or ""),
                 quality=float(variant.get("automated_quality_score") or 0.0),
                 motion=float(variant.get("motion_score") or 0.0),
@@ -467,6 +490,11 @@ def render_evaluation_markdown(report: Mapping[str, Any]) -> str:
                 lip="n/a" if variant.get("lip_sync", {}).get("score") is None else f"{float(variant['lip_sync']['score']):.3f}",
                 temporal="n/a" if variant.get("temporal", {}).get("score") is None else f"{float(variant['temporal']['score']):.3f}",
                 duration=float(variant.get("duration_delta_seconds") or 0.0),
+                identity_motion=(
+                    "n/a"
+                    if str(variant.get("kind") or "") == "generic"
+                    else ("yes" if variant.get("identity_motion_decoupled") else "no")
+                ),
                 personal="yes" if variant.get("personal_window_materialized") else "no",
                 prosody="yes" if variant.get("prosody_timeline_materialized") else "no",
                 eligible="yes" if variant.get("eligible") else "no",
