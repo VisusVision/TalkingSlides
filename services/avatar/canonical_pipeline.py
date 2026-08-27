@@ -571,6 +571,48 @@ def _request_performance_window(request: Any) -> dict[str, str]:
     }
 
 
+_PERSONAL_MOTION_STRENGTH_CAPS = {
+    "calm": ("AVATAR_LIVEPORTRAIT_PERSONAL_MOTION_STRENGTH_CALM", 0.40),
+    "natural": ("AVATAR_LIVEPORTRAIT_PERSONAL_MOTION_STRENGTH_NATURAL", 0.45),
+    "expressive": ("AVATAR_LIVEPORTRAIT_PERSONAL_MOTION_STRENGTH_EXPRESSIVE", 0.65),
+}
+
+
+def _identity_preserving_motion_strength(request: Any, configured_strength: str) -> tuple[str, str]:
+    """Cap personal driving strength without changing generic/template renders."""
+    reference_type = str(getattr(request, "avatar_reference_type", "image") or "image").strip().lower()
+    source_video_path = str(getattr(request, "source_video_path", "") or "").strip()
+    if reference_type != "video" or not source_video_path:
+        return configured_strength, "configured"
+
+    personal_window = _request_performance_window(request)
+    style = personal_window["style"] if personal_window["enabled"] == "1" else ""
+    cap_config = _PERSONAL_MOTION_STRENGTH_CAPS.get(style)
+    if cap_config is None:
+        return configured_strength, "configured"
+
+    env_name, default_cap = cap_config
+    try:
+        base_value = float(configured_strength)
+    except (TypeError, ValueError):
+        return configured_strength, "configured_invalid"
+    if not math.isfinite(base_value) or base_value <= 0.0:
+        return configured_strength, "configured_non_positive"
+
+    raw_cap = str(os.environ.get(env_name, default_cap)).strip()
+    try:
+        cap_value = float(raw_cap)
+    except (TypeError, ValueError):
+        cap_value = default_cap
+    if not math.isfinite(cap_value) or cap_value <= 0.0 or cap_value > 2.0:
+        cap_value = default_cap
+
+    resolved = min(base_value, cap_value)
+    if resolved == base_value:
+        return configured_strength, f"configured_at_or_below_{style}_cap"
+    return f"{resolved:g}", f"motion_style_v2_{style}_cap"
+
+
 def _request_performance_timeline(request: Any) -> dict[str, str]:
     raw = getattr(request, "performance_timeline", {}) or {}
     if not isinstance(raw, dict):
@@ -703,6 +745,8 @@ _STAGE_CACHE_PROVENANCE_STRING_FIELDS = [
     "liveportrait_vetted_template_path",
     "liveportrait_fallback_driver_source",
     "liveportrait_selected_driver_video",
+    "liveportrait_motion_strength",
+    "liveportrait_motion_strength_source",
     "liveportrait_template_motion_strength",
     "liveportrait_template_temporal_smoothing",
     "liveportrait_template_speed",
@@ -939,6 +983,8 @@ def _liveportrait_stage_cache_keys(request: Any, requested_engine: str) -> dict[
         "target_frame_count",
         "target_duration_seconds",
         "liveportrait_motion_preset",
+        "liveportrait_motion_strength",
+        "liveportrait_motion_strength_source",
         "liveportrait_driver_source_policy",
         "liveportrait_calm_template_hash",
         "liveportrait_calm_template_basename",
@@ -1252,6 +1298,10 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
     else:
         liveportrait_motion_strength = str(os.environ.get("AVATAR_LIVEPORTRAIT_MOTION_STRENGTH", "1.0")).strip() or "1.0"
         liveportrait_temporal_smoothing = str(os.environ.get("AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING", "3e-6")).strip() or "3e-6"
+    liveportrait_motion_strength, liveportrait_motion_strength_source = _identity_preserving_motion_strength(
+        request,
+        liveportrait_motion_strength,
+    )
     preview_fast_musetalk = str(os.environ.get("AVATAR_PREVIEW_MUSETALK_FAST_MODE", "1")).strip().lower() in {"1", "true", "yes", "on"}
     liveportrait_motion_preset = _liveportrait_motion_preset_for_request(request)
     liveportrait_boosted_retry_allowed = _liveportrait_boosted_retry_allowed(liveportrait_motion_preset)
@@ -1299,6 +1349,7 @@ def _build_stage_env(canonical_input: Any, request: Any) -> dict[str, str]:
         "AVATAR_CANONICAL_BOTTOM_MARGIN_RATIO": f"{float(metrics.get('bottom_margin_ratio') or 0.0):.6f}",
         "AVATAR_LIVEPORTRAIT_FPS": str(int(derived_fps)),
         "AVATAR_LIVEPORTRAIT_MOTION_STRENGTH": liveportrait_motion_strength,
+        "AVATAR_LIVEPORTRAIT_MOTION_STRENGTH_SOURCE": liveportrait_motion_strength_source,
         "AVATAR_LIVEPORTRAIT_TEMPORAL_SMOOTHING": liveportrait_temporal_smoothing,
         "AVATAR_LIVEPORTRAIT_MOTION_PRESET": liveportrait_motion_preset,
         "AVATAR_LIVEPORTRAIT_ALLOW_BOOSTED_RETRY": "1" if liveportrait_boosted_retry_allowed else "0",
@@ -1967,6 +2018,16 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
     restoration_enabled = _restore_enabled(_is_preview_request(request), request)
     personal_window = _request_performance_window(request)
     personal_timeline = _request_performance_timeline(request)
+    configured_motion_strength = str(
+        os.environ.get(
+            "AVATAR_PREVIEW_LIVEPORTRAIT_MOTION_STRENGTH" if _is_preview_request(request) else "AVATAR_LIVEPORTRAIT_MOTION_STRENGTH",
+            "1.0",
+        )
+    ).strip() or "1.0"
+    resolved_motion_strength, motion_strength_source = _identity_preserving_motion_strength(
+        request,
+        configured_motion_strength,
+    )
     return {
         "audio_hash": sha256_file(audio_path) if audio_path and Path(audio_path).exists() else "",
         "source_image_hash": sha256_file(source_image_path) if Path(source_image_path).exists() else "",
@@ -1982,6 +2043,8 @@ def _expected_cache_keys(request: Any, requested_engine: str) -> dict[str, str]:
         "pipeline_mode": pipeline_mode,
         "avatar_stage_cache_version": str(os.environ.get("AVATAR_STAGE_CACHE_VERSION", "1") or "1").strip() or "1",
         "liveportrait_motion_preset": liveportrait_motion_preset,
+        "liveportrait_motion_strength": resolved_motion_strength,
+        "liveportrait_motion_strength_source": motion_strength_source,
         "liveportrait_enabled": "1" if liveportrait_enabled else "0",
         "restoration_enabled": "1" if restoration_enabled else "0",
         "liveportrait_boosted_retry_allowed": "1" if liveportrait_boosted_retry_allowed else "0",
@@ -2295,6 +2358,8 @@ def _apply_liveportrait_driver_stderr_observability(
         "liveportrait_calm_template_failure_reason",
         "liveportrait_vetted_template_path",
         "liveportrait_fallback_driver_source",
+        "liveportrait_motion_strength",
+        "liveportrait_motion_strength_source",
         "liveportrait_template_motion_strength",
         "liveportrait_template_temporal_smoothing",
         "liveportrait_template_speed",
@@ -3066,6 +3131,8 @@ def _load_cached_result(request: Any, *, is_preview_request: bool, output_path: 
         "liveportrait_vetted_template_fallback_used": bool(cached_stage_paths.get("liveportrait_vetted_template_fallback_used")),
         "liveportrait_composer_fallback_used": bool(cached_stage_paths.get("liveportrait_composer_fallback_used")),
         "liveportrait_fallback_driver_source": str(cached_stage_paths.get("liveportrait_fallback_driver_source") or ""),
+        "liveportrait_motion_strength": str(cached_stage_paths.get("liveportrait_motion_strength") or ""),
+        "liveportrait_motion_strength_source": str(cached_stage_paths.get("liveportrait_motion_strength_source") or ""),
         "liveportrait_template_motion_strength": str(cached_stage_paths.get("liveportrait_template_motion_strength") or ""),
         "liveportrait_template_temporal_smoothing": str(cached_stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
         "liveportrait_template_speed": str(cached_stage_paths.get("liveportrait_template_speed") or "1.0"),
@@ -3177,6 +3244,8 @@ def _write_meta(
         "liveportrait_vetted_template_fallback_used": bool(stage_paths.get("liveportrait_vetted_template_fallback_used")),
         "liveportrait_composer_fallback_used": bool(stage_paths.get("liveportrait_composer_fallback_used")),
         "liveportrait_fallback_driver_source": str(stage_paths.get("liveportrait_fallback_driver_source") or ""),
+        "liveportrait_motion_strength": str(stage_paths.get("liveportrait_motion_strength") or ""),
+        "liveportrait_motion_strength_source": str(stage_paths.get("liveportrait_motion_strength_source") or ""),
         "liveportrait_template_motion_strength": str(stage_paths.get("liveportrait_template_motion_strength") or ""),
         "liveportrait_template_temporal_smoothing": str(stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
         "liveportrait_template_speed": str(stage_paths.get("liveportrait_template_speed") or "1.0"),
@@ -3287,6 +3356,8 @@ def _final_payload(
         "liveportrait_vetted_template_fallback_used": bool(stage_paths.get("liveportrait_vetted_template_fallback_used")),
         "liveportrait_composer_fallback_used": bool(stage_paths.get("liveportrait_composer_fallback_used")),
         "liveportrait_fallback_driver_source": str(stage_paths.get("liveportrait_fallback_driver_source") or ""),
+        "liveportrait_motion_strength": str(stage_paths.get("liveportrait_motion_strength") or ""),
+        "liveportrait_motion_strength_source": str(stage_paths.get("liveportrait_motion_strength_source") or ""),
         "liveportrait_template_motion_strength": str(stage_paths.get("liveportrait_template_motion_strength") or ""),
         "liveportrait_template_temporal_smoothing": str(stage_paths.get("liveportrait_template_temporal_smoothing") or ""),
         "liveportrait_template_speed": str(stage_paths.get("liveportrait_template_speed") or "1.0"),
@@ -3581,6 +3652,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "liveportrait_vetted_template_fallback_used": False,
         "liveportrait_composer_fallback_used": False,
         "liveportrait_fallback_driver_source": "",
+        "liveportrait_motion_strength": "",
+        "liveportrait_motion_strength_source": "",
         "liveportrait_template_motion_strength": "",
         "liveportrait_template_temporal_smoothing": "",
         "liveportrait_template_speed": "1.0",
