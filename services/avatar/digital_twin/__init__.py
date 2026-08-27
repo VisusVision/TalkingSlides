@@ -38,6 +38,7 @@ from .motion_analysis import MOTION_STYLE_VERSION, analyze_performance_motion, b
 from .motion_planning import MOTION_PLAN_VERSION, build_personal_motion_plan
 from .prosody import PROSODY_PROFILE_VERSION, analyze_audio_prosody, build_prosody_profile
 from .render_quality import RenderQualityReport, evaluate_render_quality
+from .identity_sface import evaluate_sface_identity
 from .verification import ConsentVerificationReport, VerificationSignal, verify_consent_evidence
 
 __all__ = [
@@ -78,6 +79,7 @@ __all__ = [
     "RenderQualityReport",
     "VerificationSignal",
     "evaluate_render_quality",
+    "evaluate_sface_identity",
     "evaluate_avatar_variants",
     "render_evaluation_markdown",
     "run_demo_pack",
