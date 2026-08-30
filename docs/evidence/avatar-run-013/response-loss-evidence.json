@@ -1,0 +1,123 @@
+{
+  "version": "avatar-musetalk-response-loss-evidence-v1",
+  "run_id": "avatar-run-013",
+  "implementation_revision": "37ea436cc9b65ca6e37cd78bfe33447d308d3d7b",
+  "harness_revision": "37ea436cc9b65ca6e37cd78bfe33447d308d3d7b",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "gpu_total_mib": 8188,
+    "before": {
+      "free_mib": 4538,
+      "utilization_percent": 16
+    },
+    "after": {
+      "free_mib": 4497,
+      "utilization_percent": 17
+    }
+  },
+  "runtime": {
+    "real_gpu_inference": true,
+    "cuda_available": true,
+    "cuda_device": "cuda:0",
+    "cuda_provider_verified": true,
+    "musetalk_version": "v15",
+    "use_float16": true,
+    "batch_size": 8,
+    "model_load_seconds": 147.064
+  },
+  "fault_contract": {
+    "version": "musetalk-recovery-fault-v2",
+    "injected_fault": "post_infer_disconnect",
+    "infer_requests": 2,
+    "forwarded_infer_requests": 2,
+    "injected_failures": 1,
+    "upstream_responses": 2,
+    "dropped_responses": 1,
+    "service_request_start_count": 1,
+    "service_inference_complete_count": 1,
+    "real_inference_executions": 1,
+    "same_run_id_on_retry": true,
+    "response_audit": [
+      {
+        "request_index": 1,
+        "http_status": 200,
+        "response_dropped": true,
+        "success": true,
+        "idempotency_status": "owner",
+        "idempotency_replayed": false,
+        "response_sha256": "17d8ecdc2633b49a22e24333af27a16639bb90b253105a6ea3e0d3b1485e4623"
+      },
+      {
+        "request_index": 2,
+        "http_status": 200,
+        "response_dropped": false,
+        "success": true,
+        "idempotency_status": "completed_replay",
+        "idempotency_replayed": true,
+        "response_sha256": "5f007de3294fe69260dba07218665b9f55735285ad75e73f81f044fd020d5b66"
+      }
+    ]
+  },
+  "recovery": {
+    "success": true,
+    "retry_limit": 1,
+    "retry_count": 1,
+    "failure_classification": "transient_service_transport:remote_end_closed_connection",
+    "recovery_succeeded": true,
+    "retry_exhausted": false,
+    "total_wall_clock_seconds": 164.8695,
+    "service_inference_seconds": 163.829,
+    "retry_path_wall_clock_upper_bound_seconds": 0.8265,
+    "final_idempotency_status": "completed_replay",
+    "final_idempotency_replayed": true
+  },
+  "stage_timings": {
+    "model_load_seconds": 0.0,
+    "face_landmark_extraction_seconds": 70.54,
+    "inference_loop_seconds": 32.57,
+    "generated_frame_count": 375,
+    "frame_blend_seconds": 33.23,
+    "written_frame_count": 375,
+    "mux_encode_seconds": 3.18,
+    "final_save_seconds": 2.03
+  },
+  "data_integrity": {
+    "liveportrait_handoff_sha256_before": "b14c90a974e75a7d1ce26d2b53778c9cadc8a3a606cda1b1c0852b9f2dd95d95",
+    "liveportrait_handoff_sha256_after": "b14c90a974e75a7d1ce26d2b53778c9cadc8a3a606cda1b1c0852b9f2dd95d95",
+    "liveportrait_handoff_unchanged": true,
+    "output_sha256_observations": [
+      "5e7b84bf7ea19606c4ac296c52acb4aa56aa07dc69ce499f2d87a301b015e4e1",
+      "5e7b84bf7ea19606c4ac296c52acb4aa56aa07dc69ce499f2d87a301b015e4e1"
+    ],
+    "output_unchanged_across_replay": true
+  },
+  "output": {
+    "committed": false,
+    "sha256": "5e7b84bf7ea19606c4ac296c52acb4aa56aa07dc69ce499f2d87a301b015e4e1",
+    "size_bytes": 1262247,
+    "duration_seconds": 15.0,
+    "width": 1024,
+    "height": 1024,
+    "fps": 25,
+    "video_codec": "h264",
+    "audio_codec": "aac"
+  },
+  "quality_scope": {
+    "technical_media_probe_passed": true,
+    "identity_and_lip_sync_reassessed": false,
+    "reason": "reliability_only_run"
+  },
+  "private_artifacts": {
+    "recovery_report_sha256": "c6efdc655f9ecf0c1f18e7bd5bdd020a4fe31290e92b279ba2a25c5fed8c673e",
+    "fault_state_sha256": "812e12c57020bddd6c153c53028c868a2ad9ef85966b86d3d7ec7fbe7113ba71",
+    "musetalk_debug_sha256": "d1032d6b5f9f90e09fd46e20c38988336f971442b3d6300a93fe038f49252182",
+    "service_log_sha256": "0a57011420d4c5a4421c0fe3fd907224acdc4232a50446d41caba98eb43120a4",
+    "fault_proxy_log_sha256": "80ca5701983a174b439c1141aab923cf569e38e94abe51db1d7903e7c171d9c5"
+  },
+  "privacy": {
+    "real_person_media_committed": false,
+    "raw_logs_committed": false,
+    "absolute_path_leak_scan_required": true
+  },
+  "claim_boundary": "proves_one_real_gpu_inference_survives_post_inference_response_loss_via_completed_replay"
+}
