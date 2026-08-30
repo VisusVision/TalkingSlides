@@ -80,6 +80,10 @@ def test_proxy_injects_one_infer_failure_then_forwards(tmp_path):
         upstream.server_close()
 
     audit = json.loads(state_path.read_text(encoding="utf-8"))
+    assert audit["version"] == "musetalk-recovery-fault-v2"
+    assert audit["fault_mode"] == "pre_infer_http_503"
     assert audit["infer_requests"] == 2
     assert audit["injected_failures"] == 1
     assert audit["forwarded_requests"] == 2
+    assert audit["forwarded_infer_requests"] == 1
+    assert audit["dropped_responses"] == 0

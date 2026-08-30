@@ -108,6 +108,49 @@ Defaults retain 128 completed entries for 3600 seconds. Tune
 `MUSETALK_IDEMPOTENCY_TTL_SECONDS`, `MUSETALK_IDEMPOTENCY_MAX_ENTRIES`, and
 `MUSETALK_IDEMPOTENCY_WAIT_TIMEOUT_SECONDS` only from observed staging traffic.
 
+### Prove recovery after the inference response is lost
+
+The localhost recovery proxy can let the real MuseTalk service finish one GPU
+inference and then close the client connection before returning the response.
+This is stronger than the pre-inference HTTP 503 smoke because the retry arrives
+after the output already exists. Keep all source media, generated video, proxy
+state, and the raw report in private `storage_local` paths.
+
+Start the real MuseTalk service on port `17860`, then run the proxy in a separate
+PowerShell window:
+
+```powershell
+python services/scripts/musetalk_recovery_proxy.py `
+  --listen-port 17861 `
+  --upstream-port 17860 `
+  --fault-mode post_infer_disconnect `
+  --fail-infer-count 1 `
+  --state-path storage_local/avatar-evidence/response-loss-state.json
+```
+
+Route the smoke through the proxy from the worker/runtime environment:
+
+```powershell
+$env:AVATAR_MUSETALK_SERVICE_PORT = "17861"
+$env:AVATAR_MUSETALK_TRANSIENT_RETRY_COUNT = "1"
+$env:AVATAR_MUSETALK_TRANSIENT_RETRY_DELAY_SECONDS = "0"
+python services/scripts/run_musetalk_recovery_smoke.py `
+  --source-image storage_local/avatar-evidence/source.png `
+  --source-video storage_local/avatar-evidence/liveportrait-handoff.mp4 `
+  --audio-path storage_local/avatar-evidence/voice.wav `
+  --output-path storage_local/avatar-evidence/response-loss-output.mp4 `
+  --report-path storage_local/avatar-evidence/response-loss-report.json `
+  --fault-state-path storage_local/avatar-evidence/response-loss-state.json `
+  --require-idempotent-replay
+```
+
+The command exits successfully only when the normal recovery gates pass and the
+proxy audit proves exactly two forwarded `/infer` requests with one dropped
+response, the same run ID, `owner -> completed_replay`, `false -> true` replay
+flags, and identical output SHA-256 observations. This demonstrates one GPU
+inference with a replayed result; it does not claim recovery from process death,
+lost output storage, CUDA/OOM, or model failure.
+
 ## Observability Report
 
 Use the read-only observability report for a single operator snapshot of render, follow-up intent, storage, and recovery health:
