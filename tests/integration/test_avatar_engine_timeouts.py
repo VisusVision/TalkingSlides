@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import sys
 import importlib
@@ -398,6 +399,57 @@ def test_musetalk_service_route_preserves_run_hashes_and_validation(monkeypatch,
     assert result.details["face_landmark_seconds"] == 0.4
     assert result.details["inference_loop_seconds"] == 0.2
     assert result.details["svc_timeout_seconds"] == 500.0
+
+
+def test_musetalk_service_route_preserves_non_retryable_output_preflight_details(monkeypatch, tmp_path):
+    source = tmp_path / "source.png"
+    audio = tmp_path / "audio.wav"
+    output = tmp_path / "out.mp4"
+    source.write_bytes(b"source-bytes")
+    audio.write_bytes(b"audio-bytes")
+    response_body = json.dumps(
+        {
+            "success": False,
+            "error": (
+                "musetalk_output_preflight_failed "
+                f"reason=permission_denied output_parent={output.parent}"
+            ),
+            "failure_category": "output_preflight",
+            "retryable": False,
+        }
+    ).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        raise adapters.urllib.error.HTTPError(
+            req.full_url,
+            422,
+            "Unprocessable Entity",
+            hdrs=None,
+            fp=io.BytesIO(response_body),
+        )
+
+    monkeypatch.setattr(adapters.urllib.request, "urlopen", fake_urlopen)
+
+    result = adapters._run_via_musetalk_service(
+        "http://127.0.0.1:17860",
+        source_image=str(source),
+        source_video="",
+        audio_path=str(audio),
+        output_path=str(output),
+        params={"batch_size": 8},
+        timeout_seconds=500.0,
+        stage_budget_timeout_seconds=440.0,
+        stage_name="preview_musetalk",
+        run_id="run-preflight",
+        route_reason="service_enabled_health_ready",
+        service_health={"status": "ready", "ready_for_inference": True},
+    )
+
+    assert result.success is False
+    assert result.details["http_status"] == 422
+    assert result.details["failure_category"] == "output_preflight"
+    assert result.details["retryable"] is False
+    assert "reason=permission_denied" in result.error
 
 
 def test_musetalk_service_chunked_route_stitches_long_lesson_segment(monkeypatch, tmp_path):

@@ -66,6 +66,13 @@ Operational checks:
 
 Keep avatar worker concurrency at `1` per GPU until benchmarked.
 
+The persistent MuseTalk service performs an output writability preflight in
+the service process before it acquires the GPU inference lock. A rejected
+request returns HTTP `422`, `failure_category=output_preflight`, and
+`retryable=false`; fix the ownership or mount permissions instead of retrying
+the render. This check creates and removes a sibling probe file, so it verifies
+the service user's real permissions even when the calling worker runs as root.
+
 ## Observability Report
 
 Use the read-only observability report for a single operator snapshot of render, follow-up intent, storage, and recovery health:

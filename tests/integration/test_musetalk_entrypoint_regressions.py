@@ -4,6 +4,10 @@ import os
 import json
 import subprocess
 import sys
+import threading
+import urllib.error
+import urllib.request
+from http.server import HTTPServer
 from pathlib import Path
 
 import pytest
@@ -107,6 +111,85 @@ def test_musetalk_service_request_stage_timeout_uses_request_budget() -> None:
 
     assert timeout_floor == 7200.0
     assert max(service._stage_timeout_seconds("face_landmark_extraction", 900.0), timeout_floor) == 7200.0
+
+
+@pytest.mark.integration
+def test_musetalk_service_output_preflight_creates_no_persistent_artifact(tmp_path: Path) -> None:
+    output = tmp_path / "nested" / "avatar.mp4"
+
+    resolved = service._preflight_output_path(str(output))
+
+    assert resolved == output
+    assert output.parent.is_dir()
+    assert list(output.parent.iterdir()) == []
+
+
+@pytest.mark.integration
+def test_musetalk_service_output_preflight_reports_permission_denied(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "avatar.mp4"
+
+    def _deny_probe(*_args, **_kwargs):
+        raise PermissionError("service user cannot write here")
+
+    monkeypatch.setattr(service.tempfile, "mkstemp", _deny_probe)
+
+    with pytest.raises(service.MuseTalkOutputPreflightError) as excinfo:
+        service._preflight_output_path(str(output))
+
+    assert excinfo.value.reason == "permission_denied"
+    assert "musetalk_output_preflight_failed" in str(excinfo.value)
+    assert "reason=permission_denied" in str(excinfo.value)
+
+
+@pytest.mark.integration
+def test_musetalk_service_http_preflight_rejects_before_gpu_lock_and_inference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    was_loaded = service._models_loaded.is_set()
+    service._models_loaded.set()
+    monkeypatch.setattr(service, "_models_error", None)
+    inference_calls = {"count": 0}
+
+    def _reject(_output_path: str) -> Path:
+        raise service.MuseTalkOutputPreflightError(
+            reason="permission_denied",
+            output_path=tmp_path / "blocked" / "avatar.mp4",
+        )
+
+    def _unexpected_infer(**_kwargs):
+        inference_calls["count"] += 1
+        return {"success": True}
+
+    monkeypatch.setattr(service, "_preflight_output_path", _reject)
+    monkeypatch.setattr(service, "_infer", _unexpected_infer)
+    server = HTTPServer(("127.0.0.1", 0), service._Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_port}/infer",
+        data=json.dumps({"output_path": str(tmp_path / "blocked" / "avatar.mp4")}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request, timeout=2.0)
+        payload = json.loads(excinfo.value.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2.0)
+        if not was_loaded:
+            service._models_loaded.clear()
+
+    assert excinfo.value.code == 422
+    assert payload["failure_category"] == "output_preflight"
+    assert payload["retryable"] is False
+    assert "reason=permission_denied" in payload["error"]
+    assert inference_calls["count"] == 0
 
 
 @pytest.mark.integration
