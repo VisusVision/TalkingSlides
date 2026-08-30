@@ -2330,6 +2330,10 @@ def test_preview_pipeline_recovers_transient_musetalk_without_rerunning_liveport
         ("preview_musetalk_timeout", {"route": "service", "stderr": "timeout"}),
         ("CUDA out of memory", {"route": "service"}),
         ("late_musetalk_output_detected:run_id_mismatch", {"route": "service"}),
+        (
+            "musetalk_output_preflight_failed reason=permission_denied output_parent=/blocked",
+            {"route": "service", "failure_category": "output_preflight", "retryable": False},
+        ),
         ("[Errno 32] Broken pipe", {"route": "standalone"}),
     ],
 )

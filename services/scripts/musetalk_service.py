@@ -5,7 +5,8 @@ Subsequent inference requests skip the entire cold-start cost.
 
 Protocol:
   GET  /health  → 200 {"status":"ready"} or 503 {"status":"loading"}
-  POST /infer   → 200 {"success":true,"elapsed_seconds":N} or 500 {"success":false,"error":"..."}
+  POST /infer   → 200 {"success":true,"elapsed_seconds":N}, 422 for an invalid
+                  output target, or 500 for an inference failure
 
 Environment variables:
   MUSETALK_HOME          — path to MuseTalk checkout (default /opt/musetalk)
@@ -794,6 +795,89 @@ def _load_models(*, musetalk_home: Path, model_root: Path, gpu_id: int = 0) -> N
 # Per-request inference  (extracted from inference.py:main, using cached models)
 # ---------------------------------------------------------------------------
 
+class MuseTalkOutputPreflightError(RuntimeError):
+    """A non-retryable output target failure detected before GPU inference."""
+
+    def __init__(self, *, reason: str, output_path: Path, cause: BaseException | None = None) -> None:
+        self.reason = str(reason)
+        self.output_path = output_path
+        self.output_parent = output_path.parent
+        self.cause = cause
+        super().__init__(
+            "musetalk_output_preflight_failed "
+            f"reason={self.reason} output_parent={self.output_parent}"
+        )
+
+
+def _preflight_output_path(output_path: str) -> Path:
+    """Prove the service process can create and replace the requested output.
+
+    The API/worker process may run as root while this persistent service runs as
+    an unprivileged user, so checking from the caller is insufficient.  A real
+    sibling file is created and removed here in the service user's context.
+    """
+    raw_output_path = str(output_path or "").strip()
+    if not raw_output_path:
+        raise MuseTalkOutputPreflightError(
+            reason="invalid_output_path",
+            output_path=Path("."),
+        )
+
+    target = Path(raw_output_path)
+    parent = target.parent
+    probe_path: Path | None = None
+    try:
+        parent.mkdir(parents=True, exist_ok=True)
+        if not parent.is_dir():
+            raise NotADirectoryError(str(parent))
+        if target.exists():
+            if target.is_dir():
+                raise IsADirectoryError(str(target))
+            # Opening the existing target exercises the permission required by
+            # shutil.copy2's final overwrite without changing its contents.
+            with target.open("ab"):
+                pass
+
+        probe_fd, probe_name = tempfile.mkstemp(
+            prefix=f".{target.name}.musetalk-write-probe-",
+            dir=str(parent),
+        )
+        probe_path = Path(probe_name)
+        with os.fdopen(probe_fd, "wb") as probe:
+            probe.write(b"musetalk-output-preflight\n")
+            probe.flush()
+    except MuseTalkOutputPreflightError:
+        raise
+    except PermissionError as exc:
+        raise MuseTalkOutputPreflightError(
+            reason="permission_denied",
+            output_path=target,
+            cause=exc,
+        ) from exc
+    except (NotADirectoryError, IsADirectoryError) as exc:
+        raise MuseTalkOutputPreflightError(
+            reason="invalid_output_parent",
+            output_path=target,
+            cause=exc,
+        ) from exc
+    except OSError as exc:
+        raise MuseTalkOutputPreflightError(
+            reason="output_io_error",
+            output_path=target,
+            cause=exc,
+        ) from exc
+    finally:
+        if probe_path is not None:
+            try:
+                probe_path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "MuseTalk service: output preflight probe cleanup failed path=%s",
+                    probe_path,
+                    exc_info=True,
+                )
+    return target
+
 def _infer(
     *,
     source_image: str,
@@ -1355,6 +1439,22 @@ class _Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(length))
         except Exception as exc:
             self._json(400, {"success": False, "error": f"invalid_json:{exc}"})
+            return
+
+        try:
+            _preflight_output_path(str(req.get("output_path") or ""))
+        except MuseTalkOutputPreflightError as exc:
+            logger.warning(
+                "MuseTalk service: output preflight rejected reason=%s output_parent=%s",
+                exc.reason,
+                exc.output_parent,
+            )
+            self._json(422, {
+                "success": False,
+                "error": str(exc),
+                "failure_category": "output_preflight",
+                "retryable": False,
+            })
             return
 
         with _infer_lock:   # GPU inference must be serialized

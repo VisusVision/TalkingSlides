@@ -1023,9 +1023,15 @@ def _run_via_musetalk_service(
         raise
     except urllib.error.HTTPError as exc:
         elapsed = time.monotonic() - started_at
+        error_details: dict[str, Any] = {}
         try:
             err_body = json.loads(exc.read())
             error_msg = str(err_body.get("error") or "service_http_error")
+            failure_category = str(err_body.get("failure_category") or "")
+            if failure_category:
+                error_details["failure_category"] = failure_category
+            if isinstance(err_body.get("retryable"), bool):
+                error_details["retryable"] = err_body["retryable"]
         except Exception:
             error_msg = f"service_http_{exc.code}"
         logger.error(
@@ -1052,6 +1058,7 @@ def _run_via_musetalk_service(
             "service_health": service_health,
             "svc_timeout_seconds": float(timeout_seconds),
             "stage_budget_timeout_seconds": round(float(stage_budget_timeout_seconds), 3),
+            **error_details,
         })
     except TimeoutError:
         elapsed = time.monotonic() - started_at
