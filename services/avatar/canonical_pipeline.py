@@ -2121,6 +2121,14 @@ def _run_musetalk_with_transient_recovery(**run_kwargs: Any) -> EngineResult:
     """
     retry_limit = _musetalk_transient_retry_limit()
     retry_delay = _musetalk_transient_retry_delay_seconds()
+    run_kwargs = dict(run_kwargs)
+    recovery_env = dict(run_kwargs.get("env_overrides") or {})
+    recovery_env.setdefault(
+        "AVATAR_MUSETALK_RUN_ID",
+        f"{str(run_kwargs.get('stage_name') or 'musetalk')}-{int(time.time() * 1000)}-{os.getpid()}",
+    )
+    run_kwargs["env_overrides"] = recovery_env
+    idempotency_run_id = str(recovery_env["AVATAR_MUSETALK_RUN_ID"])
     attempts: list[dict[str, Any]] = []
     result: EngineResult | None = None
     initial_classification = ""
@@ -2139,6 +2147,8 @@ def _run_musetalk_with_transient_recovery(**run_kwargs: Any) -> EngineResult:
                 "route": str(details.get("route") or ""),
                 "route_reason": str(details.get("route_reason") or ""),
                 "run_id": str(details.get("run_id") or ""),
+                "idempotency_status": str(details.get("idempotency_status") or ""),
+                "idempotency_replayed": bool(details.get("idempotency_replayed")),
                 "elapsed_seconds": round(float(details.get("elapsed_seconds") or 0.0), 4),
             }
         )
@@ -2181,6 +2191,7 @@ def _run_musetalk_with_transient_recovery(**run_kwargs: Any) -> EngineResult:
                 and retry_count >= retry_limit
                 and bool(_musetalk_transient_failure_classification(result))
             ),
+            "idempotency_run_id": idempotency_run_id,
         }
     )
     return EngineResult(
@@ -5195,6 +5206,9 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         stage_paths["musetalk_svc_timeout_used_seconds"] = float(musetalk_details.get("svc_timeout_seconds") or 0.0)
         stage_paths["musetalk_route"] = str(musetalk_details.get("route") or "")
         stage_paths["musetalk_route_reason"] = str(musetalk_details.get("route_reason") or "")
+        stage_paths["musetalk_idempotency_run_id"] = str(musetalk_details.get("idempotency_run_id") or "")
+        stage_paths["musetalk_idempotency_status"] = str(musetalk_details.get("idempotency_status") or "")
+        stage_paths["musetalk_idempotency_replayed"] = bool(musetalk_details.get("idempotency_replayed"))
         stage_paths["musetalk_transient_retry_count"] = int(musetalk_details.get("transient_retry_count") or 0)
         stage_paths["musetalk_transient_retry_attempts"] = list(musetalk_details.get("transient_retry_attempts") or [])
         stage_paths["musetalk_transient_failure_classification"] = str(

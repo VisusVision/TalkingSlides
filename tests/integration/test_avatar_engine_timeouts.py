@@ -342,21 +342,24 @@ def test_musetalk_service_route_preserves_run_hashes_and_validation(monkeypatch,
 
     def fake_urlopen(req, timeout=None):
         payload = json.loads(req.data.decode("utf-8"))
-        captured["payload"] = payload
+        captured.setdefault("payloads", []).append(payload)
+        captured.setdefault("payload", payload)
         captured["timeout"] = timeout
-        output.write_bytes(b"video-bytes")
-        sidecar = adapters._musetalk_debug_sidecar_path(output)
-        sidecar.write_text(
-            json.dumps(
-                {
-                    "musetalk_run_id": payload["run"]["run_id"],
-                    "input_reference_image_sha256": payload["run"]["source_image_sha256"],
-                    "input_reference_video_sha256": "",
-                    "input_audio_sha256": payload["run"]["audio_sha256"],
-                }
-            ),
-            encoding="utf-8",
-        )
+        if len(captured["payloads"]) == 1:
+            output.write_bytes(b"video-bytes")
+            sidecar = adapters._musetalk_debug_sidecar_path(output)
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "musetalk_run_id": payload["run"]["run_id"],
+                        "input_reference_image_sha256": payload["run"]["source_image_sha256"],
+                        "input_reference_video_sha256": "",
+                        "input_audio_sha256": payload["run"]["audio_sha256"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+        replayed = len(captured["payloads"]) > 1
         return FakeResponse(
             {
                 "success": True,
@@ -365,6 +368,9 @@ def test_musetalk_service_route_preserves_run_hashes_and_validation(monkeypatch,
                 "cold_start_seconds": 0.0,
                 "model_load_seconds": 0.0,
                 "inference_seconds": 1.25,
+                "idempotency_replayed": replayed,
+                "idempotency_status": "completed_replay" if replayed else "owner",
+                "idempotency_run_id": "run-123",
                 "stage_timings": {
                     "model_load_seconds": 0.0,
                     "face_landmark_extraction_seconds": 0.4,
@@ -399,6 +405,81 @@ def test_musetalk_service_route_preserves_run_hashes_and_validation(monkeypatch,
     assert result.details["face_landmark_seconds"] == 0.4
     assert result.details["inference_loop_seconds"] == 0.2
     assert result.details["svc_timeout_seconds"] == 500.0
+    assert result.details["idempotency_replayed"] is False
+    assert result.details["idempotency_status"] == "owner"
+    assert result.details["idempotency_run_id"] == "run-123"
+
+    replay_result = adapters._run_via_musetalk_service(
+        "http://127.0.0.1:17860",
+        source_image=str(source),
+        source_video="",
+        audio_path=str(audio),
+        output_path=str(output),
+        params={"batch_size": 8},
+        timeout_seconds=500.0,
+        stage_budget_timeout_seconds=440.0,
+        stage_name="preview_musetalk",
+        run_id="run-123",
+        route_reason="service_enabled_health_ready",
+        service_health={"status": "ready", "ready_for_inference": True},
+    )
+
+    assert replay_result.success is True
+    assert replay_result.details["idempotency_replayed"] is True
+    assert replay_result.details["idempotency_status"] == "completed_replay"
+    assert len(captured["payloads"]) == 2
+    assert captured["payloads"][0]["run"]["started_epoch"] == captured["payloads"][1]["run"]["started_epoch"]
+    assert output.read_bytes() == b"video-bytes"
+
+
+def test_musetalk_current_run_marker_preserves_same_attempt_and_rejects_identity_change(tmp_path):
+    source = tmp_path / "source.png"
+    audio = tmp_path / "audio.wav"
+    output = tmp_path / "out.mp4"
+    source.write_bytes(b"source-bytes")
+    audio.write_bytes(b"audio-bytes")
+
+    first = adapters._prepare_musetalk_service_current_run(
+        source_image=str(source),
+        source_video="",
+        audio_path=str(audio),
+        output_path=str(output),
+        run_id="stable-run",
+        started_epoch=100.0,
+    )
+    output.write_bytes(b"completed-video")
+    adapters._musetalk_debug_sidecar_path(output).write_text("{}", encoding="utf-8")
+
+    replay = adapters._prepare_musetalk_service_current_run(
+        source_image=str(source),
+        source_video="",
+        audio_path=str(audio),
+        output_path=str(output),
+        run_id="stable-run",
+        started_epoch=200.0,
+    )
+
+    assert replay == first
+    assert replay["started_epoch"] == "100.000000"
+    assert output.read_bytes() == b"completed-video"
+    assert adapters._musetalk_debug_sidecar_path(output).is_file()
+
+    audio.write_bytes(b"changed-audio")
+    try:
+        adapters._prepare_musetalk_service_current_run(
+            source_image=str(source),
+            source_video="",
+            audio_path=str(audio),
+            output_path=str(output),
+            run_id="stable-run",
+            started_epoch=300.0,
+        )
+        raise AssertionError("expected idempotency conflict")
+    except RuntimeError as exc:
+        assert "musetalk_idempotency_conflict" in str(exc)
+        assert "audio_sha256" in str(exc)
+
+    assert output.read_bytes() == b"completed-video"
 
 
 def test_musetalk_service_route_preserves_non_retryable_output_preflight_details(monkeypatch, tmp_path):
