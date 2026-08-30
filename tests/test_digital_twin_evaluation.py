@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -91,7 +92,7 @@ def _manifest() -> dict:
 def test_evaluation_recommends_prosody_only_without_quality_regression():
     report = evaluate_avatar_variants(_manifest())
 
-    assert report["version"] == "avatar-evaluation-v1"
+    assert report["version"] == "avatar-evaluation-v2"
     assert report["fair_comparison"] is True
     assert report["recommendation"] == "prosody"
     assert report["comparisons"]["personal_vs_generic"]["regressions"] == []
@@ -333,6 +334,32 @@ def test_cli_reports_missing_evidence_as_contract_error(tmp_path):
 
     assert process.returncode == 2
     assert json.loads(process.stderr)["error"].startswith("evaluation_file_missing:")
+
+
+def test_cli_strong_mode_fails_before_evaluation_when_models_are_not_configured(tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(_manifest()), encoding="utf-8")
+    script = Path(__file__).resolve().parents[1] / "services" / "scripts" / "evaluate_avatar_variants.py"
+    environment = dict(os.environ)
+    for key in list(environment):
+        if key.startswith("DIGITAL_TWIN_"):
+            environment.pop(key)
+
+    process = subprocess.run(
+        [sys.executable, str(script), str(manifest_path), "--require-strong-quality"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+        env=environment,
+    )
+
+    assert process.returncode == 2
+    error = json.loads(process.stderr)["error"]
+    assert error.startswith("demo_strong_quality_configuration_missing:")
+    assert "strict_quality_gate" in error
+    assert "strong_identity_provider" in error
+    assert "strong_lipsync_provider" in error
 
 
 def test_cli_can_fail_ci_on_a_detected_regression(tmp_path):

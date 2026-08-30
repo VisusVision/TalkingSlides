@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -51,7 +52,13 @@ def _sha256(path: Path | None) -> str:
     return digest.hexdigest()
 
 
-def _merge_evidence(variant: dict[str, Any], *, base_dir: Path, context: dict[str, Any]) -> dict[str, Any]:
+def _merge_evidence(
+    variant: dict[str, Any],
+    *,
+    base_dir: Path,
+    context: dict[str, Any],
+    require_strong_quality: bool = False,
+) -> dict[str, Any]:
     resolved = dict(variant)
     evidence_path = _resolve_path(base_dir, variant.get("evidence_path"))
     if evidence_path is not None:
@@ -74,11 +81,18 @@ def _merge_evidence(variant: dict[str, Any], *, base_dir: Path, context: dict[st
         from avatar.digital_twin.render_quality import evaluate_render_quality
         from avatar.pipeline import accept_avatar_render, validate_avatar_render_with_audio
 
-        validation = validate_avatar_render_with_audio(
-            str(video_path),
-            str(audio_path),
-            validation_context=dict(variant.get("validation_context") or {}),
-        )
+        try:
+            validation = validate_avatar_render_with_audio(
+                str(video_path),
+                str(audio_path),
+                validation_context=dict(variant.get("validation_context") or {}),
+            )
+        except Exception as exc:
+            kind = str(variant.get("kind") or "variant").strip().lower()
+            reason = str(exc).replace("\r", " ").replace("\n", " ")[:300]
+            raise EvaluationContractError(
+                f"evaluation_media_validation_failed:{kind}:{type(exc).__name__}:{reason}"
+            ) from exc
         render_info = {
             "motion_validation": validation,
             "strict_validation_passed": bool(accept_avatar_render(validation)),
@@ -88,8 +102,11 @@ def _merge_evidence(variant: dict[str, Any], *, base_dir: Path, context: dict[st
             output_video=str(video_path),
             audio_path=str(audio_path),
             render_info=render_info,
-            environ={},
         ).as_dict()
+        if require_strong_quality:
+            from avatar.digital_twin.demo_pack import validate_strong_quality_report
+
+            validate_strong_quality_report(str(variant.get("kind") or "variant"), quality_report)
         resolved["motion_validation"] = validation
         resolved["quality_report"] = quality_report
         resolved["artifacts"] = {
@@ -121,6 +138,11 @@ def main() -> int:
         "--require-recommendation",
         choices=["generic", "personal", "prosody"],
     )
+    parser.add_argument(
+        "--require-strong-quality",
+        action="store_true",
+        help="Require strict model-backed identity and lip-sync verification for every media variant.",
+    )
     args = parser.parse_args()
 
     manifest_path = args.manifest.resolve()
@@ -129,8 +151,23 @@ def main() -> int:
     raw_variants = manifest.get("variants")
     if not isinstance(raw_variants, list):
         raise EvaluationContractError("evaluation_variants_missing")
+    if args.require_strong_quality:
+        from avatar.digital_twin.demo_pack import (
+            DemoPackContractError,
+            validate_strong_quality_configuration,
+        )
+
+        try:
+            validate_strong_quality_configuration(os.environ)
+        except DemoPackContractError as exc:
+            raise EvaluationContractError(str(exc)) from exc
     manifest["variants"] = [
-        _merge_evidence(dict(variant), base_dir=manifest_path.parent, context=context)
+        _merge_evidence(
+            dict(variant),
+            base_dir=manifest_path.parent,
+            context=context,
+            require_strong_quality=args.require_strong_quality,
+        )
         for variant in raw_variants
         if isinstance(variant, dict)
     ]
