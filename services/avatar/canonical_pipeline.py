@@ -2040,6 +2040,159 @@ def _stage_record(stage: str, result: EngineResult, *, input_path: str) -> dict[
     }
 
 
+_MUSETALK_TRANSIENT_SERVICE_ERRORS = (
+    "broken pipe",
+    "connection aborted",
+    "connection refused",
+    "connection reset",
+    "connection closed",
+    "remote end closed connection",
+    "temporarily unavailable",
+    "temporary failure",
+    "incomplete read",
+    "service_http_502",
+    "service_http_503",
+    "service_http_504",
+    "musetalk_service_unavailable",
+)
+
+_MUSETALK_NON_RETRYABLE_ERRORS = (
+    "timeout",
+    "cuda out of memory",
+    "out of memory",
+    "model_load",
+    "missing_output",
+    "output_path_mismatch",
+    "late_musetalk_output_detected",
+    "source_hash_mismatch",
+    "audio_hash_mismatch",
+    "run_id_mismatch",
+)
+
+
+def _musetalk_transient_failure_classification(result: EngineResult) -> str:
+    """Return a bounded retry classification for service transport failures only."""
+    if result.success:
+        return ""
+    details = dict(result.details or {})
+    route = str(details.get("route") or "").strip().lower()
+    if not route.startswith("service"):
+        return ""
+    error_text = " ".join(
+        str(value or "")
+        for value in (
+            result.error,
+            details.get("stderr"),
+            details.get("route_reason"),
+            f"service_http_{details.get('http_status')}" if details.get("http_status") else "",
+        )
+    ).lower()
+    if any(marker in error_text for marker in _MUSETALK_NON_RETRYABLE_ERRORS):
+        return ""
+    matched = next(
+        (marker for marker in _MUSETALK_TRANSIENT_SERVICE_ERRORS if marker in error_text),
+        "",
+    )
+    return f"transient_service_transport:{matched.replace(' ', '_')}" if matched else ""
+
+
+def _musetalk_transient_retry_limit() -> int:
+    raw = str(os.environ.get("AVATAR_MUSETALK_TRANSIENT_RETRY_COUNT", "1")).strip()
+    try:
+        return min(max(int(raw or "1"), 0), 2)
+    except (TypeError, ValueError):
+        return 1
+
+
+def _musetalk_transient_retry_delay_seconds() -> float:
+    raw = str(os.environ.get("AVATAR_MUSETALK_TRANSIENT_RETRY_DELAY_SECONDS", "1")).strip()
+    try:
+        return min(max(float(raw or "1"), 0.0), 10.0)
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _run_musetalk_with_transient_recovery(**run_kwargs: Any) -> EngineResult:
+    """Retry only a transient MuseTalk service transport failure.
+
+    This wrapper is intentionally placed at the MuseTalk stage boundary. The
+    already-materialized LivePortrait handoff is reused verbatim and is never
+    recomputed by a transport retry.
+    """
+    retry_limit = _musetalk_transient_retry_limit()
+    retry_delay = _musetalk_transient_retry_delay_seconds()
+    attempts: list[dict[str, Any]] = []
+    result: EngineResult | None = None
+    initial_classification = ""
+    recovery_started_at = time.monotonic()
+
+    for attempt_index in range(retry_limit + 1):
+        result = run_musetalk(**run_kwargs)
+        classification = _musetalk_transient_failure_classification(result)
+        details = dict(result.details or {})
+        attempts.append(
+            {
+                "attempt": attempt_index + 1,
+                "success": bool(result.success),
+                "error": str(result.error or ""),
+                "classification": classification,
+                "route": str(details.get("route") or ""),
+                "route_reason": str(details.get("route_reason") or ""),
+                "run_id": str(details.get("run_id") or ""),
+                "elapsed_seconds": round(float(details.get("elapsed_seconds") or 0.0), 4),
+            }
+        )
+        if attempt_index == 0:
+            initial_classification = classification
+        if result.success or not classification or attempt_index >= retry_limit:
+            break
+
+        delay_seconds = min(retry_delay * (2 ** attempt_index), 10.0)
+        logger.warning(
+            "Avatar MuseTalk transient recovery stage=%s attempt=%s next_attempt=%s "
+            "classification=%s delay_seconds=%s handoff_path=%s",
+            str(run_kwargs.get("stage_name") or "musetalk"),
+            attempt_index + 1,
+            attempt_index + 2,
+            classification,
+            round(delay_seconds, 3),
+            str(run_kwargs.get("source_video") or ""),
+        )
+        if delay_seconds > 0:
+            time.sleep(delay_seconds)
+
+    assert result is not None
+    retry_count = max(len(attempts) - 1, 0)
+    attempt_elapsed_seconds = sum(float(attempt.get("elapsed_seconds") or 0.0) for attempt in attempts)
+    recovery_elapsed_seconds = time.monotonic() - recovery_started_at
+    final_details = dict(result.details or {})
+    final_details.update(
+        {
+            "transient_retry_limit": retry_limit,
+            "transient_retry_count": retry_count,
+            "transient_retry_attempts": attempts,
+            "transient_failure_classification": initial_classification,
+            "transient_recovery_succeeded": bool(result.success and retry_count > 0),
+            "transient_attempt_elapsed_seconds": round(attempt_elapsed_seconds, 4),
+            "transient_recovery_elapsed_seconds": round(recovery_elapsed_seconds, 4),
+            "transient_retry_exhausted": bool(
+                not result.success
+                and retry_limit > 0
+                and retry_count >= retry_limit
+                and bool(_musetalk_transient_failure_classification(result))
+            ),
+        }
+    )
+    return EngineResult(
+        result.success,
+        result.engine,
+        result.output_path,
+        result.error,
+        result.command,
+        final_details,
+    )
+
+
 def _cache_payload_matches(meta_payload: dict[str, Any], expected: dict[str, str]) -> bool:
     for key, value in expected.items():
         if str(meta_payload.get(key) or "") != str(value or ""):
@@ -3743,6 +3896,11 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         "musetalk_output_path": str(musetalk_output),
         "musetalk_started": False,
         "musetalk_succeeded": False,
+        "musetalk_transient_retry_count": 0,
+        "musetalk_transient_retry_attempts": [],
+        "musetalk_transient_failure_classification": "",
+        "musetalk_transient_recovery_succeeded": False,
+        "musetalk_transient_retry_exhausted": False,
         "musetalk_timeout_budget_seconds": 0.0,
         "musetalk_chunk_timing_metrics": [],
         "restoration_output_path": str(restoration_output),
@@ -5012,7 +5170,7 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
                 },
             )
         else:
-            musetalk_result = run_musetalk(
+            musetalk_result = _run_musetalk_with_transient_recovery(
                 source_image=str(canonical_input.normalized_input_path),
                 source_video=str(musetalk_handoff_video),
                 audio_path=str(getattr(request, "audio_path", "") or ""),
@@ -5027,7 +5185,8 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         musetalk_details = dict(musetalk_result.details or {})
         stage_paths["musetalk_command"] = str(musetalk_result.command or musetalk_details.get("command") or "")
         stage_paths["musetalk_elapsed_seconds"] = float(
-            musetalk_details.get("elapsed_seconds")
+            musetalk_details.get("transient_recovery_elapsed_seconds")
+            or musetalk_details.get("elapsed_seconds")
             or musetalk_elapsed_seconds_total
             or 0.0
         )
@@ -5036,6 +5195,17 @@ def render_avatar_segment_local_canonical(request: Any) -> dict[str, Any]:
         stage_paths["musetalk_svc_timeout_used_seconds"] = float(musetalk_details.get("svc_timeout_seconds") or 0.0)
         stage_paths["musetalk_route"] = str(musetalk_details.get("route") or "")
         stage_paths["musetalk_route_reason"] = str(musetalk_details.get("route_reason") or "")
+        stage_paths["musetalk_transient_retry_count"] = int(musetalk_details.get("transient_retry_count") or 0)
+        stage_paths["musetalk_transient_retry_attempts"] = list(musetalk_details.get("transient_retry_attempts") or [])
+        stage_paths["musetalk_transient_failure_classification"] = str(
+            musetalk_details.get("transient_failure_classification") or ""
+        )
+        stage_paths["musetalk_transient_recovery_succeeded"] = bool(
+            musetalk_details.get("transient_recovery_succeeded")
+        )
+        stage_paths["musetalk_transient_retry_exhausted"] = bool(
+            musetalk_details.get("transient_retry_exhausted")
+        )
         stage_paths["musetalk_chunk_count"] = int(musetalk_details.get("chunk_count") or musetalk_timeout_reason.get("chunk_count") or 1)
         stage_paths["musetalk_chunk_metadata"] = list(musetalk_details.get("chunk_metadata") or [])
         stage_paths["musetalk_final_stitched_output_path"] = str(musetalk_details.get("final_stitched_output_path") or "")
