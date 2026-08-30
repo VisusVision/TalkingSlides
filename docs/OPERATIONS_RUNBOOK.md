@@ -90,6 +90,24 @@ work, and 4 MiB per estimated frame. Tune `MUSETALK_PREFLIGHT_MIN_OUTPUT_FREE_MI
 space or repair the mount, then submit a new render; automatic retries are not
 useful while the same capacity fault remains.
 
+MuseTalk requests are idempotent when `run.run_id` is present. The identity
+fingerprint binds that ID to the source/audio hashes, paths, output target, and
+runtime parameters. A matching duplicate joins the in-flight owner instead of
+entering the GPU queue; a completed result is replayed while its output remains
+valid. The output debug sidecar also permits replay after a service restart.
+Transient recovery preserves one run ID and the client preserves the original
+run marker, output, sidecar, and start timestamp across the retry.
+
+`GET /health` reports idempotency entry, in-progress, completed, TTL, and limit
+counts. A non-retryable HTTP `409` with
+`failure_category=idempotency_conflict` means a caller reused one run ID with
+different inputs, output, or parameters; generate a new run ID after correcting
+the caller. `idempotency_in_progress` means a duplicate could not finish joining
+within its request-derived wait budget while the original owner continued.
+Defaults retain 128 completed entries for 3600 seconds. Tune
+`MUSETALK_IDEMPOTENCY_TTL_SECONDS`, `MUSETALK_IDEMPOTENCY_MAX_ENTRIES`, and
+`MUSETALK_IDEMPOTENCY_WAIT_TIMEOUT_SECONDS` only from observed staging traffic.
+
 ## Observability Report
 
 Use the read-only observability report for a single operator snapshot of render, follow-up intent, storage, and recovery health:

@@ -2231,9 +2231,13 @@ def test_preview_pipeline_recovers_transient_musetalk_without_rerunning_liveport
         )
 
     musetalk_calls = []
+    musetalk_run_ids = []
 
     def fake_musetalk(*, output_path, source_video="", **_kwargs):
         musetalk_calls.append(str(source_video))
+        musetalk_run_ids.append(
+            str((_kwargs.get("env_overrides") or {}).get("AVATAR_MUSETALK_RUN_ID") or "")
+        )
         if len(musetalk_calls) == 1:
             return EngineResult(
                 False,
@@ -2317,6 +2321,10 @@ def test_preview_pipeline_recovers_transient_musetalk_without_rerunning_liveport
     assert result["stage_paths"]["musetalk_source_video"] == str(output.with_suffix(output.suffix + ".liveportrait.mp4"))
     assert liveportrait_calls == [str(output.with_suffix(output.suffix + ".liveportrait.mp4"))]
     assert musetalk_calls == [result["stage_paths"]["musetalk_source_video"]] * 2
+    assert len(set(musetalk_run_ids)) == 1
+    assert musetalk_run_ids[0]
+    assert result["stage_paths"]["musetalk_idempotency_run_id"] == musetalk_run_ids[0]
+    assert result["stage_paths"]["musetalk_idempotency_replayed"] is False
     assert result["final_avatar_engine_chain"] == ["liveportrait", "musetalk"]
     assert result["stage_paths"]["musetalk_handoff_frame_normalization_strategy"] == "normalize_contract_fps"
     assert result["stage_paths"]["final_playable_path"] == str(output)

@@ -16,6 +16,9 @@ Environment variables:
   MUSETALK_PREFLIGHT_MIN_OUTPUT_FREE_MIB — final-output free-space floor (default 256)
   MUSETALK_PREFLIGHT_MIN_TEMP_FREE_MIB — temporary free-space floor (default 1024)
   MUSETALK_PREFLIGHT_TEMP_MIB_PER_FRAME — estimated temporary MiB per frame (default 4)
+  MUSETALK_IDEMPOTENCY_TTL_SECONDS — completed replay retention (default 3600)
+  MUSETALK_IDEMPOTENCY_MAX_ENTRIES — retained replay entries (default 128)
+  MUSETALK_IDEMPOTENCY_WAIT_TIMEOUT_SECONDS — duplicate join cap; 0 derives from request
 """
 from __future__ import annotations
 
@@ -39,6 +42,11 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
+
+try:
+    from services.scripts.musetalk_idempotency import IdempotencyCoordinator, IdempotencyEntry
+except ImportError:  # Direct script execution inside the worker image.
+    from musetalk_idempotency import IdempotencyCoordinator, IdempotencyEntry  # type: ignore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,6 +80,7 @@ _cuda_available: bool = False
 _cuda_device: str = ""
 _provider_diagnostics: dict[str, object] = {}
 _service_use_float16: bool = True
+_idempotency = IdempotencyCoordinator()
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +418,10 @@ def _health_payload() -> dict[str, object]:
         "use_float16": bool(_service_use_float16),
         "face_parser_cheek_widths": list(_fp_cheek_widths or ()),
         "memory_snapshot": _cuda_memory_snapshot(),
+        "idempotency": _idempotency.stats(
+            ttl_seconds=_idempotency_ttl_seconds(),
+            max_entries=_idempotency_max_entries(),
+        ),
     }
 
 
@@ -995,6 +1008,154 @@ def _nonnegative_env_float(name: str, default: float) -> float:
         return max(float(str(os.environ.get(name, default)).strip() or default), 0.0)
     except (TypeError, ValueError):
         return float(default)
+
+
+def _idempotency_ttl_seconds() -> float:
+    return _nonnegative_env_float("MUSETALK_IDEMPOTENCY_TTL_SECONDS", 3600.0)
+
+
+def _idempotency_max_entries() -> int:
+    try:
+        return min(max(int(os.environ.get("MUSETALK_IDEMPOTENCY_MAX_ENTRIES", "128")), 1), 4096)
+    except (TypeError, ValueError):
+        return 128
+
+
+def _idempotency_wait_timeout_seconds(params: dict) -> float:
+    http_timeout = max(_float_param(params, "http_timeout_seconds", 0.0), 0.0)
+    request_timeout = max(http_timeout - 5.0, 1.0) if http_timeout > 0.0 else 7200.0
+    configured = _nonnegative_env_float("MUSETALK_IDEMPOTENCY_WAIT_TIMEOUT_SECONDS", 0.0)
+    if configured > 0.0:
+        return min(configured, request_timeout)
+    return request_timeout
+
+
+def _idempotency_fingerprint(
+    *,
+    source_image: str,
+    source_video: str,
+    audio_path: str,
+    output_path: str,
+    params: dict,
+    run: dict,
+) -> str:
+    identity = {
+        "source_image": str(source_image or ""),
+        "source_video": str(source_video or ""),
+        "audio_path": str(audio_path or ""),
+        "output_path": str(Path(output_path).resolve(strict=False)),
+        "source_image_sha256": str(run.get("source_image_sha256") or ""),
+        "source_video_sha256": str(run.get("source_video_sha256") or ""),
+        "source_sha256": str(run.get("source_sha256") or ""),
+        "audio_sha256": str(run.get("audio_sha256") or ""),
+        "params": dict(params),
+    }
+    encoded = json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class MuseTalkIdempotencyConflict(RuntimeError):
+    pass
+
+
+def _persisted_idempotent_result(
+    *,
+    run_id: str,
+    source_image: str,
+    source_video: str,
+    audio_path: str,
+    output_path: str,
+    params: dict,
+    run: dict,
+) -> dict[str, Any] | None:
+    output = Path(output_path)
+    sidecar = _debug_sidecar_path(output)
+    try:
+        output_ready = output.is_file() and output.stat().st_size > 0 and sidecar.is_file()
+    except OSError:
+        return None
+    if not output_ready:
+        return None
+    try:
+        debug_payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    sidecar_run_id = str(debug_payload.get("musetalk_run_id") or "")
+    if sidecar_run_id != run_id:
+        return None
+
+    path_comparisons = {
+        "input_reference_image_path": str(source_image or ""),
+        "input_reference_video_path": str(source_video or ""),
+        "input_audio_path": str(audio_path or ""),
+    }
+    for field, expected in path_comparisons.items():
+        if str(debug_payload.get(field) or "") != expected:
+            raise MuseTalkIdempotencyConflict(
+                f"musetalk_idempotency_conflict run_id={run_id} field={field}"
+            )
+
+    hash_comparisons = {
+        "input_reference_image_sha256": str(run.get("source_image_sha256") or ""),
+        "input_reference_video_sha256": str(run.get("source_video_sha256") or ""),
+        "input_source_sha256": str(run.get("source_sha256") or ""),
+        "input_audio_sha256": str(run.get("audio_sha256") or ""),
+    }
+    for field, expected in hash_comparisons.items():
+        if expected and str(debug_payload.get(field) or "") != expected:
+            raise MuseTalkIdempotencyConflict(
+                f"musetalk_idempotency_conflict run_id={run_id} field={field}"
+            )
+    persisted_params = dict(debug_payload.get("selected_musetalk_params") or {})
+    if persisted_params != dict(params):
+        raise MuseTalkIdempotencyConflict(
+            f"musetalk_idempotency_conflict run_id={run_id} field=params"
+        )
+    persisted_output = Path(str(debug_payload.get("output_path") or output_path)).resolve(strict=False)
+    if persisted_output != output.resolve(strict=False):
+        raise MuseTalkIdempotencyConflict(
+            f"musetalk_idempotency_conflict run_id={run_id} field=output_path"
+        )
+
+    stage_timings = dict(debug_payload.get("stage_timings") or {})
+    elapsed_seconds = float(debug_payload.get("elapsed_seconds") or 0.0)
+    return {
+        "success": True,
+        "output_path": str(output),
+        "elapsed_seconds": elapsed_seconds,
+        "cold_start_seconds": 0.0,
+        "model_load_seconds": 0.0,
+        "service_model_load_seconds": round(float(_model_load_seconds), 3) if _model_load_seconds else 0.0,
+        "inference_seconds": elapsed_seconds,
+        "stage_timings": stage_timings,
+        "runtime_settings": persisted_params,
+        "runtime_info": {
+            "device": debug_payload.get("device"),
+            "use_float16": debug_payload.get("use_float16"),
+            "batch_size": debug_payload.get("batch_size"),
+            "requested_batch_size": debug_payload.get("requested_batch_size"),
+            "chunk_count": debug_payload.get("chunk_count"),
+            "source_preprocessing": debug_payload.get("source_preprocessing") or {},
+        },
+        "per_frame_timings": dict(debug_payload.get("per_frame_timings") or {}),
+        "run_id": run_id,
+    }
+
+
+def _idempotency_replay_payload(
+    payload: dict[str, Any],
+    *,
+    run_id: str,
+    status: str,
+) -> dict[str, Any]:
+    replay = dict(payload)
+    replay.update({
+        "idempotency_replayed": True,
+        "idempotency_status": status,
+        "idempotency_run_id": run_id,
+    })
+    return replay
 
 
 def _preflight_disk_capacity(
@@ -1675,6 +1836,139 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"success": False, "error": f"invalid_request:{exc}"})
             return
 
+        run_id = str(run.get("run_id") or "").strip()
+        fingerprint = _idempotency_fingerprint(
+            source_image=source_image,
+            source_video=source_video,
+            audio_path=audio_path,
+            output_path=output_path,
+            params=params,
+            run=run,
+        )
+        owner_entry: IdempotencyEntry | None = None
+        while True:
+            reservation = _idempotency.reserve(
+                run_id=run_id,
+                fingerprint=fingerprint,
+                output_path=output_path,
+                ttl_seconds=_idempotency_ttl_seconds(),
+                max_entries=_idempotency_max_entries(),
+            )
+            if reservation.action == "conflict":
+                logger.warning(
+                    "MuseTalk service: idempotency conflict run_id=%s fingerprint=%s",
+                    run_id,
+                    fingerprint,
+                )
+                self._json(409, {
+                    "success": False,
+                    "error": f"musetalk_idempotency_conflict run_id={run_id}",
+                    "failure_category": "idempotency_conflict",
+                    "retryable": False,
+                    "idempotency_status": "conflict",
+                    "idempotency_run_id": run_id,
+                })
+                return
+            if reservation.action == "follower" and reservation.entry is not None:
+                wait_timeout = _idempotency_wait_timeout_seconds(params)
+                logger.info(
+                    "MuseTalk service: idempotency join run_id=%s wait_timeout_seconds=%.3f",
+                    run_id,
+                    wait_timeout,
+                )
+                completed = _idempotency.wait(
+                    reservation.entry,
+                    timeout_seconds=wait_timeout,
+                )
+                if completed is None:
+                    self._json(409, {
+                        "success": False,
+                        "error": f"musetalk_idempotency_in_progress run_id={run_id}",
+                        "failure_category": "idempotency_in_progress",
+                        "retryable": False,
+                        "idempotency_status": "wait_timeout",
+                        "idempotency_run_id": run_id,
+                    })
+                    return
+                status_code, payload = completed
+                self._json(
+                    status_code,
+                    _idempotency_replay_payload(
+                        payload,
+                        run_id=run_id,
+                        status="joined_inflight",
+                    ),
+                )
+                return
+            if reservation.action == "replay" and reservation.entry is not None:
+                payload = dict(reservation.entry.payload or {})
+                try:
+                    persisted = _persisted_idempotent_result(
+                        run_id=run_id,
+                        source_image=source_image,
+                        source_video=source_video,
+                        audio_path=audio_path,
+                        output_path=output_path,
+                        params=params,
+                        run=run,
+                    )
+                except MuseTalkIdempotencyConflict as exc:
+                    self._json(409, {
+                        "success": False,
+                        "error": str(exc),
+                        "failure_category": "idempotency_conflict",
+                        "retryable": False,
+                        "idempotency_status": "completed_output_conflict",
+                        "idempotency_run_id": run_id,
+                    })
+                    return
+                if persisted is not None and payload.get("success"):
+                    self._json(
+                        int(reservation.entry.status_code or 200),
+                        _idempotency_replay_payload(
+                            payload,
+                            run_id=run_id,
+                            status="completed_replay",
+                        ),
+                    )
+                    return
+                _idempotency.forget(reservation.entry)
+                continue
+            if reservation.action == "owner":
+                owner_entry = reservation.entry
+            break
+
+        if owner_entry is not None:
+            try:
+                persisted = _persisted_idempotent_result(
+                    run_id=run_id,
+                    source_image=source_image,
+                    source_video=source_video,
+                    audio_path=audio_path,
+                    output_path=output_path,
+                    params=params,
+                    run=run,
+                )
+            except MuseTalkIdempotencyConflict as exc:
+                payload = {
+                    "success": False,
+                    "error": str(exc),
+                    "failure_category": "idempotency_conflict",
+                    "retryable": False,
+                    "idempotency_status": "persisted_conflict",
+                    "idempotency_run_id": run_id,
+                }
+                self._idempotent_json(409, payload, entry=owner_entry, retain=False)
+                return
+            if persisted is not None:
+                payload = _idempotency_replay_payload(
+                    persisted,
+                    run_id=run_id,
+                    status="persisted_replay",
+                )
+                self._idempotent_json(200, payload, entry=owner_entry, retain=True)
+                return
+
         try:
             inputs = _preflight_request_inputs(
                 source_image=source_image,
@@ -1688,14 +1982,14 @@ class _Handler(BaseHTTPRequestHandler):
                 exc.resource,
                 exc.path,
             )
-            self._json(422, {
+            self._idempotent_json(422, {
                 "success": False,
                 "error": str(exc),
                 "failure_category": "request_preflight",
                 "retryable": False,
                 "preflight_reason": exc.reason,
                 "preflight_resource": exc.resource,
-            })
+            }, entry=owner_entry, retain=False)
             return
 
         try:
@@ -1706,14 +2000,14 @@ class _Handler(BaseHTTPRequestHandler):
                 exc.reason,
                 exc.output_parent,
             )
-            self._json(422, {
+            self._idempotent_json(422, {
                 "success": False,
                 "error": str(exc),
                 "failure_category": "output_preflight",
                 "retryable": False,
                 "preflight_reason": exc.reason,
                 "preflight_resource": "output",
-            })
+            }, entry=owner_entry, retain=False)
             return
 
         try:
@@ -1733,7 +2027,7 @@ class _Handler(BaseHTTPRequestHandler):
                 exc.free_mib,
                 exc.path,
             )
-            self._json(507, {
+            self._idempotent_json(507, {
                 "success": False,
                 "error": str(exc),
                 "failure_category": "disk_preflight",
@@ -1742,7 +2036,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "preflight_filesystem": exc.filesystem,
                 "required_mib": exc.required_mib,
                 "free_mib": exc.free_mib,
-            })
+            }, entry=owner_entry, retain=False)
             return
 
         logger.info(
@@ -1763,10 +2057,39 @@ class _Handler(BaseHTTPRequestHandler):
                     params=params,
                     run=run,
                 )
-                self._json(200, result)
+                result = dict(result)
+                result.update({
+                    "idempotency_replayed": False,
+                    "idempotency_status": "owner" if owner_entry is not None else "bypass_missing_run_id",
+                    "idempotency_run_id": run_id,
+                })
+                self._idempotent_json(200, result, entry=owner_entry, retain=True)
             except Exception as exc:
                 logger.exception("MuseTalk service: infer failed")
-                self._json(500, {"success": False, "error": str(exc)})
+                self._idempotent_json(500, {
+                    "success": False,
+                    "error": str(exc),
+                    "idempotency_replayed": False,
+                    "idempotency_status": "owner_failed" if owner_entry is not None else "bypass_missing_run_id",
+                    "idempotency_run_id": run_id,
+                }, entry=owner_entry, retain=False)
+
+    def _idempotent_json(
+        self,
+        code: int,
+        payload: dict,
+        *,
+        entry: IdempotencyEntry | None,
+        retain: bool,
+    ) -> None:
+        if entry is not None:
+            _idempotency.complete(
+                entry,
+                status_code=code,
+                payload=payload,
+                retain=retain,
+            )
+        self._json(code, payload)
 
     def _json(self, code: int, payload: dict) -> None:
         body = json.dumps(payload).encode("utf-8")

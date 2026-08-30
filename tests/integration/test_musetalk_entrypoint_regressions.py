@@ -489,6 +489,8 @@ def test_musetalk_service_health_reports_ready_cuda_and_model_state(monkeypatch:
     monkeypatch.setattr(service, "_model_load_seconds", 123.4)
     monkeypatch.setattr(service, "_provider_diagnostics", {"cuda_provider_available": True})
     monkeypatch.setattr(service, "_cuda_memory_snapshot", lambda: {"cuda_total_mib": 4096.0})
+    monkeypatch.setenv("MUSETALK_IDEMPOTENCY_TTL_SECONDS", "120")
+    monkeypatch.setenv("MUSETALK_IDEMPOTENCY_MAX_ENTRIES", "16")
     try:
         payload = service._health_payload()
     finally:
@@ -503,6 +505,8 @@ def test_musetalk_service_health_reports_ready_cuda_and_model_state(monkeypatch:
     assert payload["ready_for_inference"] is True
     assert payload["model_load_seconds"] == 123.4
     assert payload["provider_diagnostics"] == {"cuda_provider_available": True}
+    assert payload["idempotency"]["ttl_seconds"] == 120.0
+    assert payload["idempotency"]["max_entries"] == 16
 
 
 @pytest.mark.integration

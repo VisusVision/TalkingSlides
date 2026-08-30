@@ -826,16 +826,6 @@ def _prepare_musetalk_service_current_run(
 ) -> dict[str, str]:
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    for stale_path in [out_path, _musetalk_debug_sidecar_path(out_path)]:
-        if stale_path.exists():
-            logger.warning(
-                "late_musetalk_output_detected reason=stale_before_service_run path=%s mtime=%s run_id=%s",
-                str(stale_path),
-                round(float(stale_path.stat().st_mtime), 6),
-                run_id,
-            )
-            stale_path.unlink(missing_ok=True)
-
     source_image_path = Path(source_image) if source_image else None
     source_video_path = Path(source_video) if source_video else None
     audio = Path(audio_path)
@@ -870,7 +860,59 @@ def _prepare_musetalk_service_current_run(
         "audio_sha256": _sha256_file(audio),
         "output_path": str(out_path),
     }
-    _musetalk_run_marker_path(out_path).write_text(
+    marker_path = _musetalk_run_marker_path(out_path)
+    existing_marker: dict[str, str] = {}
+    if marker_path.is_file():
+        try:
+            existing_marker = {
+                str(key): str(value)
+                for key, value in dict(json.loads(marker_path.read_text(encoding="utf-8"))).items()
+            }
+        except Exception:
+            existing_marker = {}
+
+    identity_fields = (
+        "run_id",
+        "source_image_path",
+        "source_video_path",
+        "source_path",
+        "audio_path",
+        "source_image_sha256",
+        "source_video_sha256",
+        "source_sha256",
+        "audio_sha256",
+        "output_path",
+    )
+    if existing_marker.get("run_id") == str(run_id):
+        mismatches = [
+            field
+            for field in identity_fields
+            if str(existing_marker.get(field) or "") != str(marker.get(field) or "")
+        ]
+        if mismatches:
+            raise RuntimeError(
+                "musetalk_idempotency_conflict "
+                f"run_id={run_id} fields={','.join(mismatches)}"
+            )
+        logger.info(
+            "MuseTalk service current-run marker reused run_id=%s output_path=%s started_epoch=%s",
+            run_id,
+            out_path,
+            existing_marker.get("started_epoch"),
+        )
+        return existing_marker
+
+    for stale_path in [out_path, _musetalk_debug_sidecar_path(out_path)]:
+        if stale_path.exists():
+            logger.warning(
+                "late_musetalk_output_detected reason=stale_before_service_run path=%s mtime=%s run_id=%s",
+                str(stale_path),
+                round(float(stale_path.stat().st_mtime), 6),
+                run_id,
+            )
+            stale_path.unlink(missing_ok=True)
+
+    marker_path.write_text(
         json.dumps(marker, ensure_ascii=True, indent=2),
         encoding="utf-8",
     )
@@ -979,6 +1021,11 @@ def _run_via_musetalk_service(
             "service_health": service_health,
         })
 
+    try:
+        started_epoch = float(run_marker.get("started_epoch") or started_epoch)
+    except (TypeError, ValueError):
+        pass
+
     body = json.dumps({
         "source_image": source_image,
         "source_video": source_video,
@@ -1039,6 +1086,12 @@ def _run_via_musetalk_service(
             for field in ("required_mib", "free_mib"):
                 if isinstance(err_body.get(field), (int, float)):
                     error_details[field] = float(err_body[field])
+            for field in ("idempotency_status", "idempotency_run_id"):
+                value = str(err_body.get(field) or "")
+                if value:
+                    error_details[field] = value
+            if isinstance(err_body.get("idempotency_replayed"), bool):
+                error_details["idempotency_replayed"] = err_body["idempotency_replayed"]
         except Exception:
             error_msg = f"service_http_{exc.code}"
         logger.error(
@@ -1205,6 +1258,9 @@ def _run_via_musetalk_service(
             "runtime_settings": result.get("runtime_settings", {}),
             "runtime_info": result.get("runtime_info", {}),
             "per_frame_timings": result.get("per_frame_timings", {}),
+            "idempotency_replayed": bool(result.get("idempotency_replayed", False)),
+            "idempotency_status": str(result.get("idempotency_status") or ""),
+            "idempotency_run_id": str(result.get("idempotency_run_id") or run_id),
             "model_load_seconds": model_load_seconds,
             "face_landmark_seconds": face_landmark_seconds,
             "inference_loop_seconds": inference_loop_seconds,
