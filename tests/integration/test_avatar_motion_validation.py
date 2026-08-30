@@ -2334,6 +2334,14 @@ def test_preview_pipeline_recovers_transient_musetalk_without_rerunning_liveport
             "musetalk_output_preflight_failed reason=permission_denied output_parent=/blocked",
             {"route": "service", "failure_category": "output_preflight", "retryable": False},
         ),
+        (
+            "musetalk_request_preflight_failed reason=permission_denied resource=source path=/blocked",
+            {"route": "service", "failure_category": "request_preflight", "retryable": False},
+        ),
+        (
+            "musetalk_disk_preflight_failed reason=insufficient_space filesystem=temporary",
+            {"route": "service", "failure_category": "disk_preflight", "retryable": False},
+        ),
         ("[Errno 32] Broken pipe", {"route": "standalone"}),
     ],
 )

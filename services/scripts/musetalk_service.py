@@ -5,13 +5,17 @@ Subsequent inference requests skip the entire cold-start cost.
 
 Protocol:
   GET  /health  → 200 {"status":"ready"} or 503 {"status":"loading"}
-  POST /infer   → 200 {"success":true,"elapsed_seconds":N}, 422 for an invalid
-                  output target, or 500 for an inference failure
+  POST /infer   → 200 {"success":true,"elapsed_seconds":N}, 422 for invalid
+                  input/output, 507 for insufficient storage, or 500 for an
+                  inference failure
 
 Environment variables:
   MUSETALK_HOME          — path to MuseTalk checkout (default /opt/musetalk)
   MUSETALK_MODEL_PATH    — path to model weights root (default /app/storage_local/models)
   AVATAR_MUSETALK_SERVICE_PORT — TCP port to bind (default 17860)
+  MUSETALK_PREFLIGHT_MIN_OUTPUT_FREE_MIB — final-output free-space floor (default 256)
+  MUSETALK_PREFLIGHT_MIN_TEMP_FREE_MIB — temporary free-space floor (default 1024)
+  MUSETALK_PREFLIGHT_TEMP_MIB_PER_FRAME — estimated temporary MiB per frame (default 4)
 """
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ import glob
 import hashlib
 import json
 import logging
+import math
 import os
 import pickle
 import shutil
@@ -878,6 +883,224 @@ def _preflight_output_path(output_path: str) -> Path:
                 )
     return target
 
+
+class MuseTalkRequestPreflightError(RuntimeError):
+    """A non-retryable input failure detected in the service process."""
+
+    def __init__(self, *, reason: str, resource: str, path: Path, cause: BaseException | None = None) -> None:
+        self.reason = str(reason)
+        self.resource = str(resource)
+        self.path = path
+        self.cause = cause
+        super().__init__(
+            "musetalk_request_preflight_failed "
+            f"reason={self.reason} resource={self.resource} path={self.path}"
+        )
+
+
+class MuseTalkDiskPreflightError(RuntimeError):
+    """A non-retryable capacity or temporary-directory preflight failure."""
+
+    def __init__(
+        self,
+        *,
+        reason: str,
+        filesystem: str,
+        path: Path,
+        required_mib: float = 0.0,
+        free_mib: float = 0.0,
+        cause: BaseException | None = None,
+    ) -> None:
+        self.reason = str(reason)
+        self.filesystem = str(filesystem)
+        self.path = path
+        self.required_mib = round(float(required_mib), 3)
+        self.free_mib = round(float(free_mib), 3)
+        self.cause = cause
+        super().__init__(
+            "musetalk_disk_preflight_failed "
+            f"reason={self.reason} filesystem={self.filesystem} "
+            f"required_mib={self.required_mib} free_mib={self.free_mib} path={self.path}"
+        )
+
+
+def _preflight_readable_file(path_value: str, *, resource: str) -> Path:
+    path = Path(str(path_value or "").strip())
+    if not str(path_value or "").strip():
+        raise MuseTalkRequestPreflightError(
+            reason="missing_path",
+            resource=resource,
+            path=path,
+        )
+    try:
+        file_stat = path.stat()
+        if not path.is_file():
+            raise MuseTalkRequestPreflightError(
+                reason="not_a_file",
+                resource=resource,
+                path=path,
+            )
+        if file_stat.st_size <= 0:
+            raise MuseTalkRequestPreflightError(
+                reason="empty_file",
+                resource=resource,
+                path=path,
+            )
+        # Exercise the service user's real read permission. The caller may have
+        # hashed the same file successfully while running under another UID.
+        with path.open("rb") as stream:
+            if not stream.read(1):
+                raise MuseTalkRequestPreflightError(
+                    reason="empty_file",
+                    resource=resource,
+                    path=path,
+                )
+    except MuseTalkRequestPreflightError:
+        raise
+    except FileNotFoundError as exc:
+        raise MuseTalkRequestPreflightError(
+            reason="file_not_found",
+            resource=resource,
+            path=path,
+            cause=exc,
+        ) from exc
+    except PermissionError as exc:
+        raise MuseTalkRequestPreflightError(
+            reason="permission_denied",
+            resource=resource,
+            path=path,
+            cause=exc,
+        ) from exc
+    except OSError as exc:
+        raise MuseTalkRequestPreflightError(
+            reason="input_io_error",
+            resource=resource,
+            path=path,
+            cause=exc,
+        ) from exc
+    return path
+
+
+def _preflight_request_inputs(*, source_image: str, source_video: str, audio_path: str) -> dict[str, Path]:
+    # A requested LivePortrait handoff must not silently fall back to the image
+    # merely because the service UID cannot see it.
+    selected_source = str(source_video or "").strip() or str(source_image or "").strip()
+    source = _preflight_readable_file(selected_source, resource="source")
+    audio = _preflight_readable_file(audio_path, resource="audio")
+    return {"source": source, "audio": audio}
+
+
+def _nonnegative_env_float(name: str, default: float) -> float:
+    try:
+        return max(float(str(os.environ.get(name, default)).strip() or default), 0.0)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _preflight_disk_capacity(
+    *,
+    output_path: Path,
+    source_path: Path,
+    audio_path: Path,
+    params: dict,
+) -> dict[str, float | int | str]:
+    fps = max(_int_param(params, "fps", 25), 1)
+    target_frame_count = max(_int_param(params, "target_frame_count", 0), 0)
+    target_duration_seconds = max(_float_param(params, "target_duration_seconds", 0.0), 0.0)
+    probed_duration_seconds = max(
+        _media_duration_seconds(source_path),
+        _media_duration_seconds(audio_path),
+    )
+    estimated_frame_count = max(
+        target_frame_count,
+        int(math.ceil(target_duration_seconds * fps)),
+        int(math.ceil(probed_duration_seconds * fps)),
+        1,
+    )
+    output_required_mib = _nonnegative_env_float(
+        "MUSETALK_PREFLIGHT_MIN_OUTPUT_FREE_MIB",
+        256.0,
+    )
+    temp_floor_mib = _nonnegative_env_float(
+        "MUSETALK_PREFLIGHT_MIN_TEMP_FREE_MIB",
+        1024.0,
+    )
+    temp_mib_per_frame = _nonnegative_env_float(
+        "MUSETALK_PREFLIGHT_TEMP_MIB_PER_FRAME",
+        4.0,
+    )
+    temp_required_mib = max(
+        temp_floor_mib,
+        float(estimated_frame_count) * temp_mib_per_frame,
+    )
+
+    temp_root = Path(tempfile.gettempdir())
+    checks = (
+        ("output", output_path.parent, output_required_mib),
+        ("temporary", temp_root, temp_required_mib),
+    )
+    free_by_filesystem: dict[str, float] = {}
+    for filesystem, path, required_mib in checks:
+        try:
+            free_mib = float(shutil.disk_usage(path).free) / (1024.0 * 1024.0)
+        except OSError as exc:
+            raise MuseTalkDiskPreflightError(
+                reason="capacity_probe_failed",
+                filesystem=filesystem,
+                path=path,
+                required_mib=required_mib,
+                cause=exc,
+            ) from exc
+        free_by_filesystem[filesystem] = round(free_mib, 3)
+        if free_mib < required_mib:
+            raise MuseTalkDiskPreflightError(
+                reason="insufficient_space",
+                filesystem=filesystem,
+                path=path,
+                required_mib=required_mib,
+                free_mib=free_mib,
+            )
+
+    temp_probe: Path | None = None
+    try:
+        probe_fd, probe_name = tempfile.mkstemp(
+            prefix=".musetalk-temp-write-probe-",
+            dir=str(temp_root),
+        )
+        temp_probe = Path(probe_name)
+        with os.fdopen(probe_fd, "wb") as probe:
+            probe.write(b"musetalk-temp-preflight\n")
+            probe.flush()
+    except OSError as exc:
+        raise MuseTalkDiskPreflightError(
+            reason="temporary_directory_unwritable",
+            filesystem="temporary",
+            path=temp_root,
+            required_mib=temp_required_mib,
+            free_mib=free_by_filesystem.get("temporary", 0.0),
+            cause=exc,
+        ) from exc
+    finally:
+        if temp_probe is not None:
+            try:
+                temp_probe.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "MuseTalk service: temporary preflight probe cleanup failed path=%s",
+                    temp_probe,
+                    exc_info=True,
+                )
+
+    return {
+        "estimated_frame_count": estimated_frame_count,
+        "probed_duration_seconds": round(probed_duration_seconds, 3),
+        "output_required_mib": round(output_required_mib, 3),
+        "output_free_mib": free_by_filesystem["output"],
+        "temporary_required_mib": round(temp_required_mib, 3),
+        "temporary_free_mib": free_by_filesystem["temporary"],
+        "temporary_path": str(temp_root),
+    }
+
 def _infer(
     *,
     source_image: str,
@@ -1442,7 +1665,41 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            _preflight_output_path(str(req.get("output_path") or ""))
+            source_image = str(req.get("source_image") or "")
+            source_video = str(req.get("source_video") or "")
+            audio_path = str(req.get("audio_path") or "")
+            output_path = str(req.get("output_path") or "")
+            params = dict(req.get("params") or {})
+            run = dict(req.get("run") or {})
+        except (AttributeError, TypeError, ValueError) as exc:
+            self._json(400, {"success": False, "error": f"invalid_request:{exc}"})
+            return
+
+        try:
+            inputs = _preflight_request_inputs(
+                source_image=source_image,
+                source_video=source_video,
+                audio_path=audio_path,
+            )
+        except MuseTalkRequestPreflightError as exc:
+            logger.warning(
+                "MuseTalk service: request preflight rejected reason=%s resource=%s path=%s",
+                exc.reason,
+                exc.resource,
+                exc.path,
+            )
+            self._json(422, {
+                "success": False,
+                "error": str(exc),
+                "failure_category": "request_preflight",
+                "retryable": False,
+                "preflight_reason": exc.reason,
+                "preflight_resource": exc.resource,
+            })
+            return
+
+        try:
+            checked_output_path = _preflight_output_path(output_path)
         except MuseTalkOutputPreflightError as exc:
             logger.warning(
                 "MuseTalk service: output preflight rejected reason=%s output_parent=%s",
@@ -1454,18 +1711,57 @@ class _Handler(BaseHTTPRequestHandler):
                 "error": str(exc),
                 "failure_category": "output_preflight",
                 "retryable": False,
+                "preflight_reason": exc.reason,
+                "preflight_resource": "output",
             })
             return
+
+        try:
+            disk_preflight = _preflight_disk_capacity(
+                output_path=checked_output_path,
+                source_path=inputs["source"],
+                audio_path=inputs["audio"],
+                params=params,
+            )
+        except MuseTalkDiskPreflightError as exc:
+            logger.warning(
+                "MuseTalk service: disk preflight rejected reason=%s filesystem=%s "
+                "required_mib=%s free_mib=%s path=%s",
+                exc.reason,
+                exc.filesystem,
+                exc.required_mib,
+                exc.free_mib,
+                exc.path,
+            )
+            self._json(507, {
+                "success": False,
+                "error": str(exc),
+                "failure_category": "disk_preflight",
+                "retryable": False,
+                "preflight_reason": exc.reason,
+                "preflight_filesystem": exc.filesystem,
+                "required_mib": exc.required_mib,
+                "free_mib": exc.free_mib,
+            })
+            return
+
+        logger.info(
+            "MuseTalk service: request preflight passed source=%s audio=%s output=%s disk=%s",
+            inputs["source"],
+            inputs["audio"],
+            checked_output_path,
+            disk_preflight,
+        )
 
         with _infer_lock:   # GPU inference must be serialized
             try:
                 result = _infer(
-                    source_image=str(req.get("source_image") or ""),
-                    source_video=str(req.get("source_video") or ""),
-                    audio_path=str(req.get("audio_path") or ""),
-                    output_path=str(req.get("output_path") or ""),
-                    params=dict(req.get("params") or {}),
-                    run=dict(req.get("run") or {}),
+                    source_image=source_image,
+                    source_video=source_video,
+                    audio_path=audio_path,
+                    output_path=output_path,
+                    params=params,
+                    run=run,
                 )
                 self._json(200, result)
             except Exception as exc:

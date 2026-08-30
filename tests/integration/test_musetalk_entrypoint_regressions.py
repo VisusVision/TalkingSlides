@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 from http.server import HTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -145,7 +146,117 @@ def test_musetalk_service_output_preflight_reports_permission_denied(
 
 
 @pytest.mark.integration
-def test_musetalk_service_http_preflight_rejects_before_gpu_lock_and_inference(
+def test_musetalk_service_request_preflight_prefers_requested_video(tmp_path: Path) -> None:
+    source_image = tmp_path / "source.png"
+    source_video = tmp_path / "handoff.mp4"
+    audio = tmp_path / "voice.wav"
+    source_image.write_bytes(b"image")
+    source_video.write_bytes(b"video")
+    audio.write_bytes(b"audio")
+
+    inputs = service._preflight_request_inputs(
+        source_image=str(source_image),
+        source_video=str(source_video),
+        audio_path=str(audio),
+    )
+
+    assert inputs == {"source": source_video, "audio": audio}
+
+
+@pytest.mark.integration
+def test_musetalk_service_request_preflight_does_not_hide_missing_video_with_image_fallback(
+    tmp_path: Path,
+) -> None:
+    source_image = tmp_path / "source.png"
+    audio = tmp_path / "voice.wav"
+    source_image.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    with pytest.raises(service.MuseTalkRequestPreflightError) as excinfo:
+        service._preflight_request_inputs(
+            source_image=str(source_image),
+            source_video=str(tmp_path / "missing-handoff.mp4"),
+            audio_path=str(audio),
+        )
+
+    assert excinfo.value.reason == "file_not_found"
+    assert excinfo.value.resource == "source"
+
+
+@pytest.mark.integration
+def test_musetalk_service_disk_preflight_estimates_frames_and_rejects_low_temp_space(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output" / "avatar.mp4"
+    output.parent.mkdir()
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    monkeypatch.setattr(service.tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(service, "_media_duration_seconds", lambda _path: 2.0)
+    monkeypatch.setenv("MUSETALK_PREFLIGHT_MIN_OUTPUT_FREE_MIB", "5")
+    monkeypatch.setenv("MUSETALK_PREFLIGHT_MIN_TEMP_FREE_MIB", "10")
+    monkeypatch.setenv("MUSETALK_PREFLIGHT_TEMP_MIB_PER_FRAME", "2")
+
+    def _disk_usage(path):
+        free_mib = 99 if Path(path) == temp_root else 500
+        return SimpleNamespace(free=free_mib * 1024 * 1024)
+
+    monkeypatch.setattr(service.shutil, "disk_usage", _disk_usage)
+
+    with pytest.raises(service.MuseTalkDiskPreflightError) as excinfo:
+        service._preflight_disk_capacity(
+            output_path=output,
+            source_path=tmp_path / "source.mp4",
+            audio_path=tmp_path / "voice.wav",
+            params={"fps": 25},
+        )
+
+    assert excinfo.value.reason == "insufficient_space"
+    assert excinfo.value.filesystem == "temporary"
+    assert excinfo.value.required_mib == 100.0
+    assert excinfo.value.free_mib == 99.0
+    assert list(temp_root.iterdir()) == []
+
+
+@pytest.mark.integration
+def test_musetalk_service_disk_preflight_returns_capacity_diagnostics_and_cleans_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output" / "avatar.mp4"
+    output.parent.mkdir()
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    monkeypatch.setattr(service.tempfile, "gettempdir", lambda: str(temp_root))
+    monkeypatch.setattr(service, "_media_duration_seconds", lambda _path: 2.0)
+    monkeypatch.setenv("MUSETALK_PREFLIGHT_MIN_OUTPUT_FREE_MIB", "5")
+    monkeypatch.setenv("MUSETALK_PREFLIGHT_MIN_TEMP_FREE_MIB", "10")
+    monkeypatch.setenv("MUSETALK_PREFLIGHT_TEMP_MIB_PER_FRAME", "2")
+
+    def _disk_usage(path):
+        free_mib = 150 if Path(path) == temp_root else 500
+        return SimpleNamespace(free=free_mib * 1024 * 1024)
+
+    monkeypatch.setattr(service.shutil, "disk_usage", _disk_usage)
+
+    diagnostics = service._preflight_disk_capacity(
+        output_path=output,
+        source_path=tmp_path / "source.mp4",
+        audio_path=tmp_path / "voice.wav",
+        params={"fps": 25},
+    )
+
+    assert diagnostics["estimated_frame_count"] == 50
+    assert diagnostics["temporary_required_mib"] == 100.0
+    assert diagnostics["temporary_free_mib"] == 150.0
+    assert diagnostics["output_required_mib"] == 5.0
+    assert diagnostics["output_free_mib"] == 500.0
+    assert list(temp_root.iterdir()) == []
+
+
+@pytest.mark.integration
+def test_musetalk_service_http_output_preflight_rejects_before_gpu_lock_and_inference(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -153,6 +264,10 @@ def test_musetalk_service_http_preflight_rejects_before_gpu_lock_and_inference(
     service._models_loaded.set()
     monkeypatch.setattr(service, "_models_error", None)
     inference_calls = {"count": 0}
+    source = tmp_path / "source.png"
+    audio = tmp_path / "voice.wav"
+    source.write_bytes(b"image")
+    audio.write_bytes(b"audio")
 
     def _reject(_output_path: str) -> Path:
         raise service.MuseTalkOutputPreflightError(
@@ -171,7 +286,11 @@ def test_musetalk_service_http_preflight_rejects_before_gpu_lock_and_inference(
     server_thread.start()
     request = urllib.request.Request(
         f"http://127.0.0.1:{server.server_port}/infer",
-        data=json.dumps({"output_path": str(tmp_path / "blocked" / "avatar.mp4")}).encode("utf-8"),
+        data=json.dumps({
+            "source_image": str(source),
+            "audio_path": str(audio),
+            "output_path": str(tmp_path / "blocked" / "avatar.mp4"),
+        }).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
     try:
@@ -189,6 +308,68 @@ def test_musetalk_service_http_preflight_rejects_before_gpu_lock_and_inference(
     assert payload["failure_category"] == "output_preflight"
     assert payload["retryable"] is False
     assert "reason=permission_denied" in payload["error"]
+    assert inference_calls["count"] == 0
+
+
+@pytest.mark.integration
+def test_musetalk_service_http_disk_preflight_returns_507_before_inference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    was_loaded = service._models_loaded.is_set()
+    service._models_loaded.set()
+    monkeypatch.setattr(service, "_models_error", None)
+    inference_calls = {"count": 0}
+    source = tmp_path / "source.png"
+    audio = tmp_path / "voice.wav"
+    output = tmp_path / "output" / "avatar.mp4"
+    source.write_bytes(b"image")
+    audio.write_bytes(b"audio")
+
+    def _reject_disk(**_kwargs):
+        raise service.MuseTalkDiskPreflightError(
+            reason="insufficient_space",
+            filesystem="temporary",
+            path=Path("/tmp"),
+            required_mib=1024.0,
+            free_mib=128.0,
+        )
+
+    def _unexpected_infer(**_kwargs):
+        inference_calls["count"] += 1
+        return {"success": True}
+
+    monkeypatch.setattr(service, "_preflight_disk_capacity", _reject_disk)
+    monkeypatch.setattr(service, "_infer", _unexpected_infer)
+    server = HTTPServer(("127.0.0.1", 0), service._Handler)
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{server.server_port}/infer",
+        data=json.dumps({
+            "source_image": str(source),
+            "audio_path": str(audio),
+            "output_path": str(output),
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(request, timeout=2.0)
+        payload = json.loads(excinfo.value.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=2.0)
+        if not was_loaded:
+            service._models_loaded.clear()
+
+    assert excinfo.value.code == 507
+    assert payload["failure_category"] == "disk_preflight"
+    assert payload["retryable"] is False
+    assert payload["preflight_filesystem"] == "temporary"
+    assert payload["required_mib"] == 1024.0
+    assert payload["free_mib"] == 128.0
     assert inference_calls["count"] == 0
 
 

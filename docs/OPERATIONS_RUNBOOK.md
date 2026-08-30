@@ -73,6 +73,23 @@ request returns HTTP `422`, `failure_category=output_preflight`, and
 the render. This check creates and removes a sibling probe file, so it verifies
 the service user's real permissions even when the calling worker runs as root.
 
+The same request boundary opens one byte from the selected source and audio as
+the service user. Missing, empty, non-file, or unreadable inputs return HTTP
+`422` with `failure_category=request_preflight`. A requested LivePortrait video
+never silently falls back to the source image when that handoff is unavailable.
+
+Before acquiring the GPU lock, the service also checks free space on both the
+final-output filesystem and its temporary directory. Temporary demand is
+estimated from the larger of the requested/probed frame count and the configured
+floor. Insufficient capacity returns HTTP `507` with
+`failure_category=disk_preflight`, `required_mib`, `free_mib`, and
+`retryable=false`. Defaults are 256 MiB for final output, 1024 MiB for temporary
+work, and 4 MiB per estimated frame. Tune `MUSETALK_PREFLIGHT_MIN_OUTPUT_FREE_MIB`,
+`MUSETALK_PREFLIGHT_MIN_TEMP_FREE_MIB`, and
+`MUSETALK_PREFLIGHT_TEMP_MIB_PER_FRAME` only from measured staging data. Clear
+space or repair the mount, then submit a new render; automatic retries are not
+useful while the same capacity fault remains.
+
 ## Observability Report
 
 Use the read-only observability report for a single operator snapshot of render, follow-up intent, storage, and recovery health:
