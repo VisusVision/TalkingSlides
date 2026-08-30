@@ -1,0 +1,355 @@
+{
+  "version": "avatar-evaluation-v2",
+  "suite_id": "real-local-case-001",
+  "fair_comparison": true,
+  "input_fingerprint": "8b81b64f87e02fe81982735c2239d60dc28f5cfa733ea09fd3bb00f150c5faf6",
+  "context": {
+    "script_hash": "e9e1001c1833bf4764a0018e77adcc9ef342c996c05d77e0a55c15bfa960d909",
+    "quality_preset": "high",
+    "model_versions": {
+      "worker_image": "sha256:c3aee3c9dc262ad2cd4fc94368a54428f57238b4f33c7899cde542dddd200372",
+      "liveportrait": "installed-/opt/liveportrait",
+      "musetalk": "v1",
+      "torch": "2.0.1+cu118"
+    }
+  },
+  "recommendation": "prosody",
+  "variants": [
+    {
+      "id": "real-local-case-001-generic",
+      "kind": "generic",
+      "input_fingerprint": "8b81b64f87e02fe81982735c2239d60dc28f5cfa733ea09fd3bb00f150c5faf6",
+      "automated_quality_score": 90.28,
+      "identity": {
+        "score": 0.7342,
+        "passed": true,
+        "assurance": "strong",
+        "provider": "opencv_yunet_sface",
+        "evidence": {
+          "opencv_zoo_revision": "47534e27c9851bb1128ccc0102f1145e27f23f98",
+          "model_hashes_verified": true,
+          "opencv_version": "4.11.0",
+          "frames_sampled": 24,
+          "face_frames": 24,
+          "face_coverage": 1.0,
+          "minimum_cosine": 0.363,
+          "aggregation": "cosine_p10",
+          "cosine_min": 0.7215,
+          "cosine_p10": 0.7342,
+          "cosine_median": 0.7878,
+          "cosine_max": 0.8491
+        }
+      },
+      "lip_sync": {
+        "score": 0.8239,
+        "passed": true,
+        "assurance": "strong",
+        "provider": "latentsync_syncnet",
+        "evidence": {
+          "latentsync_code_revision_expected": "a229c3948406bc2cf6eaf4873e662e70c6a04746",
+          "latentsync_model_revision": "405eda8eab9f65c1a6e0c292a5dee5a08089e2ae",
+          "syncnet_model_license": "openrail++",
+          "minimum_confidence": 2.0,
+          "maximum_offset_frames": 2,
+          "video_fps_contract": 25,
+          "model_hash_verified": true,
+          "s3fd_hash_verified": true,
+          "latentsync_code_revision": "a229c3948406bc2cf6eaf4873e662e70c6a04746",
+          "runtime_revision_verified": true,
+          "syncnet_confidence": 2.34,
+          "av_offset_frames": 0,
+          "av_offset_milliseconds": 0.0,
+          "confidence_passed": true,
+          "offset_passed": true,
+          "score_normalization": "confidence/(confidence+minimum_confidence/4)"
+        }
+      },
+      "temporal": {
+        "score": 1.0,
+        "passed": true,
+        "assurance": "technical",
+        "provider": "canonical_pipeline_validation",
+        "evidence": {}
+      },
+      "motion_score": 1.0,
+      "duration_score": 1.0,
+      "duration_delta_seconds": 0.0,
+      "technical_pass": true,
+      "audio_match": true,
+      "duration_mismatch": false,
+      "artifact_detected": false,
+      "loop_detected": false,
+      "landmark_stable": true,
+      "personal_window_selected": false,
+      "personal_window_materialized": false,
+      "prosody_timeline_materialized": false,
+      "generic_baseline_isolated": true,
+      "appearance_source_policy": "",
+      "identity_motion_decoupled": null,
+      "capability_coverage": 0.0,
+      "expected_evidence_present": true,
+      "ready_for_comparison": true,
+      "missing_signals": [],
+      "failed_signals": [],
+      "runtime": {
+        "render_seconds": 230.639,
+        "peak_vram_mb": 7871.0
+      },
+      "artifacts": {
+        "video_path": "private-renders/generic/avatar.mp4",
+        "video_sha256": "6325d894162c8d980e33999c4f576969ee53c287ebc584b5ed861221b9ae123c",
+        "motion_plan_path": "private-renders/generic/motion-plan.json",
+        "render_info_path": "private-renders/generic/render-info.json"
+      },
+      "eligible": true
+    },
+    {
+      "id": "real-local-case-001-personal",
+      "kind": "personal",
+      "input_fingerprint": "8b81b64f87e02fe81982735c2239d60dc28f5cfa733ea09fd3bb00f150c5faf6",
+      "automated_quality_score": 89.92,
+      "identity": {
+        "score": 0.7085,
+        "passed": true,
+        "assurance": "strong",
+        "provider": "opencv_yunet_sface",
+        "evidence": {
+          "opencv_zoo_revision": "47534e27c9851bb1128ccc0102f1145e27f23f98",
+          "model_hashes_verified": true,
+          "opencv_version": "4.11.0",
+          "frames_sampled": 24,
+          "face_frames": 24,
+          "face_coverage": 1.0,
+          "minimum_cosine": 0.363,
+          "aggregation": "cosine_p10",
+          "cosine_min": 0.5327,
+          "cosine_p10": 0.7085,
+          "cosine_median": 0.7756,
+          "cosine_max": 0.8358
+        }
+      },
+      "lip_sync": {
+        "score": 0.8299,
+        "passed": true,
+        "assurance": "strong",
+        "provider": "latentsync_syncnet",
+        "evidence": {
+          "latentsync_code_revision_expected": "a229c3948406bc2cf6eaf4873e662e70c6a04746",
+          "latentsync_model_revision": "405eda8eab9f65c1a6e0c292a5dee5a08089e2ae",
+          "syncnet_model_license": "openrail++",
+          "minimum_confidence": 2.0,
+          "maximum_offset_frames": 2,
+          "video_fps_contract": 25,
+          "model_hash_verified": true,
+          "s3fd_hash_verified": true,
+          "latentsync_code_revision": "a229c3948406bc2cf6eaf4873e662e70c6a04746",
+          "runtime_revision_verified": true,
+          "syncnet_confidence": 2.44,
+          "av_offset_frames": 1,
+          "av_offset_milliseconds": 40.0,
+          "confidence_passed": true,
+          "offset_passed": true,
+          "score_normalization": "confidence/(confidence+minimum_confidence/4)"
+        }
+      },
+      "temporal": {
+        "score": 1.0,
+        "passed": true,
+        "assurance": "technical",
+        "provider": "canonical_pipeline_validation",
+        "evidence": {}
+      },
+      "motion_score": 1.0,
+      "duration_score": 1.0,
+      "duration_delta_seconds": 0.0,
+      "technical_pass": true,
+      "audio_match": true,
+      "duration_mismatch": false,
+      "artifact_detected": false,
+      "loop_detected": false,
+      "landmark_stable": true,
+      "personal_window_selected": true,
+      "personal_window_materialized": true,
+      "prosody_timeline_materialized": false,
+      "generic_baseline_isolated": null,
+      "appearance_source_policy": "personal_image_original_identity_video_motion_v1",
+      "identity_motion_decoupled": true,
+      "capability_coverage": 0.5,
+      "expected_evidence_present": true,
+      "ready_for_comparison": true,
+      "missing_signals": [],
+      "failed_signals": [],
+      "runtime": {
+        "render_seconds": 262.601,
+        "peak_vram_mb": 6134.0
+      },
+      "artifacts": {
+        "video_path": "private-renders/personal/avatar.mp4",
+        "video_sha256": "5f472e3f129e024c7d78c29a71442dd764603b2cffdf9521f42b55dbeacac76e",
+        "motion_plan_path": "private-renders/personal/motion-plan.json",
+        "render_info_path": "private-renders/personal/render-info.json"
+      },
+      "eligible": true
+    },
+    {
+      "id": "real-local-case-001-prosody",
+      "kind": "prosody",
+      "input_fingerprint": "8b81b64f87e02fe81982735c2239d60dc28f5cfa733ea09fd3bb00f150c5faf6",
+      "automated_quality_score": 90.75,
+      "identity": {
+        "score": 0.7393,
+        "passed": true,
+        "assurance": "strong",
+        "provider": "opencv_yunet_sface",
+        "evidence": {
+          "opencv_zoo_revision": "47534e27c9851bb1128ccc0102f1145e27f23f98",
+          "model_hashes_verified": true,
+          "opencv_version": "4.11.0",
+          "frames_sampled": 24,
+          "face_frames": 24,
+          "face_coverage": 1.0,
+          "minimum_cosine": 0.363,
+          "aggregation": "cosine_p10",
+          "cosine_min": 0.634,
+          "cosine_p10": 0.7393,
+          "cosine_median": 0.801,
+          "cosine_max": 0.8514
+        }
+      },
+      "lip_sync": {
+        "score": 0.8387,
+        "passed": true,
+        "assurance": "strong",
+        "provider": "latentsync_syncnet",
+        "evidence": {
+          "latentsync_code_revision_expected": "a229c3948406bc2cf6eaf4873e662e70c6a04746",
+          "latentsync_model_revision": "405eda8eab9f65c1a6e0c292a5dee5a08089e2ae",
+          "syncnet_model_license": "openrail++",
+          "minimum_confidence": 2.0,
+          "maximum_offset_frames": 2,
+          "video_fps_contract": 25,
+          "model_hash_verified": true,
+          "s3fd_hash_verified": true,
+          "latentsync_code_revision": "a229c3948406bc2cf6eaf4873e662e70c6a04746",
+          "runtime_revision_verified": true,
+          "syncnet_confidence": 2.6,
+          "av_offset_frames": 1,
+          "av_offset_milliseconds": 40.0,
+          "confidence_passed": true,
+          "offset_passed": true,
+          "score_normalization": "confidence/(confidence+minimum_confidence/4)"
+        }
+      },
+      "temporal": {
+        "score": 1.0,
+        "passed": true,
+        "assurance": "technical",
+        "provider": "canonical_pipeline_validation",
+        "evidence": {}
+      },
+      "motion_score": 1.0,
+      "duration_score": 1.0,
+      "duration_delta_seconds": 0.0,
+      "technical_pass": true,
+      "audio_match": true,
+      "duration_mismatch": false,
+      "artifact_detected": false,
+      "loop_detected": false,
+      "landmark_stable": true,
+      "personal_window_selected": true,
+      "personal_window_materialized": true,
+      "prosody_timeline_materialized": true,
+      "generic_baseline_isolated": null,
+      "appearance_source_policy": "personal_image_original_identity_video_motion_v1",
+      "identity_motion_decoupled": true,
+      "capability_coverage": 1.0,
+      "expected_evidence_present": true,
+      "ready_for_comparison": true,
+      "missing_signals": [],
+      "failed_signals": [],
+      "runtime": {
+        "render_seconds": 254.936,
+        "peak_vram_mb": 7848.0
+      },
+      "artifacts": {
+        "video_path": "private-renders/prosody/avatar.mp4",
+        "video_sha256": "3cc2d8482a7acf0cb01059ee0f82e4957adfc59f7da6c5a45284d8e434c49b9a",
+        "motion_plan_path": "private-renders/prosody/motion-plan.json",
+        "render_info_path": "private-renders/prosody/render-info.json"
+      },
+      "eligible": true
+    }
+  ],
+  "comparisons": {
+    "personal_vs_generic": {
+      "baseline": "generic",
+      "candidate": "personal",
+      "deltas": {
+        "automated_quality_points": -0.36,
+        "identity_score": -0.0257,
+        "lip_sync_score": 0.006,
+        "temporal_score": 0.0,
+        "motion_score": 0.0,
+        "duration_delta_seconds": 0.0,
+        "render_seconds": 31.962,
+        "peak_vram_mb": -1737.0
+      },
+      "regressions": [],
+      "improvements": [
+        "capability_coverage_increased",
+        "peak_vram_reduced"
+      ]
+    },
+    "prosody_vs_personal": {
+      "baseline": "personal",
+      "candidate": "prosody",
+      "deltas": {
+        "automated_quality_points": 0.83,
+        "identity_score": 0.0308,
+        "lip_sync_score": 0.0088,
+        "temporal_score": 0.0,
+        "motion_score": 0.0,
+        "duration_delta_seconds": 0.0,
+        "render_seconds": -7.665,
+        "peak_vram_mb": 1714.0
+      },
+      "regressions": [],
+      "improvements": [
+        "capability_coverage_increased"
+      ]
+    }
+  },
+  "automated_claims": {
+    "fair_input_contract": true,
+    "generic_baseline_isolated": true,
+    "personal_motion_bound": true,
+    "personal_identity_motion_decoupled": true,
+    "prosody_timing_materialized": true,
+    "prosody_identity_motion_decoupled": true,
+    "personal_quality_non_regression": true,
+    "prosody_quality_non_regression": true,
+    "model_verified_identity_and_lip_sync": true,
+    "naturalness_improved": "manual_review_required",
+    "emotion_fit_improved": "manual_review_required"
+  },
+  "manual_review": {
+    "required": true,
+    "blind_order_required": true,
+    "scale": "1-5",
+    "criteria": [
+      "identity_consistency",
+      "lip_sync_naturalness",
+      "head_and_expression_naturalness",
+      "transition_smoothness",
+      "emotion_and_emphasis_fit"
+    ],
+    "minimum_reviewers": 3
+  },
+  "warnings": [],
+  "heuristic_signals": [],
+  "limitations": [
+    "Automated motion metrics do not prove human-perceived naturalness.",
+    "Heuristic identity or lip-sync signals cannot support biometric-grade claims.",
+    "This report does not establish parity with commercial avatar products."
+  ]
+}
