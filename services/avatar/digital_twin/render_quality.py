@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .identity_sface import evaluate_sface_identity
+from .lipsync_syncnet import evaluate_syncnet_lipsync
 from .verification import VerificationSignal, _provider_signal, _run_json_provider, analyze_video_evidence, enforce_signal_threshold
 
 try:
@@ -146,6 +147,9 @@ def evaluate_render_quality(
         )
 
     lipsync_template = str(env.get("DIGITAL_TWIN_LIPSYNC_VERIFY_CMD") or "").strip()
+    syncnet_home = str(env.get("DIGITAL_TWIN_SYNCNET_HOME") or "").strip()
+    syncnet_model = str(env.get("DIGITAL_TWIN_SYNCNET_MODEL_PATH") or "").strip()
+    syncnet_s3fd = str(env.get("DIGITAL_TWIN_SYNCNET_S3FD_MODEL_PATH") or "").strip()
     if lipsync_template:
         try:
             lip_sync = enforce_signal_threshold(
@@ -158,6 +162,23 @@ def evaluate_render_quality(
             )
         except Exception as exc:
             lip_sync = VerificationSignal("lip_sync", None, None, "unavailable", "configured_lipsync_provider", {}, str(exc))
+    elif syncnet_model:
+        if not syncnet_home or not syncnet_s3fd:
+            lip_sync = VerificationSignal(
+                "lip_sync", False, None, "strong", "latentsync_syncnet", {},
+                "lipsync_model_configuration_incomplete",
+            )
+        else:
+            lip_sync = evaluate_syncnet_lipsync(
+                output_video=output_video,
+                audio_path=audio_path,
+                runtime_home=syncnet_home,
+                checkpoint=syncnet_model,
+                s3fd_checkpoint=syncnet_s3fd,
+                min_confidence=env.get("DIGITAL_TWIN_SYNCNET_MIN_CONFIDENCE") or 2.0,
+                max_offset_frames=env.get("DIGITAL_TWIN_SYNCNET_MAX_OFFSET_FRAMES") or 2,
+                timeout_seconds=env.get("DIGITAL_TWIN_SYNCNET_TIMEOUT_SECONDS") or 300,
+            )
     else:
         raw_lip = float(checks.get("lip_movement_score") or 0.0)
         target = max(float(checks.get("min_lip_movement") or 0.002), 0.0001)

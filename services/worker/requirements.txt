@@ -8,3 +8,6 @@ requests>=2.31.0
 python-docx>=0.8
 PyMuPDF>=1.23
 opencv-python-headless>=4.10
+decord==0.6.0
+python_speech_features==0.6
+scenedetect==0.6.1

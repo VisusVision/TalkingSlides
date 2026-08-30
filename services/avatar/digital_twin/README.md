@@ -92,3 +92,42 @@ Run the metric against existing renders without re-rendering:
 ```powershell
 python services/scripts/evaluate_avatar_identity.py source.png generic.mp4 personal.mp4 prosody.mp4
 ```
+
+## Strong local lip-sync metric
+
+The avatar worker contains a pinned ByteDance LatentSync checkout and can run
+its SyncNet evaluator as a release gate. Install the checksum-pinned 54 MB
+evaluation checkpoint into private storage:
+
+```powershell
+python services/scripts/install_avatar_syncnet_model.py
+```
+
+Configure the model after rebuilding the avatar worker image:
+
+```text
+DIGITAL_TWIN_SYNCNET_HOME=/opt/latentsync
+DIGITAL_TWIN_SYNCNET_MODEL_PATH=/app/storage_local/models/syncnet/syncnet_v2.model
+```
+
+The installer also checksum-verifies the S3FD face detector in the worker's
+Torch cache. The provider remuxes the rendered video with the audio requested
+by the render, then records SyncNet confidence and the best audio/video offset.
+The default locally calibrated gate requires confidence of at least `2.0` and
+an absolute offset no greater than two 25 FPS frames (80 ms). Checkpoint
+checksum, code and model revisions, license metadata, raw confidence, and
+offset evidence are persisted. Missing runtime/model files, unverifiable
+revisions, malformed provider output, timeouts, low confidence, and excessive
+offset all fail closed. This metric is an automated synchronization signal;
+perceived naturalness still requires human review.
+
+The normalized `score` is a threshold-relative quality value, not a
+probability: `confidence / (confidence + minimum_confidence / 4)`. Therefore
+the configured confidence boundary maps to `0.8`, while the raw upstream value
+is always retained for comparison and recalibration.
+
+Evaluate existing renders without generating them again:
+
+```powershell
+python services/scripts/evaluate_avatar_lipsync.py speech.wav generic.mp4 personal.mp4 prosody.mp4
+```
