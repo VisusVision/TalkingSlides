@@ -1032,6 +1032,13 @@ def _run_via_musetalk_service(
                 error_details["failure_category"] = failure_category
             if isinstance(err_body.get("retryable"), bool):
                 error_details["retryable"] = err_body["retryable"]
+            for field in ("preflight_reason", "preflight_resource", "preflight_filesystem"):
+                value = str(err_body.get(field) or "")
+                if value:
+                    error_details[field] = value
+            for field in ("required_mib", "free_mib"):
+                if isinstance(err_body.get(field), (int, float)):
+                    error_details[field] = float(err_body[field])
         except Exception:
             error_msg = f"service_http_{exc.code}"
         logger.error(

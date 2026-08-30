@@ -416,6 +416,8 @@ def test_musetalk_service_route_preserves_non_retryable_output_preflight_details
             ),
             "failure_category": "output_preflight",
             "retryable": False,
+            "preflight_reason": "permission_denied",
+            "preflight_resource": "output",
         }
     ).encode("utf-8")
 
@@ -449,6 +451,8 @@ def test_musetalk_service_route_preserves_non_retryable_output_preflight_details
     assert result.details["http_status"] == 422
     assert result.details["failure_category"] == "output_preflight"
     assert result.details["retryable"] is False
+    assert result.details["preflight_reason"] == "permission_denied"
+    assert result.details["preflight_resource"] == "output"
     assert "reason=permission_denied" in result.error
 
 
