@@ -7,7 +7,7 @@ import math
 from typing import Any
 
 
-EVALUATION_VERSION = "avatar-evaluation-v1"
+EVALUATION_VERSION = "avatar-evaluation-v2"
 REQUIRED_VARIANTS = ("generic", "personal", "prosody")
 _QUALITY_REGRESSION_TOLERANCE = 0.05
 _DURATION_REGRESSION_TOLERANCE_SECONDS = 0.10
@@ -33,16 +33,61 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+_PUBLIC_SIGNAL_DETAIL_KEYS = frozenset(
+    {
+        "aggregation",
+        "av_offset_frames",
+        "av_offset_milliseconds",
+        "confidence_passed",
+        "cosine_max",
+        "cosine_median",
+        "cosine_min",
+        "cosine_p10",
+        "face_coverage",
+        "face_frames",
+        "frames_sampled",
+        "latentsync_code_revision",
+        "latentsync_code_revision_expected",
+        "latentsync_model_revision",
+        "maximum_offset_frames",
+        "minimum_confidence",
+        "minimum_cosine",
+        "model_hash_verified",
+        "model_hashes_verified",
+        "offset_passed",
+        "opencv_version",
+        "opencv_zoo_revision",
+        "runtime_revision_verified",
+        "s3fd_hash_verified",
+        "score_normalization",
+        "syncnet_confidence",
+        "syncnet_model_license",
+        "video_fps_contract",
+    }
+)
+
+
 def _signal(payload: Any) -> dict[str, Any]:
     signal = _mapping(payload)
     raw_score = signal.get("score")
     score = None if raw_score is None else round(_clamp(raw_score), 5)
     passed = signal.get("passed")
+    details = _mapping(signal.get("details"))
+    public_evidence = {
+        key: value
+        for key, value in details.items()
+        if key in _PUBLIC_SIGNAL_DETAIL_KEYS
+        and (
+            isinstance(value, (str, int, bool))
+            or (isinstance(value, float) and math.isfinite(value))
+        )
+    }
     return {
         "score": score,
         "passed": passed if isinstance(passed, bool) else None,
         "assurance": str(signal.get("assurance") or "unavailable").strip().lower(),
         "provider": str(signal.get("provider") or "").strip(),
+        "evidence": public_evidence,
     }
 
 
@@ -395,8 +440,15 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
             f"{kind}.{signal_name}"
             for kind, variant in by_kind.items()
             for signal_name in ("identity", "lip_sync", "temporal")
-            if str(variant[signal_name]["assurance"]) not in {"strong", "biometric", "verified"}
+            if str(variant[signal_name]["assurance"])
+            not in ({"technical", "verified"} if signal_name == "temporal" else {"strong", "biometric", "verified"})
         }
+    )
+    model_verified = all(
+        str(by_kind[kind][signal_name]["assurance"]) in {"strong", "biometric", "verified"}
+        and by_kind[kind][signal_name]["passed"] is True
+        for kind in REQUIRED_VARIANTS
+        for signal_name in ("identity", "lip_sync")
     )
     fair_comparison = bool(generic["generic_baseline_isolated"])
     automated_claims = {
@@ -408,6 +460,7 @@ def evaluate_avatar_variants(manifest: Mapping[str, Any]) -> dict[str, Any]:
         "prosody_identity_motion_decoupled": bool(prosody["identity_motion_decoupled"]),
         "personal_quality_non_regression": not bool(comparisons["personal_vs_generic"]["regressions"]),
         "prosody_quality_non_regression": not bool(comparisons["prosody_vs_personal"]["regressions"]),
+        "model_verified_identity_and_lip_sync": model_verified,
         "naturalness_improved": "manual_review_required",
         "emotion_fit_improved": "manual_review_required",
     }
@@ -499,6 +552,24 @@ def render_evaluation_markdown(report: Mapping[str, Any]) -> str:
                 prosody="yes" if variant.get("prosody_timeline_materialized") else "no",
                 eligible="yes" if variant.get("eligible") else "no",
             )
+        )
+    lines.extend(["", "## Verification providers", ""])
+    for variant in variants:
+        identity = dict(variant.get("identity") or {})
+        lip_sync = dict(variant.get("lip_sync") or {})
+        sync_evidence = dict(lip_sync.get("evidence") or {})
+        offset = sync_evidence.get("av_offset_milliseconds")
+        confidence = sync_evidence.get("syncnet_confidence")
+        sync_measurement = (
+            f"confidence={float(confidence):.2f}, offset={float(offset):+.0f}ms"
+            if confidence is not None and offset is not None
+            else "provider score recorded"
+        )
+        lines.append(
+            f"- `{variant.get('kind')}`: identity `{identity.get('provider') or 'unavailable'}` "
+            f"({identity.get('assurance') or 'unavailable'}); lip sync "
+            f"`{lip_sync.get('provider') or 'unavailable'}` "
+            f"({lip_sync.get('assurance') or 'unavailable'}, {sync_measurement})."
         )
     lines.extend(["", "## Regression checks", ""])
     for name, comparison in dict(payload.get("comparisons") or {}).items():

@@ -13,6 +13,8 @@ from avatar.digital_twin.demo_pack import (
     build_demo_variant_plans,
     compose_side_by_side_video,
     run_demo_pack,
+    validate_strong_quality_configuration,
+    validate_strong_quality_report,
 )
 
 
@@ -62,13 +64,37 @@ def _prosody_profile() -> dict:
 
 
 def _quality_report() -> dict:
-    signal = {"score": 0.9, "passed": True, "assurance": "strong", "provider": "test"}
+    identity = {
+        "score": 0.9,
+        "passed": True,
+        "assurance": "strong",
+        "provider": "opencv_yunet_sface",
+        "details": {
+            "face_frames": 24,
+            "face_coverage": 1.0,
+            "cosine_p10": 0.9,
+            "yunet_model": "private/model/path.onnx",
+        },
+    }
+    lip_sync = {
+        "score": 0.9,
+        "passed": True,
+        "assurance": "strong",
+        "provider": "latentsync_syncnet",
+        "details": {
+            "syncnet_confidence": 2.5,
+            "av_offset_frames": 1,
+            "av_offset_milliseconds": 40.0,
+            "syncnet_model": "private/model/path.model",
+        },
+    }
     return {
         "decision": "passed",
         "publish_allowed": True,
-        "identity": dict(signal),
-        "lip_sync": dict(signal),
-        "temporal": {**signal, "assurance": "verified"},
+        "strict_gate": True,
+        "identity": identity,
+        "lip_sync": lip_sync,
+        "temporal": {"score": 0.9, "passed": True, "assurance": "technical", "provider": "canonical"},
         "technical": {
             "strict_validation_passed": True,
             "audio_match": True,
@@ -104,6 +130,61 @@ class _FakeSampler:
             "peak_delta_mb": 5_100.0,
             "scope": "test",
         }
+
+
+def test_strong_quality_configuration_checks_strict_gate_and_runtime_files(tmp_path, monkeypatch):
+    monkeypatch.setattr("avatar.digital_twin.demo_pack.shutil.which", lambda name: f"/test/{name}")
+    runtime = tmp_path / "latentsync"
+    evaluator = runtime / "eval" / "eval_sync_conf.py"
+    evaluator.parent.mkdir(parents=True)
+    evaluator.write_text("# fixture", encoding="utf-8")
+    yunet = tmp_path / "yunet.onnx"
+    sface = tmp_path / "sface.onnx"
+    syncnet = tmp_path / "syncnet.model"
+    s3fd = tmp_path / "s3fd.pth"
+    for path in (yunet, sface, syncnet, s3fd):
+        path.write_bytes(b"fixture")
+    env = {
+        "DIGITAL_TWIN_STRICT_QUALITY_GATE": "1",
+        "DIGITAL_TWIN_YUNET_MODEL_PATH": str(yunet),
+        "DIGITAL_TWIN_SFACE_MODEL_PATH": str(sface),
+        "DIGITAL_TWIN_SYNCNET_HOME": str(runtime),
+        "DIGITAL_TWIN_SYNCNET_MODEL_PATH": str(syncnet),
+        "DIGITAL_TWIN_SYNCNET_S3FD_MODEL_PATH": str(s3fd),
+    }
+
+    result = validate_strong_quality_configuration(env)
+
+    assert result == {
+        "strict_gate": True,
+        "identity_provider_mode": "opencv_yunet_sface",
+        "lip_sync_provider_mode": "latentsync_syncnet",
+    }
+    with pytest.raises(DemoPackContractError, match="strong_identity_model_files"):
+        validate_strong_quality_configuration({**env, "DIGITAL_TWIN_YUNET_MODEL_PATH": str(tmp_path / "missing")})
+
+    external = {
+        **env,
+        "DIGITAL_TWIN_IDENTITY_VERIFY_CMD": "identity-provider --json",
+        "DIGITAL_TWIN_LIPSYNC_VERIFY_CMD": "lipsync-provider --json",
+        "DIGITAL_TWIN_YUNET_MODEL_PATH": str(tmp_path / "unused-missing-yunet"),
+        "DIGITAL_TWIN_SYNCNET_MODEL_PATH": str(tmp_path / "unused-missing-syncnet"),
+    }
+    assert validate_strong_quality_configuration(external)["identity_provider_mode"] == "external"
+    assert validate_strong_quality_configuration(external)["lip_sync_provider_mode"] == "external"
+
+
+def test_strong_quality_report_rejects_a_heuristic_signal():
+    report = _quality_report()
+    report["lip_sync"] = {
+        "score": 0.9,
+        "passed": True,
+        "assurance": "heuristic",
+        "provider": "motion_proxy",
+    }
+
+    with pytest.raises(DemoPackContractError, match="demo_strong_quality_failed:prosody:lip_sync_not_strong"):
+        validate_strong_quality_report("prosody", report)
 
 
 def test_variant_plans_change_only_the_capability_under_test():
@@ -266,6 +347,47 @@ def test_demo_pack_identifies_the_variant_that_failed_to_render(tmp_path):
         )
 
 
+def test_demo_pack_stops_before_comparison_when_strong_quality_fails(tmp_path):
+    source_image, source_video, audio = _write_inputs(tmp_path)
+    rendered: list[str] = []
+
+    def render_variant(kind: str, _plan: dict, output_path: Path) -> dict:
+        rendered.append(kind)
+        output_path.write_bytes(b"render" * 300)
+        return {
+            "strict_validation_passed": True,
+            "motion_validation": {"audio_match": True},
+        }
+
+    report = _quality_report()
+    report["identity"]["passed"] = False
+
+    with pytest.raises(
+        DemoPackContractError,
+        match="demo_strong_quality_failed:generic:identity_failed",
+    ):
+        run_demo_pack(
+            suite_id="portfolio-strong-failure",
+            output_dir=tmp_path / "strong-failure",
+            source_image=source_image,
+            source_video=source_video,
+            audio_path=audio,
+            motion_style_package=_motion_package(),
+            request_payload={},
+            prosody_profile=_prosody_profile(),
+            model_versions={"liveportrait": "test"},
+            script_hash="a" * 64,
+            quality_preset="high",
+            render_contract={"lipsync_engine": "musetalk"},
+            render_variant=render_variant,
+            evaluate_quality=lambda *_args: report,
+            compose_comparison=lambda **_kwargs: pytest.fail("comparison must not run"),
+            sampler_factory=_FakeSampler,
+        )
+
+    assert rendered == ["generic"]
+
+
 def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp_path):
     source_image, source_video, audio = _write_inputs(tmp_path)
     output_dir = tmp_path / "demo"
@@ -364,6 +486,12 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
     assert result["pack"]["experiment"]["render_contract"]["generic_motion_source_policy"] == (
         "generic_non_personal"
     )
+    assert result["pack"]["experiment"]["quality_contract"] == {
+        "strict_gate_required": True,
+        "strong_identity_required": True,
+        "strong_lip_sync_required": True,
+        "failed_variant_publishable": False,
+    }
     assert result["report"]["recommendation"] == "prosody"
     variants = {item["kind"]: item for item in result["report"]["variants"]}
     assert variants["personal"]["personal_window_materialized"] is True
@@ -375,6 +503,12 @@ def test_demo_pack_runs_serially_and_separates_public_from_private_artifacts(tmp
     assert result["report"]["automated_claims"]["generic_baseline_isolated"] is True
     assert result["report"]["automated_claims"]["personal_identity_motion_decoupled"] is True
     assert result["report"]["automated_claims"]["prosody_identity_motion_decoupled"] is True
+    assert result["report"]["automated_claims"]["model_verified_identity_and_lip_sync"] is True
+    generic_metrics = result["report"]["variants"][0]
+    assert generic_metrics["identity"]["evidence"]["face_frames"] == 24
+    assert "yunet_model" not in generic_metrics["identity"]["evidence"]
+    assert generic_metrics["lip_sync"]["evidence"]["syncnet_confidence"] == 2.5
+    assert "syncnet_model" not in generic_metrics["lip_sync"]["evidence"]
     public_dir = output_dir / "portfolio"
     assert sorted(path.name for path in public_dir.iterdir()) == sorted(
         [

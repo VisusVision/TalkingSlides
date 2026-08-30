@@ -1,4 +1,4 @@
-# Avatar Demo Pack V1
+# Avatar Demo Pack V2
 
 Avatar Demo Pack turns the personal-motion work into a reproducible portfolio
 artifact. It renders three variants from the same image, performance video,
@@ -26,8 +26,9 @@ every quality preset or model combination fits a particular GPU.
 - the corresponding performance video;
 - one final speech audio file used unchanged by all variants;
 - an accepted `motion-style-v2` package produced during training;
-- LivePortrait, MuseTalk, restoration dependencies, FFmpeg, and optional
-  configured strong quality providers available to the avatar worker runtime.
+- LivePortrait, MuseTalk, restoration dependencies, and FFmpeg;
+- strict quality mode plus configured model-backed identity and lip-sync
+  providers. The default portfolio command refuses heuristic fallbacks.
 
 The script deliberately does not synthesize speech three times. Reusing one
 audio artifact prevents TTS variation from contaminating the motion comparison.
@@ -54,12 +55,31 @@ The runner refuses to start if a personal interval or a varied prosody timeline
 cannot be built. This avoids spending GPU time on three clips that do not
 actually represent the promised experiment.
 
+Before starting GPU rendering, V2 also verifies that strict mode is enabled,
+that the configured YuNet/SFace and SyncNet runtime files exist, and that
+FFmpeg is available to remux the requested audio for SyncNet. Every completed
+variant must record `decision=passed`, `publish_allowed=true`, successful strong
+identity and lip-sync signals, and successful technical/temporal validation.
+The run stops at the first failing variant, and no comparison video is produced
+from a failed candidate.
+
 ## Run
 
 Run from the repository root with an output directory outside the repository:
 
 ```powershell
 python services/scripts/build_avatar_demo_pack.py D:\avatar-demo-inputs\manifest.json --output-dir D:\avatar-demo-results\case-001
+```
+
+Required environment variables for the built-in verifier path are:
+
+```powershell
+$env:DIGITAL_TWIN_STRICT_QUALITY_GATE = "1"
+$env:DIGITAL_TWIN_YUNET_MODEL_PATH = "D:\models\face_detection_yunet_2023mar.onnx"
+$env:DIGITAL_TWIN_SFACE_MODEL_PATH = "D:\models\face_recognition_sface_2021dec.onnx"
+$env:DIGITAL_TWIN_SYNCNET_HOME = "D:\models\latentsync-runtime"
+$env:DIGITAL_TWIN_SYNCNET_MODEL_PATH = "D:\models\syncnet_v2.model"
+$env:DIGITAL_TWIN_SYNCNET_S3FD_MODEL_PATH = "D:\models\torch\hub\checkpoints\s3fd-619a316812.pth"
 ```
 
 On an RTX 4060, keep other GPU-heavy applications closed and begin with the
@@ -73,6 +93,10 @@ dependency. It still writes diagnostic reports but returns `3` when automated
 quality evidence does not recommend `prosody`. Use
 `--allow-non-prosody-recommendation` only for investigation, not to turn a
 failed comparison into a successful portfolio claim.
+
+`--allow-heuristic-quality` exists only for local diagnostics and is recorded
+in the pack's quality contract. Do not publish that output as model-verified
+portfolio evidence.
 
 Use a new or empty output directory for every run. The runner rejects a
 non-empty directory so cached videos cannot accidentally be presented as fresh
@@ -117,6 +141,9 @@ source-video, or audio paths. Nothing is uploaded or published automatically.
 - Prosody is counted only when the renderer reports a materialized timeline.
 - Every candidate must pass identity, lip-sync, temporal, technical, duration,
   artifact, and non-regression gates before it can be recommended.
+- Public reports contain provider names, assurance levels, safe aggregate
+  measurements, SyncNet confidence and AV offset. Local model/source paths are
+  excluded from the public evidence.
 
 ## Portfolio claim boundary
 

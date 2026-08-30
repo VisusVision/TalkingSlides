@@ -31,6 +31,8 @@ from .demo_pack import (
     build_demo_input_fingerprint,
     build_demo_variant_plans,
     run_demo_pack,
+    validate_strong_quality_configuration,
+    validate_strong_quality_report,
 )
 from .orchestrator import DigitalTwinOrchestrator, QualityGateError, TwinNotReadyError
 from .hardware import GpuSnapshot, InferenceProfile, apply_local_inference_profile, probe_nvidia_gpu
@@ -85,5 +87,7 @@ __all__ = [
     "evaluate_avatar_variants",
     "render_evaluation_markdown",
     "run_demo_pack",
+    "validate_strong_quality_configuration",
+    "validate_strong_quality_report",
     "verify_consent_evidence",
 ]

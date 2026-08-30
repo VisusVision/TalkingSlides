@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 from typing import Any
@@ -16,6 +17,7 @@ from avatar.digital_twin.demo_pack import (  # noqa: E402
     DemoPackContractError,
     build_demo_variant_render_inputs,
     run_demo_pack,
+    validate_strong_quality_configuration,
 )
 
 
@@ -63,6 +65,11 @@ def main() -> int:
         action="store_true",
         help="Return success even when quality gates do not recommend the prosody variant.",
     )
+    parser.add_argument(
+        "--allow-heuristic-quality",
+        action="store_true",
+        help="Investigation only: allow a demo run without strict model-backed identity and lip-sync gates.",
+    )
     args = parser.parse_args()
 
     manifest_path = args.manifest.resolve()
@@ -96,6 +103,9 @@ def main() -> int:
     model_versions = dict(manifest.get("model_versions") or {})
     if not model_versions:
         raise DemoPackContractError("demo_model_versions_missing")
+    require_strong_quality = not args.allow_heuristic_quality
+    if require_strong_quality:
+        validate_strong_quality_configuration(os.environ)
 
     from avatar.digital_twin.prosody import analyze_audio_prosody
     from avatar.digital_twin.render_quality import evaluate_render_quality
@@ -165,6 +175,7 @@ def main() -> int:
         },
         render_variant=render_variant,
         evaluate_quality=quality_evaluator,
+        require_strong_quality=require_strong_quality,
     )
     recommendation = str(result["report"]["recommendation"])
     print(

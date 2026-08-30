@@ -90,6 +90,19 @@ The command writes deterministic `avatar-evaluation.json` and
 python services/scripts/evaluate_avatar_variants.py manifest.json --fail-on-regression --require-recommendation prosody
 ```
 
+For a portfolio or release artifact backed by existing media, enable the same
+strict YuNet/SFace and SyncNet environment used by the demo runner and require
+strong verification explicitly:
+
+```powershell
+python services/scripts/evaluate_avatar_variants.py manifest.json --require-strong-quality --fail-on-regression --require-recommendation prosody
+```
+
+Strong mode checks the configured model/runtime files and FFmpeg before media
+evaluation. Each variant must then pass strict technical, temporal, identity,
+and lip-sync gates. The public V2 report includes safe aggregate verifier
+evidence while excluding local model and source paths.
+
 Exit code `2` means the comparison contract or an input file is invalid, `3`
 means a regression was found, and `4` means the required recommendation was
 not reached.
@@ -129,7 +142,7 @@ unfavorable manual result with the automated recommendation.
   natural or more like the subject.
 - Heuristic identity and lip-sync providers are not biometric-grade evidence.
 - V1 compares already-produced artifacts; it does not schedule all three
-  renders itself. `AVATAR_DEMO_PACK_V1.md` supplies the local sequential runner
+  renders itself. `AVATAR_DEMO_PACK_V1.md` supplies the V2 local sequential runner
   and comparison artifact layer.
 - The report supports an honest engineering claim about reproducibility and
   non-regression, not a HeyGen-equivalence claim.

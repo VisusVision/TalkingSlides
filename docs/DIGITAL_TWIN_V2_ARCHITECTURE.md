@@ -223,12 +223,13 @@ Markdown scorecard requires blind human review for naturalness and emotion-fit
 claims. The protocol and CLI are documented in
 `docs/AVATAR_EVALUATION_LAB_V1.md`.
 
-Avatar Demo Pack V1 supplies the artifact-producing layer above that evaluator.
+Avatar Demo Pack V2 supplies the artifact-producing layer above that evaluator.
 It runs generic, personal-window, and prosody-timeline renders sequentially,
 records runtime and best-effort total GPU-memory measurements, verifies actual
-motion materialization, and emits a synchronized three-panel video with an
-`AI AVATAR DEMO` disclosure. Private individual renders and publishable
-portfolio artifacts use separate directories. See `docs/AVATAR_DEMO_PACK_V1.md`.
+motion materialization plus strong identity/lip-sync gates, and emits a
+synchronized three-panel video with an `AI AVATAR DEMO` disclosure. Private
+individual renders and publishable portfolio artifacts use separate
+directories. See `docs/AVATAR_DEMO_PACK_V1.md` (legacy filename).
 
 ## API shape
 

@@ -17,12 +17,116 @@ from .evaluation import evaluate_avatar_variants, render_evaluation_markdown
 from .motion_planning import build_personal_motion_plan
 
 
-DEMO_PACK_VERSION = "avatar-demo-pack-v1"
+DEMO_PACK_VERSION = "avatar-demo-pack-v2"
 DEMO_VARIANTS = ("generic", "personal", "prosody")
+STRONG_ASSURANCE = frozenset({"strong", "biometric", "verified"})
 
 
 class DemoPackContractError(ValueError):
     """Raised before or during a demo run when its evidence would be invalid."""
+
+
+def validate_strong_quality_configuration(environ: Mapping[str, str]) -> dict[str, Any]:
+    """Fail before GPU work when portfolio-grade verifiers are not configured."""
+
+    env = {str(key): str(value or "").strip() for key, value in environ.items()}
+    strict_gate = env.get("DIGITAL_TWIN_STRICT_QUALITY_GATE", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+    identity_external = bool(env.get("DIGITAL_TWIN_IDENTITY_VERIFY_CMD"))
+    identity_builtin = bool(
+        env.get("DIGITAL_TWIN_YUNET_MODEL_PATH")
+        and env.get("DIGITAL_TWIN_SFACE_MODEL_PATH")
+    )
+    lipsync_external = bool(env.get("DIGITAL_TWIN_LIPSYNC_VERIFY_CMD"))
+    lipsync_builtin = bool(
+        env.get("DIGITAL_TWIN_SYNCNET_HOME")
+        and env.get("DIGITAL_TWIN_SYNCNET_MODEL_PATH")
+        and env.get("DIGITAL_TWIN_SYNCNET_S3FD_MODEL_PATH")
+    )
+    missing: list[str] = []
+    if not strict_gate:
+        missing.append("strict_quality_gate")
+    if not (identity_external or identity_builtin):
+        missing.append("strong_identity_provider")
+    elif identity_builtin and not identity_external and not all(
+        Path(env[key]).is_file()
+        for key in ("DIGITAL_TWIN_YUNET_MODEL_PATH", "DIGITAL_TWIN_SFACE_MODEL_PATH")
+    ):
+        missing.append("strong_identity_model_files")
+    if not (lipsync_external or lipsync_builtin):
+        missing.append("strong_lipsync_provider")
+    elif lipsync_builtin and not lipsync_external:
+        syncnet_home = Path(env["DIGITAL_TWIN_SYNCNET_HOME"])
+        if not (
+            (syncnet_home / "eval" / "eval_sync_conf.py").is_file()
+            and Path(env["DIGITAL_TWIN_SYNCNET_MODEL_PATH"]).is_file()
+            and Path(env["DIGITAL_TWIN_SYNCNET_S3FD_MODEL_PATH"]).is_file()
+        ):
+            missing.append("strong_lipsync_runtime_files")
+        if not shutil.which("ffmpeg"):
+            missing.append("strong_lipsync_ffmpeg")
+    if missing:
+        raise DemoPackContractError(
+            f"demo_strong_quality_configuration_missing:{','.join(missing)}"
+        )
+    return {
+        "strict_gate": True,
+        "identity_provider_mode": "external" if identity_external else "opencv_yunet_sface",
+        "lip_sync_provider_mode": "external" if lipsync_external else "latentsync_syncnet",
+    }
+
+
+def validate_strong_quality_report(kind: str, report: Mapping[str, Any]) -> dict[str, Any]:
+    """Require a publishable, model-verified result for one portfolio variant."""
+
+    payload = dict(report or {})
+    failures: list[str] = []
+    if str(payload.get("decision") or "").strip().lower() != "passed":
+        failures.append("decision_not_passed")
+    if payload.get("publish_allowed") is not True:
+        failures.append("publish_not_allowed")
+    if payload.get("strict_gate") is not True:
+        failures.append("strict_gate_not_recorded")
+    technical = dict(payload.get("technical") or {})
+    if technical.get("strict_validation_passed") is not True:
+        failures.append("technical_validation_failed")
+    if technical.get("audio_match") is not True:
+        failures.append("audio_mismatch")
+    if technical.get("duration_mismatch") is True:
+        failures.append("duration_mismatch")
+    if technical.get("artifact_detected") is True:
+        failures.append("artifact_detected")
+    if technical.get("landmark_stable") is not True:
+        failures.append("landmark_unstable")
+    for name in ("identity", "lip_sync"):
+        signal = dict(payload.get(name) or {})
+        assurance = str(signal.get("assurance") or "").strip().lower()
+        if assurance not in STRONG_ASSURANCE:
+            failures.append(f"{name}_not_strong")
+        if signal.get("passed") is not True:
+            failures.append(f"{name}_failed")
+        if not str(signal.get("provider") or "").strip():
+            failures.append(f"{name}_provider_missing")
+    temporal = dict(payload.get("temporal") or {})
+    if temporal.get("passed") is not True:
+        failures.append("temporal_failed")
+    if failures:
+        normalized_kind = str(kind or "unknown").strip().lower()[:40]
+        raise DemoPackContractError(
+            f"demo_strong_quality_failed:{normalized_kind}:{','.join(failures)}"
+        )
+    return {
+        "strict_gate": True,
+        "identity": {
+            "provider": str(dict(payload["identity"]).get("provider") or ""),
+            "assurance": str(dict(payload["identity"]).get("assurance") or ""),
+        },
+        "lip_sync": {
+            "provider": str(dict(payload["lip_sync"]).get("provider") or ""),
+            "assurance": str(dict(payload["lip_sync"]).get("assurance") or ""),
+        },
+    }
 
 
 def _json_safe(value: Any) -> Any:
@@ -409,6 +513,7 @@ def run_demo_pack(
     render_contract: Mapping[str, Any],
     render_variant: Callable[[str, Mapping[str, Any], Path], Mapping[str, Any]],
     evaluate_quality: Callable[[Path, Mapping[str, Any]], Mapping[str, Any]],
+    require_strong_quality: bool = True,
     compose_comparison: Callable[..., Mapping[str, Any]] = compose_side_by_side_video,
     sampler_factory: Callable[[], AbstractContextManager[Any]] = GpuMemorySampler,
 ) -> dict[str, Any]:
@@ -477,6 +582,8 @@ def run_demo_pack(
             raise DemoPackContractError(
                 f"demo_quality_evaluation_failed:{kind}:{type(exc).__name__}:{reason}"
             ) from exc
+        if require_strong_quality:
+            validate_strong_quality_report(kind, quality_report)
         gpu = dict(sampler.as_dict()) if hasattr(sampler, "as_dict") else {}
         variant_evidence = {
             "id": f"{suite_id}-{kind}",
@@ -553,6 +660,12 @@ def run_demo_pack(
         "experiment": {
             "request": public_request,
             "render_contract": public_render_contract,
+            "quality_contract": {
+                "strict_gate_required": bool(require_strong_quality),
+                "strong_identity_required": bool(require_strong_quality),
+                "strong_lip_sync_required": bool(require_strong_quality),
+                "failed_variant_publishable": False,
+            },
         },
         "comparison": comparison,
         "public_artifacts": [

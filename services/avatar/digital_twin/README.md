@@ -14,9 +14,11 @@ digital twin. It separates lifecycle policy from GPU implementation:
 - `prosody.py`: lightweight PCM energy, speech-activity, pause, and emphasis
   analysis for versioned `prosody-v1` render timing.
 - `evaluation.py`: fair-input comparison, non-regression checks, numeric
-  deltas, and blind-review scaffolding for `avatar-evaluation-v1`.
+  deltas, model-verifier evidence, and blind-review scaffolding for
+  `avatar-evaluation-v2`.
 - `demo_pack.py`: sequential generic/personal/prosody renders, GPU measurement,
-  and a separated public portfolio bundle for `avatar-demo-pack-v1`.
+  and a separated, strict model-verified public portfolio bundle for
+  `avatar-demo-pack-v2`.
 
 The current LivePortrait + MuseTalk pipeline should be connected through a
 `PortraitRenderer` adapter. A future video-reference diffusion model connects
@@ -50,16 +52,17 @@ crossfaded driving montage. The audio analyzer and montage are fail-open: when
 decoding, timing validation, or montage generation fails, the single-window
 Motion Planner V2 path remains active and the fallback reason is persisted.
 
-Avatar Evaluation Lab V1 compares generic, personal, and prosody render
+Avatar Evaluation Lab V2 compares generic, personal, and prosody render
 evidence under one input fingerprint. It writes stable JSON and Markdown,
 rejects unsupported recommendations, and leaves perceptual naturalness claims
 to a blind human review. See `docs/AVATAR_EVALUATION_LAB_V1.md` for the capture
 contract and CLI workflow.
 
-Avatar Demo Pack V1 drives the real local render boundary three times with one
-fingerprinted input contract, then creates a labeled and watermarked comparison
-video and runs the evaluation lab. It keeps source paths and individual renders
-out of the public artifact directory. See `docs/AVATAR_DEMO_PACK_V1.md`.
+Avatar Demo Pack V2 drives the real local render boundary three times with one
+fingerprinted input contract, requires model-backed identity and lip-sync gates,
+then creates a labeled and watermarked comparison video and runs the evaluation
+lab. It keeps source paths and individual renders out of the public artifact
+directory. See `docs/AVATAR_DEMO_PACK_V1.md` (legacy filename).
 
 ## Strong local identity metric
 
