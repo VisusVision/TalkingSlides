@@ -35,6 +35,7 @@ Useful setup and runtime diagnostics:
 - [Intelligence providers](INTELLIGENCE_PROVIDERS.md)
 - [Avatar pipeline](AVATAR_PIPELINE.md)
 - [Avatar model provisioning](AVATAR_MODEL_PROVISIONING.md)
+- [Avatar Run 011 strict evidence](evidence/avatar-run-011/README.md)
 - [Subtitle translation provider options](SUBTITLE_TRANSLATION_PROVIDER_OPTIONS.md)
 
 ## Roadmaps

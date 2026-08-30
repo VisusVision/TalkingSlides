@@ -1,0 +1,40 @@
+{
+  "version": "avatar-run-evidence-v1",
+  "run_id": "avatar-run-011",
+  "code_revision": "d229184be6016907cb73f3e00ed1f319ce35ff84",
+  "evaluation_contract": "avatar-evaluation-v2",
+  "demo_contract": "avatar-demo-pack-v2",
+  "recommendation": "prosody",
+  "fair_comparison": true,
+  "model_verified_identity_and_lip_sync": true,
+  "regressions": [],
+  "execution": {
+    "mode": "sequential",
+    "parallel_gpu_renders": 1,
+    "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "gpu_total_mib": 8188
+  },
+  "artifacts": {
+    "evaluation_report": {
+      "path": "avatar-evaluation.json",
+      "sha256": "107263b22cdf8fc5d9e8c51c08e6bec520ef326e1ea763e89b291c396aee1dd0"
+    },
+    "comparison_video": {
+      "committed": false,
+      "sha256": "72edd6cfb64f660bce8731eda50db23fb7af142b3099ea21a3fb2aa2ab8b4da2",
+      "size_bytes": 1728930,
+      "duration_seconds": 15.0,
+      "width": 1440,
+      "height": 720,
+      "fps": 25,
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "watermark": "AI AVATAR DEMO"
+    }
+  },
+  "privacy": {
+    "real_person_media_committed": false,
+    "absolute_path_leak_scan_passed": true
+  },
+  "claim_boundary": "manual_blind_review_required_for_perceived_naturalness"
+}
