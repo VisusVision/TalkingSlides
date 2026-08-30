@@ -1,0 +1,121 @@
+{
+  "version": "avatar-musetalk-recovery-evidence-v1",
+  "run_id": "avatar-run-012",
+  "implementation_revision": "901b0a72ab071b55c743244d2b81af889ed96e69",
+  "harness_revision": "ac200d5c61a9350f3e66dc636f9abb1b9987fd27",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+    "gpu_total_mib": 8188,
+    "observed_in_progress_sample": {
+      "memory_used_mib": 4126,
+      "memory_free_mib": 3831,
+      "temperature_celsius": 82,
+      "utilization_percent": 95
+    }
+  },
+  "fault_contract": {
+    "version": "musetalk-recovery-fault-v1",
+    "injected_fault": "first_infer_http_503",
+    "fail_infer_count": 1,
+    "infer_requests": 2,
+    "injected_failures": 1,
+    "expected_real_inferences": 1,
+    "service_route": "service_one_shot"
+  },
+  "recovery": {
+    "success": true,
+    "retry_limit": 1,
+    "retry_count": 1,
+    "failure_classification": "transient_service_transport:service_http_503",
+    "recovery_succeeded": true,
+    "retry_exhausted": false,
+    "total_elapsed_seconds": 132.4704,
+    "attempt_elapsed_seconds": 131.045,
+    "attempts": [
+      {
+        "attempt": 1,
+        "success": false,
+        "error": "fault_injection_transient_service_unavailable",
+        "classification": "transient_service_transport:service_http_503",
+        "elapsed_seconds": 0.015
+      },
+      {
+        "attempt": 2,
+        "success": true,
+        "error": "",
+        "classification": "",
+        "elapsed_seconds": 131.03
+      }
+    ]
+  },
+  "liveportrait_handoff": {
+    "sha256_before": "b14c90a974e75a7d1ce26d2b53778c9cadc8a3a606cda1b1c0852b9f2dd95d95",
+    "sha256_after": "b14c90a974e75a7d1ce26d2b53778c9cadc8a3a606cda1b1c0852b9f2dd95d95",
+    "unchanged": true,
+    "liveportrait_rerun": false
+  },
+  "output": {
+    "committed": false,
+    "sha256": "8dbacaa399d7ed241335fc99337955f01e44acd0fbd97e02dde9bd438d41324e",
+    "size_bytes": 1259196,
+    "duration_seconds": 15.0,
+    "width": 1024,
+    "height": 1024,
+    "fps": 25,
+    "video_codec": "h264",
+    "audio_codec": "aac"
+  },
+  "quality": {
+    "decision": "passed",
+    "publish_allowed": true,
+    "strict_validation_passed": true,
+    "frame_count": 375,
+    "animation_score": 4.2097,
+    "artifact_detected": false,
+    "lip_movement_score": 11.2524,
+    "mouth_openness_change": 0.003598,
+    "eye_movement_score": 8.4207,
+    "eye_blink_change": 0.003694,
+    "identity": {
+      "provider": "opencv_yunet_sface",
+      "assurance": "strong",
+      "passed": true,
+      "cosine_p10": 0.8212,
+      "face_coverage": 1.0,
+      "face_frames": 24,
+      "frames_sampled": 24,
+      "model_hashes_verified": true
+    },
+    "lip_sync": {
+      "provider": "latentsync_syncnet",
+      "assurance": "strong",
+      "passed": true,
+      "score": 0.8333,
+      "syncnet_confidence": 2.5,
+      "av_offset_frames": -1,
+      "av_offset_milliseconds": -40.0,
+      "model_hash_verified": true,
+      "runtime_revision_verified": true,
+      "s3fd_hash_verified": true
+    },
+    "temporal": {
+      "passed": true,
+      "score": 1.0
+    }
+  },
+  "private_artifacts": {
+    "recovery_report_sha256": "cbf2a5c08eb0c6b069ab882e68c2968f257edbe2c63f4b5c0f8d7c8e2fbf444c",
+    "fault_state_sha256": "cf13b87a7c3961d0893dfbe2c0870d7426b12fdf84dc527083a714e2f018607f",
+    "musetalk_debug_sha256": "f0020e6b05184b03ef6930873e565fe1b031cd6aca6136d4255ac00c13aa5a66"
+  },
+  "negative_control": {
+    "non_transient_permission_failure_retried": false,
+    "classification": "hard_failure",
+    "preserved_privately": true
+  },
+  "privacy": {
+    "real_person_media_committed": false,
+    "absolute_path_leak_scan_required": true
+  },
+  "claim_boundary": "proves_bounded_transport_recovery_not_commercial_avatar_parity"
+}

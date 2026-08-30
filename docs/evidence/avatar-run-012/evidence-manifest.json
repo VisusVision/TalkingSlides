@@ -1,0 +1,32 @@
+{
+  "version": "avatar-run-evidence-v1",
+  "run_id": "avatar-run-012",
+  "code_revision": "901b0a72ab071b55c743244d2b81af889ed96e69",
+  "harness_revision": "ac200d5c61a9350f3e66dc636f9abb1b9987fd27",
+  "recovery_contract": "avatar-musetalk-recovery-evidence-v1",
+  "fault_contract": "musetalk-recovery-fault-v1",
+  "result": "passed",
+  "artifacts": {
+    "recovery_evidence": {
+      "path": "recovery-evidence.json",
+      "sha256": "6ec62790a27db5bd602ff8fe3008ba9f824d9a5a088c2f04174194b0e3afe1d6"
+    },
+    "recovered_video": {
+      "committed": false,
+      "sha256": "8dbacaa399d7ed241335fc99337955f01e44acd0fbd97e02dde9bd438d41324e",
+      "size_bytes": 1259196
+    },
+    "private_recovery_report": {
+      "committed": false,
+      "sha256": "cbf2a5c08eb0c6b069ab882e68c2968f257edbe2c63f4b5c0f8d7c8e2fbf444c"
+    },
+    "private_fault_state": {
+      "committed": false,
+      "sha256": "cf13b87a7c3961d0893dfbe2c0870d7426b12fdf84dc527083a714e2f018607f"
+    }
+  },
+  "privacy": {
+    "real_person_media_committed": false,
+    "absolute_path_leak_scan_passed": true
+  }
+}
