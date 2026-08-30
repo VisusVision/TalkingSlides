@@ -843,6 +843,27 @@ def _warmup_musetalk(*, musetalk_home: Path, model_root: Path) -> int:
     return 0
 
 
+def _open_persistent_musetalk_service_stdio(fd: int) -> object:
+    """Open a service log target that outlives a short bootstrap invocation."""
+    configured = str(
+        os.environ.get(
+            "AVATAR_MUSETALK_SERVICE_STDOUT_PATH" if fd == 1 else "AVATAR_MUSETALK_SERVICE_STDERR_PATH",
+            "",
+        )
+    ).strip()
+    target = Path(configured) if configured else Path(f"/proc/1/fd/{fd}")
+    try:
+        return target.open("ab", buffering=0)
+    except Exception as exc:
+        LOGGER.warning(
+            "Bootstrap: MuseTalk service log target unavailable fd=%s path=%s error=%s; using DEVNULL",
+            fd,
+            target,
+            exc,
+        )
+        return subprocess.DEVNULL
+
+
 def _start_musetalk_service(*, musetalk_home: Path, model_root: Path) -> bool:
     """Start musetalk_service.py as a background process and wait until /health is ready.
 
@@ -940,15 +961,35 @@ def _start_musetalk_service(*, musetalk_home: Path, model_root: Path) -> bool:
             existing_health,
         )
     else:
-        proc = subprocess.Popen(
-            [sys.executable, str(service_script),
-             "--musetalk_home", str(musetalk_home),
-             "--model_root", str(model_root),
-             "--port", str(port)],
-            stdout=None,   # inherit worker stdout so logs appear in docker logs
-            stderr=None,
-            close_fds=True,
-        )
+        # Do not inherit a short-lived bootstrap caller's pipe. This matters
+        # when bootstrap is invoked through `docker exec`: once that exec exits,
+        # a service still writing to the inherited pipe can fail with EPIPE.
+        # Reopen PID 1's descriptors so logs stay attached to container logs.
+        stdio_handles: list[object] = []
+
+        try:
+            stdout_target = _open_persistent_musetalk_service_stdio(1)
+            stderr_target = _open_persistent_musetalk_service_stdio(2)
+            stdio_handles.extend(
+                target
+                for target in (stdout_target, stderr_target)
+                if target != subprocess.DEVNULL
+            )
+            proc = subprocess.Popen(
+                [sys.executable, str(service_script),
+                 "--musetalk_home", str(musetalk_home),
+                 "--model_root", str(model_root),
+                 "--port", str(port)],
+                stdout=stdout_target,
+                stderr=stderr_target,
+                close_fds=True,
+            )
+        finally:
+            for handle in stdio_handles:
+                try:
+                    handle.close()  # type: ignore[attr-defined]
+                except Exception:
+                    pass
 
     deadline = time.monotonic() + startup_timeout
     poll_interval = 3.0

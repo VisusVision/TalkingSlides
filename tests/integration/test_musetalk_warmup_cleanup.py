@@ -40,6 +40,25 @@ def _sleeping_musetalk_process(*, marker: str | None) -> subprocess.Popen[str]:
     )
 
 
+def test_musetalk_service_stdio_uses_explicit_persistent_targets(tmp_path, monkeypatch) -> None:
+    stdout_path = tmp_path / "musetalk.stdout.log"
+    stderr_path = tmp_path / "musetalk.stderr.log"
+    monkeypatch.setenv("AVATAR_MUSETALK_SERVICE_STDOUT_PATH", str(stdout_path))
+    monkeypatch.setenv("AVATAR_MUSETALK_SERVICE_STDERR_PATH", str(stderr_path))
+
+    stdout_target = bootstrap._open_persistent_musetalk_service_stdio(1)
+    stderr_target = bootstrap._open_persistent_musetalk_service_stdio(2)
+    try:
+        stdout_target.write(b"service-out\n")
+        stderr_target.write(b"service-error\n")
+    finally:
+        stdout_target.close()
+        stderr_target.close()
+
+    assert stdout_path.read_bytes() == b"service-out\n"
+    assert stderr_path.read_bytes() == b"service-error\n"
+
+
 def _terminate_process(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
         return

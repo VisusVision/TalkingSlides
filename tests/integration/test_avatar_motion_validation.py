@@ -2141,12 +2141,14 @@ def test_preview_pipeline_preserves_liveportrait_when_musetalk_times_out(tmp_pat
     assert not output.exists()
 
 
-def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monkeypatch):
+def test_preview_pipeline_recovers_transient_musetalk_without_rerunning_liveportrait(tmp_path, monkeypatch):
     audio = tmp_path / "a.wav"
     image = tmp_path / "face.png"
     output = tmp_path / "preview.mp4"
     audio.write_bytes(b"audio")
     image.write_bytes(b"image")
+    monkeypatch.setenv("AVATAR_MUSETALK_TRANSIENT_RETRY_COUNT", "1")
+    monkeypatch.setenv("AVATAR_MUSETALK_TRANSIENT_RETRY_DELAY_SECONDS", "0")
 
     monkeypatch.setattr(avatar_canonical_pipeline, "canonicalize_avatar_input", lambda **_kwargs: _stub_canonical_input(tmp_path, image))
     monkeypatch.setattr(avatar_canonical_pipeline, "_liveportrait_motion_gate", lambda *_args, **_kwargs: _passing_motion_gate())
@@ -2195,7 +2197,10 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "validate_avatar_render_with_audio", lambda *_args, **_kwargs: _strict_validation_pass())
     monkeypatch.setattr(avatar_canonical_pipeline.legacy_pipeline, "accept_avatar_render", lambda *_args, **_kwargs: True)
 
+    liveportrait_calls = []
+
     def fake_liveportrait(*, output_path, **_kwargs):
+        liveportrait_calls.append(str(output_path))
         Path(output_path).write_bytes(b"liveportrait")
         return EngineResult(
             True,
@@ -2229,8 +2234,32 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
 
     def fake_musetalk(*, output_path, source_video="", **_kwargs):
         musetalk_calls.append(str(source_video))
+        if len(musetalk_calls) == 1:
+            return EngineResult(
+                False,
+                "musetalk",
+                output_path,
+                "[Errno 32] Broken pipe",
+                details={
+                    "route": "service",
+                    "route_reason": "service_one_shot",
+                    "run_id": "attempt-1",
+                    "elapsed_seconds": 0.25,
+                },
+            )
         Path(output_path).write_bytes(b"musetalk")
-        return EngineResult(True, "musetalk", output_path, "")
+        return EngineResult(
+            True,
+            "musetalk",
+            output_path,
+            "",
+            details={
+                "route": "service",
+                "route_reason": "service_one_shot",
+                "run_id": "attempt-2",
+                "elapsed_seconds": 1.5,
+            },
+        )
 
     monkeypatch.setattr(avatar_canonical_pipeline, "run_liveportrait", fake_liveportrait)
     monkeypatch.setattr(avatar_canonical_pipeline, "run_musetalk", fake_musetalk)
@@ -2274,14 +2303,64 @@ def test_preview_pipeline_runs_musetalk_and_uses_musetalk_output(tmp_path, monke
     assert result["stage_paths"]["liveportrait_whole_frame_drift_guard"] is True
     assert result["stage_paths"]["musetalk_started"] is True
     assert result["stage_paths"]["musetalk_succeeded"] is True
+    assert result["stage_paths"]["musetalk_transient_retry_count"] == 1
+    assert result["stage_paths"]["musetalk_transient_recovery_succeeded"] is True
+    assert result["stage_paths"]["musetalk_transient_retry_exhausted"] is False
+    assert result["stage_paths"]["musetalk_transient_failure_classification"] == (
+        "transient_service_transport:broken_pipe"
+    )
+    assert [attempt["run_id"] for attempt in result["stage_paths"]["musetalk_transient_retry_attempts"]] == [
+        "attempt-1",
+        "attempt-2",
+    ]
     assert result["stage_paths"]["musetalk_source_kind"] == "liveportrait"
     assert result["stage_paths"]["musetalk_source_video"] == str(output.with_suffix(output.suffix + ".liveportrait.mp4"))
-    assert musetalk_calls == [result["stage_paths"]["musetalk_source_video"]]
+    assert liveportrait_calls == [str(output.with_suffix(output.suffix + ".liveportrait.mp4"))]
+    assert musetalk_calls == [result["stage_paths"]["musetalk_source_video"]] * 2
     assert result["final_avatar_engine_chain"] == ["liveportrait", "musetalk"]
     assert result["stage_paths"]["musetalk_handoff_frame_normalization_strategy"] == "normalize_contract_fps"
     assert result["stage_paths"]["final_playable_path"] == str(output)
     assert result["stage_outputs"][-1]["stage"] == "musetalk"
     assert Path(result["output_path"]).exists()
+
+
+@pytest.mark.parametrize(
+    ("error", "details"),
+    [
+        ("preview_musetalk_timeout", {"route": "service", "stderr": "timeout"}),
+        ("CUDA out of memory", {"route": "service"}),
+        ("late_musetalk_output_detected:run_id_mismatch", {"route": "service"}),
+        ("[Errno 32] Broken pipe", {"route": "standalone"}),
+    ],
+)
+def test_musetalk_transient_recovery_does_not_retry_hard_or_standalone_failures(
+    monkeypatch,
+    error,
+    details,
+):
+    monkeypatch.setenv("AVATAR_MUSETALK_TRANSIENT_RETRY_COUNT", "2")
+    monkeypatch.setenv("AVATAR_MUSETALK_TRANSIENT_RETRY_DELAY_SECONDS", "0")
+    calls = []
+
+    def fake_musetalk(**kwargs):
+        calls.append(dict(kwargs))
+        return EngineResult(False, "musetalk", kwargs["output_path"], error, details=dict(details))
+
+    monkeypatch.setattr(avatar_canonical_pipeline, "run_musetalk", fake_musetalk)
+
+    result = avatar_canonical_pipeline._run_musetalk_with_transient_recovery(
+        source_image="face.png",
+        source_video="liveportrait.mp4",
+        audio_path="voice.wav",
+        output_path="musetalk.mp4",
+        stage_name="preview_musetalk",
+    )
+
+    assert result.success is False
+    assert len(calls) == 1
+    assert result.details["transient_retry_count"] == 0
+    assert result.details["transient_recovery_succeeded"] is False
+    assert result.details["transient_retry_exhausted"] is False
 
 
 def test_liveportrait_output_is_normalized_before_gate_and_musetalk(tmp_path, monkeypatch):

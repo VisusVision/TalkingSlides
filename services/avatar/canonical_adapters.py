@@ -1045,6 +1045,7 @@ def _run_via_musetalk_service(
         return EngineResult(False, "musetalk", output_path, error_msg, "", {
             "elapsed_seconds": round(elapsed, 3),
             "stage_name": stage_name,
+            "http_status": int(exc.code),
             "route": route_label,
             "route_reason": route_reason,
             "run_id": run_id,
