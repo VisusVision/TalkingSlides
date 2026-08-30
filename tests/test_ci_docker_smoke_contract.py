@@ -49,7 +49,10 @@ def test_worker_dockerfile_keeps_runtime_avatar_dependencies_opt_in() -> None:
     assert "Put a compatible wheel at ${MMCV_LOCAL_WHEEL}" in dockerfile
     assert 'if [ "$INSTALL_AVATAR_RUNTIME_DEPS" = "1" ]; then' in dockerfile
     assert "Skipping avatar runtime dependencies for smoke build because INSTALL_AVATAR_RUNTIME_DEPS=${INSTALL_AVATAR_RUNTIME_DEPS}." in dockerfile
-    assert "mkdir -p /opt/musetalk /opt/liveportrait/pretrained_weights /app/storage_local/models/musetalk" in dockerfile
+    assert (
+        "mkdir -p /opt/musetalk /opt/liveportrait/pretrained_weights /opt/latentsync "
+        "/app/storage_local/models/musetalk"
+    ) in dockerfile
     assert "Skipping OpenMMLab/mmcv dependencies for smoke build because INSTALL_OPENMMLAB_DEPS=${INSTALL_OPENMMLAB_DEPS}." in dockerfile
     assert "Skipping LivePortrait pretrained weights download for smoke build." in dockerfile
     assert dockerfile.index('"/build-context/$MMCV_LOCAL_WHEEL"') < dockerfile.index('"$MMCV_WHEEL_URL"')

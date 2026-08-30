@@ -35,6 +35,7 @@ OPTIONAL_FILES: tuple[str, ...] = (
     "musetalk/pytorch_model.bin",
     "musetalkV15/musetalk.json",
     "syncnet/latentsync_syncnet.pt",
+    "syncnet/syncnet_v2.model",
 )
 
 

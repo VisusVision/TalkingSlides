@@ -44,10 +44,16 @@ Optional upstream files may also appear in a complete upstream checkout:
 musetalk/pytorch_model.bin
 musetalkV15/musetalk.json
 syncnet/latentsync_syncnet.pt
+syncnet/syncnet_v2.model
 ```
 
 They are not required by the current local avatar path, but the checker reports
 whether they are present.
+
+`syncnet_v2.model` becomes required when the built-in strong lip-sync quality
+provider is enabled. Install the pinned evaluator checkpoint with
+`python services/scripts/install_avatar_syncnet_model.py`; do not substitute
+the 1.4 GB SyncNet training-loss checkpoint for this evaluation model.
 
 ## Known upstream sources
 

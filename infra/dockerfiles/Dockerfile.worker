@@ -23,6 +23,8 @@ FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ARG LIVEPORTRAIT_REPO=https://github.com/KwaiVGI/LivePortrait.git
 ARG LIVEPORTRAIT_REF=49784e879821538ecda5c8e4ca0472f4cb6236cf
+ARG LATENTSYNC_REPO=https://github.com/bytedance/LatentSync.git
+ARG LATENTSYNC_REF=a229c3948406bc2cf6eaf4873e662e70c6a04746
 ARG INSTALL_TEST_DEPS=0
 ARG INSTALL_AVATAR_RUNTIME_DEPS=1
 ARG DOWNLOAD_LIVEPORTRAIT_WEIGHTS=1
@@ -120,6 +122,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
        && git clone ${LIVEPORTRAIT_REPO} /opt/liveportrait \
        && cd /opt/liveportrait \
        && git checkout ${LIVEPORTRAIT_REF} \
+       && git clone ${LATENTSYNC_REPO} /opt/latentsync \
+       && cd /opt/latentsync \
+       && git checkout ${LATENTSYNC_REF} \
        && pip install onnx==1.16.1 onnxruntime-gpu==1.18.0 lmdb==1.4.1 scikit-image==0.24.0 albumentations==1.4.10 rich==13.7.1 tyro==0.8.5 pykalman==0.9.7 imageio-ffmpeg==0.5.1 \
        && if [ "$DOWNLOAD_LIVEPORTRAIT_WEIGHTS" = "1" ]; then \
             python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='KlingTeam/LivePortrait', revision='main', local_dir='/opt/liveportrait/pretrained_weights', local_dir_use_symlinks=False, ignore_patterns=['*.git*','README.md','docs/*'])"; \
@@ -130,7 +135,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
        && mkdir -p /app/storage_local/models/musetalk; \
      else \
        echo "Skipping avatar runtime dependencies for smoke build because INSTALL_AVATAR_RUNTIME_DEPS=${INSTALL_AVATAR_RUNTIME_DEPS}."; \
-       mkdir -p /opt/musetalk /opt/liveportrait/pretrained_weights /app/storage_local/models/musetalk; \
+       mkdir -p /opt/musetalk /opt/liveportrait/pretrained_weights /opt/latentsync /app/storage_local/models/musetalk; \
      fi
 
 # Normalize site-packages path and register CUDA/torch runtime libs in the
@@ -193,6 +198,7 @@ RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser \
      /app \
      /opt/musetalk \
      /opt/liveportrait \
+     /opt/latentsync \
      /tmp/lo_user \
      && chmod 700 /tmp/lo_user
 
