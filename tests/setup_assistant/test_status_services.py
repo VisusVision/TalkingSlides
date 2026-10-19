@@ -158,3 +158,26 @@ def test_group_commands_use_supported_runtime_script_on_windows(
     assert "windows-runtime.ps1" in " ".join(spec.argv)
     assert "-Profile" in spec.argv
     assert "core" in spec.argv
+
+
+def test_modern_runtime_groups_are_disabled_for_legacy_checkout(tmp_path: Path) -> None:
+    for directory in ("infra", "scripts", "services/api", "services/frontend"):
+        (tmp_path / directory).mkdir(parents=True, exist_ok=True)
+    (tmp_path / "README.md").write_text("# TalkingSlides\n", encoding="utf-8")
+    (tmp_path / "infra" / "docker-compose.yml").write_text(
+        "services:\n"
+        "  api:\n    image: api\n"
+        "  frontend:\n    image: frontend\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "scripts" / "windows-dev-start.ps1").write_text("# legacy\n", encoding="utf-8")
+    (tmp_path / "scripts" / "windows-dev-setup.ps1").write_text("# legacy\n", encoding="utf-8")
+
+    assert available_service_groups(tmp_path) == ()
+    controller = ServiceController(tmp_path, MappingRunner())
+    try:
+        controller.group_specs("core", "start")
+    except ValueError as exc:
+        assert "windows-runtime.ps1" in str(exc)
+    else:
+        raise AssertionError("legacy checkout unexpectedly exposed modern runtime groups")

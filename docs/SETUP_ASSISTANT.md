@@ -1,6 +1,6 @@
 # TalkingSlides Setup Assistant
 
-TalkingSlides Setup Assistant is the cross-platform repository onboarding, diagnostics, configuration, and local service-control application for TalkingSlides. The released version is `setup-assistant-v0.1.0`; source builds on `developer` identify as `0.2.0-dev` until a future `setup-assistant-v0.2.0` release is created.
+TalkingSlides Setup Assistant is the cross-platform repository onboarding, diagnostics, configuration, and local service-control application for TalkingSlides. The released version is `setup-assistant-v0.2.0`; source builds on `developer` identify as `0.2.1-dev` until a future `setup-assistant-v0.2.1` release is created.
 
 ## Architecture
 
@@ -32,11 +32,11 @@ The assistant diagnoses prerequisites but never installs Docker, Git, Ollama, GP
 
 ## Release Downloads and Source Usage
 
-The published v0.1.0 release files remain:
+The published release files use strict Setup Assistant tags and versioned asset names. The v0.2.1 hotfix tag will produce:
 
-- `TalkingSlides-Setup-0.1.0-windows-x64.exe`
-- `talkingslides-setup-cli-0.1.0-windows-x64.exe`
-- `TalkingSlides-Setup-0.1.0-linux-x64.tar.gz`
+- `TalkingSlides-Setup-0.2.1-windows-x64.exe`
+- `talkingslides-setup-cli-0.2.1-windows-x64.exe`
+- `TalkingSlides-Setup-0.2.1-linux-x64.tar.gz`
 - `SHA256SUMS.txt`
 
 Source commands:
@@ -65,15 +65,28 @@ When no saved valid repository exists, the Repository page offers:
 3. **Clone TalkingSlides** from the centrally configured public URL.
 4. **Continue with system checks only** without selecting a repository.
 
-The page displays the candidate path, validation state, and every missing marker. A folder is valid only when all of these project markers have the expected file/directory type:
+The page separates stable repository identity from optional runtime capabilities. A folder is a TalkingSlides repository when these stable identity markers have the expected file/directory type:
 
 - `infra/docker-compose.yml`
-- `scripts/windows-runtime.ps1`
-- `tools/setup_assistant/__init__.py`
 - `services/api`
 - `services/frontend`
+- `scripts`
+- `README.md`
+
+Capability checks are reported separately. Missing capability files do not make a genuine checkout invalid:
+
+- modern Windows runtime: `scripts/windows-runtime.ps1`
+- legacy Windows runtime: `scripts/windows-dev-start.ps1` and `scripts/windows-dev-setup.ps1`
+- embedded Setup Assistant source: `tools/setup_assistant/__init__.py`
+- Compose, API, frontend, TTS, worker, and optional avatar/runtime profile support
 
 Folder name alone is never trusted. Git metadata is reported when present but is not mandatory for a source archive. Paths are canonicalized without shell interpolation and support spaces, Unicode, frozen executables, portable installations, and working directories outside the checkout.
+
+Repository status uses:
+
+- **Healthy** — compatible TalkingSlides repository with modern runtime controls.
+- **Attention** — TalkingSlides repository with limited capabilities; diagnostics remain available and unsupported actions are disabled with guidance.
+- **Blocked** — folder is not a TalkingSlides repository; only missing identity markers are listed.
 
 The header always shows repository mode or system-only mode. It also provides a recent-repository selector and a route back to onboarding.
 
@@ -96,25 +109,35 @@ The default public URL is:
 https://github.com/VisusVision/TalkingSlides.git
 ```
 
-The repository's public default branch is `main`, so `main` is the user-facing default ref. Developers can override the central defaults with `TALKINGSLIDES_CLONE_URL` and `TALKINGSLIDES_CLONE_REF`, or edit the advanced ref field.
+The branch/ref field is optional. Empty means Git uses the repository's configured default branch. Developers can override the central defaults with `TALKINGSLIDES_CLONE_URL` and `TALKINGSLIDES_CLONE_REF`, or edit the advanced ref field.
 
 Before cloning, the assistant:
 
 - requires an installed Git executable and gives manual installation guidance if absent;
 - rejects URLs containing embedded credentials;
 - verifies that the destination parent exists and is writable;
-- rejects a non-empty incompatible destination;
-- activates an already-compatible checkout instead of overwriting it;
+- rejects a non-empty incompatible destination and offers recovery guidance instead of deleting it;
+- activates an already-compatible or compatibility-limited TalkingSlides checkout instead of overwriting it;
 - shows the sanitized URL, canonical destination, selected ref, operation explanation, and argv preview;
 - requires confirmation.
 
 Git is launched without a shell:
 
 ```text
+git clone --progress <url> <destination>
+```
+
+When an explicit ref is supplied, the argv becomes:
+
+```text
 git clone --progress --branch <ref> --single-branch <url> <destination>
 ```
 
-Stdout and stderr stay separate, progress is streamed into a bounded view, cancellation is supported, and the native exit code is retained. On failure or cancellation, only a new incomplete destination created by that attempt is removed. A pre-existing directory is never deleted. Successful output must pass the full repository validation before automatic activation.
+Stdout and stderr stay separate, progress is streamed into a bounded view, cancellation is supported, and the native exit code is retained.
+
+Successful Git exits are never deleted automatically. If repository identity passes, the checkout is activated, saved as the active repository, added to recent repositories, and shown with capability warnings when needed. If identity does not pass, the folder is preserved for inspection with the message that the clone completed but the downloaded repository did not match the expected TalkingSlides project structure.
+
+Cleanup runs only for genuinely incomplete clone attempts: the destination did not pre-exist, Git failed/timed out/was cancelled, the path still matches the exact canonical destination, and the destination is not a valid TalkingSlides repository. Cleanup is non-elevated, uses Python filesystem APIs, clears read-only attributes, and retries transient Windows `PermissionError` / WinError 5 with bounded backoff. If cleanup still fails, the assistant reports the exact preserved path and suggests closing applications before removing it manually later.
 
 ## System-Only Diagnostics
 
@@ -167,7 +190,7 @@ Discovered Compose services are:
 - External HTTP dependency: optional translation API configuration
 - Configuration-only dependency: optional Google OAuth configuration
 
-Compose profiles are discovered from `infra/docker-compose.yml`: `avatar` and `translation`. User-facing groups are exposed only when `scripts/windows-runtime.ps1` declares them and their services exist:
+Compose profiles are discovered from `infra/docker-compose.yml`: `avatar` and `translation`. User-facing groups are exposed only when `scripts/windows-runtime.ps1` declares them and their services exist. Legacy checkouts without the modern runtime script remain valid for diagnostics and any safe legacy/manual controls, but modern runtime groups are disabled with guidance:
 
 - Core
 - Media / TTS
@@ -175,7 +198,7 @@ Compose profiles are discovered from `infra/docker-compose.yml`: `avatar` and `t
 - Avatar
 - Full supported environment
 
-Every group lists included services, prerequisites, resource impact, and start/stop actions. Windows group operations reuse `scripts/windows-runtime.ps1`. Optional avatar/full groups warn about GPU/resource use and queued avatar work.
+Every group lists included services, prerequisites, resource impact, and start/stop actions. Windows group operations reuse `scripts/windows-runtime.ps1` and are disabled rather than silently mapped to a different command when that script is absent. Optional avatar/full groups warn about GPU/resource use and queued avatar work.
 
 Service refresh and operations run outside the GUI thread. A service cannot run conflicting operations concurrently, and repository selection is locked during an active repository/service operation.
 
@@ -252,7 +275,7 @@ Run a target-native build:
 python packaging/setup_assistant/build.py
 ```
 
-Development builds use `0.2.0-dev`. A matching `setup-assistant-vMAJOR.MINOR.PATCH` tag overrides the development version through the existing runtime hook. No v0.2.0 tag is created by development work.
+Development builds use `0.2.1-dev`. A matching `setup-assistant-vMAJOR.MINOR.PATCH` tag overrides the development version through the existing runtime hook. No v0.2.1 tag is created by development work.
 
 Generated `build/`, `dist/`, executable, archive, report, environment, model, media, and runtime files must not be committed. Ubuntu package tests run with:
 

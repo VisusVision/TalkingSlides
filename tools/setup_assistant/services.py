@@ -373,6 +373,8 @@ def available_service_groups(repository: Path) -> tuple[ServiceGroup, ...]:
     validation = validate_repository(repository)
     if not validation.valid:
         return ()
+    if not validation.capabilities.modern_windows_runtime:
+        return ()
     script = (validation.path / "scripts" / "windows-runtime.ps1").read_text(encoding="utf-8")
     match = re.search(r"\$ValidProfiles\s*=\s*@\((?P<profiles>[^)]+)\)", script)
     if not match:
@@ -391,6 +393,7 @@ class ServiceController:
     def __init__(self, repository: Path | None, runner: CommandRunner | None = None) -> None:
         validation = validate_repository(repository) if repository else None
         self.repository = validation.path if validation and validation.valid else None
+        self.validation = validation if validation and validation.valid else None
         self.runner = runner or CommandRunner()
         self._active: set[str] = set()
         self._active_lock = threading.Lock()
@@ -405,6 +408,8 @@ class ServiceController:
     def _compose_base(self, definition: ServiceDefinition) -> list[str]:
         if not self.repository:
             raise ValueError("Repository required")
+        if self.validation and not self.validation.capabilities.compose:
+            raise ValueError("Docker Compose controls require infra/docker-compose.yml.")
         argv = [
             "docker",
             "compose",
@@ -421,6 +426,9 @@ class ServiceController:
         definition = self.definition(service_id)
         if definition.repository_required and not self.repository:
             raise ValueError("Repository required")
+        reason = self.action_unavailable_reason(service_id, action)
+        if reason:
+            raise ValueError(reason)
         if action not in definition.supported_actions and action != "status":
             raise ValueError(f"{action.title()} is not supported for {definition.display_name}.")
         if definition.service_type is not ServiceType.COMPOSE:
@@ -456,6 +464,21 @@ class ServiceController:
             CommandResult(spec.argv, os.fspath(spec.cwd) if spec.cwd else None, None, "", "", 0).display_command
             for spec in self.command_specs(service_id, action)
         )
+
+    def action_unavailable_reason(self, service_id: str, action: str) -> str:
+        definition = self.definition(service_id)
+        if definition.repository_required and not self.repository:
+            return "Repository required"
+        if action not in definition.supported_actions and action != "status":
+            return f"{action.title()} is not supported for {definition.display_name}."
+        if definition.service_type is ServiceType.COMPOSE:
+            if self.validation and not self.validation.capabilities.compose:
+                return "Docker Compose controls require infra/docker-compose.yml."
+            try:
+                discover_compose_services(self.repository) if self.repository else {}
+            except (OSError, ValueError) as exc:
+                return f"Docker Compose controls are unavailable: {exc}"
+        return ""
 
     def _begin(self, service_id: str) -> bool:
         with self._active_lock:
@@ -576,6 +599,9 @@ class ServiceController:
             return ServiceSnapshot(definition, ServiceStatus.HEALTHY, summary)
         if definition.repository_required and not self.repository:
             return ServiceSnapshot(definition, ServiceStatus.BLOCKED, "Repository required")
+        reason = self.action_unavailable_reason(service_id, "status")
+        if reason:
+            return ServiceSnapshot(definition, ServiceStatus.BLOCKED, reason)
         try:
             result = self.runner.run(self.command_specs(service_id, "status")[0])
         except (OSError, ValueError) as exc:
@@ -704,6 +730,11 @@ class ServiceController:
     def group_specs(self, group_id: str, action: str) -> tuple[CommandSpec, ...]:
         if not self.repository:
             raise ValueError("Repository required")
+        if self.validation and not self.validation.capabilities.modern_windows_runtime:
+            raise ValueError(
+                "Modern runtime groups require scripts/windows-runtime.ps1. "
+                "Use diagnostics only, use available legacy scripts manually, or switch to a supported branch."
+            )
         groups = {group.group_id: group for group in available_service_groups(self.repository)}
         if group_id not in groups:
             raise ValueError(f"Unsupported service group: {group_id}")

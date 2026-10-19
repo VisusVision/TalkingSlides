@@ -14,7 +14,13 @@ from typing import Callable
 from ..models import CheckResult, CheckRun, CheckStatus, Profile, SafeAction, Severity
 from ..ollama import OllamaManager
 from ..platforms import platform_checks
-from ..repository import RepositoryValidation, discover_repository
+from ..repository import (
+    REPOSITORY_MARKERS,
+    RepositoryValidation,
+    discover_repository,
+    display_marker_list,
+    repository_capability_summary,
+)
 from ..runner import CommandResult, CommandRunner, CommandSpec
 from ..status import ServiceStatus
 
@@ -130,21 +136,32 @@ class CheckEngine:
                     CheckStatus.FAILURE,
                     Severity.CRITICAL,
                     "The selected folder is not a valid TalkingSlides repository.",
-                    technical_details=f"Missing markers: {', '.join(validation.missing_markers)}",
+                    technical_details=f"Missing identity markers: {', '.join(display_marker_list(validation.missing_identity_markers))}",
                     remediation="Choose the repository root rather than a parent or child directory.",
-                    diagnostic_data={"missing_markers": list(validation.missing_markers)},
+                    diagnostic_data={"missing_identity_markers": list(validation.missing_identity_markers)},
                 )
             ]
         writable = os.access(validation.path, os.R_OK | os.W_OK | os.X_OK)
-        return [
+        summary = (
+            "Compatible TalkingSlides repository detected."
+            if validation.compatibility_level == "modern"
+            else "TalkingSlides repository detected, but some modern runtime controls are unavailable."
+        )
+        results = [
             CheckResult(
                 "repository.discovery",
                 "TalkingSlides repository",
                 "Installation & Configuration",
-                CheckStatus.PASS,
-                Severity.INFO,
-                "Repository markers were found.",
-                diagnostic_data={"marker_count": 4},
+                CheckStatus.PASS if validation.compatibility_level == "modern" else CheckStatus.WARNING,
+                Severity.INFO if validation.compatibility_level == "modern" else Severity.MEDIUM,
+                summary,
+                technical_details="\n".join(repository_capability_summary(validation)),
+                remediation=" ".join(validation.warnings),
+                diagnostic_data={
+                    "identity_marker_count": len(REPOSITORY_MARKERS),
+                    "compatibility_level": validation.compatibility_level,
+                    "missing_capabilities": list(validation.missing_capabilities),
+                },
             ),
             CheckResult(
                 "repository.permissions",
@@ -173,6 +190,7 @@ class CheckEngine:
                 diagnostic_data={"contains_spaces": " " in os.fspath(validation.path), "contains_unicode": not os.fspath(validation.path).isascii()},
             ),
         ]
+        return results
 
     def _ollama_checks(self, repository: Path | None) -> list[CheckResult]:
         state = OllamaManager(self.runner).inspect(repository)

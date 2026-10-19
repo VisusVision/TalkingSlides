@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .models import Profile
+from .repository import validate_repository
 from .runner import CommandResult, CommandRunner, CommandSpec
 
 PROFILE_SERVICES = {
@@ -35,7 +36,15 @@ class RuntimeManager:
         self.runner = runner or CommandRunner()
 
     def _command(self, action: str, profile: Profile, no_frontend: bool) -> tuple[str, ...]:
+        validation = validate_repository(self.repository)
+        if not validation.valid:
+            raise ValueError("Runtime actions require a valid TalkingSlides repository.")
         if platform.system() == "Windows":
+            if not validation.capabilities.modern_windows_runtime:
+                raise ValueError(
+                    "Modern runtime actions require scripts/windows-runtime.ps1. "
+                    "This checkout can still be used for diagnostics; switch to a supported branch or update the repository for runtime controls."
+                )
             script = self.repository / "scripts" / "windows-runtime.ps1"
             argv = [
                 "powershell.exe",
@@ -58,6 +67,8 @@ class RuntimeManager:
             return tuple(argv)
 
         compose_file = self.repository / "infra" / "docker-compose.yml"
+        if not validation.capabilities.compose:
+            raise ValueError("Runtime actions require infra/docker-compose.yml.")
         argv = ["docker", "compose", "-f", os.fspath(compose_file)]
         if profile is Profile.AVATAR:
             argv.extend(("--profile", "avatar"))
@@ -75,7 +86,11 @@ class RuntimeManager:
         return tuple(argv)
 
     def preview(self, action: str, profile: Profile, no_frontend: bool = False) -> str:
-        result = CommandResult(self._command(action, profile, no_frontend), os.fspath(self.repository), None, "", "", 0)
+        try:
+            command = self._command(action, profile, no_frontend)
+        except ValueError as exc:
+            return str(exc)
+        result = CommandResult(command, os.fspath(self.repository), None, "", "", 0)
         warning = ""
         if action == "start" and profile is Profile.AVATAR:
             warning = " Avatar start can consume queued avatar work."
@@ -102,7 +117,10 @@ class RuntimeManager:
                 preview,
                 error="Avatar start requires explicit acknowledgement that queued avatar work may be consumed.",
             )
-        command = self._command(action, profile, no_frontend)
+        try:
+            command = self._command(action, profile, no_frontend)
+        except ValueError as exc:
+            return RuntimeActionResult(action, profile, False, preview, error=str(exc))
         timeout = 120 if mutating else 20
         result = self.runner.run(CommandSpec.create(command, cwd=self.repository, timeout_seconds=timeout))
         return RuntimeActionResult(action, profile, True, preview, result=result)
