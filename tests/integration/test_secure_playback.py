@@ -1634,6 +1634,78 @@ def test_catalog_detail_secure_stream_without_hls_exposes_authorized_mp4_fallbac
 
 
 @pytest.mark.django_db
+def test_catalog_detail_ignores_sidecar_from_newer_uncompleted_job(tmp_path):
+    cache.clear()
+    teacher = _make_teacher("sidecar_split_teacher")
+    project = Project.objects.create(
+        title="Sidecar split brain guard",
+        user=teacher,
+        status="ready",
+        moderation_status="approved",
+        is_published=True,
+    )
+    old_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="done",
+        result_url=f"{project.id}/renders/{project.id}/final/{project.id}.mp4",
+        srt_url=f"{project.id}/renders/{project.id}/final/{project.id}.srt",
+    )
+    newer_job = Job.objects.create(
+        project=project,
+        job_type="video_export",
+        status="running",
+        result_url="",
+        srt_url="",
+    )
+    project_dir = tmp_path / str(project.id)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "playback_assets.json").write_text(
+        json.dumps(
+            {
+                "job_id": newer_job.id,
+                "mp4_rel_path": f"{project.id}/renders/{newer_job.id}/final/{project.id}.mp4",
+                "hls": {
+                    "enabled": True,
+                    "manifest_rel_path": f"{project.id}/renders/{newer_job.id}/final/drm/hls/index.m3u8",
+                    "encrypted": False,
+                    "packaging_status": "packaged",
+                },
+                "avatar": {
+                    "track_rel_path": f"{project.id}/renders/{newer_job.id}/final/avatar/avatar_track.mp4",
+                    "default_position": "top-right",
+                    "default_size": "medium",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    request = APIRequestFactory().get(f"/api/v1/catalog/{project.id}/")
+    request.session = _DummyRequest._DummySession()
+
+    with override_settings(
+        STORAGE_ROOT=str(tmp_path),
+        LESSON_PROTECTION_DEFAULT_MODE="secure_stream",
+        LESSON_PROTECTION_ALLOW_MP4_FALLBACK=True,
+        ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"],
+    ):
+        response = views.CatalogDetailView.as_view()(request, project_id=project.id)
+
+    assert response.status_code == 200
+    assert response.data["stream_url"].startswith("http://testserver/api/v1/stream/")
+    assert response.data["streaming"]["hls"]["enabled"] is False
+    assert response.data["streaming"]["hls"]["manifest_url"] == ""
+    assert response.data["avatar_overlay"]["enabled"] is False
+
+    token = response.data["stream_url"].rstrip("/").split("/")[-1]
+    token_job_id, file_type, rel_path, _grant_id, _bind_key = views.validate_media_token(token)
+    assert token_job_id == old_job.id
+    assert file_type == "video"
+    assert rel_path == ""
+
+
+@pytest.mark.django_db
 def test_catalog_detail_reuses_same_session_grant_for_rapid_duplicate_requests(tmp_path):
     cache.clear()
     student = User.objects.create_user(username="same_session_student", password="pw")
@@ -2082,3 +2154,67 @@ def test_media_stream_view_allows_browser_like_grant_bound_request(tmp_path, mon
         response = views.MediaStreamView.as_view()(request, token=token)
 
     assert response.status_code == 200
+
+@pytest.mark.django_db
+def test_concat_finalize_late_stale_before_sidecar_preserves_previous_authority(tmp_path, monkeypatch):
+    teacher = _make_teacher("late_stale_teacher")
+    project = Project.objects.create(title="Late stale lesson", user=teacher, status="processing")
+    job = Job.objects.create(project=project, job_type="video_export", status="running", progress=10)
+    part_path = tmp_path / str(project.id) / "parts" / "slide-1.mp4"
+    audio_path = tmp_path / str(project.id) / "audio" / "slide-1.wav"
+    slide_path = tmp_path / str(project.id) / "images" / "slide-1.png"
+    for path in (part_path, audio_path, slide_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fixture")
+
+    import scripts.ffmpeg_helpers as ffmpeg_helpers
+
+    def fake_concat(_parts, out_path):
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(out_path).write_bytes(b"not-a-real-mp4")
+        return out_path
+
+    current_checks = []
+
+    def fake_is_current(_project_id, _job_id):
+        current_checks.append((_project_id, _job_id))
+        return len(current_checks) == 1
+
+    monkeypatch.setattr(ffmpeg_helpers, "concat_videos", fake_concat)
+    monkeypatch.setattr(worker_tasks, "_is_current_render_job", fake_is_current)
+    monkeypatch.setattr(worker_tasks, "_write_playback_sidecar", lambda *_args, **_kwargs: pytest.fail("stale job must not write playback sidecar"))
+    monkeypatch.setattr(worker_tasks, "_sync_lesson_segments", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_update_transcript_timeline", lambda *_args, **_kwargs: None)
+
+    render_result = {
+        "index": 0,
+        "slide_num": 1,
+        "page_key": "slide-1",
+        "part_path": str(part_path),
+        "slide_path": str(slide_path),
+        "tts_audio_path": str(audio_path),
+        "duration": 1.0,
+        "pause_seconds": 0.0,
+        "text": "Safe narration.",
+        "original_text": "Safe narration.",
+        "subtitle_chunks": ["Safe narration."],
+        "tts_settings": {},
+    }
+
+    with override_settings(STORAGE_ROOT=str(tmp_path), LESSON_PROTECTION_DEFAULT_MODE="public"):
+        result = worker_tasks.concat_and_finalize.run(
+            [render_result],
+            str(project.id),
+            job_id=job.id,
+            job_scoped_output=True,
+            validate_media_contract=False,
+        )
+
+    assert result["status"] == "stale"
+    assert result["reason"] == "stale_render_job_before_promotion"
+    job.refresh_from_db()
+    assert job.status == "failed"
+    assert job.result_url == ""
+    assert job.srt_url == ""
+    assert job.error_message == "stale_render_job_skipped"
+    assert not (tmp_path / str(project.id) / "playback_assets.json").exists()

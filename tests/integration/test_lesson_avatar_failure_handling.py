@@ -657,6 +657,127 @@ def test_concat_finalize_queues_avatar_after_base_video_without_blocking(tmp_pat
     assert sidecar_payload["avatar_status"] == "none"
 
 
+def test_concat_finalize_hidden_avatar_does_not_publish_or_queue_overlay(tmp_path, monkeypatch):
+    ffmpeg_helpers = importlib.import_module("scripts.ffmpeg_helpers")
+    updates: list[dict] = []
+    queued: list[dict] = []
+    avatar_state_updates: list[dict] = []
+
+    monkeypatch.setattr(worker_tasks, "STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(worker_tasks, "DRM_STREAMING_ENABLED", False)
+    monkeypatch.setattr(worker_tasks, "_update_job", lambda _project_id, **kwargs: updates.append(kwargs))
+    monkeypatch.setattr(worker_tasks, "_sync_lesson_segments", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(worker_tasks, "_update_transcript_timeline", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_queue_lesson_avatar_overlay_after_base_render",
+        lambda **kwargs: queued.append(kwargs) or {"status": "queued", "queued": True, "job_id": 77},
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_mark_project_avatar_state",
+        lambda _project_id, **kwargs: avatar_state_updates.append(kwargs),
+    )
+
+    def fake_concat_videos(_part_paths, output_path):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"hidden-avatar-video")
+
+    def fake_generate_srt_from_cues(_cues, output_path):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_text("1\n00:00:00,000 --> 00:00:01,000\nSlide\n", encoding="utf-8")
+
+    monkeypatch.setattr(ffmpeg_helpers, "concat_videos", fake_concat_videos)
+    monkeypatch.setattr(ffmpeg_helpers, "generate_srt_from_cues", fake_generate_srt_from_cues)
+    monkeypatch.setattr(ffmpeg_helpers, "generate_vtt_from_cues", fake_generate_srt_from_cues)
+
+    part = tmp_path / "129" / "parts" / "part_001.mp4"
+    slide = tmp_path / "129" / "images" / "slide_001.png"
+    audio = tmp_path / "129" / "audio" / "slide_001.mp3"
+    avatar = tmp_path / "129" / "avatar_segments" / "avatar_001.mp4"
+    for path in [part, slide, audio, avatar]:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+    result = worker_tasks.concat_and_finalize.run(
+        [
+            {
+                "index": 0,
+                "slide_num": 1,
+                "page_key": "p1",
+                "part_path": str(part),
+                "duration": 1.0,
+                "pause_seconds": 0.0,
+                "text": "Slide",
+                "slide_path": str(slide),
+                "tts_audio_path": str(audio),
+                "subtitle_chunks": ["Slide"],
+                "avatar_applied": True,
+                "avatar_visible": False,
+                "avatar_composited": False,
+                "avatar_attempted": True,
+                "avatar_skipped": False,
+                "avatar_failed": False,
+                "avatar_status": "ready",
+                "avatar_error": "",
+                "avatar_failure_reason": "",
+                "avatar_motion_validation": {},
+                "avatar_segment_rel_path": "129/avatar_segments/avatar_001.mp4",
+                "avatar_engine_used": "liveportrait+musetalk",
+                "avatar_fallback_chain": ["liveportrait", "musetalk"],
+                "avatar_layout": {
+                    "position": "top-right",
+                    "size": "medium",
+                    "visible": True,
+                    "source_level": "publisher",
+                    "sources": {
+                        "position": "publisher",
+                        "size": "publisher",
+                        "visible": "publisher",
+                    },
+                },
+            }
+        ],
+        project_id="129",
+        avatar_options={
+            "requested": True,
+            "enabled": True,
+            "avatar_visible": False,
+            "default_visible": False,
+            "teacher_id": 2,
+            "source_image_rel_path": "avatars/teacher.png",
+            "avatar_source_valid": True,
+            "avatar_preview_stale": False,
+            "lipsync_engine": "liveportrait+musetalk",
+            "publisher_avatar_layout": {
+                "position": "top-right",
+                "size": "medium",
+                "visible": True,
+            },
+        },
+    )
+
+    assert updates[-1]["status"] == "done"
+    assert result["background_avatar"] == {"status": "hidden", "queued": False}
+    assert queued == []
+    assert avatar_state_updates[-1] == {
+        "status": "none",
+        "message": "",
+        "job_id": "",
+        "clear_output": True,
+    }
+
+    sidecar_payload = json.loads((tmp_path / "129" / "playback_assets.json").read_text(encoding="utf-8"))
+    assert sidecar_payload["avatar"] is None
+    assert sidecar_payload["avatar_burned_in"] is False
+    assert sidecar_payload["avatar_layout_pages"][0]["avatar_layout"]["visible"] is True
+    assert sidecar_payload["avatar_layout_pages"][0]["effective_avatar_layout"]["visible"] is False
+    assert sidecar_payload["avatar_slide_metadata"][0]["avatar_visible"] is False
+    assert sidecar_payload["avatar_slide_metadata"][0]["effective_avatar_layout"]["visible"] is False
+    assert sidecar_payload["final_segments"][0]["effective_avatar_layout"]["visible"] is False
+    assert not (tmp_path / "129" / "avatar" / "avatar_track.mp4").exists()
+
+
 def test_concat_finalize_marks_burned_in_avatar_and_skips_duplicate_overlay(tmp_path, monkeypatch):
     ffmpeg_helpers = importlib.import_module("scripts.ffmpeg_helpers")
     updates: list[dict] = []

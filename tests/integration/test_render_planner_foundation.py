@@ -23,7 +23,6 @@ from core.render_planner import (
     REASON_PROVIDER_CHANGED,
     REASON_REMOVED_SLIDE,
     REASON_RENDER_RESOLUTION_CHANGED,
-    REASON_SLIDE_ORDER_CHANGED,
     REASON_TRANSCRIPT_CHANGED,
     REASON_VOICE_CHANGED,
     build_project_render_planner_manifest,
@@ -339,7 +338,7 @@ def test_default_render_resolution_matches_pipeline_default():
     assert manifest["render_resolution"] == {"width": 1920, "height": 1080}
 
 
-def test_inserted_deleted_and_reordered_slides_are_reported(tmp_path):
+def test_inserted_deleted_and_reordered_slides_reuse_unchanged_parts(tmp_path):
     previous = _manifest(tmp_path)
     slides = [
         {**_slides()[1], "slide_number": 1},
@@ -358,15 +357,45 @@ def test_inserted_deleted_and_reordered_slides_are_reported(tmp_path):
 
     plan = _plan(previous, current, tmp_path)
 
-    assert plan["dirty_slides"] == [1, 2, 4]
-    assert plan["reasons"]["1"] == [REASON_SLIDE_ORDER_CHANGED]
-    assert plan["reasons"]["2"] == [REASON_SLIDE_ORDER_CHANGED]
+    assert plan["dirty_slides"] == [4]
+    assert plan["reusable_slides"] == [1, 2, 3]
     assert plan["reasons"]["4"] == [REASON_NEW_SLIDE]
+    assert plan["sequence_changed"] is True
 
     deleted = _manifest(tmp_path, slides=_slides()[:2])
     delete_plan = _plan(previous, deleted, tmp_path)
     assert delete_plan["dirty_slides"] == [3]
     assert delete_plan["reasons"]["3"] == [REASON_REMOVED_SLIDE]
+    assert delete_plan["sequence_changed"] is True
+
+
+def test_insert_before_existing_pages_only_dirties_inserted_page(tmp_path):
+    previous = _manifest(tmp_path)
+    slides = [
+        _slides()[0],
+        {
+            "slide_number": 2,
+            "page_key": "s1-p2",
+            "narration_text": "Inserted narration.",
+            "display_text": "Inserted narration.",
+            "subtitle_chunks": ["Inserted narration."],
+            "image_hash": "image-inserted",
+        },
+        {**_slides()[1], "slide_number": 3},
+        {**_slides()[2], "slide_number": 4},
+    ]
+    current = _manifest(tmp_path, slides=slides)
+
+    plan = _plan(previous, current, tmp_path)
+
+    assert plan["dirty_slides"] == [2]
+    assert plan["reusable_slides"] == [1, 3, 4]
+    assert [row["page_key"] for row in plan["slides"] if row["status"] == "reusable"] == [
+        "s1-p1",
+        "s2-p1",
+        "s3-p1",
+    ]
+    assert plan["sequence_changed"] is True
 
 
 def test_duplicate_page_keys_are_canonicalized_without_colliding(tmp_path):

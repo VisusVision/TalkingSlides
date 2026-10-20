@@ -1,10 +1,9 @@
 # Industrial Render Planner Foundation
 
 Phase 1 added planning only. Phase 2 connects the planner to worker dispatch so
-auto renders enqueue expensive slide work only for dirty slides. Auto partial
-renders in Phase 2 record dirty-slide intermediate artifacts but do not promote
-a new final MP4 or playback sidecar; Watch remains on the previous
-authoritative final output until a later atomic assembly/promotion phase.
+auto renders enqueue expensive slide work only for dirty slides. Phase 3
+assembles dirty-slide outputs with validated reusable baseline parts and
+promotes a new authoritative final only after media validation succeeds.
 
 ## Fingerprint Inputs
 
@@ -144,8 +143,80 @@ For auto renders:
 
 For successful full finalization, `playback_assets.json` embeds
 `render_planner_manifest` so future auto renders have a safe baseline. Failed
-jobs and auto partial dispatch jobs do not replace the authoritative baseline
-sidecar.
+jobs do not replace the authoritative baseline sidecar.
+
+## Phase 3 Assembly And Promotion
+
+Auto dirty-slide jobs consume the immutable job-scoped render plan captured
+before dispatch. The assembly step uses the plan's ordered page keys, dirty
+page keys, reusable page keys, current planner manifest, pipeline version, and
+baseline job ID. It does not recompute order from mutable project state after
+slide work completes.
+
+For each ordered page key:
+
+- dirty pages use the new slide task result for the same project/job/page key
+- reusable pages use the previous authoritative sidecar's `final_segments` and
+  planner artifacts for the matching page key and fingerprint
+- page selection is never based on filename sort order
+
+The worker records an internal assembly manifest under
+`projects/<project>/renders/<job>/staging/assembly_manifest.json`. The manifest
+stores project ID, job ID, baseline job ID, pipeline version, planner manifest
+hash, ordered parts, source (`new` or `reused`), fingerprint, relative part
+reference, and origin job ID. Private absolute paths are not part of the
+manifest.
+
+Before concatenation, each part must pass the media contract:
+
+- referenced file exists and is non-empty
+- FFprobe succeeds
+- video stream exists
+- audio stream exists
+- duration is positive and within a tolerant range of expected duration
+- resolution matches the render contract
+- reusable part fingerprint and baseline job identity match the captured plan
+
+Validation failures mark the current job failed, record a concise stage reason,
+and leave the prior completed job and sidecar authoritative. A corrupt reusable
+part is never silently assembled.
+
+The assembled final for auto partial jobs is written to a job-scoped immutable
+namespace:
+
+`<project>/renders/<job>/final/<project>.mp4`
+
+SRT and VTT are regenerated from the complete assembled render-result snapshot
+so later subtitle offsets reflect changed slide durations while reusable later
+parts remain valid. If HLS packaging is enabled by the existing protection
+mode, it runs from the validated assembled MP4 and its sidecar metadata is
+promoted with the same playback sidecar.
+
+Promotion sequence:
+
+1. validate dirty and reusable parts
+2. write staging assembly and validation reports
+3. re-check the job is still the latest current render job
+4. concatenate to the job-scoped final namespace
+5. validate the final MP4 with FFprobe
+6. regenerate SRT/VTT and optional HLS
+7. write the complete playback sidecar with `atomic_assembly` and
+   `final_validation`
+8. update the job's `result_url`/`srt_url` and mark it done
+
+The API authority model remains latest completed `video_export` job plus
+`playback_assets.json`. Watch, Studio preview, catalog, publish, and download
+continue to select the latest completed job; partial staging files are never
+referenced by a completed job before successful finalization. Older/stale jobs
+may finish validation or staging, but the finalizer re-checks current job
+identity before promotion and stale jobs are marked terminal without replacing
+the latest output.
+
+The filesystem backend uses local materialized files because FFmpeg, avatar,
+and TTS tooling require paths. Object storage remains behind the existing
+adapter boundary for sidecar JSON; production object-storage media promotion
+must use immutable uploaded objects and pointer/sidecar updates last. Runtime
+S3 media serving remains gated by the broader storage migration plan.
 
 ## Failure And Concurrency Boundary
 
@@ -160,8 +231,11 @@ same-project render storms. The captured plan prevents mid-run replanning from
 mutable project state. Older/stale jobs use the existing current-job checks
 before finalization or Phase 2 result recording.
 
-## Phase 3 Boundary
+## Release Gates
 
-Phase 2 prevents unnecessary expensive slide processing. Phase 3 must harden
-artifact reuse with deeper media validation, atomic final assembly, and
-authoritative output promotion for partial auto renders.
+Render changes that affect this flow must prove one-slide partial promotion,
+zero-dirty no-op behavior, insert/delete/reorder assembly, corrupt reusable
+part rejection, stale job rejection, Watch/download agreement, avatar burn-in
+without duplicate overlay, XTTS output, and explicit gTTS behavior. Unit tests
+and CI are not sufficient by themselves; real media evidence is required before
+merge recommendation.
