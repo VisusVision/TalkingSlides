@@ -294,9 +294,3 @@
   --default-ring-width: 3px;
   --default-ring-color: #3b82f6;
 }
-
-/* v3 outline-none kept an invisible outline for forced-colors accessibility. */
-@utility outline-none {
-  outline: 2px solid transparent;
-  outline-offset: 2px;
-}

@@ -11,7 +11,9 @@ async function openStyleProbe(page, theme = 'light') {
     const probe = document.createElement('section'); probe.id = 'style-probe';
     probe.style.cssText = 'position:fixed;inset:100px auto auto 100px;z-index:9999';
     probe.innerHTML = '<button id="motion-probe" class="focus-ring motion-interactive h-control-md rounded-lg enabled:active:scale-[0.98] bg-[var(--surface)] text-[var(--text-primary)]" style="width:200px">Style probe</button><div id="token-probe" class="rounded-token-lg font-display leading-tight tracking-tight">Türkçe &amp; English</div>';
-    document.body.append(probe);
+    const outlineProbe = document.createElement('button');
+    outlineProbe.id = 'outline-probe'; outlineProbe.className = 'outline-hidden'; outlineProbe.textContent = 'Outline probe';
+    probe.append(outlineProbe); document.body.append(probe);
   });
 }
 
@@ -43,6 +45,9 @@ test('keyboard focus retains its visible ring and forced-colors outline', async 
   await page.emulateMedia({ forcedColors: 'active' });
   await expect(page.locator('#motion-probe')).toHaveCSS('outline-style', 'solid');
   await expect(page.locator('#motion-probe')).toHaveCSS('outline-width', '2px');
+  await page.locator('#outline-probe').focus();
+  await expect(page.locator('#outline-probe')).toHaveCSS('outline-style', 'solid');
+  await expect(page.locator('#outline-probe')).toHaveCSS('outline-width', '2px');
 });
 
 for (const preference of ['system', 'class']) test(`active transforms respect ${preference} reduced motion`, async ({ page }) => {

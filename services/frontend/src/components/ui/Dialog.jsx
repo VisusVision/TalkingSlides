@@ -190,7 +190,7 @@ function Dialog({
         aria-label={ariaLabel}
         tabIndex={-1}
         className={joinClasses(
-          'motion-scale-in flex max-h-[calc(100dvh-1.5rem)] w-full flex-col overflow-hidden rounded-dialog border border-[var(--border-subtle)] bg-[var(--surface-container)] text-start text-[var(--text-primary)] shadow-dialog outline-none sm:max-h-[calc(100dvh-2rem)]',
+          'motion-scale-in flex max-h-[calc(100dvh-1.5rem)] w-full flex-col overflow-hidden rounded-dialog border border-[var(--border-subtle)] bg-[var(--surface-container)] text-start text-[var(--text-primary)] shadow-dialog outline-hidden sm:max-h-[calc(100dvh-2rem)]',
           SIZE_STYLES[size] || SIZE_STYLES.md,
           className,
         )}

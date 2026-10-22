@@ -183,7 +183,7 @@ export default function Header({
                   onChange={(event) => onSearchQueryChange(event.target.value)}
                   type="search"
                   placeholder="Search lessons, teachers, and topics"
-                  className="h-full w-full border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--outline)] focus:outline-none"
+                  className="h-full w-full border-0 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--outline)] focus:outline-hidden"
                   aria-label="Global search"
                 />
               </label>

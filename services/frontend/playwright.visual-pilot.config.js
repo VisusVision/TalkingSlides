@@ -4,6 +4,7 @@ export default defineConfig({
   testDir: './visual-pilot',
   timeout: 90_000,
   workers: 2,
+  maxFailures: 4,
   reporter: [['list'], ['html', { outputFolder: 'visual-pilot-report', open: 'never' }]],
   outputDir: 'visual-pilot-results',
   snapshotPathTemplate: '{testDir}/.snapshots/{testName}/{arg}{ext}',

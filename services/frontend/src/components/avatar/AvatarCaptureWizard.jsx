@@ -749,7 +749,7 @@ export default function AvatarCaptureWizard({
                   <p className="mt-2 text-sm leading-6 text-slate-500">{copy.nameBody}</p>
                   <label className="mt-6 block text-sm font-bold text-slate-800">
                     {copy.nameLabel}
-                    <input autoFocus type="text" maxLength={120} value={avatarName} onChange={(event) => setAvatarName(event.target.value)} placeholder={copy.namePlaceholder} className="focus-ring mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none" />
+                    <input autoFocus type="text" maxLength={120} value={avatarName} onChange={(event) => setAvatarName(event.target.value)} placeholder={copy.namePlaceholder} className="focus-ring mt-2 h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-hidden" />
                   </label>
                   {error ? <p role="alert" className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">{error}</p> : null}
                   <div className="mt-7 flex justify-between gap-3">

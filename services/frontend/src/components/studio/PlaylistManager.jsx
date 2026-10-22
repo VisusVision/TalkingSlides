@@ -411,7 +411,7 @@ export default function PlaylistManager({ projects = [] }) {
                                 value={searchQuery}
                                 onChange={(e) => setLessonSearchQuery((prev) => ({ ...prev, [playlist.id]: e.target.value }))}
                                 placeholder="Search your lessons..."
-                                className="h-9 w-full bg-transparent text-sm text-[var(--text-primary)] outline-none"
+                                className="h-9 w-full bg-transparent text-sm text-[var(--text-primary)] outline-hidden"
                               />
                             </div>
                             <div className="max-h-64 overflow-y-auto space-y-1 pr-1">
