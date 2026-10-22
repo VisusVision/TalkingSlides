@@ -1,0 +1,41 @@
+{
+  "schema_version": "slide-source.v1",
+  "project_id": "synthetic-lesson",
+  "page_key": "comparison.source-0.split-1",
+  "source_slide_index": 0,
+  "split_index": 1,
+  "original_display_text": "Isı aktarımı: iki farklı yol",
+  "protected_narration": "İletim ve ışınım, belirtilen özellikleriyle karşılaştırılır.",
+  "source_revision": "sha256:b902d69bf3585a63e35e4da72fd21b44d474413b5784d6ce48a712def28400c6",
+  "evidence": [
+    {
+      "id": "comparison-evidence",
+      "kind": "comparison",
+      "source_revision": "sha256:b902d69bf3585a63e35e4da72fd21b44d474413b5784d6ce48a712def28400c6",
+      "locator": "synthetic-fixture:comparison",
+      "verified": true,
+      "data": {
+        "categories": [
+          "Ortam",
+          "Örnek"
+        ],
+        "items": [
+          {
+            "label": "İletim",
+            "values": [
+              "Madde içinde",
+              "Metal kaşık"
+            ]
+          },
+          {
+            "label": "Işınım",
+            "values": [
+              "Boşlukta da olur",
+              "Güneş ışığı"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

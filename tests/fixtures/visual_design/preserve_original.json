@@ -1,0 +1,23 @@
+{
+  "schema_version": "slide-source.v1",
+  "project_id": "synthetic-lesson",
+  "page_key": "preserve_original.source-0.split-1",
+  "source_slide_index": 0,
+  "split_index": 1,
+  "original_display_text": "Öğretmen tarafından onaylı şema",
+  "protected_narration": "Bu slaydın özgün görseli korunmalıdır.",
+  "source_revision": "sha256:c8f92c6df2b662307edd0c8305f378c41bb13d6937a881d0d8651a67d0b1ed21",
+  "evidence": [
+    {
+      "id": "preserve_original-evidence",
+      "kind": "preserve",
+      "source_revision": "sha256:c8f92c6df2b662307edd0c8305f378c41bb13d6937a881d0d8651a67d0b1ed21",
+      "locator": "synthetic-fixture:preserve_original",
+      "verified": true,
+      "data": {
+        "reason": "Existing diagram is legible and teacher-approved."
+      }
+    }
+  ],
+  "original_asset_ref": "asset:fixture-original"
+}

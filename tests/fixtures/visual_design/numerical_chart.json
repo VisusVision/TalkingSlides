@@ -1,0 +1,33 @@
+{
+  "schema_version": "slide-source.v1",
+  "project_id": "synthetic-lesson",
+  "page_key": "numerical_chart.source-0.split-1",
+  "source_slide_index": 0,
+  "split_index": 1,
+  "original_display_text": "Deney sonuçları: A < B",
+  "protected_narration": "A grubunda 12, B grubunda 18 fidan sayılmıştır.",
+  "source_revision": "sha256:69549f887b29092b2f310cd2dad403140e6191f0992db414d54c09436cdbc483",
+  "evidence": [
+    {
+      "id": "numerical_chart-evidence",
+      "kind": "numeric",
+      "source_revision": "sha256:69549f887b29092b2f310cd2dad403140e6191f0992db414d54c09436cdbc483",
+      "locator": "synthetic-fixture:numerical_chart",
+      "verified": true,
+      "data": {
+        "measure": "Sayılmış fidanlar",
+        "unit": "fidan",
+        "points": [
+          {
+            "label": "Grup A",
+            "value": 12
+          },
+          {
+            "label": "Grup B & ekibi",
+            "value": 18
+          }
+        ]
+      }
+    }
+  ]
+}

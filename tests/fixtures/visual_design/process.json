@@ -1,0 +1,41 @@
+{
+  "schema_version": "slide-source.v1",
+  "project_id": "synthetic-lesson",
+  "page_key": "process.source-0.split-1",
+  "source_slide_index": 0,
+  "split_index": 1,
+  "original_display_text": "Ölçüm kaydı & veri kontrolü",
+  "protected_narration": "Bu örnekte deney verisi kayıt, kontrol ve aktarım sırasıyla işlenir.",
+  "source_revision": "sha256:9bb11e89763faef012d235fc7ca39116481a10c95d3420a5d1d79fc659a50a46",
+  "evidence": [
+    {
+      "id": "process-evidence",
+      "kind": "process",
+      "source_revision": "sha256:9bb11e89763faef012d235fc7ca39116481a10c95d3420a5d1d79fc659a50a46",
+      "locator": "synthetic-fixture:process",
+      "verified": true,
+      "data": {
+        "steps": [
+          {
+            "id": "collect",
+            "label": "Ölçümü kaydet & tarihi ekle"
+          },
+          {
+            "id": "filter",
+            "label": "Kaydı kaynak form ile karşılaştır"
+          },
+          {
+            "id": "store",
+            "label": "Doğrulanan veriyi tabloya aktar"
+          }
+        ],
+        "order": [
+          "collect",
+          "filter",
+          "store"
+        ],
+        "relationship": "sequence"
+      }
+    }
+  ]
+}
