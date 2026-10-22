@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   setGoogleAuthProvider: vi.fn(),
   setToken: vi.fn(),
   refreshCapabilities: vi.fn(),
+  loginTarget: '',
 }));
 
 vi.mock("../api", () => ({
@@ -26,8 +27,9 @@ vi.mock("../lib/capabilities", () => ({
 }));
 
 vi.mock("../components/ui/AppShell", () => ({
-  default: ({ children, searchQuery, onSearchQueryChange }) => (
+  default: ({ children, searchQuery, onSearchQueryChange, onLoginRequest }) => (
     <div data-testid="app-shell">
+      <button data-testid="request-sign-in" onClick={() => onLoginRequest(mocks.loginTarget)}>Sign in</button>
       <input
         data-testid="route-search"
         value={searchQuery}
@@ -40,7 +42,7 @@ vi.mock("../components/ui/AppShell", () => ({
 }));
 
 vi.mock("../components/ui/AuthModal", () => ({
-  default: () => null,
+  default: ({ open, onLoginSuccess }) => open ? <button data-testid="finish-sign-in" onClick={() => onLoginSuccess({ id: 1, username: 'teacher' })}>Complete sign in</button> : null,
 }));
 
 vi.mock("../components/ui/ThemeProvider", () => ({
@@ -72,6 +74,7 @@ describe("redirect hash auth regressions", () => {
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
+    mocks.loginTarget = '';
     mocks.getStoredAuthUser.mockReturnValue(null);
     mocks.fetchCurrentUser.mockResolvedValue(null);
     mocks.logout.mockResolvedValue(undefined);
@@ -125,6 +128,28 @@ describe("redirect hash auth regressions", () => {
     expect(searchScopeForPathname("/browse")).toBe("browse");
     expect(searchScopeForPathname("/watch/42")).toBe("watch");
     expect(searchScopeForPathname("/channel/42")).toBe("channel:/channel/42");
+  });
+
+  it.each(['//redirect.invalid', '/\\redirect.invalid', '/\t/redirect.invalid', '/%2fredirect.invalid', '/%255credirect.invalid', '/a/..//redirect.invalid'])('rejects unsafe sign-in query and callback destinations: %j', async (target) => {
+    window.history.replaceState({}, '', `/?redirect=${encodeURIComponent(target)}`);
+    mocks.loginTarget = target;
+    const { root, host } = await renderApp();
+    await act(async () => host.querySelector('[data-testid="request-sign-in"]').click());
+    await act(async () => host.querySelector('[data-testid="finish-sign-in"]').click());
+    expect(window.location.pathname).toBe('/');
+    expect(window.location.search).toBe('');
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  it('preserves an internal sign-in destination with query and hash', async () => {
+    mocks.loginTarget = '/watch?lesson=501&resume=1#transcript';
+    const { root, host } = await renderApp();
+    await act(async () => host.querySelector('[data-testid="request-sign-in"]').click());
+    await act(async () => host.querySelector('[data-testid="finish-sign-in"]').click());
+    expect(window.location.pathname + window.location.search + window.location.hash).toBe(mocks.loginTarget);
+    await act(async () => root.unmount());
+    host.remove();
   });
 
   it("parses auth_token from the redirect hash and removes the hash from history", async () => {

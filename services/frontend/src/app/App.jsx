@@ -16,16 +16,11 @@ import SurfaceCard from '../components/ui/SurfaceCard';
 import { PageLoadingProvider } from '../components/ui/PageLoading';
 import { ToastProvider, toast } from '../components/ui/Toast';
 import { CapabilitiesProvider, useCapabilities } from '../lib/capabilities';
-import { ROUTE_RESET_EVENT, readRouteSessionState, writeRouteSessionState } from '../utils/routeSession';
+import { ROUTE_RESET_EVENT, readRouteSessionState, safeInternalReturnTo, writeRouteSessionState } from '../utils/routeSession';
 
 function getRedirectFromSearch(search) {
   const params = new URLSearchParams(search || '');
-  const redirect = String(params.get('redirect') || '').trim();
-
-  if (!redirect || !redirect.startsWith('/') || redirect.startsWith('//')) {
-    return '';
-  }
-  return redirect;
+  return safeInternalReturnTo(params.get('redirect'));
 }
 
 export function searchScopeForPathname(pathname) {
@@ -161,14 +156,7 @@ function AppWithRouter() {
   }, [location.pathname, location.search, navigate]);
 
   const handleLoginRequest = useCallback((redirectTo = '') => {
-    if (redirectTo) {
-      setPendingRedirect(redirectTo);
-    } else {
-      const redirectFromQuery = getRedirectFromSearch(location.search);
-      if (redirectFromQuery) {
-        setPendingRedirect(redirectFromQuery);
-      }
-    }
+    setPendingRedirect(safeInternalReturnTo(redirectTo) || getRedirectFromSearch(location.search));
     setAuthModalOpen(true);
   }, [location.search]);
 
@@ -194,7 +182,7 @@ function AppWithRouter() {
     toast.success('Signed in');
     void refreshCapabilities({ force: true });
 
-    const redirectTarget = pendingRedirect || getRedirectFromSearch(location.search);
+    const redirectTarget = safeInternalReturnTo(pendingRedirect) || getRedirectFromSearch(location.search);
     setPendingRedirect('');
 
     if (redirectTarget) {

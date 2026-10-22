@@ -76,9 +76,27 @@ export function onRouteReset(routeId, callback) {
   return () => window.removeEventListener(ROUTE_RESET_EVENT, handler);
 }
 
+function validatedInternalPath(value) {
+  // Return the authored target only after validation; never repair a redirect.
+  if (typeof value !== 'string' || !value || value.length > 4096) return '';
+  if (!value.startsWith('/') || value.startsWith('//') || /[\s\\\u0000-\u001f\u007f-\u009f]/u.test(value)) return '';
+  try {
+    const decoded = decodeURIComponent(value);
+    if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(decoded)) return '';
+    const pathname = value.split(/[?#]/, 1)[0];
+    const decodedPath = decodeURIComponent(pathname);
+    // Encoded separators/delimiters and nested encodings are ambiguous across
+    // URL parsers and later decoding. Query/fragment values remain data.
+    if (/%(?:2f|5c|25|3f|23)/i.test(pathname) || /[\\%\uFF0F\uFF3C]/u.test(decodedPath)) return '';
+    if (decodedPath.split('/').some((part) => part === '.' || part === '..')) return '';
+    const target = new URL(value, 'https://internal.invalid');
+    if (target.origin !== 'https://internal.invalid') return '';
+    return value;
+  } catch {
+    return '';
+  }
+}
+
 export function safeInternalReturnTo(value, fallback = '') {
-  const raw = String(value || '').trim();
-  const fallbackValue = String(fallback || '').trim();
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return fallbackValue;
-  return raw;
+  return validatedInternalPath(value) || validatedInternalPath(fallback);
 }

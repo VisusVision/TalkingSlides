@@ -1,3 +1,5 @@
+import { safeInternalReturnTo } from './routeSession';
+
 export function notificationResults(payload) {
   if (Array.isArray(payload)) return payload;
   if (Array.isArray(payload?.results)) return payload.results;
@@ -27,8 +29,7 @@ export function formatNotificationTime(value) {
 }
 
 export function isSafeNotificationActionUrl(value) {
-  const url = String(value || '').trim();
-  return Boolean(url && url.startsWith('/') && !url.startsWith('//'));
+  return Boolean(safeInternalReturnTo(value));
 }
 
 export function notificationPageInfo(payload, fallback = {}) {

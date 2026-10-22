@@ -5042,7 +5042,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
   }), [setSearchParams, studioPositionStorageKey, visibleEditorPanels]);
 
   const handleBackToReviewContext = useCallback(() => {
-    navigate(requestedReviewReturnTo || '/moderation');
+    navigate(safeInternalReturnTo(requestedReviewReturnTo, '/moderation'));
   }, [navigate, requestedReviewReturnTo]);
 
   const adminReviewBackLabelText = useMemo(
