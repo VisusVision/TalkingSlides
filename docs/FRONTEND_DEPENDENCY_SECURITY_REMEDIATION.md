@@ -206,9 +206,16 @@ Tailwind's declared 6.x range.
 
 All existing unit/component suites, including `VisualSuggestionsPanel`, nested
 Intelligence tabs, Studio Intelligence, routing/auth and playback tests, were
-retained unchanged. Generated CSS remained byte-identical:
-`index-C9fFvl95.css`, 93,031 characters; flex/grid, responsive grid and token
-utilities were present before/after. No backend tests were rerun because no
+retained unchanged. A separate archive of the exact Phase 2A baseline was
+installed with `npm ci` and rebuilt, then its generated CSS was compared byte
+for byte with the updated build's asset referenced by `dist/index.html`:
+`index-D9rTB-uI.css`, 93,106 bytes, SHA256
+`54d247d513d8525916642b7d25bb8ae0cdfdcf7585c566673fef5d97e71dfd69`.
+The comparison passed; flex/grid, responsive grid and token utilities also
+passed. An initial alphabetical asset scan selected an older ignored output;
+the explicit build/index reference above is the verified comparison, not a
+claim about every stale file in the local output directory.
+No backend tests were rerun because no
 backend files changed. No new test dependency or permanent test harness added.
 
 Additional bounded in-process/child-process security controls were executed:
