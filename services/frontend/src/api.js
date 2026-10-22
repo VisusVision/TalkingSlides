@@ -2056,3 +2056,43 @@ export function extractJobInfo(data) {
   }
   return { project_id: data.project_id, job_id: data.job_id };
 }
+
+// Private deterministic previews: these never call scene/draft/render APIs.
+export async function fetchVisualSuggestions(projectId, pageKey) {
+  const params = new URLSearchParams({ page_key: pageKey });
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-suggestions/?${params}`, {
+    headers: authHeaders(), cache: 'no-store',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, 'Unable to load visual suggestions');
+  return data;
+}
+
+export async function generateVisualSuggestion(projectId, pageKey, expectedSourceHash) {
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-suggestions/`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), cache: 'no-store',
+    body: JSON.stringify({ page_key: pageKey, expected_source_hash: expectedSourceHash }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, 'Unable to generate a visual suggestion');
+  return data;
+}
+
+export async function fetchVisualSuggestionPreview(projectId, suggestionId) {
+  // Construct the route: never send an auth token to an asset-supplied URL.
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-suggestions/${encodeURIComponent(suggestionId)}/preview/`, {
+    headers: authHeaders(), cache: 'no-store',
+  });
+  if (!res.ok) throw apiError(await res.json().catch(() => ({})), 'Unable to load the private preview');
+  if (!(res.headers.get('Content-Type') || '').toLowerCase().startsWith('image/svg+xml')) throw new Error('Unsupported visual preview type');
+  return URL.createObjectURL(await res.blob());
+}
+
+export async function fetchVisualOriginalPreview(projectId, pageRef, isDraft) {
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/transcript-pages/${encodeURIComponent(pageRef)}/background/original/${isDraft ? '?draft=1' : ''}`, {
+    headers: authHeaders(), cache: 'no-store',
+  });
+  if (!res.ok) throw new Error('Original preview unavailable');
+  if (!/^image\/(png|jpeg|webp)(;|$)/i.test(res.headers.get('Content-Type') || '')) throw new Error('Unsupported original preview type');
+  return URL.createObjectURL(await res.blob());
+}

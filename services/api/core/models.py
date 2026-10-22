@@ -1213,3 +1213,38 @@ class LessonSegment(models.Model):
 
     def __str__(self):
         return f"LessonSegment project={self.project_id} order={self.segment_order}"
+
+
+class VisualDesignSuggestion(models.Model):
+    """Immutable private candidate; never an active scene, draft edit or render job.
+
+    Bounded SVG assets live inside preview_payload in the database, following the
+    private JSON report convention. No publicly mounted storage path is created.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="visual_design_suggestions")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="visual_design_suggestions")
+    page_key = models.CharField(max_length=64)
+    source_mode = models.CharField(max_length=12, choices=[("active", "Active"), ("draft", "Saved private draft")])
+    source_revision = models.CharField(max_length=71)
+    source_hash = models.CharField(max_length=71)
+    candidate_key = models.CharField(max_length=71)
+    schema_version = models.CharField(max_length=40, default="visual-suggestion.v1")
+    status = models.CharField(max_length=16, choices=[("ready", "Ready"), ("preserved", "Original retained"), ("unsupported", "Unsupported"), ("failed", "Failed")])
+    plan_payload = models.JSONField(default=dict)
+    preview_payload = models.JSONField(default=dict)
+    plan_hash = models.CharField(max_length=71, blank=True)
+    preview_hash = models.CharField(max_length=71, blank=True)
+    validation_errors = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [models.UniqueConstraint(fields=["project", "owner", "candidate_key"], name="unique_visual_design_candidate")]
+        indexes = [models.Index(fields=["project", "owner", "page_key", "-created_at"], name="visual_candidate_page_idx")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Visual suggestions are immutable; generate a new candidate.")
+        return super().save(*args, **kwargs)

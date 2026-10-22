@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import VisualSuggestionsPanel, { StudioIntelligenceTabs } from '../components/studio/VisualSuggestionsPanel';
 import {
   createProject,
   deleteProject,
@@ -8500,6 +8501,7 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                     className={activeEditorPanel === 'intelligence' ? 'motion-studio-panel' : 'hidden'}
                   >
                     {selectedLesson ? (
+                      <StudioIntelligenceTabs analysis={
                       <LessonIntelligencePanel
                         project={selectedLesson}
                         report={selectedLessonIntelligence}
@@ -8518,6 +8520,16 @@ export default function Studio({ user, searchQuery = '', onLoginRequest }) {
                         onCopySuggestion={handleCopyLessonIntelligenceItem}
                         onApplyNarrationSuggestion={handleApplyLessonNarrationSuggestion}
                       />
+                      }>
+                        <VisualSuggestionsPanel
+                          key={`${selectedLesson.id}:${selectedScene?.page?.page_key || ''}`}
+                          projectId={selectedLesson.id}
+                          page={selectedScene?.page}
+                          unsavedChanges={Boolean(transcriptDirty || ttsDirty || selectedScene?.isDirty)}
+                          readOnly={readOnlyReview}
+                          revision={JSON.stringify([selectedLesson.updated_at, selectedLesson.draft_metadata])}
+                        />
+                      </StudioIntelligenceTabs>
                     ) : (
                       <div className="rounded-2xl token-surface p-4">
                         <p className="title-lg text-[var(--text-primary)]">Lesson Intelligence</p>
