@@ -58,7 +58,7 @@ export default function EmptyState({
         <Title
           className={joinClasses(
             Icon ? 'mt-4' : '',
-            'font-[var(--font-display)] font-bold leading-snug text-[var(--text-primary)]',
+            'font-display font-bold leading-snug text-[var(--text-primary)]',
             layout.title,
           )}
         >

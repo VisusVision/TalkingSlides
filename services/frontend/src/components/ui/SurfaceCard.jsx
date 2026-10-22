@@ -94,7 +94,7 @@ function SurfaceCardTitle({ as: Component = 'h2', size = 'lg', className, childr
   return (
     <Component
       className={joinClasses(
-        'font-[var(--font-display)] leading-snug text-[var(--text-primary)]',
+        'font-display leading-snug text-[var(--text-primary)]',
         TITLE_STYLES[size] || TITLE_STYLES.lg,
         className,
       )}
