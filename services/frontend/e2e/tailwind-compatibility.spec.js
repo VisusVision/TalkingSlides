@@ -63,3 +63,17 @@ for (const preference of ['system', 'class']) test(`active transforms respect ${
   await expect.poll(async () => (await button.boundingBox()).width).toBe(200);
   await page.mouse.up();
 });
+
+test('existing sibling spacing preserves hidden-child and authored-margin behavior', async ({ page }) => {
+  await openStyleProbe(page);
+  await page.evaluate(() => {
+    const spacing = document.createElement('div'); spacing.className = 'space-y-3';
+    spacing.innerHTML = '<p id="first-spaced" class="mt-2 mb-2">First</p><p hidden>Hidden</p><p id="second-spaced">Second</p><p id="third-spaced" class="mt-4">Third</p>';
+    document.querySelector('#style-probe').append(spacing);
+  });
+  await expect(page.locator('#first-spaced')).toHaveCSS('margin-top', '8px');
+  await expect(page.locator('#first-spaced')).toHaveCSS('margin-bottom', '8px');
+  await expect(page.locator('#second-spaced')).toHaveCSS('margin-top', '12px');
+  await expect(page.locator('#second-spaced')).toHaveCSS('margin-bottom', '0px');
+  await expect(page.locator('#third-spaced')).toHaveCSS('margin-top', '12px');
+});

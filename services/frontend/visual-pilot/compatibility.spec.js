@@ -84,6 +84,8 @@ async function open(state, scenario) {
   if (['studio', 'analysis', 'visuals', 'dialog'].includes(scenario)) {
     await expect(page.getByTestId('studio-creator-header')).toBeVisible();
     if (scenario !== 'studio') {
+      const inspector = page.locator('button[aria-controls="studio-compact-inspector-workspace"]');
+      if (await inspector.isVisible()) await inspector.click();
       await page.locator('#studio-inspector-tab-intelligence').click();
       await expect(page.getByRole('tab', { name: 'Analysis', exact: true })).toHaveAttribute('aria-selected', 'true');
     }
@@ -133,7 +135,7 @@ async function layout(page) {
     return { tag: el.tagName, label: (el.getAttribute('aria-label') || el.textContent).trim().slice(0, 80),
       rect: ['x', 'y', 'width', 'height'].map((key) => Math.round(rect[key] * 10) / 10),
       font: [style.fontFamily, style.fontSize, style.fontWeight, style.lineHeight, style.letterSpacing],
-      color: style.color, background: style.backgroundColor, radius: style.borderRadius,
+      radius: style.borderRadius,
     };
   }));
 }

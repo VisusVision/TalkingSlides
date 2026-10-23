@@ -836,7 +836,7 @@ export function StudioCreatorHeader({
           </p>
           <h2
             id="studio-creator-header-title"
-            className="mt-2 break-words text-2xl font-bold leading-tight text-[var(--text-primary)] sm:text-3xl"
+            className="mt-2 break-words text-2xl font-bold leading-tight text-[var(--text-primary)] sm:text-3xl sm:leading-9"
           >
             {title || copy.creatorUntitledLesson}
           </h2>
