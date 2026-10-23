@@ -1,5 +1,6 @@
 """Owner-only preview APIs; deliberately disconnected from scene/render APIs."""
 from django.http import HttpResponse
+from django.db import OperationalError
 from django.shortcuts import get_object_or_404
 from django.utils.cache import patch_vary_headers
 from rest_framework import permissions, serializers
@@ -10,9 +11,9 @@ from rest_framework.throttling import UserRateThrottle
 from rest_framework.views import APIView
 
 from core.models import Project, VisualDesignSuggestion
-from core.visual_design import DesignError, VisualPlan, VisualPreview, validate_svg
 from core.visual_design_source import build_studio_visual_source
 from core.visual_suggestions import SUGGESTION_VERSION, generate_suggestion, suggestion_metadata
+from core.visual_drafts import VisualDraftConflict, decide_visual_draft, verified_preview, visual_draft_metadata
 
 
 class GenerateRequest(serializers.Serializer):
@@ -100,15 +101,8 @@ class VisualSuggestionPreviewView(OwnerVisualView):
         if candidate.status != "ready" or not metadata["compatible"]:
             raise NotFound("No supported generated preview is available.")
         try:
-            plan = VisualPlan(candidate.plan_payload)
-            preview = VisualPreview(candidate.preview_payload)
-            data = preview.to_dict()
-            if (plan.content_hash != candidate.plan_hash or preview.content_hash != candidate.preview_hash
-                or data["plan_hash"] != candidate.plan_hash or data["source_hash"] != candidate.source_hash
-                or plan.to_dict()["source_hash"] != candidate.source_hash
-                or not validate_svg(data["svg"], plan).valid):
-                raise DesignError("integrity", "Preview integrity check failed")
-        except DesignError:
+            data = verified_preview(candidate)
+        except VisualDraftConflict:
             return Response({"error": "Stored preview failed validation."}, status=409)
         response = HttpResponse(data["svg"], content_type="image/svg+xml; charset=utf-8")
         response["Content-Security-Policy"] = "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; sandbox"
@@ -116,3 +110,49 @@ class VisualSuggestionPreviewView(OwnerVisualView):
         response["Cross-Origin-Resource-Policy"] = "same-origin"
         response["X-Visual-Source-Stale"] = "true" if metadata["is_stale"] else "false"
         return response
+
+
+class VisualDecisionRequest(serializers.Serializer):
+    page_key = serializers.CharField(max_length=64, trim_whitespace=False)
+    action = serializers.ChoiceField(choices=["select", "reject", "restore"])
+    candidate_id = serializers.UUIDField(required=False)
+    expected_source_hash = serializers.RegexField(r"^sha256:[0-9a-f]{64}$")
+    expected_version = serializers.IntegerField(min_value=0, max_value=2**53 - 1)
+
+    def to_internal_value(self, data):
+        if (not isinstance(data, dict) or set(data) - set(self.fields)
+            or type(data.get("expected_version")) is not int
+            or any(type(data.get(key)) is not str for key in ("page_key", "action", "expected_source_hash"))
+            or ("candidate_id" in data and type(data["candidate_id"]) is not str)):
+            raise serializers.ValidationError({"non_field_errors": ["Only the explicit visual decision contract is accepted."]})
+        return super().to_internal_value(data)
+
+    def validate(self, data):
+        if (data["action"] == "restore") == ("candidate_id" in data):
+            raise serializers.ValidationError("Select/reject require candidate_id; restore must omit it.")
+        return data
+
+
+class VisualDraftView(OwnerVisualView):
+    """Private storage only. No call into ordinary draft or render mutation APIs."""
+
+    def get(self, request, project_id):
+        project = self.project(request, project_id)
+        page_key = request.query_params.get("page_key")
+        if not page_key or len(page_key) > 64:
+            raise serializers.ValidationError({"page_key": "Select a stable page key."})
+        return Response(visual_draft_metadata(project, request.user, page_key))
+
+    def post(self, request, project_id):
+        self.project(request, project_id)
+        payload = VisualDecisionRequest(data=request.data)
+        payload.is_valid(raise_exception=True)
+        try:
+            data, reused = decide_visual_draft(project_id, request.user, payload.validated_data)
+        except OperationalError as exc:
+            # SQLite's write lock cannot serialize select_for_update in remote
+            # tests; a busy writer is a conflict, never a successful partial save.
+            if "locked" in str(exc).lower() or "deadlock" in str(exc).lower() or "could not serialize" in str(exc).lower():
+                raise VisualDraftConflict() from exc
+            raise
+        return Response({**data, "reused": reused})

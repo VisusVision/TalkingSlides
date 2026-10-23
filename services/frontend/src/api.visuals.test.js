@@ -1,11 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchVisualSuggestions, generateVisualSuggestion, fetchVisualSuggestionPreview, fetchVisualOriginalPreview, setToken } from './api';
+import { fetchVisualSuggestions, generateVisualSuggestion, fetchVisualSuggestionPreview, fetchVisualOriginalPreview, fetchVisualDraft, saveVisualDecision, setToken } from './api';
 
 beforeEach(() => { global.fetch = vi.fn(); localStorage.clear(); setToken('private-token'); URL.createObjectURL = vi.fn(() => 'blob:private'); });
 afterEach(() => vi.restoreAllMocks());
 function json(data, ok = true) { return { ok, status: ok ? 200 : 409, json: async () => data }; }
 
 describe('private Visual Designer API', () => {
+  it('uses the separate private draft route and explicit decision payload', async () => {
+    fetch.mockResolvedValue(json({}));
+    await fetchVisualDraft(9, 'p0');
+    expect(fetch.mock.calls[0][0]).toContain('/projects/9/visual-draft/?page_key=p0');
+    await saveVisualDecision(9, { pageKey: 'p0', action: 'select', candidateId: 'uuid', expectedSourceHash: 'hash', expectedVersion: 0 });
+    expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ page_key: 'p0', action: 'select', candidate_id: 'uuid', expected_source_hash: 'hash', expected_version: 0 });
+    await saveVisualDecision(9, { pageKey: 'p0', action: 'restore', candidateId: 'ignored', expectedSourceHash: 'hash', expectedVersion: 1 });
+    expect(JSON.parse(fetch.mock.calls[2][1].body)).not.toHaveProperty('candidate_id');
+  });
   it('lists using a stable page key with authorization and no cache', async () => {
     fetch.mockResolvedValue(json({ suggestions: [] }));
     await fetchVisualSuggestions(9, 's1-p2');

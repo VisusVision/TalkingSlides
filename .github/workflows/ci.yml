@@ -162,3 +162,35 @@ jobs:
         uses: grafana/setup-k6-action@v1
       - name: Validate k6 script
         run: k6 inspect infra/loadtest/k6-production-sprint.js
+
+  visual-drafts-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: visual_drafts_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            services/api/requirements.txt
+            requirements-test.txt
+      - name: Install backend test dependencies
+        run: pip install -r services/api/requirements.txt -r requirements-test.txt
+      - name: Private visual choices and simultaneous updates on PostgreSQL
+        env:
+          INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED: 'false'
+        run: pytest -q tests/integration/test_visual_drafts.py --ds=config.settings_test_postgres

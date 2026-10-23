@@ -1248,3 +1248,49 @@ class VisualDesignSuggestion(models.Model):
         if not self._state.adding:
             raise ValidationError("Visual suggestions are immutable; generate a new candidate.")
         return super().save(*args, **kwargs)
+
+
+class VisualDraftSelection(models.Model):
+    """Owner-private visual choice. Deliberately outside Project.draft_data."""
+
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="visual_draft_selections")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="visual_draft_selections")
+    page_key = models.CharField(max_length=64)
+    state = models.CharField(max_length=12, choices=[("original", "Original"), ("selected", "Selected design")], default="original")
+    candidate = models.ForeignKey(VisualDesignSuggestion, null=True, blank=True, on_delete=models.RESTRICT, related_name="private_selections")
+    source_hash = models.CharField(max_length=71, blank=True)
+    source_revision = models.CharField(max_length=71, blank=True)
+    plan_hash = models.CharField(max_length=71, blank=True)
+    preview_hash = models.CharField(max_length=71, blank=True)
+    design_versions = models.JSONField(default=dict)
+    contains_text = models.BooleanField(default=False)
+    version = models.PositiveBigIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["project", "owner", "page_key"], name="unique_private_visual_page"),
+            models.CheckConstraint(condition=(models.Q(state="original", candidate__isnull=True) | models.Q(state="selected", candidate__isnull=False)), name="private_visual_state_candidate"),
+        ]
+
+
+class VisualDraftDecision(models.Model):
+    """Append-only select/reject/restore audit; no SVG or authored text copies."""
+
+    selection = models.ForeignKey(VisualDraftSelection, on_delete=models.CASCADE, related_name="decisions")
+    candidate = models.ForeignKey(VisualDesignSuggestion, null=True, blank=True, on_delete=models.RESTRICT, related_name="private_decisions")
+    action = models.CharField(max_length=12, choices=[("select", "Select"), ("reject", "Reject"), ("restore", "Restore original")])
+    version = models.PositiveBigIntegerField()
+    source_hash = models.CharField(max_length=71)
+    result = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version"]
+        constraints = [models.UniqueConstraint(fields=["selection", "version"], name="unique_visual_decision_version")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Visual decisions are immutable.")
+        return super().save(*args, **kwargs)

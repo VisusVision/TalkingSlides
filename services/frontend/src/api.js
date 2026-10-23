@@ -2096,3 +2096,25 @@ export async function fetchVisualOriginalPreview(projectId, pageRef, isDraft) {
   if (!/^image\/(png|jpeg|webp)(;|$)/i.test(res.headers.get('Content-Type') || '')) throw new Error('Unsupported original preview type');
   return URL.createObjectURL(await res.blob());
 }
+
+// Separate private visual-choice endpoint: never call Studio save/rerender here.
+export async function fetchVisualDraft(projectId, pageKey) {
+  const params = new URLSearchParams({ page_key: pageKey });
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-draft/?${params}`, {
+    headers: authHeaders(), cache: 'no-store',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, 'Unable to load the private visual draft');
+  return data;
+}
+
+export async function saveVisualDecision(projectId, { pageKey, action, candidateId, expectedSourceHash, expectedVersion }) {
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-draft/`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), cache: 'no-store',
+    body: JSON.stringify({ page_key: pageKey, action, expected_source_hash: expectedSourceHash,
+      expected_version: expectedVersion, ...(action === 'restore' ? {} : { candidate_id: candidateId }) }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { const error = apiError(data, 'Unable to save the private visual draft'); error.status = res.status; throw error; }
+  return data;
+}

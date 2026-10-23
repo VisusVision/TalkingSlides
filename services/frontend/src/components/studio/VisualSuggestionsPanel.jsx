@@ -1,8 +1,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { fetchVisualSuggestions, generateVisualSuggestion, fetchVisualSuggestionPreview, fetchVisualOriginalPreview } from '../../api';
+import { fetchVisualSuggestions, generateVisualSuggestion } from '../../api';
 import { useStudioWorkspaceCopy } from './StudioWorkspaceChrome';
 import Button from '../ui/Button';
 import Dialog from '../ui/Dialog';
+import { usePrivatePreview, usePrivateOriginal } from './visualPreviewHooks';
+import VisualDraftControls from './VisualDraftControls';
 
 export function StudioIntelligenceTabs({ analysis, children }) {
   const copy = useStudioWorkspaceCopy();
@@ -22,43 +24,6 @@ export function StudioIntelligenceTabs({ analysis, children }) {
   </div>;
 }
 
-function usePrivatePreview(projectId, candidate, refreshVersion) {
-  const [image, setImage] = useState('');
-  const [failed, setFailed] = useState(false);
-  const [loading, setLoading] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl = '';
-    setImage(''); setFailed(false);
-    if (!candidate?.preview_url || candidate.status !== 'ready' || candidate.compatible === false) { setLoading(false); return undefined; }
-    setLoading(true);
-    fetchVisualSuggestionPreview(projectId, candidate.id).then((url) => {
-      objectUrl = url;
-      if (cancelled) { URL.revokeObjectURL(url); return; }
-      setImage(url); setLoading(false);
-    }).catch(() => { if (!cancelled) { setFailed(true); setLoading(false); } });
-    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [projectId, candidate?.id, candidate?.preview_url, candidate?.status, candidate?.compatible, refreshVersion]);
-  return { image, failed, loading };
-}
-
-function usePrivateOriginal(projectId, source) {
-  const [image, setImage] = useState('');
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl = '';
-    setImage('');
-    if (!source?.original_available || !source?.asset_page_ref) return undefined;
-    fetchVisualOriginalPreview(projectId, source.asset_page_ref, source.source_mode === 'draft').then((url) => {
-      objectUrl = url;
-      if (cancelled) { URL.revokeObjectURL(url); return; }
-      setImage(url);
-    }).catch(() => { if (!cancelled) setImage(''); });
-    return () => { cancelled = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
-  }, [projectId, source?.source_hash, source?.asset_page_ref, source?.original_available, source?.source_mode]);
-  return image;
-}
-
 export default function VisualSuggestionsPanel({ projectId, page, originalImageUrl = '', unsavedChanges = false, readOnly = false, revision = '' }) {
   const copy = useStudioWorkspaceCopy();
   const pageKey = page?.page_key || '';
@@ -69,6 +34,8 @@ export default function VisualSuggestionsPanel({ projectId, page, originalImageU
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [reused, setReused] = useState(false);
+  const generationBusy = useRef(false);
   const requestEpoch = useRef(0);
   const candidate = data?.suggestions?.find((item) => item.id === selectedId) || data?.suggestions?.[0] || null;
   const privatePreview = usePrivatePreview(projectId, candidate, refreshVersion);
@@ -78,7 +45,7 @@ export default function VisualSuggestionsPanel({ projectId, page, originalImageU
 
   useEffect(() => {
     const epoch = ++requestEpoch.current;
-    setData(null); setSelectedId(''); setExpanded(null); setError(false); setBusy(false);
+    setData(null); setSelectedId(''); setExpanded(null); setError(false); setBusy(false); setReused(false); generationBusy.current = false;
     if (!projectId || !pageKey || readOnly) { setLoading(false); return undefined; }
     setLoading(true);
     fetchVisualSuggestions(projectId, pageKey).then((next) => {
@@ -89,16 +56,17 @@ export default function VisualSuggestionsPanel({ projectId, page, originalImageU
   }, [projectId, pageKey, sourceToken, readOnly, refreshVersion]);
 
   async function generate() {
-    if (busy || unsavedChanges || readOnly || !data?.source) return;
+    if (generationBusy.current || busy || unsavedChanges || readOnly || !data?.source) return;
+    generationBusy.current = true;
     const epoch = requestEpoch.current;
     setBusy(true); setError(false);
     try {
       const result = await generateVisualSuggestion(projectId, pageKey, data.source.source_hash);
       const next = await fetchVisualSuggestions(projectId, pageKey);
       if (epoch !== requestEpoch.current) return;
-      setData(next); setSelectedId(result.suggestion.id);
+      setData(next); setSelectedId(result.suggestion.id); setReused(Boolean(result.reused));
     } catch { if (epoch === requestEpoch.current) setError(true); }
-    finally { if (epoch === requestEpoch.current) setBusy(false); }
+    finally { if (epoch === requestEpoch.current) { setBusy(false); generationBusy.current = false; } }
   }
   const strategyLabel = { preserve_original: copy.visualStrategyPreserve, typography_only: copy.visualStrategyTypography, flowchart: copy.visualStrategyFlowchart, comparison: copy.visualStrategyComparison, chart: copy.visualStrategyChart }[candidate?.strategy];
 
@@ -113,10 +81,11 @@ export default function VisualSuggestionsPanel({ projectId, page, originalImageU
     <p className="mt-2 text-sm text-[var(--text-secondary)]">{copy.visualHint}</p>
     {unsavedChanges && <p role="status" className="mt-3 text-sm text-[var(--status-warning-fg)]">{copy.visualUnsaved}</p>}
     <div className="my-3 flex flex-wrap gap-2">
-      <Button size="sm" disabled={busy || loading || unsavedChanges || !data?.source} onClick={generate}>{busy ? copy.visualGenerating : copy.visualGenerate}</Button>
+      <Button size="sm" disabled={busy || loading || unsavedChanges || !data?.source} onClick={generate}>{busy ? copy.visualGenerating : candidate ? copy.visualRegenerate : copy.visualGenerate}</Button>
       <Button size="sm" variant="secondary" disabled={busy || loading} onClick={() => setRefreshVersion((n) => n + 1)}>{copy.visualRefresh}</Button>
     </div>
     {(loading || busy) && <p role="status">{busy ? copy.visualGenerating : copy.visualLoading}</p>}
+    {reused && <p role="status" className="text-sm">{copy.visualReused}</p>}
     {error && <p role="alert" className="text-sm text-[var(--status-danger-fg)]">{copy.visualError}</p>}
     {!loading && data && !candidate && <p className="text-sm">{data.source ? copy.visualEmpty : copy.visualSelectPage}</p>}
     {data?.source && <p className="my-3 text-xs text-[var(--text-secondary)]">{data.source.source_mode === 'draft' ? copy.visualDraft : copy.visualActive}</p>}
@@ -134,13 +103,14 @@ export default function VisualSuggestionsPanel({ projectId, page, originalImageU
         {candidate.status === 'preserved' && <>{originalImage && <img src={originalImage} alt={copy.visualSuggestion} className="aspect-video w-full object-contain" />}<p className="text-sm">{copy.visualPreserved}</p></>}{candidate.status === 'unsupported' && <p className="text-sm">{copy.visualUnsupported}</p>}{candidate.status === 'failed' && <p role="alert">{copy.visualFailed}</p>}
       </figure>}
     </div>
+    {data?.source && <VisualDraftControls key={`${projectId}:${pageKey}:${data.source.source_hash}`} projectId={projectId} pageKey={pageKey} source={data.source} candidate={candidate} originalImage={originalImage} originalText={page?.original_text} unsavedChanges={unsavedChanges} refreshVersion={refreshVersion} onRefreshSource={() => setRefreshVersion((n) => n + 1)} />}
     {candidate && <div className="mt-4 space-y-2 text-sm">
       <p className="font-semibold">{strategyLabel || copy.visualUnsupported}</p>
       <p role="status">{candidate.is_stale ? copy.visualStale : copy.visualCurrent}{unsavedChanges ? ` · ${copy.visualWorkingChanged}` : ''}</p>
       <p><strong>{copy.visualRationale}: </strong>{candidate.rationale || copy.visualUnsupported}</p>
       {candidate.fallback_reason && <p className="text-[var(--text-secondary)]">{candidate.fallback_reason}</p>}
       {(candidate.warnings?.length > 0 || candidate.errors?.length > 0) && <div><strong>{copy.visualWarnings}</strong><ul className="mt-1 list-disc space-y-1 ps-5">{[...(candidate.warnings || []), ...(candidate.errors || [])].map((note, index) => <li key={index}>{note}</li>)}</ul></div>}
-      <p className="font-semibold">{copy.visualPreviewOnly}</p><p className="text-xs text-[var(--text-secondary)]">{copy.visualFuture}</p>
+      <p className="font-semibold">{copy.visualPreviewOnly}</p>
     </div>}
   </section>;
 }

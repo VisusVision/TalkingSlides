@@ -46,7 +46,7 @@ Router:
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .visual_design_views import VisualSuggestionListView, VisualSuggestionDetailView, VisualSuggestionPreviewView
+from .visual_design_views import VisualSuggestionListView, VisualSuggestionDetailView, VisualSuggestionPreviewView, VisualDraftView
 
 from .views import (
   AdminStatsDashboardView,
@@ -139,6 +139,7 @@ router.register(r"jobs", JobViewSet, basename="job")
 
 urlpatterns = [
     path("projects/<int:project_id>/visual-suggestions/", VisualSuggestionListView.as_view(), name="visual-suggestion-list"),
+    path("projects/<int:project_id>/visual-draft/", VisualDraftView.as_view(), name="visual-draft"),
     path("projects/<int:project_id>/visual-suggestions/<uuid:suggestion_id>/", VisualSuggestionDetailView.as_view(), name="visual-suggestion-detail"),
     path("projects/<int:project_id>/visual-suggestions/<uuid:suggestion_id>/preview/", VisualSuggestionPreviewView.as_view(), name="visual-suggestion-preview"),
     # Auth
