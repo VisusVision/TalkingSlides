@@ -312,3 +312,18 @@ def test_unconfigured_private_root_fails_instead_of_ephemeral_or_public_storage(
     monkeypatch.delenv("VISUAL_RENDER_PRIVATE_ROOT", raising=False)
     with pytest.raises(DesignError, match="Configure an absolute persistent"):
         PrivateRenderAssets(lesson[1].pk)
+
+
+@pytest.mark.parametrize("public_setting", ["STATIC_ROOT", "MEDIA_ROOT"])
+def test_pins_cannot_be_stored_under_other_known_public_roots(lesson, settings, tmp_path, public_setting):
+    setattr(settings, public_setting, str(tmp_path/"published"))
+    settings.VISUAL_RENDER_PRIVATE_ROOT = str(tmp_path/"published"/"not-private")
+    with pytest.raises(DesignError): PrivateRenderAssets(lesson[1].pk)
+
+
+@pytest.mark.parametrize("chunk", [{"start": 1, "end": 0, "text": "bad"},
+    {"start": -1, "end": 1, "text": "bad"}, {"start": 0, "end": 5, "text": "outside page"}])
+def test_invalid_frozen_subtitle_intervals_fail_before_snapshot_creation(lesson, chunk):
+    lesson[2].chunk_timeline = [chunk]; lesson[2].save()
+    with pytest.raises(DesignError): current_render_revision(lesson[1].pk, lesson[0])
+    assert not VisualRenderSnapshot.objects.exists()

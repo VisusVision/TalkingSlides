@@ -83,6 +83,17 @@ class FrozenRenderSnapshot:
             for name in ("start_seconds", "end_seconds", "duration_seconds"):
                 n = page[name]
                 require(n is None or type(n) in (int, float) and math.isfinite(n) and n >= 0, "timing", "Invalid timing input")
+            if page["start_seconds"] is not None and page["end_seconds"] is not None:
+                require(page["end_seconds"] >= page["start_seconds"], "timing", "Page ends before it starts")
+            previous_end = None
+            for chunk in page["chunk_timeline"]:
+                fields(chunk, ("start", "end", "text"), ("index", "chunk_index"))
+                require(type(chunk["text"]) is str and all(type(chunk[key]) in (int, float) for key in ("start", "end"))
+                        and 0 <= chunk["start"] < chunk["end"], "timing", "Invalid frozen subtitle interval")
+                require(previous_end is None or chunk["start"] >= previous_end, "timing", "Overlapping or unordered frozen subtitle intervals")
+                if page["start_seconds"] is not None: require(chunk["start"] >= page["start_seconds"], "timing", "Subtitle precedes page")
+                if page["end_seconds"] is not None: require(chunk["end"] <= page["end_seconds"], "timing", "Subtitle exceeds page")
+                previous_end = chunk["end"]
             keys.append(page["page_key"]); orders.append(page["order"])
         require(len(set(keys)) == len(keys) and len(set(orders)) == len(orders) and orders == sorted(orders), "identity", "Duplicate or ambiguous page ordering/keys")
         for key in ("ordinary_draft", "project_fields", "tts_settings", "avatar"):

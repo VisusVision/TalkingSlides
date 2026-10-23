@@ -19,8 +19,12 @@ class PrivateRenderAssets:
         require(isinstance(configured, (str, os.PathLike)) and str(configured).strip()
                 and Path(configured).is_absolute(), "private_storage", "Configure an absolute persistent VISUAL_RENDER_PRIVATE_ROOT before capturing snapshots")
         self.root = Path(configured).resolve()
-        public = Path(settings.STORAGE_ROOT).resolve()
-        require(not self.root.is_relative_to(public) and not public.is_relative_to(self.root), "private_storage", "Private render assets must be separate from public storage")
+        public_roots = [getattr(settings, name, None) for name in ("STORAGE_ROOT", "STATIC_ROOT", "MEDIA_ROOT")]
+        for raw in public_roots:
+            if not raw: continue
+            public = Path(raw).resolve()
+            require(not self.root.is_relative_to(public) and not public.is_relative_to(self.root),
+                    "private_storage", "Private render assets must be separate from public media/static storage")
         self.project_root = self.root / str(project_id)
         require(self.project_root.resolve().is_relative_to(self.root), "asset_path", "Private project symlink escaped")
         self.seen = {}
