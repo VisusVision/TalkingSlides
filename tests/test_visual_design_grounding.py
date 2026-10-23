@@ -61,6 +61,7 @@ def test_original_visual_does_not_suppress_explicit_source_alternative():
 
 
 @pytest.mark.parametrize("text", [
+    "Compare process models\n1. A\n2. B", "Not a process\n1. A\n2. B", "Süreç türleri\n1. A\n2. B",
     "Process\n1. A\n3. B", "Process\n1. A\n2. A", "Rank\n1. A\n2. B",
     "Process\n1. A\n2. B\nExtra unsupported assertion",
     "Data\nGroup | Height (cm)\nA | NaN\nB | 18", "Data\nGroup | Height (cm)\nA | 12 kg\nB | 18 cm",
@@ -128,3 +129,10 @@ def test_committed_grounded_preview_artifacts_match_versioned_contracts():
         assert item["plan_hash"] == plan.content_hash
         assert item["preview_hash"] == preview.content_hash
         assert (root / item["file"]).read_text() == preview.to_dict()["svg"]
+
+
+def test_explicit_markdown_process_heading_retains_exact_authored_title():
+    source = snapshot("# Steps: Measurement\n1. Collect sample\n2. Record value")
+    result = extract_evidence(source)
+    assert len(result["evidence"]) == 1
+    assert result["evidence"][0]["heading"] == "# Steps: Measurement"

@@ -59,7 +59,12 @@ def extract_evidence(snapshot):
     if not lines:
         return result
     heading, body = lines[0]["quote"], [line["quote"] for line in lines[1:]]
-    process_heading = re.search(r"(?:\bprocess\b|\bsteps\b|\bprocedure\b|süreç|süreci|adımlar|işlem sırası)", heading, re.I)
+    # Mentioning a process ("Compare process models") does not establish order.
+    cue_heading = re.sub(r"^#{1,6} +", "", heading)
+    process_heading = (
+        re.search(r"^(?:process|steps|procedure|süreç|adımlar|işlem sırası)\s*(?::|$)|\b(?:process|procedure|süreci|adımları|işlem sırası)$", cue_heading, re.I)
+        and not re.search(r"\b(?:not|no|versus|comparison|compare|alternatives|değil|karşılaştırma)\b", cue_heading, re.I)
+    )
     numbered = [re.fullmatch(r"([1-9][0-9]?)\s*[.)]\s+(.+)", line) for line in body]
     try:
         if process_heading and 2 <= len(body) <= 4 and all(numbered):

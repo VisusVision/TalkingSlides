@@ -150,6 +150,6 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1600, height
     await page.getByRole('tab', { name: 'Analysis', exact: true }).click();
     await expect(page.getByRole('tab', { name: 'Analysis', exact: true })).toHaveAttribute('aria-selected', 'true');
     expect(state.writes.every((path) => /visual-(?:proposals|draft)/.test(path))).toBe(true);
-    expect(state.errors).toEqual([]);
+    state.errors();
   });
 }
