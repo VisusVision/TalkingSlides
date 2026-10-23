@@ -1,0 +1,107 @@
+[
+  {
+    "fixture": "flowchart",
+    "file": "flowchart.png",
+    "strategy": "flowchart",
+    "source_text": "Ölçüm süreci\n1. Örneği topla\n2. Ölçümü kaydet & kontrol et\n3. Sonucu arşivle",
+    "receipt": {
+      "schema_version": "visual-frame-receipt.v1",
+      "snapshot_hash": "sha256:870b9d551eb6e0da08a7e4374a2f9464a792678e64f5cfc3f2f7cc1b52de6959",
+      "revision_hash": "sha256:69899aa6bb9f946deb608606723e5d1d0623ae7ae7d514f7ca49d86e8c88f440",
+      "page_key": "flowchart.source-0.split-1",
+      "frame_asset": {
+        "sha256": "sha256:e3f5728a3544fa414b27ac6785b42a0f4a2e30938fd31518efff6a6dd44cba71",
+        "size": 51621,
+        "extension": "png"
+      },
+      "width": 1920,
+      "height": 1080,
+      "publishing_allowed": false
+    },
+    "synthetic": true
+  },
+  {
+    "fixture": "comparison",
+    "file": "comparison.png",
+    "strategy": "comparison",
+    "source_text": "Energy storage comparison\nProperty | Battery | Capacitor\nStorage | Chemical | Electric field\nDischarge | Slow | Fast",
+    "receipt": {
+      "schema_version": "visual-frame-receipt.v1",
+      "snapshot_hash": "sha256:41a8f51d0c433c264a5b7c6588d1619a13673f7928f1e93061724952256897b8",
+      "revision_hash": "sha256:6de131bafa614a4942248db5133def518b8f34d4e1bb2fa796a6007f8ce3c250",
+      "page_key": "comparison.source-0.split-1",
+      "frame_asset": {
+        "sha256": "sha256:060fa91e47f8b078c8757d8cd07d14d094e2351c0298236ebb3b5301b199bcd0",
+        "size": 59769,
+        "extension": "png"
+      },
+      "width": 1920,
+      "height": 1080,
+      "publishing_allowed": false
+    },
+    "synthetic": true
+  },
+  {
+    "fixture": "chart",
+    "file": "chart.png",
+    "strategy": "chart",
+    "source_text": "Bitki büyümesi\nGrup | Boy (cm)\nKontrol | 12\nDeney | 18",
+    "receipt": {
+      "schema_version": "visual-frame-receipt.v1",
+      "snapshot_hash": "sha256:bd2ab9264c62d3717b77b4e654ad0127b31d08cd4d25aee0b6b1d1f5b01d19f0",
+      "revision_hash": "sha256:ea81ade5e41d417155d49a37f38e5c93ccff45e878704ad62a83313b26a5e345",
+      "page_key": "chart.source-0.split-1",
+      "frame_asset": {
+        "sha256": "sha256:fb0051b30f37e28424159244d91a3a36b13a542bd961925b34ef39d6da5f7656",
+        "size": 32493,
+        "extension": "png"
+      },
+      "width": 1920,
+      "height": 1080,
+      "publishing_allowed": false
+    },
+    "synthetic": true
+  },
+  {
+    "fixture": "typography",
+    "file": "typography.png",
+    "strategy": "typography_only",
+    "source_text": "Öğrenme & observation: retain exact source meaning.",
+    "receipt": {
+      "schema_version": "visual-frame-receipt.v1",
+      "snapshot_hash": "sha256:0e39eb71373f53582e4c9126b336c70fc79b1e1a26d15b977bb3f721fb9b1c1b",
+      "revision_hash": "sha256:12d40d0e7ff599052791922ca3021aa7f571d1af37d57de5d53d35cef6afa98d",
+      "page_key": "typography.source-0.split-1",
+      "frame_asset": {
+        "sha256": "sha256:d74085dab31bbc656cd7ce23a54b67f5fa448d0e0132c785ff4b2b6b099983e4",
+        "size": 35838,
+        "extension": "png"
+      },
+      "width": 1920,
+      "height": 1080,
+      "publishing_allowed": false
+    },
+    "synthetic": true
+  },
+  {
+    "fixture": "preserve_original",
+    "file": "preserve_original.png",
+    "strategy": "preserve_original",
+    "source_text": "Preserve the original educational drawing.",
+    "receipt": {
+      "schema_version": "visual-frame-receipt.v1",
+      "snapshot_hash": "sha256:fa634d5f807acb0deadc1b877c40766231ab03ea10566ede61aa9cef7492eda7",
+      "revision_hash": "sha256:c998bd553186f683b179b85aa923aa4e4a67c8422010097098b1ef1ca4642632",
+      "page_key": "preserve_original.source-0.split-1",
+      "frame_asset": {
+        "sha256": "sha256:e519ca5a5d0439429f68575b535e303d21052a39e02697b411d788bd22d7831d",
+        "size": 27162,
+        "extension": "png"
+      },
+      "width": 1920,
+      "height": 1080,
+      "publishing_allowed": false
+    },
+    "synthetic": true
+  }
+]

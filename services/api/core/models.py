@@ -1335,3 +1335,23 @@ class VisualEvidenceReview(models.Model):
         if not self._state.adding:
             raise ValidationError("Visual evidence reviews are immutable.")
         return super().save(*args, **kwargs)
+
+
+class VisualRenderSnapshot(models.Model):
+    """Explicit immutable render revision, outside all promotable Studio state."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="visual_render_snapshots")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="visual_render_snapshots")
+    schema_version = models.CharField(max_length=40, default="visual-render-snapshot.v1")
+    snapshot_hash = models.CharField(max_length=71)
+    revision_hash = models.CharField(max_length=71)
+    payload = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["project", "owner", "snapshot_hash"], name="unique_visual_render_snapshot")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Render snapshots are immutable.")
+        return super().save(*args, **kwargs)

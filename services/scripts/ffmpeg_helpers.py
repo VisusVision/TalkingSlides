@@ -30,14 +30,20 @@ logger = logging.getLogger(__name__)
 # Internal helper
 # ---------------------------------------------------------------------------
 
-def _run(cmd: List[str]) -> subprocess.CompletedProcess:
+def _run(cmd: List[str], *, timeout_seconds: float | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
     """Execute *cmd*; raise RuntimeError with stderr on non-zero exit."""
     logger.debug("ffmpeg cmd: %s", " ".join(cmd))
+    options = {}
+    if timeout_seconds is not None:
+        options["timeout"] = timeout_seconds
+    if env is not None:
+        options["env"] = env
     result = subprocess.run(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        **options,
     )
     if result.returncode != 0:
         raise RuntimeError(

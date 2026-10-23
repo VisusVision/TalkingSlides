@@ -46,6 +46,7 @@ Router:
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .visual_render_views import VisualRenderSnapshotListView, VisualRenderSnapshotDetailView
 from .visual_evidence_views import VisualProposalListView, VisualProposalReviewView
 from .visual_design_views import VisualSuggestionListView, VisualSuggestionDetailView, VisualSuggestionPreviewView, VisualDraftView
 
@@ -139,6 +140,8 @@ router.register(r"slides", SlideViewSet, basename="slide")
 router.register(r"jobs", JobViewSet, basename="job")
 
 urlpatterns = [
+    path("projects/<int:project_id>/visual-render-snapshots/", VisualRenderSnapshotListView.as_view(), name="visual-render-snapshot-list"),
+    path("projects/<int:project_id>/visual-render-snapshots/<uuid:snapshot_id>/", VisualRenderSnapshotDetailView.as_view(), name="visual-render-snapshot-detail"),
     path("projects/<int:project_id>/visual-proposals/", VisualProposalListView.as_view(), name="visual-proposal-list"),
     path("projects/<int:project_id>/visual-proposals/<uuid:proposal_id>/decision/", VisualProposalReviewView.as_view(), name="visual-proposal-review"),
     path("projects/<int:project_id>/visual-suggestions/", VisualSuggestionListView.as_view(), name="visual-suggestion-list"),

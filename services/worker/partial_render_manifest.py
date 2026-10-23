@@ -496,6 +496,10 @@ def build_partial_render_manifest(
             )
         )
         tts_settings = canonicalize_tts_settings(raw_tts_settings)
+        # Opt-in frozen voice dependency; omitted by every production caller.
+        snapshot_voice = _first_present(result.get("snapshot_voice_identity"), slide.get("snapshot_voice_identity"))
+        if snapshot_voice is not None:
+            tts_settings["snapshot_voice_identity"] = _canonical_value(snapshot_voice)
         tts_language = _canonical_language(
             _first_present(
                 result.get("tts_normalization_language"),
@@ -617,6 +621,11 @@ def build_partial_render_manifest(
             ),
             "pause_seconds": pause_seconds,
         }
+        # Opt-in immutable-snapshot timing contract. Existing callers supply no
+        # marker, so their established fingerprints remain byte-for-byte stable.
+        timing_identity = _first_present(result.get("snapshot_timing_identity"), slide.get("snapshot_timing_identity"))
+        if timing_identity is not None:
+            structural["snapshot_timing_identity"] = _canonical_value(timing_identity)
         result_editor_scene = _nested_value(result.get("editor_document"), "scene")
         slide_editor_scene = _nested_value(slide.get("editor_document"), "scene")
         source_render = _drop_volatile(
