@@ -110,7 +110,9 @@ Compatibility changes are limited to visual preservation:
   New spacing forms should be reviewed rather than assumed to have v3 semantics.
 * Make Studio's responsive heading line height explicit. Tailwind 4 retains a
   base leading value across responsive font-size changes, whereas the baseline
-  responsive size supplied its own line height.
+  responsive size supplied its own line height. The same preservation is needed
+  for hero descriptions (24 px), the Studio onboarding header (32 px), and the
+  channel featured title (36 px). These are explicit v3 default line heights.
 
 The initial hosted comparison correctly rejected 12–16 px Studio spacing
 changes and a 1.5 px desktop heading line-height change. Those are migration
@@ -187,7 +189,7 @@ not silenced. CSS is expected to differ:
 | Build | Bytes | SHA-256 |
 | --- | ---: | --- |
 | Baseline | 93,106 | `54d247d513d8525916642b7d25bb8ae0cdfdcf7585c566673fef5d97e71dfd69` |
-| Migrated | 114,861 | `db4b8ef25635c8f8ea827c15d3aa3349f633ec5079f721a652fa9f503448e815` |
+| Migrated | 114,951 | `48fda275ceb067dcc2d96bcf6fc98ed123fe04b739c6918a158340f4a26c0a15` |
 
 Official local Playwright Chromium downloads returned truncated archives.
 Local `npm run e2e` could not launch its expected browser. A separate scratch

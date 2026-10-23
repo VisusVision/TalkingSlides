@@ -1136,7 +1136,7 @@ export function StudioFirstRunOnboarding({
           </p>
           <h2
             id="studio-first-run-title"
-            className="mt-2 text-xl font-bold leading-snug text-[var(--text-primary)] sm:text-2xl"
+            className="mt-2 text-xl font-bold leading-snug text-[var(--text-primary)] sm:text-2xl sm:leading-8"
           >
             {copy.firstRunTitle}
           </h2>
