@@ -50,6 +50,8 @@ jobs:
           path: |
             services/frontend/visual-pilot-report
             services/frontend/visual-pilot-results
+            services/frontend/dist/assets/*.css
             tailwind3-baseline/services/frontend/playwright-report
             tailwind3-baseline/services/frontend/test-results
+            tailwind3-baseline/services/frontend/dist/assets/*.css
           retention-days: 14

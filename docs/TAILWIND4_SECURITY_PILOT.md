@@ -90,6 +90,10 @@ The existing pixel breakpoints are preserved.
 
 Compatibility changes are limited to visual preservation:
 
+* Put external font stylesheets in the base layer. Google's Material Symbols
+  stylesheet also declares a utility-like class; leaving it unlayered would
+  override the application's existing icon sizing and inline-flex alignment.
+  Real-font comparisons exposed the resulting dashboard/sidebar shifts.
 * Preserve v3 border and placeholder colors, button cursors, and native dialog
   margins. Existing custom component CSS, keyframes, and tokens remain.
 * Keep transparent keyboard focus outlines. Existing `outline-none` uses move
@@ -183,7 +187,7 @@ not silenced. CSS is expected to differ:
 | Build | Bytes | SHA-256 |
 | --- | ---: | --- |
 | Baseline | 93,106 | `54d247d513d8525916642b7d25bb8ae0cdfdcf7585c566673fef5d97e71dfd69` |
-| Migrated | 114,837 | `d49c5d530ae8b5c88fc73c41526b8559b4255305481a089434a88fe62d3e595c` |
+| Migrated | 114,861 | `db4b8ef25635c8f8ea827c15d3aa3349f633ec5079f721a652fa9f503448e815` |
 
 Official local Playwright Chromium downloads returned truncated archives.
 Local `npm run e2e` could not launch its expected browser. A separate scratch

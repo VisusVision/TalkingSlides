@@ -138,7 +138,12 @@ async function open(state, scenario) {
   }
   await page.waitForLoadState('networkidle');
   await expect(page.locator('html')).toHaveAttribute('data-theme', state.theme);
-  await page.evaluate(() => document.fonts.ready);
+  await page.evaluate(async () => {
+    // Compact Studio has no visible Material glyphs; still validate the face
+    // explicitly, rather than confusing an unused font with a failed download.
+    await document.fonts.load('400 16px "Material Symbols Outlined"', 'auto_awesome');
+    await document.fonts.ready;
+  });
   const loadedFamilies = await page.evaluate(() => [...document.fonts].filter((face) => face.status === 'loaded').map((face) => face.family.replace(/['"]/g, '')));
   expect(loadedFamilies).toContain('Inter');
   expect(loadedFamilies).toContain('Material Symbols Outlined');

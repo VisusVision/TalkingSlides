@@ -16,7 +16,9 @@ async function openStyleProbe(page, theme = 'light') {
     probe.innerHTML = '<button id="motion-probe" class="focus-ring motion-interactive h-control-md rounded-lg enabled:active:scale-[0.98] bg-[var(--surface)] text-[var(--text-primary)]" style="width:200px">Style probe</button><div id="token-probe" class="rounded-token-lg font-display leading-tight tracking-tight">Türkçe &amp; English</div>';
     const outlineProbe = document.createElement('button');
     outlineProbe.id = 'outline-probe'; outlineProbe.className = 'outline-hidden'; outlineProbe.textContent = 'Outline probe';
-    probe.append(outlineProbe); document.body.append(probe);
+    const materialProbe = document.createElement('span');
+    materialProbe.id = 'material-probe'; materialProbe.className = 'material-symbols-outlined'; materialProbe.textContent = 'auto_awesome';
+    probe.append(outlineProbe, materialProbe); document.body.append(probe);
   });
 }
 
@@ -31,6 +33,8 @@ test('manual theme overrides the OS and stock utilities stay separate from produ
   await expect(page.locator('#token-probe')).toHaveCSS('line-height', '20px');
   await expect(page.locator('#token-probe')).toHaveCSS('letter-spacing', '-0.4px');
   await expect(page.locator('#token-probe')).toHaveCSS('font-family', /Manrope/);
+  await expect(page.locator('#material-probe')).toHaveCSS('font-size', '16.8px');
+  await expect(page.locator('#material-probe')).toHaveCSS('display', 'inline-flex');
   await page.emulateMedia({ colorScheme: 'light' });
   await page.evaluate(() => localStorage.setItem('visus-theme-mode', 'dark'));
   await page.reload();
