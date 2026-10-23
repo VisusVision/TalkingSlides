@@ -638,3 +638,28 @@ def test_public_stream_rejects_private_job_even_with_a_signed_token(lesson):
     client = APIClient(); client.force_authenticate(lesson.owner)
     response = client.get(f"/api/v1/stream/{token}/")
     assert response.status_code in (403, 404) and "input_pins" not in str(response.content)
+
+
+def test_valid_but_unattested_private_pin_cannot_replace_request_audio(lesson):
+    import hashlib
+    run, _ = reserve(lesson)
+    store = PrivateSegmentMedia(lesson.owner.pk, lesson.project.pk)
+    path = lesson.source/"unattested.m4a"; data = b"This is not attested narration."
+    path.write_bytes(data); path.chmod(0o600)
+    asset = {"sha256": "sha256:"+hashlib.sha256(data).hexdigest(), "size": len(data), "extension": "m4a"}
+    with path.open("rb") as file:
+        foreign_input = store.pin_from_fd(file.fileno(), asset, "narration")
+    assert store.read(foreign_input) == data  # Byte integrity alone is not authorization.
+    rewritten = deepcopy(run.input_pins); rewritten["media"]["narration"] = foreign_input
+    _sql_update(VisualSegmentRun, run.pk, "input_pins", json.dumps(rewritten))
+    result = runs.check_run_executable(lesson.project.pk, lesson.owner, run.pk)
+    assert not result.allowed and result.reason_code == "run_integrity"
+
+
+def test_persisted_synthesis_descriptor_must_fully_match_authenticated_proof(lesson):
+    run, _ = reserve(lesson)
+    rewritten = deepcopy(run.audio_verification)
+    rewritten["dependencies"]["synthesis"]["dependencies"]["model_hash"] = "sha256:"+"a"*64
+    _sql_update(VisualSegmentRun, run.pk, "audio_verification", json.dumps(rewritten))
+    result = runs.check_run_executable(lesson.project.pk, lesson.owner, run.pk)
+    assert not result.allowed and result.reason_code == "run_integrity"

@@ -84,7 +84,10 @@ The owner lock also serializes cross-project quotas. NO KEY UPDATE allows ordina
 foreign-key key-share checks, avoiding a cycle with existing Project-first writers.
 Rows lock in primary-key order. Source/control sets have a 1,024-row bound and saved
 state an 8 MiB bound. Database state, persisted snapshot, selection/approval,
-revocation and producer control identity are rechecked. Open private descriptors
+revocation and producer control identity are rechecked. Expected media/visual pin
+references and full synthesis dependencies are rebuilt
+from the immutable snapshot/request/proof at claim time; a rewritten pin row cannot
+substitute a different valid object. Open private descriptors
 and fresh no-follow namespace resolution must still identify the same files; source
 asset resolution/stat identity is rechecked too. No native command or full media
 scan runs while those locks are held.
@@ -175,12 +178,13 @@ still runs. Production rejects these attestations.
 
 ## Executed verification
 
-* Final Run + secure-playback regression: **100 passed, 9 skipped** (35.12 s).
-  The skips are PostgreSQL-only races, not ignored failures.
+* Final Run/artifact/snapshot/planning/segment-contract regression: **374 passed,
+  10 skipped** (43.90 s), including both persisted-input substitution checks.
+  The skips require PostgreSQL, not ignored failures.
 * Standalone Phase 3B-1 pure contracts: **216 passed** (1.18 s), without Django,
   database or native tooling. Existing golden hashes remain unchanged.
-* Final full local backend: **2,692 passed, 1 failed, 21 skipped, 63 subtests passed**
-  (138.82 s). Sole failure:
+* Final full local backend: **2,694 passed, 1 failed, 21 skipped, 63 subtests passed**
+  (148.56 s). Sole failure:
   `test_musetalk_warmup_cleanup.py::test_orphan_check_detects_and_kills_marked_warmup_process`.
   The unchanged test observes process-group ID zero in this sandbox and cannot
   kill its marked process group. It is reported, not patched or suppressed.
@@ -191,10 +195,10 @@ still runs. Production rejects these attestations.
   `npm audit --omit=dev --audit-level=moderate`: **0 vulnerabilities**.
 * `pip-audit -r services/api/requirements.txt`: **No known vulnerabilities found**.
 
-Final focused Run/artifact/snapshot/contract/private-draft/evidence/promotion/
-scoped-render/follow-up suite: **483 passed, 11 skipped** (47.77 s). These include
-nine new PostgreSQL races plus the two existing PostgreSQL-only source/selection
-checks, all scheduled in the hosted PostgreSQL gate.
+The full run includes existing secure playback, private draft/evidence, promotion,
+scoped-render/follow-up, core/partial planner and Phase 1–3B-2 regressions. Nine new
+PostgreSQL-only races and the existing source/selection checks run in the hosted
+PostgreSQL gate; none is represented as passing based on SQLite.
 
 Hosted full backend, real PostgreSQL races, Chromium and Docker results for the
 committed revision are reported in the completion message and

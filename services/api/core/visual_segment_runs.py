@@ -29,7 +29,7 @@ from core.visual_design.schemas import DesignError, require, content_hash, canon
 from core.visual_design.render_snapshot import FrozenRenderSnapshot
 from core.visual_design.segment_contracts import (SegmentAudioProof, SegmentRequest, REQUEST_VERSION,
     RECIPE_OPTIONS, LIMITS, CUES_VERSION, describe_scene, snapshot_page, page_identity, _uuid, _string, _integer)
-from core.visual_design.segment_dependencies import SynthesisDependencies, MEDIA_VALIDATOR_VERSION
+from core.visual_design.segment_dependencies import dependencies_from_verified_audio, MEDIA_VALIDATOR_VERSION
 from core.visual_render_snapshots import read_render_snapshot, _capture
 from core.visual_render_assets import PrivateRenderAssets
 from core.visual_segment_artifacts import (PrivateSegmentMedia, pin_verified_narration,
@@ -237,7 +237,15 @@ def _source_files(frozen):
     yield check
 
 
-def _pins(frozen, eligibility):
+def _pins(frozen, proof, store):
+    """Derive every expected input reference from immutable contracts, not rows."""
+    attested = proof.to_dict()
+    media = {"narration": store.reference(attested["audio"]["asset"], "narration")}
+    if attested["processing"]["input_asset"]["extension"] == "wav":
+        media["source_wav"] = store.reference(attested["processing"]["input_asset"], "source_wav")
+    sample = attested["synthesis"]["dependencies"]["sample"]
+    if sample is not None:
+        media["voice_sample"] = store.reference(sample, "voice_sample")
     raw = frozen.to_dict()
     refs = []
     for scene in raw["scenes"]:
@@ -246,7 +254,7 @@ def _pins(frozen, eligibility):
             refs.append(scene["design"]["asset"])
     refs.extend(raw["fonts"].values())
     unique = {(ref["sha256"], ref["extension"]): ref for ref in refs}
-    return {"media": {"narration": eligibility.pin, **eligibility.supporting_pins}, "visual": list(unique.values())}
+    return {"media": media, "visual": list(unique.values())}
 
 
 def _confirmation(review):
@@ -384,7 +392,9 @@ def reserve_visual_segment(project_id, owner, *, snapshot_id, expected_snapshot_
     require(eligibility.eligible and eligibility.execution_hash == request.execution_hash
             and all(getattr(eligibility, name) for name in ("proof_validated", "producer_authenticated", "bytes_verified", "media_verified", "pin_verified")),
             eligibility.reason_code, "Verified private audio reuse is unavailable")
-    pins = _pins(frozen, eligibility)
+    pins = _pins(frozen, proof, store)
+    require(canonical_json(pins["media"]) == canonical_json({"narration": eligibility.pin, **eligibility.supporting_pins}),
+            "run_integrity", "Eligibility pins differ from immutable producer inputs")
     with _InputGuard(owner.pk, project.pk, pins) as guard, _source_files(frozen) as source_check:
         stamp = _current_preflight(project, owner, frozen)
         with _locked_project(project.pk, owner) as locked:
@@ -427,10 +437,12 @@ def _prepare_run(project_id, owner, run_id):
     request = SegmentRequest(run.request_payload, snapshot=frozen, snapshot_id=str(row.pk), expected_snapshot_hash=row.snapshot_hash,
         audio_proof=proof, supported_runtime_hashes=dependencies.supported_runtime_hashes)
     require(request.execution_hash == run.execution_hash, "run_integrity", "Execution request changed")
-    descriptor = SynthesisDependencies(run.audio_verification["dependencies"]).to_dict()
-    require(descriptor["producer"]["proof_hash"] == proof.content_hash
-            and descriptor["integrity"]["validation_hash"] == content_hash(MEDIA_VALIDATOR_VERSION, run.audio_verification["native"])
-            and descriptor["audio"]["asset"] == proof.to_dict()["audio"]["asset"], "run_integrity", "Stored audio verification identity changed")
+    expected_pins = _pins(frozen, proof, PrivateSegmentMedia(owner.pk, project_id))
+    require(canonical_json(run.input_pins) == canonical_json(expected_pins),
+            "run_integrity", "Persisted pins differ from immutable request inputs")
+    expected_dependencies = dependencies_from_verified_audio(proof, content_hash(MEDIA_VALIDATOR_VERSION, run.audio_verification["native"]))
+    require(expected_dependencies.to_json() == canonical_json(run.audio_verification["dependencies"]),
+            "run_integrity", "Stored synthesis dependencies differ from the authenticated proof")
     return run, frozen, dependencies, proof, association, request
 
 
