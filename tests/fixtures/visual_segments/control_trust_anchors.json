@@ -1,0 +1,24 @@
+{
+  "scope": "TEST ONLY: synthetic control-plane engineering association. Existing known speech bytes are associated with canonical neutral saved settings under test assumptions; this is NOT a production or historical producer certification. Original Phase 3B-1 receipts and trust anchors are unchanged.",
+  "original_trust_anchors": "trust_anchors.json",
+  "canonical_saved_tts_settings": {
+    "provider_preference": "auto",
+    "normalization_enabled": true,
+    "normalization_mode": "loose",
+    "unknown_word_strategy": "keep",
+    "overrides": {
+      "technical": {},
+      "abbreviation": {},
+      "mixed_word": {}
+    },
+    "speech_speed": 1.0,
+    "volume_gain_db": 0,
+    "pause_seconds": null
+  },
+  "snapshot_tts_settings_hash": "sha256:89e9f8692b0379aa9b4ba16374632408e69dd7cba97bd58e7a25bd68b1526021",
+  "audio_proof_hashes": [
+    "sha256:98509b1c5fc1bafa630f9cd73762e9c902fac81fa7f0775f0897ec4f443009f6",
+    "sha256:35d14e7a63350795b9ba6f8a2a9b7ce257695edcf64ed146d0418b2f52602565",
+    "sha256:824b7de6c2bc0bed53220c4ed78c9d437e6c0242bfa800d620d3b262919da620"
+  ]
+}

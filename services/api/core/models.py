@@ -460,6 +460,35 @@ class Slide(models.Model):
         return f"{self.project.title} - Slide {self.order}"
 
 
+PRIVATE_SEGMENT_JOB = "visual_segment_preview"
+_SEGMENT_CONTROL_WRITE = object()
+
+
+class SegmentJobQuerySet(models.QuerySet):
+    def update(self, **kwargs):
+        if kwargs.get("job_type") == PRIVATE_SEGMENT_JOB or self.filter(job_type=PRIVATE_SEGMENT_JOB).exists():
+            raise ValidationError("Private segment Jobs require the control service.")
+        return super().update(**kwargs)
+
+    def bulk_create(self, objs, *args, **kwargs):
+        objs = list(objs)
+        if any(obj.job_type == PRIVATE_SEGMENT_JOB for obj in objs):
+            raise ValidationError("Private segment Jobs require an atomic Run reservation.")
+        return super().bulk_create(objs, *args, **kwargs)
+
+    def delete(self):
+        if self.filter(job_type=PRIVATE_SEGMENT_JOB).exists():
+            raise ValidationError("Private Job history requires project/owner lifecycle cleanup.")
+        return super().delete()
+
+    def _control_update(self, token, **kwargs):
+        if token is not _SEGMENT_CONTROL_WRITE or not set(kwargs) <= {"status", "progress", "error_message", "updated_at"}:
+            raise ValidationError("Invalid private Job control write.")
+        if kwargs.get("status") == "done":
+            raise ValidationError("Segment media acceptance is not implemented.")
+        return super().update(**kwargs)
+
+
 class Job(models.Model):
     """Async processing job (Celery task) for TTS rendering, export, etc."""
 
@@ -470,6 +499,7 @@ class Job(models.Model):
         ("sync", "Data Sync"),
         ("avatar_preprocess", "Avatar Preprocess"),
         ("avatar_render", "Avatar Render"),
+        (PRIVATE_SEGMENT_JOB, "Private Visual Segment Preview"),
     ]
 
     STATUS_CHOICES = [
@@ -491,9 +521,13 @@ class Job(models.Model):
     error_message = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    objects = SegmentJobQuerySet.as_manager()
 
     class Meta:
         ordering = ["-created_at"]
+        constraints = [models.CheckConstraint(
+            condition=(~Q(job_type=PRIVATE_SEGMENT_JOB) | (Q(result_url="", srt_url="") & ~Q(status="done"))),
+            name="private_segment_job_no_public_result")]
         indexes = [
             models.Index(
                 fields=["project", "job_type", "status", "-created_at"],
@@ -507,6 +541,19 @@ class Job(models.Model):
 
     def __str__(self):
         return f"{self.job_type} [{self.status}] - {self.pk}"
+
+    def save(self, *args, **kwargs):
+        token = kwargs.pop("_control_token", None)
+        old_private = self.pk and type(self).objects.filter(pk=self.pk, job_type=PRIVATE_SEGMENT_JOB).exists()
+        if self.job_type == PRIVATE_SEGMENT_JOB or old_private:
+            if token is not _SEGMENT_CONTROL_WRITE or old_private or self.project_id is None or self.result_url or self.srt_url or self.status != "pending":
+                raise ValidationError("Private Jobs may only be created by atomic Run reservation.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        if self.job_type == PRIVATE_SEGMENT_JOB:
+            raise ValidationError("Private Job history requires project/owner lifecycle cleanup.")
+        return super().delete(*args, **kwargs)
 
 
 class LessonIntelligenceReport(models.Model):
@@ -1355,3 +1402,155 @@ class VisualRenderSnapshot(models.Model):
         if not self._state.adding:
             raise ValidationError("Render snapshots are immutable.")
         return super().save(*args, **kwargs)
+
+
+class SegmentControlQuerySet(models.QuerySet):
+    """No generic/bulk mutation of immutable or operational control records."""
+    def update(self, **kwargs):
+        raise ValidationError("Use the private segment control service.")
+
+    def bulk_update(self, objs, fields, **kwargs):
+        raise ValidationError("Bulk control writes are forbidden.")
+
+    def bulk_create(self, objs, **kwargs):
+        raise ValidationError("Use atomic control reservation/revocation.")
+
+    def delete(self):
+        raise ValidationError("Private control history cannot be deleted directly.")
+
+    def _control_update(self, token, **kwargs):
+        allowed = {"pending_dispatch", "attempt_generation", "claim_token", "lease_owner", "lease_expires_at",
+                   "cancelled_at", "cancellation_reason", "terminal_failure_reason", "updated_at"}
+        if token is not _SEGMENT_CONTROL_WRITE or self.model.__name__ != "VisualSegmentRun" or not set(kwargs) <= allowed:
+            raise ValidationError("Invalid private Run control write.")
+        return super().update(**kwargs)
+
+
+class VisualSegmentRun(models.Model):
+    """One immutable request and one private-purpose Job; no media execution."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="visual_segment_runs")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="visual_segment_runs")
+    snapshot = models.ForeignKey(VisualRenderSnapshot, on_delete=models.RESTRICT, related_name="segment_runs")
+    snapshot_hash = models.CharField(max_length=71)
+    revision_hash = models.CharField(max_length=71)
+    page_key = models.CharField(max_length=64)
+    candidate = models.ForeignKey(VisualDesignSuggestion, null=True, blank=True, on_delete=models.RESTRICT)
+    proposal = models.ForeignKey(VisualEvidenceProposal, null=True, blank=True, on_delete=models.RESTRICT)
+    confirmation = models.ForeignKey(VisualEvidenceReview, null=True, blank=True, on_delete=models.RESTRICT, related_name="segment_runs")
+    request_payload = models.JSONField()
+    execution_hash = models.CharField(max_length=71)
+    input_pins = models.JSONField()
+    audio_verification = models.JSONField()
+    job = models.OneToOneField(Job, on_delete=models.CASCADE, related_name="visual_segment_run")
+    pending_dispatch = models.BooleanField(default=True)
+    dispatch_task_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    attempt_generation = models.PositiveBigIntegerField(default=0)
+    claim_token = models.UUIDField(null=True, blank=True)
+    lease_owner = models.CharField(max_length=128, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancellation_reason = models.CharField(max_length=160, blank=True)
+    terminal_failure_reason = models.CharField(max_length=80, blank=True)
+    completed_receipt = models.JSONField(null=True, blank=True)
+    completed_receipt_hash = models.CharField(max_length=71, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    objects = SegmentControlQuerySet.as_manager()
+
+    class Meta:
+        base_manager_name = "objects"
+        constraints = [
+            models.UniqueConstraint(fields=["project", "owner", "execution_hash"], name="unique_private_segment_execution"),
+            models.CheckConstraint(condition=(Q(claim_token__isnull=True, lease_expires_at__isnull=True, lease_owner="") |
+                (Q(claim_token__isnull=False, lease_expires_at__isnull=False) & ~Q(lease_owner=""))), name="segment_claim_lease_consistent"),
+            models.CheckConstraint(condition=(Q(cancelled_at__isnull=True, cancellation_reason="") |
+                (Q(cancelled_at__isnull=False) & ~Q(cancellation_reason=""))), name="segment_cancel_reason_consistent"),
+            # This stage deliberately has NO route to successful media acceptance.
+            models.CheckConstraint(condition=Q(completed_receipt__isnull=True, completed_receipt_hash=""), name="segment_receipt_acceptance_disabled"),
+        ]
+        indexes = [models.Index(fields=["project", "owner", "created_at"], name="private_segment_owner_idx")]
+
+    def clean(self):
+        from core.visual_design.schemas import content_hash, canonical_json
+        from core.visual_design.segment_contracts import page_identity, snapshot_page, describe_scene, REQUEST_VERSION
+        from core.visual_design.render_snapshot import FrozenRenderSnapshot
+        if type(self.request_payload) is not dict:
+            raise ValidationError("Private Run requires a structured immutable request.")
+        frozen = FrozenRenderSnapshot(self.snapshot.payload)
+        expected = {"owner_id": str(self.owner_id), "project_id": str(self.project_id), "snapshot_id": str(self.snapshot_id),
+            "snapshot_hash": self.snapshot_hash, "authored_revision_hash": self.revision_hash}
+        page = snapshot_page(frozen, self.page_key)
+        if (self.request_payload.get("schema_version") != REQUEST_VERSION or self.snapshot_hash != frozen.content_hash
+            or self.snapshot_hash != self.snapshot.snapshot_hash or self.revision_hash != self.snapshot.revision_hash
+            or canonical_json(self.request_payload.get("snapshot")) != canonical_json(expected)
+            or canonical_json(self.request_payload.get("page")) != canonical_json({**page_identity(page), "order": page["order"]})
+            or canonical_json(self.request_payload.get("scene")) != canonical_json(describe_scene(frozen, self.page_key))):
+            raise ValidationError("Private Run request does not identify the frozen page/scene.")
+        if self.execution_hash != content_hash("visual-segment-request.v1", self.request_payload):
+            raise ValidationError("Execution hash differs from immutable request.")
+        if self.project.user_id != self.owner_id or self.snapshot.project_id != self.project_id or self.snapshot.owner_id != self.owner_id:
+            raise ValidationError("Private Run owner/project/snapshot mismatch.")
+        if self.job.project_id != self.project_id or self.job.job_type != PRIVATE_SEGMENT_JOB or self.job.result_url or self.job.srt_url:
+            raise ValidationError("Private Run Job scope/purpose mismatch.")
+
+    def save(self, *args, **kwargs):
+        if kwargs.pop("_control_token", None) is not _SEGMENT_CONTROL_WRITE or not self._state.adding:
+            raise ValidationError("Private Run identity is immutable; use the control service.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Private Run history is immutable.")
+
+
+class VisualEvidenceRevocation(models.Model):
+    """Permanent withdrawal of exactly one immutable teacher confirmation."""
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="visual_evidence_revocations")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="visual_evidence_revocations")
+    review = models.OneToOneField(VisualEvidenceReview, on_delete=models.RESTRICT, related_name="revocation")
+    proposal = models.ForeignKey(VisualEvidenceProposal, on_delete=models.RESTRICT)
+    source_hash = models.CharField(max_length=71)
+    source_revision = models.CharField(max_length=71)
+    proposal_hash = models.CharField(max_length=71)
+    confirmation_hash = models.CharField(max_length=71)
+    reason = models.CharField(max_length=160)
+    created_at = models.DateTimeField(auto_now_add=True)
+    # The BigAutoField PK is a monotonic, permanent control identity.
+    objects = SegmentControlQuerySet.as_manager()
+
+    class Meta:
+        base_manager_name = "objects"
+        constraints = [models.CheckConstraint(condition=~Q(reason=""), name="visual_revocation_reason_required")]
+
+    def clean(self):
+        from core.visual_design.schemas import content_hash
+        confirmation = {"proposal_id": str(self.review.proposal_id), "proposal_hash": self.review.proposal_hash,
+            "owner_id": str(self.review.owner_id), "action": self.review.action, "source_hash": self.review.source_hash,
+            "created_at": self.review.created_at.isoformat()}
+        if self.confirmation_hash != content_hash("visual-segment-confirmation.v1", confirmation):
+            raise ValidationError("Revocation confirmation identity mismatch.")
+        if (self.project.user_id != self.owner_id or self.review.owner_id != self.owner_id or self.review.action != "confirm"
+            or self.review.proposal_id != self.proposal_id or self.proposal.project_id != self.project_id
+            or self.proposal.owner_id != self.owner_id or self.source_hash != self.review.source_hash
+            or self.source_hash != self.proposal.source_hash or self.proposal_hash != self.review.proposal_hash
+            or self.proposal_hash != self.proposal.proposal_hash or self.source_revision != self.proposal.source_revision):
+            raise ValidationError("Revocation must identify an owned matching confirmation.")
+
+    def save(self, *args, **kwargs):
+        if kwargs.pop("_control_token", None) is not _SEGMENT_CONTROL_WRITE or not self._state.adding:
+            raise ValidationError("Evidence revocations are append-only.")
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("Evidence revocations are permanent.")
+
+
+def _delete_private_segment_job(sender, instance, using, **kwargs):
+    # Project/owner cascade removes its private companion, never ordinary Jobs.
+    Job.objects.using(using).filter(pk=instance.job_id, job_type=PRIVATE_SEGMENT_JOB)._raw_delete(using)
+
+
+models.signals.post_delete.connect(_delete_private_segment_job, sender=VisualSegmentRun,
+                                   dispatch_uid="delete_private_visual_segment_job")

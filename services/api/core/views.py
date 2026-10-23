@@ -3981,6 +3981,8 @@ class MediaStreamView(APIView):
 
         try:
             job = Job.objects.get(pk=job_id)
+            if getattr(job, "job_type", None) == "visual_segment_preview":
+                return _stream_error_response(file_type=requested_type, status_code=status.HTTP_404_NOT_FOUND, reason="job_not_found")
         except Job.DoesNotExist:
             return _stream_error_response(file_type=requested_type, status_code=status.HTTP_404_NOT_FOUND, reason="job_not_found")
         storage_root = getattr(settings, "STORAGE_ROOT", "storage_local")
@@ -5191,7 +5193,7 @@ class SlideViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class JobViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Job.objects.select_related("project").all()
+    queryset = Job.objects.select_related("project").exclude(job_type="visual_segment_preview")
     serializer_class = JobSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -11241,7 +11243,7 @@ class JobStatusView(APIView):
 
     def get(self, request, project_id, job_id):
         try:
-            job = Job.objects.get(pk=job_id, project_id=project_id)
+            job = Job.objects.exclude(job_type="visual_segment_preview").get(pk=job_id, project_id=project_id)
         except Job.DoesNotExist:
             return Response({"error": "Job not found."}, status=status.HTTP_404_NOT_FOUND)
         if job.project and not _can_manage_project(request.user, job.project):

@@ -1055,6 +1055,12 @@ class JobSerializer(serializers.ModelSerializer):
     """Job status/result. Includes project_id so the frontend can poll correctly."""
     project_id = serializers.IntegerField(source="project.id", read_only=True, allow_null=True)
 
+    def to_representation(self, instance):
+        purpose = instance.get("job_type") if isinstance(instance, dict) else getattr(instance, "job_type", None)
+        if purpose == "visual_segment_preview":
+            raise serializers.ValidationError("Private segment Jobs are unavailable through this serializer.")
+        return super().to_representation(instance)
+
     class Meta:
         model = Job
         fields = [

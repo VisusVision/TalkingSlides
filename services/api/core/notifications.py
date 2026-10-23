@@ -147,6 +147,8 @@ def create_notification(
         resolved_project = _instance_or_none(Project, project)
         resolved_comment = _instance_or_none(LessonComment, lesson_comment)
         resolved_job = _instance_or_none(Job, job)
+        if resolved_job is not None and resolved_job.job_type == "visual_segment_preview":
+            return None
 
         if idempotency_filter:
             if Notification.objects.filter(**idempotency_filter).exists():

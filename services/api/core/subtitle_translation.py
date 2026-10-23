@@ -1163,11 +1163,11 @@ def generate_translated_subtitle_track(
     root = _storage_root(storage_root)
     job = None
     if job_id is not None:
-        job = Job.objects.filter(pk=int(job_id), project=project, status="done").first()
+        job = Job.objects.exclude(job_type="visual_segment_preview").filter(pk=int(job_id), project=project, status="done").first()
         if job is None:
             raise ValueError("completed job_id was not found for this project")
     else:
-        job = project.jobs.filter(status="done").order_by("-created_at", "-id").first()
+        job = project.jobs.exclude(job_type="visual_segment_preview").filter(status="done").order_by("-created_at", "-id").first()
     if job is None:
         raise ValueError("no completed render job is available for subtitle translation")
 

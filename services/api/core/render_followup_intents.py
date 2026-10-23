@@ -133,6 +133,8 @@ def claim_render_followup_intent_for_completed_job(
     completed_id = int(completed_job_id)
     with transaction.atomic():
         project = Project.objects.select_for_update().get(pk=int(project_id))
+        if Job.objects.filter(pk=completed_id, job_type="visual_segment_preview").exists():
+            return None
         active_job_exists = (
             Job.objects.select_for_update()
             .filter(project=project, job_type="video_export", status__in=("pending", "running"))
