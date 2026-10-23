@@ -1,0 +1,344 @@
+[
+  {
+    "fixture": "process_tr",
+    "source_text": "Ölçüm süreci\n1. Örneği topla\n2. Ölçümü kaydet & kontrol et\n3. Sonucu arşivle",
+    "strategy": "flowchart",
+    "file": "process_tr.svg",
+    "status": "valid",
+    "source_hash": "sha256:28dc0a03297b343b674acdfb6294ea6c89db42a1ef4e12c841b9b2d0a3ca115d",
+    "design_source_hash": "sha256:c692dc0c68477cb7f2119935e96e74e77c26fd12ec513a23f7e59191b0ea070b",
+    "plan_hash": "sha256:24c8b5bf0d1993bfe0f3b8f21a80523c01c747b2865046ac77ed94fc398d02d6",
+    "preview_hash": "sha256:b1eccdd176df98cc6cf6969785c520be463e7d6fdb8e9eb3335de0a9b40ce0d6",
+    "rationale": "Explicit source order supports a sequence diagram; arrows assert order only.",
+    "origin": "source_text",
+    "supports": [
+      {
+        "page_key": "process_tr.source-0.split-1",
+        "source_revision": "sha256:e71dc0de03f93281dc9ded808ce16233b6d32e6e83476acee0ac4561fd57b3f2",
+        "locator": "display:0:12",
+        "start": 0,
+        "end": 12,
+        "quote": "Ölçüm süreci"
+      },
+      {
+        "page_key": "process_tr.source-0.split-1",
+        "source_revision": "sha256:e71dc0de03f93281dc9ded808ce16233b6d32e6e83476acee0ac4561fd57b3f2",
+        "locator": "display:13:28",
+        "start": 13,
+        "end": 28,
+        "quote": "1. Örneği topla"
+      },
+      {
+        "page_key": "process_tr.source-0.split-1",
+        "source_revision": "sha256:e71dc0de03f93281dc9ded808ce16233b6d32e6e83476acee0ac4561fd57b3f2",
+        "locator": "display:29:58",
+        "start": 29,
+        "end": 58,
+        "quote": "2. Ölçümü kaydet & kontrol et"
+      },
+      {
+        "page_key": "process_tr.source-0.split-1",
+        "source_revision": "sha256:e71dc0de03f93281dc9ded808ce16233b6d32e6e83476acee0ac4561fd57b3f2",
+        "locator": "display:59:76",
+        "start": 59,
+        "end": 76,
+        "quote": "3. Sonucu arşivle"
+      }
+    ],
+    "warnings": []
+  },
+  {
+    "fixture": "comparison_en",
+    "source_text": "Energy storage comparison\nProperty | Battery | Capacitor\nStorage | Chemical | Electric field\nDischarge | Slow | Fast",
+    "strategy": "comparison",
+    "file": "comparison_en.svg",
+    "status": "valid",
+    "source_hash": "sha256:d3fe3eaf141f02a78dc5391d8e66343b84f18214185e3b85d18d708b78bf4ece",
+    "design_source_hash": "sha256:1bf9b6c1c94df9eec812faeb27cf2a96490ab2b721a7e1c97c380de71f8c71a3",
+    "plan_hash": "sha256:88f101b62098cac2e4ae1576b1d92010bf3d41ca679f7af389dca61b1e6fe1ec",
+    "preview_hash": "sha256:6fd0eb0e705d25ae6107071064424141d2283e022103020031399f4d468a2e15",
+    "rationale": "Two concepts have explicit facts for the same source-backed categories.",
+    "origin": "source_text",
+    "supports": [
+      {
+        "page_key": "comparison_en.source-0.split-1",
+        "source_revision": "sha256:deb76bd8308b483b9d4b136c3fdc1cd8027f28ba4a54f335b797f8bd766048b4",
+        "locator": "display:0:25",
+        "start": 0,
+        "end": 25,
+        "quote": "Energy storage comparison"
+      },
+      {
+        "page_key": "comparison_en.source-0.split-1",
+        "source_revision": "sha256:deb76bd8308b483b9d4b136c3fdc1cd8027f28ba4a54f335b797f8bd766048b4",
+        "locator": "display:26:56",
+        "start": 26,
+        "end": 56,
+        "quote": "Property | Battery | Capacitor"
+      },
+      {
+        "page_key": "comparison_en.source-0.split-1",
+        "source_revision": "sha256:deb76bd8308b483b9d4b136c3fdc1cd8027f28ba4a54f335b797f8bd766048b4",
+        "locator": "display:57:92",
+        "start": 57,
+        "end": 92,
+        "quote": "Storage | Chemical | Electric field"
+      },
+      {
+        "page_key": "comparison_en.source-0.split-1",
+        "source_revision": "sha256:deb76bd8308b483b9d4b136c3fdc1cd8027f28ba4a54f335b797f8bd766048b4",
+        "locator": "display:93:116",
+        "start": 93,
+        "end": 116,
+        "quote": "Discharge | Slow | Fast"
+      }
+    ],
+    "warnings": []
+  },
+  {
+    "fixture": "dataset_tr",
+    "source_text": "Bitki büyümesi\nGrup | Boy (cm)\nKontrol | 12\nDeney | 18",
+    "strategy": "chart",
+    "file": "dataset_tr.svg",
+    "status": "valid",
+    "source_hash": "sha256:94fa0bfecbbec5b8c1379ffeaa4e7617746a391a4c2296235c8aa66e9dc8bd0e",
+    "design_source_hash": "sha256:6e20a32fe84539c4a389b6a258e40555d9e67ce40af7c427e404cee0236e2d02",
+    "plan_hash": "sha256:e110360fd865c1c5d92b6f581b4ea8e340429da7e2f80347a7e45a2367d90c17",
+    "preview_hash": "sha256:48f4d27a6b42c3e72ebd84fc31ee1de7dad01d84270918edf752055b6f36eddd",
+    "rationale": "Verified labels, values and a common unit support a zero-baseline bar chart.",
+    "origin": "source_text",
+    "supports": [
+      {
+        "page_key": "dataset_tr.source-0.split-1",
+        "source_revision": "sha256:984df937a4cf59d1b49b19ff581e637d004e6485dc1258350a4b6d9dfd2b0513",
+        "locator": "display:0:14",
+        "start": 0,
+        "end": 14,
+        "quote": "Bitki büyümesi"
+      },
+      {
+        "page_key": "dataset_tr.source-0.split-1",
+        "source_revision": "sha256:984df937a4cf59d1b49b19ff581e637d004e6485dc1258350a4b6d9dfd2b0513",
+        "locator": "display:15:30",
+        "start": 15,
+        "end": 30,
+        "quote": "Grup | Boy (cm)"
+      },
+      {
+        "page_key": "dataset_tr.source-0.split-1",
+        "source_revision": "sha256:984df937a4cf59d1b49b19ff581e637d004e6485dc1258350a4b6d9dfd2b0513",
+        "locator": "display:31:43",
+        "start": 31,
+        "end": 43,
+        "quote": "Kontrol | 12"
+      },
+      {
+        "page_key": "dataset_tr.source-0.split-1",
+        "source_revision": "sha256:984df937a4cf59d1b49b19ff581e637d004e6485dc1258350a4b6d9dfd2b0513",
+        "locator": "display:44:54",
+        "start": 44,
+        "end": 54,
+        "quote": "Deney | 18"
+      }
+    ],
+    "warnings": []
+  },
+  {
+    "fixture": "ambiguous",
+    "source_text": "B is better. A has 12 and B has 18.",
+    "strategy": "typography_only",
+    "file": "ambiguous.svg",
+    "status": "valid",
+    "source_hash": "sha256:103a7eb20b2d1ca823eaea9b94fe4be508f787782679cf4877c053717c48a78e",
+    "design_source_hash": "sha256:103a7eb20b2d1ca823eaea9b94fe4be508f787782679cf4877c053717c48a78e",
+    "plan_hash": "sha256:d9826676855322cf297881206017363463aeb51e64337c456ea061dc90fc4c6c",
+    "preview_hash": "sha256:b8a0a864b7a3e309b23db9740387300975832d90b114a87134a58a7b1ecc11bc",
+    "rationale": "Preserve source meaning without introducing relationships or numerical claims.",
+    "origin": "source_text",
+    "supports": [
+      {
+        "page_key": "ambiguous.source-0.split-1",
+        "source_revision": "sha256:04113b3a6c590dd39ad7ed6dac0e7ff9258a628d601d6475ebe2a75acd78bd3b",
+        "locator": "display:0:35",
+        "start": 0,
+        "end": 35,
+        "quote": "B is better. A has 12 and B has 18."
+      }
+    ],
+    "warnings": []
+  },
+  {
+    "fixture": "missing_units",
+    "source_text": "Growth\nGroup | Height\nA | 12\nB | 18",
+    "strategy": "typography_only",
+    "file": "missing_units.svg",
+    "status": "valid",
+    "source_hash": "sha256:0daa10c866077bee5dd8898f4dcbf91cb0cbb383b5612be08391dcd1d67bf4ec",
+    "design_source_hash": "sha256:0daa10c866077bee5dd8898f4dcbf91cb0cbb383b5612be08391dcd1d67bf4ec",
+    "plan_hash": "sha256:1a2589be06b651c6f261f24141fade2eabbe367b045ed0463578ba33061c834d",
+    "preview_hash": "sha256:107f6f5bcbd85a96544455fa857ae80546c96697f42b9afe45152e92180c3002",
+    "rationale": "Preserve source meaning without introducing relationships or numerical claims.",
+    "origin": "source_text",
+    "supports": [
+      {
+        "page_key": "missing_units.source-0.split-1",
+        "source_revision": "sha256:1ce21a1b903974b3fdb647fd07810fc02bc576f4fb467b56440e87bc0d6c0e20",
+        "locator": "display:0:6",
+        "start": 0,
+        "end": 6,
+        "quote": "Growth"
+      },
+      {
+        "page_key": "missing_units.source-0.split-1",
+        "source_revision": "sha256:1ce21a1b903974b3fdb647fd07810fc02bc576f4fb467b56440e87bc0d6c0e20",
+        "locator": "display:7:21",
+        "start": 7,
+        "end": 21,
+        "quote": "Group | Height"
+      },
+      {
+        "page_key": "missing_units.source-0.split-1",
+        "source_revision": "sha256:1ce21a1b903974b3fdb647fd07810fc02bc576f4fb467b56440e87bc0d6c0e20",
+        "locator": "display:22:28",
+        "start": 22,
+        "end": 28,
+        "quote": "A | 12"
+      },
+      {
+        "page_key": "missing_units.source-0.split-1",
+        "source_revision": "sha256:1ce21a1b903974b3fdb647fd07810fc02bc576f4fb467b56440e87bc0d6c0e20",
+        "locator": "display:29:35",
+        "start": 29,
+        "end": 35,
+        "quote": "B | 18"
+      }
+    ],
+    "warnings": [
+      "units: explicit structure could not be verified; source text was retained."
+    ]
+  },
+  {
+    "fixture": "contradictory",
+    "source_text": "Growth\nGroup | Height (cm)\nA | 12\nA | 18",
+    "strategy": "typography_only",
+    "file": "contradictory.svg",
+    "status": "valid",
+    "source_hash": "sha256:f3a8970dbecc7e8ec0ef12443b0b67280d4fe729369f3b9304f6838e31c762d1",
+    "design_source_hash": "sha256:f3a8970dbecc7e8ec0ef12443b0b67280d4fe729369f3b9304f6838e31c762d1",
+    "plan_hash": "sha256:d63b7b4377cfd1568a513beed168f513a7f3fe0879d962e52077ea73adb5386a",
+    "preview_hash": "sha256:875fa20e654363d11508a764da955cd50f1edbe3833bb70fa3d63061b2e742b5",
+    "rationale": "Preserve source meaning without introducing relationships or numerical claims.",
+    "origin": "source_text",
+    "supports": [
+      {
+        "page_key": "contradictory.source-0.split-1",
+        "source_revision": "sha256:f0a9b9410d20d199ce6906d1683bad3320ba0adf1d4f211790001cbcf9b48ec5",
+        "locator": "display:0:6",
+        "start": 0,
+        "end": 6,
+        "quote": "Growth"
+      },
+      {
+        "page_key": "contradictory.source-0.split-1",
+        "source_revision": "sha256:f0a9b9410d20d199ce6906d1683bad3320ba0adf1d4f211790001cbcf9b48ec5",
+        "locator": "display:7:26",
+        "start": 7,
+        "end": 26,
+        "quote": "Group | Height (cm)"
+      },
+      {
+        "page_key": "contradictory.source-0.split-1",
+        "source_revision": "sha256:f0a9b9410d20d199ce6906d1683bad3320ba0adf1d4f211790001cbcf9b48ec5",
+        "locator": "display:27:33",
+        "start": 27,
+        "end": 33,
+        "quote": "A | 12"
+      },
+      {
+        "page_key": "contradictory.source-0.split-1",
+        "source_revision": "sha256:f0a9b9410d20d199ce6906d1683bad3320ba0adf1d4f211790001cbcf9b48ec5",
+        "locator": "display:34:40",
+        "start": 34,
+        "end": 40,
+        "quote": "A | 18"
+      }
+    ],
+    "warnings": [
+      "duplicate: explicit structure could not be verified; source text was retained."
+    ]
+  },
+  {
+    "fixture": "bullet_review",
+    "source_text": "Veri hazırlama\n- Örneği seç\n- Veriyi kaydet\n- Sonucu kontrol et",
+    "strategy": "typography_only",
+    "file": "bullet_review.svg",
+    "status": "valid",
+    "source_hash": "sha256:42163c45aa4dbdc85887628b0d05283c69ad9f4681145bbd94f85de3b07d605f",
+    "design_source_hash": "sha256:42163c45aa4dbdc85887628b0d05283c69ad9f4681145bbd94f85de3b07d605f",
+    "plan_hash": "sha256:b8e7b0e05b29bdd16cdebb82f45f7710c6cdcba427202add8392480e38d9edc4",
+    "preview_hash": "sha256:3562eac9295ae097a49b3aaff58fa596955c8cf203b5e169337d2fe252ddb4e1",
+    "rationale": "Preserve source meaning without introducing relationships or numerical claims.",
+    "origin": "source_text",
+    "supports": [
+      {
+        "page_key": "bullet_review.source-0.split-1",
+        "source_revision": "sha256:5c50bab1fd1e3e93d214b611faf2174c850ccfd3900363137969d9ad44bb29a1",
+        "locator": "display:0:14",
+        "start": 0,
+        "end": 14,
+        "quote": "Veri hazırlama"
+      },
+      {
+        "page_key": "bullet_review.source-0.split-1",
+        "source_revision": "sha256:5c50bab1fd1e3e93d214b611faf2174c850ccfd3900363137969d9ad44bb29a1",
+        "locator": "display:15:27",
+        "start": 15,
+        "end": 27,
+        "quote": "- Örneği seç"
+      },
+      {
+        "page_key": "bullet_review.source-0.split-1",
+        "source_revision": "sha256:5c50bab1fd1e3e93d214b611faf2174c850ccfd3900363137969d9ad44bb29a1",
+        "locator": "display:28:43",
+        "start": 28,
+        "end": 43,
+        "quote": "- Veriyi kaydet"
+      },
+      {
+        "page_key": "bullet_review.source-0.split-1",
+        "source_revision": "sha256:5c50bab1fd1e3e93d214b611faf2174c850ccfd3900363137969d9ad44bb29a1",
+        "locator": "display:44:63",
+        "start": 44,
+        "end": 63,
+        "quote": "- Sonucu kontrol et"
+      }
+    ],
+    "warnings": []
+  },
+  {
+    "fixture": "teacher_confirmed",
+    "source_text": "Process ideas\n- Collect sample\n- Record value\n- Check result",
+    "strategy": "flowchart",
+    "file": "teacher_confirmed.svg",
+    "status": "valid",
+    "source_hash": "sha256:001cd39b65e26436755c3278bed457a0223fa9299965a2ec0b5bc06f39f409c4",
+    "design_source_hash": "sha256:2f26994da6e9269fb0be1d710f393a8c2b9ca922d44289a83f6df28320566bf1",
+    "plan_hash": "sha256:8694eabff5bf7ff1325baa8610abc7eee2093b1f9f5e21755fd727c9ce7f9c8e",
+    "preview_hash": "sha256:307bc0ae1070280516d646cc365bef19c09cc6e6f1ff2ddf79131893fff75de9",
+    "rationale": "Explicit source order supports a sequence diagram; arrows assert order only.",
+    "origin": "teacher_confirmed",
+    "supports": [
+      {
+        "page_key": "teacher_confirmed.source-0.split-1",
+        "source_revision": "sha256:cd674c61f893405c42a99906e96f59b0f65e5f79ac754f8b1faab948bd4b5cb5",
+        "locator": "display:0:60",
+        "end": 60,
+        "quote": "Process ideas\n- Collect sample\n- Record value\n- Check result",
+        "start": 0
+      }
+    ],
+    "warnings": [
+      "Teacher must verify the proposed organization and sequence; arrows assert order only."
+    ]
+  }
+]

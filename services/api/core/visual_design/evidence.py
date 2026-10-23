@@ -24,7 +24,7 @@ def backed_layout(snapshot, strategy, refs):
     if strategy == "chart":
         values = [p["value"] for p in record["data"]["points"]]
         require(all(v >= 0 for v in values) and max(values) > 0, "chart_domain", "Phase 1 bar charts require nonnegative values and a positive maximum")
-    return {"heading": source["original_display_text"], "evidence_id": record["id"], **record["data"]}
+    return {"heading": record.get("heading", source["original_display_text"]), "evidence_id": record["id"], **record["data"]}
 
 
 def required_labels(strategy, layout):

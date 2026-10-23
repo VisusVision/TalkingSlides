@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fetchVisualSuggestions, generateVisualSuggestion, fetchVisualSuggestionPreview, fetchVisualOriginalPreview, fetchVisualDraft, saveVisualDecision, setToken } from './api';
+import { fetchVisualProposals, generateVisualProposal, reviewVisualProposal, fetchVisualSuggestions, generateVisualSuggestion, fetchVisualSuggestionPreview, fetchVisualOriginalPreview, fetchVisualDraft, saveVisualDecision, setToken } from './api';
 
 beforeEach(() => { global.fetch = vi.fn(); localStorage.clear(); setToken('private-token'); URL.createObjectURL = vi.fn(() => 'blob:private'); });
 afterEach(() => vi.restoreAllMocks());
@@ -51,4 +51,20 @@ describe('private Visual Designer API', () => {
     fetch.mockResolvedValue(json({ error: 'Saved source changed' }, false));
     await expect(generateVisualSuggestion(9, 'page', 'old')).rejects.toThrow();
   });
+});
+
+it('keeps model proposal generation and review separate from scene and visual draft writes', async () => {
+  fetch.mockResolvedValue(json({}));
+  await fetchVisualProposals(9, 'page-0');
+  await generateVisualProposal(9, 'page-0', 'saved-hash');
+  await reviewVisualProposal(9, 'proposal-id', 'confirm', 'saved-hash');
+  expect(fetch.mock.calls[0][0]).toContain('/projects/9/visual-proposals/?page_key=page-0');
+  expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ page_key: 'page-0', expected_source_hash: 'saved-hash' });
+  expect(fetch.mock.calls[2][0]).toContain('/projects/9/visual-proposals/proposal-id/decision/');
+  expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({ action: 'confirm', expected_source_hash: 'saved-hash' });
+  for (const [url, options] of fetch.mock.calls) {
+    expect(options.headers.Authorization).toBe('Token private-token');
+    expect(options.cache).toBe('no-store');
+    expect(url).not.toMatch(/render|transcript|visual-draft/);
+  }
 });

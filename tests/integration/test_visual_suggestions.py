@@ -123,7 +123,7 @@ def test_generation_is_repeatable_and_reuses_identical_candidate(lesson):
     assert VisualPlan(candidate.plan_payload).content_hash == candidate.plan_hash
     assert VisualPreview(candidate.preview_payload).content_hash == candidate.preview_hash
     assert first.data["suggestion"]["schema_version"] == "visual-suggestion.v1"
-    assert first.data["suggestion"]["renderer_version"] == "svg-educational.v1"
+    assert first.data["suggestion"]["renderer_version"] == "svg-educational.v2"
 
 
 def test_private_preview_delivery_and_metadata_do_not_expose_svg_or_paths(lesson):

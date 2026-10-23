@@ -46,7 +46,10 @@ class _Canvas:
         line_height = size * 1.3
         require(bool(lines) and len(lines) * line_height <= height, "text_overflow", "Required text exceeds the available text-box height")
         baseline = y + size
-        self.parts.append(f'<text x="{_n(x)}" y="{_n(baseline)}" font-size="{size}" font-family="{FONT_FAMILY}" font-weight="{700 if bold else 400}" fill="{color}" aria-label="{escape(label, quote=True)}">')
+        # XML parsers normalize literal attribute newlines/tabs to spaces. Numeric
+        # references preserve exact authored labels for independent validation.
+        attribute = escape(label, quote=True).replace("\n", "&#10;").replace("\t", "&#9;").replace("\r", "&#13;")
+        self.parts.append(f'<text x="{_n(x)}" y="{_n(baseline)}" font-size="{size}" font-family="{FONT_FAMILY}" font-weight="{700 if bold else 400}" fill="{color}" aria-label="{attribute}">')
         for i, line in enumerate(lines):
             self.parts.append(f'<tspan x="{_n(x)}" y="{_n(baseline + i * line_height)}">{escape(line)}</tspan>')
         self.parts.append('</text>')

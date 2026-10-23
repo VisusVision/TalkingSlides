@@ -10,7 +10,7 @@
       "fallback_reason": null,
       "source_hash": "sha256:c5c87f5483717caf0cf4cd1f88cc1ae9d74a43b8c1a8711ff9e479de66850b65",
       "plan_hash": "sha256:9fc04d8ed27bac92be3d1c6285b4b9277982ac68c243b883e4ff84f7a5f23aa6",
-      "preview_hash": "sha256:7785a98aa111f8bdf81af7d5f146c32757a9339adc018fee1b2bcaa5e43aac34",
+      "preview_hash": "sha256:988c583807935816e3781ec45c4f076f76729ebc841c08821493bb1f9dc84c3d",
       "warnings": [
         "Font-dependent pixels: use DejaVu Sans; SVG bounds use a conservative Latin glyph advance, not arbitrary-font shaping."
       ],
@@ -25,7 +25,7 @@
       "fallback_reason": null,
       "source_hash": "sha256:cef1d31fccbd925340d454ffde2c4c9cc976f1d612bae7e3f9d2a5023130bb1b",
       "plan_hash": "sha256:3917359fd0de6becdda7695b30f40d8f5b7ddd1a7ab88c01229aa88712e5a55e",
-      "preview_hash": "sha256:3f919122af31ec75f4bf682188798fdca4328a9a305019bf3406df18a8d870be",
+      "preview_hash": "sha256:75445b7587945a3198832cb14602c3350f81b191dde2ad91fb7b8bfcb81e7e09",
       "warnings": [
         "Font-dependent pixels: use DejaVu Sans; SVG bounds use a conservative Latin glyph advance, not arbitrary-font shaping."
       ],
@@ -40,7 +40,7 @@
       "fallback_reason": null,
       "source_hash": "sha256:dac51164193824c9841e8e5f10b470add71ef3e40a697aa4007dde50fdc97a6f",
       "plan_hash": "sha256:ffdd15e0ca96fb79f776a56224f6e1ddb15d16aba2cea000c839ae6ea5c73ddf",
-      "preview_hash": "sha256:846b817542194f0cbf60b7e804e241974ec24458e3b175b793293602d75d9a64",
+      "preview_hash": "sha256:476922ba3743aba25ad74ed98593fe4642a83478b48d2e594c4c377fcb0fb6c8",
       "warnings": [
         "Font-dependent pixels: use DejaVu Sans; SVG bounds use a conservative Latin glyph advance, not arbitrary-font shaping."
       ],
@@ -55,7 +55,7 @@
       "fallback_reason": null,
       "source_hash": "sha256:f07e0e8d3e2acf046d58d649edf29b27e527dfc604363300f7916e660fd4966d",
       "plan_hash": "sha256:bda42ae20a106cd58fc2b165836f58a2263c687c80535a61eab4977ec0532c4a",
-      "preview_hash": "sha256:e6b2b9ecc4139ab63d22c9c2b8603d81371af0896798da804ee6c0e0a7650fba",
+      "preview_hash": "sha256:c964a45cdf6acd834c0e07ad0c842b09a9c4283dd4c4ba61828954ab15641b22",
       "warnings": [],
       "errors": []
     },
@@ -68,7 +68,7 @@
       "fallback_reason": "No single verified structured evidence record supports a diagram; prose is not interpreted as evidence.",
       "source_hash": "sha256:830888ccacb95c96cd10179bf4c0c12cba652b80116669c7537e66f6af83e895",
       "plan_hash": "sha256:93f6fc79073395b4d8b774d94916889b69ca178bad637ba395af63c05face5e9",
-      "preview_hash": "sha256:8ee3142e9b6dfe41a883590f2f6af0a74451afa345fb953f064af69a50582548",
+      "preview_hash": "sha256:0d24f1ea03bafaae95ab56ea46623f8a8d912d2e3e6669a6426314eedefe7e2b",
       "warnings": [
         "Font-dependent pixels: use DejaVu Sans; SVG bounds use a conservative Latin glyph advance, not arbitrary-font shaping."
       ],

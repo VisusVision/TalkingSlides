@@ -1237,6 +1237,8 @@ class VisualDesignSuggestion(models.Model):
     plan_hash = models.CharField(max_length=71, blank=True)
     preview_hash = models.CharField(max_length=71, blank=True)
     validation_errors = models.JSONField(default=list)
+    grounding_payload = models.JSONField(default=dict)
+    proposal = models.ForeignKey("VisualEvidenceProposal", null=True, blank=True, on_delete=models.RESTRICT, related_name="suggestions")
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1293,4 +1295,43 @@ class VisualDraftDecision(models.Model):
     def save(self, *args, **kwargs):
         if not self._state.adding:
             raise ValidationError("Visual decisions are immutable.")
+        return super().save(*args, **kwargs)
+
+
+class VisualEvidenceProposal(models.Model):
+    """Immutable private model proposal, never verified evidence by itself."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="visual_evidence_proposals")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="visual_evidence_proposals")
+    page_key = models.CharField(max_length=64)
+    source_hash = models.CharField(max_length=71)
+    source_revision = models.CharField(max_length=71)
+    proposal_hash = models.CharField(max_length=71)
+    payload = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [models.UniqueConstraint(fields=["project", "owner", "source_hash", "proposal_hash"], name="unique_visual_evidence_proposal")]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Visual evidence proposals are immutable.")
+        return super().save(*args, **kwargs)
+
+
+class VisualEvidenceReview(models.Model):
+    """Single append-only teacher decision, bound to an immutable proposal hash."""
+
+    proposal = models.OneToOneField(VisualEvidenceProposal, on_delete=models.CASCADE, related_name="review")
+    owner = models.ForeignKey(User, on_delete=models.CASCADE)
+    source_hash = models.CharField(max_length=71)
+    proposal_hash = models.CharField(max_length=71)
+    action = models.CharField(max_length=12, choices=[("confirm", "Confirm"), ("reject", "Reject")])
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValidationError("Visual evidence reviews are immutable.")
         return super().save(*args, **kwargs)

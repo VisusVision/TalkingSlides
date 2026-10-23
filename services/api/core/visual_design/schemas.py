@@ -10,7 +10,7 @@ SOURCE_VERSION = "slide-source.v1"
 PLAN_VERSION = "visual-plan.v1"
 PREVIEW_VERSION = "visual-preview.v1"
 TEMPLATE_VERSION = "educational.v1"
-RENDERER_VERSION = "svg-educational.v1"
+RENDERER_VERSION = "svg-educational.v2"
 STRATEGIES = {"preserve_original", "typography_only", "flowchart", "comparison", "chart"}
 MAX_PAYLOAD_BYTES = 65_536
 
@@ -109,10 +109,12 @@ def identity(value):
 
 
 def evidence_record(record, revision):
-    fields(record, ("id", "kind", "source_revision", "locator", "verified", "data"))
+    fields(record, ("id", "kind", "source_revision", "locator", "verified", "data"), ("heading",))
     identifier(record["id"])
     require(record["source_revision"] == revision, "source_revision", "Evidence revision does not match source")
     text(record["locator"], 256)
+    if "heading" in record:
+        text(record["heading"], 256)
     require(type(record["verified"]) is bool, "schema", "verified must be a boolean assertion by the source adapter")
     kind, data = record["kind"], record["data"]
     require(type(kind) is str and kind in {"process", "comparison", "numeric", "preserve"}, "evidence_type", "Unsupported evidence kind")

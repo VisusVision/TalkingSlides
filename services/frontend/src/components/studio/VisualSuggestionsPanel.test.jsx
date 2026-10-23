@@ -3,10 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import VisualSuggestionsPanel, { StudioIntelligenceTabs } from './VisualSuggestionsPanel';
-import { fetchVisualSuggestions, generateVisualSuggestion, fetchVisualSuggestionPreview, fetchVisualOriginalPreview, fetchVisualDraft, saveVisualDecision } from '../../api';
+import { fetchVisualProposals, fetchVisualSuggestions, generateVisualSuggestion, fetchVisualSuggestionPreview, fetchVisualOriginalPreview, fetchVisualDraft, saveVisualDecision } from '../../api';
 import { studioWorkspaceCopy } from './studioWorkspaceCopy';
 
-vi.mock('../../api', () => ({ fetchVisualSuggestions: vi.fn(), generateVisualSuggestion: vi.fn(), fetchVisualSuggestionPreview: vi.fn(), fetchVisualOriginalPreview: vi.fn(), fetchVisualDraft: vi.fn(), saveVisualDecision: vi.fn() }));
+vi.mock('../../api', () => ({ fetchVisualProposals: vi.fn().mockResolvedValue({ proposals: [], model_available: false }), generateVisualProposal: vi.fn(), reviewVisualProposal: vi.fn(), fetchVisualSuggestions: vi.fn(), generateVisualSuggestion: vi.fn(), fetchVisualSuggestionPreview: vi.fn(), fetchVisualOriginalPreview: vi.fn(), fetchVisualDraft: vi.fn(), saveVisualDecision: vi.fn() }));
 let host, root;
 const page = { id: 7, page_key: 's1-p2', source_slide_index: 0, split_index: 1, original_text: 'Ölçüm & kayıt', narration_text: 'Protected narration' };
 const source = { source_hash: 'sha256:' + 'a'.repeat(64), source_mode: 'active', page_key: page.page_key, supported: true };
@@ -22,6 +22,7 @@ beforeEach(() => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   vi.resetAllMocks();
   URL.revokeObjectURL = vi.fn();
+  fetchVisualProposals.mockResolvedValue({ proposals: [], model_available: false });
   fetchVisualSuggestions.mockResolvedValue(listing());
   fetchVisualDraft.mockResolvedValue({ schema_version: 'visual-draft.v1', page_key: page.page_key, source, selection: { state: 'original', candidate_id: null, version: 0 }, rejected_ids: [], history: [] });
   fetchVisualSuggestionPreview.mockResolvedValue('blob:private-svg');

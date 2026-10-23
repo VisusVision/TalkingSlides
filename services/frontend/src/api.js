@@ -2118,3 +2118,34 @@ export async function saveVisualDecision(projectId, { pageKey, action, candidate
   if (!res.ok) { const error = apiError(data, 'Unable to save the private visual draft'); error.status = res.status; throw error; }
   return data;
 }
+
+// Model proposals are private and unverified until a separate teacher decision.
+export async function fetchVisualProposals(projectId, pageKey) {
+  const params = new URLSearchParams({ page_key: pageKey });
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-proposals/?${params}`, {
+    headers: authHeaders(), cache: 'no-store',
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, 'Unable to load visual evidence');
+  return data;
+}
+
+export async function generateVisualProposal(projectId, pageKey, expectedSourceHash) {
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-proposals/`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), cache: 'no-store',
+    body: JSON.stringify({ page_key: pageKey, expected_source_hash: expectedSourceHash }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, 'Unable to propose a visual structure');
+  return data;
+}
+
+export async function reviewVisualProposal(projectId, proposalId, action, expectedSourceHash) {
+  const res = await fetch(`${API_BASE_URL}/projects/${encodeURIComponent(projectId)}/visual-proposals/${encodeURIComponent(proposalId)}/decision/`, {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), cache: 'no-store',
+    body: JSON.stringify({ action, expected_source_hash: expectedSourceHash }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw apiError(data, 'Unable to review visual evidence');
+  return data;
+}

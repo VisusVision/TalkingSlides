@@ -2,16 +2,34 @@
 from core.models import VisualDesignSuggestion
 from core.visual_design import DeterministicPlanner, render_preview
 from core.visual_design.schemas import PLAN_VERSION, PREVIEW_VERSION, RENDERER_VERSION, TEMPLATE_VERSION, content_hash
+from core.visual_design.grounding import grounded_payload, design_snapshot, VisualProposal
 
 SUGGESTION_VERSION = "visual-suggestion.v1"
-GENERATOR_VERSION = "deterministic-studio.v1"
+GENERATOR_VERSION = "grounded-studio.v1"
 
 
-def generate_suggestion(project, owner, source):
+def generate_suggestion(project, owner, source, *, proposal=None):
+    grounding = {}
+    if source.snapshot is not None:
+        grounding = grounded_payload(source.snapshot, VisualProposal(proposal.payload) if proposal else None,
+                                     str(proposal.pk) if proposal else None)
+    # A model proposal only enters the rendering path after a matching immutable
+    # teacher decision. Revalidate this even for callers outside the HTTP view.
+    if proposal is not None:
+        from core.models import VisualEvidenceReview
+        from core.visual_design.schemas import require
+        require(proposal.project_id == project.pk and proposal.owner_id == owner.pk
+                and proposal.page_key == source.page_key and proposal.source_hash == source.source_hash
+                and proposal.source_revision == source.source_revision
+                and VisualProposal(proposal.payload).content_hash == proposal.proposal_hash
+                and VisualEvidenceReview.objects.filter(proposal=proposal, owner=owner, action="confirm",
+                    source_hash=source.source_hash, proposal_hash=proposal.proposal_hash).exists(),
+                "review", "Matching teacher confirmation is required")
     key = content_hash(GENERATOR_VERSION, {
         "source_hash": source.source_hash, "source_mode": source.source_mode,
         "plan_version": PLAN_VERSION, "preview_version": PREVIEW_VERSION,
         "renderer_version": RENDERER_VERSION, "template_version": TEMPLATE_VERSION,
+        "grounding_hash": content_hash("grounding.v1", grounding),
     })
     existing = VisualDesignSuggestion.objects.filter(project=project, owner=owner, candidate_key=key).first()
     if existing:
@@ -19,8 +37,9 @@ def generate_suggestion(project, owner, source):
     plan_payload, preview_payload, plan_hash, preview_hash = {}, {}, "", ""
     errors, state = list(source.errors), "unsupported"
     if source.snapshot is not None:
-        plan = DeterministicPlanner().plan(source.snapshot)
-        preview = render_preview(source.snapshot, plan)
+        snapshot = design_snapshot(grounding)
+        plan = DeterministicPlanner().plan(snapshot)
+        preview = render_preview(snapshot, plan)
         plan_payload, preview_payload = plan.to_dict(), preview.to_dict()
         plan_hash, preview_hash = plan.content_hash, preview.content_hash
         errors = preview_payload["errors"]
@@ -31,7 +50,8 @@ def generate_suggestion(project, owner, source):
         defaults={"page_key": source.page_key, "source_mode": source.source_mode,
                   "source_revision": source.source_revision, "source_hash": source.source_hash,
                   "status": state, "plan_payload": plan_payload, "preview_payload": preview_payload,
-                  "plan_hash": plan_hash, "preview_hash": preview_hash, "validation_errors": errors},
+                  "plan_hash": plan_hash, "preview_hash": preview_hash, "validation_errors": errors,
+                  "grounding_payload": grounding, "proposal": proposal},
     )
 
 
@@ -50,6 +70,8 @@ def suggestion_metadata(candidate, current_source):
         "status": candidate.status, "strategy": plan.get("strategy"),
         "rationale": plan.get("rationale", ""), "fallback_reason": plan.get("fallback_reason"),
         "warnings": preview.get("warnings", []), "errors": candidate.validation_errors,
+        "evidence": {key: candidate.grounding_payload.get(key) for key in ("schema_version", "origin", "supports", "warnings", "proposal_id")},
+        "design_source_hash": plan.get("source_hash"),
         "is_stale": stale, "compatible": compatible,
         "stale_reason": "version_changed" if not compatible else "page_unavailable" if current_source is None else "source_changed" if stale else None,
         "contains_text": preview.get("contains_text", False),

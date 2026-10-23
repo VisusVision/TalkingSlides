@@ -55,7 +55,7 @@ def test_select_reload_and_source_hash_stability_without_any_lesson_mutation(vis
     assert result.data["selection"]["contains_text"] is True
     assert result.data["selection"]["is_stale"] is False
     assert result.data["selection"]["version"] == 1
-    assert result.data["selection"]["design_versions"]["renderer"] == "svg-educational.v1"
+    assert result.data["selection"]["design_versions"]["renderer"] == "svg-educational.v2"
     assert result.data["applied"] is False
     project.refresh_from_db()
     assert build_studio_visual_source(project, page.page_key).source_hash == source.source_hash

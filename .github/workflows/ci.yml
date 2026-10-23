@@ -193,4 +193,4 @@ jobs:
       - name: Private visual choices and simultaneous updates on PostgreSQL
         env:
           INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED: 'false'
-        run: pytest -q tests/integration/test_visual_drafts.py --ds=config.settings_test_postgres
+        run: pytest -q tests/integration/test_visual_drafts.py tests/integration/test_visual_evidence.py --ds=config.settings_test_postgres

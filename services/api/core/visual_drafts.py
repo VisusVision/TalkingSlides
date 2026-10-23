@@ -34,22 +34,24 @@ def verified_preview(candidate, source=None):
             raise DesignError("unsupported", "Candidate is not selectable")
         plan, preview = VisualPlan(candidate.plan_payload), VisualPreview(candidate.preview_payload)
         p, v = plan.to_dict(), preview.to_dict()
+        from core.visual_evidence import validate_candidate_grounding
+        snapshot = validate_candidate_grounding(candidate, source)
         if (p["schema_version"] != PLAN_VERSION or p["template_version"] != TEMPLATE_VERSION
             or v["schema_version"] != PREVIEW_VERSION or v["renderer_version"] != RENDERER_VERSION
             or v["status"] != "valid" or v["errors"]
             or plan.content_hash != candidate.plan_hash or preview.content_hash != candidate.preview_hash
-            or v["plan_hash"] != candidate.plan_hash or v["source_hash"] != candidate.source_hash
-            or p["source_hash"] != candidate.source_hash
+            or v["plan_hash"] != candidate.plan_hash or v["source_hash"] != snapshot.content_hash
+            or p["source_hash"] != snapshot.content_hash
             or p["source_identity"]["project_id"] != str(candidate.project_id)
             or p["source_identity"]["page_key"] != candidate.page_key
             or p["source_identity"]["source_revision"] != candidate.source_revision
-            or not validate_svg(v["svg"], plan).valid):
+            or not validate_svg(v["svg"], plan).valid
+            or not validate_plan(snapshot, plan).valid
+            or render_preview(snapshot, plan).content_hash != candidate.preview_hash):
             raise DesignError("integrity", "Stored preview failed validation")
         if source is not None:
             if (source.snapshot is None or candidate.source_hash != source.source_hash
-                or candidate.source_revision != source.source_revision or candidate.source_mode != source.source_mode
-                or not validate_plan(source.snapshot, plan).valid
-                or render_preview(source.snapshot, plan).content_hash != candidate.preview_hash):
+                or candidate.source_revision != source.source_revision or candidate.source_mode != source.source_mode):
                 raise DesignError("stale_source", "Candidate does not match the saved source")
         return v
     except (DesignError, KeyError, TypeError, ValueError) as exc:
@@ -65,7 +67,9 @@ def design_identity(candidate, preview):
                             "plan": candidate.plan_payload["schema_version"],
                             "preview": preview["schema_version"],
                             "template": candidate.plan_payload["template_version"],
-                            "renderer": preview["renderer_version"]},
+                            "renderer": preview["renderer_version"],
+                            "grounding": candidate.grounding_payload.get("schema_version"),
+                            "extractor": candidate.grounding_payload.get("extractor_version")},
     }
 
 

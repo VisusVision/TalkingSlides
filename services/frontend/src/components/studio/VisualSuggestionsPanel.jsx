@@ -5,6 +5,7 @@ import Button from '../ui/Button';
 import Dialog from '../ui/Dialog';
 import { usePrivatePreview, usePrivateOriginal } from './visualPreviewHooks';
 import VisualDraftControls from './VisualDraftControls';
+import VisualEvidencePanel from './VisualEvidencePanel';
 
 export function StudioIntelligenceTabs({ analysis, children }) {
   const copy = useStudioWorkspaceCopy();
@@ -68,6 +69,12 @@ export default function VisualSuggestionsPanel({ projectId, page, originalImageU
     } catch { if (epoch === requestEpoch.current) setError(true); }
     finally { if (epoch === requestEpoch.current) { setBusy(false); generationBusy.current = false; } }
   }
+  async function acceptGroundedCandidate(result) {
+    const epoch = requestEpoch.current;
+    const next = await fetchVisualSuggestions(projectId, pageKey);
+    if (epoch !== requestEpoch.current) return;
+    setData(next); setSelectedId(result.suggestion.id); setReused(Boolean(result.reused));
+  }
   const strategyLabel = { preserve_original: copy.visualStrategyPreserve, typography_only: copy.visualStrategyTypography, flowchart: copy.visualStrategyFlowchart, comparison: copy.visualStrategyComparison, chart: copy.visualStrategyChart }[candidate?.strategy];
 
   if (readOnly) return <p className="token-surface rounded-xl p-4">{copy.visualReadOnly}</p>;
@@ -103,6 +110,7 @@ export default function VisualSuggestionsPanel({ projectId, page, originalImageU
         {candidate.status === 'preserved' && <>{originalImage && <img src={originalImage} alt={copy.visualSuggestion} className="aspect-video w-full object-contain" />}<p className="text-sm">{copy.visualPreserved}</p></>}{candidate.status === 'unsupported' && <p className="text-sm">{copy.visualUnsupported}</p>}{candidate.status === 'failed' && <p role="alert">{copy.visualFailed}</p>}
       </figure>}
     </div>
+    {data?.source && <VisualEvidencePanel key={`evidence:${projectId}:${pageKey}:${data.source.source_hash}`} projectId={projectId} pageKey={pageKey} source={data.source} candidate={candidate} disabled={unsavedChanges || busy || loading} onCandidate={acceptGroundedCandidate} />}
     {data?.source && <VisualDraftControls key={`${projectId}:${pageKey}:${data.source.source_hash}`} projectId={projectId} pageKey={pageKey} source={data.source} candidate={candidate} originalImage={originalImage} originalText={page?.original_text} unsavedChanges={unsavedChanges} refreshVersion={refreshVersion} onRefreshSource={() => setRefreshVersion((n) => n + 1)} />}
     {candidate && <div className="mt-4 space-y-2 text-sm">
       <p className="font-semibold">{strategyLabel || copy.visualUnsupported}</p>

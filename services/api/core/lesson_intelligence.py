@@ -512,7 +512,22 @@ class OllamaLessonIntelligenceProvider:
         }
         return normalized
 
-    def _generate(self, prompt: str, timeout_seconds: float, *, retry_count: int) -> tuple[dict[str, Any], float]:
+    def generate_structured(self, prompt: str, *, timeout_seconds: float = 8.0) -> str:
+        """Shared local JSON transport for bounded, independently validated callers.
+
+        No repair retry, lesson normalization, scheduling or report persistence.
+        The caller owns its strict domain schema and provider feature gate.
+        """
+        if not self.base_url or not self.model:
+            raise LessonIntelligenceProviderUnavailable("Ollama is not configured")
+        data, _ = self._generate(prompt, min(8.0, self.timeout_seconds, max(0.5, timeout_seconds)),
+                                 retry_count=0, response_limit=65_536)
+        response = data.get("response")
+        if not isinstance(response, str):
+            raise LessonIntelligenceProviderUnavailable("Ollama response is not structured text")
+        return response
+
+    def _generate(self, prompt: str, timeout_seconds: float, *, retry_count: int, response_limit: int | None = None) -> tuple[dict[str, Any], float]:
         request_payload = {
             "model": self.model,
             "prompt": prompt,
@@ -529,9 +544,12 @@ class OllamaLessonIntelligenceProvider:
         started_at = time.monotonic()
         try:
             with urlopen(request, timeout=timeout_seconds) as response:
-                body = response.read().decode("utf-8")
+                raw = response.read(response_limit + 1) if response_limit is not None else response.read()
+                if response_limit is not None and len(raw) > response_limit:
+                    raise LessonIntelligenceProviderUnavailable("Ollama response exceeds the bounded JSON limit")
+                body = raw.decode("utf-8")
             data = json.loads(body)
-        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        except (HTTPError, URLError, TimeoutError, OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             elapsed_seconds = round(time.monotonic() - started_at, 2)
             failure = LessonIntelligenceProviderUnavailable(f"Ollama request failed: {exc.__class__.__name__}")
             failure.diagnostic = _ollama_failure_diagnostic(

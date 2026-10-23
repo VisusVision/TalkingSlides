@@ -34,7 +34,7 @@ class StudioVisualSource:
             "source_hash": self.source_hash,
             "supported": self.snapshot is not None,
             "errors": list(self.errors),
-            "evidence_policy": "authored_text_only_unverified",
+            "evidence_policy": "explicit_text_structures.v1",
             "original_available": self.original_available,
             "asset_page_ref": self.asset_page_ref,
         }
