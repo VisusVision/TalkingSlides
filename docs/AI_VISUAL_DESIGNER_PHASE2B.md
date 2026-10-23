@@ -10,7 +10,9 @@ Baseline: `02aa14dad0d1dc5a4ac1c0fa2249bcd9b6e9f0c6` on
 `VisualDraftSelection` stores one current choice per project/owner/stable page key:
 original or selected candidate, source revision/hash, plan/preview hashes, design
 schema/template/renderer versions, `contains_text`, timestamps and optimistic
-version. No SVG is copied into this record. `VisualDraftDecision` is append-only
+version. `contains_text` describes the selected generated asset; original state
+defers to existing scene semantics and contains no generated asset. No SVG is
+copied into this record. `VisualDraftDecision` is append-only
 select/reject/restore history with the resulting choice and monotonic version.
 Candidates remain immutable. The additive migration is `0039_private_visual_drafts`.
 
@@ -127,16 +129,72 @@ changing another page. URLs are revoked on replacement/unmount and late arrival.
 
 ## Verification
 
-Executed checks and hosted results are recorded below after the final CI run.
-Initial local checks: fresh npm installation; 342 frontend tests (48 files);
-production build; both npm audits zero; Django system/migration checks pass.
-Relevant backend tests include Phase 1/2A, new selections/concurrency and existing
-ordinary-draft/promotion isolation. Browser acceptance uses hosted Chromium when
-local downloads fail. Blocked browser launches are never counted as passed.
+**READY_FOR_PHASE3_REVIEW.** All five hosted CI jobs passed. No video application
+is enabled. Migration `0039` must be applied when running the updated app locally;
+it has already been applied to fresh SQLite/PostgreSQL test databases.
 
-The CI adds `visual-drafts-postgres`, using PostgreSQL 16 and isolated test settings,
-to verify actual simultaneous API updates. Existing backend, Docker, load, frontend
-and audit jobs are not removed or weakened. No new application dependency is added.
+Application acceptance commit: `0ce04c24e6b6ca7ac23bb60da8561d80f6a69f38`.
+[Hosted CI run 39915900032](https://github.com/VisusVision/TalkingSlides/actions/runs/39915900032).
+The final report update changes documentation only; its application, migration,
+workflow, dependency and test files are byte-identical to this acceptance commit.
+
+| Check | Executed result |
+| --- | --- |
+| Fresh `npm ci` | passed locally and hosted |
+| `npm run test:ci` | 342 passed / 48 files in hosted CI |
+| Local `npm run test:ci -- --maxWorkers=2` | 342 passed / 48 files |
+| `npm run build` | passed locally and hosted; existing chunk warning retained |
+| Hosted `npm run e2e` | 34 passed (51.9 s), including desktop and mobile-viewport private-draft flows |
+| `npm audit --audit-level=high` | exit 0; zero vulnerabilities locally and hosted |
+| `npm audit --omit=dev --audit-level=moderate` | exit 0; zero vulnerabilities locally |
+| Focused SQLite backend: Phase 1/2A, selections and draft/promotion regressions | 137 passed plus 63 subtests; two additional ownership/coherent-forgery tests passed separately |
+| PostgreSQL 16 private-selection suite | 36 passed, including simultaneous conflicting writes |
+| Django `check` | no issues, zero silenced |
+| `makemigrations --check --dry-run` | no changes detected; new additive migration committed |
+| Full hosted backend suite and migration check | 2,218 passed, 10 skipped, 63 subtests passed; 2 existing warnings; migration check passed |
+| Python dependency audit | no known vulnerabilities found |
+| Docker build smoke | passed |
+| k6 load-script syntax smoke | passed |
+| Complete diff / whitespace check | passed |
+
+PostgreSQL uses the separate test settings and a CI-only database, with no new
+application dependency. SQLite's shared-cache lock can ask both concurrent writers
+to retry; the real PostgreSQL assertion requires exactly one success and one 409
+for competing different decisions at the same version. The CI addition leaves
+all existing backend, Docker, frontend and dependency-audit checks enabled.
+
+The relevant backend tests verify owner isolation, cross-owner/project/page
+rejection, source/index-zero identity, saved-draft precedence, source-hash stability,
+source edits/assets/lifecycle staleness, immutable-candidate integrity, even coherent
+but fabricated source text with recalculated hashes, optimistic conflicts, atomic
+rollback, idempotency, rejection/restoration history, ordinary-draft promotion
+isolation, project cleanup and zero lesson/job mutation.
+
+Frontend tests verify immediate staged previews, explicit save, remount recovery,
+reject/restore, disabled invalid choices/unsaved narration, page/project/save races,
+URL revocation, strict API requests and retained Analysis/localization behavior.
+The hosted browser scenarios use synthetic authenticated API fixtures, actual image
+decoding, keyboard activation, layout bounds and persisted fixture state across
+reload. Real backend persistence/transactions are tested separately against SQLite
+and PostgreSQL; a full browser-to-Django deployment is not claimed.
+
+[Browser report and saved-selection screenshots](https://github.com/VisusVision/TalkingSlides/actions/runs/39915900032/artifacts/12484399435)
+include manually reviewed desktop/mobile working-preview captures. Archive SHA-256:
+`1dd49735d0579e10d9b26e4441f6f1e256d6f637a8fe202b8f9e5e93af8f7190`
+(713,168 bytes, verified after download). The artifact expires after 14 days; the
+committed synthetic scenarios reproduce the evidence. No generated browser report,
+raw screenshot or new binary is committed to the application.
+
+The first hosted run passed 33/34 E2E tests. Its mobile harness checked Inspector
+visibility before Studio loaded and skipped the compact workspace switch. The
+follow-up test-only commit waits for Studio and explicitly opens Inspector at the
+compact viewport; all 34 pass without changing production code or relaxing checks.
+
+Local `npm run e2e` was executed but all browser launches were blocked by missing
+Chromium. `npx playwright install chromium --only-shell` failed with truncated archive
+downloads. These are blocked local runs, not passing browser tests. Hosted Chromium
+provides acceptance. Physical devices, touch hardware, Safari and Firefox were not
+executed. Existing backend Django deprecation warnings are not silenced.
 
 ## Limits and Phase 3 prerequisites
 
@@ -154,3 +212,18 @@ semantics and text ownership, maintain split-page/subtitle mapping, reuse audio 
 visual-only edits, and promote only the revision actually rendered after moderation.
 Published playback must remain in place until its approved replacement is ready.
 None of those renderer/promotion changes is activated here.
+
+## Commits and branch safety
+
+- `ba8deb335ece8b5bebcbd3f8933304eb65eca2c2`: models, additive migration,
+  transaction/validation API, source fingerprint v2, Studio controls, localization,
+  tests and PostgreSQL concurrency CI.
+- `0ce04c24e6b6ca7ac23bb60da8561d80f6a69f38`: mobile test readiness fix and
+  working-preview screenshot attachments. Application code is unchanged.
+- Final follow-up: documentation-only results and boundary clarification.
+
+The complete diff is limited to 19 Phase 2B files. Phase 1 pure modules,
+`core/drafts.py`, `core/views.py`, worker/render/TTS code, Studio.jsx, dependency
+lockfiles, Tailwind design compatibility and routeSession.js are unchanged from
+the accepted baseline. All work remains on `feature/ai-visual-designer`; neither
+`developer` nor `main` is modified or merged.
