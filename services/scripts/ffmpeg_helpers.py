@@ -153,6 +153,10 @@ def create_slide_video(
     out_video_path: str,
     resolution: tuple[int, int] = (1920, 1080),
     duration_sec: float | None = None,
+    *,
+    verified_aac_copy: bool = False,
+    ffmpeg_path: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> str:
     """
     Combine a static PNG image and an audio file into an MP4 video clip.
@@ -176,6 +180,28 @@ def create_slide_video(
 
         create_slide_video("slides/01.png", "audio/01.mp3", "parts/01.mp4")
     """
+    if verified_aac_copy:
+        # Opt-in private h264-aac-copy.v1 recipe. The caller authenticates and
+        # probes the AAC-LC pin; this helper never guesses provenance or falls
+        # back to synthesis/re-encoding. Keep the legacy command below intact.
+        import math
+        if (resolution != (1920, 1080) or type(duration_sec) not in (int, float)
+                or not math.isfinite(duration_sec) or not 0 < duration_sec <= 120
+                or type(timeout_seconds) not in (int, float) or not 0 < timeout_seconds <= 180
+                or not ffmpeg_path or not Path(ffmpeg_path).is_absolute()):
+            raise ValueError("Explicit bounded private AAC-copy recipe required")
+        cmd = [ffmpeg_path, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-protocol_whitelist", "file,pipe", "-loop", "1", "-framerate", "25", "-i", str(image_path),
+            "-protocol_whitelist", "file,pipe", "-f", "mov", "-enable_drefs", "0", "-use_absolute_path", "0", "-i", str(audio_path),
+            "-map", "0:v:0", "-map", "1:a:0", "-t", f"{duration_sec:.3f}",
+            "-c:v", "libx264", "-crf", "23", "-preset", "medium", "-r", "25",
+            "-pix_fmt", "yuv420p", "-c:a", "copy", "-threads", "1", "-filter_threads", "1",
+            "-vf", "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2",
+            "-movflags", "+faststart", "-fs", "33554433", "-f", "mp4", str(out_video_path)]
+        _run(cmd, timeout_seconds=timeout_seconds)
+        return out_video_path
+    if ffmpeg_path is not None or timeout_seconds is not None:
+        raise ValueError("Private runtime options require verified_aac_copy")
     Path(out_video_path).parent.mkdir(parents=True, exist_ok=True)
     w, h = resolution
     cmd = [

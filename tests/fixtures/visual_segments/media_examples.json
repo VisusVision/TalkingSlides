@@ -1,0 +1,7 @@
+{
+  "flowchart": "Ölçüm süreci\n1. Örneği topla\n2. Ölçümü kaydet & kontrol et\n3. Sonucu arşivle",
+  "comparison": "Energy storage comparison\nProperty | Battery | Capacitor\nStorage | Chemical | Electric field\nDischarge | Slow | Fast",
+  "chart": "Bitki büyümesi\nGrup | Boy (cm)\nKontrol | 12\nDeney | 18",
+  "typography": "Öğrenme & observation: retain exact source meaning.",
+  "preserve_original": "Preserve the original educational drawing."
+}

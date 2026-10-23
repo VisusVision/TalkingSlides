@@ -578,8 +578,14 @@ def test_private_job_cannot_be_created_or_repurposed_outside_atomic_reservation(
 def test_database_constraints_prevent_public_result_and_unverified_success(lesson):
     run, _ = reserve(lesson)
     for model, pk, field, value in ((VisualSegmentRun, run.pk, "completed_receipt_hash", "sha256:"+"c"*64),
-            (Job, run.job_id, "result_url", "private-segment.mp4"), (Job, run.job_id, "status", "done")):
+            (Job, run.job_id, "result_url", "private-segment.mp4")):
         with pytest.raises(IntegrityError), transaction.atomic(): _sql_update(model, pk, field, value)
+    from core.models import _SEGMENT_CONTROL_WRITE
+    with pytest.raises(ValidationError):
+        Job.objects.filter(pk=run.job_id)._control_update(_SEGMENT_CONTROL_WRITE, status="done")
+    _sql_update(Job, run.job_id, "status", "done")
+    with pytest.raises(DesignError, match="inconsistent"):
+        runs.read_private_run(lesson.project.pk, lesson.owner, run.pk)
 
 
 def test_expired_or_wrong_token_cannot_record_terminal_failure(lesson, monkeypatch):

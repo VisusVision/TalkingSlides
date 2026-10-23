@@ -1,0 +1,224 @@
+{
+  "scope": "Observed synthetic engineering acceptance; not production producer attestation or publication.",
+  "reproduce": "python docs/visual_design/phase3b4/generate_examples.py --private-root /tmp/talkingslides-private-phase3b4-new",
+  "runtime": {
+    "build_id": "private-segment-linux.v1",
+    "ffmpeg_binary_hash": "sha256:ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+    "ffmpeg_version": "version-sha256.5b320c97f515e79171f10a2147d875ffb6b14bd2b25681047b73c46fe0a527ee",
+    "fontconfig_build_hash": "sha256:a94b4059b27766f563894c8f7e61762b6f6b2e25c59ef36b730164d4b75c6c98",
+    "rasterizer_build_hash": "sha256:d4f12eb8cd0dc44f7b22da337beec318cbe5654078018971a9c049ef34dbab5b",
+    "rasterizer_id": "librsvg.v1"
+  },
+  "examples": [
+    {
+      "fixture": "chart",
+      "outputs": {
+        "mp4": {
+          "extension": "mp4",
+          "sha256": "sha256:e9137c6f3109e4155bb9818d01377028b73e18485c04f29da0c3e0ebea8c4d79",
+          "size": 31393
+        },
+        "srt": {
+          "extension": "srt",
+          "sha256": "sha256:cf1acdef9a0b351adacca0d3b1e4048c8f84ad42379b4c943782eda1fedd3597",
+          "size": 69
+        },
+        "vtt": {
+          "extension": "vtt",
+          "sha256": "sha256:70d8a9907886ae4e7ce131e79f83308f010bc9eb45a13062b7b8509d79daa862",
+          "size": 77
+        }
+      },
+      "streams": {
+        "audio": {
+          "channels": 1,
+          "codec": "aac",
+          "duration_ms": 2335,
+          "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91",
+          "profile": "LC",
+          "sample_rate": 44100
+        },
+        "caption_end_ms": 2180,
+        "container_duration_ms": 2520,
+        "video": {
+          "codec": "h264",
+          "duration_ms": 2520,
+          "fps": 25,
+          "frame_count": 63,
+          "height": 1080,
+          "pixel_format": "yuv420p",
+          "width": 1920
+        }
+      },
+      "publishing_allowed": false
+    },
+    {
+      "fixture": "comparison",
+      "outputs": {
+        "mp4": {
+          "extension": "mp4",
+          "sha256": "sha256:1ac57bb7e89cbcc03c2d18f7cc8a60bbb96a341434bd200f75595f8c76bc4e37",
+          "size": 44426
+        },
+        "srt": {
+          "extension": "srt",
+          "sha256": "sha256:cf1acdef9a0b351adacca0d3b1e4048c8f84ad42379b4c943782eda1fedd3597",
+          "size": 69
+        },
+        "vtt": {
+          "extension": "vtt",
+          "sha256": "sha256:70d8a9907886ae4e7ce131e79f83308f010bc9eb45a13062b7b8509d79daa862",
+          "size": 77
+        }
+      },
+      "streams": {
+        "audio": {
+          "channels": 1,
+          "codec": "aac",
+          "duration_ms": 2335,
+          "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91",
+          "profile": "LC",
+          "sample_rate": 44100
+        },
+        "caption_end_ms": 2180,
+        "container_duration_ms": 2520,
+        "video": {
+          "codec": "h264",
+          "duration_ms": 2520,
+          "fps": 25,
+          "frame_count": 63,
+          "height": 1080,
+          "pixel_format": "yuv420p",
+          "width": 1920
+        }
+      },
+      "publishing_allowed": false
+    },
+    {
+      "fixture": "flowchart",
+      "outputs": {
+        "mp4": {
+          "extension": "mp4",
+          "sha256": "sha256:7466607e19c383137d3f0d8c06fd351936d1423edd50accfe9239c69b0512061",
+          "size": 39943
+        },
+        "srt": {
+          "extension": "srt",
+          "sha256": "sha256:cf1acdef9a0b351adacca0d3b1e4048c8f84ad42379b4c943782eda1fedd3597",
+          "size": 69
+        },
+        "vtt": {
+          "extension": "vtt",
+          "sha256": "sha256:70d8a9907886ae4e7ce131e79f83308f010bc9eb45a13062b7b8509d79daa862",
+          "size": 77
+        }
+      },
+      "streams": {
+        "audio": {
+          "channels": 1,
+          "codec": "aac",
+          "duration_ms": 2335,
+          "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91",
+          "profile": "LC",
+          "sample_rate": 44100
+        },
+        "caption_end_ms": 2180,
+        "container_duration_ms": 2520,
+        "video": {
+          "codec": "h264",
+          "duration_ms": 2520,
+          "fps": 25,
+          "frame_count": 63,
+          "height": 1080,
+          "pixel_format": "yuv420p",
+          "width": 1920
+        }
+      },
+      "publishing_allowed": false
+    },
+    {
+      "fixture": "preserve_original",
+      "outputs": {
+        "mp4": {
+          "extension": "mp4",
+          "sha256": "sha256:e0b49cd210d70f86dd4ef2497283ff2c4bc76b7d2baab7fc2d340ddc978613c5",
+          "size": 28546
+        },
+        "srt": {
+          "extension": "srt",
+          "sha256": "sha256:cf1acdef9a0b351adacca0d3b1e4048c8f84ad42379b4c943782eda1fedd3597",
+          "size": 69
+        },
+        "vtt": {
+          "extension": "vtt",
+          "sha256": "sha256:70d8a9907886ae4e7ce131e79f83308f010bc9eb45a13062b7b8509d79daa862",
+          "size": 77
+        }
+      },
+      "streams": {
+        "audio": {
+          "channels": 1,
+          "codec": "aac",
+          "duration_ms": 2335,
+          "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91",
+          "profile": "LC",
+          "sample_rate": 44100
+        },
+        "caption_end_ms": 2180,
+        "container_duration_ms": 2520,
+        "video": {
+          "codec": "h264",
+          "duration_ms": 2520,
+          "fps": 25,
+          "frame_count": 63,
+          "height": 1080,
+          "pixel_format": "yuv420p",
+          "width": 1920
+        }
+      },
+      "publishing_allowed": false
+    },
+    {
+      "fixture": "typography",
+      "outputs": {
+        "mp4": {
+          "extension": "mp4",
+          "sha256": "sha256:3368f1dbd1c58a566047950a9bbc456c99b0799a1309d0ec3908e475ba16bf5c",
+          "size": 35394
+        },
+        "srt": {
+          "extension": "srt",
+          "sha256": "sha256:cf1acdef9a0b351adacca0d3b1e4048c8f84ad42379b4c943782eda1fedd3597",
+          "size": 69
+        },
+        "vtt": {
+          "extension": "vtt",
+          "sha256": "sha256:70d8a9907886ae4e7ce131e79f83308f010bc9eb45a13062b7b8509d79daa862",
+          "size": 77
+        }
+      },
+      "streams": {
+        "audio": {
+          "channels": 1,
+          "codec": "aac",
+          "duration_ms": 2335,
+          "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91",
+          "profile": "LC",
+          "sample_rate": 44100
+        },
+        "caption_end_ms": 2180,
+        "container_duration_ms": 2520,
+        "video": {
+          "codec": "h264",
+          "duration_ms": 2520,
+          "fps": 25,
+          "frame_count": 63,
+          "height": 1080,
+          "pixel_format": "yuv420p",
+          "width": 1920
+        }
+      },
+      "publishing_allowed": false
+    }
+  ]
+}

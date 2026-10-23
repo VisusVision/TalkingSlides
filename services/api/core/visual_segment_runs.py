@@ -1,4 +1,4 @@
-"""Private segment control plane. No task dispatch, output acceptance or rendering.
+"""Private segment control plane. No task dispatch or rendering. Verified private output acceptance is fenced.
 
 Producer dependencies are deliberately unconfigured in production. Tests replace
 private dependency functions with independently anchored engineering attestations;
@@ -24,10 +24,10 @@ from rest_framework.exceptions import APIException
 from core.models import (Project, TranscriptPage, VoiceProfile, UserProfile, Job,
     VisualDraftSelection, VisualDesignSuggestion, VisualEvidenceProposal, VisualEvidenceReview,
     VisualEvidenceRevocation, VisualRenderSnapshot, VisualSegmentRun,
-    PRIVATE_SEGMENT_JOB, _SEGMENT_CONTROL_WRITE)
+    PRIVATE_SEGMENT_JOB, _SEGMENT_CONTROL_WRITE, _SEGMENT_MEDIA_WRITE)
 from core.visual_design.schemas import DesignError, require, content_hash, canonical_json, digest
 from core.visual_design.render_snapshot import FrozenRenderSnapshot
-from core.visual_design.segment_contracts import (SegmentAudioProof, SegmentRequest, REQUEST_VERSION,
+from core.visual_design.segment_contracts import (SegmentAudioProof, SegmentRequest, SegmentReceipt, REQUEST_VERSION,
     RECIPE_OPTIONS, LIMITS, CUES_VERSION, describe_scene, snapshot_page, page_identity, _uuid, _string, _integer)
 from core.visual_design.segment_dependencies import dependencies_from_verified_audio, MEDIA_VALIDATOR_VERSION
 from core.visual_render_snapshots import read_render_snapshot, _capture
@@ -326,6 +326,13 @@ def _stored_identity(run, job):
             and job.pk == run.job_id and job.project_id == run.project_id and job.job_type == PRIVATE_SEGMENT_JOB
             and not job.result_url and not job.srt_url and not job.celery_task_id,
             "run_integrity", "Private Run/snapshot/Job binding changed")
+    require((run.completed_receipt is None and not run.completed_receipt_hash and run.completed_claim_token is None and job.status != "done")
+            or (run.completed_receipt is not None and run.completed_claim_token is not None and job.status == "done"
+                and content_hash("visual-segment-receipt.v1", run.completed_receipt) == run.completed_receipt_hash
+                and run.completed_receipt.get("execution_hash") == run.execution_hash
+                and run.completed_receipt.get("snapshot") == expected and run.completed_receipt.get("page") == value["page"]
+                and run.completed_receipt.get("publishing_allowed") is False),
+            "run_integrity", "Private receipt and Job completion are inconsistent")
     design = value["scene"]["design"]
     require((str(run.candidate_id) if run.candidate_id else None) == (design["candidate_id"] if design else None)
             and (str(run.proposal_id) if run.proposal_id else None) == (design["proposal_id"] if design else None),
@@ -344,7 +351,7 @@ def _terminal(run, job):
     if run.terminal_failure_reason or job.status == "failed":
         return "terminal_failure"
     if job.status == "done" or run.completed_receipt is not None:
-        return "unsupported_completion"
+        return "completed_private"
     return None
 
 
@@ -411,7 +418,7 @@ def reserve_visual_segment(project_id, owner, *, snapshot_id, expected_snapshot_
                 require(canonical_json(existing.request_payload) == request.to_json() and existing.input_pins == pins,
                         "run_integrity", "Existing execution identity has conflicting content")
                 terminal = _terminal(existing, job)
-                require(terminal is None, terminal or "terminal_failure", "Historical terminal Run cannot be resurrected")
+                require(terminal in (None, "completed_private"), terminal or "terminal_failure", "Historical terminal Run cannot be resurrected")
                 return existing, True
             active = VisualSegmentRun.objects.filter(job__status__in=["pending", "running"])
             require(active.filter(project=locked).count() < MAX_PENDING_PROJECT and active.filter(owner=owner).count() < MAX_PENDING_OWNER,
@@ -481,12 +488,13 @@ def claim_attempt(project_id, owner, run_id, *, execution_hash, expected_generat
     with _executable_run(project_id, owner, run_id) as (run, job):
         require(run.execution_hash == execution_hash and run.attempt_generation == expected_generation,
                 "stale_attempt", "Execution or generation differs from persisted Run")
+        require(run.attempt_count < 3, "attempt_limit", "Private execution is limited to three claimed attempts")
         now = _now()
         require(run.lease_expires_at is None or run.lease_expires_at <= now, "claim_busy", "Another claim has a live lease")
         active = VisualSegmentRun.objects.filter(owner=owner, lease_expires_at__gt=now, job__status="running").exclude(pk=run.pk)
         require(not active.exists(), "concurrency_limit", "Only one active private segment claim per owner")
         token = uuid.uuid4(); expiry = now + timedelta(seconds=lease_seconds)
-        _write_run(run, attempt_generation=run.attempt_generation + 1, claim_token=token,
+        _write_run(run, attempt_generation=run.attempt_generation + 1, attempt_count=run.attempt_count + 1, claim_token=token,
             lease_owner=lease_owner, lease_expires_at=expiry, pending_dispatch=False)
         _write_job(job, "running")
         return AttemptClaim(run.pk, run.execution_hash, run.attempt_generation, token, expiry)
@@ -527,12 +535,13 @@ def cancel_run(project_id, owner, run_id, *, reason):
         run, job = _locked_run(project, owner, run_id)
         if run.cancelled_at is None:
             _clear_claim(run, cancelled_at=_now(), cancellation_reason=reason, pending_dispatch=False)
-            _write_job(job, "failed", "private_segment_cancelled")
+            if run.completed_receipt is None:
+                _write_job(job, "failed", "private_segment_cancelled")
         return run
 
 
 def record_terminal_failure(project_id, owner, run_id, *, execution_hash, generation, claim_token, reason_code):
-    require(reason_code in {"invalid_input", "invalid_or_corrupt_artifact", "unsupported_media", "validation_failed", "runtime_unavailable"},
+    require(reason_code in {"invalid_input", "invalid_or_corrupt_artifact", "unsupported_media", "validation_failed", "runtime_unavailable", "retry_exhausted"},
             "failure_reason", "Classified terminal validation reason required")
     with _locked_project(project_id, owner) as project:
         run, job = _locked_run(project, owner, run_id)
@@ -563,16 +572,16 @@ def revoke_confirmation(project_id, owner, review_id, *, expected_confirmation_h
             job = jobs[run.job_id]; _stored_identity(run, job)
             if run.cancelled_at is None:
                 _clear_claim(run, cancelled_at=_now(), cancellation_reason="evidence_revoked", pending_dispatch=False)
-                _write_job(job, "failed", "private_segment_evidence_revoked")
+                if run.completed_receipt is None:
+                    _write_job(job, "failed", "private_segment_evidence_revoked")
         return revocation, False
 
 
 def prepare_receipt_acceptance(project_id, owner, run_id, *, execution_hash, generation, claim_token):
-    """Validate control preconditions only; NEVER persist success/receipt.
+    """Legacy control-only preflight, never evidence of successful media.
 
-    3B-4 must supply independent output probing and verified output pins before
-    adding receipt persistence. No witness/receipt supplied by a caller can turn
-    this gate into successful segment completion in 3B-3.
+    This closed gate accepts no receipt. The separate accept_verified_segment
+    boundary requires a sealed witness minted by actual native output validation.
     """
     with _executable_run(project_id, owner, run_id) as (run, job):
         _claim_matches(run, execution_hash, generation, claim_token)
@@ -580,13 +589,83 @@ def prepare_receipt_acceptance(project_id, owner, run_id, *, execution_hash, gen
         return ControlDecision(False, "media_validation_unavailable")
 
 
+def accept_verified_segment(project_id, owner, run_id, *, witness):
+    """Only a sealed native-validation witness, never a caller JSON receipt.
+
+    Hashing/probing happens outside row locks. The short transaction rechecks
+    current controls, saved revision, pins/stat identities and attempt fencing.
+    Identical callbacks converge; a different generation or receipt cannot win.
+    """
+    from core.visual_segment_validation import require_media_witness
+    witness = require_media_witness(witness)
+    prepared, frozen, dependencies, proof, association, request = _prepare_run(project_id, owner, run_id)
+    pins, frame = json.loads(witness.pins_json), json.loads(witness.frame_json)
+    receipt = SegmentReceipt(json.loads(witness.receipt_json), request=request,
+        expected_frame_asset=frame, expected_attempt_generation=witness.generation)
+    store = PrivateSegmentMedia(owner.pk, project_id)
+    require(pins == {role: store.reference(asset, "segment" if role == "mp4" else role)
+                    for role, asset in receipt.to_dict()["outputs"].items()}, "run_integrity", "Receipt output pins differ")
+    all_pins = {"media": {**prepared.input_pins["media"], **pins}, "visual": [*prepared.input_pins["visual"], frame]}
+    project = get_object_or_404(Project, pk=project_id, user=owner)
+    with _InputGuard(owner.pk, project_id, all_pins) as guard, _source_files(frozen) as source_check:
+        stamp = _current_preflight(project, owner, frozen)
+        with _locked_project(project_id, owner) as locked:
+            run, job = _locked_run(locked, owner, run_id)
+            require(run.execution_hash == request.execution_hash and run.input_pins == prepared.input_pins
+                    and stamp == _database_stamp(project_id, owner.pk), "revision_conflict", "Saved revision changed during completion")
+            _approval(locked, owner, request)
+            _producer_current(dependencies, proof, association)
+            guard.check(); source_check()
+            reason = _terminal(run, job)
+            if reason == "completed_private":
+                require(job.status == "done" and run.completed_receipt_hash == receipt.content_hash
+                        and canonical_json(run.completed_receipt) == receipt.to_json()
+                        and run.completed_claim_token == uuid.UUID(witness.claim_token)
+                        and run.attempt_generation == witness.generation,
+                        "receipt_conflict", "A different private result was already accepted")
+                return run, True
+            require(reason is None, reason or "terminal_failure", "Run cannot accept a result")
+            _claim_matches(run, request.execution_hash, witness.generation, witness.claim_token)
+            require(job.status == "running", "run_integrity", "Claimed private Job required")
+            VisualSegmentRun.objects.filter(pk=run.pk)._accept_media(_SEGMENT_MEDIA_WRITE,
+                receipt=receipt.to_dict(), receipt_hash=receipt.content_hash,
+                claim_token=uuid.UUID(witness.claim_token), updated_at=_now())
+            Job.objects.filter(pk=job.pk)._complete_media(_SEGMENT_MEDIA_WRITE, updated_at=_now())
+            guard.check(); source_check()
+            run.refresh_from_db()
+            return run, False
+
+
 def private_result_access_policy(project_id, owner, run_id):
+    # This is an internal authorization primitive, NOT an HTTP delivery route.
+    # Current source changes make historical results unavailable conservatively.
     with _locked_project(project_id, owner) as project:
-        run, job = _locked_run(project, owner, run_id)
-        terminal = _terminal(run, job)
-        if terminal:
-            return ControlDecision(False, terminal)
-        return ControlDecision(False, "completed_media_unavailable")
+        initial, job = _locked_run(project, owner, run_id)
+        reason = _terminal(initial, job)
+        if reason and reason != "completed_private": return ControlDecision(False, reason)
+    prepared, frozen, dependencies, proof, association, request = _prepare_run(project_id, owner, run_id)
+    if prepared.completed_receipt is None:
+        with _locked_project(project_id, owner) as project:
+            run, job = _locked_run(project, owner, run_id)
+            return ControlDecision(False, _terminal(run, job) or "completed_media_unavailable")
+    value = prepared.completed_receipt
+    receipt = SegmentReceipt(value, request=request, expected_frame_asset=value["inputs"]["frame_asset"],
+                             expected_attempt_generation=value["attempt_generation"])
+    require(receipt.content_hash == prepared.completed_receipt_hash, "run_integrity", "Accepted receipt changed")
+    store = PrivateSegmentMedia(owner.pk, project_id)
+    pins = {"media": {**prepared.input_pins["media"], **{k:store.reference(v, "segment" if k=="mp4" else k) for k,v in value["outputs"].items()}},
+            "visual":[*prepared.input_pins["visual"], value["inputs"]["frame_asset"]]}
+    project = get_object_or_404(Project, pk=project_id, user=owner)
+    with _InputGuard(owner.pk, project_id, pins) as guard:
+        stamp = _current_preflight(project, owner, frozen)
+        with _locked_project(project_id, owner) as locked:
+            run, job = _locked_run(locked, owner, run_id)
+            reason = _terminal(run, job)
+            if reason != "completed_private": return ControlDecision(False, reason or "completed_media_unavailable")
+            require(stamp == _database_stamp(project_id, owner.pk) and job.status == "done"
+                    and run.completed_receipt_hash == receipt.content_hash, "revision_conflict", "Result revision changed")
+            _approval(locked, owner, request); _producer_current(dependencies, proof, association); guard.check()
+            return ControlDecision(True, "accepted_private")
 
 
 def read_private_run(project_id, owner, run_id):

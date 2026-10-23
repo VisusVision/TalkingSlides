@@ -138,7 +138,9 @@ jobs:
 
       - name: npm audit (high+critical)
         working-directory: services/frontend
-        run: npm audit --audit-level=high
+        run: |
+          npm audit --audit-level=high
+          npm audit --omit=dev --audit-level=moderate
 
   docker-smoke:
     runs-on: ubuntu-latest
@@ -223,4 +225,4 @@ jobs:
         env:
           VISUAL_MEDIA_REQUIRE: '1'
           INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED: 'false'
-        run: pytest -q tests/integration/test_visual_drafts.py tests/integration/test_visual_evidence.py tests/integration/test_visual_render_snapshots.py tests/integration/test_visual_segment_runs.py --ds=config.settings_test_postgres
+        run: pytest -q tests/integration/test_visual_drafts.py tests/integration/test_visual_evidence.py tests/integration/test_visual_render_snapshots.py tests/integration/test_visual_segment_runs.py tests/integration/test_visual_segment_media.py --ds=config.settings_test_postgres

@@ -462,6 +462,7 @@ class Slide(models.Model):
 
 PRIVATE_SEGMENT_JOB = "visual_segment_preview"
 _SEGMENT_CONTROL_WRITE = object()
+_SEGMENT_MEDIA_WRITE = object()
 
 
 class SegmentJobQuerySet(models.QuerySet):
@@ -485,8 +486,13 @@ class SegmentJobQuerySet(models.QuerySet):
         if token is not _SEGMENT_CONTROL_WRITE or not set(kwargs) <= {"status", "progress", "error_message", "updated_at"}:
             raise ValidationError("Invalid private Job control write.")
         if kwargs.get("status") == "done":
-            raise ValidationError("Segment media acceptance is not implemented.")
+            raise ValidationError("Private success requires verified media acceptance.")
         return super().update(**kwargs)
+
+    def _complete_media(self, token, *, updated_at):
+        if token is not _SEGMENT_MEDIA_WRITE or self.exclude(job_type=PRIVATE_SEGMENT_JOB, status="running", result_url="", srt_url="").exists():
+            raise ValidationError("Verified private media acceptance required.")
+        return super().update(status="done", progress=100, error_message="", updated_at=updated_at)
 
 
 class Job(models.Model):
@@ -526,7 +532,7 @@ class Job(models.Model):
     class Meta:
         ordering = ["-created_at"]
         constraints = [models.CheckConstraint(
-            condition=(~Q(job_type=PRIVATE_SEGMENT_JOB) | (Q(result_url="", srt_url="") & ~Q(status="done"))),
+            condition=(~Q(job_type=PRIVATE_SEGMENT_JOB) | Q(result_url="", srt_url="")),
             name="private_segment_job_no_public_result")]
         indexes = [
             models.Index(
@@ -1420,14 +1426,21 @@ class SegmentControlQuerySet(models.QuerySet):
 
     def _control_update(self, token, **kwargs):
         allowed = {"pending_dispatch", "attempt_generation", "claim_token", "lease_owner", "lease_expires_at",
-                   "cancelled_at", "cancellation_reason", "terminal_failure_reason", "updated_at"}
+                   "cancelled_at", "cancellation_reason", "terminal_failure_reason", "attempt_count", "updated_at"}
         if token is not _SEGMENT_CONTROL_WRITE or self.model.__name__ != "VisualSegmentRun" or not set(kwargs) <= allowed:
             raise ValidationError("Invalid private Run control write.")
         return super().update(**kwargs)
 
+    def _accept_media(self, token, *, receipt, receipt_hash, claim_token, updated_at):
+        if token is not _SEGMENT_MEDIA_WRITE or self.model.__name__ != "VisualSegmentRun" or self.exclude(completed_receipt__isnull=True).exists():
+            raise ValidationError("Verified private media acceptance required.")
+        return super().update(completed_receipt=receipt, completed_receipt_hash=receipt_hash,
+            completed_claim_token=claim_token, pending_dispatch=False, claim_token=None,
+            lease_owner="", lease_expires_at=None, updated_at=updated_at)
+
 
 class VisualSegmentRun(models.Model):
-    """One immutable request and one private-purpose Job; no media execution."""
+    """One immutable private request and at most one verified private result."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name="visual_segment_runs")
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="visual_segment_runs")
@@ -1446,6 +1459,7 @@ class VisualSegmentRun(models.Model):
     pending_dispatch = models.BooleanField(default=True)
     dispatch_task_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
     attempt_generation = models.PositiveBigIntegerField(default=0)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
     claim_token = models.UUIDField(null=True, blank=True)
     lease_owner = models.CharField(max_length=128, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
@@ -1454,6 +1468,7 @@ class VisualSegmentRun(models.Model):
     terminal_failure_reason = models.CharField(max_length=80, blank=True)
     completed_receipt = models.JSONField(null=True, blank=True)
     completed_receipt_hash = models.CharField(max_length=71, blank=True)
+    completed_claim_token = models.UUIDField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     objects = SegmentControlQuerySet.as_manager()
@@ -1466,8 +1481,9 @@ class VisualSegmentRun(models.Model):
                 (Q(claim_token__isnull=False, lease_expires_at__isnull=False) & ~Q(lease_owner=""))), name="segment_claim_lease_consistent"),
             models.CheckConstraint(condition=(Q(cancelled_at__isnull=True, cancellation_reason="") |
                 (Q(cancelled_at__isnull=False) & ~Q(cancellation_reason=""))), name="segment_cancel_reason_consistent"),
-            # This stage deliberately has NO route to successful media acceptance.
-            models.CheckConstraint(condition=Q(completed_receipt__isnull=True, completed_receipt_hash=""), name="segment_receipt_acceptance_disabled"),
+            models.CheckConstraint(condition=(Q(completed_receipt__isnull=True, completed_receipt_hash="", completed_claim_token__isnull=True) |
+                (Q(completed_receipt__isnull=False, completed_claim_token__isnull=False) & ~Q(completed_receipt_hash=""))), name="segment_receipt_identity_consistent"),
+            models.CheckConstraint(condition=Q(attempt_count__lte=3), name="segment_attempt_count_bounded"),
         ]
         indexes = [models.Index(fields=["project", "owner", "created_at"], name="private_segment_owner_idx")]
 
@@ -1497,6 +1513,8 @@ class VisualSegmentRun(models.Model):
     def save(self, *args, **kwargs):
         if kwargs.pop("_control_token", None) is not _SEGMENT_CONTROL_WRITE or not self._state.adding:
             raise ValidationError("Private Run identity is immutable; use the control service.")
+        if self.completed_receipt is not None or self.completed_receipt_hash or self.completed_claim_token or self.attempt_count:
+            raise ValidationError("New Runs cannot contain successful media or attempts.")
         self.full_clean()
         return super().save(*args, **kwargs)
 

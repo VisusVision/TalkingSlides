@@ -15,7 +15,7 @@ from core.visual_design.render_snapshot import (FrozenRenderSnapshot, validate_f
 from scripts.ffmpeg_helpers import _run
 
 
-def compose_frozen_frame(snapshot, page_key, assets):
+def compose_frozen_frame(snapshot, page_key, assets, *, ffmpeg_path="ffmpeg", timeout_seconds=20):
     require(isinstance(snapshot, FrozenRenderSnapshot), "snapshot", "Validated frozen contract required")
     data = snapshot.to_dict()
     require(str(assets.project_root.name) == data["project_id"], "asset_scope", "Wrong private project storage")
@@ -48,10 +48,11 @@ def compose_frozen_frame(snapshot, page_key, assets):
             with Image.open(source) as original:
                 require(original.width * original.height <= 16_000_000, "raster_limit", "Original pixel count exceeds prototype limit")
         frame = temp / "frame.png"
-        _run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-protocol_whitelist", "file,pipe",
+        require(type(timeout_seconds) in (int, float) and 0 < timeout_seconds <= 20, "runtime", "Bounded frame deadline required")
+        _run([ffmpeg_path, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-protocol_whitelist", "file,pipe",
               *decoder, "-i", str(source), "-frames:v", "1", "-vf",
               "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=white",
-              "-threads", "1", str(frame)], timeout_seconds=20, env=env)
+              "-threads", "1", str(frame)], timeout_seconds=timeout_seconds, env=env)
         with Image.open(frame) as image:
             require(image.format == "PNG" and image.size == (1920, 1080), "frame", "Invalid frame dimensions/type")
             require(max(ImageStat.Stat(image.convert("RGB")).stddev) > 1, "blank_frame", "Blank output frame")
