@@ -147,6 +147,10 @@ An earlier run passed 30/32 cases but captured Studio's baseline one pixel
 scrolled; this changes document coordinates without changing layout. The
 stabilization preserves the comparison thresholds and records scroll evidence.
 The Visuals case also scrolls its nested inspector to show the decoded preview.
+Playback capture waits for paused, non-seeking media with future frame data,
+records that state, and avoids a redundant seek to zero that can show a native
+loading spinner in the later-captured build. This is test-state stabilization;
+no player, media, or renderer implementation changes are made.
 
 The production Google Fonts URLs are unchanged. The final harness downloads
 each requested CSS/font resource once, serves identical bytes to both builds,

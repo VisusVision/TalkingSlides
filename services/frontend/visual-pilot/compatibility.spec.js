@@ -130,8 +130,11 @@ async function open(state, scenario) {
   else if (scenario === 'notifications') await expect(page.getByRole('heading', { name: 'Render complete' })).toBeVisible();
   else if (scenario === 'watch') {
     await expect(page.getByRole('heading', { name: PROJECT.title }).first()).toBeVisible();
-    await expect.poll(() => page.locator('video').evaluate((video) => video.readyState)).toBeGreaterThanOrEqual(2);
-    await page.locator('video').evaluate((video) => { video.pause(); video.currentTime = 0; });
+    await expect.poll(() => page.locator('video').evaluate((video) => video.readyState)).toBeGreaterThanOrEqual(3);
+    await page.locator('video').evaluate((video) => video.pause());
+    // Reassigning currentTime=0 starts an asynchronous seek even at time zero,
+    // creating a native loading spinner in only the later-captured build.
+    await expect.poll(() => page.locator('video').evaluate((video) => video.paused && !video.seeking && video.currentTime === 0 && video.readyState >= 3)).toBe(true);
   } else {
     await expect(page.getByRole('main')).toBeVisible();
     const expand = page.getByRole('button', { name: 'Expand sidebar', exact: true });
@@ -184,6 +187,11 @@ for (const theme of ['light', 'dark']) for (const [device, viewport] of Object.e
       baseline.theme = theme; candidate.theme = theme;
       try {
         await open(baseline, scenario); await open(candidate, scenario);
+        if (scenario === 'watch') {
+          const media = await Promise.all([baseline.page, candidate.page].map((page) => page.locator('video').evaluate((video) => ({ paused: video.paused, seeking: video.seeking, time: video.currentTime, readyState: video.readyState }))));
+          await info.attach('capture-media', { body: JSON.stringify(media), contentType: 'application/json' });
+          expect(media.every((video) => video.paused && !video.seeking && video.time === 0 && video.readyState >= 3)).toBe(true);
+        }
         const baselineImage = await baseline.page.screenshot({ fullPage: true, animations: 'disabled' });
         const candidateImage = await candidate.page.screenshot({ fullPage: true, animations: 'disabled' });
         const scroll = await Promise.all([baseline.page, candidate.page].map((page) => page.evaluate(() => ({ x: scrollX, y: scrollY }))));
