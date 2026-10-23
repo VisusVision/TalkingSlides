@@ -112,6 +112,11 @@ The receipt and private Job success commit in the same transaction. Generic Job
 updates still cannot set private success. Receipt fields cannot be written through
 normal save/update/bulk paths. Public `result_url`/`srt_url` remain blank.
 
+Preflight reads Run, Job, snapshot and confirmation in one database query so a
+concurrent completion cannot produce a mixed old/new Run/Job view. A delivery
+whose initial read straddles completion re-enters only the authorized immutable
+result path, without another encode.
+
 Identical callbacks/deliveries return the same accepted result; different/stale
 attempts cannot overwrite it. Cancellation/revocation before acceptance wins the
 fence. Later cancellation/revocation denies access while retaining the historical
@@ -164,6 +169,7 @@ Executed local verification:
 |---|---|
 | Final media + Run suite | 92 passed, 12 PostgreSQL-only skips (161.04 s) |
 | Final error/Unicode checks after last error-classification refinement | 4 passed (8.12 s) |
+| Consistent preflight read and delivery-straddling-completion regression | 2 passed (11.31 s) |
 | Final five-scene regeneration with actual encoder-parameter validation | 5 passed (26.36 s) |
 | Phase 3A/3B-1/3B-2, planners, partial/draft/scoped render and legacy media regression | 571 passed, 2 PostgreSQL-only skips (26.03 s) |
 | Standalone pure Phase 3B-1, no Django/native runtime | 216 passed (0.96 s) |

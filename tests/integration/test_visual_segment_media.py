@@ -107,10 +107,20 @@ def test_five_real_private_segments_exact_aac_and_cues(lesson,kind):
 
 
 def test_duplicate_delivery_and_callback_are_idempotent_without_composition(lesson,monkeypatch):
-    run,attempt=prepare(lesson); first=execute(run,attempt)
+    run,attempt=prepare(lesson); before_completion=deepcopy(run); first=execute(run,attempt)
     witness=witness_for(lesson,run)
     monkeypatch.setattr(media,"create_slide_video",lambda *a,**kw:pytest.fail("duplicate render"))
     assert execute(run,attempt)==first
+    # Simulate a delivery's initial Run read straddling atomic completion. Its
+    # preflight must return the accepted result, without starting another encode.
+    lookup=media.get_object_or_404; calls=[]
+    def straddled(*args,**kwargs):
+        calls.append(True)
+        return before_completion if len(calls)==1 else lookup(*args,**kwargs)
+    monkeypatch.setattr(media,"get_object_or_404",straddled)
+    assert execute(run,attempt)==first
+    prepared=runs._prepare_run(lesson.project.pk,lesson.owner,run.pk)[0]
+    assert all(name in prepared._state.fields_cache for name in ("job","snapshot","confirmation"))
     result,reused=runs.accept_verified_segment(lesson.project.pk,lesson.owner,run.pk,witness=witness)
     assert reused and result.completed_receipt==first
     assert VisualSegmentRun.objects.count()==1 and Job.objects.filter(job_type=PRIVATE_SEGMENT_JOB).count()==1

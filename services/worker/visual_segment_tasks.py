@@ -171,6 +171,12 @@ def execute_private_segment(run_id, execution_hash, attempt_generation, *, claim
             raise DesignError("retry_exhausted", "Private media attempt limit exhausted") from exc
         raise DesignError("transient_media_failure", "Private media attempt failed; explicit bounded retry required") from exc
     except (DesignError, RuntimeError, ValueError, KeyError) as exc:
+        if isinstance(exc, DesignError) and exc.code == "completed_private":
+            # Another delivery completed after our initial read. Re-enter only
+            # the immutable-result/access path; never restart media execution.
+            current = VisualSegmentRun.objects.get(pk=run_id)
+            require(current.completed_receipt is not None, "run_integrity", "Missing accepted private result")
+            return execute_private_segment(run_id, execution_hash, attempt_generation, claim_token=claim_token)
         # No failure may turn into synthesis, original fallback or publication.
         try:
             controls.record_terminal_failure(project_id,owner,run_id,execution_hash=execution_hash,

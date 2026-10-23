@@ -436,7 +436,10 @@ def reserve_visual_segment(project_id, owner, *, snapshot_id, expected_snapshot_
 
 
 def _prepare_run(project_id, owner, run_id):
-    run = get_object_or_404(VisualSegmentRun, pk=run_id, project_id=project_id, owner=owner, project__user=owner)
+    # A single MVCC read must observe Run/Job/receipt together. Separate lazy
+    # relation reads could straddle another callback's atomic completion.
+    run = get_object_or_404(VisualSegmentRun.objects.select_related("job", "snapshot", "confirmation"),
+        pk=run_id, project_id=project_id, owner=owner, project__user=owner)
     _stored_identity(run, run.job)
     dependencies = _dependencies()
     row, frozen = read_render_snapshot(project_id, owner, run.snapshot_id)
