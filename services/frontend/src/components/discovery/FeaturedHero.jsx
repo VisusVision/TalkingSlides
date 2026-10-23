@@ -97,7 +97,7 @@ export default function FeaturedHero({ lesson, onStartLesson, onBrowse }) {
           <div className="max-w-3xl space-y-4">
             <p className="label-sm text-[color:var(--media-text-on-image)] opacity-80">Featured Lecture</p>
             <h1 className="display-lg text-[color:var(--media-text-on-image)]">{lesson.title}</h1>
-            <p className="max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base">
+            <p className="max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base sm:leading-6">
               {lesson.description ||
                 'Explore a cinematic lesson experience built for clarity: chapter-led learning, transcript context, and quick notes in one focused workspace.'}
             </p>

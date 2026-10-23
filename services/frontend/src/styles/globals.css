@@ -1,9 +1,14 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap');
+@layer theme, base, components, utilities;
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap') layer(base);
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap') layer(base);
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss' source(none);
+@import './tailwind-compat.css';
+@config '../../tailwind.config.js';
+@source '../../index.html';
+@source '../';
+
+@custom-variant dark (&:where(.dark, .dark *));
 
 :root {
   color-scheme: light;
@@ -220,6 +225,24 @@
   * {
     box-sizing: border-box;
   }
+
+  /* Preserve the established v3 reset instead of changing controls visually. */
+  *, ::before, ::after, ::backdrop, ::file-selector-button {
+    border-color: #e5e7eb;
+  }
+  input::placeholder, textarea::placeholder {
+    color: #9ca3af;
+    opacity: 1;
+  }
+  button, [role='button'] {
+    cursor: pointer;
+  }
+  :disabled {
+    cursor: default;
+  }
+  dialog {
+    margin: auto;
+  }
 }
 
 @layer components {
@@ -321,13 +344,18 @@
   }
 
   .focus-ring {
-    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2;
+    @apply focus-visible:ring-2 focus-visible:ring-offset-2;
     --tw-ring-color: var(--accent-primary);
     --tw-ring-offset-color: var(--bg);
   }
 
+  .focus-ring:focus-visible {
+    outline: 2px solid transparent;
+    outline-offset: 2px;
+  }
+
   .motion-interactive {
-    transition-property: background-color, border-color, color, box-shadow, filter, opacity, transform;
+    transition-property: background-color, border-color, color, box-shadow, filter, opacity, transform, scale, translate, rotate;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
@@ -355,13 +383,13 @@
   }
 
   .motion-nav-indicator {
-    transition-property: background-color, opacity, transform;
+    transition-property: background-color, opacity, transform, scale, translate, rotate;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
 
   .motion-disclosure {
-    transition-property: background-color, color, opacity, transform;
+    transition-property: background-color, color, opacity, transform, scale, translate, rotate;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
@@ -372,7 +400,7 @@
   }
 
   .motion-studio-selection {
-    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-property: background-color, border-color, box-shadow, color, opacity, transform, scale, translate, rotate;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
@@ -390,13 +418,13 @@
   }
 
   .motion-studio-status {
-    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-property: background-color, border-color, box-shadow, color, opacity, transform, scale, translate, rotate;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
 
   .motion-task-active {
-    transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+    transition-property: background-color, border-color, box-shadow, color, opacity, transform, scale, translate, rotate;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
@@ -440,7 +468,7 @@
   }
 
   .motion-watch-control {
-    transition-property: background-color, border-color, color, opacity, transform, box-shadow;
+    transition-property: background-color, border-color, color, opacity, transform, scale, translate, rotate, box-shadow;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
@@ -451,7 +479,7 @@
 
   .motion-watch-status {
     animation: motion-fade var(--duration-fast) var(--ease-out) both;
-    transition-property: background-color, border-color, color, opacity, transform;
+    transition-property: background-color, border-color, color, opacity, transform, scale, translate, rotate;
     transition-duration: var(--duration-fast);
     transition-timing-function: var(--ease-standard);
   }
@@ -729,6 +757,9 @@
   .motion-watch-buffering-dot {
     animation: none !important;
     transform: none !important;
+    scale: none !important;
+    translate: none !important;
+    rotate: none !important;
   }
 
   .motion-task-progress::after {
@@ -790,6 +821,9 @@
 .reduced-motion .motion-watch-complete,
 .reduced-motion .motion-watch-buffering-dot {
   transform: none !important;
+  scale: none !important;
+  translate: none !important;
+  rotate: none !important;
 }
 
 .reduced-motion .motion-task-progress::after {

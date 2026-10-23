@@ -1,0 +1,57 @@
+name: Tailwind 4 visual migration pilot
+
+on:
+  push:
+    branches: [chore/tailwind4-security-pilot]
+  workflow_dispatch:
+
+concurrency:
+  group: tailwind4-pilot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          ref: b259020dbaadf8b2a332e6cb720a0e338c6ff642
+          path: tailwind3-baseline
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+      - name: Build and test immutable Tailwind 3 baseline
+        working-directory: tailwind3-baseline/services/frontend
+        run: |
+          npm ci
+          npm run test:ci
+          npm run build
+      - name: Install candidate and Chromium
+        working-directory: services/frontend
+        run: |
+          npm ci
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Fresh baseline Chromium E2E
+        working-directory: tailwind3-baseline/services/frontend
+        run: npm run e2e
+      - name: Compare freshly rendered baseline and candidate
+        working-directory: services/frontend
+        env:
+          TAILWIND_BASELINE_FRONTEND: ${{ github.workspace }}/tailwind3-baseline/services/frontend
+        run: npx playwright test --config playwright.visual-pilot.config.js
+      - name: Upload baseline and candidate visual evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tailwind4-visual-comparison
+          path: |
+            services/frontend/visual-pilot-report
+            services/frontend/visual-pilot-results
+            services/frontend/dist/assets/*.css
+            tailwind3-baseline/services/frontend/playwright-report
+            tailwind3-baseline/services/frontend/test-results
+            tailwind3-baseline/services/frontend/dist/assets/*.css
+          retention-days: 14

@@ -836,7 +836,7 @@ export function StudioCreatorHeader({
           </p>
           <h2
             id="studio-creator-header-title"
-            className="mt-2 break-words text-2xl font-bold leading-tight text-[var(--text-primary)] sm:text-3xl"
+            className="mt-2 break-words text-2xl font-bold leading-tight text-[var(--text-primary)] sm:text-3xl sm:leading-9"
           >
             {title || copy.creatorUntitledLesson}
           </h2>
@@ -1136,7 +1136,7 @@ export function StudioFirstRunOnboarding({
           </p>
           <h2
             id="studio-first-run-title"
-            className="mt-2 text-xl font-bold leading-snug text-[var(--text-primary)] sm:text-2xl"
+            className="mt-2 text-xl font-bold leading-snug text-[var(--text-primary)] sm:text-2xl sm:leading-8"
           >
             {copy.firstRunTitle}
           </h2>

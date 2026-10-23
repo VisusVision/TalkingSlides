@@ -163,7 +163,7 @@ function ToastItem({ item, onDismiss }) {
       dir="auto"
       onKeyDown={handleKeyDown}
       className={joinClasses(
-        'visus-toast motion-slide-up group relative grid grid-cols-[auto_1fr_auto] gap-3 overflow-hidden rounded-token-xl border bg-[color:var(--surface-container-lowest)] p-3 text-start text-[var(--text-primary)] shadow-token-md outline-none transition-[opacity,transform,box-shadow] duration-normal ease-standard focus-ring',
+        'visus-toast motion-slide-up group relative grid grid-cols-[auto_1fr_auto] gap-3 overflow-hidden rounded-token-xl border bg-[color:var(--surface-container-lowest)] p-3 text-start text-[var(--text-primary)] shadow-token-md outline-hidden transition-[opacity,transform,box-shadow] duration-normal ease-standard focus-ring',
         config.borderClass,
         item.dismissed && 'motion-exit',
         item.className,

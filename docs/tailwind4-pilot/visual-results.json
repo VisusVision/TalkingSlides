@@ -1,0 +1,2167 @@
+{
+  "schema_version": "tailwind-pilot-evidence.v1",
+  "baseline_commit": "b259020dbaadf8b2a332e6cb720a0e338c6ff642",
+  "candidate_commit": "b7791f34b475d4b5fddaaf462fe4ed557208ecb7",
+  "workflow_run": 39879821816,
+  "artifact_id": 12469709454,
+  "artifact_zip_sha256": "e4cb754d386e6cd29ca5b2bfa755456fba69c2df7b25f434cc375ee61d82228c",
+  "compiled_css": {
+    "baseline": [
+      {
+        "file": "index-D9rTB-uI.css",
+        "bytes": 93106,
+        "sha256": "54d247d513d8525916642b7d25bb8ae0cdfdcf7585c566673fef5d97e71dfd69"
+      }
+    ],
+    "candidate": [
+      {
+        "file": "index-DhRolIMc.css",
+        "bytes": 114951,
+        "sha256": "48fda275ceb067dcc2d96bcf6fc98ed123fe04b739c6918a158340f4a26c0a15"
+      }
+    ]
+  },
+  "comparison": {
+    "perceptual_threshold": 0.1,
+    "maximum_changed_pixel_ratio": 0.001,
+    "semantic_geometry_rounding_px": 0.1
+  },
+  "cases": [
+    {
+      "case": "dashboard light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1941
+        ],
+        [
+          1600,
+          1941
+        ]
+      ],
+      "png_sha256": [
+        "ff589136be8d65f83f528e93f9dc2b3b17ae9c956b8b91b8f4414810aec2b904",
+        "111938d667ac328d43923b18fc7fc2ef04d1f0a89d2b1914d737b04b505fcde7"
+      ],
+      "raw_changed_pixels": 449,
+      "pixels_over_16_channel_levels": 108,
+      "mean_absolute_channel_difference": 0.003411,
+      "maximum_channel_difference": 193,
+      "semantic_element_count": 48,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "studio light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "37a88d48e594d059175719ad49707bb93211062779e3b3e96b9aa1ff5460b196",
+        "9325f699e716d0d50e3ecbdff564f67e448b9cb7e330df87e4f8bf1286386621"
+      ],
+      "raw_changed_pixels": 234845,
+      "pixels_over_16_channel_levels": 2025,
+      "mean_absolute_channel_difference": 0.226156,
+      "maximum_channel_difference": 193,
+      "semantic_element_count": 57,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "analysis light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "a4048dd2c64ef251de610660ad12723650ef9b3e3048ce29f8237f7646a3e643",
+        "e21e83d649d1dc403c81b62fe79122e887f562fa00b38f8b63c868b1235b54b8"
+      ],
+      "raw_changed_pixels": 288875,
+      "pixels_over_16_channel_levels": 2025,
+      "mean_absolute_channel_difference": 0.287966,
+      "maximum_channel_difference": 193,
+      "semantic_element_count": 58,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "visuals light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "dc27eb122d15e55fdf399e3a61254baf287cb37d46e228cc81de8662673b8b50",
+        "051a0e181bf9b4a159ebff1f58a0ae001c9d1f1ac766ad83c9a25d8aad4b2f37"
+      ],
+      "raw_changed_pixels": 234845,
+      "pixels_over_16_channel_levels": 2025,
+      "mean_absolute_channel_difference": 0.226156,
+      "maximum_channel_difference": 193,
+      "semantic_element_count": 57,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "dialog light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "bcfa60e5c5b90c476bb354b5de686d0847dbcc70c77eca45ba584ed991e65042",
+        "a0bf02f2c8545a10963c4157f2c43e37b8e700ea0705d3585e626afa7068e14b"
+      ],
+      "raw_changed_pixels": 232947,
+      "pixels_over_16_channel_levels": 922,
+      "mean_absolute_channel_difference": 0.216791,
+      "maximum_channel_difference": 116,
+      "semantic_element_count": 60,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "login light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1941
+        ],
+        [
+          1600,
+          1941
+        ]
+      ],
+      "png_sha256": [
+        "9796fb1e658a416ea963fab7b12f375a9d3a728bc733869126f6abf8647c3e95",
+        "d2c6a1cdaa18545234ec6b688430592c702f69e6ca2912110ad587ac37732485"
+      ],
+      "raw_changed_pixels": 447,
+      "pixels_over_16_channel_levels": 107,
+      "mean_absolute_channel_difference": 0.002588,
+      "maximum_channel_difference": 126,
+      "semantic_element_count": 52,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "watch light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "media_at_capture": [
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        },
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1874
+        ],
+        [
+          1600,
+          1874
+        ]
+      ],
+      "png_sha256": [
+        "d68d19f1d79766160d3b5b234470e5809203655d329596d69d1b66ad3a2bab68",
+        "da0c5463daa832117e48be64b4c5728f4678fd8294a223dbe8b5e707c2c395d3"
+      ],
+      "raw_changed_pixels": 13932,
+      "pixels_over_16_channel_levels": 11547,
+      "mean_absolute_channel_difference": 0.041516,
+      "maximum_channel_difference": 62,
+      "semantic_element_count": 47,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "notifications light desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1000
+        ],
+        [
+          1600,
+          1000
+        ]
+      ],
+      "png_sha256": [
+        "513f7cb7e8026623b6abb752a37277a2176902378e83d55674f20dcd9eeb5e22",
+        "d39c1448aaae09c42ebe6263c38c799340361031986d1b87165310601b65bcc4"
+      ],
+      "raw_changed_pixels": 29,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 1e-05,
+      "maximum_channel_difference": 1,
+      "semantic_element_count": 19,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "dashboard light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2662
+        ],
+        [
+          390,
+          2662
+        ]
+      ],
+      "png_sha256": [
+        "8d29b45912e4087f11b644590ed73829d25d2aff7bdbd9a667f5c33944e8214c",
+        "7aef80647af9ba02a1ece9ad98176d09274f067341d5e4dcd6d214136a0175fc"
+      ],
+      "raw_changed_pixels": 336,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.000243,
+      "maximum_channel_difference": 1,
+      "semantic_element_count": 42,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "studio light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2313
+        ],
+        [
+          390,
+          2313
+        ]
+      ],
+      "png_sha256": [
+        "1380097097be91ee286fc78446791ee30935a088601873d2397116e00249cce3",
+        "1fab907f7b02ff1f5c63665ef174f702b7e39320f1a2d1bc1d369dbb4299bce5"
+      ],
+      "raw_changed_pixels": 107223,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.35787,
+      "maximum_channel_difference": 15,
+      "semantic_element_count": 26,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "analysis light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          3120
+        ],
+        [
+          390,
+          3120
+        ]
+      ],
+      "png_sha256": [
+        "4fb051a5a865fb0ad22becbdc7529cb37bc982bf49d665fd3c22f582cfc85b9a",
+        "dcc9eca93642c7cb301f537fd6cebe39c8feb59352b37ad9662d6c07a11edcde"
+      ],
+      "raw_changed_pixels": 59625,
+      "pixels_over_16_channel_levels": 1505,
+      "mean_absolute_channel_difference": 0.204941,
+      "maximum_channel_difference": 58,
+      "semantic_element_count": 46,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "visuals light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          3335
+        ],
+        [
+          390,
+          3335
+        ]
+      ],
+      "png_sha256": [
+        "197a7fdd26a6b9526bdfab8fa3bca0f2306f1d1140098a7ccfbe77d72bfbea32",
+        "02550adba992e5ae2e9cebb745a9f88676754a8cce7fe78ecfd59abf908bebc6"
+      ],
+      "raw_changed_pixels": 2354,
+      "pixels_over_16_channel_levels": 1505,
+      "mean_absolute_channel_difference": 0.024579,
+      "maximum_channel_difference": 58,
+      "semantic_element_count": 45,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "dialog light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          3335
+        ],
+        [
+          390,
+          3335
+        ]
+      ],
+      "png_sha256": [
+        "7f299e02ec84512fb95d8132b3eacb24d3a34c9eef684a6163852ff7469b5505",
+        "dd166025cc91eb3816ed48ff22d0caa0c705a7ec352f6d8bb6b96c38e70d2c31"
+      ],
+      "raw_changed_pixels": 2354,
+      "pixels_over_16_channel_levels": 1505,
+      "mean_absolute_channel_difference": 0.024579,
+      "maximum_channel_difference": 58,
+      "semantic_element_count": 48,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "login light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2662
+        ],
+        [
+          390,
+          2662
+        ]
+      ],
+      "png_sha256": [
+        "2a68d81f78a24b2ca21da3f470858856a4a199cc87da4a5877c5e3c938fa15d4",
+        "dd8017f2fc8e08a3ea01e676a361010d62a3a67ddb9fbcad1caa650bebecef6b"
+      ],
+      "raw_changed_pixels": 336,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.000243,
+      "maximum_channel_difference": 1,
+      "semantic_element_count": 47,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "watch light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "media_at_capture": [
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        },
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2588
+        ],
+        [
+          390,
+          2588
+        ]
+      ],
+      "png_sha256": [
+        "3240977d2afef367c2eacd2ff58ccf2b9566774db3f185408235f2817c9bec44",
+        "3a33318fbf745379f2460dbbfd51ef51e4d0f0caa046e900927524df196b6e2c"
+      ],
+      "raw_changed_pixels": 18274,
+      "pixels_over_16_channel_levels": 16463,
+      "mean_absolute_channel_difference": 0.169776,
+      "maximum_channel_difference": 119,
+      "semantic_element_count": 43,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "notifications light mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          1192
+        ],
+        [
+          390,
+          1192
+        ]
+      ],
+      "png_sha256": [
+        "752d4a507fa4d9f4ba555f84ec35b32244ec23182428750c9856a42d3b7e5e05",
+        "752d4a507fa4d9f4ba555f84ec35b32244ec23182428750c9856a42d3b7e5e05"
+      ],
+      "raw_changed_pixels": 0,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.0,
+      "maximum_channel_difference": 0,
+      "semantic_element_count": 16,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "dashboard dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1941
+        ],
+        [
+          1600,
+          1941
+        ]
+      ],
+      "png_sha256": [
+        "babb89fd9db5edeca80cc2e2f970aaee7a8d82eacc00316e4f5fc75d8d45b0f1",
+        "30fa873c8a63a23168bff900ab5f2ac4f0fc2254cb4b0622b40804b14799866f"
+      ],
+      "raw_changed_pixels": 251,
+      "pixels_over_16_channel_levels": 108,
+      "mean_absolute_channel_difference": 0.00527,
+      "maximum_channel_difference": 232,
+      "semantic_element_count": 48,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "studio dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "8a4f480c09b47738f3d433159a45cb5278cef049d146ac7c731004444b28bec0",
+        "1f8dd6ed6b3485571624174c181c7f73327fba5f5b50a52af9487cf8990f43bc"
+      ],
+      "raw_changed_pixels": 239436,
+      "pixels_over_16_channel_levels": 2023,
+      "mean_absolute_channel_difference": 0.299042,
+      "maximum_channel_difference": 232,
+      "semantic_element_count": 57,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "analysis dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "0b887e7706e8e494f5c9ebf6844df7f7508d13932ab1272f0a171172b8863821",
+        "232e401d9833393b2e4d8beabe0910c568fe58310da9cf945f8c862da7003bdc"
+      ],
+      "raw_changed_pixels": 293695,
+      "pixels_over_16_channel_levels": 2023,
+      "mean_absolute_channel_difference": 0.366302,
+      "maximum_channel_difference": 232,
+      "semantic_element_count": 58,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "visuals dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "f2782cc847a617b613f643194c3d870c555a9694d864bf95f102358b2242d831",
+        "eff3f2d692a48f7ca24f1d89b1c6f80b3b9ca28cdeca0f654a5f98b8c80def90"
+      ],
+      "raw_changed_pixels": 239436,
+      "pixels_over_16_channel_levels": 2023,
+      "mean_absolute_channel_difference": 0.299042,
+      "maximum_channel_difference": 232,
+      "semantic_element_count": 57,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "dialog dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          2074
+        ],
+        [
+          1600,
+          2074
+        ]
+      ],
+      "png_sha256": [
+        "044052ca3d75b2b5288f1321716c498b4b299512529c6d4d81679a5b7ba111ea",
+        "31315288fc56ebae2104a77433893e8ecc60bdfe286a14d277addaa86edf252d"
+      ],
+      "raw_changed_pixels": 237390,
+      "pixels_over_16_channel_levels": 839,
+      "mean_absolute_channel_difference": 0.286667,
+      "maximum_channel_difference": 51,
+      "semantic_element_count": 60,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "login dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1941
+        ],
+        [
+          1600,
+          1941
+        ]
+      ],
+      "png_sha256": [
+        "cbd03fbfe3c2a1d9c4dda4131b88fe4e7a89b663b69ab8aa4f7a294e89c37a43",
+        "7e22dc46bfbb7552ea4fba87e6698f25ba7a4b02ac93064c8cdb55fd5a8d15c6"
+      ],
+      "raw_changed_pixels": 251,
+      "pixels_over_16_channel_levels": 100,
+      "mean_absolute_channel_difference": 0.001616,
+      "maximum_channel_difference": 60,
+      "semantic_element_count": 52,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "watch dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "media_at_capture": [
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        },
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1874
+        ],
+        [
+          1600,
+          1874
+        ]
+      ],
+      "png_sha256": [
+        "da2d804e7fb81987b1a461f0b7500684958e3fb18d9a6a068f4cc011c1ec5744",
+        "833b0ad2ee932b5b6bbb00e95117e3bf229b03bf095afcea90c60f264995b82d"
+      ],
+      "raw_changed_pixels": 17905,
+      "pixels_over_16_channel_levels": 11555,
+      "mean_absolute_channel_difference": 0.044678,
+      "maximum_channel_difference": 209,
+      "semantic_element_count": 47,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "notifications dark desktop",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          1600,
+          1000
+        ],
+        [
+          1600,
+          1000
+        ]
+      ],
+      "png_sha256": [
+        "8e94912d2d686811e6b32917ad0d8ab7fdac2ebac079e46bc2dcb7de11ed3a6b",
+        "893ccc3b8cdcd78ae3ef785189ff0e91973dd8f3a75a631df44f8a851a7dd467"
+      ],
+      "raw_changed_pixels": 22,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 8e-06,
+      "maximum_channel_difference": 1,
+      "semantic_element_count": 19,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "dashboard dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2662
+        ],
+        [
+          390,
+          2662
+        ]
+      ],
+      "png_sha256": [
+        "63906a179c9048f346c6e32d58ebae5cb8d6e038f8eef02753cdfd4f86857dbc",
+        "63b55025de9d6f314bf08e19a9f3b7c0942f3f6527d0305f9e3bfbed99008b0f"
+      ],
+      "raw_changed_pixels": 145,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.000101,
+      "maximum_channel_difference": 1,
+      "semantic_element_count": 42,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "studio dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2313
+        ],
+        [
+          390,
+          2313
+        ]
+      ],
+      "png_sha256": [
+        "b79b61c9b94776cad2789142cc1f082a12820f5f30684003ad9e98d53a2a899c",
+        "08ccfa108211141398f9216f23a08456c5a64a341a7e8465c26914efe6684f82"
+      ],
+      "raw_changed_pixels": 107337,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.478542,
+      "maximum_channel_difference": 14,
+      "semantic_element_count": 26,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "analysis dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          3120
+        ],
+        [
+          390,
+          3120
+        ]
+      ],
+      "png_sha256": [
+        "af038acdd4b9e64dcc1f4c7a1f128aee0aa26b5c7b95a6cd34d5cb8ee75cdb97",
+        "36bf56eeba44fbfb2b0096881f9ca91c7dd020d3cf189324ce0d1caeab8bb131"
+      ],
+      "raw_changed_pixels": 64241,
+      "pixels_over_16_channel_levels": 1612,
+      "mean_absolute_channel_difference": 0.223536,
+      "maximum_channel_difference": 68,
+      "semantic_element_count": 46,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "visuals dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          3335
+        ],
+        [
+          390,
+          3335
+        ]
+      ],
+      "png_sha256": [
+        "35d31b02c0a83bcf60f7572f35b8f8c77ff8e200f405769940619cbcc79b3138",
+        "71c64534e3a6f24b75760a338aa1c48b6b2c90e562c8b4f33548b2d2aca708fb"
+      ],
+      "raw_changed_pixels": 6747,
+      "pixels_over_16_channel_levels": 1612,
+      "mean_absolute_channel_difference": 0.027196,
+      "maximum_channel_difference": 68,
+      "semantic_element_count": 45,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "dialog dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          3335
+        ],
+        [
+          390,
+          3335
+        ]
+      ],
+      "png_sha256": [
+        "3c1180ce9493338e694dc95f52fd3cdd8c432468414c2e6cdc692a3ec054e3e4",
+        "2d29081fa7377e79d7e552f91e992254f01c48c85b6bd84e093640837e4bbdb7"
+      ],
+      "raw_changed_pixels": 6747,
+      "pixels_over_16_channel_levels": 1612,
+      "mean_absolute_channel_difference": 0.027196,
+      "maximum_channel_difference": 68,
+      "semantic_element_count": 48,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "login dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2662
+        ],
+        [
+          390,
+          2662
+        ]
+      ],
+      "png_sha256": [
+        "37284bcd4787b309c4267fd45b786d1c503128f15fecf7ad055be4ebcd3fd65e",
+        "a557591fcc5fe7e78c86de41722d1f8dc76d621ddb40050e1bc97338ca9fbbfe"
+      ],
+      "raw_changed_pixels": 145,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.000101,
+      "maximum_channel_difference": 1,
+      "semantic_element_count": 47,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "watch dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "media_at_capture": [
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        },
+        {
+          "paused": true,
+          "seeking": false,
+          "time": 0,
+          "readyState": 4
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          2588
+        ],
+        [
+          390,
+          2588
+        ]
+      ],
+      "png_sha256": [
+        "9c9db0bd6efe50c243f393c5de0f9af267a38315b5e0f69b444e651a3172a58d",
+        "3ae161af24fceb169ca69ad7aa82f592730f6c54e938c0ddc4a3e0bfb14f33d9"
+      ],
+      "raw_changed_pixels": 19494,
+      "pixels_over_16_channel_levels": 16395,
+      "mean_absolute_channel_difference": 0.177307,
+      "maximum_channel_difference": 221,
+      "semantic_element_count": 43,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    },
+    {
+      "case": "notifications dark mobile",
+      "outcome": "expected",
+      "status": "passed",
+      "scroll_after_capture": [
+        {
+          "x": 0,
+          "y": 0
+        },
+        {
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "dimensions": [
+        [
+          390,
+          1192
+        ],
+        [
+          390,
+          1192
+        ]
+      ],
+      "png_sha256": [
+        "1a43bbd56cc9726fd343eec30d6fafe1c85ea94472cc2d68c5bac56e4722dcd0",
+        "1a43bbd56cc9726fd343eec30d6fafe1c85ea94472cc2d68c5bac56e4722dcd0"
+      ],
+      "raw_changed_pixels": 0,
+      "pixels_over_16_channel_levels": 0,
+      "mean_absolute_channel_difference": 0.0,
+      "maximum_channel_difference": 0,
+      "semantic_element_count": 16,
+      "layout_equal": true,
+      "fonts": [
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap",
+          "sha256": "12e15aeef3e17ad68294db35eabecd2a9baf475808b9326541bc6997c8f8fe83"
+        },
+        {
+          "url": "https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap",
+          "sha256": "496aa91183a9b58cf6c9eb43d494fc4450a7138cf6e70b1c4cc7721d741ddebf"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2",
+          "sha256": "a30ddcd349703aff7464c34bef3fffdff405ee50c113440d7c8693c02d210972"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2",
+          "sha256": "3100e775e8616cd2611beecfa23a4263d7037586789b43f035236a2e6fbd4c62"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/materialsymbolsoutlined/v380/kJEPBvYX7BgnkSrUwT8OhrdQw4oELdPIeeII9v6oDMzBwG-RpA6RzaxHMPdY40KH8nGzv3fzfVJO1Q.woff2",
+          "sha256": "d4fa6a67d368199190adc30f2bce175f450739196d83dec015c3f9f11e125ce2"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggmxSuXd.woff2",
+          "sha256": "3911b66d9f2e005a4b989223405d0e5032619c668597ba467cc76a23c8fffcfb"
+        },
+        {
+          "url": "https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa25L7SUc.woff2",
+          "sha256": "34b9c504cab7a73e37b746343a449132e56cf7b5481af2cb81dc74dcff25c956"
+        }
+      ]
+    }
+  ]
+}

@@ -762,7 +762,7 @@ export default function Channel({ user, searchQuery, onLoginRequest, onUserRefre
                     <div className="absolute inset-0 bg-black/35 transition group-hover:bg-black/20" />
                     <div className="relative flex max-w-3xl flex-col justify-end gap-3 self-stretch pr-10">
                       <span className="inline-flex w-fit rounded-full bg-black/45 px-3 py-1 text-xs font-bold uppercase tracking-[0.12em]">Featured video</span>
-                      <h2 className="text-2xl font-bold leading-tight sm:text-3xl">{featuredLesson.title}</h2>
+                      <h2 className="text-2xl font-bold leading-tight sm:text-3xl sm:leading-9">{featuredLesson.title}</h2>
                       {featuredLesson.description ? (
                         <p className="line-clamp-2 text-sm leading-6 text-white/85">{featuredLesson.description}</p>
                       ) : null}

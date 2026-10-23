@@ -336,7 +336,7 @@ export default function Home({ searchQuery, user, onLoginRequest }) {
                   {featuredLesson.title}
                 </h1>
 
-                <p className="max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base">
+                <p className="max-w-2xl text-sm leading-relaxed text-[color:var(--media-text-on-image)] opacity-90 sm:text-base sm:leading-6">
                   {featuredLesson.description || 'Master the foundations of modern intelligence with guided cinematic lessons, transcript-first context, and practical studio workflows.'}
                 </p>
 
