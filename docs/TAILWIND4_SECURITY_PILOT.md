@@ -7,10 +7,13 @@ merge or deployment. The source branch was clean at the expected
 
 ## Decision and verification status
 
-The migration removes the remaining audited dependency paths. Local unit,
-build, installation, and audit checks pass. Hosted visual and functional
-acceptance is still being completed; this document will record the final
-decision after those gates finish. A dependency-only success is insufficient.
+**ACCEPT — recommend integration after separate authorization.** The final
+candidate `b7791f34b475d4b5fddaaf462fe4ed557208ecb7` passes both hosted workflows,
+including 32 fresh baseline/candidate visual comparisons and 32 functional
+Chromium tests. Both npm audit gates report zero vulnerabilities. The migration
+preserves the tested design and Phase 2A preview behavior. No merge or deployment
+has been performed. This final report/evidence commit changes documentation only;
+the tested application, dependency, and test files remain identical to that SHA.
 
 ## Dependency comparison
 
@@ -64,7 +67,9 @@ development tooling:
 
 Lockfile-wide inspection and `npm ls ... --all` find no remaining instances
 of the six named libraries. There is therefore no remaining dependency path
-to list. The existing security gate in `.github/workflows/ci.yml` is unchanged.
+to list. The targeted `npm ls` prints `(empty)` and exits 1 because none of the
+requested packages is installed; the full installed dependency-tree check passes.
+The existing security gate in `.github/workflows/ci.yml` is unchanged.
 No force fix, override, advisory exclusion, or audit threshold reduction was used.
 
 ## Supported configuration and visual preservation
@@ -156,7 +161,7 @@ The production Google Fonts URLs are unchanged. The final harness downloads
 each requested CSS/font resource once, serves identical bytes to both builds,
 waits for font loading, and records resource SHA-256 hashes. Missing required
 fonts fail the test. Early exploratory comparisons used deterministic fallback
-fonts; final evidence must identify whether the real-font comparisons passed.
+fonts; all 32 final comparisons passed with the real downloaded font resources.
 
 Artifacts include baseline/candidate PNGs, computed layout JSON, font
 provenance, screenshot diffs on failure, and traces on failure. Hosted artifacts
@@ -189,6 +194,62 @@ both reduced-motion modes, and sibling spacing, bringing functional E2E to 32.
 Visuals checks decode private assets, switch Analysis/Visuals, and assert that
 only the expected suggestion-generation POST occurs. Video/draft/narration
 mutation endpoints are not used.
+
+## Final hosted results and reviewable evidence
+
+Both runs below tested the exact candidate
+`b7791f34b475d4b5fddaaf462fe4ed557208ecb7` on 2026-10-23.
+
+| Gate | Result |
+| --- | --- |
+| Fresh baseline `npm ci`, unit tests, build | passed; 330 tests / 47 files |
+| Fresh baseline Chromium E2E | 27 passed (34.5 s) |
+| Candidate `npm ci`, unit tests, build | passed; 330 tests / 47 files |
+| Candidate Chromium functional E2E | 32 passed (40.5 s) |
+| Same-run baseline/candidate screenshots and layout assertions | 32 passed (1.9 min) |
+| Candidate `npm audit --audit-level=high` | exit 0; zero vulnerabilities |
+| Candidate `npm audit --omit=dev --audit-level=moderate` (local) | exit 0; zero vulnerabilities |
+| Existing backend CI | 2,182 passed; 10 skipped; 63 subtests passed; 2 warnings |
+| Existing backend dependency security check | no known vulnerabilities found |
+| Docker smoke and load-test smoke | both passed |
+
+* [Normal CI — all four jobs passed](https://github.com/VisusVision/TalkingSlides/actions/runs/39879821827).
+* [Tailwind pilot — passed](https://github.com/VisusVision/TalkingSlides/actions/runs/39879821816).
+* [Full original PNGs, layout/font/media records, generated CSS, and HTML reports](https://github.com/VisusVision/TalkingSlides/actions/runs/39879821816/artifacts/12469709454).
+  Artifact ZIP: 12,984,402 bytes; SHA-256
+  `e4cb754d386e6cd29ca5b2bfa755456fba69c2df7b25f434cc375ee61d82228c`.
+  The downloaded archive was verified against GitHub's digest. Hosted retention
+  expires 2026-11-06; the following compact evidence is committed permanently:
+* [Per-case results, image hashes, raw pixel metrics, font provenance, media
+  state, and generated CSS hashes](tailwind4-pilot/visual-results.json).
+* [Desktop light Visuals comparison](tailwind4-pilot/visuals-desktop-light.webp).
+* [Mobile dark Visuals comparison](tailwind4-pilot/visuals-mobile-dark.webp).
+* [Expanded suggestion dialog comparison](tailwind4-pilot/suggestion-dialog-desktop.webp).
+
+Manual review covered the eight surfaces in desktop-light and mobile-dark
+montages, plus full-sized Visuals and dialog comparisons. All 32 cases have
+matching measured semantic geometry, typography, and radii. They are not
+pixel-identical: 30 cases have raw pixel differences, primarily subtle tones,
+shadows, and rasterization. Mean absolute channel differences range from 0 to
+0.479 on a 0–255 scale. All satisfy the unchanged perceptual comparison limit;
+no remaining material layout or legibility regression was identified. The JSON
+records raw differences separately from Playwright's perceptual pass/fail.
+All four playback comparisons recorded both videos paused at zero, not seeking,
+with `readyState=4`; the earlier transient loading-spinner mismatch is resolved.
+
+Earlier failing pilot runs were useful rejection gates: Studio spacing and
+leading, Material Symbols cascade precedence, and responsive hero leading were
+fixed before acceptance. A later 30/32 run exposed scroll-position jitter, and
+manual review of an otherwise passing run exposed unstable media capture.
+Those harness fixes retained comparison thresholds and added state assertions.
+The immediately preceding candidate also passed all 32 comparisons; the final
+candidate repeats the entire gate with stable playback capture.
+
+Browser integration uses synthetic API fixtures and checks the real frontend
+generation request, private authenticated image loading, decoded previews,
+Analysis/Visuals switching, dialog focus, page identity, and absence of lesson
+mutation requests. It does not establish a live browser-to-Django deployment or
+GPU/video-generation result. The independent existing backend suite passes.
 
 ## Local verification and limitations
 
@@ -232,6 +293,23 @@ publication code changed. The normal backend/Docker jobs remain enabled.
   private original-image and playback fixtures.
 * `4be978907868b89ef14f8e1da1130b36586b9e04`: Studio leading and sibling-spacing
   preservation, mobile inspector test path, spacing regression test.
+* `6a86f03929e356a0e1f3f2525bb17b0cbf1b9e69`: populated dashboard fixtures,
+  shared real-font capture/provenance, correct theme-persistence test seed.
+* `6368e396d568a9274b69c001e913675f60e085db`: external font stylesheets in the
+  base layer to preserve existing Material Symbols component rules.
+* `d81e8ccf77319d5428e84ebb5d0e11b880d59111`: original responsive line heights
+  in hero and featured-title layouts; final application-code change.
+* `a62943572dbfdc9133a2fad57f7779db6619835c`: stable scroll capture and visible
+  private Visuals assets; 32/32 comparisons and functional E2E passed.
+* `b7791f34b475d4b5fddaaf462fe4ed557208ecb7`: stable paused playback fixture;
+  final fully green hosted candidate, including backend and smoke jobs.
+
+For integration review, compare the immutable baseline to the final candidate,
+retain `tailwind-compat.css`, and confirm the browser support floor is acceptable.
+Before deploying on another OS or supporting Safari/Firefox, run the same
+lockfile install/build and relevant browser checks there. These are platform
+coverage limits, not concealed failing gates. Further Visual Designer work can
+continue independently on its unchanged feature branch.
 
 No merge, deployment, force push, history reset, audit bypass, or update to the
 three protected source branches is authorized or performed by this pilot.
