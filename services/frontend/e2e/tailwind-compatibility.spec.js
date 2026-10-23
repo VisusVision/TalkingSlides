@@ -2,7 +2,10 @@ import { expect, test } from '@playwright/test';
 
 async function openStyleProbe(page, theme = 'light') {
   await page.addInitScript((theme) => {
-    localStorage.clear(); sessionStorage.clear(); localStorage.setItem('visus-theme-mode', theme);
+    if (!sessionStorage.getItem('style-probe-seeded')) {
+      localStorage.clear(); sessionStorage.clear(); localStorage.setItem('visus-theme-mode', theme);
+      sessionStorage.setItem('style-probe-seeded', '1');
+    }
   }, theme);
   await page.route('**/api/v1/**', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ results: [], features: {}, sections: [] }) }));
   await page.goto('/');

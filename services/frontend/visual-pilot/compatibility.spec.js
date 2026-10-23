@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 
 const USER = { id: 42, username: 'pilot.teacher', display_name: 'Pilot Teacher', role: 'teacher', is_staff: true, auth_provider: 'password' };
@@ -17,6 +18,18 @@ const CANDIDATE = { id: 'pilot', page_key: PAGE_KEY, strategy: 'typography_only'
   warnings: ['Unstructured prose is not verified numerical evidence.'], errors: [], is_stale: false, compatible: true, applied: false, can_apply: false, preview_url: '/private/preview/' };
 const SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080"><rect width="1920" height="1080" fill="#f8fafc"/><rect x="90" y="130" width="1740" height="820" rx="32" fill="#e0e7ff"/><text x="150" y="300" font-family="sans-serif" font-size="72" fill="#312e81">Öğrenme &amp; Evidence</text><text x="150" y="460" font-family="sans-serif" font-size="56">Observe → Measure → Record</text></svg>';
 const VIDEO = await fs.readFile(new URL('./fixtures/lesson.webm', import.meta.url));
+const FONT_CACHE = new Map();
+async function fontResponse(url) {
+  if (!FONT_CACHE.has(url)) FONT_CACHE.set(url, (async () => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(20_000), headers: {
+      'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36',
+    } });
+    if (!response.ok) throw new Error(`Visual pilot font download failed: ${response.status}`);
+    const body = Buffer.from(await response.arrayBuffer());
+    return { status: 200, contentType: response.headers.get('content-type'), body };
+  })());
+  return FONT_CACHE.get(url);
+}
 
 async function setup(browser, origin, theme, viewport, anonymous = false) {
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1, reducedMotion: 'reduce', colorScheme: 'light', locale: 'en-US', timezoneId: 'UTC', isMobile: viewport.width < 600, hasTouch: viewport.width < 600 });
@@ -38,8 +51,9 @@ async function setup(browser, origin, theme, viewport, anonymous = false) {
     localStorage.setItem('visus-theme-mode', theme);
     if (!anonymous) { localStorage.setItem('auth_token', 'pilot-token'); localStorage.setItem('auth_user', JSON.stringify(user)); }
   }, { theme, user: USER, anonymous });
-  // Identical, offline font fallback on both builds; no CDN timing or late swaps.
-  await page.route(/https:\/\/fonts\.(googleapis|gstatic)\.com\//, (route) => route.fulfill({ status: 200, body: '', contentType: 'text/css' }));
+  // Fetch each existing production font once; both builds receive identical
+  // bytes. Missing fonts fail acceptance rather than silently using fallback.
+  await page.route(/https:\/\/fonts\.(googleapis|gstatic)\.com\//, async (route) => route.fulfill(await fontResponse(route.request().url())));
   await page.route('**/pilot-media.webm', (route) => route.fulfill({ contentType: 'video/webm', body: VIDEO }));
   await page.route('**/api/v1/**', async (route) => {
     const request = route.request();
@@ -68,7 +82,10 @@ async function setup(browser, origin, theme, viewport, anonymous = false) {
     if (pathname.endsWith('/intelligence/')) return json({ id: 10, status: 'done', provider: 'heuristic', is_stale: false, summary: 'Existing lesson analysis.' });
     if (pathname.endsWith('/moderation/')) return json({ moderation_status: 'approved', can_publish: true, findings: [] });
     if (pathname === '/api/v1/catalog/501/' || pathname.endsWith('/playback-token/')) return json({ ...PROJECT, transcript_pages: PAGES, video_url: '/pilot-media.webm', protection_mode: 'public' });
-    if (pathname === '/api/v1/catalog/' || pathname === '/api/v1/catalog/feed/') return json(pathname.endsWith('/feed/') ? { sections: [], results: [PROJECT] } : [PROJECT]);
+    if (pathname === '/api/v1/catalog/' || pathname === '/api/v1/catalog/feed/') {
+      const lessons = [PROJECT, ...['Process & Measurement', 'Scientific comparisons', 'Learning with verified data'].map((title, i) => ({ ...PROJECT, id: 502 + i, title }))];
+      return json(pathname.endsWith('/feed/') ? { sections: [{ key: 'recommended', title: 'Recommended for You', items: lessons }], results: lessons } : lessons);
+    }
     if (pathname === '/api/v1/me/notifications/unread-count/') return json({ unread_count: 1 });
     if (pathname === '/api/v1/me/notifications/') return json({ count: 1, results: [{ id: 1, title: 'Render complete', body: 'Your private lesson preview is ready.', event_type: 'render_complete', action_url: '/watch?lesson=501', is_read: false, created_at: '2026-10-23T10:00:00Z' }], has_more: false });
     if (pathname.endsWith('/playlist-context/')) return json({ mode: 'publisher', items: [] });
@@ -122,6 +139,9 @@ async function open(state, scenario) {
   await page.waitForLoadState('networkidle');
   await expect(page.locator('html')).toHaveAttribute('data-theme', state.theme);
   await page.evaluate(() => document.fonts.ready);
+  const loadedFamilies = await page.evaluate(() => [...document.fonts].filter((face) => face.status === 'loaded').map((face) => face.family.replace(/['"]/g, '')));
+  expect(loadedFamilies).toContain('Inter');
+  expect(loadedFamilies).toContain('Material Symbols Outlined');
   await page.mouse.move(0, 0);
   await page.evaluate(() => window.scrollTo(0, 0));
   expect(state.errors).toEqual([]);
@@ -154,6 +174,8 @@ for (const theme of ['light', 'dark']) for (const [device, viewport] of Object.e
         await info.attach('tailwind4', { body: candidateImage, contentType: 'image/png' });
         const before = await layout(baseline.page), after = await layout(candidate.page);
         await info.attach('computed-layout', { body: JSON.stringify({ before, after }, null, 2), contentType: 'application/json' });
+        const fonts = await Promise.all([...FONT_CACHE].map(async ([url, value]) => ({ url, sha256: createHash('sha256').update((await value).body).digest('hex') })));
+        await info.attach('font-provenance', { body: JSON.stringify(fonts, null, 2), contentType: 'application/json' });
         const golden = info.snapshotPath('same-run-baseline.png');
         await fs.mkdir(path.dirname(golden), { recursive: true }); await fs.writeFile(golden, baselineImage);
         expect.soft(candidateImage).toMatchSnapshot('same-run-baseline.png', { threshold: 0.1, maxDiffPixelRatio: 0.001 });
