@@ -98,6 +98,7 @@ async function open(state, scenario) {
   const { page, origin } = state;
   const route = { dashboard: '/', studio: '/studio?view=editor&lesson=501', analysis: '/studio?view=editor&lesson=501', visuals: '/studio?view=editor&lesson=501', dialog: '/studio?view=editor&lesson=501', login: '/library', watch: '/watch?lesson=501', notifications: '/notifications' }[scenario];
   await page.goto(origin + route);
+  await page.addStyleTag({ content: 'html { overflow-anchor: none !important; scroll-behavior: auto !important; }' });
   if (['studio', 'analysis', 'visuals', 'dialog'].includes(scenario)) {
     await expect(page.getByTestId('studio-creator-header')).toBeVisible();
     if (scenario !== 'studio') {
@@ -147,8 +148,18 @@ async function open(state, scenario) {
   const loadedFamilies = await page.evaluate(() => [...document.fonts].filter((face) => face.status === 'loaded').map((face) => face.family.replace(/['"]/g, '')));
   expect(loadedFamilies).toContain('Inter');
   expect(loadedFamilies).toContain('Material Symbols Outlined');
+  if (scenario === 'visuals') {
+    const image = page.getByRole('img', { name: 'Suggested design', exact: true });
+    await image.scrollIntoViewIfNeeded();
+    await expect(image).toBeInViewport();
+  }
   await page.mouse.move(0, 0);
-  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.evaluate(async () => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  });
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   expect(state.errors).toEqual([]);
   const nonPlaybackWrites = state.writes.filter((path) => !(scenario === 'watch' && path === '/api/v1/catalog/501/progress/'));
   expect(nonPlaybackWrites).toEqual(['visuals', 'dialog'].includes(scenario) ? ['/api/v1/projects/501/visual-suggestions/'] : []);
@@ -175,6 +186,9 @@ for (const theme of ['light', 'dark']) for (const [device, viewport] of Object.e
         await open(baseline, scenario); await open(candidate, scenario);
         const baselineImage = await baseline.page.screenshot({ fullPage: true, animations: 'disabled' });
         const candidateImage = await candidate.page.screenshot({ fullPage: true, animations: 'disabled' });
+        const scroll = await Promise.all([baseline.page, candidate.page].map((page) => page.evaluate(() => ({ x: scrollX, y: scrollY }))));
+        await info.attach('capture-scroll', { body: JSON.stringify(scroll), contentType: 'application/json' });
+        expect(scroll).toEqual([{ x: 0, y: 0 }, { x: 0, y: 0 }]);
         await info.attach('tailwind3', { body: baselineImage, contentType: 'image/png' });
         await info.attach('tailwind4', { body: candidateImage, contentType: 'image/png' });
         const before = await layout(baseline.page), after = await layout(candidate.page);

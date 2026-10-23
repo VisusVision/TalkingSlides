@@ -141,6 +141,13 @@ ratio 0.001, and separately checks semantic element geometry to 0.1 px,
 typography, and radii. Colors are assessed by rendered pixels, avoiding false
 failures from equivalent `rgba()` versus `oklab()` serialization.
 
+The harness disables browser scroll anchoring on both builds, waits two frames,
+uses instant scroll positioning, and asserts zero scroll offsets after capture.
+An earlier run passed 30/32 cases but captured Studio's baseline one pixel
+scrolled; this changes document coordinates without changing layout. The
+stabilization preserves the comparison thresholds and records scroll evidence.
+The Visuals case also scrolls its nested inspector to show the decoded preview.
+
 The production Google Fonts URLs are unchanged. The final harness downloads
 each requested CSS/font resource once, serves identical bytes to both builds,
 waits for font loading, and records resource SHA-256 hashes. Missing required
