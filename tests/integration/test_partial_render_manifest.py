@@ -4064,3 +4064,58 @@ def test_partial_render_analysis_failure_does_not_fail_finalize(tmp_path, monkey
             "notes": ["plan_failed"],
         },
     }
+
+
+def test_private_dependency_absence_preserves_exact_partial_legacy_golden():
+    golden=json.loads((REPO_ROOT/"tests/fixtures/visual_segments/planner_legacy_golden.json").read_text())
+    expected=build_expected_partial_render_manifest(project_id=701,slides=golden["slides"],tts_settings={},effective_language="en")
+    finalized=build_partial_render_manifest(project_id=701,slides=golden["slides"],ordered_results=golden["slides"],effective_language="en")
+    assert canonical_json(expected)==golden["partial_canonical"] and expected==golden["partial"]
+    assert canonical_json(finalized)==golden["finalized_canonical"] and finalized==golden["finalized"]
+    assert expected["manifest_hash"]=="sha256:55f067bcff5396ce9aeba08a93449a53d35dca0abfa2461c68b1753b6384931b"
+    assert classify_partial_render_changes(old_manifest=expected,expected_manifest=expected,required_artifacts=())==golden["partial_classification"]
+
+
+def _segment_dep():
+    from core.visual_design.segment_contracts import SegmentAudioProof
+    from core.visual_design.segment_dependencies import dependencies_from_verified_audio
+    root=REPO_ROOT/"tests/fixtures/visual_segments";trust=json.loads((root/"trust_anchors.json").read_text())
+    proof=json.loads((root/"audio_proof_0.json").read_text())
+    audio=SegmentAudioProof(proof,expected_hash=trust["audio_proof_hashes"][0],expected_producer_id=trust["producer_id"],allow_synthetic=True)
+    return dependencies_from_verified_audio(audio,"sha256:"+"a"*64).to_dict()
+
+
+def _segment_partial(dep):
+    row={"page_key":"source-0.split-1","source_slide_index":0,"split_index":1,"index":0,
+         "narration_text":"Plants need light and water to grow.","private_synthesis_dependencies":dep}
+    return build_expected_partial_render_manifest(project_id=701,slides=[row],effective_language="en")
+
+
+@pytest.mark.parametrize("field",["voice", "provider", "language", "sample", "model", "config", "preparation", "pronunciation", "protected", "spoken", "audio", "proof", "integrity"])
+def test_partial_private_synthesis_dependencies_reach_tts_hash_and_existing_actions(field):
+    dep=_segment_dep();baseline=_segment_partial(dep);newer=deepcopy(dep);replacement="sha256:"+"b"*64
+    if field=="voice": newer["synthesis"]["voice_id"]="other-voice"
+    if field=="provider": newer["synthesis"]["provider"]="other-provider"
+    if field=="language": newer["narration"]["language"]="tr"
+    if field=="sample":
+        newer["synthesis"]["voice_kind"]="cloned";newer["synthesis"]["dependencies"]["sample"]={"sha256":replacement,"size":100,"extension":"wav"}
+    if field in ("model","config","preparation","pronunciation"): newer["synthesis"]["dependencies"][field+"_hash"]=replacement
+    if field in ("protected","spoken"): newer["narration"][field+"_hash"]=replacement
+    if field=="audio": newer["audio"]["asset"]["sha256"]=replacement
+    if field=="proof": newer["producer"]["proof_hash"]=replacement
+    if field=="integrity": newer["integrity"]["validation_hash"]=replacement
+    expected=_segment_partial(newer)
+    report=classify_partial_render_changes(old_manifest=baseline,expected_manifest=expected,required_artifacts=())
+    assert "tts_settings_changed" in report["pages"]["source-0.split-1"]["reasons"]
+    assert build_partial_render_plan(report)["summary"]["rerun_tts_avatar_future"]==1
+    assert baseline["pages"]["source-0.split-1"]["tts_settings_hash"]!=expected["pages"]["source-0.split-1"]["tts_settings_hash"]
+
+
+def test_partial_unknown_or_missing_private_semantics_require_safe_full_classification():
+    baseline=_segment_partial(_segment_dep());bad=deepcopy(baseline)
+    bad["pages"]["source-0.split-1"]["private_synthesis_dependencies"]["schema_version"]="unknown.v2"
+    report=classify_partial_render_changes(old_manifest=baseline,expected_manifest=bad,required_artifacts=())
+    assert "unknown_requires_full" in report["pages"]["source-0.split-1"]["reasons"]
+    missing=deepcopy(baseline);missing["pages"]["source-0.split-1"].pop("private_synthesis_dependencies")
+    report=classify_partial_render_changes(old_manifest=missing,expected_manifest=baseline,required_artifacts=())
+    assert build_partial_render_plan(report)["summary"]["full_rerender_required_future"]==1

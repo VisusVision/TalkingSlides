@@ -176,6 +176,14 @@ def build_render_planner_manifest(
         if slide.get("order") is not None and slide.get("slide_number") is None and slide.get("slide_num") is None:
             slide_number = _int_value(slide.get("order"), index) + 1
         inputs = _slide_render_inputs(slide=slide, global_inputs=global_inputs)
+        if "private_synthesis_dependencies" in slide:
+            from core.visual_design.segment_dependencies import validate_synthesis_dependencies
+            inputs["private_synthesis_dependencies"] = validate_synthesis_dependencies(
+                slide["private_synthesis_dependencies"], project_id=project_id, page_key=page_key, page=slide)
+            inputs["timing"]["private_page_identity"] = inputs["private_synthesis_dependencies"]["page"]
+        if "private_caption_dependencies" in slide:
+            from core.visual_design.segment_dependencies import validate_caption_dependencies
+            inputs["timing"]["private_caption_dependencies"] = validate_caption_dependencies(slide["private_caption_dependencies"])
         page = {
             "page_key": page_key,
             "slide_number": slide_number,
@@ -280,7 +288,7 @@ def plan_render_dirty_slides(
         elif previous_page is None:
             reasons.append(REASON_NEW_SLIDE)
         else:
-            reasons.extend(_input_change_reasons(previous_page, current_page))
+            reasons.extend(_input_change_reasons(previous_page, current_page, previous_project_id=previous_manifest.get("project_id"), current_project_id=current_manifest.get("project_id")))
             if _page_position(previous_page) != _page_position(current_page):
                 reasons.append(REASON_SLIDE_ORDER_CHANGED)
             reasons.extend(
@@ -419,7 +427,7 @@ def _slide_render_inputs(*, slide: Mapping[str, Any], global_inputs: Mapping[str
     }
 
 
-def _input_change_reasons(previous_page: Mapping[str, Any], current_page: Mapping[str, Any]) -> list[str]:
+def _input_change_reasons(previous_page: Mapping[str, Any], current_page: Mapping[str, Any], *, previous_project_id=None, current_project_id=None) -> list[str]:
     previous_inputs = previous_page.get("inputs") if isinstance(previous_page.get("inputs"), Mapping) else {}
     current_inputs = current_page.get("inputs") if isinstance(current_page.get("inputs"), Mapping) else {}
     reasons: list[str] = []
@@ -438,6 +446,33 @@ def _input_change_reasons(previous_page: Mapping[str, Any], current_page: Mappin
         if _canonical_value(previous_inputs.get(key)) != _canonical_value(current_inputs.get(key)):
             reasons.append(reason)
 
+    # Opt-in semantics only. Never normalize away or silently ignore an unknown
+    # private dependency version, even if a stored legacy fingerprint is equal.
+    private_reasons = []
+    if "private_synthesis_dependencies" in previous_inputs or "private_synthesis_dependencies" in current_inputs:
+        from core.visual_design.segment_dependencies import validate_synthesis_dependencies
+        try:
+            old_dep = validate_synthesis_dependencies(previous_inputs.get("private_synthesis_dependencies"), project_id=previous_project_id, page_key=previous_page.get("page_key"))
+            new_dep = validate_synthesis_dependencies(current_inputs.get("private_synthesis_dependencies"), project_id=current_project_id, page_key=current_page.get("page_key"))
+            if old_dep != new_dep:
+                private_reasons.append(REASON_PROVIDER_CHANGED)
+        except ValueError:
+            private_reasons.append(REASON_MISSING_BASELINE)
+        reasons.extend(private_reasons)
+    old_timing = previous_inputs.get("timing") if isinstance(previous_inputs.get("timing"), Mapping) else {}
+    new_timing = current_inputs.get("timing") if isinstance(current_inputs.get("timing"), Mapping) else {}
+    if "private_caption_dependencies" in old_timing or "private_caption_dependencies" in new_timing:
+        from core.visual_design.segment_dependencies import validate_caption_dependencies
+        try:
+            old_captions = validate_caption_dependencies(old_timing.get("private_caption_dependencies"))
+            new_captions = validate_caption_dependencies(new_timing.get("private_caption_dependencies"))
+            reason = REASON_TIMING_CHANGED if old_captions != new_captions else None
+        except ValueError:
+            reason = REASON_MISSING_BASELINE
+        if reason:
+            private_reasons.append(reason)
+            reasons.append(reason)
+
     previous_avatar = previous_inputs.get("avatar") if isinstance(previous_inputs.get("avatar"), Mapping) else {}
     current_avatar = current_inputs.get("avatar") if isinstance(current_inputs.get("avatar"), Mapping) else {}
     if _avatar_core(previous_avatar) != _avatar_core(current_avatar):
@@ -450,7 +485,7 @@ def _input_change_reasons(previous_page: Mapping[str, Any], current_page: Mappin
     previous_fingerprint = str(previous_page.get("fingerprint") or "")
     current_fingerprint = str(current_page.get("fingerprint") or "")
     if previous_fingerprint and current_fingerprint and previous_fingerprint == current_fingerprint:
-        return [reason for reason in reasons if reason in {REASON_MISSING_ARTIFACT, REASON_CORRUPT_ARTIFACT}]
+        return [reason for reason in reasons if reason in {REASON_MISSING_ARTIFACT, REASON_CORRUPT_ARTIFACT} or reason in private_reasons]
     return reasons
 
 

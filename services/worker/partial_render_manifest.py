@@ -500,6 +500,16 @@ def build_partial_render_manifest(
         snapshot_voice = _first_present(result.get("snapshot_voice_identity"), slide.get("snapshot_voice_identity"))
         if snapshot_voice is not None:
             tts_settings["snapshot_voice_identity"] = _canonical_value(snapshot_voice)
+        private_synthesis = None
+        if "private_synthesis_dependencies" in result or "private_synthesis_dependencies" in slide:
+            from core.visual_design.segment_dependencies import validate_synthesis_dependencies
+            supplied = result["private_synthesis_dependencies"] if "private_synthesis_dependencies" in result else slide["private_synthesis_dependencies"]
+            private_synthesis = validate_synthesis_dependencies(supplied, project_id=project_id, page_key=page_key,
+                page=result if "source_slide_index" in result else slide)
+            if "private_synthesis_dependencies" in result and "private_synthesis_dependencies" in slide:
+                if canonical_json(result["private_synthesis_dependencies"]) != canonical_json(slide["private_synthesis_dependencies"]):
+                    raise ValueError("Conflicting private synthesis dependencies")
+            tts_settings["private_synthesis_dependencies"] = private_synthesis
         tts_language = _canonical_language(
             _first_present(
                 result.get("tts_normalization_language"),
@@ -626,6 +636,15 @@ def build_partial_render_manifest(
         timing_identity = _first_present(result.get("snapshot_timing_identity"), slide.get("snapshot_timing_identity"))
         if timing_identity is not None:
             structural["snapshot_timing_identity"] = _canonical_value(timing_identity)
+        private_captions = None
+        if "private_caption_dependencies" in result or "private_caption_dependencies" in slide:
+            from core.visual_design.segment_dependencies import validate_caption_dependencies
+            supplied = result["private_caption_dependencies"] if "private_caption_dependencies" in result else slide["private_caption_dependencies"]
+            private_captions = validate_caption_dependencies(supplied)
+            if "private_caption_dependencies" in result and "private_caption_dependencies" in slide:
+                if canonical_json(result["private_caption_dependencies"]) != canonical_json(slide["private_caption_dependencies"]):
+                    raise ValueError("Conflicting private caption dependencies")
+            structural["private_caption_dependencies"] = private_captions
         result_editor_scene = _nested_value(result.get("editor_document"), "scene")
         slide_editor_scene = _nested_value(slide.get("editor_document"), "scene")
         source_render = _drop_volatile(
@@ -687,6 +706,10 @@ def build_partial_render_manifest(
             "artifacts": artifacts,
             "invalidation_reasons": [],
         }
+        if private_captions is not None:
+            page_manifest["private_caption_dependencies"] = private_captions
+        if private_synthesis is not None:
+            page_manifest["private_synthesis_dependencies"] = private_synthesis
         pages[page_key] = page_manifest
         sequence_items.append(
             {
@@ -843,6 +866,23 @@ def classify_partial_render_changes(
         elif old_page is None or expected_page is None:
             reasons.append("structural_changed")
         else:
+            if "private_synthesis_dependencies" in old_page or "private_synthesis_dependencies" in expected_page:
+                from core.visual_design.segment_dependencies import validate_synthesis_dependencies
+                try:
+                    old_dep = validate_synthesis_dependencies(old_page.get("private_synthesis_dependencies"), project_id=old_manifest.get("project_id"), page_key=page_key)
+                    new_dep = validate_synthesis_dependencies(expected_page.get("private_synthesis_dependencies"), project_id=expected_manifest.get("project_id"), page_key=page_key)
+                    if old_dep != new_dep:
+                        reasons.append("tts_settings_changed")
+                except ValueError:
+                    reasons.append("unknown_requires_full")
+            if "private_caption_dependencies" in old_page or "private_caption_dependencies" in expected_page:
+                from core.visual_design.segment_dependencies import validate_caption_dependencies
+                try:
+                    old_cues = validate_caption_dependencies(old_page.get("private_caption_dependencies"))
+                    new_cues = validate_caption_dependencies(expected_page.get("private_caption_dependencies"))
+                    if old_cues != new_cues: reasons.append("structural_changed")
+                except ValueError:
+                    reasons.append("unknown_requires_full")
             for hash_key, reason in HASH_REASON_MAP.items():
                 if _manifest_value(old_page, hash_key) != _manifest_value(expected_page, hash_key):
                     changed_hashes.append(hash_key)

@@ -1,0 +1,684 @@
+{
+  "origin_commit": "400e9ca6d7d3519272414fff38ca26e590a25546",
+  "slides": [
+    {
+      "page_key": "zero-split",
+      "order": 0,
+      "index": 0,
+      "source_slide_index": 0,
+      "split_index": 1,
+      "original_text": "Ölçüm & observation",
+      "narration_text": "Protected narration.",
+      "subtitle_chunks": [
+        "Protected narration."
+      ],
+      "tts_settings": {},
+      "pause_seconds": 0.2
+    },
+    {
+      "page_key": "other-source",
+      "order": 1,
+      "index": 1,
+      "source_slide_index": 2,
+      "split_index": 0,
+      "original_text": "Comparison",
+      "narration_text": "Other narration.",
+      "subtitle_chunks": [
+        "Other narration."
+      ],
+      "tts_settings": {},
+      "pause_seconds": 0.2
+    }
+  ],
+  "voice": {
+    "provider": "xtts_v2",
+    "voice_id": "teacher-a",
+    "language": "en",
+    "speed": 1,
+    "pitch": 1
+  },
+  "core": {
+    "version": 1,
+    "project_id": 701,
+    "pipeline_version": "industrial-render-pipeline:v1",
+    "render_resolution": {
+      "width": 1920,
+      "height": 1080
+    },
+    "page_order": [
+      "zero-split",
+      "other-source"
+    ],
+    "pages": {
+      "zero-split": {
+        "page_key": "zero-split",
+        "slide_number": 1,
+        "index": 0,
+        "fingerprint": "sha256:fcda09cec5fbd097d7e585e7eea19d62a50a4c13a17984cb718744b3568ab3e2",
+        "inputs": {
+          "transcript": {
+            "narration_text": "Protected narration.",
+            "display_text": "Ölçüm & observation",
+            "subtitle_chunks": [
+              "Protected narration."
+            ],
+            "rich_text_html": ""
+          },
+          "image": {
+            "image_hash": "",
+            "image_token": "",
+            "background_mode": "",
+            "background_fit": "",
+            "whiteboard_mode": false,
+            "source_slide_index": 0,
+            "split_index": 1
+          },
+          "timing": {
+            "duration_seconds": null,
+            "pause_seconds": 0.2
+          },
+          "voice": {
+            "voice_id": "teacher-a",
+            "speed": 1,
+            "pitch": 1
+          },
+          "language": "en",
+          "tts_provider": "xtts_v2",
+          "tts_settings": {
+            "provider_preference": "auto",
+            "normalization_enabled": true,
+            "normalization_mode": "loose",
+            "unknown_word_strategy": "keep",
+            "overrides": {
+              "technical": {},
+              "abbreviation": {},
+              "mixed_word": {}
+            },
+            "speech_speed": 1.0,
+            "volume_gain_db": 0,
+            "pause_seconds": null
+          },
+          "avatar": {
+            "enabled": false
+          },
+          "render_resolution": {
+            "width": 1920,
+            "height": 1080
+          },
+          "pipeline_version": "industrial-render-pipeline:v1"
+        },
+        "artifacts": {}
+      },
+      "other-source": {
+        "page_key": "other-source",
+        "slide_number": 2,
+        "index": 1,
+        "fingerprint": "sha256:9c384cc4c9749e8f3ab89839453ddcddbc505351699ca4fb4d4cfcc1819b0c76",
+        "inputs": {
+          "transcript": {
+            "narration_text": "Other narration.",
+            "display_text": "Comparison",
+            "subtitle_chunks": [
+              "Other narration."
+            ],
+            "rich_text_html": ""
+          },
+          "image": {
+            "image_hash": "",
+            "image_token": "",
+            "background_mode": "",
+            "background_fit": "",
+            "whiteboard_mode": false,
+            "source_slide_index": 2,
+            "split_index": 0
+          },
+          "timing": {
+            "duration_seconds": null,
+            "pause_seconds": 0.2
+          },
+          "voice": {
+            "voice_id": "teacher-a",
+            "speed": 1,
+            "pitch": 1
+          },
+          "language": "en",
+          "tts_provider": "xtts_v2",
+          "tts_settings": {
+            "provider_preference": "auto",
+            "normalization_enabled": true,
+            "normalization_mode": "loose",
+            "unknown_word_strategy": "keep",
+            "overrides": {
+              "technical": {},
+              "abbreviation": {},
+              "mixed_word": {}
+            },
+            "speech_speed": 1.0,
+            "volume_gain_db": 0,
+            "pause_seconds": null
+          },
+          "avatar": {
+            "enabled": false
+          },
+          "render_resolution": {
+            "width": 1920,
+            "height": 1080
+          },
+          "pipeline_version": "industrial-render-pipeline:v1"
+        },
+        "artifacts": {}
+      }
+    },
+    "manifest_hash": "sha256:db1adad08c2124faeb119e674d1a0e13f5d57a649f21fe3f32c7d5d76413e914"
+  },
+  "partial": {
+    "version": 1,
+    "hash_semantics_version": 2,
+    "project_id": 701,
+    "job_id": null,
+    "sequence_hash": "sha256:fdc94eaee38d82a0a771a0bd0309de4d0e10289a08395715a07d915a9432d775",
+    "manifest_hash": "sha256:55f067bcff5396ce9aeba08a93449a53d35dca0abfa2461c68b1753b6384931b",
+    "pages": {
+      "zero-split": {
+        "index": 0,
+        "page_key": "zero-split",
+        "page_id": null,
+        "duration": null,
+        "pause_seconds": 0.2,
+        "display_text_hash": "sha256:5dc961c49b1bec848c7ef7817bf3f9e44b89eeffd9e094668f6a7d90a92385ac",
+        "narration_text_hash": "sha256:fb7987b1b0ec28bd2aff9db60f8db1a203b92b1cea5dd4969ab1a4d687686788",
+        "subtitle_text_hash": "sha256:41bc98b0b5840a8da5aaa158b2ea1df9a28865d07016e7896d5da55d23c019d5",
+        "tts_input_hash": "sha256:4a89da1c59230305a4a2110601664036a650acedd743258cc237b02f68ba3df4",
+        "tts_settings_hash": "sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51",
+        "avatar_input_hash": "sha256:6f46db9572e11ee8d950aea46b536c53898e65af025939a2f47a57f76777183f",
+        "avatar_display_hash": "sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62",
+        "background_hash": "sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0",
+        "layout_hash": "sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9",
+        "structural_hash": "sha256:70cf0e192f6173a3cbd277c5b9dcbf47dff945bc4d84449a1285b18e18fe99c2",
+        "source_render_hash": "sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80",
+        "avatar_layout": {
+          "position": "top-right",
+          "size": "medium",
+          "visible": true
+        },
+        "artifacts": {
+          "tts_audio": "",
+          "avatar_clip": "",
+          "composed_segment": "",
+          "slide_image": ""
+        },
+        "invalidation_reasons": []
+      },
+      "other-source": {
+        "index": 1,
+        "page_key": "other-source",
+        "page_id": null,
+        "duration": null,
+        "pause_seconds": 0.2,
+        "display_text_hash": "sha256:df1e82a1a76985a17ff8728809275671cf1eeef9419e4c21138e276cdb75fcae",
+        "narration_text_hash": "sha256:266b6fd2e478a36cc0473f666fbf031190769fb4877df7ae630ed8e80e74009f",
+        "subtitle_text_hash": "sha256:40452f4b55e2374507de649562596bbb40f929bd74962235840c9d09c8e9312f",
+        "tts_input_hash": "sha256:c4828f312e8cbfe1b547fca78685972aa9793c96b2b6d2dcaf14837197a2bc0b",
+        "tts_settings_hash": "sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51",
+        "avatar_input_hash": "sha256:d3449ba86326c35cf6baac7a247fd54f95ebd3d397b91fa7a0ca3ced7c6d16d5",
+        "avatar_display_hash": "sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62",
+        "background_hash": "sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0",
+        "layout_hash": "sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9",
+        "structural_hash": "sha256:81b1d0eb58af979db4597a43ef63c96e510390376f93977a8706f37d51024dba",
+        "source_render_hash": "sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80",
+        "avatar_layout": {
+          "position": "top-right",
+          "size": "medium",
+          "visible": true
+        },
+        "artifacts": {
+          "tts_audio": "",
+          "avatar_clip": "",
+          "composed_segment": "",
+          "slide_image": ""
+        },
+        "invalidation_reasons": []
+      }
+    }
+  },
+  "finalized": {
+    "version": 1,
+    "hash_semantics_version": 2,
+    "project_id": 701,
+    "job_id": null,
+    "sequence_hash": "sha256:fdc94eaee38d82a0a771a0bd0309de4d0e10289a08395715a07d915a9432d775",
+    "manifest_hash": "sha256:55f067bcff5396ce9aeba08a93449a53d35dca0abfa2461c68b1753b6384931b",
+    "pages": {
+      "zero-split": {
+        "index": 0,
+        "page_key": "zero-split",
+        "page_id": null,
+        "duration": null,
+        "pause_seconds": 0.2,
+        "display_text_hash": "sha256:5dc961c49b1bec848c7ef7817bf3f9e44b89eeffd9e094668f6a7d90a92385ac",
+        "narration_text_hash": "sha256:fb7987b1b0ec28bd2aff9db60f8db1a203b92b1cea5dd4969ab1a4d687686788",
+        "subtitle_text_hash": "sha256:41bc98b0b5840a8da5aaa158b2ea1df9a28865d07016e7896d5da55d23c019d5",
+        "tts_input_hash": "sha256:4a89da1c59230305a4a2110601664036a650acedd743258cc237b02f68ba3df4",
+        "tts_settings_hash": "sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51",
+        "avatar_input_hash": "sha256:6f46db9572e11ee8d950aea46b536c53898e65af025939a2f47a57f76777183f",
+        "avatar_display_hash": "sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62",
+        "background_hash": "sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0",
+        "layout_hash": "sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9",
+        "structural_hash": "sha256:70cf0e192f6173a3cbd277c5b9dcbf47dff945bc4d84449a1285b18e18fe99c2",
+        "source_render_hash": "sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80",
+        "avatar_layout": {
+          "position": "top-right",
+          "size": "medium",
+          "visible": true
+        },
+        "artifacts": {
+          "tts_audio": "",
+          "avatar_clip": "",
+          "composed_segment": "",
+          "slide_image": ""
+        },
+        "invalidation_reasons": []
+      },
+      "other-source": {
+        "index": 1,
+        "page_key": "other-source",
+        "page_id": null,
+        "duration": null,
+        "pause_seconds": 0.2,
+        "display_text_hash": "sha256:df1e82a1a76985a17ff8728809275671cf1eeef9419e4c21138e276cdb75fcae",
+        "narration_text_hash": "sha256:266b6fd2e478a36cc0473f666fbf031190769fb4877df7ae630ed8e80e74009f",
+        "subtitle_text_hash": "sha256:40452f4b55e2374507de649562596bbb40f929bd74962235840c9d09c8e9312f",
+        "tts_input_hash": "sha256:c4828f312e8cbfe1b547fca78685972aa9793c96b2b6d2dcaf14837197a2bc0b",
+        "tts_settings_hash": "sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51",
+        "avatar_input_hash": "sha256:d3449ba86326c35cf6baac7a247fd54f95ebd3d397b91fa7a0ca3ced7c6d16d5",
+        "avatar_display_hash": "sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62",
+        "background_hash": "sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0",
+        "layout_hash": "sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9",
+        "structural_hash": "sha256:81b1d0eb58af979db4597a43ef63c96e510390376f93977a8706f37d51024dba",
+        "source_render_hash": "sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80",
+        "avatar_layout": {
+          "position": "top-right",
+          "size": "medium",
+          "visible": true
+        },
+        "artifacts": {
+          "tts_audio": "",
+          "avatar_clip": "",
+          "composed_segment": "",
+          "slide_image": ""
+        },
+        "invalidation_reasons": []
+      }
+    }
+  },
+  "core_canonical": "{\"manifest_hash\":\"sha256:db1adad08c2124faeb119e674d1a0e13f5d57a649f21fe3f32c7d5d76413e914\",\"page_order\":[\"zero-split\",\"other-source\"],\"pages\":{\"other-source\":{\"artifacts\":{},\"fingerprint\":\"sha256:9c384cc4c9749e8f3ab89839453ddcddbc505351699ca4fb4d4cfcc1819b0c76\",\"index\":1,\"inputs\":{\"avatar\":{\"enabled\":false},\"image\":{\"background_fit\":\"\",\"background_mode\":\"\",\"image_hash\":\"\",\"image_token\":\"\",\"source_slide_index\":2,\"split_index\":0,\"whiteboard_mode\":false},\"language\":\"en\",\"pipeline_version\":\"industrial-render-pipeline:v1\",\"render_resolution\":{\"height\":1080,\"width\":1920},\"timing\":{\"duration_seconds\":null,\"pause_seconds\":0.2},\"transcript\":{\"display_text\":\"Comparison\",\"narration_text\":\"Other narration.\",\"rich_text_html\":\"\",\"subtitle_chunks\":[\"Other narration.\"]},\"tts_provider\":\"xtts_v2\",\"tts_settings\":{\"normalization_enabled\":true,\"normalization_mode\":\"loose\",\"overrides\":{\"abbreviation\":{},\"mixed_word\":{},\"technical\":{}},\"pause_seconds\":null,\"provider_preference\":\"auto\",\"speech_speed\":1,\"unknown_word_strategy\":\"keep\",\"volume_gain_db\":0},\"voice\":{\"pitch\":1,\"speed\":1,\"voice_id\":\"teacher-a\"}},\"page_key\":\"other-source\",\"slide_number\":2},\"zero-split\":{\"artifacts\":{},\"fingerprint\":\"sha256:fcda09cec5fbd097d7e585e7eea19d62a50a4c13a17984cb718744b3568ab3e2\",\"index\":0,\"inputs\":{\"avatar\":{\"enabled\":false},\"image\":{\"background_fit\":\"\",\"background_mode\":\"\",\"image_hash\":\"\",\"image_token\":\"\",\"source_slide_index\":0,\"split_index\":1,\"whiteboard_mode\":false},\"language\":\"en\",\"pipeline_version\":\"industrial-render-pipeline:v1\",\"render_resolution\":{\"height\":1080,\"width\":1920},\"timing\":{\"duration_seconds\":null,\"pause_seconds\":0.2},\"transcript\":{\"display_text\":\"\\u00d6l\\u00e7\\u00fcm & observation\",\"narration_text\":\"Protected narration.\",\"rich_text_html\":\"\",\"subtitle_chunks\":[\"Protected narration.\"]},\"tts_provider\":\"xtts_v2\",\"tts_settings\":{\"normalization_enabled\":true,\"normalization_mode\":\"loose\",\"overrides\":{\"abbreviation\":{},\"mixed_word\":{},\"technical\":{}},\"pause_seconds\":null,\"provider_preference\":\"auto\",\"speech_speed\":1,\"unknown_word_strategy\":\"keep\",\"volume_gain_db\":0},\"voice\":{\"pitch\":1,\"speed\":1,\"voice_id\":\"teacher-a\"}},\"page_key\":\"zero-split\",\"slide_number\":1}},\"pipeline_version\":\"industrial-render-pipeline:v1\",\"project_id\":701,\"render_resolution\":{\"height\":1080,\"width\":1920},\"version\":1}",
+  "partial_canonical": "{\"hash_semantics_version\":2,\"job_id\":null,\"manifest_hash\":\"sha256:55f067bcff5396ce9aeba08a93449a53d35dca0abfa2461c68b1753b6384931b\",\"pages\":{\"other-source\":{\"artifacts\":{\"avatar_clip\":\"\",\"composed_segment\":\"\",\"slide_image\":\"\",\"tts_audio\":\"\"},\"avatar_display_hash\":\"sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62\",\"avatar_input_hash\":\"sha256:d3449ba86326c35cf6baac7a247fd54f95ebd3d397b91fa7a0ca3ced7c6d16d5\",\"avatar_layout\":{\"position\":\"top-right\",\"size\":\"medium\",\"visible\":true},\"background_hash\":\"sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0\",\"display_text_hash\":\"sha256:df1e82a1a76985a17ff8728809275671cf1eeef9419e4c21138e276cdb75fcae\",\"duration\":null,\"index\":1,\"invalidation_reasons\":[],\"layout_hash\":\"sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9\",\"narration_text_hash\":\"sha256:266b6fd2e478a36cc0473f666fbf031190769fb4877df7ae630ed8e80e74009f\",\"page_id\":null,\"page_key\":\"other-source\",\"pause_seconds\":0.2,\"source_render_hash\":\"sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80\",\"structural_hash\":\"sha256:81b1d0eb58af979db4597a43ef63c96e510390376f93977a8706f37d51024dba\",\"subtitle_text_hash\":\"sha256:40452f4b55e2374507de649562596bbb40f929bd74962235840c9d09c8e9312f\",\"tts_input_hash\":\"sha256:c4828f312e8cbfe1b547fca78685972aa9793c96b2b6d2dcaf14837197a2bc0b\",\"tts_settings_hash\":\"sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51\"},\"zero-split\":{\"artifacts\":{\"avatar_clip\":\"\",\"composed_segment\":\"\",\"slide_image\":\"\",\"tts_audio\":\"\"},\"avatar_display_hash\":\"sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62\",\"avatar_input_hash\":\"sha256:6f46db9572e11ee8d950aea46b536c53898e65af025939a2f47a57f76777183f\",\"avatar_layout\":{\"position\":\"top-right\",\"size\":\"medium\",\"visible\":true},\"background_hash\":\"sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0\",\"display_text_hash\":\"sha256:5dc961c49b1bec848c7ef7817bf3f9e44b89eeffd9e094668f6a7d90a92385ac\",\"duration\":null,\"index\":0,\"invalidation_reasons\":[],\"layout_hash\":\"sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9\",\"narration_text_hash\":\"sha256:fb7987b1b0ec28bd2aff9db60f8db1a203b92b1cea5dd4969ab1a4d687686788\",\"page_id\":null,\"page_key\":\"zero-split\",\"pause_seconds\":0.2,\"source_render_hash\":\"sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80\",\"structural_hash\":\"sha256:70cf0e192f6173a3cbd277c5b9dcbf47dff945bc4d84449a1285b18e18fe99c2\",\"subtitle_text_hash\":\"sha256:41bc98b0b5840a8da5aaa158b2ea1df9a28865d07016e7896d5da55d23c019d5\",\"tts_input_hash\":\"sha256:4a89da1c59230305a4a2110601664036a650acedd743258cc237b02f68ba3df4\",\"tts_settings_hash\":\"sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51\"}},\"project_id\":701,\"sequence_hash\":\"sha256:fdc94eaee38d82a0a771a0bd0309de4d0e10289a08395715a07d915a9432d775\",\"version\":1}",
+  "finalized_canonical": "{\"hash_semantics_version\":2,\"job_id\":null,\"manifest_hash\":\"sha256:55f067bcff5396ce9aeba08a93449a53d35dca0abfa2461c68b1753b6384931b\",\"pages\":{\"other-source\":{\"artifacts\":{\"avatar_clip\":\"\",\"composed_segment\":\"\",\"slide_image\":\"\",\"tts_audio\":\"\"},\"avatar_display_hash\":\"sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62\",\"avatar_input_hash\":\"sha256:d3449ba86326c35cf6baac7a247fd54f95ebd3d397b91fa7a0ca3ced7c6d16d5\",\"avatar_layout\":{\"position\":\"top-right\",\"size\":\"medium\",\"visible\":true},\"background_hash\":\"sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0\",\"display_text_hash\":\"sha256:df1e82a1a76985a17ff8728809275671cf1eeef9419e4c21138e276cdb75fcae\",\"duration\":null,\"index\":1,\"invalidation_reasons\":[],\"layout_hash\":\"sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9\",\"narration_text_hash\":\"sha256:266b6fd2e478a36cc0473f666fbf031190769fb4877df7ae630ed8e80e74009f\",\"page_id\":null,\"page_key\":\"other-source\",\"pause_seconds\":0.2,\"source_render_hash\":\"sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80\",\"structural_hash\":\"sha256:81b1d0eb58af979db4597a43ef63c96e510390376f93977a8706f37d51024dba\",\"subtitle_text_hash\":\"sha256:40452f4b55e2374507de649562596bbb40f929bd74962235840c9d09c8e9312f\",\"tts_input_hash\":\"sha256:c4828f312e8cbfe1b547fca78685972aa9793c96b2b6d2dcaf14837197a2bc0b\",\"tts_settings_hash\":\"sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51\"},\"zero-split\":{\"artifacts\":{\"avatar_clip\":\"\",\"composed_segment\":\"\",\"slide_image\":\"\",\"tts_audio\":\"\"},\"avatar_display_hash\":\"sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62\",\"avatar_input_hash\":\"sha256:6f46db9572e11ee8d950aea46b536c53898e65af025939a2f47a57f76777183f\",\"avatar_layout\":{\"position\":\"top-right\",\"size\":\"medium\",\"visible\":true},\"background_hash\":\"sha256:cc47e13e51e3e93f866c40ac5af5c767346c339761686945dc09ec1a13e890e0\",\"display_text_hash\":\"sha256:5dc961c49b1bec848c7ef7817bf3f9e44b89eeffd9e094668f6a7d90a92385ac\",\"duration\":null,\"index\":0,\"invalidation_reasons\":[],\"layout_hash\":\"sha256:ffb89f6db713b4dce356c505f8a2cdfb0693409a94be2f63970fd218830818b9\",\"narration_text_hash\":\"sha256:fb7987b1b0ec28bd2aff9db60f8db1a203b92b1cea5dd4969ab1a4d687686788\",\"page_id\":null,\"page_key\":\"zero-split\",\"pause_seconds\":0.2,\"source_render_hash\":\"sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80\",\"structural_hash\":\"sha256:70cf0e192f6173a3cbd277c5b9dcbf47dff945bc4d84449a1285b18e18fe99c2\",\"subtitle_text_hash\":\"sha256:41bc98b0b5840a8da5aaa158b2ea1df9a28865d07016e7896d5da55d23c019d5\",\"tts_input_hash\":\"sha256:4a89da1c59230305a4a2110601664036a650acedd743258cc237b02f68ba3df4\",\"tts_settings_hash\":\"sha256:be86cb0453b1e6efe4fa2f7a7e6453179ecc6889ebb2aa64ff28378070c1df51\"}},\"project_id\":701,\"sequence_hash\":\"sha256:fdc94eaee38d82a0a771a0bd0309de4d0e10289a08395715a07d915a9432d775\",\"version\":1}",
+  "core_classification": {
+    "version": 1,
+    "mode": "planning_only",
+    "dirty_slides": [],
+    "reusable_slides": [
+      1,
+      2
+    ],
+    "reasons": {},
+    "global_reasons": [],
+    "slides": [
+      {
+        "slide": 1,
+        "page_key": "zero-split",
+        "status": "reusable",
+        "reasons": []
+      },
+      {
+        "slide": 2,
+        "page_key": "other-source",
+        "status": "reusable",
+        "reasons": []
+      }
+    ],
+    "actual_behavior_changed": false
+  },
+  "partial_classification": {
+    "version": 1,
+    "old_manifest_hash": "sha256:55f067bcff5396ce9aeba08a93449a53d35dca0abfa2461c68b1753b6384931b",
+    "expected_manifest_hash": "sha256:55f067bcff5396ce9aeba08a93449a53d35dca0abfa2461c68b1753b6384931b",
+    "old_sequence_hash": "sha256:fdc94eaee38d82a0a771a0bd0309de4d0e10289a08395715a07d915a9432d775",
+    "expected_sequence_hash": "sha256:fdc94eaee38d82a0a771a0bd0309de4d0e10289a08395715a07d915a9432d775",
+    "global_reasons": [],
+    "summary": {
+      "unchanged": 2,
+      "display_text_changed": 0,
+      "narration_text_changed": 0,
+      "subtitle_text_changed": 0,
+      "tts_input_changed": 0,
+      "tts_settings_changed": 0,
+      "avatar_input_changed": 0,
+      "avatar_display_changed": 0,
+      "background_changed": 0,
+      "layout_changed": 0,
+      "structural_changed": 0,
+      "missing_artifact": 0,
+      "unknown_requires_full": 0
+    },
+    "pages": {
+      "zero-split": {
+        "page_key": "zero-split",
+        "index": 0,
+        "old_index": 0,
+        "classification": "unchanged",
+        "reasons": [],
+        "changed_hashes": [],
+        "missing_artifacts": [],
+        "requires_full": false
+      },
+      "other-source": {
+        "page_key": "other-source",
+        "index": 1,
+        "old_index": 1,
+        "classification": "unchanged",
+        "reasons": [],
+        "changed_hashes": [],
+        "missing_artifacts": [],
+        "requires_full": false
+      }
+    }
+  },
+  "snapshot_plans": {
+    "core": {
+      "version": 1,
+      "project_id": "701",
+      "pipeline_version": "industrial-render-pipeline:v1",
+      "render_resolution": {
+        "width": 1920,
+        "height": 1080
+      },
+      "page_order": [
+        "source-0.split-1",
+        "source-2.split-0",
+        "source-0.split-0"
+      ],
+      "pages": {
+        "source-0.split-1": {
+          "page_key": "source-0.split-1",
+          "slide_number": 1,
+          "index": 0,
+          "fingerprint": "sha256:470949803d0a7f50ea318d2767335d0da4ed05eaceb401df85e93c45466bce5f",
+          "inputs": {
+            "transcript": {
+              "narration_text": "Plants need light and water to grow.",
+              "display_text": "Plant observation process\n1. Collect sample\n2. Record growth\n3. Check result",
+              "subtitle_chunks": [
+                "Plants need light and water to grow."
+              ],
+              "rich_text_html": ""
+            },
+            "image": {
+              "image_hash": "sha256:d7f9985ef96616c7ce571bdadde4b47aa7fd988559f6d32f26b1ba997dc2d56f",
+              "image_token": "sha256:d7f9985ef96616c7ce571bdadde4b47aa7fd988559f6d32f26b1ba997dc2d56f",
+              "background_mode": "completed_generated",
+              "background_fit": "",
+              "whiteboard_mode": false,
+              "source_slide_index": 0,
+              "split_index": 1
+            },
+            "timing": {
+              "duration_seconds": 2.335,
+              "pause_seconds": 2.2
+            },
+            "voice": {
+              "voice_id": "slt",
+              "speed": 1,
+              "pitch": 1
+            },
+            "language": "en",
+            "tts_provider": "flite",
+            "tts_settings": {
+              "provider_preference": "auto",
+              "normalization_enabled": true,
+              "normalization_mode": "loose",
+              "unknown_word_strategy": "keep",
+              "overrides": {
+                "technical": {},
+                "abbreviation": {},
+                "mixed_word": {}
+              },
+              "speech_speed": 1.0,
+              "volume_gain_db": 0,
+              "pause_seconds": null
+            },
+            "avatar": {
+              "enabled": false
+            },
+            "render_resolution": {
+              "width": 1920,
+              "height": 1080
+            },
+            "pipeline_version": "industrial-render-pipeline:v1"
+          },
+          "artifacts": {}
+        },
+        "source-2.split-0": {
+          "page_key": "source-2.split-0",
+          "slide_number": 2,
+          "index": 1,
+          "fingerprint": "sha256:ff80c5c6812cdd6ba825bb61f42f17761eae193526ee5249b70ce0bb70ae9324",
+          "inputs": {
+            "transcript": {
+              "narration_text": "Plants need light and water to grow.",
+              "display_text": "Energy storage comparison\nProperty | Battery | Capacitor\nStorage | Chemical | Electric field\nDischarge | Slow | Fast",
+              "subtitle_chunks": [
+                "Plants need light and water to grow."
+              ],
+              "rich_text_html": ""
+            },
+            "image": {
+              "image_hash": "sha256:bab0df928d9ad9344d13ec12dbcaf2edefb61e889d0f4206b28ecea48d328d06",
+              "image_token": "sha256:bab0df928d9ad9344d13ec12dbcaf2edefb61e889d0f4206b28ecea48d328d06",
+              "background_mode": "completed_generated",
+              "background_fit": "",
+              "whiteboard_mode": false,
+              "source_slide_index": 2,
+              "split_index": 0
+            },
+            "timing": {
+              "duration_seconds": 2.335,
+              "pause_seconds": 2.2
+            },
+            "voice": {
+              "voice_id": "slt",
+              "speed": 1,
+              "pitch": 1
+            },
+            "language": "en",
+            "tts_provider": "flite",
+            "tts_settings": {
+              "provider_preference": "auto",
+              "normalization_enabled": true,
+              "normalization_mode": "loose",
+              "unknown_word_strategy": "keep",
+              "overrides": {
+                "technical": {},
+                "abbreviation": {},
+                "mixed_word": {}
+              },
+              "speech_speed": 1.0,
+              "volume_gain_db": 0,
+              "pause_seconds": null
+            },
+            "avatar": {
+              "enabled": false
+            },
+            "render_resolution": {
+              "width": 1920,
+              "height": 1080
+            },
+            "pipeline_version": "industrial-render-pipeline:v1"
+          },
+          "artifacts": {}
+        },
+        "source-0.split-0": {
+          "page_key": "source-0.split-0",
+          "slide_number": 3,
+          "index": 2,
+          "fingerprint": "sha256:24528c3b5016e2db45d3e1b3045edc43da76e14ac4e97816b98feb0fec369534",
+          "inputs": {
+            "transcript": {
+              "narration_text": "Plants need light and water to grow.",
+              "display_text": "Plant growth\nGroup | Height (cm)\nControl | 12\nExperiment | 18",
+              "subtitle_chunks": [
+                "Plants need light and water to grow."
+              ],
+              "rich_text_html": ""
+            },
+            "image": {
+              "image_hash": "sha256:f32da1b6929079113f71a9ff3c0f6eb667120206785440fe695d4258a72793e8",
+              "image_token": "sha256:f32da1b6929079113f71a9ff3c0f6eb667120206785440fe695d4258a72793e8",
+              "background_mode": "completed_generated",
+              "background_fit": "",
+              "whiteboard_mode": false,
+              "source_slide_index": 0,
+              "split_index": 0
+            },
+            "timing": {
+              "duration_seconds": 2.335,
+              "pause_seconds": 2.2
+            },
+            "voice": {
+              "voice_id": "slt",
+              "speed": 1,
+              "pitch": 1
+            },
+            "language": "en",
+            "tts_provider": "flite",
+            "tts_settings": {
+              "provider_preference": "auto",
+              "normalization_enabled": true,
+              "normalization_mode": "loose",
+              "unknown_word_strategy": "keep",
+              "overrides": {
+                "technical": {},
+                "abbreviation": {},
+                "mixed_word": {}
+              },
+              "speech_speed": 1.0,
+              "volume_gain_db": 0,
+              "pause_seconds": null
+            },
+            "avatar": {
+              "enabled": false
+            },
+            "render_resolution": {
+              "width": 1920,
+              "height": 1080
+            },
+            "pipeline_version": "industrial-render-pipeline:v1"
+          },
+          "artifacts": {}
+        }
+      },
+      "manifest_hash": "sha256:e8176076805aa5c8d0e03742a2e7cd34b7230c4cf24e7bad1b9f8cdf3994dc61"
+    },
+    "partial": {
+      "version": 1,
+      "hash_semantics_version": 2,
+      "project_id": "701",
+      "job_id": null,
+      "sequence_hash": "sha256:01942921895dee3f13652a3936da8240019f6bf150a3a9501be947a9e5098a95",
+      "manifest_hash": "sha256:a2e08b728768def0d8ec0c06a1765a2cfb6118b058beb26e1a839408ee5678de",
+      "pages": {
+        "source-0.split-1": {
+          "index": 0,
+          "page_key": "source-0.split-1",
+          "page_id": "source-0.split-1",
+          "duration": 2.335,
+          "pause_seconds": 2.2,
+          "display_text_hash": "sha256:1868997e86d7c43d42bf12f9ff0c70d209e60b08e9a337166a884151a8ec10c1",
+          "narration_text_hash": "sha256:7d8f3231044ad9600da73a460943b7d3f2cc03cf97d333434a25ee8d5364912f",
+          "subtitle_text_hash": "sha256:a52f401493f79959174186632245406ac59684c318080e6629a21629a99e1116",
+          "tts_input_hash": "sha256:e7eee0c6c7b0c1e489e65e6358ed25e5c74a1944ecabbbde30f38c271eae7f32",
+          "tts_settings_hash": "sha256:fc46f5c9c740f7e47aaa95f0530854abe28e54dd6668b7f1fc23265368397e7f",
+          "avatar_input_hash": "sha256:f2d9e60abdcadeadb4724865b0d830f4f07f5bf1d1b3d686b37f89f0a5e435ac",
+          "avatar_display_hash": "sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62",
+          "background_hash": "sha256:fcf93ac59735b473dc9ca88f6a4122b2e59a32d233210b6bab9a227f4e3a34ca",
+          "layout_hash": "sha256:7dc96071c9f6a35c42a6bbb0da8480bf13e574c2f55c3724679de3787123bd4e",
+          "structural_hash": "sha256:8bb1d4dea6a77a2e772441fa748b910bccb5e303aa71df63594407efa6fba2a3",
+          "source_render_hash": "sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80",
+          "avatar_layout": {
+            "position": "top-right",
+            "size": "medium",
+            "visible": true
+          },
+          "artifacts": {
+            "tts_audio": "",
+            "avatar_clip": "",
+            "composed_segment": "",
+            "slide_image": ""
+          },
+          "invalidation_reasons": []
+        },
+        "source-2.split-0": {
+          "index": 1,
+          "page_key": "source-2.split-0",
+          "page_id": "source-2.split-0",
+          "duration": 2.335,
+          "pause_seconds": 2.2,
+          "display_text_hash": "sha256:a7e01d6f7fc34de146c33c8c93cd002213e8f320bc35292dcea82b9b9576bedd",
+          "narration_text_hash": "sha256:7d8f3231044ad9600da73a460943b7d3f2cc03cf97d333434a25ee8d5364912f",
+          "subtitle_text_hash": "sha256:a52f401493f79959174186632245406ac59684c318080e6629a21629a99e1116",
+          "tts_input_hash": "sha256:e7eee0c6c7b0c1e489e65e6358ed25e5c74a1944ecabbbde30f38c271eae7f32",
+          "tts_settings_hash": "sha256:fc46f5c9c740f7e47aaa95f0530854abe28e54dd6668b7f1fc23265368397e7f",
+          "avatar_input_hash": "sha256:f2d9e60abdcadeadb4724865b0d830f4f07f5bf1d1b3d686b37f89f0a5e435ac",
+          "avatar_display_hash": "sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62",
+          "background_hash": "sha256:fcf93ac59735b473dc9ca88f6a4122b2e59a32d233210b6bab9a227f4e3a34ca",
+          "layout_hash": "sha256:c38a1dadb5fcbcf1e55a770ffac2b001a99bfcf16ce4dbf852076328ab9996ee",
+          "structural_hash": "sha256:a519fed442807d05ed7df2d4e9e9ec8d803174daa8ac4ec167a5b68105f7901b",
+          "source_render_hash": "sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80",
+          "avatar_layout": {
+            "position": "top-right",
+            "size": "medium",
+            "visible": true
+          },
+          "artifacts": {
+            "tts_audio": "",
+            "avatar_clip": "",
+            "composed_segment": "",
+            "slide_image": ""
+          },
+          "invalidation_reasons": []
+        },
+        "source-0.split-0": {
+          "index": 2,
+          "page_key": "source-0.split-0",
+          "page_id": "source-0.split-0",
+          "duration": 2.335,
+          "pause_seconds": 2.2,
+          "display_text_hash": "sha256:cce93eaeaaf1d142586d402ac197b64080cffe90abdf47d37358d8a9b3939a27",
+          "narration_text_hash": "sha256:7d8f3231044ad9600da73a460943b7d3f2cc03cf97d333434a25ee8d5364912f",
+          "subtitle_text_hash": "sha256:a52f401493f79959174186632245406ac59684c318080e6629a21629a99e1116",
+          "tts_input_hash": "sha256:e7eee0c6c7b0c1e489e65e6358ed25e5c74a1944ecabbbde30f38c271eae7f32",
+          "tts_settings_hash": "sha256:fc46f5c9c740f7e47aaa95f0530854abe28e54dd6668b7f1fc23265368397e7f",
+          "avatar_input_hash": "sha256:f2d9e60abdcadeadb4724865b0d830f4f07f5bf1d1b3d686b37f89f0a5e435ac",
+          "avatar_display_hash": "sha256:c254621bb62c98587027ed107d12eb1f11a03cfa49f7b58b8f27daa78b7e7b62",
+          "background_hash": "sha256:fcf93ac59735b473dc9ca88f6a4122b2e59a32d233210b6bab9a227f4e3a34ca",
+          "layout_hash": "sha256:03d5acb3e9ec82e5da576c42c2ec3e980df95d670d3b4d96643c42e1611ada6e",
+          "structural_hash": "sha256:2c1323d9f90cc1d9442b9bab20a4ea7ce12720897cadf3b0638da2416b47b9fa",
+          "source_render_hash": "sha256:18e10b7414d076b89eb93f35ff99f189f6b3e4d1d51bf5cba7892fd279194f80",
+          "avatar_layout": {
+            "position": "top-right",
+            "size": "medium",
+            "visible": true
+          },
+          "artifacts": {
+            "tts_audio": "",
+            "avatar_clip": "",
+            "composed_segment": "",
+            "slide_image": ""
+          },
+          "invalidation_reasons": []
+        }
+      }
+    }
+  }
+}

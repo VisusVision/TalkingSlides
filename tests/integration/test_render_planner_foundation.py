@@ -561,3 +561,74 @@ def test_project_tts_settings_are_canonical_in_project_manifest(tmp_path):
     settings = manifest["pages"]["s1-p1"]["inputs"]["tts_settings"]
     assert settings["provider_preference"] == "gtts"
     assert settings["overrides"]["technical"] == {"ASP": "ey es pi"}
+
+
+def test_private_dependency_absence_preserves_exact_legacy_manifest_and_classification():
+    import json
+    from pathlib import Path
+    golden=json.loads((Path(__file__).parents[1]/"fixtures/visual_segments/planner_legacy_golden.json").read_text())
+    current=build_render_planner_manifest(project_id=701,slides=golden["slides"],voice=golden["voice"],language="en",tts_provider="xtts_v2")
+    assert canonical_json(current)==golden["core_canonical"]
+    assert current==golden["core"]
+    assert current["manifest_hash"]=="sha256:db1adad08c2124faeb119e674d1a0e13f5d57a649f21fe3f32c7d5d76413e914"
+    assert plan_render_dirty_slides(previous_manifest=current,current_manifest=current,required_artifacts=())==golden["core_classification"]
+
+
+def _private_dependency():
+    import json
+    from pathlib import Path
+    from core.visual_design.segment_contracts import SegmentAudioProof
+    from core.visual_design.segment_dependencies import dependencies_from_verified_audio
+    root=Path(__file__).parents[1]/"fixtures/visual_segments"
+    trust=json.loads((root/"trust_anchors.json").read_text()); proof=json.loads((root/"audio_proof_0.json").read_text())
+    audio=SegmentAudioProof(proof,expected_hash=trust["audio_proof_hashes"][0],expected_producer_id=trust["producer_id"],allow_synthetic=True)
+    # Schema-only planner tests: this supplied validation digest is a synthetic
+    # fixture, not byte/media acceptance. Actual eligibility tests use FFmpeg.
+    return dependencies_from_verified_audio(audio,"sha256:"+"a"*64).to_dict()
+
+
+def _private_core(dep):
+    slide={"page_key":"source-0.split-1","source_slide_index":0,"split_index":1,"order":0,
+           "narration_text":"Plants need light and water to grow.","private_synthesis_dependencies":dep}
+    return build_render_planner_manifest(project_id=701,slides=[slide])
+
+
+@pytest.mark.parametrize("field",["voice", "provider", "language", "sample", "model", "preparation", "pronunciation", "spoken", "audio", "proof"])
+def test_explicit_synthesis_dependency_changes_use_existing_tts_invalidation(field):
+    dep=_private_dependency(); before=_private_core(dep); newer=deepcopy(dep)
+    replacement="sha256:"+"b"*64
+    if field=="voice": newer["synthesis"]["voice_id"]="other-voice"
+    if field=="provider": newer["synthesis"]["provider"]="other-provider"
+    if field=="language": newer["narration"]["language"]="tr"
+    if field=="sample":
+        newer["synthesis"]["voice_kind"]="cloned"
+        newer["synthesis"]["dependencies"]["sample"]={"sha256":replacement,"size":100,"extension":"wav"}
+    if field=="model": newer["synthesis"]["dependencies"]["model_hash"]=replacement
+    if field=="preparation": newer["synthesis"]["dependencies"]["preparation_hash"]=replacement
+    if field=="pronunciation": newer["synthesis"]["dependencies"]["pronunciation_hash"]=replacement
+    if field=="spoken": newer["narration"]["spoken_hash"]=replacement
+    if field=="audio": newer["audio"]["asset"]["sha256"]=replacement
+    if field=="proof": newer["producer"]["proof_hash"]=replacement
+    report=plan_render_dirty_slides(previous_manifest=before,current_manifest=_private_core(newer),required_artifacts=())
+    assert report["dirty_slides"]==[1] and report["reasons"]["1"]==[REASON_PROVIDER_CHANGED]
+    assert report["actual_behavior_changed"] is False
+
+
+def test_private_semantics_cannot_be_ignored_by_an_equal_stored_fingerprint():
+    baseline=_private_core(_private_dependency()); damaged=deepcopy(baseline)
+    damaged["pages"]["source-0.split-1"]["inputs"]["private_synthesis_dependencies"]["schema_version"]="unknown.v99"
+    report=plan_render_dirty_slides(previous_manifest=baseline,current_manifest=damaged,required_artifacts=())
+    assert REASON_MISSING_BASELINE in report["reasons"]["1"]
+    missing=deepcopy(baseline);missing["pages"]["source-0.split-1"]["inputs"].pop("private_synthesis_dependencies")
+    assert plan_render_dirty_slides(previous_manifest=missing,current_manifest=baseline,required_artifacts=())["dirty_slides"]==[1]
+
+
+@pytest.mark.parametrize("legacy_timing",[None,False,0,"old-timing",[]])
+def test_absent_private_fields_preserve_legacy_timing_shape_handling(legacy_timing):
+    import json
+    from pathlib import Path
+    golden=json.loads((Path(__file__).parents[1]/"fixtures/visual_segments/planner_legacy_golden.json").read_text())
+    before=deepcopy(golden["core"]);after=deepcopy(before);page=before["pages"]["zero-split"]
+    page["inputs"]["timing"]=legacy_timing;page["fingerprint"]=render_fingerprint(page["inputs"])
+    report=plan_render_dirty_slides(previous_manifest=before,current_manifest=after,required_artifacts=())
+    assert report["dirty_slides"]==[1] and report["reasons"]["1"]==["TimingChanged"]
