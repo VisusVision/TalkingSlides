@@ -57,8 +57,12 @@ async function setup(page) {
 }
 async function openVisuals(page) {
   await page.goto('/studio?view=editor&lesson=501');
+  await expect(page.getByTestId('studio-creator-header')).toBeVisible();
   const inspector = page.locator('button[aria-controls="studio-compact-inspector-workspace"]');
-  if (await inspector.isVisible()) await inspector.click();
+  if (page.viewportSize().width < 1280) {
+    await expect(inspector).toBeVisible();
+    await inspector.click();
+  }
   await page.locator('#studio-inspector-tab-intelligence').click();
   await page.getByRole('tab', { name: 'Visuals ✨', exact: true }).click();
 }
@@ -77,6 +81,9 @@ for (const [device, viewport] of Object.entries({ desktop: { width: 1600, height
     expect(state.writes).toEqual(['/api/v1/projects/501/visual-suggestions/']);
     await page.getByRole('button', { name: 'Save visual draft', exact: true }).click();
     await expect(page.getByText('Private visual choice saved. Video unchanged.')).toBeVisible();
+    await preview.scrollIntoViewIfNeeded();
+    expect((await preview.boundingBox()).width).toBeLessThanOrEqual(viewport.width);
+    await test.info().attach(`saved-private-visual-${device}`, { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
     await openVisuals(page);
     await expect(preview.getByRole('img', { name: 'Selected design', exact: true })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save visual draft', exact: true })).toBeDisabled();
