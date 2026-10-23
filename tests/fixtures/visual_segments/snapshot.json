@@ -1,0 +1,709 @@
+{
+  "schema_version": "visual-render-snapshot.v1",
+  "project_id": "701",
+  "owner_id": "801",
+  "revision_hash": "sha256:821dd0b94dfc1a85720db9520b07a427c3505a30abd8eca15187a6a7fba8ff22",
+  "state": {
+    "source_mode": "draft",
+    "ordinary_draft": {
+      "metadata": {
+        "dirty": true
+      }
+    },
+    "project_fields": {
+      "title": "Synthetic educational segment fixture"
+    },
+    "pages": [
+      {
+        "page_key": "source-0.split-1",
+        "order": 0,
+        "source_slide_index": 0,
+        "split_index": 1,
+        "original_text": "Plant observation process\n1. Collect sample\n2. Record growth\n3. Check result",
+        "narration_text": "Plants need light and water to grow.",
+        "rich_text_html": "",
+        "editor_document": {},
+        "whiteboard_mode": false,
+        "subtitle_chunks": [
+          "Plants need light and water to grow."
+        ],
+        "chunk_timeline": [
+          {
+            "start": 0.243,
+            "end": 2.18,
+            "text": "Plants need light and water to grow."
+          }
+        ],
+        "start_seconds": 0,
+        "end_seconds": 2.335,
+        "duration_seconds": 2.335
+      },
+      {
+        "page_key": "source-2.split-0",
+        "order": 1,
+        "source_slide_index": 2,
+        "split_index": 0,
+        "original_text": "Energy storage comparison\nProperty | Battery | Capacitor\nStorage | Chemical | Electric field\nDischarge | Slow | Fast",
+        "narration_text": "Plants need light and water to grow.",
+        "rich_text_html": "",
+        "editor_document": {},
+        "whiteboard_mode": false,
+        "subtitle_chunks": [
+          "Plants need light and water to grow."
+        ],
+        "chunk_timeline": [
+          {
+            "start": 5.243,
+            "end": 7.18,
+            "text": "Plants need light and water to grow."
+          }
+        ],
+        "start_seconds": 5,
+        "end_seconds": 7.335,
+        "duration_seconds": 2.335
+      },
+      {
+        "page_key": "source-0.split-0",
+        "order": 2,
+        "source_slide_index": 0,
+        "split_index": 0,
+        "original_text": "Plant growth\nGroup | Height (cm)\nControl | 12\nExperiment | 18",
+        "narration_text": "Plants need light and water to grow.",
+        "rich_text_html": "",
+        "editor_document": {},
+        "whiteboard_mode": false,
+        "subtitle_chunks": [
+          "Plants need light and water to grow."
+        ],
+        "chunk_timeline": [
+          {
+            "start": 10.243,
+            "end": 12.18,
+            "text": "Plants need light and water to grow."
+          }
+        ],
+        "start_seconds": 10,
+        "end_seconds": 12.335,
+        "duration_seconds": 2.335
+      }
+    ],
+    "source_stamps": [
+      {
+        "page_key": "source-0.split-1",
+        "source_hash": "sha256:728af3467c2bcfb9c952fbeb3a51716b9a78ba6a0dd2c2e95ef7c0fbaa24dd09",
+        "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6"
+      },
+      {
+        "page_key": "source-2.split-0",
+        "source_hash": "sha256:563f8b68d3e39441eec2a4edffe55aa8b539cf36f443bd94c7873320e1b233cc",
+        "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92"
+      },
+      {
+        "page_key": "source-0.split-0",
+        "source_hash": "sha256:38a000e7d7fb715fbd180f15138d4841896fc2c67953d3cf07c710843c29bf1b",
+        "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537"
+      }
+    ],
+    "selections": [
+      {
+        "page_key": "source-0.split-1",
+        "version": 1,
+        "state": "selected",
+        "candidate_id": "00000000-0000-4000-8000-000000000001"
+      },
+      {
+        "page_key": "source-2.split-0",
+        "version": 1,
+        "state": "selected",
+        "candidate_id": "00000000-0000-4000-8000-000000000002"
+      },
+      {
+        "page_key": "source-0.split-0",
+        "version": 1,
+        "state": "selected",
+        "candidate_id": "00000000-0000-4000-8000-000000000003"
+      }
+    ],
+    "voice": {
+      "provider": "flite",
+      "voice_id": "slt",
+      "language": "en",
+      "speed": 1,
+      "pitch": 1
+    },
+    "tts_settings": {},
+    "avatar": {
+      "enabled": false
+    }
+  },
+  "scenes": [
+    {
+      "schema_version": "completed-scene.v1",
+      "page_key": "source-0.split-1",
+      "type": "completed_generated",
+      "display_overlay": "none",
+      "narration_enabled": true,
+      "subtitles_enabled": true,
+      "original": {
+        "mode": "original",
+        "scene": {},
+        "assets": {
+          "original": {
+            "sha256": "sha256:e519ca5a5d0439429f68575b535e303d21052a39e02697b411d788bd22d7831d",
+            "size": 27162,
+            "extension": "png"
+          }
+        },
+        "missing_policy": "fail"
+      },
+      "design": {
+        "candidate_id": "00000000-0000-4000-8000-000000000001",
+        "selection_version": 1,
+        "source_hash": "sha256:728af3467c2bcfb9c952fbeb3a51716b9a78ba6a0dd2c2e95ef7c0fbaa24dd09",
+        "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+        "design_source_hash": "sha256:96e3e25c0545a4ff71078466b4fb047e791f389f37609845428f97bf2cac34b6",
+        "plan_hash": "sha256:4a3d606d9df36fd9cb38cc1637881a30b157787efbfafcb79b66c40b49e856de",
+        "preview_hash": "sha256:bca6c85e83c5f50ceaff79ee135d71bb06e86b31e175ce72297014568cf390f9",
+        "contains_text": true,
+        "grounding": {
+          "schema_version": "grounded-design.v1",
+          "extractor_version": "text-evidence.v1",
+          "base_snapshot": {
+            "evidence": [],
+            "original_display_text": "Plant observation process\n1. Collect sample\n2. Record growth\n3. Check result",
+            "page_key": "source-0.split-1",
+            "project_id": "701",
+            "protected_narration": "Plants need light and water to grow.",
+            "schema_version": "slide-source.v1",
+            "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+            "source_slide_index": 0,
+            "split_index": 1
+          },
+          "evidence": [
+            {
+              "id": "text-process",
+              "kind": "process",
+              "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+              "locator": "original_display_text",
+              "verified": true,
+              "data": {
+                "steps": [
+                  {
+                    "id": "step-1",
+                    "label": "Collect sample"
+                  },
+                  {
+                    "id": "step-2",
+                    "label": "Record growth"
+                  },
+                  {
+                    "id": "step-3",
+                    "label": "Check result"
+                  }
+                ],
+                "order": [
+                  "step-1",
+                  "step-2",
+                  "step-3"
+                ],
+                "relationship": "sequence"
+              },
+              "heading": "Plant observation process"
+            }
+          ],
+          "supports": [
+            {
+              "page_key": "source-0.split-1",
+              "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+              "locator": "display:0:25",
+              "start": 0,
+              "end": 25,
+              "quote": "Plant observation process"
+            },
+            {
+              "page_key": "source-0.split-1",
+              "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+              "locator": "display:26:43",
+              "start": 26,
+              "end": 43,
+              "quote": "1. Collect sample"
+            },
+            {
+              "page_key": "source-0.split-1",
+              "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+              "locator": "display:44:60",
+              "start": 44,
+              "end": 60,
+              "quote": "2. Record growth"
+            },
+            {
+              "page_key": "source-0.split-1",
+              "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+              "locator": "display:61:76",
+              "start": 61,
+              "end": 76,
+              "quote": "3. Check result"
+            }
+          ],
+          "warnings": [],
+          "origin": "source_text",
+          "proposal_id": null
+        },
+        "plan": {
+          "evidence_refs": [
+            "text-process"
+          ],
+          "fallback_reason": null,
+          "layout": {
+            "evidence_id": "text-process",
+            "heading": "Plant observation process",
+            "order": [
+              "step-1",
+              "step-2",
+              "step-3"
+            ],
+            "relationship": "sequence",
+            "steps": [
+              {
+                "id": "step-1",
+                "label": "Collect sample"
+              },
+              {
+                "id": "step-2",
+                "label": "Record growth"
+              },
+              {
+                "id": "step-3",
+                "label": "Check result"
+              }
+            ]
+          },
+          "rationale": "Explicit source order supports a sequence diagram; arrows assert order only.",
+          "required_labels": [
+            "Plant observation process",
+            "Collect sample",
+            "Record growth",
+            "Check result"
+          ],
+          "schema_version": "visual-plan.v1",
+          "source_hash": "sha256:96e3e25c0545a4ff71078466b4fb047e791f389f37609845428f97bf2cac34b6",
+          "source_identity": {
+            "page_key": "source-0.split-1",
+            "project_id": "701",
+            "source_revision": "sha256:73f594385fe530af5c1caec76c23479851c057f62f389944dd7edec01775f3b6",
+            "source_slide_index": 0,
+            "split_index": 1
+          },
+          "strategy": "flowchart",
+          "template_version": "educational.v1"
+        },
+        "preview_metadata": {
+          "contains_text": true,
+          "errors": [],
+          "height": 1080,
+          "plan_hash": "sha256:4a3d606d9df36fd9cb38cc1637881a30b157787efbfafcb79b66c40b49e856de",
+          "renderer_version": "svg-educational.v2",
+          "schema_version": "visual-preview.v1",
+          "source_hash": "sha256:96e3e25c0545a4ff71078466b4fb047e791f389f37609845428f97bf2cac34b6",
+          "status": "valid",
+          "strategy": "flowchart",
+          "warnings": [
+            "Font-dependent pixels: use DejaVu Sans; SVG bounds use a conservative Latin glyph advance, not arbitrary-font shaping."
+          ],
+          "width": 1920
+        },
+        "proposal": null,
+        "confirmation": null,
+        "asset": {
+          "sha256": "sha256:28bfb5edd6ae3acc41b2269887f2a77e1fcde258ddb3fca7fcf521471d8aa9aa",
+          "size": 1960,
+          "extension": "svg"
+        }
+      }
+    },
+    {
+      "schema_version": "completed-scene.v1",
+      "page_key": "source-2.split-0",
+      "type": "completed_generated",
+      "display_overlay": "none",
+      "narration_enabled": true,
+      "subtitles_enabled": true,
+      "original": {
+        "mode": "original",
+        "scene": {},
+        "assets": {
+          "original": {
+            "sha256": "sha256:e519ca5a5d0439429f68575b535e303d21052a39e02697b411d788bd22d7831d",
+            "size": 27162,
+            "extension": "png"
+          }
+        },
+        "missing_policy": "fail"
+      },
+      "design": {
+        "candidate_id": "00000000-0000-4000-8000-000000000002",
+        "selection_version": 1,
+        "source_hash": "sha256:563f8b68d3e39441eec2a4edffe55aa8b539cf36f443bd94c7873320e1b233cc",
+        "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+        "design_source_hash": "sha256:682c257740aff5a6d6fc4da7b867947e1450f4f0b72c9b35486f331d8aebd23e",
+        "plan_hash": "sha256:fdf8f1251ca490a64800c3ad82b754fef960b01134e7705011298ea0c59520d1",
+        "preview_hash": "sha256:651414df700a507df3be158babf3f0ee6fb0d887447f9c157114d64d424fd9c9",
+        "contains_text": true,
+        "grounding": {
+          "schema_version": "grounded-design.v1",
+          "extractor_version": "text-evidence.v1",
+          "base_snapshot": {
+            "evidence": [],
+            "original_display_text": "Energy storage comparison\nProperty | Battery | Capacitor\nStorage | Chemical | Electric field\nDischarge | Slow | Fast",
+            "page_key": "source-2.split-0",
+            "project_id": "701",
+            "protected_narration": "Plants need light and water to grow.",
+            "schema_version": "slide-source.v1",
+            "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+            "source_slide_index": 2,
+            "split_index": 0
+          },
+          "evidence": [
+            {
+              "id": "text-comparison",
+              "kind": "comparison",
+              "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+              "locator": "original_display_text",
+              "verified": true,
+              "data": {
+                "categories": [
+                  "Storage",
+                  "Discharge"
+                ],
+                "items": [
+                  {
+                    "label": "Battery",
+                    "values": [
+                      "Chemical",
+                      "Slow"
+                    ]
+                  },
+                  {
+                    "label": "Capacitor",
+                    "values": [
+                      "Electric field",
+                      "Fast"
+                    ]
+                  }
+                ]
+              },
+              "heading": "Energy storage comparison"
+            }
+          ],
+          "supports": [
+            {
+              "page_key": "source-2.split-0",
+              "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+              "locator": "display:0:25",
+              "start": 0,
+              "end": 25,
+              "quote": "Energy storage comparison"
+            },
+            {
+              "page_key": "source-2.split-0",
+              "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+              "locator": "display:26:56",
+              "start": 26,
+              "end": 56,
+              "quote": "Property | Battery | Capacitor"
+            },
+            {
+              "page_key": "source-2.split-0",
+              "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+              "locator": "display:57:92",
+              "start": 57,
+              "end": 92,
+              "quote": "Storage | Chemical | Electric field"
+            },
+            {
+              "page_key": "source-2.split-0",
+              "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+              "locator": "display:93:116",
+              "start": 93,
+              "end": 116,
+              "quote": "Discharge | Slow | Fast"
+            }
+          ],
+          "warnings": [],
+          "origin": "source_text",
+          "proposal_id": null
+        },
+        "plan": {
+          "evidence_refs": [
+            "text-comparison"
+          ],
+          "fallback_reason": null,
+          "layout": {
+            "categories": [
+              "Storage",
+              "Discharge"
+            ],
+            "evidence_id": "text-comparison",
+            "heading": "Energy storage comparison",
+            "items": [
+              {
+                "label": "Battery",
+                "values": [
+                  "Chemical",
+                  "Slow"
+                ]
+              },
+              {
+                "label": "Capacitor",
+                "values": [
+                  "Electric field",
+                  "Fast"
+                ]
+              }
+            ]
+          },
+          "rationale": "Two concepts have explicit facts for the same source-backed categories.",
+          "required_labels": [
+            "Energy storage comparison",
+            "Storage",
+            "Discharge",
+            "Battery",
+            "Capacitor",
+            "Chemical",
+            "Slow",
+            "Electric field",
+            "Fast"
+          ],
+          "schema_version": "visual-plan.v1",
+          "source_hash": "sha256:682c257740aff5a6d6fc4da7b867947e1450f4f0b72c9b35486f331d8aebd23e",
+          "source_identity": {
+            "page_key": "source-2.split-0",
+            "project_id": "701",
+            "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+            "source_slide_index": 2,
+            "split_index": 0
+          },
+          "strategy": "comparison",
+          "template_version": "educational.v1"
+        },
+        "preview_metadata": {
+          "contains_text": true,
+          "errors": [],
+          "height": 1080,
+          "plan_hash": "sha256:fdf8f1251ca490a64800c3ad82b754fef960b01134e7705011298ea0c59520d1",
+          "renderer_version": "svg-educational.v2",
+          "schema_version": "visual-preview.v1",
+          "source_hash": "sha256:682c257740aff5a6d6fc4da7b867947e1450f4f0b72c9b35486f331d8aebd23e",
+          "status": "valid",
+          "strategy": "comparison",
+          "warnings": [
+            "Font-dependent pixels: use DejaVu Sans; SVG bounds use a conservative Latin glyph advance, not arbitrary-font shaping."
+          ],
+          "width": 1920
+        },
+        "proposal": null,
+        "confirmation": null,
+        "asset": {
+          "sha256": "sha256:583b568fae1a21f78ae395f45fd5e5eee4c841dc5619f8104ebcbd5d9c55a1d5",
+          "size": 2463,
+          "extension": "svg"
+        }
+      }
+    },
+    {
+      "schema_version": "completed-scene.v1",
+      "page_key": "source-0.split-0",
+      "type": "completed_generated",
+      "display_overlay": "none",
+      "narration_enabled": true,
+      "subtitles_enabled": true,
+      "original": {
+        "mode": "original",
+        "scene": {},
+        "assets": {
+          "original": {
+            "sha256": "sha256:e519ca5a5d0439429f68575b535e303d21052a39e02697b411d788bd22d7831d",
+            "size": 27162,
+            "extension": "png"
+          }
+        },
+        "missing_policy": "fail"
+      },
+      "design": {
+        "candidate_id": "00000000-0000-4000-8000-000000000003",
+        "selection_version": 1,
+        "source_hash": "sha256:38a000e7d7fb715fbd180f15138d4841896fc2c67953d3cf07c710843c29bf1b",
+        "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+        "design_source_hash": "sha256:3d66b2c4e0f23fe4d5e3e0d4452f7f264d59d0d61cd0d16302c729e7416f64df",
+        "plan_hash": "sha256:dbaf78d41a9109c501f70b265414ea418d5f4992e99199a60cefdf771da96b75",
+        "preview_hash": "sha256:089c3b1c2d0e9f3e6acf5c7c522519da1505012ad3af271cea37b085eda1f584",
+        "contains_text": true,
+        "grounding": {
+          "schema_version": "grounded-design.v1",
+          "extractor_version": "text-evidence.v1",
+          "base_snapshot": {
+            "evidence": [],
+            "original_display_text": "Plant growth\nGroup | Height (cm)\nControl | 12\nExperiment | 18",
+            "page_key": "source-0.split-0",
+            "project_id": "701",
+            "protected_narration": "Plants need light and water to grow.",
+            "schema_version": "slide-source.v1",
+            "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+            "source_slide_index": 0,
+            "split_index": 0
+          },
+          "evidence": [
+            {
+              "id": "text-numeric",
+              "kind": "numeric",
+              "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+              "locator": "original_display_text",
+              "verified": true,
+              "data": {
+                "measure": "Height",
+                "unit": "cm",
+                "points": [
+                  {
+                    "label": "Control",
+                    "value": 12
+                  },
+                  {
+                    "label": "Experiment",
+                    "value": 18
+                  }
+                ]
+              },
+              "heading": "Plant growth"
+            }
+          ],
+          "supports": [
+            {
+              "page_key": "source-0.split-0",
+              "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+              "locator": "display:0:12",
+              "start": 0,
+              "end": 12,
+              "quote": "Plant growth"
+            },
+            {
+              "page_key": "source-0.split-0",
+              "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+              "locator": "display:13:32",
+              "start": 13,
+              "end": 32,
+              "quote": "Group | Height (cm)"
+            },
+            {
+              "page_key": "source-0.split-0",
+              "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+              "locator": "display:33:45",
+              "start": 33,
+              "end": 45,
+              "quote": "Control | 12"
+            },
+            {
+              "page_key": "source-0.split-0",
+              "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+              "locator": "display:46:61",
+              "start": 46,
+              "end": 61,
+              "quote": "Experiment | 18"
+            }
+          ],
+          "warnings": [],
+          "origin": "source_text",
+          "proposal_id": null
+        },
+        "plan": {
+          "evidence_refs": [
+            "text-numeric"
+          ],
+          "fallback_reason": null,
+          "layout": {
+            "evidence_id": "text-numeric",
+            "heading": "Plant growth",
+            "measure": "Height",
+            "points": [
+              {
+                "label": "Control",
+                "value": 12
+              },
+              {
+                "label": "Experiment",
+                "value": 18
+              }
+            ],
+            "unit": "cm"
+          },
+          "rationale": "Verified labels, values and a common unit support a zero-baseline bar chart.",
+          "required_labels": [
+            "Plant growth",
+            "Height",
+            "cm",
+            "Control",
+            "12",
+            "Experiment",
+            "18"
+          ],
+          "schema_version": "visual-plan.v1",
+          "source_hash": "sha256:3d66b2c4e0f23fe4d5e3e0d4452f7f264d59d0d61cd0d16302c729e7416f64df",
+          "source_identity": {
+            "page_key": "source-0.split-0",
+            "project_id": "701",
+            "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+            "source_slide_index": 0,
+            "split_index": 0
+          },
+          "strategy": "chart",
+          "template_version": "educational.v1"
+        },
+        "preview_metadata": {
+          "contains_text": true,
+          "errors": [],
+          "height": 1080,
+          "plan_hash": "sha256:dbaf78d41a9109c501f70b265414ea418d5f4992e99199a60cefdf771da96b75",
+          "renderer_version": "svg-educational.v2",
+          "schema_version": "visual-preview.v1",
+          "source_hash": "sha256:3d66b2c4e0f23fe4d5e3e0d4452f7f264d59d0d61cd0d16302c729e7416f64df",
+          "status": "valid",
+          "strategy": "chart",
+          "warnings": [
+            "Font-dependent pixels: use DejaVu Sans; SVG bounds use a conservative Latin glyph advance, not arbitrary-font shaping."
+          ],
+          "width": 1920
+        },
+        "proposal": null,
+        "confirmation": null,
+        "asset": {
+          "sha256": "sha256:9e670f0097a1e55c8aa8fbaec90c6a2fee7a0fa7bb0c5330de1edbf060d39ee2",
+          "size": 1894,
+          "extension": "svg"
+        }
+      }
+    }
+  ],
+  "fonts": {
+    "regular": {
+      "sha256": "sha256:ae7b7855e115a5966d8b1b3f80f254ccc117ec86f9965e202ee2940453837280",
+      "size": 759720,
+      "extension": "ttf"
+    },
+    "bold": {
+      "sha256": "sha256:5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895",
+      "size": 708920,
+      "extension": "ttf"
+    }
+  },
+  "render_config": {
+    "width": 1920,
+    "height": 1080,
+    "purpose": "isolated_frame.v1",
+    "pipeline_version": "industrial-render-pipeline:v1",
+    "fps": 25,
+    "tts_mode": "service",
+    "language_hint": "auto",
+    "default_pause_seconds": 2.2,
+    "subtitle_policy": "narration_sidecar.v1",
+    "avatar_policy": "unsupported.v1"
+  }
+}

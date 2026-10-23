@@ -1,0 +1,248 @@
+{
+  "schema_version": "visual-segment-request.v1",
+  "snapshot": {
+    "owner_id": "801",
+    "project_id": "701",
+    "snapshot_id": "00000000-0000-4000-8000-000000000701",
+    "snapshot_hash": "sha256:e3029ba276ee6befc116c68ec263a8d0276aafd4db6f14e20e036b3ffe389dd2",
+    "authored_revision_hash": "sha256:821dd0b94dfc1a85720db9520b07a427c3505a30abd8eca15187a6a7fba8ff22"
+  },
+  "page": {
+    "page_key": "source-0.split-0",
+    "source_slide_index": 0,
+    "split_index": 0,
+    "order": 2
+  },
+  "scene": {
+    "schema_version": "visual-segment-scene.v1",
+    "page": {
+      "page_key": "source-0.split-0",
+      "source_slide_index": 0,
+      "split_index": 0
+    },
+    "kind": "completed_generated.v1",
+    "text_owner": "completed_design",
+    "display_overlay": "none",
+    "contains_text": true,
+    "narration_enabled": true,
+    "subtitles_enabled": true,
+    "source_hash": "sha256:38a000e7d7fb715fbd180f15138d4841896fc2c67953d3cf07c710843c29bf1b",
+    "source_revision": "sha256:96a104c3ec780da9a0d12657194caa64d65bb51e44cb3a7d8bd503f5a5465537",
+    "design": {
+      "candidate_id": "00000000-0000-4000-8000-000000000003",
+      "selection_version": 1,
+      "proposal_id": null,
+      "proposal_hash": null,
+      "confirmation_hash": null,
+      "grounded_design_hash": "sha256:3d66b2c4e0f23fe4d5e3e0d4452f7f264d59d0d61cd0d16302c729e7416f64df",
+      "plan_hash": "sha256:dbaf78d41a9109c501f70b265414ea418d5f4992e99199a60cefdf771da96b75",
+      "preview_hash": "sha256:089c3b1c2d0e9f3e6acf5c7c522519da1505012ad3af271cea37b085eda1f584",
+      "plan_schema": "visual-plan.v1",
+      "preview_schema": "visual-preview.v1",
+      "template_version": "educational.v1",
+      "renderer_version": "svg-educational.v2"
+    },
+    "asset": {
+      "extension": "svg",
+      "sha256": "sha256:9e670f0097a1e55c8aa8fbaec90c6a2fee7a0fa7bb0c5330de1edbf060d39ee2",
+      "size": 1894
+    },
+    "fonts": {
+      "bold": {
+        "extension": "ttf",
+        "sha256": "sha256:5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895",
+        "size": 708920
+      },
+      "regular": {
+        "extension": "ttf",
+        "sha256": "sha256:ae7b7855e115a5966d8b1b3f80f254ccc117ec86f9965e202ee2940453837280",
+        "size": 759720
+      }
+    },
+    "original": {
+      "page": {
+        "page_key": "source-0.split-0",
+        "source_slide_index": 0,
+        "split_index": 0
+      },
+      "source_template_index": 0,
+      "asset": {
+        "extension": "png",
+        "sha256": "sha256:e519ca5a5d0439429f68575b535e303d21052a39e02697b411d788bd22d7831d",
+        "size": 27162
+      },
+      "recovery_policy": "explicit_new_request.v1",
+      "missing_policy": "fail"
+    }
+  },
+  "narration": {
+    "protected_text": "Plants need light and water to grow.",
+    "protected_hash": "sha256:a8b94aec599221453306a742381a6438f8aa1fdf63c54ae5c9aab05d635176bf",
+    "spoken_text": "Plants need light and water to grow.",
+    "spoken_hash": "sha256:a8b94aec599221453306a742381a6438f8aa1fdf63c54ae5c9aab05d635176bf",
+    "language": "en",
+    "audio_proof_hash": "sha256:a4d5f58d11f166dcad927956c185073d101de7fa939f96e73657b34b198a6c75"
+  },
+  "audio_mode": "reuse_verified_audio.v1",
+  "audio_proof": {
+    "schema_version": "visual-segment-audio-proof.v1",
+    "receipt_id": "00000000-0000-4000-8000-000000000102",
+    "producer": {
+      "id": "synthetic-flite-fixture.v1",
+      "build_hash": "sha256:f6dd698ea47b85d64b4e7a061849d2e622e4d0c63059f23d6021a647bd66c7e5",
+      "attestation_kind": "synthetic_engineering_attestation.v1"
+    },
+    "owner_id": "801",
+    "project_id": "701",
+    "page": {
+      "page_key": "source-0.split-0",
+      "source_slide_index": 0,
+      "split_index": 0
+    },
+    "baseline": {
+      "job_id": "synthetic-baseline-job",
+      "run_id": "synthetic-baseline-run",
+      "manifest_hash": "sha256:ee487a6cbb06745f35b8ba645238b42f014bd6958f6c0f626458b37788305457",
+      "page_order": 2,
+      "cues_hash": "sha256:bfbf78c655064983515c78babe6a5af608b64435947eb3fab21ee6477f2ffd28"
+    },
+    "narration": {
+      "protected_text": "Plants need light and water to grow.",
+      "protected_hash": "sha256:a8b94aec599221453306a742381a6438f8aa1fdf63c54ae5c9aab05d635176bf",
+      "spoken_text": "Plants need light and water to grow.",
+      "spoken_hash": "sha256:a8b94aec599221453306a742381a6438f8aa1fdf63c54ae5c9aab05d635176bf",
+      "language": "en"
+    },
+    "synthesis": {
+      "provider": "flite",
+      "voice_id": "slt",
+      "voice_kind": "built_in",
+      "fallback": "none",
+      "snapshot_tts_settings_hash": "sha256:066d3a13b8d18855ad77b08028b1b22de0f7ff51f224cb7325a67fe8433f6c63",
+      "settings": {
+        "schema_version": "neutral-audio-settings.v1",
+        "speed": 1,
+        "pitch": 1,
+        "gain_db": 0
+      },
+      "dependencies": {
+        "model_hash": "sha256:03ccfdbdd4df4135e0a825f9810fce1fe051cc739c36ccc75a9947a114cdd55f",
+        "config_hash": "sha256:4acd297825bcbc9117b9a37bce20dfeabc8982ca9a37d8efc0eb286cd6c3f4d2",
+        "preparation_hash": "sha256:05d0d26ff468fb589d9384e22b309a9d73a825d5ea72a7919e25b235c23312d6",
+        "pronunciation_hash": "sha256:d456d49a5e39689cf2012df85fb8e5c37c7c85f2de9df061fee0450231c348da",
+        "sample": null
+      }
+    },
+    "audio": {
+      "asset": {
+        "sha256": "sha256:2249cceae85b3b763183a9b7d7ab63cd9ff8679be0ef3433dc3989ae9c6a911c",
+        "size": 15501,
+        "extension": "m4a"
+      },
+      "codec": "aac",
+      "profile": "LC",
+      "sample_rate": 44100,
+      "channels": 1,
+      "duration_ms": 2335,
+      "audible_start_ms": 243,
+      "audible_end_ms": 2180,
+      "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91"
+    },
+    "processing": {
+      "schema_version": "audio-postprocessing.v1",
+      "input_asset": {
+        "sha256": "sha256:508e55dee9eae994cf8dfa85c9bac5a6ee0b9f7f5ecb2ab6fcac5eee989b55ce",
+        "size": 74764,
+        "extension": "wav"
+      },
+      "operations": [
+        {
+          "operation": "resample_aac_encode.v1",
+          "settings_hash": "sha256:b3cf838337d24228f75dff38b8ed499df1620f5389706fed2298d258242f8386",
+          "implementation_hash": "sha256:ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+          "input_hash": "sha256:508e55dee9eae994cf8dfa85c9bac5a6ee0b9f7f5ecb2ab6fcac5eee989b55ce",
+          "output_hash": "sha256:2249cceae85b3b763183a9b7d7ab63cd9ff8679be0ef3433dc3989ae9c6a911c"
+        }
+      ],
+      "measurement_version": "pcm-threshold-100-and-ffprobe.v1"
+    }
+  },
+  "subtitles": {
+    "page": {
+      "page_key": "source-0.split-0",
+      "source_slide_index": 0,
+      "split_index": 0
+    },
+    "authored_chunks": [
+      "Plants need light and water to grow."
+    ],
+    "cues": [
+      {
+        "chunk_index": 0,
+        "start_ms": 243,
+        "end_ms": 2180,
+        "text": "Plants need light and water to grow."
+      }
+    ],
+    "cues_hash": "sha256:bfbf78c655064983515c78babe6a5af608b64435947eb3fab21ee6477f2ffd28",
+    "policy": "frozen_baseline.v1",
+    "provenance": {
+      "baseline_job_id": "synthetic-baseline-job",
+      "baseline_run_id": "synthetic-baseline-run",
+      "producer_receipt_id": "00000000-0000-4000-8000-000000000102",
+      "allocator_version": null
+    },
+    "audio_duration_ms": 2335,
+    "hold_duration_ms": 200,
+    "target_duration_ms": 2535,
+    "time_base": "milliseconds.v1",
+    "frozen_absolute": {
+      "start_seconds": 10,
+      "end_seconds": 12.335,
+      "duration_seconds": 2.335,
+      "chunk_timeline": [
+        {
+          "start": 10.243,
+          "end": 12.18,
+          "text": "Plants need light and water to grow."
+        }
+      ]
+    }
+  },
+  "recipe": {
+    "purpose": "private_visual_segment.v1",
+    "recipe_version": "h264-aac-copy.v1",
+    "width": 1920,
+    "height": 1080,
+    "fps": 25,
+    "video_codec": "h264",
+    "video_encoder": "libx264",
+    "pixel_format": "yuv420p",
+    "crf": 23,
+    "preset": "medium",
+    "audio_codec": "aac",
+    "audio_profile": "LC",
+    "audio_policy": "reuse_without_reprocessing",
+    "subtitle_policy": "sidecars_only.v1",
+    "runtime": {
+      "build_id": "fixture-media-build.v1",
+      "ffmpeg_version": "6.1.1-3ubuntu5",
+      "ffmpeg_binary_hash": "sha256:ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+      "rasterizer_id": "librsvg.v1",
+      "rasterizer_build_hash": "sha256:8e8cd30e4f306491895a7f7a6b035da1031d46f8d812feb078843616d6ce960f",
+      "fontconfig_build_hash": "sha256:77d72ad688a03502085e42a503a7043ae0e40e1e28574d3e869aba322c3c45b7"
+    },
+    "fonts_hash": "sha256:af14035aa8f896cd8fb95d32701be19bb6553f2720a439dedbb632cca602bc9c",
+    "limits": {
+      "max_duration_ms": 120000,
+      "max_audio_bytes": 16777216,
+      "max_mp4_bytes": 33554432,
+      "max_caption_bytes": 131072,
+      "max_attempt_bytes": 67108864,
+      "execution_timeout_seconds": 180,
+      "probe_timeout_seconds": 10,
+      "duration_tolerance_ms": 80
+    }
+  },
+  "authorization_policy": "live_authorization_revocation_required.v1"
+}

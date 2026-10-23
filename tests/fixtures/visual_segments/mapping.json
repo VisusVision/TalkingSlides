@@ -1,0 +1,22 @@
+{
+  "source_slide_indices": [
+    0,
+    2,
+    0
+  ],
+  "split_indices": [
+    1,
+    0,
+    0
+  ],
+  "display_positions": [
+    0,
+    1,
+    2
+  ],
+  "page_keys": [
+    "source-0.split-1",
+    "source-2.split-0",
+    "source-0.split-0"
+  ]
+}

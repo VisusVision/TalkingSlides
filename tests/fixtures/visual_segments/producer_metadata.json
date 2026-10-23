@@ -1,0 +1,30 @@
+{
+  "scope": "synthetic engineering fixture only; no legacy audio certification",
+  "text": "Plants need light and water to grow.",
+  "source": "Original synthetic educational sentence, authored for this fixture.",
+  "generator": "FFmpeg 6.1.1-3ubuntu5 lavfi flite voice=slt; installed offline CMU Flite libraries; no model download",
+  "license": "Original sentence and generated test audio: CC0-1.0 dedication; Flite notices in FLITE_NOTICE.txt",
+  "wav": {
+    "sha256": "sha256:508e55dee9eae994cf8dfa85c9bac5a6ee0b9f7f5ecb2ab6fcac5eee989b55ce",
+    "size": 74764,
+    "extension": "wav",
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_width": 2,
+    "frames": 37360
+  },
+  "m4a": {
+    "sha256": "sha256:2249cceae85b3b763183a9b7d7ab63cd9ff8679be0ef3433dc3989ae9c6a911c",
+    "size": 15501,
+    "extension": "m4a"
+  },
+  "duration_ms": 2335,
+  "audible_start_ms": 243,
+  "audible_end_ms": 2180,
+  "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91",
+  "libraries": {
+    "/lib/x86_64-linux-gnu/libflite.so.1": "sha256:d456d49a5e39689cf2012df85fb8e5c37c7c85f2de9df061fee0450231c348da",
+    "/lib/x86_64-linux-gnu/libflite_cmu_us_slt.so.1": "sha256:03ccfdbdd4df4135e0a825f9810fce1fe051cc739c36ccc75a9947a114cdd55f"
+  },
+  "ffmpeg_binary_hash": "sha256:ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41"
+}

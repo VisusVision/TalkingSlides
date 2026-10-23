@@ -1,0 +1,23 @@
+{
+  "scope": "TEST ONLY. These are synthetic engineering attestations, not production producer receipts.",
+  "producer_id": "synthetic-flite-fixture.v1",
+  "snapshot_id": "00000000-0000-4000-8000-000000000701",
+  "snapshot_hash": "sha256:e3029ba276ee6befc116c68ec263a8d0276aafd4db6f14e20e036b3ffe389dd2",
+  "revision_hash": "sha256:821dd0b94dfc1a85720db9520b07a427c3505a30abd8eca15187a6a7fba8ff22",
+  "runtime_hash": "sha256:dacb93f540e5bb2504237e17d56ff12b1ae0f9710368e23bb99a8aba6fa6dca5",
+  "audio_proof_hashes": [
+    "sha256:ed942540997a0ff79b272e6cb9307b61447f0b12eccfe42df528910399443437",
+    "sha256:9bf6aafd84873380b28c981b72937417253b5d2f5c6e56f2faa1063d79273ee1",
+    "sha256:a4d5f58d11f166dcad927956c185073d101de7fa939f96e73657b34b198a6c75"
+  ],
+  "execution_hashes": [
+    "sha256:390db2843af366b028cc973e4d12d7ea254c8c20f5af50499c7363fedf508f98",
+    "sha256:fafe16148404d1d312c701c408f60a079b7aa3d4b4c9b6ffeaf5b29a213403c7",
+    "sha256:eebc0155ccd628122a0e627322f54faf57a289b78d21bfaf4b79d81681e7d9c2"
+  ],
+  "receipt_hashes": [
+    "sha256:307fe4908c116a8edea1a6bc96cbb181cf2dd89825c765432e1846671234969c",
+    "sha256:d2404078cd3a2d9c9b7db8bfdca746f7968e356d5cb6439dfbe4d7309ad8767d",
+    "sha256:722ad745f458c6a6d19a5447ec1a5b9625f5258f77139be824577e581a72cddc"
+  ]
+}

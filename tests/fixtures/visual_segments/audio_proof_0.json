@@ -1,0 +1,83 @@
+{
+  "schema_version": "visual-segment-audio-proof.v1",
+  "receipt_id": "00000000-0000-4000-8000-000000000100",
+  "producer": {
+    "id": "synthetic-flite-fixture.v1",
+    "build_hash": "sha256:f6dd698ea47b85d64b4e7a061849d2e622e4d0c63059f23d6021a647bd66c7e5",
+    "attestation_kind": "synthetic_engineering_attestation.v1"
+  },
+  "owner_id": "801",
+  "project_id": "701",
+  "page": {
+    "page_key": "source-0.split-1",
+    "source_slide_index": 0,
+    "split_index": 1
+  },
+  "baseline": {
+    "job_id": "synthetic-baseline-job",
+    "run_id": "synthetic-baseline-run",
+    "manifest_hash": "sha256:ee487a6cbb06745f35b8ba645238b42f014bd6958f6c0f626458b37788305457",
+    "page_order": 0,
+    "cues_hash": "sha256:cdbab869ad31a5c53c81a9be4a604d64fe02273b06f3b1e5393c5a04629dab81"
+  },
+  "narration": {
+    "protected_text": "Plants need light and water to grow.",
+    "protected_hash": "sha256:a8b94aec599221453306a742381a6438f8aa1fdf63c54ae5c9aab05d635176bf",
+    "spoken_text": "Plants need light and water to grow.",
+    "spoken_hash": "sha256:a8b94aec599221453306a742381a6438f8aa1fdf63c54ae5c9aab05d635176bf",
+    "language": "en"
+  },
+  "synthesis": {
+    "provider": "flite",
+    "voice_id": "slt",
+    "voice_kind": "built_in",
+    "fallback": "none",
+    "snapshot_tts_settings_hash": "sha256:066d3a13b8d18855ad77b08028b1b22de0f7ff51f224cb7325a67fe8433f6c63",
+    "settings": {
+      "schema_version": "neutral-audio-settings.v1",
+      "speed": 1,
+      "pitch": 1,
+      "gain_db": 0
+    },
+    "dependencies": {
+      "model_hash": "sha256:03ccfdbdd4df4135e0a825f9810fce1fe051cc739c36ccc75a9947a114cdd55f",
+      "config_hash": "sha256:4acd297825bcbc9117b9a37bce20dfeabc8982ca9a37d8efc0eb286cd6c3f4d2",
+      "preparation_hash": "sha256:05d0d26ff468fb589d9384e22b309a9d73a825d5ea72a7919e25b235c23312d6",
+      "pronunciation_hash": "sha256:d456d49a5e39689cf2012df85fb8e5c37c7c85f2de9df061fee0450231c348da",
+      "sample": null
+    }
+  },
+  "audio": {
+    "asset": {
+      "sha256": "sha256:2249cceae85b3b763183a9b7d7ab63cd9ff8679be0ef3433dc3989ae9c6a911c",
+      "size": 15501,
+      "extension": "m4a"
+    },
+    "codec": "aac",
+    "profile": "LC",
+    "sample_rate": 44100,
+    "channels": 1,
+    "duration_ms": 2335,
+    "audible_start_ms": 243,
+    "audible_end_ms": 2180,
+    "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91"
+  },
+  "processing": {
+    "schema_version": "audio-postprocessing.v1",
+    "input_asset": {
+      "sha256": "sha256:508e55dee9eae994cf8dfa85c9bac5a6ee0b9f7f5ecb2ab6fcac5eee989b55ce",
+      "size": 74764,
+      "extension": "wav"
+    },
+    "operations": [
+      {
+        "operation": "resample_aac_encode.v1",
+        "settings_hash": "sha256:b3cf838337d24228f75dff38b8ed499df1620f5389706fed2298d258242f8386",
+        "implementation_hash": "sha256:ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+        "input_hash": "sha256:508e55dee9eae994cf8dfa85c9bac5a6ee0b9f7f5ecb2ab6fcac5eee989b55ce",
+        "output_hash": "sha256:2249cceae85b3b763183a9b7d7ab63cd9ff8679be0ef3433dc3989ae9c6a911c"
+      }
+    ],
+    "measurement_version": "pcm-threshold-100-and-ffprobe.v1"
+  }
+}

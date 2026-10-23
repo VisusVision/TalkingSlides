@@ -1,0 +1,118 @@
+{
+  "schema_version": "visual-segment-receipt.v1",
+  "execution_hash": "sha256:fafe16148404d1d312c701c408f60a079b7aa3d4b4c9b6ffeaf5b29a213403c7",
+  "snapshot": {
+    "owner_id": "801",
+    "project_id": "701",
+    "snapshot_id": "00000000-0000-4000-8000-000000000701",
+    "snapshot_hash": "sha256:e3029ba276ee6befc116c68ec263a8d0276aafd4db6f14e20e036b3ffe389dd2",
+    "authored_revision_hash": "sha256:821dd0b94dfc1a85720db9520b07a427c3505a30abd8eca15187a6a7fba8ff22"
+  },
+  "page": {
+    "page_key": "source-2.split-0",
+    "source_slide_index": 2,
+    "split_index": 0,
+    "order": 1
+  },
+  "scene_hash": "sha256:ca0599efc1672603086eeaa40267bfcda455e3ac148ed3de373d68a923340bae",
+  "design": {
+    "source_hash": "sha256:563f8b68d3e39441eec2a4edffe55aa8b539cf36f443bd94c7873320e1b233cc",
+    "source_revision": "sha256:da705d3ab85b27e06bd54ded881791610f86d2f3b4d4dfd80f166c756a483c92",
+    "selected": {
+      "candidate_id": "00000000-0000-4000-8000-000000000002",
+      "selection_version": 1,
+      "proposal_id": null,
+      "proposal_hash": null,
+      "confirmation_hash": null,
+      "grounded_design_hash": "sha256:682c257740aff5a6d6fc4da7b867947e1450f4f0b72c9b35486f331d8aebd23e",
+      "plan_hash": "sha256:fdf8f1251ca490a64800c3ad82b754fef960b01134e7705011298ea0c59520d1",
+      "preview_hash": "sha256:651414df700a507df3be158babf3f0ee6fb0d887447f9c157114d64d424fd9c9",
+      "plan_schema": "visual-plan.v1",
+      "preview_schema": "visual-preview.v1",
+      "template_version": "educational.v1",
+      "renderer_version": "svg-educational.v2"
+    }
+  },
+  "inputs": {
+    "frame_asset": {
+      "sha256": "sha256:e3f5728a3544fa414b27ac6785b42a0f4a2e30938fd31518efff6a6dd44cba71",
+      "size": 51621,
+      "extension": "png"
+    },
+    "audio_asset": {
+      "sha256": "sha256:2249cceae85b3b763183a9b7d7ab63cd9ff8679be0ef3433dc3989ae9c6a911c",
+      "size": 15501,
+      "extension": "m4a"
+    },
+    "audio_proof_hash": "sha256:9bf6aafd84873380b28c981b72937417253b5d2f5c6e56f2faa1063d79273ee1",
+    "cues_hash": "sha256:8eb31de4edf01efcbe7f33f4a2272a8bfb0c181cf2c45e44f6a19f1d94f4aabf"
+  },
+  "producer": {
+    "receipt_id": "00000000-0000-4000-8000-000000000101",
+    "producer_id": "synthetic-flite-fixture.v1",
+    "baseline": {
+      "job_id": "synthetic-baseline-job",
+      "run_id": "synthetic-baseline-run",
+      "manifest_hash": "sha256:ee487a6cbb06745f35b8ba645238b42f014bd6958f6c0f626458b37788305457",
+      "page_order": 1,
+      "cues_hash": "sha256:8eb31de4edf01efcbe7f33f4a2272a8bfb0c181cf2c45e44f6a19f1d94f4aabf"
+    }
+  },
+  "recipe_hash": "sha256:652e1be0a8dcdc6b04e029b7b5a39d754ee0f50f66db8d51cf6756e014733a36",
+  "runtime": {
+    "build_id": "fixture-media-build.v1",
+    "ffmpeg_version": "6.1.1-3ubuntu5",
+    "ffmpeg_binary_hash": "sha256:ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+    "rasterizer_id": "librsvg.v1",
+    "rasterizer_build_hash": "sha256:8e8cd30e4f306491895a7f7a6b035da1031d46f8d812feb078843616d6ce960f",
+    "fontconfig_build_hash": "sha256:77d72ad688a03502085e42a503a7043ae0e40e1e28574d3e869aba322c3c45b7"
+  },
+  "attempt_generation": 1,
+  "outputs": {
+    "mp4": {
+      "sha256": "sha256:1730747df92bbd0584f2add9d827bdb25a8c3386f3b14c83adc96a5eaca180a4",
+      "size": 1000,
+      "extension": "mp4"
+    },
+    "srt": {
+      "sha256": "sha256:22bac5e068e22e5842572ccf91a4600c35266a61308d4496acbc0720838a2d83",
+      "size": 1000,
+      "extension": "srt"
+    },
+    "vtt": {
+      "sha256": "sha256:44052cf2cea7581b00fe31aee1aee69263b6e369f335d4cceaff3f968c796734",
+      "size": 1000,
+      "extension": "vtt"
+    }
+  },
+  "streams": {
+    "video": {
+      "codec": "h264",
+      "width": 1920,
+      "height": 1080,
+      "fps": 25,
+      "pixel_format": "yuv420p",
+      "duration_ms": 2560,
+      "frame_count": 64
+    },
+    "audio": {
+      "codec": "aac",
+      "profile": "LC",
+      "sample_rate": 44100,
+      "channels": 1,
+      "duration_ms": 2335,
+      "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91"
+    },
+    "container_duration_ms": 2560,
+    "caption_end_ms": 2180
+  },
+  "acceptance": {
+    "status": "accepted_private.v1",
+    "validator_version": "visual-segment-validator.v1",
+    "integrity": "all_output_hashes_verified.v1",
+    "warnings": [
+      "synthetic_receipt_no_output_files"
+    ]
+  },
+  "publishing_allowed": false
+}
