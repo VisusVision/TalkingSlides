@@ -126,6 +126,9 @@ def main():
         value=lesson();page=value.pages[0];page.narration_text='A later saved source';page.save();return {'edited':True}
     if action=='owner_lost':
         value=lesson();value.owner.is_active=False;value.owner.save();return {'inactive':True}
+    if action=='producer_lost':
+        marker=Path('/engineering-private/test-controls/producer-disabled')
+        marker.write_text('disabled');marker.chmod(0o600);return {'producer_disabled':True}
     if action in ('pause','resume'):
         stage=sys.argv[2]
         if stage not in ('claim','native','media','pin','accepted','send','sent'):raise RuntimeError('invalid barrier')
@@ -136,8 +139,11 @@ def main():
         else:(root/('pause-'+stage)).unlink(missing_ok=True)
         return {'barrier':stage,'action':action}
     if action=='reached':return (Path('/engineering-private/test-controls')/('reached-'+sys.argv[2])).exists()
+    if action=='execution_finished':return Path('/engineering-private/test-controls/execution-finished').is_file()
+    if action=='delivery_finished':return Path('/engineering-private/test-controls/delivery-finished').is_file()
     if action=='reset_controls':
         root=Path('/engineering-private/test-controls')
+        for name in ('execution-finished','delivery-finished','producer-disabled'):(root/name).unlink(missing_ok=True)
         for stage in ('claim','native','media','pin','accepted','send','sent'):
             for prefix in ('pause-','reached-'):(root/(prefix+stage)).unlink(missing_ok=True)
         return {'reset':True}

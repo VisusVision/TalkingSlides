@@ -28,6 +28,18 @@ client-disconnect probe and requires actual Gunicorn process inspection rather
 than silently treating unavailable descriptor inspection as success. Final-tree
 test results and remaining gates are recorded below when verification completes.
 
+The first continuation run, [40121841441](https://github.com/VisusVision/TalkingSlides/actions/runs/40121841441)
+at `af3ba87cf657f01b8195c5f920447ccf5b07b0bb`, passed actual private generation,
+HTTP GET/HEAD/Range/sidecars, cross-owner/public-route denial and descriptor cleanup.
+It stopped during restart health verification because the controller reused an
+ephemeral port from before container restart. The API itself restarted normally.
+The controller now resolves the loopback port after every API start/restart.
+Additional continuation coverage waits for executor exit after revocation,
+tests abrupt Redis/AOF recovery without republishing, and checks producer denial
+at reservation, worker claim, completion and delivery across processes. Built
+fault probes also reject an unmounted private directory and an unexpected FFmpeg
+binary hash. Production trust and readiness functions are unchanged.
+
 Verified starting HEAD: `ed49b3e0ffc26167e29d94d49c7d9cca80148d10`, clean
 `feature/ai-visual-designer`. Main/developer are not modified or merged.
 

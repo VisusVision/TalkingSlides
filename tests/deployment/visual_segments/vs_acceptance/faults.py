@@ -14,6 +14,22 @@ from core.visual_segment_artifacts import PrivateSegmentMedia,MediaPinBudget
 
 mode=sys.argv[1]
 root=Path('/fault')
+if mode=='missing_mount':
+    from core.visual_private_volume import inspect_volume
+    with tempfile.TemporaryDirectory() as directory:
+        Path(directory).chmod(0o700)
+        try:inspect_volume(directory)
+        except ValueError as exc:
+            assert str(exc)=='explicit_private_mount_required'
+            print(json.dumps({'fault':mode,'rejected':True}));raise SystemExit(0)
+    raise AssertionError('Unmounted directory accepted as a private volume')
+if mode=='runtime_drift':
+    from core.visual_segment_artifacts import NativeAudioValidator
+    try:NativeAudioValidator._tool('/usr/bin/ffmpeg','sha256:'+'0'*64)
+    except DesignError as exc:
+        assert exc.code=='audio_runtime'
+        print(json.dumps({'fault':mode,'rejected':True}));raise SystemExit(0)
+    raise AssertionError('Unexpected FFmpeg build accepted')
 if mode in ('disk','inode'):
     full=False
     for i in range(1000):

@@ -46,6 +46,11 @@ appropriate. Pauses have 45-second deadlines. Expiry/cooldown test-clock updates
 change only operational fields in the isolated test database, never immutable
 request content. Retrying an expired claim uses the real explicit reconciliation
 and generation fence. No automatic retry service or new queue is introduced.
+The broker is also killed with an unconsumed message and must recover it from AOF
+without republishing. Authorization cases wait for the real executor to exit
+before checking the absence of a receipt. A test-only producer-denial marker
+propagates across processes at reservation, claim, completion and later HTTP
+delivery; it can only withdraw engineering authority, never enroll a producer.
 
 `acceptance.json` records image IDs, actual UID/GID, native builds, media digests,
 executed scenarios and separate gate states. `containers.log` contains disposable

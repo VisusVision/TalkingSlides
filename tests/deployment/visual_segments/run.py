@@ -237,7 +237,7 @@ class Deployment:
                       '/api/v1/projects/701/jobs/'+str(signed['job_id'])+'/'):
             if self.http('GET',route)[0] not in (403,404):raise SecurityInvariantError('Private result escaped through ordinary token/Job route')
         self.ops('replay',0);time.sleep(2);assert self.summary()['receipt_hash']==receipt and self.summary()['attempts']==1
-        self.cmd('restart','api','worker');self.wait(lambda:self.http('GET','/health/')[0]==200)
+        self.cmd('restart','api','worker');self.api_ready()
         assert self.http('GET',path+'mp4/')[0]==200
         self.ops('cancel');assert self.http('GET',path+'mp4/')[0]==403
         inventory=self.cmd('run','--rm','--no-deps','api','python','-m','django','visual_segment_inventory').stdout
@@ -276,7 +276,11 @@ class Deployment:
     def authorization(self,action):
         self.reset(inferred=action=='revoke');self.ops('pause','native');self.worker();self.submit();self.reached('native')
         self.ops(action);self.ops('resume','native')
-        result=self.wait(lambda:(row if (row:=self.summary())['status']=='failed' else None),seconds=40)
+        # Cancellation/revocation can mark the Job failed before FFmpeg returns.
+        # Observe the executor's exit as well, so a later acceptance is not hidden
+        # by killing the worker when the next scenario resets its database.
+        self.wait(lambda:self.ops('execution_finished'),seconds=40)
+        result=self.summary();assert result['status']=='failed'
         if result['receipt_hash']:raise SecurityInvariantError('Unauthorized attempt accepted')
         self.scenarios.append(action+' during real FFmpeg')
 
@@ -293,6 +297,15 @@ class Deployment:
         self.submit();after=self.done();assert after['attempts']==1
         self.scenarios.append('existing worker reconnects after Redis restart')
 
+    def broker_persisted(self):
+        self.reset();self.submit();before=self.summary()
+        assert before['pending'] and before['attempts']==0
+        self.cmd('kill','-s','SIGKILL','vs-redis')
+        self.cmd('up','-d','--wait','vs-redis');self.worker()
+        after=self.done()
+        assert before['execution_hash']==after['execution_hash'] and after['attempts']==1
+        self.scenarios.append('Redis killed with pending delivery; AOF survives without republishing')
+
     def broker(self):
         self.reset();self.cmd('stop','vs-redis')
         self.submit();before=self.summary();assert before['pending'] and not before['receipt_hash']
@@ -307,6 +320,16 @@ class Deployment:
         assert code in (401,403,404,409) and self.summary()['receipt_hash']==before
         self.scenarios.append(action+' after accepted receipt denies HTTP delivery')
 
+    def producer_boundaries(self):
+        self.reset();self.ops('producer_lost')
+        assert self.http('POST',self.base,self.tokens['payload'])[0]==503
+        self.scenarios.append('producer disabled before HTTP reservation; dispatch denied')
+        self.reset();self.submit();self.ops('producer_lost');self.worker()
+        self.wait(lambda:self.ops('delivery_finished'),seconds=40)
+        run=self.summary()
+        if run['attempts'] or run['receipt_hash']:raise SecurityInvariantError('Disabled producer acquired a claim')
+        self.scenarios.append('producer disabled after send; real worker claim denied')
+
     def faults(self):
         results=[]
         for mode,options in [('disk','rw,size=1048576,nr_inodes=128,uid=1000,gid=1000,mode=0700'),
@@ -315,7 +338,9 @@ class Deployment:
                 ('world','rw,size=1048576,uid=1000,gid=1000,mode=0755'),
                 ('readonly','ro,size=1048576,uid=1000,gid=1000,mode=0700'),
                 ('symlink','rw,size=1048576,uid=1000,gid=1000,mode=0700'),
-                ('quota','rw,size=1048576,uid=1000,gid=1000,mode=0700')]:
+                ('quota','rw,size=1048576,uid=1000,gid=1000,mode=0700'),
+                ('missing_mount','rw,size=1048576,uid=1000,gid=1000,mode=0700'),
+                ('runtime_drift','rw,size=1048576,uid=1000,gid=1000,mode=0700')]:
             raw=subprocess.run(['docker','run','--rm','--user','1000:1000',
                 '--tmpfs','/fault:'+options,'--mount','type=bind,src='+str(HERE)+',dst=/acceptance,readonly',
                 '-e','PYTHONPATH=/acceptance:/app/api:/app','vs-private-api:acceptance',
@@ -328,6 +353,8 @@ class Deployment:
 
     def finish(self):
         self.results['scenarios']=self.scenarios
+        for name,value in self.results.get('gates',{}).items():
+            if value=='pending':self.results['gates'][name]='NOT_COMPLETED'
         self.results.setdefault('classification','PHASE3B_DEPLOYMENT_BLOCKED')
         self.results['production_enabled']=False
         self.results['remaining']=['No authenticated production producer',
@@ -345,10 +372,11 @@ class Deployment:
                 print('DEPLOYMENT_STAGE dispatch-crash '+stage,flush=True);self.crash_dispatch(stage)
             for stage in ('claim','native','pin','accepted'):
                 print('DEPLOYMENT_STAGE worker-crash '+stage,flush=True);self.worker_crash(stage)
-            self.worker_before_claim();self.broker();self.broker_reconnect()
-            for action in ('cancel','revoke','source_edit'):
+            self.worker_before_claim();self.broker();self.broker_reconnect();self.broker_persisted()
+            for action in ('cancel','revoke','source_edit','producer_lost'):
                 print('DEPLOYMENT_STAGE authorization '+action,flush=True);self.authorization(action)
-            for action in ('revoke','source_edit','owner_lost'):self.post_authorization(action)
+            for action in ('revoke','source_edit','owner_lost','producer_lost'):self.post_authorization(action)
+            self.producer_boundaries()
             self.results['gates']['D5']='PASS_ENUMERATED_REAL_PROCESS_FAILURES'
             self.results['gates']['D6']='PASS_TESTED_CONTROL_BOUNDARIES'
             self.results['gates']['D9']='PARTIAL_CLOSED_PRODUCTION_GATE; SEE_UNIT_FAULT_TESTS'

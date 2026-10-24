@@ -27,7 +27,10 @@ def install():
     expected = json.loads(path.read_text())
     verifier = NativeAudioValidator(ffmpeg='/usr/bin/ffmpeg', ffprobe='/usr/bin/ffprobe',
         expected_ffmpeg_hash=expected['ffmpeg_hash'], expected_ffprobe_hash=expected['ffprobe_hash'])
-    trust = FixtureTrust()
+    class ControlledFixtureTrust(FixtureTrust):
+        def currently_authorized(self,association):
+            return super().currently_authorized(association) and not Path('/engineering-private/test-controls/producer-disabled').exists()
+    trust = ControlledFixtureTrust()
     proofs = {load(f'audio_proof_{i}.json')['receipt_id']: load(f'audio_proof_{i}.json') for i in range(3)}
     anchors = load('control_trust_anchors.json')
     for i,(key,value) in enumerate(proofs.items()):
@@ -66,6 +69,11 @@ def _install_fault_barriers():
             return result
         setattr(module,name,bounded)
     from core import visual_segment_dispatch as dispatch
+    from celery.signals import task_postrun
+    def delivered(sender=None,**kwargs):
+        if getattr(sender,'name',None)==dispatch.TASK_NAME:
+            marker=root/'delivery-finished';marker.write_text('finished');marker.chmod(0o600)
+    task_postrun.connect(delivered,weak=False)
     send=dispatch._send
     def wait(stage):
         target=root/('pause-'+stage)
@@ -83,6 +91,12 @@ def _install_fault_barriers():
     from worker import visual_segment_tasks as media
     wrap(media,'create_slide_video','media')
     wrap(media,'_pin_output','pin')
+    execute=media.execute_private_segment
+    def observed_execution(*args,**kwargs):
+        try:return execute(*args,**kwargs)
+        finally:
+            marker=root/'execution-finished';marker.write_text('finished');marker.chmod(0o600)
+    media.execute_private_segment=observed_execution
     import os, signal, subprocess
     original_popen = subprocess.Popen
     def controlled_popen(*args,**kwargs):
