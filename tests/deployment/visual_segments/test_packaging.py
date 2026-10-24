@@ -76,3 +76,10 @@ def test_runtime_comparison_ignores_only_aslr_display_addresses():
     assert identity(changed)==identity(base)
     assert identity({**changed,'runtime':{'rasterizer_build_hash':'sha256:b'}})!=identity(base)
     with pytest.raises(ValueError):identity({**base,'unknown_render_dependency':'x'})
+
+
+def test_container_json_accepts_known_entrypoint_banner_before_result():
+    import runpy
+    parse=runpy.run_path(str(Path(__file__).parent/'run.py'))['container_json']
+    assert parse('CUDA banner\nGPU unavailable warning\n{"uid":1000}\n')=={'uid':1000}
+    with pytest.raises(ValueError):parse('CUDA banner\nNo successful result')

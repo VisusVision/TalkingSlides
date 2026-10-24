@@ -25,6 +25,13 @@ HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[2]
 
 
+def container_json(output):
+    # NVIDIA's inherited worker entrypoint emits a CUDA banner before commands.
+    # Command return codes are checked independently; the final line is our
+    # fixed internal operation's explicit single-line JSON, never a trust grant.
+    return json.loads(output.strip().splitlines()[-1])
+
+
 def runtime_identity(value):
     # ldd's display addresses are randomized diagnostics, not build identities.
     # The existing runtime contract hashes every linked library's actual bytes.
@@ -56,7 +63,7 @@ class Deployment:
 
     def ops(self,action,*args,service='api'):
         value=self.cmd('run','--rm','--no-deps',service,'python','-m','vs_acceptance.ops',action,*map(str,args),timeout=90)
-        return json.loads(value.stdout.strip().splitlines()[-1])
+        return container_json(value.stdout)
 
     def wait(self,callback,*,seconds=60):
         deadline=time.monotonic()+seconds;last=None
@@ -127,7 +134,7 @@ class Deployment:
             '-e','PYTHONPATH=/acceptance:/app','vs-default-api:acceptance','python','-c',
             'from vs_acceptance.ops import runtime;import json;print(json.dumps(runtime()))'],
             capture_output=True,text=True,timeout=60,check=True)
-        self.results['default_slim_api_runtime']=json.loads(raw.stdout.strip())
+        self.results['default_slim_api_runtime']=container_json(raw.stdout)
         self.results['default_slim_matches_worker']=runtime_identity(self.results['default_slim_api_runtime'])==runtime_identity(actual)
         self.cmd('run','--rm','--no-deps','api','python','-m','django','migrate','--noinput',timeout=120)
         self.results['images']={}
@@ -141,10 +148,10 @@ class Deployment:
         # Actual numeric process identity, cross-process writes and restart.
         probe="import os,pathlib,json;from core.visual_private_volume import inspect_volume; p=pathlib.Path('/engineering-private/PROBE');p.write_bytes(b'private shared bytes');p.chmod(0o600);print(json.dumps(inspect_volume('/engineering-private')))"
         out=self.cmd('run','--rm','--no-deps','api','python','-c',probe).stdout
-        api_mount=json.loads(out.strip());assert api_mount['runtime_uid']==1000
+        api_mount=container_json(out);assert api_mount['runtime_uid']==1000
         read="from pathlib import Path;assert Path('/engineering-private/PROBE').read_bytes()==b'private shared bytes'"
         self.cmd('run','--rm','--no-deps','worker','python','-c',read)
-        worker_mount=json.loads(self.cmd('run','--rm','--no-deps','worker','python','-c',probe.replace('private shared bytes','worker shared bytes')).stdout.strip())
+        worker_mount=container_json(self.cmd('run','--rm','--no-deps','worker','python','-c',probe.replace('private shared bytes','worker shared bytes')).stdout)
         assert all(api_mount[k]==worker_mount[k] for k in ('device','inode','uid','gid','mode'))
         self.results['shared_mount']={'api':api_mount,'worker':worker_mount}
         self.cmd('run','--rm','--no-deps','api','python','-c',read.replace('private shared bytes','worker shared bytes'))
@@ -157,7 +164,7 @@ class Deployment:
                 '--mount','type=bind,src='+str(ROOT/'infra/dockerfiles/local-storage-entrypoint.sh')+',dst=/entrypoint.sh,readonly',
                 '-e','VISUAL_RENDER_PRIVATE_ROOT=/var/lib/talkingslides-private',
                 image,'sh','/entrypoint.sh','python','-c',probe],capture_output=True,text=True,timeout=30,check=True)
-            dropped.append({'image':image,'process':json.loads(result.stdout.strip())})
+            dropped.append({'image':image,'process':container_json(result.stdout)})
         self.results['root_entrypoint_processes']=dropped
         self.results['gates']['D1']='PASS_BUILT_CROSS_PROCESS_1000_1000'
 
@@ -205,7 +212,7 @@ class Deployment:
         assert self.http('GET',path+'mp4/')[0]==200
         self.ops('cancel');assert self.http('GET',path+'mp4/')[0]==403
         inventory=self.cmd('run','--rm','--no-deps','api','python','-m','django','visual_segment_inventory').stdout
-        report=json.loads(inventory.strip().splitlines()[-1]);assert not report['deletion_enabled']
+        report=container_json(inventory);assert not report['deletion_enabled']
         assert any(item['reference']=='retained_reference' for item in report['files'])
         self.results['retention_inventory']={'files':len(report['files']),'bytes':report['bytes'],'deletion_enabled':False}
         self.results['gates'].update(D3='PASS_EXTERNAL_REDIS_SEPARATE_WORKER',D4='PASS_REAL_AAC_COPY_MP4_SRT_VTT',D7='PASS_TESTED_ROUTES')
@@ -284,7 +291,7 @@ class Deployment:
                 '--tmpfs','/fault:'+options,'--mount','type=bind,src='+str(HERE)+',dst=/acceptance,readonly',
                 '-e','PYTHONPATH=/acceptance:/app/api:/app','vs-private-api:acceptance',
                 'python','-m','vs_acceptance.faults',mode],capture_output=True,text=True,timeout=30,check=True)
-            results.append(json.loads(raw.stdout.strip()))
+            results.append(container_json(raw.stdout))
         self.results['storage_faults']=results
         probe="import os;os.environ['DJANGO_SETTINGS_MODULE']='config.settings_test';import django;django.setup();from core.visual_segment_runs import _producer_dependencies;from core.visual_segment_dispatch import _deployment_ready;assert _producer_dependencies() is None and _deployment_ready() is False;print('production gates remain closed')"
         subprocess.run(['docker','run','--rm','-e','VISUAL_SEGMENT_DEPLOYMENT_READY=true',
@@ -299,14 +306,19 @@ class Deployment:
             'Production reverse proxy and full GPU/avatar image variant not exercised',
             'Retention is report-only; destructive cleanup remains disabled']
         (self.report/'acceptance.json').write_text(json.dumps(self.results,indent=2))
+        print('DEPLOYMENT_GATE_REPORT '+json.dumps(self.results),flush=True)
 
     def run(self):
         try:
+            print('DEPLOYMENT_STAGE prepare/storage/faults/media',flush=True)
             self.prepare();self.storage();self.faults();self.media()
-            for stage in ('send','sent'):self.crash_dispatch(stage)
-            for stage in ('claim','native','pin','accepted'):self.worker_crash(stage)
+            for stage in ('send','sent'):
+                print('DEPLOYMENT_STAGE dispatch-crash '+stage,flush=True);self.crash_dispatch(stage)
+            for stage in ('claim','native','pin','accepted'):
+                print('DEPLOYMENT_STAGE worker-crash '+stage,flush=True);self.worker_crash(stage)
             self.worker_before_claim();self.broker();self.broker_reconnect()
-            for action in ('cancel','revoke','source_edit'):self.authorization(action)
+            for action in ('cancel','revoke','source_edit'):
+                print('DEPLOYMENT_STAGE authorization '+action,flush=True);self.authorization(action)
             for action in ('revoke','source_edit','owner_lost'):self.post_authorization(action)
             self.results['gates']['D5']='PASS_ENUMERATED_REAL_PROCESS_FAILURES'
             self.results['gates']['D6']='PASS_TESTED_CONTROL_BOUNDARIES'
