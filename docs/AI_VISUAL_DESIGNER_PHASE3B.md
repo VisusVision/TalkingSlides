@@ -3,6 +3,14 @@
 Current classification: **PHASE3B_DEPLOYMENT_BLOCKED**. This is not production
 producer readiness or publication authorization.
 
+The interrupted Phase 3B-6 checkout was recovered at `9d73193`, preserving three
+existing implementation commits and two unstaged test changes. Continuation
+commits `af3ba87`, `67710e0` and `346cc60` repair the isolated HTTP restart harness and extend
+actual broker-persistence, executor-completion and producer-revocation checks.
+The [Phase 3B-6 report](AI_VISUAL_DESIGNER_PHASE3B6.md) records exact recovery,
+executed verification and remaining deployment boundaries. Production readiness
+still returns false and the authenticated producer dependency is unconfigured.
+
 | Stage | Implemented boundary |
 |---|---|
 | 3B-1 | Strict supplementary request, independently anchored audio proof and non-publishing receipt contracts; original snapshot v1 unchanged |
@@ -36,3 +44,22 @@ current authorization can permit private result access in an eligible deployment
 **No Phase 3C work is authorized or implemented.** Exact-revision full-lesson
 assembly, release/promotion, public playback and rollout need separate review and
 authorization. No branch merge has been performed.
+
+Completed isolated deployment evidence for engineering source commit
+`346cc60db0797bd91f90b0a2a4502f78c46efa79` is preserved in the
+[observation record](visual_design/phase3b6/deployment-evidence.json).
+[Implementation CI](https://github.com/VisusVision/TalkingSlides/actions/runs/40123137215)
+passed all six jobs: backend **2,794 passed / 26 skipped / 63 subtests passed**,
+PostgreSQL **246 passed with no skips**, frontend **350**, Chromium **36**,
+Docker builds, migration consistency and both language dependency audits.
+Actual Redis/Gunicorn/prefork-worker execution passed **20** recovery/authorization
+scenarios and **nine** negative probes. Matching built API/worker runtime identity
+includes **205** linked-library hashes; AAC packet payload is unchanged.
+
+Production remains blocked by unconfigured authenticated producer receipts,
+independent expiring deployment enrollment, incompatible default slim API native
+identity, production proxy/slow-stream verification and safe coordinated retention.
+The compatible API variant is an observed engineering candidate; report-only
+inventory performs no deletion. The final report-only commit and its independent
+CI result are identified in the completion response. This status does not authorize
+production execution, full lessons, public playback or Phase 3C.

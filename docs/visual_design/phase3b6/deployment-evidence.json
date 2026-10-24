@@ -1,0 +1,559 @@
+{
+  "artifact_id": 12572462490,
+  "artifact_sha256": "sha256:8505b65760230d97890a2858ced642c72df332ea16e7c3f5dec8c2053c03d726",
+  "ci_run": "https://github.com/VisusVision/TalkingSlides/actions/runs/40123137215",
+  "classification": "PHASE3B_DEPLOYMENT_BLOCKED",
+  "default_slim_matches_worker": false,
+  "disconnect": {
+    "after_private_fds": 0,
+    "baseline_private_fds": 0,
+    "client_resets": 3,
+    "scope": "direct Gunicorn, fixture-sized output; no production proxy/slow-stream claim"
+  },
+  "evidence_only": true,
+  "example": {
+    "execution_hash": "sha256:d178d90338e2a13efe69aa74cf6f76ae83bf260a6e54d0e593e89af666a4d66f",
+    "id": "e1367cb9-ad76-46d4-a0e3-7b65bbf2b767",
+    "receipt": {
+      "acceptance": {
+        "integrity": "all_output_hashes_verified.v1",
+        "status": "accepted_private.v1",
+        "validator_version": "visual-segment-validator.v1",
+        "warnings": []
+      },
+      "attempt_generation": 1,
+      "design": {
+        "selected": {
+          "candidate_id": "d46b4706-f8e9-4007-b59e-8ded27c4bcd9",
+          "confirmation_hash": null,
+          "grounded_design_hash": "sha256:f265ab96df34fbebf9aa0462b33c8e559bbbb3059a89ecd5b0945d0a25a0c35f",
+          "plan_hash": "sha256:e6d65ee24a4e3cff16ca1d0c0e329e13dc358f33ff9d3e67c1ac11e6ca3419fb",
+          "plan_schema": "visual-plan.v1",
+          "preview_hash": "sha256:0504bb458161eb79dec9c72d9ad14f314e313674b1f94ab41796ef4d990a5e7e",
+          "preview_schema": "visual-preview.v1",
+          "proposal_hash": null,
+          "proposal_id": null,
+          "renderer_version": "svg-educational.v2",
+          "selection_version": 1,
+          "template_version": "educational.v1"
+        },
+        "source_hash": "sha256:f76bff10255dd89591a4a9317e729ad8028ad92549ba5b269c945c6a6ec48a60",
+        "source_revision": "sha256:1c1ae6fa7f5efe5e3c94f32f90e176a325c5a0d043c3a5388de54f7594afb6a8"
+      },
+      "execution_hash": "sha256:d178d90338e2a13efe69aa74cf6f76ae83bf260a6e54d0e593e89af666a4d66f",
+      "inputs": {
+        "audio_asset": {
+          "extension": "m4a",
+          "sha256": "sha256:2249cceae85b3b763183a9b7d7ab63cd9ff8679be0ef3433dc3989ae9c6a911c",
+          "size": 15501
+        },
+        "audio_proof_hash": "sha256:98509b1c5fc1bafa630f9cd73762e9c902fac81fa7f0775f0897ec4f443009f6",
+        "cues_hash": "sha256:cdbab869ad31a5c53c81a9be4a604d64fe02273b06f3b1e5393c5a04629dab81",
+        "frame_asset": {
+          "extension": "png",
+          "sha256": "sha256:a5941235ab4c979aa45eb1a6bf39001b62a2157c369a20c555460c9087f2f746",
+          "size": 42108
+        }
+      },
+      "outputs": {
+        "mp4": {
+          "extension": "mp4",
+          "sha256": "sha256:4f76b622b4d8f302919b7538bfc56381fc7ff7c77b02a35c8e2fd575dca84b69",
+          "size": 38179
+        },
+        "srt": {
+          "extension": "srt",
+          "sha256": "sha256:cf1acdef9a0b351adacca0d3b1e4048c8f84ad42379b4c943782eda1fedd3597",
+          "size": 69
+        },
+        "vtt": {
+          "extension": "vtt",
+          "sha256": "sha256:70d8a9907886ae4e7ce131e79f83308f010bc9eb45a13062b7b8509d79daa862",
+          "size": 77
+        }
+      },
+      "page": {
+        "order": 0,
+        "page_key": "source-0.split-1",
+        "source_slide_index": 0,
+        "split_index": 1
+      },
+      "producer": {
+        "baseline": {
+          "cues_hash": "sha256:cdbab869ad31a5c53c81a9be4a604d64fe02273b06f3b1e5393c5a04629dab81",
+          "job_id": "synthetic-baseline-job",
+          "manifest_hash": "sha256:ee487a6cbb06745f35b8ba645238b42f014bd6958f6c0f626458b37788305457",
+          "page_order": 0,
+          "run_id": "synthetic-baseline-run"
+        },
+        "producer_id": "synthetic-flite-fixture.v1",
+        "receipt_id": "00000000-0000-4000-8000-000000000100"
+      },
+      "publishing_allowed": false,
+      "recipe_hash": "sha256:881f12ebdd9c98c4fab6a1f1025ef4dadcd15679d56c433de08fac5a8b64a789",
+      "runtime": {
+        "build_id": "private-segment-linux.v1",
+        "ffmpeg_binary_hash": "sha256:36d94a605d612e4090d1b8aec889d0c0801c6eafb1593c90f5c0dfd2e2966a45",
+        "ffmpeg_version": "version-sha256.ff177c4585de71302b95b6fe2751cb5fdfc8c145ce192b81876fd617561ffa9f",
+        "fontconfig_build_hash": "sha256:7d688909aab1c566b60832045fef012ea118ff7ee189df87608fbff999d3bd0d",
+        "rasterizer_build_hash": "sha256:67cf7c0cbfe497555d865b6d0310fa6f3948e7f7a29b36e12a92f741d35cf8b7",
+        "rasterizer_id": "librsvg.v1"
+      },
+      "scene_hash": "sha256:ecb1b30eeb064e0419723daaeb4f65cd081fc2fc3508a1458542ba143f7bd0f0",
+      "schema_version": "visual-segment-receipt.v1",
+      "snapshot": {
+        "authored_revision_hash": "sha256:fc2b43f0cdbc2b4543d5f609de85be68e0fc5a66eb3375ba2c9a140777565d63",
+        "owner_id": "801",
+        "project_id": "701",
+        "snapshot_hash": "sha256:d3530afdad94ed64d15cacc60f4772583dcd40583cb4e85476eee8e3753e44b7",
+        "snapshot_id": "ba181a58-080d-436b-820a-0fc1ef0ad2cc"
+      },
+      "streams": {
+        "audio": {
+          "channels": 1,
+          "codec": "aac",
+          "duration_ms": 2335,
+          "packet_payload_hash": "sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91",
+          "profile": "LC",
+          "sample_rate": 44100
+        },
+        "caption_end_ms": 2180,
+        "container_duration_ms": 2520,
+        "video": {
+          "codec": "h264",
+          "duration_ms": 2520,
+          "fps": 25,
+          "frame_count": 63,
+          "height": 1080,
+          "pixel_format": "yuv420p",
+          "width": 1920
+        }
+      }
+    },
+    "receipt_hash": "sha256:2e39ffd3c08f6568ed7cfd40d10d0b5622625bd6afff5a86f94af3d6e341b630"
+  },
+  "gates": {
+    "D1": "PASS_BUILT_CROSS_PROCESS_1000_1000",
+    "D10": "HOSTED_REGRESSION_REQUIRED",
+    "D2": "PASS_MATCHED_VARIANT",
+    "D3": "PASS_EXTERNAL_REDIS_SEPARATE_WORKER",
+    "D4": "PASS_REAL_AAC_COPY_MP4_SRT_VTT",
+    "D5": "PASS_ENUMERATED_REAL_PROCESS_FAILURES",
+    "D6": "PASS_TESTED_CONTROL_BOUNDARIES",
+    "D7": "PASS_TESTED_ROUTES",
+    "D8": "REPORT_ONLY",
+    "D9": "PARTIAL_CLOSED_PRODUCTION_GATE; SEE_UNIT_FAULT_TESTS"
+  },
+  "hosted_regression": {
+    "all_jobs": "success",
+    "backend": {
+      "passed": 2794,
+      "skipped": 26,
+      "subtests_passed": 63
+    },
+    "chromium_passed": 36,
+    "docker_smoke": "passed",
+    "frontend_passed": 350,
+    "migrations": "passed",
+    "npm_audits": "clean",
+    "postgres": {
+      "passed": 246,
+      "skipped": 0
+    },
+    "python_audit": "clean",
+    "run_id": 40123137215,
+    "source_commit": "346cc60db0797bd91f90b0a2a4502f78c46efa79"
+  },
+  "images": {
+    "vs-default-api:acceptance": "sha256:54b99a65fdb710c5a6fedc42c4c9f18ad5f071a7dde34efaa0b899168c8850a4",
+    "vs-private-api:acceptance": "sha256:ddf8d012e2f66895b0562453d1b6943e22ed2e4cfcf6a5384b6a9632ffebf67e",
+    "vs-worker:acceptance": "sha256:3814eda6ae903a1b0cfcf0b840a44247fbcaceebd31051ca733658210d82b0c5"
+  },
+  "matched_api_equals_worker": true,
+  "production_attestation": false,
+  "production_enabled": false,
+  "remaining": [
+    "No authenticated production producer",
+    "Closed production readiness: no enrolled expiring cross-container attestation",
+    "Production reverse proxy and full GPU/avatar image variant not exercised",
+    "Retention is report-only; destructive cleanup remains disabled"
+  ],
+  "retention_inventory": {
+    "bytes": 1731337,
+    "deletion_enabled": false,
+    "files": 17
+  },
+  "root_entrypoint_processes": [
+    {
+      "image": "vs-default-api:acceptance",
+      "process": {
+        "gid": 1000,
+        "uid": 1000
+      }
+    },
+    {
+      "image": "vs-worker:acceptance",
+      "process": {
+        "gid": 1000,
+        "uid": 1000
+      }
+    }
+  ],
+  "scenarios": [
+    "API kill after send, reconcile same identity",
+    "API kill after sent, reconcile same identity",
+    "real worker kill at claim",
+    "real worker kill at native",
+    "real worker kill at pin",
+    "real worker kill at accepted",
+    "real worker restart before claim; pending Redis delivery retained",
+    "Redis unavailable/send failure/restart/reconcile",
+    "existing worker reconnects after Redis restart",
+    "Redis killed with pending delivery; AOF survives without republishing",
+    "cancel during real FFmpeg",
+    "revoke during real FFmpeg",
+    "source_edit during real FFmpeg",
+    "producer_lost during real FFmpeg",
+    "revoke after accepted receipt denies HTTP delivery",
+    "source_edit after accepted receipt denies HTTP delivery",
+    "owner_lost after accepted receipt denies HTTP delivery",
+    "producer_lost after accepted receipt denies HTTP delivery",
+    "producer disabled before HTTP reservation; dispatch denied",
+    "producer disabled after send; real worker claim denied"
+  ],
+  "schema_version": "visual-segment-deployment-observation.v1",
+  "serving_processes": [
+    {
+      "processes": [
+        {
+          "command": "/sbin/docker-init -- gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 2 --timeout 90 config.wsgi:application",
+          "gid": "1000",
+          "pid": "21962",
+          "uid": "1000"
+        },
+        {
+          "command": "/usr/bin/python3 /usr/local/bin/gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 2 --timeout 90 config.wsgi:application",
+          "gid": "1000",
+          "pid": "22018",
+          "uid": "1000"
+        },
+        {
+          "command": "/usr/bin/python3 /usr/local/bin/gunicorn --bind 0.0.0.0:8000 --workers 1 --threads 2 --timeout 90 config.wsgi:application",
+          "gid": "1000",
+          "pid": "22051",
+          "uid": "1000"
+        }
+      ],
+      "service": "api"
+    },
+    {
+      "processes": [
+        {
+          "command": "/sbin/docker-init -- /opt/nvidia/nvidia_entrypoint.sh celery -A worker.celery_app:app worker --pool=prefork --concurrency=1 --prefetch-multiplier=1 -Q render --hostname=private-acceptance --loglevel=WARNING",
+          "gid": "1000",
+          "pid": "22133",
+          "uid": "1000"
+        },
+        {
+          "command": "/usr/bin/python3 /usr/local/bin/celery -A worker.celery_app:app worker --pool=prefork --concurrency=1 --prefetch-multiplier=1 -Q render --hostname=private-acceptance --loglevel=WARNING",
+          "gid": "1000",
+          "pid": "22162",
+          "uid": "1000"
+        },
+        {
+          "command": "/usr/bin/python3 /usr/local/bin/celery -A worker.celery_app:app worker --pool=prefork --concurrency=1 --prefetch-multiplier=1 -Q render --hostname=private-acceptance --loglevel=WARNING",
+          "gid": "1000",
+          "pid": "22365",
+          "uid": "1000"
+        }
+      ],
+      "service": "worker"
+    }
+  ],
+  "shared_mount": {
+    "api": {
+      "device": 2049,
+      "gid": 1000,
+      "inode": 8945091,
+      "mode": "0700",
+      "runtime_gid": 1000,
+      "runtime_uid": 1000,
+      "uid": 1000
+    },
+    "worker": {
+      "device": 2049,
+      "gid": 1000,
+      "inode": 8945091,
+      "mode": "0700",
+      "runtime_gid": 1000,
+      "runtime_uid": 1000,
+      "uid": 1000
+    }
+  },
+  "source_commit": "346cc60db0797bd91f90b0a2a4502f78c46efa79",
+  "storage_faults": [
+    {
+      "fault": "disk",
+      "rejected": true
+    },
+    {
+      "fault": "inode",
+      "rejected": true
+    },
+    {
+      "fault": "root_owner",
+      "rejected": true
+    },
+    {
+      "fault": "world",
+      "rejected": true
+    },
+    {
+      "fault": "readonly",
+      "rejected": true
+    },
+    {
+      "fault": "symlink",
+      "rejected": true
+    },
+    {
+      "fault": "quota",
+      "rejected": true
+    },
+    {
+      "fault": "missing_mount",
+      "rejected": true
+    },
+    {
+      "fault": "runtime_drift",
+      "rejected": true
+    }
+  ],
+  "worker_runtime": {
+    "ffmpeg_hash": "sha256:36d94a605d612e4090d1b8aec889d0c0801c6eafb1593c90f5c0dfd2e2966a45",
+    "ffmpeg_version": "ffmpeg version 4.4.2-0ubuntu0.22.04.1 Copyright (c) 2000-2021 the FFmpeg developers",
+    "ffprobe_hash": "sha256:d4f3ef9c12be756793cad83dd2004d89f49c1c4094053bfbbe7e28925c8fa4fd",
+    "fonts": {
+      "bold": "sha256:d1c3ff99f1e1ce1827a33efd4dad81f40babda06bff9e43bd7591c86662a287b",
+      "regular": "sha256:690243adfefe0ce154b547db6205794bd30ac4277275179517a90994f4980648"
+    },
+    "gid": 1000,
+    "native_library_hashes": {
+      "libFLAC.so.8": "sha256:7f350d720a6ae1e0bab2a3f612d1fd49cefe266c1adc9d260da367e8132406e3",
+      "libGL.so.1": "sha256:92e6ea9f8caa3c265f3ef141a122a18f7d2e27d6e5fd2b490cfea83262df745e",
+      "libGLX.so.0": "sha256:19ad2625b20a3afe6f5e55f9acd1e18e0dfc81b0965d7d3f2181a05b6d48edbf",
+      "libGLdispatch.so.0": "sha256:a4f2642498fba54d2f39e90ca3daa94340cdd52198473185a5285608ae318cb6",
+      "libOpenCL.so.1": "sha256:1552ec44b469da72e585a29ac7fd2aa98d7f99b9362b7fb8f3dcb2d6b603d3fb",
+      "libSDL2-2.0.so.0": "sha256:e929edba30ff878b9cde28c48b34aa748d3baa59a1a382504ebcf04e7c0e075c",
+      "libX11-xcb.so.1": "sha256:d7f9e86161421311a1023c44295a88b4a00b6ecbd20c416fc71895f43e358a0a",
+      "libX11.so.6": "sha256:e23ed094eaf0a74a822a6d9d14eee628ab9f7ec08aecbf20ffd803f019ff6e98",
+      "libXau.so.6": "sha256:98343a8324ea62ed75a13c923ed5dea96b7a8ad41aeba9f18126c4cbf7178064",
+      "libXcursor.so.1": "sha256:a66dc7552a800690b9ff1e7e5026b2ec3f0c359603fe0267f82cc4a6f984f5ac",
+      "libXdmcp.so.6": "sha256:1dc3ff1269a5ede69ef9a8ec2436d73fccbcd10531055b359292e0bde4e29b46",
+      "libXext.so.6": "sha256:d61399986f565c00c090a1f222019db7b40f42eaf2d93834136d6234c16ec465",
+      "libXfixes.so.3": "sha256:3e03576f262820fe27a8cfbcf4d8a2f3bbb5f1df55290e91643794a8147dffb7",
+      "libXi.so.6": "sha256:dc46e4ed45e94b521486438d902b2c360e50bd162849448b53adc7143fa1cb84",
+      "libXinerama.so.1": "sha256:2db9101cec47fe2f00fe27dedf3325ad47e9e8d8f4a552c8ca5f04d6271bd172",
+      "libXrandr.so.2": "sha256:237b8560e61e4c2d244ea21b4d2e0cd9614de26ce284f7258646897940d8e796",
+      "libXrender.so.1": "sha256:2415c0b512d332522625bc65bcc5e05dba93c2e3418329ded2855111fb0cf723",
+      "libXss.so.1": "sha256:2c30b5f8ae4a1a733c70385229fe2143de270f292097a61879f4696abe63545b",
+      "libXv.so.1": "sha256:a68934cb43810fb8b2d6851cc1fb16748e3d5a144a6baf0def6466cbf03d85fe",
+      "libXxf86vm.so.1": "sha256:1e15b2b5d7dafb15b858cd5bad2d4ed3e3dd040f1bcf695c96b95ff3481e47a6",
+      "libaom.so.3": "sha256:2918baec317013102ab423f34fbfde76bd01f01677075f6389e13e6cd7de55f4",
+      "libapparmor.so.1": "sha256:ecaaeaa571ef0fbec11b138b24c3bab33e2d868325f82f9be51dffc29801e590",
+      "libasound.so.2": "sha256:9b2bd6ae0b44763493961fc287ec6f50808bc79bc6974c2a892401514e190584",
+      "libass.so.9": "sha256:14850341cd21715d5d275e7d8e7ad61c1306aa13e813f7b7127c40d3d5b8405a",
+      "libasyncns.so.0": "sha256:a8c1d3161ac5b18145578742218d8c7c1b6cea692ffffddc3088c955c4199327",
+      "libavc1394.so.0": "sha256:9e2686a6637d177c9ff0df712b6341e4f1cba47ae51e5298dca3abf1f46a7dbb",
+      "libavcodec.so.58": "sha256:8b5d96665b9f0ec93bc45c6832f869fcd7701f7223801444d1da6cab13c001fb",
+      "libavdevice.so.58": "sha256:a87b6abe66b85818ad917c8257f973900def3100bbdc78804c9a4c423a01ca3b",
+      "libavfilter.so.7": "sha256:8c8ce89171db1c28d39a654fb977512fb7580a3a246469f9e79b2d27f6dbbcfe",
+      "libavformat.so.58": "sha256:0c0a859a8a3c48e0d379e2f01a6d38c439a7961f8c71e9f96ea86495f4085e1e",
+      "libavutil.so.56": "sha256:578d0772a3bd7a6d2bfcc44e989eb51044bff540e5ffa6cc2d074507dfb257e4",
+      "libblas.so.3": "sha256:bd8a282c845e100cbb28dd31f9cf19757d508bf7a07a7f62bbe8c04cafb81646",
+      "libblkid.so.1": "sha256:495c42488b57442583eb3e9b7bd3af1fadde907e5335585267c1aa13ebc6f4bb",
+      "libbluray.so.2": "sha256:c8166773e1c837a7ed7a51bea84d6e400a1800948ff1d4b117fb99044831f239",
+      "libbrotlicommon.so.1": "sha256:abf86ae9362dbb413c740a55b194c74adb09a7bd92d8fbd96a293c797a4a6d08",
+      "libbrotlidec.so.1": "sha256:db9dbda709a46c3ae124433f47c4db71167db8aaba4eafdfd99c8a3a14584463",
+      "libbs2b.so.0": "sha256:26cfe8c3bff43b64158ec1b854a60f396be46c85802b5d1fd017f815c35113c3",
+      "libbsd.so.0": "sha256:e4ad21c203d8e8b9b7f49071311339af6b438026e1ad236403e3b379b022f23d",
+      "libbz2.so.1.0": "sha256:54d16979912ab62282350dd2dc5dceb5b73b13e27bb02792087aff752d16f6e9",
+      "libc.so.6": "sha256:b2cf6c33b74d2f22543b7a469a75b538911e690f769d0b238843a49465b83793",
+      "libcaca.so.0": "sha256:b6b46fed664e94a4a92d20eae8c858d5a20e5eb1b2195f4c668dc022532110fe",
+      "libcairo-gobject.so.2": "sha256:edecf402c8e98ed8d8eb3a7e4b9df27671678b7f7b786bdf243a4c84c003b9b1",
+      "libcairo.so.2": "sha256:62328c06e62439ce52ee03a7e7fa44ebe33a39a56d22b8c96ffc7c7e1eaf0d19",
+      "libcap.so.2": "sha256:4b576cb3a0b828c26648a0afce067f9583f1c87ddcd5acca9471b59e5bd52934",
+      "libcdio.so.19": "sha256:5f646e192342b4e731ac9ac07658ce07c9b609f61f174450a41b2f09acb54e5c",
+      "libcdio_cdda.so.2": "sha256:c23c4508e551d617ac48d5c253600e2ca72ea340c341a1e4898a194c61d5bda1",
+      "libcdio_paranoia.so.2": "sha256:494c7aaccadb46038dbadc5e92102f1cc27dad16fb5cdc70bb73333aae9340ef",
+      "libchromaprint.so.1": "sha256:c35c47a521b5b8399134707483ccf64a684c7531e0ae94552a36c1f62db4bf0a",
+      "libcodec2.so.1.0": "sha256:7cba4ab12eddeead515d16729380ff1f9f1e59c30c69697277b74031c98e00c5",
+      "libcom_err.so.2": "sha256:a2b7c9d27f5e50a7956e2327cde4fafbbe0e442187d5d3883d5a0ecfd836ddc1",
+      "libcrypto.so.3": "sha256:7cc817ff1841b59516d684f357bc0c3fc2cc52c3fa9b4ffb8ce8bdc215f02915",
+      "libdatrie.so.1": "sha256:bb12f6deede55959973954640ed050ec758de674a73c19715adcd6202abb8dcd",
+      "libdav1d.so.5": "sha256:eb4b11f13938b11a4dd8f0d3581e551e90025df5f0a2130614cb23bd6583fb9b",
+      "libdb-5.3.so": "sha256:659c3fb811bb0384b6a70127981ec1c1a7f95002cf1e569edc872066f20ef4c3",
+      "libdbus-1.so.3": "sha256:a3d53f7215af9860f3466b94cd8fe3e95c253c46df164dea62af9b9def93dcea",
+      "libdc1394.so.25": "sha256:ce3812496134bc4402f0ba3b2c862dbb2a3af6ee02ce850e1c195b5fb35499fe",
+      "libdecor-0.so.0": "sha256:c2282c5bd979c4b6ddc2d6af2ae8d6fb9f8c1948b0d4e487ebbc80f5ed58a76f",
+      "libdl.so.2": "sha256:3eaaa4aefd9c28f3867c96a427c3cbec9191cb61c4c9d0a2cb4a765d66064499",
+      "libdrm.so.2": "sha256:bab1e283c0fdd19eae10db2522fdc5806f0efee3c175e5e8bb1bc1b478c7e2b1",
+      "libexpat.so.1": "sha256:683e2e41db14581194bf1f6616e95a8f02cd4ab599f0fba807e46325ec01d21f",
+      "libffi.so.8": "sha256:247da4d5d34a91cadcdd6282be4c4644fcb8af001334d2b8a82ecda435418cbf",
+      "libflite.so.1": "sha256:fb35e67157692814db1d6014a97476a28dfb9cc5d81b9ce01318da1c844bd85d",
+      "libflite_cmu_us_awb.so.1": "sha256:34bd371de4bec32cf8f6ca8a9cc2877f6914a36b2e288bfaf16295230434e136",
+      "libflite_cmu_us_kal.so.1": "sha256:826ec578b3623870c8db161286167454d7b2913c016387ded9c1e18ef3ac3bf3",
+      "libflite_cmu_us_kal16.so.1": "sha256:69a5f02a87124c3303825e43155d91e51798f5830e17b71785a7a4f76872f97d",
+      "libflite_cmu_us_rms.so.1": "sha256:a0d2ad36b4237f984cf4da856ed70a0a862e474bc035ec5e01a8e7324ae50702",
+      "libflite_cmu_us_slt.so.1": "sha256:7a9bdd4a888e1d8c2058ef35ac87f27d81ed0486947e70d633582cd8c785aed6",
+      "libflite_cmulex.so.1": "sha256:dfbdbb46cd54fd2127eba39db2100d374ecd3bd6ba9b2fe8d1138b17b59cfd94",
+      "libflite_usenglish.so.1": "sha256:1839dfc7ba316d1be11307b12adcfa8bfa27220308935b9194cda3882683e6b5",
+      "libfontconfig.so.1": "sha256:7d688909aab1c566b60832045fef012ea118ff7ee189df87608fbff999d3bd0d",
+      "libfreetype.so.6": "sha256:c338538f8d90eb85217e8525ab363e68e79b46d3c8acc0b6824190e032687e5f",
+      "libfribidi.so.0": "sha256:91879069d84de2889086ad44dfc088405e7e7065e1220c1a122f8970fb1f29a9",
+      "libgbm.so.1": "sha256:c0e634db4bc3c8dc6a4a6c83ce52fec78848fd7e2af7b428203048b88933f453",
+      "libgcc_s.so.1": "sha256:fc9d43b2f6c20e53b009238f767c5b949d202389e20de9e202ea684b4ba3729a",
+      "libgcrypt.so.20": "sha256:7ff6ae38b83fd19beb283fa784d845d0614a0ee92917dab950846bdb14cce4f3",
+      "libgdk_pixbuf-2.0.so.0": "sha256:c9b29b64bff5f913438def9ffa26ea972245b89cd61dc9d2388bc1d1540412ef",
+      "libgfortran.so.5": "sha256:f7379c9331de9d66c03b439a070e8056b7419fc4213320d647952b998d026b30",
+      "libgio-2.0.so.0": "sha256:b63a477916c1f95de4b2c80bb4f5940a59ebc5860793d93b271448e90edbfe52",
+      "libglib-2.0.so.0": "sha256:86acf2c843bcfaf5e8c24ab959737960c797da53b41658dc8ec6f257c786048c",
+      "libgme.so.0": "sha256:a49d1977a698c93f34cc44b6f2155665c58a3518ca083fdf4ee0d13b86d989f2",
+      "libgmodule-2.0.so.0": "sha256:1019fc28ced6829f22b446a091ecb5b76b9fa3b3c458bc6ea936c1d328302cb5",
+      "libgmp.so.10": "sha256:4dc20a901c6951e678e216e959da2534bcef7053e6efdf1492509baf142282b0",
+      "libgnutls.so.30": "sha256:31890d4c10c55e8756cd7f721fdf787065107a31ffd81de5efe3b3b0eb7431c2",
+      "libgobject-2.0.so.0": "sha256:05a94d6be0a50dba15a579f3ad1f5c6ec12c8d303f3b715a665fd27824ca523e",
+      "libgomp.so.1": "sha256:d46f9225c1883039e8a6853e6d96ca1af11d034ce186a090952e4a7c8a7c2fdc",
+      "libgpg-error.so.0": "sha256:ed682e103b671d628ef11f19f8a5b772b8d2501ba26e4b80c055331a4c4d8dfc",
+      "libgraphite2.so.3": "sha256:1d9215d0099e87da7ed9e1a9c2064fdb1da270253b869721ea0580a00657b723",
+      "libgsm.so.1": "sha256:32957c6138a9a96c459c44bb0ec6afc5b0acede6c00181d8be8eeaec6a0b1eaf",
+      "libgssapi_krb5.so.2": "sha256:f6643079d02cf92d9da17704dcfc25fca7300af4eecd385dc43802ba408ddf15",
+      "libharfbuzz.so.0": "sha256:da47b2baefbb4e6e6058fec0c4dd0bc9d31703d94150c17c9615288188f4a118",
+      "libhogweed.so.6": "sha256:47d56894948545036bd49aed718393bf6edb93fce222874dad30b59f085ad9ee",
+      "libicudata.so.70": "sha256:c1404396288e178c8db2f30203cb8150e4d2c14cacee9a2883e0092f45399cc8",
+      "libicuuc.so.70": "sha256:4683f3623dc47a92e862dc3c8770caff81c9f4c7e116bb672fc439737b06d88a",
+      "libidn2.so.0": "sha256:1420c60a18189fb2e7bb4b8da1409564b0c1c46c59df5bbb0c23339bb961403a",
+      "libiec61883.so.0": "sha256:94782a6cf2eeb52223433818076b3492c8644ac8f345116eef9550f172ce1ad6",
+      "libjack.so.0": "sha256:9912303f5297814a9f0fa1a12c3c36b30b948e9065e4bd76e7b3baf76a09feb9",
+      "libjpeg.so.8": "sha256:2cfbcf67051b3efd1bf634af7d0b65a47dda98ff61ba793a87415ed554731344",
+      "libk5crypto.so.3": "sha256:c7702e970e1e2f41a17f137179743dddd12aa9e7ee366aa1ee1a107f67034622",
+      "libkeyutils.so.1": "sha256:ad20d5fb89df5297073b46373c65bfbb01f33a00b4949894055d29a7fcf00900",
+      "libkrb5.so.3": "sha256:ff07546faf0647a6866db7ab89ffc3b08dcc76bed47d583a49734370aa3c16f6",
+      "libkrb5support.so.0": "sha256:58262db107982357e80e36c5fc5a3077176422ee04e61204644ed2f213e96110",
+      "liblapack.so.3": "sha256:86b2c20720e2aafb6b84d20d252cd39c5b22a6f7452f8bb920a06d8c8439124c",
+      "liblilv-0.so.0": "sha256:ea7057546e3b3cf554a398ddc638486bfa159e2414e4ce9c372e5d9ade458a97",
+      "liblz4.so.1": "sha256:65f47a3dc2cec5f938379b7b625f0621657bf1254551895d22462c6a204cbad8",
+      "liblzma.so.5": "sha256:493cb401ab4aa3bba611ca464d12996afb3b327940d29476f535f999e167439b",
+      "libm.so.6": "sha256:3dd5511ae94785c9f921429b0f2b2f7aabb461b6f0e6de6dfdbef15f24bdfee6",
+      "libmd.so.0": "sha256:bb376813876bb214535bbbdac70f2c0c4b00baecb81557dab78a79518248df06",
+      "libmfx.so.1": "sha256:03deba2af2174c4edf5f51d131da738aa03a42c561f84b1cdf4345e5bfb242a7",
+      "libmount.so.1": "sha256:50f2409908922a65f827a160a855bf5cf7f9548c17a9158cce29fc03d91afeae",
+      "libmp3lame.so.0": "sha256:85ca65a26c2138f4c22ad7089defa6ad4c20b556a1145788c56d2efd9fdf3d04",
+      "libmpg123.so.0": "sha256:8cbc12cc0e3d6b8184fa1a1f9fc2f77b9a5984cf2ebe43d8fed7ac89f2db2f02",
+      "libmysofa.so.1": "sha256:bb86e4f047cd7d8b8e0724e2545b489a320bb49b5311f886824d5aedb7fcdc37",
+      "libncursesw.so.6": "sha256:bb977781bc886b44f39e49a8651e0d3e9fa8d9c31d30b01e3ca3ca8ab24d5053",
+      "libnettle.so.8": "sha256:2d3bda6cfa2d477cd91b8178843d19e081b911a124f04b4be06b6e32c9fabc73",
+      "libnorm.so.1": "sha256:cc5c631eb267f0159baee696a3fead708397ccc095ddbcde434f678582cb0481",
+      "libnuma.so.1": "sha256:3582bce922d99959ee3eb6b7d686c0b99e14c2135616ad4d9d608b2118a7e78c",
+      "libogg.so.0": "sha256:a499308d738035e86cec230c6eb0a19e895f3b197c9399107a63706253e0c737",
+      "libopenal.so.1": "sha256:94acbed36cefff5f2d91b29f746cc220765f416fe142777cb39d63bdea7844fa",
+      "libopenjp2.so.7": "sha256:9d0cbdee4fa3f44d4eb90cc304f3d34067baec1daad431af4b5f39b529f8bb83",
+      "libopenmpt.so.0": "sha256:9f9fc45a4bfdbba40af9ed2ed5d77f4224b607b38c3f37bd2dad5d86b12a7631",
+      "libopus.so.0": "sha256:f63e3597e52b57f8957bafb309e9f4d91108a3987136ace5f386f269a0947e55",
+      "libp11-kit.so.0": "sha256:d2b01eaad185e95ef312940a3bdd4b6694f992b022a2dddb9dd494286e5a1d2c",
+      "libpango-1.0.so.0": "sha256:de79fa0f427b7f0e4eaec7246393435535541bb3b0333f0c71b65d73f07602e1",
+      "libpangocairo-1.0.so.0": "sha256:f8ca87d7af66241aae432050c679e61d726a6542cb47a1333ce248c0d14c2448",
+      "libpangoft2-1.0.so.0": "sha256:158f0b0d7de5fdadf4b6671f97f69e84fa2eec827bb0416788a54dea41b85b39",
+      "libpcre.so.3": "sha256:baae995e98223eee1afe6c640f21bdbba91b9c170584ce766418b59810d98a93",
+      "libpcre2-8.so.0": "sha256:f887eed7d0df7073f3d8bdc9e60d35082453b10165cf45359b5019e33ba2b9ec",
+      "libpgm-5.3.so.0": "sha256:fcc27728d8db55fff51c782a665f37f1e5c54f3a37872a272688800e962e0dda",
+      "libpixman-1.so.0": "sha256:f6b5d0cabb6fd4b1007edbfdff4a0601f6631aa66595a89aa4f0128958661dd0",
+      "libpng16.so.16": "sha256:0c55d5776d3382cb7859ff48fcf813e0c3b27f33c46f9364633748830246c723",
+      "libpocketsphinx.so.3": "sha256:c7948b44a42d88f6cb13fddff6117fb70bc2d55e72769e5c8a18c6278841e53d",
+      "libpostproc.so.55": "sha256:a721eace908d3054b5178ec8c8484dee97493b7eeb610cbaf3013bf9fdf167d0",
+      "libpthread.so.0": "sha256:fbed9505adacada2abb37c6b43be2df6de81e742712c6025694ba48de62c7e78",
+      "libpulse.so.0": "sha256:dc4e62204e11605b8568dede082f0f24d36b4d69b2fbc6cb5d9c10c89d748b7e",
+      "libpulsecommon-15.99.so": "sha256:34d98da64f951df8bec478523323695a198d7ca7596144f4c48c8f7568f138f5",
+      "libquadmath.so.0": "sha256:a962d0383ce4c2a39a81017ffd9e5b51f32fd314e411c09ddd6da21593079a8c",
+      "librabbitmq.so.4": "sha256:9ecc41e5c7ade74fbf6f41eb1505c8f53ad82204d6373e0c04532cd143ca99b2",
+      "libraw1394.so.11": "sha256:7ef6b20355632a339d219d3dfd7f7097056ab9d0532f9acb8890a2e66a79da19",
+      "libresolv.so.2": "sha256:7230adfc1d3676f2485bec78f2d5c916d6becb15bc554ff95901f46800215194",
+      "librom1394.so.0": "sha256:45430fc3007e2aaddd41aa8dadfd584a0d0f4bebe6dc4c0cc9994a67ea93e132",
+      "librsvg-2.so.2": "sha256:de487005050dc31281932e2de24d8307167b4c1cd9c042521b34602fc93c866f",
+      "librubberband.so.2": "sha256:ad027488e96c820b34a6f8a4963fa9ebdd816a6d8e8b58109b632f0c33ba74a8",
+      "libsamplerate.so.0": "sha256:0fcd524dfbf63c95903c9bc9a5fa9129a152aa65316398ed4ac1b63769827baf",
+      "libselinux.so.1": "sha256:624eb1e6a7510e0983e9caa1bbf3e1966acb64fd6d3ad4db94528addbe1e7224",
+      "libserd-0.so.0": "sha256:0370a8cba31850ceb84dceac79ce7064ce7377436d78a0deb35caf7d7f6c0d61",
+      "libshine.so.3": "sha256:8ca727c3e0339a05e89b5f6dd60fa0bec85eb86cd7aaf27c3df8e7cdf7026ae4",
+      "libslang.so.2": "sha256:0ff07817ba60356e709ef0062c071489c1fc1b6617880d969de18753b8d674f6",
+      "libsnappy.so.1": "sha256:0b6e39db37cdefb38b1b874a72d60d13159665fe0f02d64cd72f41e11b03a48a",
+      "libsndfile.so.1": "sha256:ca86c8366be4cca11811f5338757439d9cb65db6728b4276083aad211b4fbf7f",
+      "libsndio.so.7": "sha256:fb30b6b8267c715d20c42dc51e6494decf55f4ae8796a1b88797b38de88b0475",
+      "libsodium.so.23": "sha256:f1e78ef8deb65b13d62873fab71546ccab06c77a0115891e55ce8fb108518f96",
+      "libsord-0.so.0": "sha256:7d82e4d70f628d44b64777e22a3d27e15452942f72ef1d3cfe37b277f46ff659",
+      "libsoxr.so.0": "sha256:1f7d6bf007dfa398522d49e7c53fc9ccd45ef11208d39b49ce3591803e1e1cf7",
+      "libspeex.so.1": "sha256:ccce92e26df2cb9b87d0c8f745e6348d21f7bafe766dc162b28a3f7e21380bd7",
+      "libsphinxbase.so.3": "sha256:ac938d5ec8ff18c4343aa1fea3cf6da46f3a7390b288ede82d8b6bf4f67a8645",
+      "libsratom-0.so.0": "sha256:d1053d40daa214ec1ae8a1d47bee047194c0dce2e67fc87993855763eb8c26aa",
+      "libsrt-gnutls.so.1.4": "sha256:9eab20d983e490b210fc19a4911b986b4d35f2a72037873877b2364c0bee1fb1",
+      "libssh-gcrypt.so.4": "sha256:3aeafc4e315e0898dad29c67716181f9f1063036315178fa209997da0bc84c15",
+      "libssl.so.3": "sha256:51fc92556f11ddce62f3f988d3fe973fab8fb4742032e61a713688581c924262",
+      "libstdc++.so.6": "sha256:ff0825e113603c3866680d5d52216bc6d8eedf3a59f52a0aef67ff01994db128",
+      "libswresample.so.3": "sha256:698b6fe8f8d9551be7a0ded3ae22ccfabcd79a7f1895d0ee81f54e2b99268a21",
+      "libswscale.so.5": "sha256:0e2bbc55fa51257005d5fb81120967481d5a045c6fa66ab541e4b0b7a946c4c8",
+      "libsystemd.so.0": "sha256:8ee518f4be2e280e0d327192e6f258ecfad678e8f075a3be54c66102309ae543",
+      "libtasn1.so.6": "sha256:02557ad1961e7659203b878b08f3a1befd8728a689ab4590f52637a509e6804a",
+      "libthai.so.0": "sha256:f8459dcadb747e81e21cad576f8143d7e794671689e2aac0edb1b319f548293a",
+      "libtheoradec.so.1": "sha256:ed8da0853c9c402464f548ee53f3cb60fb6f4b627f1bcca7997dd9a2cd63b86f",
+      "libtheoraenc.so.1": "sha256:44fca6dcdbd4ab86814ea1289b671f3e55823fdab8ac16b37a8f49f4f147fb67",
+      "libtinfo.so.6": "sha256:1594d475b771bf8cbb547f0e9b0c842ec37628d42c6747960b4d7c12a4cf4427",
+      "libtwolame.so.0": "sha256:192bf57f4fbd58b98b01d962e0111fc081c620a75126bc84674f2747399ebe62",
+      "libudev.so.1": "sha256:f2b5c2a7fc455cd508f883556e309ce456f67c2ec98679ddd6cc52203ab93e5b",
+      "libudfread.so.0": "sha256:2103279ba2b7e1e365938d657259e0b9c194d8e266729cfd83722782cf40c19c",
+      "libunistring.so.2": "sha256:9c28d59500f186fc28bf7e77e9b1a71129f66731c52ac1e974b9acd1a760911a",
+      "libusb-1.0.so.0": "sha256:919e7ca7633bde351a097843638d1871c497211626e6c355140e898e61d2a84c",
+      "libuuid.so.1": "sha256:af7e79f9aca96cf75a9350129758ef2de10a13b06558a0a735b950d00c0a50f5",
+      "libva-drm.so.2": "sha256:9cf5b3c1a3f86222272ed27f68c7bfcb8d1850d8b2cc9a4037d8298583420b99",
+      "libva-x11.so.2": "sha256:7c74a5de024dcfdbe9e5cc9e202f06b0b30ddb8959841dbce52710407cc1c87c",
+      "libva.so.2": "sha256:7ee0c548a2ce345a74b482aef98a3ddcb825504db7f1cda75020f9f999fef1c1",
+      "libvdpau.so.1": "sha256:50ee5606478123947dc7f6d128b6032dd87e651441aee2c7e15cbbbe122d663a",
+      "libvidstab.so.1.1": "sha256:865db564f4a41448660a8040dbb5ed8dc1fe7032a400d8c59c151ee92591c91f",
+      "libvorbis.so.0": "sha256:09ea7bba29ecd10714d85d8de184955e04e37112c8528319ccff25a4013bd30a",
+      "libvorbisenc.so.2": "sha256:888a965f043cd8346d0ba759ba5e84038c2bf779b4457a0cb6ac628b419d6a47",
+      "libvorbisfile.so.3": "sha256:2a9e1b16b4d267e2ac73f8ddc9dbd1aa78c65bd9925c46a798d0934ff3cff1a4",
+      "libvpx.so.7": "sha256:46ded032f9e2bd60f08f16802f5804897e3945e36e418606da173a786075b4ab",
+      "libwayland-client.so.0": "sha256:30a119138d812d6e1c3280a7c2d5a9f49f13ae07b31cda2beb397da4f68f6d54",
+      "libwayland-cursor.so.0": "sha256:1bf8bf6af96711611300c6a9be353af93ee89e208a2431eb6a894222d314c7b2",
+      "libwayland-egl.so.1": "sha256:c776f338f3dfbbb7056253dde27e08ff851cd3eb269fb57ea9b04b81f56d6ec3",
+      "libwayland-server.so.0": "sha256:ce73bdce7d0953f4f045a232f5351ba386be24d3a4aa5f00149f346e4d639003",
+      "libwebp.so.7": "sha256:2cff2529eb932c3b81ef6a344b99a5412c893d3f672a7d28f986a8d08c8b2ccb",
+      "libwebpmux.so.3": "sha256:28f3105333cf1a45fa80629665667dbdfcac5cb9a51694a2ce33dea858a3e5fa",
+      "libx264.so.163": "sha256:74263a09bc162e1ef7268e3d93b0b7839977292f5d702104830ca0998d85b27c",
+      "libx265.so.199": "sha256:a72e1820c6ff8e58e9238b378abf6e0ac3a688e6552cb5d71f7c88f7b32721fa",
+      "libxcb-randr.so.0": "sha256:942a242b33c80ab4a5ce6d3db62d12f8856589860fa1986248b046850e58a80e",
+      "libxcb-render.so.0": "sha256:116b70d1eef6cbad17bec65091b19fce427dc009a6213cee796935fa6a9ce520",
+      "libxcb-shape.so.0": "sha256:db29fddf057f86d4561cd54c843efd34ec17af3471ca2ab32e8f3031aa3aad33",
+      "libxcb-shm.so.0": "sha256:722e13a0a26551dd9f11b930c4632c9e51d2e9f743315d45c1b665356950d42d",
+      "libxcb-xfixes.so.0": "sha256:e3d14d45bd5208e7b146627f8a6d8918c52846face02cfc4418690c32534bc42",
+      "libxcb.so.1": "sha256:aabc489094abd96c876d1c989a2da8a8aa6d28f5a676c4a84dd6d0a0c34aec5d",
+      "libxkbcommon.so.0": "sha256:26773f54626af26f5f26f0279a9748ea2445c1adcfef50a7d572c9b54575bd86",
+      "libxml2.so.2": "sha256:8c2a993fe42a16e94f9054f1b9cbeccea50b6ed377359e9d3da04cbb2470f225",
+      "libxvidcore.so.4": "sha256:5421e7c0509526bb65ebdc497891be4c263210ad27c7f41b8ad33fe6a1ad6cc1",
+      "libz.so.1": "sha256:64c206f0146cc58bbddc4f22054436f4ff278f5a554aa3ce6921ddf7e9133370",
+      "libzimg.so.2": "sha256:41e164796f2f338c831a6abf8d7136cd7db7760a806f3f6736837f8b2d44319f",
+      "libzmq.so.5": "sha256:540a8defe7b1e1494ac553843a2bea88eaf5426bf367782b5ca6a5a01360989f",
+      "libzstd.so.1": "sha256:5df4f4df42d76270bb6981fabc7c1fdccd8ad28a23d84d67f73203fb3f537667",
+      "libzvbi.so.0": "sha256:8cec6535b9d61bb29ba2a44a37820e2c1e3b888adb297362b9ca6a7718e576a5"
+    },
+    "runtime": {
+      "build_id": "private-segment-linux.v1",
+      "ffmpeg_binary_hash": "sha256:36d94a605d612e4090d1b8aec889d0c0801c6eafb1593c90f5c0dfd2e2966a45",
+      "ffmpeg_version": "version-sha256.ff177c4585de71302b95b6fe2751cb5fdfc8c145ce192b81876fd617561ffa9f",
+      "fontconfig_build_hash": "sha256:7d688909aab1c566b60832045fef012ea118ff7ee189df87608fbff999d3bd0d",
+      "rasterizer_build_hash": "sha256:67cf7c0cbfe497555d865b6d0310fa6f3948e7f7a29b36e12a92f741d35cf8b7",
+      "rasterizer_id": "librsvg.v1"
+    },
+    "uid": 1000,
+    "unsupported": null
+  }
+}
