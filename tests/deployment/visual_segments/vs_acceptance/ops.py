@@ -11,8 +11,9 @@ def emit(value): print(json.dumps(value,default=str))
 
 
 def runtime():
+    import re
     import subprocess
-    from core.visual_segment_artifacts import NativeAudioValidator
+    from core.visual_segment_artifacts import NativeAudioValidator, _hash_stream
     from core.visual_segment_validation import installed_runtime
     digest=lambda path:'sha256:'+hashlib.sha256(Path(path).read_bytes()).hexdigest()
     ffmpeg,ffprobe='/usr/bin/ffmpeg','/usr/bin/ffprobe'
@@ -24,10 +25,18 @@ def runtime():
     from core.visual_design.schemas import DesignError
     try: observed=installed_runtime(verifier);unsupported=None
     except DesignError as exc: observed=None;unsupported=exc.code
+    linked=subprocess.check_output(['ldd',ffmpeg],text=True)
+    libraries={}
+    for name,path in re.findall(r'\s+(\S+) => (/\S+) ',linked):
+        with Path(path).resolve(strict=True).open('rb') as file:
+            libraries[name]='sha256:'+_hash_stream(file).hexdigest()
+    if observed is not None:
+        from core.visual_design.schemas import content_hash
+        assert content_hash('visual-segment-linked-runtime.v1',libraries)==observed['rasterizer_build_hash']
     return {'runtime':observed,'unsupported':unsupported,'ffmpeg_hash':digest(ffmpeg),'ffprobe_hash':digest(ffprobe),
         'fonts':fonts,'uid':os.geteuid(),'gid':os.getegid(),
         'ffmpeg_version':subprocess.check_output([ffmpeg,'-version'],text=True).splitlines()[0],
-        'linked_libraries':subprocess.check_output(['ldd',ffmpeg],text=True)}
+        'linked_libraries':linked,'native_library_hashes':libraries}
 
 
 def lesson():

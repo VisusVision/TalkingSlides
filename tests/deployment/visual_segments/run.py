@@ -37,7 +37,7 @@ def container_json(output):
 def runtime_identity(value):
     # ldd's display addresses are randomized diagnostics, not build identities.
     # The existing runtime contract hashes every linked library's actual bytes.
-    names={'runtime','unsupported','ffmpeg_hash','ffprobe_hash','fonts','uid','gid','ffmpeg_version'}
+    names={'runtime','unsupported','ffmpeg_hash','ffprobe_hash','fonts','uid','gid','ffmpeg_version','native_library_hashes'}
     if set(value)!=names|{'linked_libraries'}:raise ValueError('Unknown runtime observation fields')
     return {key:value[key] for key in names}
 
@@ -316,8 +316,11 @@ class Deployment:
     def post_authorization(self,action):
         self.reset(inferred=action=='revoke');self.worker();self.submit();run=self.done()
         before=run['receipt_hash'];self.ops(action)
-        code=self.http('GET',self.base+run['id']+'/media/mp4/')[0]
-        assert code in (401,403,404,409) and self.summary()['receipt_hash']==before
+        response=self.http('GET',self.base+run['id']+'/media/mp4/')
+        if action=='producer_lost':
+            assert response[0]==503 and json.loads(response[2])['error']['code']=='audio_provenance_unavailable'
+        else:assert response[0] in (401,403,404,409)
+        assert self.summary()['receipt_hash']==before
         self.scenarios.append(action+' after accepted receipt denies HTTP delivery')
 
     def producer_boundaries(self):

@@ -71,7 +71,8 @@ def test_runtime_comparison_ignores_only_aslr_display_addresses():
     identity=runpy.run_path(str(Path(__file__).parent/'run.py'))['runtime_identity']
     base={'runtime':{'rasterizer_build_hash':'sha256:a'},'unsupported':None,'ffmpeg_hash':'a',
         'ffprobe_hash':'b','fonts':{'regular':'c','bold':'d'},'uid':1000,'gid':1000,
-        'ffmpeg_version':'version','linked_libraries':'libc => /lib/libc (0x1234)'}
+        'ffmpeg_version':'version','native_library_hashes':{'libc':'sha256:c'},
+        'linked_libraries':'libc => /lib/libc (0x1234)'}
     changed={**base,'linked_libraries':'libc => /lib/libc (0x9999)'}
     assert identity(changed)==identity(base)
     assert identity({**changed,'runtime':{'rasterizer_build_hash':'sha256:b'}})!=identity(base)
