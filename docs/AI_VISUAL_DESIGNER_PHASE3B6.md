@@ -1,5 +1,33 @@
 # Phase 3B-6 — Deployment packaging and isolated security evidence
 
+## Interrupted-session recovery (24 October 2026)
+
+The continuation recovered the original checkout at
+`9d731938b49d9a818bdd5a71015dfd23f01f10e0`, on the requested feature branch.
+Three Phase 3B-6 commits were already present and pushed: `5010536` (packaging,
+volume provisioner, retention, container suite and CI), `0a72948` (private
+permission preservation and stable native comparison), and `9d73193` (API CUDA
+entrypoint isolation and container result parsing). Two unstaged test changes
+in `run.py` and `vs_acceptance/ops.py` added a client-reset/descriptor probe.
+There were no staged or untracked repository files and no unrelated user changes.
+All prior implementation and those two pending changes were preserved.
+
+Recovered [CI run 40081320496](https://github.com/VisusVision/TalkingSlides/actions/runs/40081320496)
+passed backend/migrations/Python audit, PostgreSQL, frontend/Chromium/npm audits,
+Docker builds and k6. Its deployment job built all three images, verified shared
+volume identity and native compatibility, then failed on missing API host port
+publication. Gunicorn had started successfully in the archived container log;
+the real media/recovery scenarios had not run. Earlier two Phase 3B-6 runs were
+cancelled, not accepted. This failure was a deployment-harness configuration
+failure, not evidence of another network download failure.
+
+The continuation adds a separate loopback-facing API bridge, keeping the broker,
+database and worker on the internal network only, and waits boundedly for port
+publication plus HTTP health at each API restart. It completes the pending
+client-disconnect probe and requires actual Gunicorn process inspection rather
+than silently treating unavailable descriptor inspection as success. Final-tree
+test results and remaining gates are recorded below when verification completes.
+
 Verified starting HEAD: `ed49b3e0ffc26167e29d94d49c7d9cca80148d10`, clean
 `feature/ai-visual-designer`. Main/developer are not modified or merged.
 

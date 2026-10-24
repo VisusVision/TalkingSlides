@@ -77,6 +77,21 @@ def main():
     action=sys.argv[1]
     if action=='runtime': return runtime()
     if action=='seed': return seed(len(sys.argv)>2 and sys.argv[2]=='inferred')
+    if action=='private_descriptors':
+        count=0;inspected=0
+        for process in Path('/proc').iterdir():
+            if not process.name.isdigit() or int(process.name)==os.getpid():continue
+            try:
+                if b'gunicorn' not in (process/'cmdline').read_bytes():continue
+                inspected+=1
+                for descriptor in (process/'fd').iterdir():
+                    try:
+                        target=os.readlink(descriptor)
+                        if target=='/engineering-private' or target.startswith('/engineering-private/'):count+=1
+                    except FileNotFoundError:pass
+            except FileNotFoundError:pass  # Process/descriptor exited during scan.
+        if not inspected:raise RuntimeError('No Gunicorn process inspected')
+        return {'private_descriptors':count,'inspected_processes':inspected}
     if action=='public_token':
         from core.views import generate_media_token
         row=VisualSegmentRun.objects.get(project_id=701)

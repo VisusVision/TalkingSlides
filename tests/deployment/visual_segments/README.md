@@ -12,6 +12,8 @@ image builds, and no GPU/model download. Do not point this Compose project at
 existing databases/volumes/brokers. It uses an internal network, generated project
 name, disposable PostgreSQL/Redis volumes, no production `.env`, no exposed broker
 or database ports, and a loopback-only ephemeral Gunicorn port.
+Only the API joins an additional HTTP bridge for that loopback publication;
+the worker, broker and database remain exclusively on the internal network.
 
 ```sh
 docker build --build-arg INSTALL_TEST_DEPS=1 --build-arg INSTALL_AVATAR_RUNTIME_DEPS=0 --build-arg INSTALL_OPENMMLAB_DEPS=0 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0 -f infra/dockerfiles/Dockerfile.worker -t vs-worker:acceptance .

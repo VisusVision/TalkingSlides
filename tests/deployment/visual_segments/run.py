@@ -12,6 +12,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
+import struct
 import subprocess
 import tempfile
 import time
@@ -87,6 +89,18 @@ class Deployment:
     @property
     def base(self):return '/api/v1/projects/701/visual-segments/'
 
+    def api_ready(self):
+        def published():
+            result=self.cmd('port','api','8000',check=False)
+            address=result.stdout.strip()
+            if result.returncode or not address:return False
+            host,port=address.rsplit(':',1)
+            if host!='127.0.0.1':raise SecurityInvariantError('API port is not loopback-only')
+            self.port=str(int(port))
+            return True
+        self.wait(published,seconds=20)
+        self.wait(lambda:self.http('GET','/health/')[0]==200)
+
     def reset(self,inferred=False):
         for service in ('worker','api'):self.cmd('kill','-s','SIGKILL',service,check=False)
         self.cmd('rm','-sf','worker','api',check=False)
@@ -95,8 +109,7 @@ class Deployment:
         self.ops('reset_controls')
         self.tokens=self.ops('seed',*(['inferred'] if inferred else []))
         self.cmd('up','-d','--no-deps','api')
-        port=self.cmd('port','api','8000').stdout.strip();self.port=port.rsplit(':',1)[1]
-        self.wait(lambda:self.http('GET','/health/')[0]==200)
+        self.api_ready()
 
     def worker(self):
         self.cmd('up','-d','--no-deps','worker')
@@ -183,6 +196,21 @@ class Deployment:
             rows.append({'service':service,'processes':found})
         self.results['serving_processes']=rows
 
+    def disconnect(self,path):
+        def count():
+            result=self.cmd('exec','-T','api','python','-m','vs_acceptance.ops','private_descriptors')
+            return container_json(result.stdout)['private_descriptors']
+        baseline=count()
+        for _ in range(3):
+            connection=socket.create_connection(('127.0.0.1',int(self.port)),timeout=10)
+            connection.sendall(('GET '+path+' HTTP/1.1\r\nHost: localhost\r\nAuthorization: Token '+self.tokens['token']+'\r\nConnection: close\r\n\r\n').encode())
+            assert connection.recv(128)
+            connection.setsockopt(socket.SOL_SOCKET,socket.SO_LINGER,struct.pack('ii',1,0))
+            connection.close()
+        self.wait(lambda:count()<=baseline,seconds=10)
+        self.results['disconnect']={'client_resets':3,'baseline_private_fds':baseline,'after_private_fds':count(),
+            'scope':'direct Gunicorn, fixture-sized output; no production proxy/slow-stream claim'}
+
     def media(self):
         self.reset();self.worker();self.submit();run=self.done();receipt=run['receipt_hash']
         self.processes()
@@ -203,6 +231,7 @@ class Deployment:
         if self.http('GET',path+'mp4/',other=True)[0]!=404:raise SecurityInvariantError('Cross-owner media access')
         for route in ('/media/','/static/','/api/v1/stream/guessed-private-hash/'):
             assert self.http('GET',route+run['receipt']['outputs']['mp4']['sha256'][7:]+'.mp4')[0] in (400,403,404)
+        self.disconnect(path+'mp4/')
         signed=self.ops('public_token')
         for route in ('/api/v1/stream/'+signed['token']+'/', '/api/v1/jobs/'+str(signed['job_id'])+'/',
                       '/api/v1/projects/701/jobs/'+str(signed['job_id'])+'/'):
@@ -226,7 +255,7 @@ class Deployment:
             try:call.result(timeout=5)
             except Exception:pass  # Actual HTTP connection is killed after DB commit.
         self.ops('resume',stage);self.cmd('up','-d','--no-deps','api')
-        self.port=self.cmd('port','api','8000').stdout.strip().rsplit(':',1)[1]
+        self.api_ready()
         self.ops('cooldown');self.ops('reconcile');self.worker()
         after=self.done();assert before['id']==after['id'] and before['execution_hash']==after['execution_hash']
         assert after['attempts']==1

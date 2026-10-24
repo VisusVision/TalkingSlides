@@ -71,6 +71,10 @@ services:
   api:
     <<: *app
     command: [gunicorn, --bind, "0.0.0.0:8000", --workers, "1", --threads, "2", --timeout, "90", config.wsgi:application]
+    # Internal-only bridges do not provide host port publication on current
+    # Docker engines. Only Gunicorn joins this extra loopback-facing bridge;
+    # Redis, PostgreSQL and the worker stay on the internal network exclusively.
+    networks: [isolated, http]
     ports: ["127.0.0.1::8000"]
   worker:
     <<: *app
@@ -86,3 +90,4 @@ volumes:
 networks:
   isolated:
     internal: true
+  http:
