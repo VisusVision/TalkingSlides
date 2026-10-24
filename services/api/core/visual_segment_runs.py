@@ -498,7 +498,7 @@ def claim_attempt(project_id, owner, run_id, *, execution_hash, expected_generat
         require(not active.exists(), "concurrency_limit", "Only one active private segment claim per owner")
         token = uuid.uuid4(); expiry = now + timedelta(seconds=lease_seconds)
         _write_run(run, attempt_generation=run.attempt_generation + 1, attempt_count=run.attempt_count + 1, claim_token=token,
-            lease_owner=lease_owner, lease_expires_at=expiry, pending_dispatch=False)
+            lease_owner=lease_owner, lease_expires_at=expiry, pending_dispatch=False, dispatch_error="")
         _write_job(job, "running")
         return AttemptClaim(run.pk, run.execution_hash, run.attempt_generation, token, expiry)
 

@@ -225,4 +225,4 @@ jobs:
         env:
           VISUAL_MEDIA_REQUIRE: '1'
           INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED: 'false'
-        run: pytest -q tests/integration/test_visual_drafts.py tests/integration/test_visual_evidence.py tests/integration/test_visual_render_snapshots.py tests/integration/test_visual_segment_runs.py tests/integration/test_visual_segment_media.py --ds=config.settings_test_postgres
+        run: pytest -q tests/integration/test_visual_drafts.py tests/integration/test_visual_evidence.py tests/integration/test_visual_render_snapshots.py tests/integration/test_visual_segment_runs.py tests/integration/test_visual_segment_media.py tests/integration/test_visual_segment_api.py --ds=config.settings_test_postgres

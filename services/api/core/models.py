@@ -1426,7 +1426,7 @@ class SegmentControlQuerySet(models.QuerySet):
 
     def _control_update(self, token, **kwargs):
         allowed = {"pending_dispatch", "attempt_generation", "claim_token", "lease_owner", "lease_expires_at",
-                   "cancelled_at", "cancellation_reason", "terminal_failure_reason", "attempt_count", "updated_at"}
+                   "cancelled_at", "cancellation_reason", "terminal_failure_reason", "attempt_count", "dispatch_generation", "dispatch_attempts", "dispatch_next_at", "dispatch_error", "updated_at"}
         if token is not _SEGMENT_CONTROL_WRITE or self.model.__name__ != "VisualSegmentRun" or not set(kwargs) <= allowed:
             raise ValidationError("Invalid private Run control write.")
         return super().update(**kwargs)
@@ -1458,6 +1458,10 @@ class VisualSegmentRun(models.Model):
     job = models.OneToOneField(Job, on_delete=models.CASCADE, related_name="visual_segment_run")
     pending_dispatch = models.BooleanField(default=True)
     dispatch_task_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)
+    dispatch_generation = models.PositiveBigIntegerField(null=True, blank=True)
+    dispatch_attempts = models.PositiveSmallIntegerField(default=0)
+    dispatch_next_at = models.DateTimeField(null=True, blank=True)
+    dispatch_error = models.CharField(max_length=80, blank=True)
     attempt_generation = models.PositiveBigIntegerField(default=0)
     attempt_count = models.PositiveSmallIntegerField(default=0)
     claim_token = models.UUIDField(null=True, blank=True)
@@ -1484,6 +1488,10 @@ class VisualSegmentRun(models.Model):
             models.CheckConstraint(condition=(Q(completed_receipt__isnull=True, completed_receipt_hash="", completed_claim_token__isnull=True) |
                 (Q(completed_receipt__isnull=False, completed_claim_token__isnull=False) & ~Q(completed_receipt_hash=""))), name="segment_receipt_identity_consistent"),
             models.CheckConstraint(condition=Q(attempt_count__lte=3), name="segment_attempt_count_bounded"),
+            models.CheckConstraint(condition=Q(dispatch_attempts__lte=3), name="segment_dispatch_count_bounded"),
+            models.CheckConstraint(condition=(Q(dispatch_generation__isnull=True,dispatch_attempts=0,dispatch_next_at__isnull=True,dispatch_error="") |
+                Q(dispatch_generation__isnull=False,dispatch_attempts__gte=1,dispatch_next_at__isnull=False)), name="segment_dispatch_intent_consistent"),
+            models.CheckConstraint(condition=(Q(dispatch_generation__isnull=True) | Q(dispatch_generation__lte=models.F("attempt_generation"))), name="segment_dispatch_generation_valid"),
         ]
         indexes = [models.Index(fields=["project", "owner", "created_at"], name="private_segment_owner_idx")]
 
@@ -1513,7 +1521,8 @@ class VisualSegmentRun(models.Model):
     def save(self, *args, **kwargs):
         if kwargs.pop("_control_token", None) is not _SEGMENT_CONTROL_WRITE or not self._state.adding:
             raise ValidationError("Private Run identity is immutable; use the control service.")
-        if self.completed_receipt is not None or self.completed_receipt_hash or self.completed_claim_token or self.attempt_count:
+        if (self.completed_receipt is not None or self.completed_receipt_hash or self.completed_claim_token or self.attempt_count
+                or self.dispatch_generation is not None or self.dispatch_attempts or self.dispatch_next_at is not None or self.dispatch_error):
             raise ValidationError("New Runs cannot contain successful media or attempts.")
         self.full_clean()
         return super().save(*args, **kwargs)

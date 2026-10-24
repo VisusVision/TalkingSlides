@@ -46,6 +46,7 @@ Router:
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
+from .visual_segment_views import VisualSegmentListView, VisualSegmentDetailView, VisualSegmentCancelView, VisualSegmentMediaView
 from .visual_render_views import VisualRenderSnapshotListView, VisualRenderSnapshotDetailView
 from .visual_evidence_views import VisualProposalListView, VisualProposalReviewView
 from .visual_design_views import VisualSuggestionListView, VisualSuggestionDetailView, VisualSuggestionPreviewView, VisualDraftView
@@ -140,6 +141,10 @@ router.register(r"slides", SlideViewSet, basename="slide")
 router.register(r"jobs", JobViewSet, basename="job")
 
 urlpatterns = [
+    path("projects/<int:project_id>/visual-segments/", VisualSegmentListView.as_view(), name="visual-segment-list"),
+    path("projects/<int:project_id>/visual-segments/<uuid:run_id>/", VisualSegmentDetailView.as_view(), name="visual-segment-detail"),
+    path("projects/<int:project_id>/visual-segments/<uuid:run_id>/cancel/", VisualSegmentCancelView.as_view(), name="visual-segment-cancel"),
+    path("projects/<int:project_id>/visual-segments/<uuid:run_id>/media/<str:role>/", VisualSegmentMediaView.as_view(), name="visual-segment-media"),
     path("projects/<int:project_id>/visual-render-snapshots/", VisualRenderSnapshotListView.as_view(), name="visual-render-snapshot-list"),
     path("projects/<int:project_id>/visual-render-snapshots/<uuid:snapshot_id>/", VisualRenderSnapshotDetailView.as_view(), name="visual-render-snapshot-detail"),
     path("projects/<int:project_id>/visual-proposals/", VisualProposalListView.as_view(), name="visual-proposal-list"),

@@ -69,6 +69,7 @@ app.conf.task_queues = tuple(
     )
 )
 app.conf.task_routes = {
+    "worker.visual_segments.generate_private_segment": {"queue": render_queue},
     "worker.tasks.process_pptx_to_video": {"queue": render_queue},
     "worker.tasks.export_project": {"queue": render_queue},
     "worker.tasks.synthesize_and_render_slide": {"queue": render_queue},
@@ -97,3 +98,6 @@ app.autodiscover_tasks(["worker"])
 
 # This module intentionally lives outside the already-large tasks.py file.
 from worker import digital_twin_tasks  # noqa: E402,F401
+
+# Private Run adapter: registered only; no dispatch on import.
+from worker import visual_segment_celery  # noqa: E402,F401
