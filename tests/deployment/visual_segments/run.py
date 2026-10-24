@@ -19,8 +19,18 @@ import urllib.error
 import urllib.request
 import uuid
 
+if not __debug__:raise RuntimeError('Acceptance checks must not run with Python optimization')
+
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[2]
+
+
+def runtime_identity(value):
+    # ldd's display addresses are randomized diagnostics, not build identities.
+    # The existing runtime contract hashes every linked library's actual bytes.
+    names={'runtime','unsupported','ffmpeg_hash','ffprobe_hash','fonts','uid','gid','ffmpeg_version'}
+    if set(value)!=names|{'linked_libraries'}:raise ValueError('Unknown runtime observation fields')
+    return {key:value[key] for key in names}
 
 
 class SecurityInvariantError(AssertionError):
@@ -107,7 +117,9 @@ class Deployment:
         assert observed['runtime'] is not None,'Worker native runtime is unsupported'
         (self.control/'runtime.json').write_text(json.dumps(observed))
         actual=self.ops('runtime')
-        assert observed==actual,'Matched API variant and worker native runtime diverged'
+        self.results['worker_runtime']=observed;self.results['api_runtime']=actual
+        print('NATIVE_IDENTITY '+json.dumps({'worker':runtime_identity(observed),'api':runtime_identity(actual)}),flush=True)
+        assert runtime_identity(observed)==runtime_identity(actual),'Matched API variant and worker native runtime diverged'
         assert (actual['uid'],actual['gid'])==(1000,1000)
         self.results['runtime']=actual
         raw=subprocess.run(['docker','run','--rm','--user','1000:1000',
@@ -116,7 +128,7 @@ class Deployment:
             'from vs_acceptance.ops import runtime;import json;print(json.dumps(runtime()))'],
             capture_output=True,text=True,timeout=60,check=True)
         self.results['default_slim_api_runtime']=json.loads(raw.stdout.strip())
-        self.results['default_slim_matches_worker']=self.results['default_slim_api_runtime']==actual
+        self.results['default_slim_matches_worker']=runtime_identity(self.results['default_slim_api_runtime'])==runtime_identity(actual)
         self.cmd('run','--rm','--no-deps','api','python','-m','django','migrate','--noinput',timeout=120)
         self.results['images']={}
         for name in ('vs-worker:acceptance','vs-private-api:acceptance','vs-default-api:acceptance'):
@@ -129,10 +141,12 @@ class Deployment:
         # Actual numeric process identity, cross-process writes and restart.
         probe="import os,pathlib,json;from core.visual_private_volume import inspect_volume; p=pathlib.Path('/engineering-private/PROBE');p.write_bytes(b'private shared bytes');p.chmod(0o600);print(json.dumps(inspect_volume('/engineering-private')))"
         out=self.cmd('run','--rm','--no-deps','api','python','-c',probe).stdout
-        assert json.loads(out.strip())['runtime_uid']==1000
+        api_mount=json.loads(out.strip());assert api_mount['runtime_uid']==1000
         read="from pathlib import Path;assert Path('/engineering-private/PROBE').read_bytes()==b'private shared bytes'"
         self.cmd('run','--rm','--no-deps','worker','python','-c',read)
-        self.cmd('run','--rm','--no-deps','worker','python','-c',probe.replace('private shared bytes','worker shared bytes'))
+        worker_mount=json.loads(self.cmd('run','--rm','--no-deps','worker','python','-c',probe.replace('private shared bytes','worker shared bytes')).stdout.strip())
+        assert all(api_mount[k]==worker_mount[k] for k in ('device','inode','uid','gid','mode'))
+        self.results['shared_mount']={'api':api_mount,'worker':worker_mount}
         self.cmd('run','--rm','--no-deps','api','python','-c',read.replace('private shared bytes','worker shared bytes'))
         bad=self.cmd('run','--rm','--no-deps','--user','1001:1001','api','python','-c',read,check=False)
         assert bad.returncode!=0
@@ -147,8 +161,24 @@ class Deployment:
         self.results['root_entrypoint_processes']=dropped
         self.results['gates']['D1']='PASS_BUILT_CROSS_PROCESS_1000_1000'
 
+    def processes(self):
+        rows=[]
+        for service,match in [('api','gunicorn'),('worker','celery')]:
+            identity=self.cmd('ps','-q',service).stdout.strip()
+            result=subprocess.run(['docker','top',identity,'-eo','pid,uid,gid,args'],capture_output=True,text=True,timeout=10,check=True)
+            found=[]
+            for line in result.stdout.splitlines()[1:]:
+                parts=line.split(None,3)
+                if len(parts)==4 and match in parts[3]:
+                    if parts[1:3]!=['1000','1000']:raise SecurityInvariantError('Wrong numeric serving/worker process identity')
+                    found.append({'pid':parts[0],'uid':parts[1],'gid':parts[2],'command':parts[3]})
+            assert found,'Actual '+match+' process not found'
+            rows.append({'service':service,'processes':found})
+        self.results['serving_processes']=rows
+
     def media(self):
         self.reset();self.worker();self.submit();run=self.done();receipt=run['receipt_hash']
+        self.processes()
         self.results['example']={k:run[k] for k in ('id','execution_hash','receipt_hash','receipt')}
         path=self.base+run['id']+'/media/'
         status,headers,mp4=self.http('GET',path+'mp4/')
@@ -166,6 +196,10 @@ class Deployment:
         if self.http('GET',path+'mp4/',other=True)[0]!=404:raise SecurityInvariantError('Cross-owner media access')
         for route in ('/media/','/static/','/api/v1/stream/guessed-private-hash/'):
             assert self.http('GET',route+run['receipt']['outputs']['mp4']['sha256'][7:]+'.mp4')[0] in (400,403,404)
+        signed=self.ops('public_token')
+        for route in ('/api/v1/stream/'+signed['token']+'/', '/api/v1/jobs/'+str(signed['job_id'])+'/',
+                      '/api/v1/projects/701/jobs/'+str(signed['job_id'])+'/'):
+            if self.http('GET',route)[0] not in (403,404):raise SecurityInvariantError('Private result escaped through ordinary token/Job route')
         self.ops('replay',0);time.sleep(2);assert self.summary()['receipt_hash']==receipt and self.summary()['attempts']==1
         self.cmd('restart','api','worker');self.wait(lambda:self.http('GET','/health/')[0]==200)
         assert self.http('GET',path+'mp4/')[0]==200

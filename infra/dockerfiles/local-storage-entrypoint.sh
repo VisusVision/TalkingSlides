@@ -13,7 +13,7 @@ if [ -n "${VISUAL_RENDER_PRIVATE_ROOT:-}" ]; then
         echo "ERROR: private storage requires application UID/GID 1000:1000" >&2
         exit 78
     fi
-    python -c 'import os; from pathlib import Path; a=Path(os.environ["VISUAL_RENDER_PRIVATE_ROOT"]).resolve(); b=Path(os.environ.get("STORAGE_ROOT", "/app/storage_local")).resolve(); assert not a.is_relative_to(b) and not b.is_relative_to(a), "private/public storage overlap"' || exit 78
+    python -c 'import os, sys; from pathlib import Path; a=Path(os.environ["VISUAL_RENDER_PRIVATE_ROOT"]).resolve(); b=Path(os.environ.get("STORAGE_ROOT", "/app/storage_local")).resolve(); sys.exit("private/public storage overlap") if a.is_relative_to(b) or b.is_relative_to(a) else None' || exit 78
 fi
 
 if [ -n "$STORAGE_ROOT" ]; then
@@ -22,9 +22,9 @@ if [ -n "$STORAGE_ROOT" ]; then
             chmod "$LOCAL_STORAGE_DIR_MODE" "$STORAGE_ROOT" 2>/dev/null || echo "WARNING: chmod failed for $STORAGE_ROOT" >&2
             if [ "$LOCAL_STORAGE_REPAIR_PROJECT_DIRS" = "1" ]; then
                 for project_dir in "$STORAGE_ROOT"/[0-9]*; do
-                    if [ -d "$project_dir" ]; then
+                    if [ -d "$project_dir" ] && [ ! -L "$project_dir" ]; then
                         chmod "$LOCAL_STORAGE_DIR_MODE" "$project_dir" 2>/dev/null || echo "WARNING: chmod failed for $project_dir" >&2
-                        if [ -d "$project_dir/subtitles" ]; then
+                        if [ -d "$project_dir/subtitles" ] && [ ! -L "$project_dir/subtitles" ]; then
                             chmod "$LOCAL_STORAGE_DIR_MODE" "$project_dir/subtitles" 2>/dev/null || echo "WARNING: chmod failed for $project_dir/subtitles" >&2
                         fi
                     fi

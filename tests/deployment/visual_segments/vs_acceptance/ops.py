@@ -77,6 +77,10 @@ def main():
     action=sys.argv[1]
     if action=='runtime': return runtime()
     if action=='seed': return seed(len(sys.argv)>2 and sys.argv[2]=='inferred')
+    if action=='public_token':
+        from core.views import generate_media_token
+        row=VisualSegmentRun.objects.get(project_id=701)
+        return {'token':generate_media_token(row.job_id,'video'),'job_id':row.job_id}
     if action=='summary':
         row=VisualSegmentRun.objects.select_related('job').get(project_id=701)
         return {'id':str(row.pk),'execution_hash':row.execution_hash,'generation':row.attempt_generation,
