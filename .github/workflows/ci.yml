@@ -226,3 +226,27 @@ jobs:
           VISUAL_MEDIA_REQUIRE: '1'
           INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED: 'false'
         run: pytest -q tests/integration/test_visual_drafts.py tests/integration/test_visual_evidence.py tests/integration/test_visual_render_snapshots.py tests/integration/test_visual_segment_runs.py tests/integration/test_visual_segment_media.py tests/integration/test_visual_segment_api.py --ds=config.settings_test_postgres
+
+  private-segment-deployment-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Build actual worker and API variants
+        run: |
+          docker build --build-arg INSTALL_TEST_DEPS=1 --build-arg INSTALL_AVATAR_RUNTIME_DEPS=0 --build-arg INSTALL_OPENMMLAB_DEPS=0 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0 -f infra/dockerfiles/Dockerfile.worker -t vs-worker:acceptance .
+          docker build -f infra/dockerfiles/Dockerfile.api -t vs-default-api:acceptance .
+          docker build --build-arg PRIVATE_WORKER_IMAGE=vs-worker:acceptance -f infra/dockerfiles/Dockerfile.private-api -t vs-private-api:acceptance .
+      - name: Actual isolated Redis, Gunicorn and worker evidence
+        run: python tests/deployment/visual_segments/run.py --report-dir "${{ runner.temp }}/visual-segment-deployment"
+      - name: Upload explicit deployment gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-segment-deployment-evidence
+          path: ${{ runner.temp }}/visual-segment-deployment
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,14 @@
+# Operator-only empty private-volume provisioning; combine with docker-compose.yml.
+services:
+  private-volume-init:
+    profiles: [private-visuals]
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/Dockerfile.api
+    user: "0:0"
+    entrypoint: [python, /app/core/visual_private_volume.py]
+    command: [provision, /var/lib/talkingslides-private]
+    volumes:
+      - visual_private:/var/lib/talkingslides-private
+    network_mode: none
+    restart: "no"

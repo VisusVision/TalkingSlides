@@ -17,7 +17,7 @@ import subprocess
 from PIL import Image, ImageStat, ImageChops
 from core.visual_design.schemas import DesignError, require, content_hash, canonical_json
 from core.visual_design.segment_contracts import SegmentRequest, SegmentReceipt, RECEIPT_VERSION, SCENE_VERSION, LIMITS
-from core.visual_segment_artifacts import PrivateSegmentMedia, _digest_fd
+from core.visual_segment_artifacts import PrivateSegmentMedia, _digest_fd, _hash_stream
 from core.visual_render_assets import PrivateRenderAssets
 
 _VALIDATED = object()
@@ -71,7 +71,7 @@ def _observe_runtime(verifier):
     for name, path in re.findall(r"\s+(\S+) => (/\S+) ", linked):
         # Pin the complete linked build, including raster/font/codec dependencies.
         with Path(path).resolve(strict=True).open("rb") as file:
-            libraries[name] = "sha256:" + hashlib.file_digest(file, "sha256").hexdigest()
+            libraries[name] = "sha256:" + _hash_stream(file).hexdigest()
     require(any("librsvg" in name for name in libraries) and "libfontconfig.so.1" in libraries,
             "runtime", "Supported librsvg/fontconfig runtime unavailable")
     return {"build_id": "private-segment-linux.v1", "ffmpeg_version": "version-sha256." + hashlib.sha256(version).hexdigest(),

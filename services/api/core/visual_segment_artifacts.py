@@ -39,6 +39,14 @@ ROLE_TYPES = {"narration": ("m4a", LIMITS["max_audio_bytes"]),
 CHUNK_BYTES = 64 * 1024
 
 
+def _hash_stream(file):
+    """SHA-256 with bounded reads on API Python 3.11 and worker Python 3.10."""
+    hasher = hashlib.sha256()
+    for block in iter(lambda: file.read(CHUNK_BYTES), b''):
+        hasher.update(block)
+    return hasher
+
+
 def _component(value):
     require(type(value) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value) is not None,
             "asset_path", "Only opaque internal path components are permitted")
@@ -375,7 +383,7 @@ class NativeAudioValidator:
             path = Path(raw).resolve(strict=True)
             require(path.is_file() and os.access(path, os.X_OK), "audio_runtime", "Executable media runtime unavailable")
             with path.open("rb") as file:
-                hasher = hashlib.file_digest(file, "sha256")
+                hasher = _hash_stream(file)
         except OSError as exc:
             raise DesignError("audio_runtime", "Native media runtime unavailable") from exc
         require("sha256:" + hasher.hexdigest() == expected, "audio_runtime", "Unexpected native media build")

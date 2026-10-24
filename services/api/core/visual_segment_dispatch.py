@@ -1,8 +1,8 @@
 """Private segment outbox/claim handoff. No normal render/finalizer dependency.
 
-The deployment gate is deliberately CLOSED until separately authorized 3B-6
-attests built-image shared storage, UID and native runtime. No environment/API
-synthetic bypass exists. Tests replace only this private dependency seam.
+The deployment gate stays CLOSED until expiring, independently controlled
+deployment evidence is enrolled. Container engineering tests do not grant live
+readiness. No environment/API synthetic bypass exists.
 """
 from datetime import timedelta
 from functools import partial
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _deployment_ready():
-    """Future server-verified deployment attestation, NOT a settings flag."""
+    """No live attestation enrollment yet; NOT a settings flag or harness result."""
     return False
 
 

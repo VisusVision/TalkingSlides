@@ -1,0 +1,302 @@
+#!/usr/bin/env python3
+"""Real Docker/PostgreSQL/Redis/Gunicorn/Celery acceptance. No mock broker.
+
+Requires an isolated Docker host and already built images (see README). A missing
+runtime fails the command; it is never a passing skip. Keeps no speech/video in
+Git. Reports contain image/runtime/media identities, never auth tokens.
+"""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import time
+import urllib.error
+import urllib.request
+import uuid
+
+HERE=Path(__file__).resolve().parent
+ROOT=HERE.parents[2]
+
+
+class SecurityInvariantError(AssertionError):
+    pass
+
+
+class Deployment:
+    def __init__(self,report):
+        self.report=report;self.report.mkdir(parents=True,exist_ok=True)
+        self.control=Path(tempfile.mkdtemp(prefix='vs-engineering-'))
+        self.control.chmod(0o755)  # Contains public runtime evidence, never tokens.
+        (self.control/'container-only.marker').write_text('ISOLATED ENGINEERING ONLY\n')
+        self.env={**os.environ,'VISUAL_ACCEPTANCE_CONTROL':str(self.control)}
+        self.project='vsengineering'+uuid.uuid4().hex[:10]
+        self.command=['docker','compose','-p',self.project,'-f',str(HERE/'compose.yml')]
+        self.results={};self.scenarios=[];self.tokens={};self.port=None
+
+    def cmd(self,*args,check=True,timeout=90):
+        value=subprocess.run([*self.command,*args],env=self.env,capture_output=True,text=True,timeout=timeout)
+        if check and value.returncode:
+            raise RuntimeError('Container operation failed: '+str(args[:3])+'\n'+value.stderr[-3000:])
+        return value
+
+    def ops(self,action,*args,service='api'):
+        value=self.cmd('run','--rm','--no-deps',service,'python','-m','vs_acceptance.ops',action,*map(str,args),timeout=90)
+        return json.loads(value.stdout.strip().splitlines()[-1])
+
+    def wait(self,callback,*,seconds=60):
+        deadline=time.monotonic()+seconds;last=None
+        while time.monotonic()<deadline:
+            try:
+                last=callback()
+                if last:return last
+            except (RuntimeError,urllib.error.URLError,ConnectionError):pass
+            time.sleep(.3)
+        raise AssertionError('Acceptance deadline exceeded; last='+str(last)[:300])
+
+    def http(self,method,path,data=None,*,other=False,headers=None):
+        head={'Authorization':'Token '+self.tokens['other_token' if other else 'token'],**(headers or {})}
+        if data is not None:head['Content-Type']='application/json'
+        request=urllib.request.Request('http://127.0.0.1:'+self.port+path,
+            data=json.dumps(data).encode() if data is not None else None,method=method,headers=head)
+        try:response=urllib.request.urlopen(request,timeout=60)
+        except urllib.error.HTTPError as exc:response=exc
+        with response:return response.status,dict(response.headers),response.read()
+
+    @property
+    def base(self):return '/api/v1/projects/701/visual-segments/'
+
+    def reset(self,inferred=False):
+        for service in ('worker','api'):self.cmd('kill','-s','SIGKILL',service,check=False)
+        self.cmd('rm','-sf','worker','api',check=False)
+        self.cmd('exec','-T','vs-redis','redis-cli','FLUSHALL')  # Dedicated broker instance only.
+        self.cmd('run','--rm','--no-deps','api','python','-m','django','flush','--noinput')
+        self.ops('reset_controls')
+        self.tokens=self.ops('seed',*(['inferred'] if inferred else []))
+        self.cmd('up','-d','--no-deps','api')
+        port=self.cmd('port','api','8000').stdout.strip();self.port=port.rsplit(':',1)[1]
+        self.wait(lambda:self.http('GET','/health/')[0]==200)
+
+    def worker(self):
+        self.cmd('up','-d','--no-deps','worker')
+
+    def submit(self):
+        response=self.http('POST',self.base,self.tokens['payload'])
+        assert response[0] in (200,201),response
+        return json.loads(response[2])
+
+    def summary(self):return self.ops('summary')
+
+    def done(self):
+        result=self.wait(lambda:(value if (value:=self.summary())['receipt_hash'] else None),seconds=65)
+        assert result['status']=='done' and result['public_fields']==['','','']
+        assert result['receipt']['publishing_allowed'] is False
+        assert result['receipt']['streams']['audio']['packet_payload_hash']=='sha256:05c9c0e0b1cfe5b55f5c72a697f62a74aa900da42ed94b1ea9d86195ddc44d91'
+        return result
+
+    def reached(self,stage):self.wait(lambda:self.ops('reached',stage),seconds=30)
+
+    def prepare(self):
+        self.cmd('up','-d','--wait','vs-postgres','vs-redis',timeout=120)
+        self.cmd('run','--rm','init')
+        observed=self.ops('runtime',service='worker')
+        assert observed['runtime'] is not None,'Worker native runtime is unsupported'
+        (self.control/'runtime.json').write_text(json.dumps(observed))
+        actual=self.ops('runtime')
+        assert observed==actual,'Matched API variant and worker native runtime diverged'
+        assert (actual['uid'],actual['gid'])==(1000,1000)
+        self.results['runtime']=actual
+        raw=subprocess.run(['docker','run','--rm','--user','1000:1000',
+            '--mount','type=bind,src='+str(HERE)+',dst=/acceptance,readonly',
+            '-e','PYTHONPATH=/acceptance:/app','vs-default-api:acceptance','python','-c',
+            'from vs_acceptance.ops import runtime;import json;print(json.dumps(runtime()))'],
+            capture_output=True,text=True,timeout=60,check=True)
+        self.results['default_slim_api_runtime']=json.loads(raw.stdout.strip())
+        self.results['default_slim_matches_worker']=self.results['default_slim_api_runtime']==actual
+        self.cmd('run','--rm','--no-deps','api','python','-m','django','migrate','--noinput',timeout=120)
+        self.results['images']={}
+        for name in ('vs-worker:acceptance','vs-private-api:acceptance','vs-default-api:acceptance'):
+            result=subprocess.run(['docker','image','inspect',name,'--format','{{.Id}}'],capture_output=True,text=True,check=True)
+            self.results['images'][name]=result.stdout.strip()
+        self.results['gates']={'D1':'pending','D2':'PASS_MATCHED_VARIANT','D3':'pending','D4':'pending',
+            'D5':'pending','D6':'pending','D7':'pending','D8':'REPORT_ONLY','D9':'pending','D10':'HOSTED_REGRESSION_REQUIRED'}
+
+    def storage(self):
+        # Actual numeric process identity, cross-process writes and restart.
+        probe="import os,pathlib,json;from core.visual_private_volume import inspect_volume; p=pathlib.Path('/engineering-private/PROBE');p.write_bytes(b'private shared bytes');p.chmod(0o600);print(json.dumps(inspect_volume('/engineering-private')))"
+        out=self.cmd('run','--rm','--no-deps','api','python','-c',probe).stdout
+        assert json.loads(out.strip())['runtime_uid']==1000
+        read="from pathlib import Path;assert Path('/engineering-private/PROBE').read_bytes()==b'private shared bytes'"
+        self.cmd('run','--rm','--no-deps','worker','python','-c',read)
+        self.cmd('run','--rm','--no-deps','worker','python','-c',probe.replace('private shared bytes','worker shared bytes'))
+        self.cmd('run','--rm','--no-deps','api','python','-c',read.replace('private shared bytes','worker shared bytes'))
+        bad=self.cmd('run','--rm','--no-deps','--user','1001:1001','api','python','-c',read,check=False)
+        assert bad.returncode!=0
+        dropped=[]
+        for image in ('vs-default-api:acceptance','vs-worker:acceptance'):
+            probe="import os,json;assert (os.geteuid(),os.getegid())==(1000,1000);print(json.dumps({'uid':os.geteuid(),'gid':os.getegid()}))"
+            result=subprocess.run(['docker','run','--rm','--user','0:0',
+                '--mount','type=bind,src='+str(ROOT/'infra/dockerfiles/local-storage-entrypoint.sh')+',dst=/entrypoint.sh,readonly',
+                '-e','VISUAL_RENDER_PRIVATE_ROOT=/var/lib/talkingslides-private',
+                image,'sh','/entrypoint.sh','python','-c',probe],capture_output=True,text=True,timeout=30,check=True)
+            dropped.append({'image':image,'process':json.loads(result.stdout.strip())})
+        self.results['root_entrypoint_processes']=dropped
+        self.results['gates']['D1']='PASS_BUILT_CROSS_PROCESS_1000_1000'
+
+    def media(self):
+        self.reset();self.worker();self.submit();run=self.done();receipt=run['receipt_hash']
+        self.results['example']={k:run[k] for k in ('id','execution_hash','receipt_hash','receipt')}
+        path=self.base+run['id']+'/media/'
+        status,headers,mp4=self.http('GET',path+'mp4/')
+        assert status==200 and headers['Cache-Control']=='private, no-store' and headers['X-Content-Type-Options']=='nosniff'
+        assert headers['Content-Type']=='video/mp4' and len(mp4)==run['receipt']['outputs']['mp4']['size']
+        for header,start,end in [('bytes=0-10',0,10),('bytes=10-',10,len(mp4)-1),('bytes=-11',len(mp4)-11,len(mp4)-1)]:
+            status,h,body=self.http('GET',path+'mp4/',headers={'Range':header})
+            assert status==206 and body==mp4[start:end+1] and int(h['Content-Length'])==len(body)
+        status,h,body=self.http('HEAD',path+'mp4/');assert status==200 and not body and int(h['Content-Length'])==len(mp4)
+        for bad in ('bytes=999999999-','bytes=0-1,3-4','bytes=-0'):
+            assert self.http('GET',path+'mp4/',headers={'Range':bad})[0]==416
+        for role in ('srt','vtt'):
+            status,h,body=self.http('GET',path+role+'/');assert status==200
+            assert 'sha256:'+hashlib.sha256(body).hexdigest()==run['receipt']['outputs'][role]['sha256']
+        if self.http('GET',path+'mp4/',other=True)[0]!=404:raise SecurityInvariantError('Cross-owner media access')
+        for route in ('/media/','/static/','/api/v1/stream/guessed-private-hash/'):
+            assert self.http('GET',route+run['receipt']['outputs']['mp4']['sha256'][7:]+'.mp4')[0] in (400,403,404)
+        self.ops('replay',0);time.sleep(2);assert self.summary()['receipt_hash']==receipt and self.summary()['attempts']==1
+        self.cmd('restart','api','worker');self.wait(lambda:self.http('GET','/health/')[0]==200)
+        assert self.http('GET',path+'mp4/')[0]==200
+        self.ops('cancel');assert self.http('GET',path+'mp4/')[0]==403
+        inventory=self.cmd('run','--rm','--no-deps','api','python','-m','django','visual_segment_inventory').stdout
+        report=json.loads(inventory.strip().splitlines()[-1]);assert not report['deletion_enabled']
+        assert any(item['reference']=='retained_reference' for item in report['files'])
+        self.results['retention_inventory']={'files':len(report['files']),'bytes':report['bytes'],'deletion_enabled':False}
+        self.results['gates'].update(D3='PASS_EXTERNAL_REDIS_SEPARATE_WORKER',D4='PASS_REAL_AAC_COPY_MP4_SRT_VTT',D7='PASS_TESTED_ROUTES')
+
+    def crash_dispatch(self,stage):
+        self.reset();self.ops('pause',stage)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            call=pool.submit(self.submit)
+            self.reached(stage);before=self.summary()
+            self.cmd('kill','-s','SIGKILL','api')
+            try:call.result(timeout=5)
+            except Exception:pass  # Actual HTTP connection is killed after DB commit.
+        self.ops('resume',stage);self.cmd('up','-d','--no-deps','api')
+        self.port=self.cmd('port','api','8000').stdout.strip().rsplit(':',1)[1]
+        self.ops('cooldown');self.ops('reconcile');self.worker()
+        after=self.done();assert before['id']==after['id'] and before['execution_hash']==after['execution_hash']
+        assert after['attempts']==1
+        self.scenarios.append('API kill after '+stage+', reconcile same identity')
+
+    def worker_crash(self,stage):
+        self.reset();self.ops('pause',stage);self.worker();self.submit();self.reached(stage)
+        before=self.summary();self.cmd('kill','-s','SIGKILL','worker');self.ops('resume',stage)
+        if stage=='accepted':
+            self.worker();self.ops('replay',0);time.sleep(2)
+            after=self.done();assert after['receipt_hash']==before['receipt_hash'] and after['attempts']==1
+        else:
+            assert not before['receipt_hash'];self.ops('expire');self.ops('reconcile','retry');self.worker()
+            after=self.done();assert after['execution_hash']==before['execution_hash'] and after['attempts']==2
+            self.ops('replay',0);time.sleep(1);assert self.summary()['receipt_hash']==after['receipt_hash']
+        self.scenarios.append('real worker kill at '+stage)
+
+    def authorization(self,action):
+        self.reset(inferred=action=='revoke');self.ops('pause','native');self.worker();self.submit();self.reached('native')
+        self.ops(action);self.ops('resume','native')
+        result=self.wait(lambda:(row if (row:=self.summary())['status']=='failed' else None),seconds=40)
+        if result['receipt_hash']:raise SecurityInvariantError('Unauthorized attempt accepted')
+        self.scenarios.append(action+' during real FFmpeg')
+
+    def worker_before_claim(self):
+        self.reset();self.worker();time.sleep(2)
+        self.cmd('kill','-s','SIGKILL','worker')
+        self.submit();before=self.summary();assert before['attempts']==0
+        self.worker();after=self.done();assert after['attempts']==1
+        self.scenarios.append('real worker restart before claim; pending Redis delivery retained')
+
+    def broker_reconnect(self):
+        self.reset();self.worker();time.sleep(2)
+        self.cmd('stop','vs-redis');self.cmd('up','-d','--wait','vs-redis');time.sleep(3)
+        self.submit();after=self.done();assert after['attempts']==1
+        self.scenarios.append('existing worker reconnects after Redis restart')
+
+    def broker(self):
+        self.reset();self.cmd('stop','vs-redis')
+        self.submit();before=self.summary();assert before['pending'] and not before['receipt_hash']
+        self.cmd('up','-d','--wait','vs-redis');self.ops('cooldown');self.ops('reconcile');self.worker();after=self.done()
+        assert before['execution_hash']==after['execution_hash'] and after['attempts']==1
+        self.scenarios.append('Redis unavailable/send failure/restart/reconcile')
+
+    def post_authorization(self,action):
+        self.reset(inferred=action=='revoke');self.worker();self.submit();run=self.done()
+        before=run['receipt_hash'];self.ops(action)
+        code=self.http('GET',self.base+run['id']+'/media/mp4/')[0]
+        assert code in (401,403,404,409) and self.summary()['receipt_hash']==before
+        self.scenarios.append(action+' after accepted receipt denies HTTP delivery')
+
+    def faults(self):
+        results=[]
+        for mode,options in [('disk','rw,size=1048576,nr_inodes=128,uid=1000,gid=1000,mode=0700'),
+                ('inode','rw,size=1048576,nr_inodes=12,uid=1000,gid=1000,mode=0700'),
+                ('root_owner','rw,size=1048576,uid=0,gid=0,mode=0700'),
+                ('world','rw,size=1048576,uid=1000,gid=1000,mode=0755'),
+                ('readonly','ro,size=1048576,uid=1000,gid=1000,mode=0700'),
+                ('symlink','rw,size=1048576,uid=1000,gid=1000,mode=0700'),
+                ('quota','rw,size=1048576,uid=1000,gid=1000,mode=0700')]:
+            raw=subprocess.run(['docker','run','--rm','--user','1000:1000',
+                '--tmpfs','/fault:'+options,'--mount','type=bind,src='+str(HERE)+',dst=/acceptance,readonly',
+                '-e','PYTHONPATH=/acceptance:/app/api:/app','vs-private-api:acceptance',
+                'python','-m','vs_acceptance.faults',mode],capture_output=True,text=True,timeout=30,check=True)
+            results.append(json.loads(raw.stdout.strip()))
+        self.results['storage_faults']=results
+        probe="import os;os.environ['DJANGO_SETTINGS_MODULE']='config.settings_test';import django;django.setup();from core.visual_segment_runs import _producer_dependencies;from core.visual_segment_dispatch import _deployment_ready;assert _producer_dependencies() is None and _deployment_ready() is False;print('production gates remain closed')"
+        subprocess.run(['docker','run','--rm','-e','VISUAL_SEGMENT_DEPLOYMENT_READY=true',
+            'vs-default-api:acceptance','python','-c',probe],capture_output=True,text=True,timeout=30,check=True)
+
+    def finish(self):
+        self.results['scenarios']=self.scenarios
+        self.results.setdefault('classification','PHASE3B_DEPLOYMENT_BLOCKED')
+        self.results['production_enabled']=False
+        self.results['remaining']=['No authenticated production producer',
+            'Closed production readiness: no enrolled expiring cross-container attestation',
+            'Production reverse proxy and full GPU/avatar image variant not exercised',
+            'Retention is report-only; destructive cleanup remains disabled']
+        (self.report/'acceptance.json').write_text(json.dumps(self.results,indent=2))
+
+    def run(self):
+        try:
+            self.prepare();self.storage();self.faults();self.media()
+            for stage in ('send','sent'):self.crash_dispatch(stage)
+            for stage in ('claim','native','pin','accepted'):self.worker_crash(stage)
+            self.worker_before_claim();self.broker();self.broker_reconnect()
+            for action in ('cancel','revoke','source_edit'):self.authorization(action)
+            for action in ('revoke','source_edit','owner_lost'):self.post_authorization(action)
+            self.results['gates']['D5']='PASS_ENUMERATED_REAL_PROCESS_FAILURES'
+            self.results['gates']['D6']='PASS_TESTED_CONTROL_BOUNDARIES'
+            self.results['gates']['D9']='PARTIAL_CLOSED_PRODUCTION_GATE; SEE_UNIT_FAULT_TESTS'
+        except BaseException as exc:
+            if isinstance(exc,SecurityInvariantError):self.results['classification']='PHASE3B_SECURITY_REWORK_REQUIRED'
+            self.results['failure']=type(exc).__name__+': '+str(exc)[:3000]
+            raise
+        finally:
+            try:
+                logs=self.cmd('logs','--no-color',check=False,timeout=20)
+                (self.report/'containers.log').write_text(logs.stdout+logs.stderr)
+            except Exception as exc:self.results['log_capture_failure']=type(exc).__name__
+            self.finish()
+            try:self.cmd('down','--volumes','--remove-orphans',check=False,timeout=60)
+            finally:shutil.rmtree(self.control)
+
+
+if __name__=='__main__':
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--report-dir',type=Path,required=True)
+    args=parser.parse_args()
+    if shutil.which('docker') is None:
+        args.report_dir.mkdir(parents=True,exist_ok=True)
+        (args.report_dir/'acceptance.json').write_text(json.dumps({'classification':'PHASE3B_DEPLOYMENT_BLOCKED','reason':'Docker unavailable','gates':{f'D{i}':'NOT_EXECUTED' for i in range(1,11)}}))
+        raise SystemExit('Docker unavailable: built-container acceptance NOT EXECUTED')
+    Deployment(args.report_dir).run()

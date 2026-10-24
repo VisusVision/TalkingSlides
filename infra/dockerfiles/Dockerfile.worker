@@ -188,7 +188,8 @@ RUN chmod +x \
 # /tmp/lo_user                 – LibreOffice per-process UserInstallation dir
 #                                (passed via --env:UserInstallation=file:///tmp/lo_user)
 # ---------------------------------------------------------------------------
-RUN useradd --create-home --home-dir /home/appuser --shell /bin/false appuser \
+RUN groupadd --gid 1000 appuser \
+  && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/appuser --shell /bin/false appuser \
      && mkdir -p \
      /home/appuser/.cache/dconf \
      /home/appuser/.config \

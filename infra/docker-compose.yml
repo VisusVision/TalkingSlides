@@ -71,6 +71,7 @@ services:
       - ../tests:/app/tests:ro
       - ../infra/dockerfiles/local-storage-entrypoint.sh:/usr/local/bin/local-storage-entrypoint.sh:ro
       - ../storage_local:/app/storage_local
+      - visual_private:/var/lib/talkingslides-private
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,6 +85,7 @@ services:
       PYTHONPATH: /app:/app/worker:/app/scripts:/app/tts_preprocess:/app/services
       DJANGO_DISABLE_STATIC_COMPRESSION: "true"
       STORAGE_ROOT: /app/storage_local
+      VISUAL_RENDER_PRIVATE_ROOT: /var/lib/talkingslides-private
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       CELERY_RENDER_QUEUE: "${CELERY_RENDER_QUEUE:-render}"
@@ -191,6 +193,7 @@ services:
       - ../services:/app/services:ro
       - ../infra/dockerfiles/local-storage-entrypoint.sh:/usr/local/bin/local-storage-entrypoint.sh:ro
       - ../storage_local:/app/storage_local
+      - visual_private:/var/lib/talkingslides-private
 
     depends_on:
       postgres:
@@ -206,6 +209,7 @@ services:
       PYTHONPATH: /app/api:/app:/app/services/scripts:/app/services/tts_service:/app/services
       SQLITE_TEST_DATABASE_PATH: /tmp/ai_academy_worker_test.sqlite3
       STORAGE_ROOT: /app/storage_local
+      VISUAL_RENDER_PRIVATE_ROOT: /var/lib/talkingslides-private
       LOCAL_STORAGE_PERMISSIVE_CHMOD: "${LOCAL_STORAGE_PERMISSIVE_CHMOD:-1}"
       LOCAL_STORAGE_DIR_MODE: "${LOCAL_STORAGE_DIR_MODE:-0777}"
       TORCH_HOME: /app/storage_local/models/torch
@@ -453,6 +457,7 @@ services:
 # Named volumes
 # ----------------------------------------------------------
 volumes:
+  visual_private:
   postgres_data:
   minio_data:
   redis_data:

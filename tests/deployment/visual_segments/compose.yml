@@ -1,0 +1,88 @@
+# Isolated engineering only. No ports for PostgreSQL/Redis, no production .env,
+# no app source bind mounts, no frontend/TTS/avatar/MinIO service or public bucket.
+x-app: &app
+  image: vs-private-api:acceptance
+  user: "1000:1000"
+  environment: &environment
+    DJANGO_SETTINGS_MODULE: vs_acceptance.settings
+    PYTHONPATH: /acceptance:/verification:/app/api:/app
+    DEBUG: "false"
+    SECRET_KEY: isolated-engineering-secret-not-for-any-production-use
+    MEDIA_TOKEN_SECRET: isolated-engineering-media-secret-not-production
+    ALLOWED_HOSTS: api,localhost,127.0.0.1,testserver
+    CORS_ALLOWED_ORIGINS: http://localhost
+    POSTGRES_HOST: vs-postgres
+    POSTGRES_DB: visual_segments_engineering
+    POSTGRES_USER: visual_engineering
+    POSTGRES_PASSWORD: engineering-only-not-production
+    CELERY_BROKER_URL: redis://vs-redis:6379/13
+    CELERY_RESULT_BACKEND: redis://vs-redis:6379/14
+    REDIS_URL: redis://vs-redis:6379/15
+    CELERY_RENDER_QUEUE: render
+    VISUAL_RENDER_PRIVATE_ROOT: /engineering-private
+    STORAGE_ROOT: /engineering-public
+    DJANGO_DISABLE_STATIC_COMPRESSION: "true"
+    AVATAR_BOOTSTRAP_ON_WORKER_STARTUP: "0"
+    INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED: "false"
+  volumes:
+    - private:/engineering-private
+    - producer:/engineering-producer
+    - public:/engineering-public
+    - ./:/acceptance:ro
+    - ../../:/verification/tests:ro
+    - ${VISUAL_ACCEPTANCE_CONTROL:?explicit controller path required}:/engineering-control:ro
+  networks: [isolated]
+  init: true
+  security_opt: [no-new-privileges:true]
+  cap_drop: [ALL]
+  depends_on:
+    vs-postgres: {condition: service_healthy}
+    vs-redis: {condition: service_healthy}
+
+services:
+  vs-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: visual_segments_engineering
+      POSTGRES_USER: visual_engineering
+      POSTGRES_PASSWORD: engineering-only-not-production
+    volumes: [database:/var/lib/postgresql/data]
+    networks: [isolated]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U visual_engineering -d visual_segments_engineering]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+  vs-redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, "yes", --appendfsync, always]
+    volumes: [broker:/data]
+    networks: [isolated]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 2s
+      retries: 40
+  init:
+    <<: *app
+    user: "0:0"
+    cap_drop: []
+    command: [sh, -ec, "python /app/api/core/visual_private_volume.py provision /engineering-private; python /app/api/core/visual_private_volume.py provision /engineering-producer; chown 1000:1000 /engineering-public; chmod 0755 /engineering-public"]
+  api:
+    <<: *app
+    command: [gunicorn, --bind, "0.0.0.0:8000", --workers, "1", --threads, "2", --timeout, "90", config.wsgi:application]
+    ports: ["127.0.0.1::8000"]
+  worker:
+    <<: *app
+    image: vs-worker:acceptance
+    command: [celery, -A, "worker.celery_app:app", worker, --pool=prefork, --concurrency=1, --prefetch-multiplier=1, -Q, render, --hostname=private-acceptance, --loglevel=WARNING]
+
+volumes:
+  private:
+  producer:
+  public:
+  database:
+  broker:
+networks:
+  isolated:
+    internal: true
