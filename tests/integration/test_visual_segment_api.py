@@ -234,7 +234,10 @@ def test_expired_worker_requires_explicit_operator_retry(engineering,monkeypatch
     run.refresh_from_db(); assert run.attempt_count==2
 
 
+@pytest.mark.django_db(transaction=True)
 def test_owner_get_head_and_exact_mp4_ranges(engineering):
+    # Streaming response.close() emits request_finished and performs real DB
+    # cleanup. There must be no surrounding pytest atomic test transaction.
     run=completed(engineering); expected=media_bytes(engineering,run)
     response=engineering.client.head(url(engineering,run,"media/mp4/"),HTTP_RANGE="bytes=0-0")
     assert response.status_code==200 and response.content==b"" and int(response["Content-Length"])==len(expected)
@@ -248,6 +251,7 @@ def test_owner_get_head_and_exact_mp4_ranges(engineering):
         assert consume(response)==expected[start:end+1]
 
 
+@pytest.mark.django_db(transaction=True)
 def test_sidecars_and_invalid_range_policy(engineering):
     run=completed(engineering)
     for role,ctype in [("srt","text/plain; charset=utf-8"),("vtt","text/vtt; charset=utf-8")]:
@@ -261,6 +265,7 @@ def test_sidecars_and_invalid_range_policy(engineering):
 
 
 @pytest.mark.parametrize("event",["cancel","revoke","source","owner","producer","deployment"])
+@pytest.mark.django_db(transaction=True)
 def test_live_stream_rechecks_and_closes_before_more_delivery(engineering,monkeypatch,event):
     run=completed(engineering,inferred=event=="revoke")
     monkeypatch.setattr(delivery,"CHUNK",1024); monkeypatch.setattr(delivery,"RECHECK_BYTES",1024)
@@ -277,6 +282,7 @@ def test_live_stream_rechecks_and_closes_before_more_delivery(engineering,monkey
 
 
 @pytest.mark.parametrize("attack",["corrupt","symlink","foreign"])
+@pytest.mark.django_db(transaction=True)
 def test_unsafe_private_media_never_streams(engineering,tmp_path,attack):
     run=completed(engineering)
     store=PrivateSegmentMedia(engineering.owner.pk,engineering.project.pk)
@@ -378,6 +384,7 @@ def test_owner_cannot_post_success_or_change_cancel_contract(engineering):
 
 
 @pytest.mark.parametrize("change",["input_pin","elapsed_time"])
+@pytest.mark.django_db(transaction=True)
 def test_active_stream_observes_input_files_and_time_bound(engineering,monkeypatch,change):
     run=completed(engineering)
     monkeypatch.setattr(delivery,"CHUNK",1024)

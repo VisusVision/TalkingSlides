@@ -221,6 +221,13 @@ owner/producer/readiness changes during streams, input-pin corruption and timed
 rechecks. Existing generic token/playback denial and real five-scene AAC-copy
 acceptance remain in the retained earlier suites.
 
+Streaming HTTP cases use `django_db(transaction=True)` so response closure and
+Django request-finished connection cleanup occur outside an artificial outer
+pytest transaction, matching actual request lifetimes. The first hosted run
+exposed eight PostgreSQL closed-connection failures under that outer wrapper;
+cleanup was retained, and these cases now use committed transactions rather than
+suppressing cleanup or mocking database access.
+
 The PostgreSQL suite includes concurrent reconciliation/claim and a real Celery
 consumer over Kombu's in-process **memory broker**, with the actual task
 implementation, committed PostgreSQL state, real FFmpeg execution, accepted
