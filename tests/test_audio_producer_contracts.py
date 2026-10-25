@@ -179,13 +179,22 @@ def verify(env, registry, **kw):
         purpose="publisher.context.v1",
         now_ms=100,
         production=False,
-        **kw
+        **kw,
     )
 
 
 def test_canonical_signature_and_registry(chain):
+    from core.visual_design.producer_contracts import signed_envelope_hash
+
     env, reg = signed(chain[1])
-    assert verify(env, reg)["payload"] == chain[1].to_dict()
+    verified = verify(env, reg)
+    assert verified["payload"] == chain[1].to_dict()
+    assert signed_envelope_hash(verified) == signed_envelope_hash(env)
+    other = deepcopy(env)
+    other["signature"] = "A" * 86
+    assert signed_envelope_hash(other) != signed_envelope_hash(env)
+    with pytest.raises(ValueError):
+        verify(other, reg)
     with pytest.raises(ValueError):
         verify(env, {})
     with pytest.raises(ValueError):
@@ -391,7 +400,7 @@ def presentation(chain, *, chunks=None):
     )
 
 
-def test_reuse_is_new_use_not_synthesis(chain):
+def reuse_case(chain):
     ex, ctx, obs, parent = chain
     pr = presentation(chain)
     v = {
@@ -425,6 +434,12 @@ def test_reuse_is_new_use_not_synthesis(chain):
         "policy": policy,
         "window": {"issued_ms": 10, "expires_ms": 10000},
     }
+    return value, consumer, pr, policy
+
+
+def test_reuse_is_new_use_not_synthesis(chain):
+    ex, ctx, obs, parent = chain
+    value, consumer, pr, policy = reuse_case(chain)
     result = AudioReuseAssociation(
         value, parent=parent, context=consumer, presentation=pr, expected_epochs=policy
     )
@@ -528,14 +543,14 @@ def test_signed_receipt_requires_original_parent_and_independent_digest(chain):
         verify_envelope(
             canonical_json(env).encode(),
             parents={**parents, "expected_proof_hash": H},
-            **args
+            **args,
         )
     # Historical metadata or a path cannot substitute for a verified parent.
     with pytest.raises(ValueError):
         verify_envelope(
             canonical_json(env).encode(),
             parents={**parents, "observation": {"path": "audio/slide_1.mp3"}},
-            **args
+            **args,
         )
 
 
@@ -640,3 +655,232 @@ def test_unicode_exact_text_and_canonical_golden():
         content_hash("production-consumer-capture.v1", {"a": 0, "z": "é"})
         == "sha256:a24d7e73aabc0262f948a0003daeb155ee10a4763c570c879ef112f0051b9106"
     )
+
+
+@pytest.mark.parametrize(
+    "field", ["owner_id", "project_id", "page_key", "source_slide_index", "split_index"]
+)
+def test_consistent_consumer_scope_change_still_cannot_transfer_parent(chain, field):
+    value, consumer, pr, policy = reuse_case(chain)
+    captured = consumer.to_dict()
+    presented = pr.to_dict()
+    for scope in (value["scope"], captured["scope"], presented["scope"]):
+        if field in ("owner_id", "project_id"):
+            scope[field] = "999"
+        else:
+            scope["page"][field] = "other-page" if field == "page_key" else 5
+    consumer = ConsumerCapture(captured)
+    pr = PagePresentationBinding(presented)
+    value["scoped_speech_hash"] = scoped_speech_hash(
+        captured["scope"], SpeechSemantics(captured["speech"])
+    )
+    value["presentation_hash"] = pr.content_hash
+    with pytest.raises(ValueError):
+        AudioReuseAssociation(
+            value,
+            parent=chain[3],
+            context=consumer,
+            presentation=pr,
+            expected_epochs=policy,
+        )
+
+
+def test_reuse_signature_expiry_and_caption_separation(chain):
+    value, consumer, pr, policy = reuse_case(chain)
+    use = AudioReuseAssociation(
+        value,
+        parent=chain[3],
+        context=consumer,
+        presentation=pr,
+        expected_epochs=policy,
+    )
+    env, reg = signed(use, "publisher.reuse.v1")
+    args = dict(
+        registry=reg,
+        environment="isolated-test",
+        audience="p1-test",
+        purpose="publisher.reuse.v1",
+        now_ms=100,
+        production=False,
+        parents={
+            "parent": chain[3],
+            "context": consumer,
+            "presentation": pr,
+            "expected_epochs": policy,
+        },
+    )
+    assert verify_envelope(canonical_json(env).encode(), **args)
+    with pytest.raises(ValueError):
+        verify_envelope(canonical_json(env).encode(), **{**args, "now_ms": 10000})
+    # Display regrouping changes presentation/use, preserving original speech.
+    new_pr = presentation(chain, chunks=["Plants need light", "and water to grow."])
+    value.update(
+        use_id=new_pr.to_dict()["use_id"], presentation_hash=new_pr.content_hash
+    )
+    regrouped = AudioReuseAssociation(
+        value,
+        parent=chain[3],
+        context=consumer,
+        presentation=new_pr,
+        expected_epochs=policy,
+    )
+    assert regrouped.to_dict()["speech_hash"] == use.to_dict()["speech_hash"]
+    bad = new_pr.to_dict()
+    bad["caption_policy"] = "frozen_baseline.v1"
+    bad = PagePresentationBinding(bad)
+    value["presentation_hash"] = bad.content_hash
+    with pytest.raises(ValueError):
+        AudioReuseAssociation(
+            value,
+            parent=chain[3],
+            context=consumer,
+            presentation=bad,
+            expected_epochs=policy,
+        )
+
+
+def test_spoken_context_changes_speech_but_order_alone_does_not(chain):
+    base = chain[0].to_dict()["speech"]
+    old = SpeechSemantics(base)
+    for key in ("protected_text", "spoken_text"):
+        base[key] = "Slide 2. " + base[key]
+    base["chunks"] = [base["spoken_text"]]
+    assert SpeechSemantics(base).content_hash != old.content_hash
+
+
+@pytest.mark.parametrize(
+    "value", ["0", "01", "１２", "-1", "9223372036854775808", True]
+)
+def test_database_ids_are_canonical_positive_bigint_strings(chain, value):
+    raw = chain[0].to_dict()
+    raw["job_id"] = value
+    with pytest.raises(ValueError):
+        ProducerExecution(raw)
+
+
+def test_enrollment_does_not_bootstrap_its_own_key_and_control_purposes(chain):
+    from types import SimpleNamespace
+
+    child = Ed25519PrivateKey.generate()
+    payload = {
+        "schema_version": "production-producer-enrollment.v1",
+        "enrollment_id": U(),
+        "issuer_id": "child",
+        "key_id": "child-key",
+        "public_key": base64.urlsafe_b64encode(
+            child.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+        )
+        .decode()
+        .rstrip("="),
+        "purposes": ["tts.original-observation.v1"],
+        "environment": "isolated-test",
+        "audience": "p1-test",
+        "image_hash": H,
+        "profile_hash": H,
+        "window": {"issued_ms": 0, "expires_ms": 1000},
+    }
+    obj = SimpleNamespace(
+        domain=payload["schema_version"], to_dict=lambda: deepcopy(payload)
+    )
+    env, registry = signed(obj, "operator.enrollment.v1")
+    args = dict(
+        environment="isolated-test", audience="p1-test", now_ms=100, production=False
+    )
+    assert verify_envelope(
+        canonical_json(env).encode(),
+        registry=registry,
+        purpose="operator.enrollment.v1",
+        **args,
+    )
+    assert (
+        len(registry) == 1
+        and (payload["enrollment_id"], payload["key_id"]) not in registry
+    )
+    with pytest.raises(ValueError):
+        verify_envelope(
+            canonical_json(env).encode(),
+            registry={},
+            purpose="operator.enrollment.v1",
+            **args,
+        )
+    control = {
+        "schema_version": "production-producer-control.v1",
+        "control_id": U(),
+        "expected_epoch": 1,
+        "action": "revoke",
+        "window": {"issued_ms": 0, "expires_ms": 1000},
+    }
+    obj = SimpleNamespace(
+        domain=control["schema_version"], to_dict=lambda: deepcopy(control)
+    )
+    env, registry = signed(obj, "operator.control.v1")
+    assert verify_envelope(
+        canonical_json(env).encode(),
+        registry=registry,
+        purpose="operator.control.v1",
+        **args,
+    )
+    env, registry = signed(obj, "publisher.attempt.v1")
+    with pytest.raises(ValueError):
+        verify_envelope(
+            canonical_json(env).encode(),
+            registry=registry,
+            purpose="publisher.attempt.v1",
+            **args,
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "extra-field",
+        "oversize-text",
+        "too-many-chunks",
+        "non-neutral-control",
+        "subtitle-field",
+    ],
+)
+def test_schema_and_budget_reject_even_authentically_signed_bad_payloads(chain, change):
+    from types import SimpleNamespace
+
+    raw = chain[1].to_dict()
+    if change == "extra-field":
+        raw["algorithm"] = "none"
+    if change == "oversize-text":
+        raw["execution"]["speech"]["protected_text"] = "x" * 1_048_576
+    if change == "too-many-chunks":
+        raw["execution"]["speech"]["chunks"] = ["word"] * 257
+    if change == "non-neutral-control":
+        raw["execution"]["speech"]["controls"]["pitch"] = "1.2"
+    if change == "subtitle-field":
+        raw["execution"]["speech"]["subtitle_chunks"] = ["display"]
+    env, reg = signed(
+        SimpleNamespace(domain=ProducerContext.domain, to_dict=lambda: raw)
+    )
+    with pytest.raises(ValueError):
+        verify(env, reg)
+
+
+@pytest.mark.parametrize("outcome", ["failed", "ineligible"])
+def test_failed_original_observation_is_history_and_never_eligible_receipt(
+    chain, outcome
+):
+    ex, ctx, obs, parent = chain
+    raw = obs.to_dict()
+    raw.update(
+        outcome=outcome,
+        actual_speech=None,
+        coverage=[],
+        outputs={"mp3": None, "wav": None},
+    )
+    failed = OriginalObservation(raw, context=ctx)
+    receipt = parent.to_dict()
+    receipt["observation_hash"] = failed.content_hash
+    with pytest.raises(ValueError):
+        OriginalReceipt(
+            receipt,
+            observation=failed,
+            context=ctx,
+            expected_proof_hash=receipt["proof_hash"],
+            expected_producer_id=receipt["proof"]["producer"]["id"],
+        )

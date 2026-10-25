@@ -28,22 +28,34 @@ BEGIN
  END IF;
  RETURN NEW;
 END $$;
-CREATE FUNCTION public.audio_p1_insert_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+CREATE FUNCTION public.audio_p1_insert_guard() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp SET lock_timeout='3s' AS $$
 DECLARE ex public.audio_producer_execution; ev public.audio_producer_event; ac public.audio_producer_control;
-        at public.audio_producer_attempt; au public.audio_producer_authority;
+        at public.audio_producer_attempt; au public.audio_producer_authority; signed_text text; signed_body jsonb;
 BEGIN
  IF NEW.payload->>'schema_version' IS DISTINCT FROM (CASE TG_TABLE_NAME WHEN 'audio_producer_authority' THEN 'production-producer-enrollment.v1' WHEN 'audio_producer_execution' THEN 'production-producer-execution.v1' WHEN 'audio_producer_attempt' THEN 'production-tts-observation.v1' WHEN 'audio_producer_receipt' THEN 'production-audio-receipt.v1' ELSE 'production-producer-control-event.v1' END) THEN RAISE EXCEPTION 'unsupported payload schema'; END IF;
  IF NEW.canonical_payload::jsonb <> NEW.payload OR octet_length(NEW.canonical_payload)>1048576 THEN
   RAISE EXCEPTION 'canonical payload mismatch';
  END IF;
  IF NEW.payload_hash IS DISTINCT FROM 'sha256:'||encode(sha256(convert_to('visual-design-hash.v1'||chr(10)||(NEW.payload->>'schema_version')||chr(10)||NEW.canonical_payload,'UTF8')),'hex') THEN RAISE EXCEPTION 'payload digest mismatch'; END IF;
+ IF TG_TABLE_NAME IN ('audio_producer_authority','audio_producer_attempt','audio_producer_receipt') THEN
+  signed_text:=CASE TG_TABLE_NAME WHEN 'audio_producer_authority' THEN to_jsonb(NEW)->>'signed_enrollment' WHEN 'audio_producer_attempt' THEN to_jsonb(NEW)->>'signed_observation' ELSE to_jsonb(NEW)->>'signed_receipt' END;
+  IF signed_text IS NULL OR octet_length(signed_text)>1048576 THEN RAISE EXCEPTION 'bounded signed envelope required'; END IF;
+  signed_body:=signed_text::jsonb;
+  IF signed_body->'payload' IS DISTINCT FROM NEW.payload OR signed_body->>'schema_version' IS DISTINCT FROM NEW.payload->>'schema_version' THEN RAISE EXCEPTION 'signed payload mismatch'; END IF;
+  IF TG_TABLE_NAME='audio_producer_authority' THEN
+   IF signed_body->>'purpose' IS DISTINCT FROM 'operator.enrollment.v1' THEN RAISE EXCEPTION 'operator enrollment required'; END IF;
+  ELSE
+   SELECT * INTO STRICT au FROM public.audio_producer_authority WHERE id=NEW.issuer_id;
+   IF signed_body->>'issuer_enrollment_id' IS DISTINCT FROM NEW.issuer_id::text OR signed_body->>'key_id' IS DISTINCT FROM au.key_id OR signed_body->>'purpose' IS DISTINCT FROM au.purpose OR signed_body->>'environment' IS DISTINCT FROM au.environment THEN RAISE EXCEPTION 'signed issuer mismatch'; END IF;
+  END IF;
+ END IF;
  IF TG_TABLE_NAME='audio_producer_authority' THEN
   IF NEW.payload->>'enrollment_id' IS DISTINCT FROM NEW.id::text
    OR NEW.payload->>'issuer_id' IS DISTINCT FROM NEW.issuer_id OR NEW.payload->>'key_id' IS DISTINCT FROM NEW.key_id
    OR NEW.payload->>'public_key' IS DISTINCT FROM NEW.public_key OR NEW.payload->>'environment' IS DISTINCT FROM NEW.environment
    OR NEW.payload->>'image_hash' IS DISTINCT FROM NEW.image_hash OR NEW.payload->>'profile_hash' IS DISTINCT FROM NEW.profile_hash
    OR NEW.payload#>>'{window,issued_ms}' IS DISTINCT FROM NEW.not_before_ms::text OR NEW.payload#>>'{window,expires_ms}' IS DISTINCT FROM NEW.expires_ms::text
-   OR NOT (NEW.payload->'purposes' @> jsonb_build_array(NEW.purpose))
+   OR (NEW.payload->'purposes' @> jsonb_build_array(NEW.purpose)) IS NOT TRUE
    OR NEW.purpose NOT IN ('operator.enrollment.v1','operator.control.v1','publisher.context.v1','publisher.attempt.v1','publisher.original-receipt.v1','publisher.reuse.v1','tts.original-observation.v1') THEN RAISE EXCEPTION 'authority payload mismatch'; END IF;
   -- Enrollment is operator-only; key-family separation is still enforced here.
   PERFORM pg_advisory_xact_lock(hashtextextended(NEW.public_key,0));
@@ -104,7 +116,7 @@ BEGIN
  RETURN NEW;
 END $$;
 CREATE FUNCTION public.audio_p1_create_control(cid uuid, target_kind text, target_id uuid) RETURNS void
- LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp SET lock_timeout='3s' AS $$
 BEGIN
  IF (target_kind='authority' AND NOT pg_has_role(session_user,'ts_audio_operator','MEMBER'))
  OR (target_kind IN ('execution','receipt') AND NOT pg_has_role(session_user,'ts_audio_publisher','MEMBER'))
@@ -114,7 +126,7 @@ BEGIN
  CASE WHEN target_kind='receipt' THEN target_id END,0,'disabled',0);
 END $$;
 CREATE FUNCTION public.audio_p1_transition(cid uuid, expected_epoch bigint, eid uuid, action text, data text) RETURNS bigint
- LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp SET lock_timeout='3s' AS $$
 DECLARE c public.audio_producer_control; p jsonb:=data::jsonb; prior text; au uuid; r public.audio_producer_receipt; event_data text;
 BEGIN
  IF octet_length(data)>1048576 THEN RAISE EXCEPTION 'event too large'; END IF;
@@ -160,7 +172,7 @@ BEGIN
  RETURN c.epoch+1;
 END $$;
 CREATE FUNCTION public.audio_p1_lock_controls(ids uuid[], epochs bigint[], owner_pk bigint, project_pk bigint) RETURNS void
- LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp AS $$
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,pg_temp SET lock_timeout='3s' AS $$
 DECLARE c public.audio_producer_control; n integer; ex public.audio_producer_execution;
 BEGIN
  IF ids IS NULL OR epochs IS NULL OR array_position(ids,NULL) IS NOT NULL OR array_position(epochs,NULL) IS NOT NULL OR cardinality(ids) NOT BETWEEN 1 AND 32 OR cardinality(ids)<>cardinality(epochs)
@@ -170,6 +182,7 @@ BEGIN
   n:=array_position(ids,c.id);
   IF c.execution_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.audio_producer_control a JOIN public.audio_producer_execution e ON e.issuer_id=a.authority_id WHERE e.id=c.execution_id AND a.id=ANY(ids)) THEN RAISE EXCEPTION 'missing parent authority'; END IF;
   IF c.receipt_id IS NOT NULL AND EXISTS(SELECT 1 FROM public.audio_producer_receipt r JOIN public.audio_producer_attempt t ON t.id=r.attempt_id JOIN public.audio_producer_execution e ON e.id=r.execution_id CROSS JOIN LATERAL unnest(ARRAY[r.issuer_id,t.issuer_id,e.issuer_id]) wanted WHERE r.id=c.receipt_id AND NOT EXISTS(SELECT 1 FROM public.audio_producer_control a WHERE a.authority_id=wanted AND a.id=ANY(ids))) THEN RAISE EXCEPTION 'missing parent authority'; END IF;
+  IF c.receipt_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.audio_producer_control x JOIN public.audio_producer_receipt r ON r.execution_id=x.execution_id WHERE r.id=c.receipt_id AND x.id=ANY(ids) AND x.accepted_receipt_id=r.id) THEN RAISE EXCEPTION 'missing accepted execution control'; END IF;
   IF c.authority_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM public.audio_producer_authority a WHERE a.id=c.authority_id AND a.not_before_ms<=extract(epoch FROM clock_timestamp())*1000 AND a.expires_ms>extract(epoch FROM clock_timestamp())*1000) THEN RAISE EXCEPTION 'expired issuer'; END IF;
   IF c.epoch<>epochs[n] OR c.status NOT IN ('active','retired_valid') THEN RAISE EXCEPTION 'current control denied'; END IF;
   IF c.execution_id IS NOT NULL OR c.receipt_id IS NOT NULL THEN

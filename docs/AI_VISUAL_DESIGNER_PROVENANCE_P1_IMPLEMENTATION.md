@@ -42,7 +42,7 @@ older design available at the starting remote revision.
 | `tests/test_audio_producer_contracts.py` | Ephemeral-key pure contract/identity/closed-gate tests |
 | `tests/integration/test_audio_producer_schema.py` | Six empty tables and additive relationship/ORM checks |
 | `tests/integration/test_audio_producer_postgres_roles.py` | Separate real LOGIN role, SQL bypass, CAS, receipt and lock tests |
-| `.github/workflows/ci.yml` | Required real-role step in existing PostgreSQL job (`P1_REQUIRE_POSTGRES=1`) |
+| `.github/workflows/ci.yml` | Required real-role step in existing PostgreSQL job (`P1_REQUIRE_POSTGRES=1`), plus pure contracts on the built worker's Python runtime |
 | Three approved inputs above and this report | Preserved specifications and engineering record |
 
 ## Final schema boundary
@@ -98,6 +98,10 @@ outer original receipt includes explicit `speech_hash` and `proof_hash` to bind
 the full original speech projection and independently expected nested v1 proof.
 This does not modify `SegmentAudioProof` or any previous golden hash.
 
+`signed_envelope_hash` derives separate `*-envelope.v1` identities over the exact
+canonical signed envelope, including signer/signature. Those hashes are not
+authentication; full independent signature/parent verification is still required.
+The six-table ledger retains exact immutable signed bytes and their issuer FKs.
 Control events use `production-producer-control-event.v1`; their hashes include
 control ID, sequence, previous hash, kind and exact instruction. The PostgreSQL
 integer/string speech serializer is limited to the new speech projection. It
@@ -151,6 +155,8 @@ Definer routines use schema-qualified tables and fixed `pg_catalog,pg_temp`
 search paths, PUBLIC EXECUTE revoked, explicit group EXECUTE grants and
 `session_user` purpose checks. No caller-selected SQL/table/function is executed.
 The narrow reader holds ordered shared locks without a broad UPDATE grant.
+Writer/reader definer routines bound lock waits to three seconds; production
+connection statement/transaction/idle timeouts remain an operator prerequisite.
 The new-control subsequence is authority controls sorted by target ID → parent
 receipt controls → execution control. Scope/epoch/window/status are rechecked.
 Global issuer revoke takes only the issuer control; it never subsequently locks
@@ -180,15 +186,15 @@ Commands are from repository root unless a directory is specified:
 
 | Command | Observed result |
 |---|---|
-| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests/test_audio_producer_contracts.py tests/integration/test_audio_producer_schema.py` | 42 passed, 2 warnings at this checkpoint |
-| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests --junitxml=/tmp/p1-backend.xml` | Earlier implementation checkpoint: 2,817 passed, 26 skipped, 1 known MuseTalk process-group sandbox failure; final-tree run pending |
-| `python manage.py check` / `makemigrations --check --dry-run` using test settings | Passed at earlier checkpoint; final repeat pending |
+| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests/test_audio_producer_contracts.py tests/integration/test_audio_producer_schema.py` | 63 passed, 2 warnings after expanded assertions |
+| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests --junitxml=/tmp/p1-backend-final.xml` | 2,835 passed, 35 skipped, 1 known MuseTalk process-group sandbox failure at implementation checkpoint; later focused changes separately verified, hosted final full suite required |
+| `PYTHONPATH=services/api:services DJANGO_SETTINGS_MODULE=config.settings_test /tmp/talkingslides-p1-venv/bin/python services/api/manage.py check` and same `makemigrations --check --dry-run` | System check: no issues; no model changes detected |
 | Frontend `npm run test:ci` | 350 passed, 49 files |
 | Frontend `npm run build` | Passed |
 | Frontend `npm run e2e -- --project=chromium` | Blocked: all 36 fail browser launch, missing Chromium executable; bounded installer retries downloaded invalid/truncated archives |
 | Frontend `npm audit --audit-level=low` and `npm audit --omit=dev --audit-level=low` | 0 vulnerabilities |
 | `pip-audit -r services/api/requirements.txt` | No known vulnerabilities with cryptography 50.0.2; initial 46.x candidate failed audit and was replaced, not suppressed |
-| Real-role PostgreSQL and concurrency | Local infrastructure blocked; required hosted step pending, not counted as a pass |
+| Real-role PostgreSQL and concurrency | Local infrastructure blocked (15 explicit skips, never acceptance). CI 827 on `11060f4` passed the initial 9 real-role tests; expanded 15-case final suite pending |
 | Docker builds / isolated Redis-container acceptance | Local Docker unavailable; existing hosted jobs pending |
 
 Mandatory P1 gates are N01–N11 and PG01–PG08 in the controlling scope; proposed
@@ -219,3 +225,11 @@ expression syntax error before role assertions ran; it was corrected with explic
 expression parentheses. A local libpg_query PL/pgSQL parser then accepted both SQL
 batches. That parser check is not a substitute for the mandatory PostgreSQL run.
 Frontend CI passed at that checkpoint. Final-tree hosted results remain pending.
+
+Correction checkpoint `11060f4cc122e663204716ec52c384dc73241df6`,
+[CI 827](https://github.com/VisusVision/TalkingSlides/actions/runs/40153053810):
+PostgreSQL legacy/API/media regression **246 passed, no skips**; independent
+LOGIN role/lock suite **9 passed, no skips**. Frontend and Docker smoke passed.
+The next verification adds stricter signed-envelope/column binding, full parent
+control checks, explicit timeout bounds, expanded negative/race cases and worker
+Python contract execution; previous results are not substituted for those checks.

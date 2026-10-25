@@ -1034,3 +1034,31 @@ def replay_decision(known_hash, statement):
         return "new"
     require(known_hash == statement.content_hash, "replay", "Conflicting identity")
     return "duplicate"
+
+
+def signed_envelope_hash(envelope):
+    """Identity of exact signed bytes, never an authentication shortcut.
+
+    Callers must retain the independently verified envelope and issuer record.
+    Nested statement hashes and signed-envelope hashes are different identities.
+    """
+    _bounded(envelope)
+    fields(
+        envelope,
+        (
+            "schema_version",
+            "purpose",
+            "environment",
+            "audience",
+            "issuer_enrollment_id",
+            "key_id",
+            "payload",
+            "signature",
+        ),
+    )
+    require(
+        envelope["schema_version"] in VERSIONS, "version", "Known envelope required"
+    )
+    return content_hash(
+        envelope["schema_version"].replace(".v1", "-envelope.v1"), envelope
+    )

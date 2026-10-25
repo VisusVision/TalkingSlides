@@ -245,6 +245,13 @@ jobs:
           docker build --build-arg INSTALL_TEST_DEPS=1 --build-arg INSTALL_AVATAR_RUNTIME_DEPS=0 --build-arg INSTALL_OPENMMLAB_DEPS=0 --build-arg DOWNLOAD_LIVEPORTRAIT_WEIGHTS=0 -f infra/dockerfiles/Dockerfile.worker -t vs-worker:acceptance .
           docker build -f infra/dockerfiles/Dockerfile.api -t vs-default-api:acceptance .
           docker build --build-arg PRIVATE_WORKER_IMAGE=vs-worker:acceptance -f infra/dockerfiles/Dockerfile.private-api -t vs-private-api:acceptance .
+      - name: P1 pure contracts on the built worker Python runtime
+        run: >-
+          docker run --rm --entrypoint python
+          -e DJANGO_SETTINGS_MODULE=config.settings_test
+          -v "$PWD:/verify:ro" -w /verify
+          vs-worker:acceptance -m pytest -q -p no:cacheprovider
+          tests/test_audio_producer_contracts.py
       - name: Actual isolated Redis, Gunicorn and worker evidence
         run: python tests/deployment/visual_segments/run.py --report-dir "${{ runner.temp }}/visual-segment-deployment"
       - name: Upload explicit deployment gate evidence

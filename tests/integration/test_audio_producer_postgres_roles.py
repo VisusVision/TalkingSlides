@@ -10,7 +10,7 @@ from pathlib import Path
 import time
 import uuid
 import pytest
-from django.db import connection
+from django.db import connection, DatabaseError
 import psycopg2
 from core.visual_design.schemas import canonical_json, content_hash
 
@@ -61,7 +61,11 @@ def pg():
             for k, v in params.items()
             if k in ("dbname", "host", "port", "sslmode")
         }
-        args.update(user=name, password=password)
+        args.update(
+            user=name,
+            password=password,
+            options="-c lock_timeout=3000 -c statement_timeout=10000",
+        )
         c = psycopg2.connect(**args)
         c.autocommit = True
         opened.append(c)
@@ -82,6 +86,23 @@ def execute(c, sql, args=()):
         q.execute(sql, args)
         if q.description:
             return q.fetchall()
+
+
+def envelope(payload, purpose, issuer=None, key_id=None, environment="isolated-test"):
+    # Deliberately invalid signature: SQL enforces relationships/privileges,
+    # not the trusted publisher's separate Ed25519 verification responsibility.
+    return canonical_json(
+        {
+            "schema_version": payload["schema_version"],
+            "purpose": purpose,
+            "environment": environment,
+            "audience": "p1-test",
+            "issuer_enrollment_id": issuer or U(),
+            "key_id": key_id or "operator-root",
+            "payload": payload,
+            "signature": "A" * 86,
+        }
+    )
 
 
 def authority(op, purpose):
@@ -122,7 +143,7 @@ def authority(op, purpose):
             H,
             H,
             expiry,
-            "isolated test statement",
+            envelope(p, "operator.enrollment.v1"),
         ),
     )
     cid = U()
@@ -157,28 +178,33 @@ def transition(c, cid, epoch, action, p):
     )[0][0]
 
 
-def original(pg):
+def original(pg, owner="1", project="2", grants=None):
     op = pg("p1_operator")
     pub = pg("p1_pub")
-    a, ac = authority(op, "publisher.context.v1")
-    tts, tc = authority(op, "tts.original-observation.v1")
+    if grants is None:
+        a, ac = authority(op, "publisher.context.v1")
+        tts, tc = authority(op, "tts.original-observation.v1")
+    else:
+        a, ac, tts, tc = grants
     ex = U()
     page = {"page_key": "s1-p2", "source_slide_index": 0, "split_index": 1}
     p = {
         "schema_version": "production-producer-execution.v1",
         "execution_id": ex,
-        "scope": {"owner_id": "1", "project_id": "2", "page": page},
+        "scope": {"owner_id": owner, "project_id": project, "page": page},
         "job_id": "3",
         "speech": {},
     }
     execute(
         pub,
-        "INSERT INTO audio_producer_execution(id,payload,payload_hash,canonical_payload,created_at,owner_id,project_id,job_id,page_key,source_slide_index,split_index,planned_speech_hash,issuer_id) VALUES(%s,%s,%s,%s,now(),1,2,3,%s,0,1,%s,%s)",
+        "INSERT INTO audio_producer_execution(id,payload,payload_hash,canonical_payload,created_at,owner_id,project_id,job_id,page_key,source_slide_index,split_index,planned_speech_hash,issuer_id) VALUES(%s,%s,%s,%s,now(),%s,%s,3,%s,0,1,%s,%s)",
         (
             ex,
             json.dumps(p),
             content_hash(p["schema_version"], p),
             canonical_json(p),
+            owner,
+            project,
             "s1-p2",
             content_hash("production-speech-semantics.v1", {}),
             a,
@@ -233,7 +259,7 @@ def test_pg01_runtime_raw_sql_denied(pg):
         with pytest.raises(psycopg2.Error) as denied:
             execute(
                 c,
-                "CREATE OR REPLACE FUNCTION public.audio_p1_create_control(uuid,text,uuid) RETURNS void LANGUAGE sql AS 'SELECT'",
+                "CREATE OR REPLACE FUNCTION public.audio_p1_create_control(uuid,text,uuid) RETURNS void LANGUAGE plpgsql AS 'BEGIN RETURN; END;'",
             )
         assert denied.value.pgcode == "42501"
         with pytest.raises(psycopg2.Error):
@@ -391,7 +417,7 @@ def test_pg08_non_escalating_revoke_and_retry(pg):
         issue(pub, cid, 2, 2)
 
 
-def test_pg_receipt_requires_current_observation_and_atomic_acceptance(pg):
+def receipt_case(pg):
     op, pub, ex, cid, a, ac, tts, tc = original(pg)
     issuer, issuer_control = authority(op, "publisher.original-receipt.v1")
     nonce, context_hash = issue(pub, cid)
@@ -429,7 +455,7 @@ def test_pg_receipt_requires_current_observation_and_atomic_acceptance(pg):
             context_hash,
             "complete",
             content_hash("production-speech-semantics.v1", {}),
-            "isolated SQL test; no signing authority",
+            envelope(obs, "tts.original-observation.v1", tts, tts),
         ),
     )
     rid = U()
@@ -448,23 +474,31 @@ def test_pg_receipt_requires_current_observation_and_atomic_acceptance(pg):
         },
     }
 
-    def insert():
+    def insert(c=pub, new_id=None):
+        row = {**body, "receipt_id": new_id or rid}
         execute(
-            pub,
+            c,
             "INSERT INTO audio_producer_receipt(id,payload,payload_hash,canonical_payload,created_at,execution_id,attempt_id,issuer_id,proof_hash,signed_receipt) VALUES(%s,%s,%s,%s,now(),%s,%s,%s,%s,%s)",
             (
-                rid,
-                json.dumps(body),
-                content_hash(body["schema_version"], body),
-                canonical_json(body),
+                row["receipt_id"],
+                json.dumps(row),
+                content_hash(row["schema_version"], row),
+                canonical_json(row),
                 ex,
                 obsid,
                 issuer,
                 H,
-                "isolated SQL test; no production signature",
+                envelope(row, "publisher.original-receipt.v1", issuer, issuer),
             ),
         )
 
+    return op, pub, ex, cid, a, ac, tts, tc, issuer, issuer_control, rid, insert
+
+
+def test_pg_receipt_requires_current_observation_and_atomic_acceptance(pg):
+    op, pub, ex, cid, a, ac, tts, tc, issuer, issuer_control, rid, insert = (
+        receipt_case(pg)
+    )
     # The independent publisher is trusted to validate signatures; DB refuses
     # even that role a receipt without atomic generation/control acceptance.
     with pytest.raises(psycopg2.Error):
@@ -491,3 +525,224 @@ def test_pg_receipt_requires_current_observation_and_atomic_acceptance(pg):
         issue(pub, cid, 3, 2)
     with pytest.raises(psycopg2.Error):
         execute(pub, "UPDATE audio_producer_receipt SET proof_hash=%s", (H,))
+    reader = pg("p1_reader")
+    controls = [cid, rcid, tc, ac, issuer_control]
+    epochs = [3, 1, 1, 1, 1]
+    execute(
+        reader,
+        "SELECT audio_p1_lock_controls(%s::uuid[],%s::bigint[],1,2)",
+        (controls, epochs),
+    )
+    transition(pub, rcid, 1, "revoke", {})
+    with pytest.raises(psycopg2.Error):
+        execute(
+            reader,
+            "SELECT audio_p1_lock_controls(%s::uuid[],%s::bigint[],1,2)",
+            (controls, epochs),
+        )
+
+
+def test_pg_receipt_fence_cannot_change_between_insert_and_accept(pg):
+    op, pub, ex, cid, a, ac, tts, tc, issuer, issuer_control, rid, insert = (
+        receipt_case(pg)
+    )
+    pub.autocommit = False
+    insert()
+    transition(pub, cid, 2, "invalidate", {})
+    with pytest.raises(psycopg2.Error):
+        transition(pub, cid, 3, "accept", {"receipt_id": rid})
+    pub.rollback()
+    pub.autocommit = True
+    assert execute(
+        pub,
+        "SELECT epoch,generation,accepted_receipt_id FROM audio_producer_control WHERE id=%s",
+        (cid,),
+    ) == [(2, 1, None)]
+    assert execute(pub, "SELECT count(*) FROM audio_producer_receipt") == [(0,)]
+
+
+def test_pg_concurrent_conflicting_original_receipts_one_winner(pg):
+    op, pub, ex, cid, a, ac, tts, tc, issuer, issuer_control, rid, insert = (
+        receipt_case(pg)
+    )
+
+    def accept(c):
+        c.autocommit = False
+        candidate = U()
+        rcid = U()
+        try:
+            insert(c, candidate)
+            execute(
+                c,
+                "SELECT audio_p1_create_control(%s,%s,%s)",
+                (rcid, "receipt", candidate),
+            )
+            transition(c, rcid, 0, "activate", {})
+            transition(c, cid, 2, "accept", {"receipt_id": candidate})
+            c.commit()
+            return candidate
+        except psycopg2.Error as e:
+            c.rollback()
+            assert e.pgcode not in ("40P01", "55P03")
+            return None
+        finally:
+            c.autocommit = True
+
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(accept, [pub, pg("p1_pub")]))
+    assert len([r for r in results if r]) == 1
+    assert execute(pub, "SELECT count(*) FROM audio_producer_receipt") == [(1,)]
+    winner = next(r for r in results if r)
+    assert (
+        str(
+            execute(
+                pub,
+                "SELECT accepted_receipt_id FROM audio_producer_control WHERE id=%s",
+                (cid,),
+            )[0][0]
+        )
+        == winner
+    )
+
+
+def test_pg_event_hash_chain_and_ordinary_job_deletion(pg):
+    from core.models import Job
+
+    op, pub, ex, cid, a, ac, tts, tc = original(pg)
+    job = Job.objects.create(id=3, job_type="video_export")
+    before = execute(
+        pub,
+        "SELECT payload,payload_hash FROM audio_producer_execution WHERE id=%s",
+        (ex,),
+    )
+    job.delete()
+    assert (
+        execute(
+            pub,
+            "SELECT payload,payload_hash FROM audio_producer_execution WHERE id=%s",
+            (ex,),
+        )
+        == before
+    )
+    issue(pub, cid)
+    events = execute(
+        pub,
+        "SELECT payload,payload_hash,previous_hash,sequence FROM audio_producer_event WHERE control_id=%s ORDER BY sequence",
+        (cid,),
+    )
+    assert len(events) == 2
+    for i, (payload, digest, prior, sequence) in enumerate(events):
+        assert sequence == i + 1 and digest == content_hash(
+            "production-producer-control-event.v1", payload
+        )
+        assert prior == (None if i == 0 else events[i - 1][1])
+
+
+def test_pg_shared_issuer_two_owners_and_retry_lock_order(pg):
+    first = original(pg)
+    op, pub, ex, cid, a, ac, tts, tc = first
+    second = original(pg, owner="8", project="9", grants=(a, ac, tts, tc))
+    other = second[1]
+    other_cid = second[3]
+    for c in (op, pub, other):
+        execute(c, "SET lock_timeout='2s'")
+    with ThreadPoolExecutor(3) as pool:
+        attempts = [pool.submit(issue, pub, cid), pool.submit(issue, other, other_cid)]
+        revocation = pool.submit(transition, op, ac, 1, "revoke", {})
+        for f in attempts:
+            try:
+                f.result(timeout=5)
+            except psycopg2.Error as e:
+                assert e.pgcode not in ("40P01", "55P03")
+        assert revocation.result(timeout=5) == 2
+    for control, scope in [(cid, (1, 2)), (other_cid, (8, 9))]:
+        with pytest.raises(psycopg2.Error):
+            execute(
+                pg("p1_reader"),
+                "SELECT audio_p1_lock_controls(%s::uuid[],%s::bigint[],%s,%s)",
+                ([ac, control], [1, 1], *scope),
+            )
+
+
+def test_pg_indexed_scope_digest_and_environment_are_not_caller_authority(pg):
+    op, pub, ex, cid, a, ac, tts, tc = original(pg)
+    payload = execute(
+        pub, "SELECT payload FROM audio_producer_execution WHERE id=%s", (ex,)
+    )[0][0]
+    payload["execution_id"] = U()
+    # Mutating just the indexed owner, while keeping a canonical signed capture,
+    # is refused by the DB even for the trusted publisher.
+    with pytest.raises(psycopg2.Error):
+        execute(
+            pub,
+            "INSERT INTO audio_producer_execution(id,payload,payload_hash,canonical_payload,created_at,owner_id,project_id,job_id,page_key,source_slide_index,split_index,planned_speech_hash,issuer_id) VALUES(%s,%s,%s,%s,now(),99,2,3,%s,0,1,%s,%s)",
+            (
+                payload["execution_id"],
+                json.dumps(payload),
+                content_hash(payload["schema_version"], payload),
+                canonical_json(payload),
+                "s1-p2",
+                content_hash("production-speech-semantics.v1", {}),
+                a,
+            ),
+        )
+    # Expiry of an immutable grant is live permission, not a rewritten fact.
+    expired = U()
+    p = {
+        "schema_version": "production-producer-enrollment.v1",
+        "enrollment_id": expired,
+        "issuer_id": "expired",
+        "key_id": expired,
+        "public_key": "B" * 43,
+        "environment": "other",
+        "image_hash": H,
+        "profile_hash": H,
+        "purposes": ["publisher.context.v1"],
+        "window": {"issued_ms": 0, "expires_ms": 1},
+    }
+    execute(
+        op,
+        "INSERT INTO audio_producer_authority(id,payload,payload_hash,canonical_payload,created_at,issuer_id,key_id,purpose,environment,public_key,image_hash,profile_hash,not_before_ms,expires_ms,signed_enrollment) VALUES(%s,%s,%s,%s,now(),%s,%s,%s,%s,%s,%s,%s,0,1,%s)",
+        (
+            expired,
+            json.dumps(p),
+            content_hash(p["schema_version"], p),
+            canonical_json(p),
+            "expired",
+            expired,
+            "publisher.context.v1",
+            "other",
+            "B" * 43,
+            H,
+            H,
+            envelope(p, "operator.enrollment.v1"),
+        ),
+    )
+    ctrl = U()
+    execute(
+        op, "SELECT audio_p1_create_control(%s,%s,%s)", (ctrl, "authority", expired)
+    )
+    transition(op, ctrl, 0, "activate", {})
+    with pytest.raises(psycopg2.Error):
+        execute(
+            pg("p1_reader"),
+            "SELECT audio_p1_lock_controls(%s::uuid[],%s::bigint[],1,2)",
+            ([ctrl], [1]),
+        )
+
+
+def test_pg_speech_projection_matches_python_canonical_bytes(pg):
+    pg("p1_reader")  # Provision roles; administrator below tests only a pure codec.
+    value = {
+        "z": ["é", 'quote"', "line\n", 0, 120000, None],
+        "a": {"punctuation": "/ \\", "flag": False},
+    }
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT public.audio_p1_speech_json(%s::jsonb)", [json.dumps(value)]
+        )
+        assert cursor.fetchone()[0] == canonical_json(value)
+        with pytest.raises(DatabaseError):
+            cursor.execute(
+                "SELECT public.audio_p1_speech_json(%s::jsonb)", ['{"speed":1.5}']
+            )
