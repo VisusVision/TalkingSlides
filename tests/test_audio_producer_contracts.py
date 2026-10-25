@@ -884,3 +884,69 @@ def test_failed_original_observation_is_history_and_never_eligible_receipt(
             expected_proof_hash=receipt["proof_hash"],
             expected_producer_id=receipt["proof"]["producer"]["id"],
         )
+
+
+@pytest.mark.parametrize("field", ["environment", "audience", "public_key"])
+def test_signed_enrollment_cannot_transfer_environment_or_operator_key_family(field):
+    key = Ed25519PrivateKey.generate()
+    enrollment = U()
+    pk = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    proposed_key = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(Encoding.Raw, PublicFormat.Raw)
+    )
+    p = {
+        "schema_version": "production-producer-enrollment.v1",
+        "enrollment_id": U(),
+        "issuer_id": "child",
+        "key_id": "child",
+        "public_key": base64.urlsafe_b64encode(proposed_key).decode().rstrip("="),
+        "purposes": ["tts.original-observation.v1"],
+        "environment": "isolated-test",
+        "audience": "p1-test",
+        "image_hash": H,
+        "profile_hash": H,
+        "window": {"issued_ms": 0, "expires_ms": 1000},
+    }
+    if field == "public_key":
+        p[field] = base64.urlsafe_b64encode(pk).decode().rstrip("=")
+    else:
+        p[field] = "production"
+    e = {
+        "schema_version": p["schema_version"],
+        "purpose": "operator.enrollment.v1",
+        "environment": "isolated-test",
+        "audience": "p1-test",
+        "issuer_enrollment_id": enrollment,
+        "key_id": "root",
+        "payload": p,
+    }
+    e["signature"] = (
+        base64.urlsafe_b64encode(key.sign(PREFIX + canonical_json(e).encode()))
+        .decode()
+        .rstrip("=")
+    )
+    reg = {
+        (enrollment, "root"): Issuer(
+            enrollment,
+            "root",
+            pk,
+            ("operator.enrollment.v1",),
+            "isolated-test",
+            "p1-test",
+            0,
+            1000,
+            engineering_only=True,
+        )
+    }
+    with pytest.raises(ValueError):
+        verify_envelope(
+            canonical_json(e).encode(),
+            registry=reg,
+            environment="isolated-test",
+            audience="p1-test",
+            purpose="operator.enrollment.v1",
+            now_ms=100,
+            production=False,
+        )

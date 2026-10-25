@@ -105,7 +105,7 @@ def envelope(payload, purpose, issuer=None, key_id=None, environment="isolated-t
     )
 
 
-def authority(op, purpose):
+def authority(op, purpose, environment="isolated-test", profile=H):
     uid = U()
     expiry = int(time.time() * 1000) + 600000
     key = (
@@ -120,10 +120,10 @@ def authority(op, purpose):
         "issuer_id": "test-issuer",
         "key_id": uid,
         "public_key": key,
-        "environment": "isolated-test",
+        "environment": environment,
         "audience": "p1-test",
         "image_hash": H,
-        "profile_hash": H,
+        "profile_hash": profile,
         "purposes": [purpose],
         "window": {"issued_ms": 0, "expires_ms": expiry},
     }
@@ -138,10 +138,10 @@ def authority(op, purpose):
             "test-issuer",
             uid,
             purpose,
-            "isolated-test",
+            environment,
             key,
             H,
-            H,
+            profile,
             expiry,
             envelope(p, "operator.enrollment.v1"),
         ),
@@ -746,3 +746,67 @@ def test_pg_speech_projection_matches_python_canonical_bytes(pg):
             cursor.execute(
                 "SELECT public.audio_p1_speech_json(%s::jsonb)", ['{"speed":1.5}']
             )
+
+
+@pytest.mark.parametrize("drift", ["environment", "profile"])
+def test_pg_observation_cannot_cross_enrolled_environment_or_profile(pg, drift):
+    op, pub, ex, cid, a, ac, tts, tc = original(pg)
+    environment = "other" if drift == "environment" else "isolated-test"
+    profile = "sha256:" + "2" * 64 if drift == "profile" else H
+    foreign, foreign_control = authority(
+        op, "tts.original-observation.v1", environment=environment, profile=profile
+    )
+    nonce, context_hash = issue(pub, cid)
+    event_id = str(
+        execute(
+            pub,
+            "SELECT id FROM audio_producer_event WHERE context_hash=%s",
+            (context_hash,),
+        )[0][0]
+    )
+    obsid = U()
+    body = {
+        "schema_version": "production-tts-observation.v1",
+        "observation_id": obsid,
+        "execution_id": ex,
+        "generation": 1,
+        "nonce": nonce,
+        "context_hash": context_hash,
+        "outcome": "complete",
+        "actual_speech": {},
+    }
+    with pytest.raises(psycopg2.Error, match="issuer profile mismatch"):
+        execute(
+            pub,
+            "INSERT INTO audio_producer_attempt(id,payload,payload_hash,canonical_payload,created_at,execution_id,issuer_id,issued_event_id,generation,nonce,context_hash,outcome,actual_speech_hash,signed_observation) VALUES(%s,%s,%s,%s,now(),%s,%s,%s,1,%s,%s,%s,%s,%s)",
+            (
+                obsid,
+                json.dumps(body),
+                content_hash(body["schema_version"], body),
+                canonical_json(body),
+                ex,
+                foreign,
+                event_id,
+                nonce,
+                context_hash,
+                "complete",
+                content_hash("production-speech-semantics.v1", {}),
+                envelope(
+                    body, "tts.original-observation.v1", foreign, foreign, environment
+                ),
+            ),
+        )
+    assert execute(pub, "SELECT count(*) FROM audio_producer_attempt") == [(0,)]
+
+
+def test_pg_operator_provisioning_rejects_preexisting_runtime_grants(pg):
+    pg("p1_api")
+    sql = (Path(__file__).parents[2] / "infra/sql/audio_producer_roles.sql").read_text()
+    sql = "\n".join(line for line in sql.splitlines() if not line.startswith("\\"))
+    with connection.cursor() as cursor:
+        cursor.execute("GRANT INSERT ON public.audio_producer_receipt TO p1_api")
+        try:
+            with pytest.raises(DatabaseError, match="unexpected ledger ACL"):
+                cursor.execute(sql)
+        finally:
+            cursor.execute("REVOKE ALL ON public.audio_producer_receipt FROM p1_api")

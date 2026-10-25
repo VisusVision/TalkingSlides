@@ -151,6 +151,13 @@ credentials are not a production-ready isolated deployment. Key custody, real
 issuer registry loading and independently operated publisher identities remain
 later operator decisions.
 
+Provisioning checks existing group attributes/memberships and unexpected object
+ACLs, including inherited default grants to ordinary roles. It fails rather than
+silently accepting them or changing unrelated default privileges. Only the nine
+explicit new functions and six tables are transferred; no wildcard schema grant
+or ownership transfer is used. Operators must fix a reported ACL conflict before
+retrying. This is setup evidence, never a production readiness switch.
+
 Definer routines use schema-qualified tables and fixed `pg_catalog,pg_temp`
 search paths, PUBLIC EXECUTE revoked, explicit group EXECUTE grants and
 `session_user` purpose checks. No caller-selected SQL/table/function is executed.
@@ -186,7 +193,7 @@ Commands are from repository root unless a directory is specified:
 
 | Command | Observed result |
 |---|---|
-| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests/test_audio_producer_contracts.py tests/integration/test_audio_producer_schema.py` | 63 passed, 2 warnings after expanded assertions |
+| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests/test_audio_producer_contracts.py tests/integration/test_audio_producer_schema.py` | 66 passed, 2 warnings after expanded assertions |
 | `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests --junitxml=/tmp/p1-backend-final.xml` | 2,835 passed, 35 skipped, 1 known MuseTalk process-group sandbox failure at implementation checkpoint; later focused changes separately verified, hosted final full suite required |
 | `PYTHONPATH=services/api:services DJANGO_SETTINGS_MODULE=config.settings_test /tmp/talkingslides-p1-venv/bin/python services/api/manage.py check` and same `makemigrations --check --dry-run` | System check: no issues; no model changes detected |
 | Frontend `npm run test:ci` | 350 passed, 49 files |
@@ -194,7 +201,7 @@ Commands are from repository root unless a directory is specified:
 | Frontend `npm run e2e -- --project=chromium` | Blocked: all 36 fail browser launch, missing Chromium executable; bounded installer retries downloaded invalid/truncated archives |
 | Frontend `npm audit --audit-level=low` and `npm audit --omit=dev --audit-level=low` | 0 vulnerabilities |
 | `pip-audit -r services/api/requirements.txt` | No known vulnerabilities with cryptography 50.0.2; initial 46.x candidate failed audit and was replaced, not suppressed |
-| Real-role PostgreSQL and concurrency | Local infrastructure blocked (15 explicit skips, never acceptance). CI 827 on `11060f4` passed the initial 9 real-role tests; expanded 15-case final suite pending |
+| Real-role PostgreSQL and concurrency | Local infrastructure blocked (15 explicit skips at preceding checkpoint, never acceptance). CI 827 on `11060f4` passed the initial 9 real-role tests; expanded 18-case final suite pending |
 | Docker builds / isolated Redis-container acceptance | Local Docker unavailable; existing hosted jobs pending |
 
 Mandatory P1 gates are N01–N11 and PG01–PG08 in the controlling scope; proposed
@@ -202,6 +209,32 @@ T01–T22/A01–A32 cases assigned to later phases remain deferred. Existing ful
 includes partial-render planner/manifest/rerender and Phase 3A/3B suites; no previous
 phase's historical result is claimed as proof of this tree. Hosted CI must verify
 the exact final commit and real isolated-role tests before acceptance.
+
+### Scope-case traceability
+
+| Revised gate | Concrete P1 coverage |
+|---|---|
+| N01 | Canonical/signature/registry, duplicate/nonfinite/Unicode budgets, signed malformed payloads, independent enrollment root, cross-environment/audience/key-family rejection |
+| N02 | Speech versus order/subtitle presentation; actual spoken slide context and loaded dependency/chunk/pause changes |
+| N03 | Distinct original observation, new actual attempt and reuse; original provider/root retained |
+| N04 | Same-page consumer Job/manifest binding, source zero, splits, consistent cross-owner/project/source changes denied |
+| N05 | Cue/text/order/window checks, independently supplied presentation/audio parent, changed cues cannot claim frozen baseline |
+| N06 | Planned versus actual resources, samples, voice, controls, fallback/coverage/output failure, failed history ineligible |
+| N07 | Metadata/path cannot substitute for a validated original parent; pure module does no media I/O |
+| N08 | Empty six-table schema/internal protected FKs, SQL indexed capture/hash/issuer/parent guards and ordinary Job deletion history |
+| N09 | Pure replay equality/conflict, DB unique issuance/nonces, current generation CAS and conflicting receipts |
+| N10 | Independent current policy epochs, revoked/expired issuer tests, reader/revoker locks and rollback; immutable history unchanged |
+| N11 | Actual closed seams and six models, unchanged legacy source/hashes, existing full/backend/partial suites |
+| PG01/PG02 | Separate actual non-superuser LOGIN connections, denial SQLSTATE checks, real COPY protocol, forbidden function/ownership/issuer mutation and cross-purpose controls |
+| PG03/PG04 | Event rollback/hash chain, ordinary Job deletion, concurrent generation CAS, atomic receipt insertion/acceptance and two-session conflicting receipt race |
+| PG05/PG06 | Reader holds shared controls against revoker, stale epoch denial, temporary-schema shadow and PUBLIC EXECUTE denial |
+| PG07 | Unissued/replayed/expired context, missing controls, immutable expired grants, cross-environment/profile observations, commit-completeness triggers |
+| PG08 | Global issuer revoke/retry and shared issuer across two owners/projects, no deadlock/lock-timeout fallback; receipt revocation checked against full parent controls |
+
+The additional codec test uses the test administrator only to compare pure SQL
+speech bytes with Python canonical bytes. It is not runtime-role isolation
+evidence. Setup ACL-conflict testing likewise uses admin only to simulate a bad
+deployment grant; all authorization assertions use the independent runtime logins.
 
 ## Exclusions and remaining risks
 
@@ -233,3 +266,12 @@ LOGIN role/lock suite **9 passed, no skips**. Frontend and Docker smoke passed.
 The next verification adds stricter signed-envelope/column binding, full parent
 control checks, explicit timeout bounds, expanded negative/race cases and worker
 Python contract execution; previous results are not substituted for those checks.
+
+Hardening checkpoint `f9d13b04eed9435da134d630fcc71e83649a664e`,
+[CI 828](https://github.com/VisusVision/TalkingSlides/actions/runs/40153644133):
+PostgreSQL legacy/API/media **246 passed** and expanded real-role/concurrency
+**15 passed**, no skips. Frontend **350 passed**, build passed, Chromium **36
+passed**, both npm audits clean, Docker smoke passed. Built-worker pure-contract
+step passed (the following container acceptance step was reached). Final checks
+add explicit enrollment target/key-family validation and provisioning ACL drift
+denial; their 18-case PostgreSQL suite must run independently before acceptance.

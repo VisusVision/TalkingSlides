@@ -871,6 +871,25 @@ def verify_envelope(
         w = ctx.to_dict()["window"]
         require(w["issued_ms"] <= now_ms < w["expires_ms"], "expiry", "Context expired")
     _payload_shape(e["schema_version"], e["payload"], purpose)
+    if e["schema_version"] == "production-producer-enrollment.v1":
+        proposed = e["payload"]
+        require(
+            proposed["environment"] == environment and proposed["audience"] == audience,
+            "issuer",
+            "Enrollment target differs from signed authority context",
+        )
+        proposed_key = decode_key(proposed["public_key"], 32)
+        related = {
+            p.split(".")[0]
+            for grant in registry.values()
+            if grant.public_key == proposed_key
+            for p in grant.purposes
+        }
+        require(
+            len(related | {p.split(".")[0] for p in proposed["purposes"]}) == 1,
+            "issuer",
+            "Enrollment collapses independent signing families",
+        )
     if e["schema_version"] in (
         "production-audio-reuse.v1",
         "production-producer-control.v1",

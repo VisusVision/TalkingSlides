@@ -24,10 +24,16 @@ DO $$DECLARE t text; f record; BEGIN
   EXECUTE format('REVOKE ALL ON public.%I FROM PUBLIC,ts_audio_operator,ts_audio_publisher,ts_audio_reader','audio_producer_'||t);
   EXECUTE format('GRANT SELECT ON public.%I TO ts_audio_reader,ts_audio_operator,ts_audio_publisher','audio_producer_'||t);
  END LOOP;
- FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname LIKE 'audio_p1_%' LOOP
+ FOR f IN SELECT oid::regprocedure AS signature FROM pg_proc WHERE pronamespace='public'::regnamespace AND proname IN ('audio_p1_speech_json','audio_p1_immutable','audio_p1_control_write','audio_p1_insert_guard','audio_p1_create_control','audio_p1_transition','audio_p1_lock_controls','audio_p1_receipt_commit','audio_p1_control_commit') LOOP
   EXECUTE format('ALTER FUNCTION %s OWNER TO ts_audio_owner',f.signature);
   EXECUTE format('REVOKE ALL ON FUNCTION %s FROM PUBLIC',f.signature);
  END LOOP;
+ IF EXISTS(SELECT 1 FROM pg_class t CROSS JOIN LATERAL aclexplode(coalesce(t.relacl,acldefault('r',t.relowner))) a
+  WHERE t.relnamespace='public'::regnamespace AND t.relname IN ('audio_producer_authority','audio_producer_execution','audio_producer_attempt','audio_producer_receipt','audio_producer_control','audio_producer_event')
+  AND a.grantee NOT IN (SELECT oid FROM pg_roles WHERE rolname IN ('ts_audio_owner','ts_audio_operator','ts_audio_publisher','ts_audio_reader'))) THEN RAISE EXCEPTION 'unexpected ledger ACL; remove runtime/default grants before provisioning'; END IF;
+ IF EXISTS(SELECT 1 FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a
+  WHERE p.pronamespace='public'::regnamespace AND p.proname IN ('audio_p1_speech_json','audio_p1_immutable','audio_p1_control_write','audio_p1_insert_guard','audio_p1_create_control','audio_p1_transition','audio_p1_lock_controls','audio_p1_receipt_commit','audio_p1_control_commit')
+  AND a.grantee NOT IN (SELECT oid FROM pg_roles WHERE rolname IN ('ts_audio_owner','ts_audio_operator','ts_audio_publisher','ts_audio_reader'))) THEN RAISE EXCEPTION 'unexpected privileged function ACL'; END IF;
 END$$;
 GRANT USAGE ON SCHEMA public TO ts_audio_owner,ts_audio_operator,ts_audio_publisher,ts_audio_reader;
 GRANT INSERT ON public.audio_producer_authority TO ts_audio_operator;
