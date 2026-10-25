@@ -405,7 +405,14 @@ def reuse_case(chain):
     pr = presentation(chain)
     v = {
         k: ctx.to_dict()["execution"][k]
-        for k in ("scope", "job_id", "manifest_hash", "source_hash", "speech")
+        for k in (
+            "scope",
+            "job_id",
+            "job_type",
+            "manifest_hash",
+            "source_hash",
+            "speech",
+        )
     }
     v["job_id"] = "8"
     v["schema_version"] = ConsumerCapture.domain
@@ -426,6 +433,7 @@ def reuse_case(chain):
         "origin_job_id": "7",
         "scope": ex.to_dict()["scope"],
         "consumer_job_id": "8",
+        "consumer_job_type": "video_export",
         "consumer_manifest_hash": H,
         "speech_hash": speech.content_hash,
         "scoped_speech_hash": scoped_speech_hash(ex.to_dict()["scope"], speech),
@@ -449,6 +457,7 @@ def test_reuse_is_new_use_not_synthesis(chain):
     )
     for k, bad in [
         ("consumer_job_id", "9"),
+        ("consumer_job_type", "publication"),
         ("parent_receipt_hash", H),
         ("speech_hash", H),
     ]:
@@ -950,3 +959,15 @@ def test_signed_enrollment_cannot_transfer_environment_or_operator_key_family(fi
             now_ms=100,
             production=False,
         )
+
+
+@pytest.mark.parametrize("purpose", [None, "publication"])
+def test_consumer_capture_requires_explicit_supported_job_purpose(chain, purpose):
+    value, consumer, pr, policy = reuse_case(chain)
+    raw = consumer.to_dict()
+    if purpose is None:
+        del raw["job_type"]
+    else:
+        raw["job_type"] = purpose
+    with pytest.raises(ValueError):
+        ConsumerCapture(raw)

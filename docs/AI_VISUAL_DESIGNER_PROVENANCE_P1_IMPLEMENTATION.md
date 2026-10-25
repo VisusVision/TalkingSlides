@@ -98,6 +98,13 @@ outer original receipt includes explicit `speech_hash` and `proof_hash` to bind
 the full original speech projection and independently expected nested v1 proof.
 This does not modify `SegmentAudioProof` or any previous golden hash.
 
+Consumer capture and the signed reuse payload explicitly bind `job_type` /
+`consumer_job_type`. Initial P1 structures permit the approved ordinary
+`video_export` consuming capture only; they do not grant a new private Job or
+publication purpose. The future P4 adapter must preserve the existing baseline
+Job and separate private Run semantics. Unsupported consuming purposes fail
+rather than being inferred from a mutable Job, path or status.
+
 `signed_envelope_hash` derives separate `*-envelope.v1` identities over the exact
 canonical signed envelope, including signer/signature. Those hashes are not
 authentication; full independent signature/parent verification is still required.
@@ -193,15 +200,16 @@ Commands are from repository root unless a directory is specified:
 
 | Command | Observed result |
 |---|---|
-| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests/test_audio_producer_contracts.py tests/integration/test_audio_producer_schema.py` | 66 passed, 2 warnings after expanded assertions |
-| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests --junitxml=/tmp/p1-backend-final.xml` | 2,835 passed, 35 skipped, 1 known MuseTalk process-group sandbox failure at implementation checkpoint; later focused changes separately verified, hosted final full suite required |
+| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests/test_audio_producer_contracts.py tests/integration/test_audio_producer_schema.py` | 68 passed, 2 warnings after expanded assertions |
+| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests --junitxml=/tmp/p1-frozen-backend.xml` | 2,859 passed, 44 skipped, 1 known MuseTalk process-group sandbox failure at `3ec2fac`; subsequent consumer-purpose assertion covered by focused suite, hosted final full suite required |
+| `PYTHONPATH=services/api:services /tmp/talkingslides-p1-venv/bin/pytest -q tests/integration/test_render_planner_foundation.py tests/integration/test_partial_render_manifest.py tests/integration/test_partial_rerender.py tests/integration/test_visual_render_planning.py` | 228 passed, 2 warnings; existing tests unchanged |
 | `PYTHONPATH=services/api:services DJANGO_SETTINGS_MODULE=config.settings_test /tmp/talkingslides-p1-venv/bin/python services/api/manage.py check` and same `makemigrations --check --dry-run` | System check: no issues; no model changes detected |
 | Frontend `npm run test:ci` | 350 passed, 49 files |
 | Frontend `npm run build` | Passed |
 | Frontend `npm run e2e -- --project=chromium` | Blocked: all 36 fail browser launch, missing Chromium executable; bounded installer retries downloaded invalid/truncated archives |
 | Frontend `npm audit --audit-level=low` and `npm audit --omit=dev --audit-level=low` | 0 vulnerabilities |
 | `pip-audit -r services/api/requirements.txt` | No known vulnerabilities with cryptography 50.0.2; initial 46.x candidate failed audit and was replaced, not suppressed |
-| Real-role PostgreSQL and concurrency | Local infrastructure blocked (15 explicit skips at preceding checkpoint, never acceptance). CI 827 on `11060f4` passed the initial 9 real-role tests; expanded 18-case final suite pending |
+| Real-role PostgreSQL and concurrency | Local infrastructure blocked (never acceptance). CI 829 on `3ec2fac` passed all 18 real-role/concurrency cases with no skips |
 | Docker builds / isolated Redis-container acceptance | Local Docker unavailable; existing hosted jobs pending |
 
 Mandatory P1 gates are N01–N11 and PG01–PG08 in the controlling scope; proposed
@@ -275,3 +283,10 @@ passed**, both npm audits clean, Docker smoke passed. Built-worker pure-contract
 step passed (the following container acceptance step was reached). Final checks
 add explicit enrollment target/key-family validation and provisioning ACL drift
 denial; their 18-case PostgreSQL suite must run independently before acceptance.
+
+Authority checkpoint `3ec2facc1c6c4c5f4bc75dd272151d32ce641664`,
+[CI 829](https://github.com/VisusVision/TalkingSlides/actions/runs/40154138696):
+PostgreSQL legacy/API/media **246 passed** and authority/concurrency **18 passed**,
+no skips. Frontend and Docker smoke passed. The final source correction is the
+explicit supported consumer Job-purpose binding in the new pure contracts;
+the six-table SQL/role implementation is unchanged from this verified checkpoint.

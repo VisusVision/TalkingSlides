@@ -550,6 +550,7 @@ class ConsumerCapture(_Frozen):
                 "schema_version",
                 "scope",
                 "job_id",
+                "job_type",
                 "manifest_hash",
                 "source_hash",
                 "speech",
@@ -562,6 +563,11 @@ class ConsumerCapture(_Frozen):
         )
         _scope(value["scope"])
         db_id(value["job_id"])
+        require(
+            value["job_type"] == "video_export",
+            "purpose",
+            "Ordinary consuming export capture required",
+        )
         digest(value["manifest_hash"])
         digest(value["source_hash"])
         SpeechSemantics(value["speech"])
@@ -584,6 +590,7 @@ class AudioReuseAssociation(_Frozen):
                 "origin_job_id",
                 "scope",
                 "consumer_job_id",
+                "consumer_job_type",
                 "consumer_manifest_hash",
                 "speech_hash",
                 "scoped_speech_hash",
@@ -629,6 +636,7 @@ class AudioReuseAssociation(_Frozen):
         require(
             value["use_id"] == pr["use_id"]
             and value["consumer_job_id"] == ex["job_id"] == pr["job_id"]
+            and value["consumer_job_type"] == ex["job_type"]
             and value["consumer_manifest_hash"]
             == ex["manifest_hash"]
             == pr["manifest_hash"]
@@ -971,6 +979,7 @@ def _payload_shape(version, value, purpose):
             "origin_job_id",
             "scope",
             "consumer_job_id",
+            "consumer_job_type",
             "consumer_manifest_hash",
             "speech_hash",
             "scoped_speech_hash",
