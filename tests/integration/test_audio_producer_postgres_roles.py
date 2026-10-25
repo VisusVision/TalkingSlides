@@ -4,6 +4,7 @@ independent non-superuser LOGIN connections. No issuer/key is deployed.
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import io
 import os
 from pathlib import Path
 import time
@@ -219,11 +220,22 @@ def test_pg01_runtime_raw_sql_denied(pg):
             "ALTER TABLE audio_producer_receipt OWNER TO " + role,
             "ALTER TABLE audio_producer_receipt DISABLE TRIGGER ALL",
             "SET ROLE ts_audio_owner",
-            "COPY audio_producer_receipt FROM STDIN",
             "INSERT INTO audio_producer_authority(id) VALUES(gen_random_uuid())",
         ]:
-            with pytest.raises(psycopg2.Error):
+            with pytest.raises(psycopg2.Error) as denied:
                 execute(c, stmt)
+            assert denied.value.pgcode == "42501"
+        with c.cursor() as cursor, pytest.raises(psycopg2.Error) as denied:
+            cursor.copy_expert(
+                "COPY public.audio_producer_receipt FROM STDIN", io.StringIO("")
+            )
+        assert denied.value.pgcode == "42501"
+        with pytest.raises(psycopg2.Error) as denied:
+            execute(
+                c,
+                "CREATE OR REPLACE FUNCTION public.audio_p1_create_control(uuid,text,uuid) RETURNS void LANGUAGE sql AS 'SELECT'",
+            )
+        assert denied.value.pgcode == "42501"
         with pytest.raises(psycopg2.Error):
             transition(c, ac, 1, "revoke", {})
 

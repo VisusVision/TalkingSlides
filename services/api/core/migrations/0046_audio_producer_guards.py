@@ -32,7 +32,7 @@ CREATE FUNCTION public.audio_p1_insert_guard() RETURNS trigger LANGUAGE plpgsql 
 DECLARE ex public.audio_producer_execution; ev public.audio_producer_event; ac public.audio_producer_control;
         at public.audio_producer_attempt; au public.audio_producer_authority;
 BEGIN
- IF NEW.payload->>'schema_version' IS DISTINCT FROM CASE TG_TABLE_NAME WHEN 'audio_producer_authority' THEN 'production-producer-enrollment.v1' WHEN 'audio_producer_execution' THEN 'production-producer-execution.v1' WHEN 'audio_producer_attempt' THEN 'production-tts-observation.v1' WHEN 'audio_producer_receipt' THEN 'production-audio-receipt.v1' ELSE 'production-producer-control-event.v1' END THEN RAISE EXCEPTION 'unsupported payload schema'; END IF;
+ IF NEW.payload->>'schema_version' IS DISTINCT FROM (CASE TG_TABLE_NAME WHEN 'audio_producer_authority' THEN 'production-producer-enrollment.v1' WHEN 'audio_producer_execution' THEN 'production-producer-execution.v1' WHEN 'audio_producer_attempt' THEN 'production-tts-observation.v1' WHEN 'audio_producer_receipt' THEN 'production-audio-receipt.v1' ELSE 'production-producer-control-event.v1' END) THEN RAISE EXCEPTION 'unsupported payload schema'; END IF;
  IF NEW.canonical_payload::jsonb <> NEW.payload OR octet_length(NEW.canonical_payload)>1048576 THEN
   RAISE EXCEPTION 'canonical payload mismatch';
  END IF;
@@ -78,7 +78,7 @@ BEGIN
    OR NEW.payload->>'context_hash' IS DISTINCT FROM NEW.context_hash
    OR NEW.payload->>'generation' IS DISTINCT FROM NEW.generation::text
    OR NEW.payload->>'outcome' IS DISTINCT FROM NEW.outcome THEN RAISE EXCEPTION 'unissued/stale observation'; END IF;
-  IF NEW.actual_speech_hash IS DISTINCT FROM CASE WHEN NEW.payload->'actual_speech'='null'::jsonb THEN NULL ELSE 'sha256:'||encode(sha256(convert_to('visual-design-hash.v1'||chr(10)||'production-speech-semantics.v1'||chr(10)||public.audio_p1_speech_json(NEW.payload->'actual_speech'),'UTF8')),'hex') END THEN RAISE EXCEPTION 'actual speech mismatch'; END IF;
+  IF NEW.actual_speech_hash IS DISTINCT FROM (CASE WHEN NEW.payload->'actual_speech'='null'::jsonb THEN NULL ELSE 'sha256:'||encode(sha256(convert_to('visual-design-hash.v1'||chr(10)||'production-speech-semantics.v1'||chr(10)||public.audio_p1_speech_json(NEW.payload->'actual_speech'),'UTF8')),'hex') END) THEN RAISE EXCEPTION 'actual speech mismatch'; END IF;
  ELSIF TG_TABLE_NAME='audio_producer_receipt' THEN
   SELECT * INTO STRICT at FROM public.audio_producer_attempt WHERE id=NEW.attempt_id;
   SELECT * INTO STRICT ex FROM public.audio_producer_execution WHERE id=NEW.execution_id;
@@ -143,7 +143,8 @@ BEGIN
  END IF;
  IF action='accept' THEN
   SELECT * INTO STRICT r FROM public.audio_producer_receipt WHERE id=(p->>'receipt_id')::uuid;
-  IF r.execution_id<>c.execution_id OR c.accepted_receipt_id IS NOT NULL THEN RAISE EXCEPTION 'wrong accepted receipt'; END IF;
+  IF r.execution_id<>c.execution_id OR c.accepted_receipt_id IS NOT NULL OR c.status<>'active'
+   OR NOT EXISTS(SELECT 1 FROM public.audio_producer_attempt a WHERE a.id=r.attempt_id AND a.execution_id=c.execution_id AND a.generation=c.generation AND a.nonce=c.nonce AND a.outcome='complete') THEN RAISE EXCEPTION 'wrong accepted receipt'; END IF;
  END IF;
  event_data:='{"control_id":'||to_json(cid::text)::text||',"instruction":'||data||',"kind":'||to_json(action)::text||',"previous_hash":'||coalesce(to_json(prior)::text,'null')||',"schema_version":"production-producer-control-event.v1","sequence":'||(c.epoch+1)::text||'}';
  INSERT INTO public.audio_producer_event(id,payload,payload_hash,canonical_payload,created_at,control_id,sequence,previous_hash,kind,execution_id,generation,issued_nonce,context_hash,instruction)

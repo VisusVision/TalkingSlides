@@ -212,5 +212,10 @@ qualification, presentation/caption acceptance, deployment isolation and proxy/
 retention/backup acceptance remain later prerequisites. P1 cannot establish real
 producer authenticity without those future independently operated components.
 
-Final commit and exact hosted CI links: pending checkpoint publication and
-verification; no hosted success is asserted here.
+Checkpoint commit: `4b0e63d3f3ce9f169a1814392581294793ac89e7`,
+[CI 826](https://github.com/VisusVision/TalkingSlides/actions/runs/40152818473).
+The first hosted PostgreSQL migration attempt failed with a PL/pgSQL CASE
+expression syntax error before role assertions ran; it was corrected with explicit
+expression parentheses. A local libpg_query PL/pgSQL parser then accepted both SQL
+batches. That parser check is not a substitute for the mandatory PostgreSQL run.
+Frontend CI passed at that checkpoint. Final-tree hosted results remain pending.
