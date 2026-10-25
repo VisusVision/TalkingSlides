@@ -1,14 +1,20 @@
 # Production audio provenance and private preview readiness — design review
 
-Reviewed: 25 October 2026. Repository: `VisusVision/TalkingSlides`.
-Verified local and remote branch: `feature/ai-visual-designer`.
-Verified source HEAD: `601979df71ed0e75e5075006a7be719f6a70910e`.
-The starting working tree and index were clean. All code references below describe
-that immutable commit. This review changes **this document only**.
+Originally reviewed: 25 October 2026. Repository: `VisusVision/TalkingSlides`.
+Original source HEAD: `601979df71ed0e75e5075006a7be719f6a70910e`.
+P1 revised after the partial-rerender audit on 25 October 2026, Europe/Istanbul;
+local HEAD, tracking ref and live GitHub ref matched
+`ea04701d9495da290c173a3bc3101a9a5dd6a1ec`, branch
+`feature/ai-visual-designer`. No runtime source changed between those commits,
+so the source anchors below remain valid. The index/tracked files were clean;
+the existing untracked integration review was preserved byte for byte.
 
-**Recommendation: READY_FOR_BOUNDED_PROVENANCE_IMPLEMENTATION**, beginning with
-P1's contracts, authority schema and negative tests only. This is readiness to
-implement a specified trust boundary, not evidence that one exists today. No
+**Recommendation: P1_REVISION_READY_FOR_IMPLEMENTATION**, limited to the
+[revised P1 specification](AI_VISUAL_DESIGNER_PROVENANCE_P1_REVISED_SCOPE.md).
+It resolves the [integration audit's](AI_VISUAL_DESIGNER_PARTIAL_RERENDER_INTEGRATION_REVIEW.md)
+earlier `REVISE_P1_BEFORE_IMPLEMENTATION` conclusion; the historical audit remains
+unchanged. This revision changes this design and adds that specification only.
+It does not authorize implementation or establish a real trust source. No
 producer, deployment enrollment, TTS behavior, private preview availability or
 publication is enabled by this review. Each subsequent phase needs separate scope
 authorization. Existing `_producer_dependencies()` remains `None` and
@@ -174,15 +180,26 @@ automatically supply this preparation package, so publisher image/import verific
 is a P3 prerequisite. This adds neither a third worker signing authority nor a
 parallel normalization algorithm.
 
-Proposed additive records, names provisional:
+Revised P1 has six inactive tables. The linked specification fixes their
+relationships, deletion semantics, constraints, writers and real PostgreSQL gates;
+these are proposals, not models implemented by this review:
 
 | Record | Authority and mutability |
 |---|---|
-| `AudioProducerExecution` | Server-captured owner/project, exact page/source/split/order, baseline Job, immutable consumed source/settings/chunk plan and semantic hash; stable producer-run UUID. Immutable payload; separate bounded attempt state. It is not `VisualSegmentRun`. |
-| `AudioProducerAttempt` / observation | Unique execution/generation/nonce and authenticated issuer; append-only observations, including failure/ineligibility. Retry means a new generation; never overwrite a past observation. |
-| `AudioProducerReceipt` | Immutable accepted outer envelope, exact SegmentAudioProof bytes/hash, signed TTS parent, resource manifests, caption payload/hash and private artifact handles. Only restricted publisher can append accepted records. |
-| `AudioProducerAuthority` + control/events | Operator-owned issuer/key/profile enrollment; separate current epoch/status and append-only receipt/issuer revocation events. No rewrite of old signed receipt. |
-| Artifact reference / publication intent | Durable sealed-object identity, retention reference and bounded pending-finalization/reconciliation state. An outbox row may share this record; do not introduce a second broker queue. |
+| `AudioProducerExecution` | Immutable original page-synthesis context: existing owner/project/origin Job IDs, exact page/source/split and source capture, planned speech identity and original order as audit metadata. Reuse creates no new synthesis execution. Actual inference belongs to a signed attempt observation. It is not `VisualSegmentRun`. |
+| `AudioProducerAttempt` | Append-only resolved original observation/outcome, including failure/ineligibility, referencing execution and the previously issued context event/generation/nonce. Outstanding issuance lives in control/events, not a blank observation patched to success. |
+| `AudioProducerReceipt` | Immutable original accepted outer envelope, unchanged SegmentAudioProof/hash, signed TTS parent, resource/caption/asset references and qualification. One accepted original per execution. Only restricted publisher can append; no P1 accepted production records. |
+| `AudioProducerAuthority` | Immutable operator-signed issuer/key/purpose/image/resource enrollment statement; public keys only. Current policy is separate. |
+| `AudioProducerControl` | Mutable epoch/deny projection for exactly one authority, execution or receipt; execution generation/nonce/deadline/acceptance pointer only through narrow routines. No duplicate Job status machine. |
+| `AudioProducerControlEvent` | Append-only typed enrollment/control/revocation/attempt-issuance/acceptance events, atomically committed with projection changes. No generic event platform. |
+
+P1 validates pure original-to-reuse and presentation structures but defers their
+tables and actual acceptance. A later bounded `AudioProducerUse` may reference
+one accepted original receipt and an explicitly captured consuming Job/page;
+it is not another synthesis or audio copy. Publication/transfer/lease/outbox
+records are deferred to P3, where actual durability operations justify them.
+Use fixed typed receipt artifact references first; no generic artifact graph,
+second broker queue, new narration store or durable chunk cache in P1.
 
 Database enforcement must include separate non-login object owner/migration role;
 no ordinary API/worker/TTS INSERT/UPDATE/DELETE/TRUNCATE/DDL privileges on receipt
@@ -191,9 +208,17 @@ row checks/triggers and explicit FK/lifecycle policy. Model methods remain usefu
 but are not the authority. Owners/superusers remain trusted because they can alter
 objects/privileges. PostgreSQL privilege rules and real-role tests matter. [R3]
 
+Existing owner/project/Job/page IDs are scalar historical references in immutable
+new records, checked against live authoritative rows at future capture/use;
+there are no cascading ledger FKs to mutable application rows. Internal ledger
+FKs are protected. Hard-deleted source/consumer Jobs, owner/project or unavailable
+page mapping deny new private use while preserving signed history; normal delete
+behavior remains unchanged. See the revised scope for this deliberate tradeoff.
+
 Current policy reads must serialize with revocation. Extend the existing lock
-order to owner → Project → source/control rows → producer authority → receipt
-control → Job → Run. Global producer revocation locks only its authority/control
+order to owner → Project → source/control rows → producer authority controls →
+existing parent receipt controls → execution control → Job → Run, sorting peer
+IDs. Global producer revocation locks only its authority/control
 rows and does not acquire Project locks afterward; affected Runs fail at their
 next live check. Per-receipt revocation uses authority-before-receipt ordering.
 An ordinary SELECT-only ledger reader cannot simply use `SELECT FOR UPDATE`:
@@ -219,8 +244,8 @@ independently accepted ledger record, never from the supplied proof.
 |---|---|
 | Schema, receipt UUID, issuer/key/purpose, acceptance timestamp | Publisher allocates UUID before cue construction; timestamps/acceptance sequence come from ledger authority. Signed canonical envelope; no mutable JSON sidecar authority. |
 | Owner/project and baseline Job | Server context capture checks owned project and exact Job purpose/FK; service echoes authenticated context hash. Publisher rejects cross-owner/project or a Job substitution. |
-| Producer run / execution / generation | New production execution UUID and immutable manifest hash plus attempt nonce/generation. Distinct from Celery task ID and later private Run. Baseline Job `done` alone does not identify the generation or actual successful full render. |
-| Stable page/source/split/order | Authoritative page capture plus the exact task mapping consumed by the engine; explicit integer checks preserving zero. Reject ambiguous positional fallback, reordered zero mapped to another source and missing source identity. |
+| Producer run / execution / generation | Original logical synthesis context UUID and immutable manifest plus actual attempt nonce/generation/observation. Reuse retains these and adds a consuming-use identity, not a new model event. Distinct from Celery task ID/private Run. Baseline Job `done` alone does not qualify a result. |
+| Stable page/source/split/order | Authoritative page tuple and exact consumed mapping; explicit integers preserving zero. Order is separately captured origin/consumer presentation metadata, not automatically speech identity. Reject positional fallback and tuple substitution; genuine authorized reordering does not itself require TTS. |
 | Protected narration and source identities | Capture original exact authored string/hash separately from worker `.strip()`/fallback string; include full source observation and audio-semantic binding. Service signs its actual input association. A stripped/invented string cannot be relabeled verbatim protected text. |
 | Prepared / effective speech | Trusted preparation record hashes original, normalized, spoken, ordered chunks, pauses and rule/resource identities. TTS observes exact ordered successful engine inputs, transformations, coverage and language; discrepancies produce ineligibility. |
 | Language | Record requested hint, preparation language and actual concrete engine language separately. Proof contains actual supported language, never `auto`. Mismatch with frozen snapshot voice policy is ineligible. |
@@ -233,7 +258,7 @@ independently accepted ledger record, never from the supplied proof.
 | Processing lineage | Outer receipt records original observations and every derivative edge. Nested v1 processing begins at the retained WAV, with actual `aac_encode.v1` or `resample_aac_encode.v1` operations, implementation/settings/input/output hashes ending at eligible M4A. Raw MP3 and legacy trim events stay separate and are not invented as supported v1 operations. |
 | Final eligible AAC | Restricted publisher reads authenticated sealed WAV, performs bounded canonical audio finalization and pins AAC-LC M4A in a producer-private namespace. Independently probe format, bytes, packets, decoded duration, stream origin and sample/channel limits using approved native identities; record original-to-final linkage. This happens at producer publication, never as a private-preview repair of legacy audio. |
 | Duration / audible window | Publisher measures final AAC and finite nonempty activity window using a versioned approved measurement recipe; service duration is diagnostic, not authority. Energy establishes activity, not words/voice correctness. Captions use final eligible audio, not later mutable row values. |
-| Caption provenance | Immutable authored chunk array/hash and page-local millisecond cues, allocator implementation/policy/hash, final audio hash, cue hash and explicit baseline Job/run. Use existing `allocate_chunk_timings`; preserve exact authored text. No acoustic alignment claim. |
+| Caption provenance | Separate immutable authored subtitle array/hash and page-local cues, allocator/policy identity, exact final audio and cue hash plus baseline Job/run. Distinct from actual engine chunks and speech fingerprint. Use existing `allocate_chunk_timings`; exact authorized text/window, no acoustic alignment claim. |
 | Permission and resource policy | Receipt records issuance-time policy/consent/authority version; current issuer, receipt, sample consent and security-denylist checks remain separate live authority. Hash alone never grants permission. |
 
 Avoid hash cycles: capture execution manifest and its hash before observations;
@@ -290,6 +315,8 @@ that gap. No requirement to add those providers, iOS or unrelated avatar support
    argument only in the separately authorized instrumentation phase; never use a
    latest-Job lookup. Each actual repeated synthesis gets a new bounded attempt
    generation/nonce (initial proposal: at most three observed attempts per execution).
+   A later use of this audio instead references its original context/observation;
+   it must not allocate a synthetic new generation or call TTS just for a receipt.
    Idempotent observation ingestion is not a claim that today's synthesis HTTP
    endpoint is idempotent. Duplicate calls without a fresh permitted attempt cannot
    earn another receipt; their ordinary behavior is not silently changed to caching.
@@ -366,6 +393,13 @@ private receipt. Prove compatibility before enabling observation hooks.
 | Broker/storage/ledger unavailable | Ordinary output may finish; private receipt remains unavailable. Bounded same-context reconciliation only; no fresh TTS fallback. |
 | Normal key rotation / compromise | Retired-valid issuance keys may validate historical signed records under current policy; compromised/revoked keys deny dependent receipts. TLS certificate expiry prevents new authenticated calls; receipt history is governed by explicit current issuer policy, not a blanket lifetime guess. |
 
+The initial full-render qualification/cache exclusion is an acceptance restriction,
+not a policy to resynthesize whole lessons to obtain receipts. Existing partial
+rendering continues normally without accepted producer evidence. A future
+authenticated use must reference a genuinely accepted original parent and the
+exact consuming capture; it cannot promote a dirty-only/no-op Job into a new
+qualified synthesis. Bare observations do not authorize final-AAC reuse.
+
 ## 5. Phase 3B integration and compatibility boundaries
 
 `visual_segment_artifacts.py:304–360` defines `ProducerArtifact`,
@@ -438,24 +472,87 @@ Retain the existing baseline-cue path unchanged for genuine matching baselines a
 engineering regression fixtures. No browser-provided cue/expected hash or generic
 production Boolean may select an unsafe alternative.
 
-Audio semantics need an explicit separate hash: exact protected text, source/split/
-stable key, actual language, canonical requested settings, provider/voice/sample,
-loaded dependencies and authored chunks. Preserve the original full capture
-revision for audit. A private snapshot's full revision also includes visual choices
-and saved timing, so it is neither a complete producer recipe nor always equal to
-the historical producer revision. At reservation, compare immutable audio semantics
-and retain the current private Run's full source revision; subsequent source edits
-remain subject to today's conservative completion/delivery policy. Do not silently
-weaken `_current_preflight` or make normal draft promotion part of this adapter.
+Speech semantics have a new separate hash: exact protected and actual spoken
+input, actual ordered **engine** chunks/pauses, language, resolved controls and
+provider/voice/sample/model/configuration/preparation/pronunciation identities.
+It excludes subtitle presentation, visual choices, order and absolute timing
+unless they actually change the resolved speech input. A separate scoped hash
+binds owner/project/stable page/source/split; signed origin and consumption
+contexts bind Jobs. A semantic equality never transfers permission.
+Authored subtitle chunks and local cues have a distinct presentation/caption hash.
+Preserve the full original capture revision for audit and the current private
+Run's full source revision for live checks; finer dependency identities do not
+weaken `_current_preflight` or enable ordinary draft promotion.
 
-Initial migrations are additive with no data backfill. Prefer RESTRICT/protected
-receipt references and tombstone/redaction policy over cascading away authority
-evidence; old records remain unchanged. Project/account deletion should immediately
-deny access and schedule separately reviewed lifecycle retention, not silently
-erase evidence or leave current permission grants. Planner opt-ins in
+Initial migrations are additive with no data backfill. Internal ledger references
+are protected; immutable captured application IDs do not cascade or SET_NULL when
+ordinary rows disappear. Project/account/origin-or-consumer Job deletion denies
+new private use and needs separately reviewed lifecycle retention, never silent
+authority erasure or remaining permission grants. Planner opt-ins in
 `segment_dependencies.py`, `render_planner.py` and `partial_render_manifest.py`
 receive descriptors only after authenticated native validation. Legacy manifest
 hashes/classifications stay unchanged when the opt-ins are absent.
+
+## 5A. Coexistence with existing partial rerendering — revised P1 foundation
+
+The [integration review](AI_VISUAL_DESIGNER_PARTIAL_RERENDER_INTEGRATION_REVIEW.md)
+verified persisted per-output-page MP3, selected visual-only recomposition and
+selected narration-only recomposition in current code. These are existing
+capabilities on GitHub, not missing pipelines. Auto dirty rendering can still
+resynthesize a dirty visual page, and render-required drafts can render all pages.
+P1 adds no scheduling change, no new worker and no alternative narration storage.
+
+`Job` identifies the existing originating/consuming work. `TranscriptPage` supplies
+the existing stable key/source/split tuple, frozen under authority because it is
+mutable. `LessonSegment.segment_tts_path`, current MP3/part paths, sidecars and
+partial manifests supply locators/candidate input metadata. They do not prove
+past engine activity. Reference these identities and capture only required facts;
+do not duplicate ordinary page/job state machines or infer history from hashes.
+
+The revised foundation separates four contracts:
+
+1. **Speech semantics and original execution:** planned then observed actual
+   speech input/resources, with origin Job/context and actual attempt lineage.
+   Changed video/font/order/subtitle grouping alone does not change the speech
+   hash. A dynamically spoken slide number does: capture its resolved text and
+   preparation dependency, not an unexplained exemption for order.
+2. **Original observation:** immutable signed statement by TTS that actual calls
+   executed, with genuine original bytes and complete ordered coverage. An audio
+   reuse never produces another observation; actual provider remains XTTS/etc.,
+   not `cached`. Matching semantics across two real inferences does not collapse
+   their different event/audio identities.
+3. **Reuse association:** a pure P1 structure binds an accepted original parent,
+   exact audio, authorized same-owner/project/stable-page consumer Job/capture and
+   current resource/consent/control epochs. It is not a new synthesis. Its table
+   and accepted issuance are deferred to P3/P4; no unrelated Job or cross-scope
+   association follows from equal hashes. No arbitrary graph/chaining initially.
+4. **Presentation/captions:** scene, display order, authored subtitle grouping,
+   audio-local timing and video recipe are distinct from TTS chunks. P1 represents
+   them without persisting/accepting new presentations. A new caption binding does
+   not mutate the original proof's baseline or cue hash. Until a later strict P4
+   extension can authenticate it, changed-cue private requests deny; they do not
+   invoke speech merely to work around a binding mismatch.
+
+Existing snapshot/planner adapters and FFmpeg/allocator helpers are reused later.
+Encoded part reuse requires matching frame/audio/video/timing dependencies; reuse
+of narration alone is insufficient. Moving lesson offsets may require assembly
+or captions without page TTS. Current producer-bearing dependency descriptors can
+change when a receipt/control binding changes even if speech does not; future
+action selection must distinguish revalidation from synthesis, while retaining
+existing strict v1 descriptors/hashes.
+
+See the [self-contained revised P1 scope](AI_VISUAL_DESIGNER_PROVENANCE_P1_REVISED_SCOPE.md)
+for the exact regeneration matrix, six-table rationale/writers/deletion policy,
+pure reuse/presentation shapes, PG role/lock requirements and complete assignment
+of T01–T22 and A01–A32 to P1 versus later phases. The audit remains unchanged as
+historical input; its tests were not executed by either design review.
+
+Unknown historical/cached audio remains ineligible. A valid existing **future
+authenticated** narration may be reused through these parent/current-policy
+checks while ordinary partial rendering keeps today's behavior. Neither the
+ledger nor smaller dependency hashes weaken private owner isolation, immutable
+snapshot/request semantics, producer/evidence revocation, attempt fencing or
+publication safety. Normal AI-design integration and Phase 3C remain excluded.
 
 ## 6. Deployment enrollment is a separate authority
 
@@ -582,7 +679,7 @@ containers use actual Redis and separate API/worker/publisher processes.
 | A02 | Mutate signed payload/algorithm/purpose; duplicate keys, NaN, oversized chunks; key URL injection | Strict parse/signature failure before artifact publication; no algorithm/key discovery from message. |
 | A03 | Use ordinary API/worker/TTS DB roles to INSERT accepted receipt, UPDATE/DELETE/TRUNCATE rows, bypass ORM or shadow the lock function | PG denies operation; owner/migration role separate; function search-path/PUBLIC privilege tests pass. |
 | A04 | Replace audio/WAV/sample with same-sized bytes and matching unsigned sidecar; swap after hashing or use symlink | Signed expected digest, descriptor confinement and postcopy verification reject replacement; no successful proof. |
-| A05 | Swap page key, source index zero, split or order `[0,2,0]`; duplicate/absent source; positional fallback | Exact server context/observation/receipt tuple mismatch; no cross-split or first-template provenance. |
+| A05 | Swap page key/source zero/split, forge captured order, duplicate/omit source or use positional fallback; separately test genuine authorized reorder | Reject tuple/context substitution. Same speech at a different authorized presentation order retains speech identity; spoken order-dependent text changes it. Preserve `[0,2,0]` source mapping without positional provenance. |
 | A06 | Submit valid receipt/context for another owner, project, Job or environment; cross-owner identical bytes | Reject association; CAS dedup cannot create authority. No public media path or metadata leak. |
 | A07 | Voice profile/sample replaced after registration or mid-model call; later sample consent revoked | Consume enrolled immutable sample actually passed to model, or reject. Current consent revocation blocks subsequent private gates. |
 | A08 | Loaded model differs from disk manifest, CPU fallback uses another instance, inference default or required model profile changes | Unknown/mixed/drifting loaded dependency fails initial profile; old receipts cannot satisfy a new required profile. Never hash current files and attribute them to old in-memory state. |
@@ -593,10 +690,10 @@ containers use actual Redis and separate API/worker/publisher processes.
 | A13 | Tamper raw→WAV→AAC processing, encode twice, pad/trim after sealing or label trim as identity | Validate each signed/producer-derived edge; v1 operations/limits enforced; final AAC container and packet payload match before/after private segment composition. |
 | A14 | Wrong FFmpeg/ffprobe/library/font/recipe or incompatible API image | Live runtime differs from approved frozen evidence; no claim/receipt/delivery. Positive matched variant and negative slim variant exercised. |
 | A15 | Revoke issuer/receipt/required profile after pinning, during render, at completion or before first/next stream chunk; also rotate an uncompromised key normally | PG control transaction serializes with claim/completion; history survives, future use stops under bounds. Test retired-valid issuance versus compromised-key denial separately; authority outage fails closed. |
-| A16 | Edit source A→B, voice/settings/authored chunks after context or private reservation | A remains immutable history; B does not inherit A's association. Completion/stream rejects current source conflict; visual-only edits can reuse only unchanged audio semantics. |
+| A16 | Edit source A→B, voice/settings/authored chunks after context or private reservation | A remains immutable history and current Run source checks still reject conflicts. A new authorized visual/caption presentation can compare unchanged speech independently; neither equal speech nor a new Job transfers permission or mutates A's observation. |
 | A17 | Replace caption payload/hash, use MP3 timings with new AAC, strip authored text, forge allocator metadata | Exact ledger cue binding, recomputation, audible bounds and frozen chunk equality fail; no transcript/timeline rewrite. |
 | A18 | Resume stale producer or private worker generation after newer success/cancellation | No accepted receipt replacement; old generation/nonce/token cannot win; include real PG race and paused worker. |
-| A19 | Duplicate broker delivery or retry the same signed observation across crash windows | Same immutable execution yields one accepted receipt; conflicting content fails. No latest-Job fallback or extra synthesis. |
+| A19 | Duplicate broker delivery, replay signed observation, or reuse accepted speech in another captured Job | One accepted original per execution; exact ingestion replay idempotent, conflicts fail. A later use retains original actual provider and has an explicit consumer binding, not a synthetic generation. No ledger replay invokes TTS; current synthesis HTTP retries are not claimed idempotent. |
 | A20 | Spoof/expire enrollment, restore old epoch, wrong audience, untrusted signing key, clock uncertainty | Readiness false; denial at all gate boundaries, not just API health; a passed engineering report grants nothing. |
 | A21 | Application attempts to self-enroll/renew, substitute its own image hash or disable independent agent | Its keys/DB role cannot write independent authority. Missing fresh observation becomes closed within declared observation budget. |
 | A22 | Native binary/config drifts after enrollment, or restart reuses old positive result | Immediate local mismatch or bounded heartbeat invalidation; no replacing expected digest with observed digest. |
@@ -626,22 +723,34 @@ support only if it meets the signed protocol and key-management requirements.
 
 ### P1 — Pure contracts and non-active authority schema
 
-- Scope: canonical execution/observation/receipt manifests, test-key signature
-  verification and append-only ledger/control models with real DB role tests.
-  No TTS hooks, accepted production records or dependency wiring.
+- Authoritative boundary: [revised P1 specification](AI_VISUAL_DESIGNER_PROVENANCE_P1_REVISED_SCOPE.md).
+  Pure planned/actual speech, context, original observation/receipt, reuse-lineage
+  and presentation structures; purpose-separated Ed25519 verification using test
+  registries; six empty execution/attempt/receipt/authority/control/event tables
+  and real PostgreSQL privilege/lock constraints. No TTS hooks, accepted production
+  records, actual reuse certification or dependency wiring.
 - Prerequisites: reviewed field/schema/role/lock ordering above; exact expected
   migration number inspected at implementation time (do not reserve a number here).
 - Likely files: new `core/visual_design/producer_contracts.py`,
-  `core/audio_producer_models.py` or explicit registered models in `core/models.py`,
-  one additive migration, narrow DB-role/provisioning scripts and contract/PG tests.
+  explicitly registered `core/audio_producer_models.py` or declarations in
+  `core/models.py`, additive migration(s), narrow role/trigger/control-function SQL,
+  pure/schema/real-PG role tests and narrowly necessary CI/dependency declarations.
+  No new crypto implementation or assumed transitive packaged dependency.
 - Compatibility: no changes to snapshot, SegmentAudioProof or legacy planner
-  schemas/hashes. New tables start empty, no legacy backfill; `_producer_dependencies`
-  stays None and readiness false.
-- Invariants/tests: A01–A06, A18–A20, A32 and PG lock/permission tests. No acceptance
-  record from arbitrary ORM writes or self-supplied expected digest.
+  schemas/hashes, per-page MP3 storage, partial scheduler, existing rows/delete
+  behavior or publication. Tables start empty, no legacy backfill, production
+  issuers or keys; `_producer_dependencies` stays None and readiness false.
+- Deferred: actual observations/accepted parent reuse, use/presentation tables,
+  publication/transfer/artifact-intent operations, producer trust adapter, dynamic
+  regeneration, durable chunk cache, deployment enrollment and rollout.
+- Invariants/tests: revised N01–N11 and **mandatory PG01–PG08** with separate real
+  roles/connections; section 8 A01–A32 and audit T01–T22 are fully phase-assigned
+  there. Structural fixtures do not execute the later media/producer/deployment
+  gates. An unavailable/skipped PG role job is a blocker, not a P1 pass.
 - Stop: owner/runtime role cannot be separated, signature/canonicalization remains
-  ambiguous, or shared control locking cannot be proved. Remaining risk: contracts
-  and DB constraints do not observe a real model; production still unavailable.
+  ambiguous, tuple/parent/generation semantics require fallback, locking cannot be
+  proved, existing hashes would change or any hook would alter runtime behavior.
+  Contracts and DB constraints do not observe a model; production stays unavailable.
 
 ### P2 — Authenticated production observation, shadow collection only
 
@@ -656,7 +765,12 @@ support only if it meets the signed protocol and key-management requirements.
   and `tts_preprocess/`; worker context hooks in `worker/tasks.py`, approved model/
   sample loader helpers, internal ingestion routes in an isolated URL/settings
   surface, Docker secret/network configuration. No unrelated avatar code.
-- Migration: only if P1 lacks observation/attempt state; no data certification.
+- Reuse the existing normal-page and narration-only synthesis calls through one
+  observation protocol. Visual-only reuse carries original parent identity and
+  does not manufacture another model call/event. Initial full-render qualification
+  remains separate; expanding partial observation/qualification needs explicit scope.
+- Migration: no duplicate observation/attempt tables; justify any additional
+  operational capture state. No historical data certification.
 - Compatibility: legacy endpoint/call defaults, fallback and media behavior unchanged
   when not observed; bounded capture failure cannot turn an ordinary success into
   private eligibility. Do not claim "observation only" if output-affecting hooks
@@ -678,8 +792,9 @@ support only if it meets the signed protocol and key-management requirements.
 - Likely files: `core/audio_producer_ledger.py`, `core/audio_producer_publication.py`,
   a narrow management/reconciliation command, existing media validation/storage
   helpers and publisher Compose/secret role configuration; isolated tests.
-- Migration: artifact reference/publication intent or baseline qualification binding
-  if not included in P1; no historical data rewrite or public Job URL changes.
+- Migration: only actual artifact/publication intent, lease, qualification or typed
+  consuming-use relationship needed for this phase; these are deferred from P1.
+  No generic graph, duplicate narration cache, historical rewrite or Job URL change.
 - Compatibility: legacy MP3/trimmed/video outputs untouched. Accepted WAV→AAC proof
   fits strict v1 operations; no pretend MP3/trim provenance or second video encoder.
 - Tests: A04, A06, A10–A14, A17–A19, A24, A26, A29–A32; real media and actual
@@ -778,19 +893,22 @@ ownership. The proposed numeric limits require measurement; they are not
 production promises. Consent erasure versus immutable audit retention also needs
 an explicit operator policy without retaining sample bytes indefinitely by accident.
 
-Validation performed for this review: branch/HEAD/index/working-tree checks;
-source tracing of the files/functions above and the five requested reports;
-inspection of schema/control/retention compatibility and primary documentation
-below. No production calls, synthesis, GPU experiment, audio conversion, migration,
-service deployment or runtime acceptance test was run. Post-write validation
-confirmed local Markdown/source paths, balanced code fences, all seven phased
-scopes and 32 adversarial cases, `git diff --check`, AST-level literal closed
-gates and the one-document-only patch/commit scope. Existing CI is historical evidence unless
-a newly triggered run is explicitly identified; do not borrow it as design testing.
+Original review validation was source/path/AST/patch inspection; no production
+calls, synthesis, GPU experiment, audio conversion, migration, deployment or runtime
+acceptance test was run. This P1 revision reads the complete integration audit,
+this design, original Phase 3B design and consolidated report, then checks relevant
+current source and PostgreSQL primary references. Post-edit validation covers
+links, source anchors, Markdown, all 22 audit/32 adversarial cases and their phase
+assignment, six-table purpose/deletion/role rationale, preserved integration-review
+bytes and documentation-only diff. The two revised deliverables remain uncommitted
+and unpushed. No test/CI pass is claimed for the proposed P1 implementation.
+Historical CI/container evidence cannot establish actual producer trust or activate
+private previews.
 
-**Final recommendation: READY_FOR_BOUNDED_PROVENANCE_IMPLEMENTATION — P1 only
-as the next implementation task. Await separate authorization before any code,
-model, TTS, producer-integration, enrollment or rollout changes.**
+**Final recommendation: P1_REVISION_READY_FOR_IMPLEMENTATION**, limited to the
+inactive contracts/schema/role-test boundary in the linked revised specification.
+Await separate authorization before P1 code or any model, TTS, producer integration,
+enrollment, dynamic scheduling, Phase 3C or rollout change.
 
 ## Primary technical references
 

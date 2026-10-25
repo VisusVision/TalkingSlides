@@ -12,3 +12,6 @@ requests>=2.31
 boto3>=1.34,<2.0
 pillow>=10.0
 opencv-python-headless>=4.10
+
+# P1 pure Ed25519 verification; no production signing keys or issuer bootstrap.
+cryptography>=50.0.0,<51

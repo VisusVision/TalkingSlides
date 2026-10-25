@@ -227,6 +227,11 @@ jobs:
           INTELLIGENCE_OLLAMA_CALIBRATION_ENABLED: 'false'
         run: pytest -q tests/integration/test_visual_drafts.py tests/integration/test_visual_evidence.py tests/integration/test_visual_render_snapshots.py tests/integration/test_visual_segment_runs.py tests/integration/test_visual_segment_media.py tests/integration/test_visual_segment_api.py --ds=config.settings_test_postgres
 
+      - name: P1 isolated PostgreSQL authority roles and locks
+        env:
+          P1_REQUIRE_POSTGRES: '1'
+        run: pytest -q tests/integration/test_audio_producer_postgres_roles.py --ds=config.settings_test_postgres
+
   private-segment-deployment-evidence:
     runs-on: ubuntu-latest
     timeout-minutes: 45

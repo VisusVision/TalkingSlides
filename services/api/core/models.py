@@ -1581,3 +1581,7 @@ def _delete_private_segment_job(sender, instance, using, **kwargs):
 
 models.signals.post_delete.connect(_delete_private_segment_job, sender=VisualSegmentRun,
                                    dispatch_uid="delete_private_visual_segment_job")
+
+# Inactive producer evidence schema; deliberately no runtime trust-source import.
+from .audio_producer_models import (AudioProducerAuthority, AudioProducerExecution,
+    AudioProducerAttempt, AudioProducerReceipt, AudioProducerControl, AudioProducerControlEvent)
