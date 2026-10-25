@@ -810,3 +810,33 @@ def test_pg_operator_provisioning_rejects_preexisting_runtime_grants(pg):
                 cursor.execute(sql)
         finally:
             cursor.execute("REVOKE ALL ON public.audio_producer_receipt FROM p1_api")
+
+
+def test_pg_operator_never_adopts_untrusted_overloaded_function(pg):
+    attacker = pg("p1_api")
+    reader = pg("p1_reader")
+    sql = (Path(__file__).parents[2] / "infra/sql/audio_producer_roles.sql").read_text()
+    sql = "\n".join(line for line in sql.splitlines() if not line.startswith("\\"))
+    with connection.cursor() as cursor:
+        cursor.execute("GRANT CREATE ON SCHEMA public TO p1_api")
+        try:
+            execute(
+                attacker,
+                "CREATE FUNCTION public.audio_p1_transition(text) RETURNS text LANGUAGE sql SECURITY DEFINER AS 'SELECT current_user::text'",
+            )
+            execute(
+                attacker,
+                "GRANT EXECUTE ON FUNCTION public.audio_p1_transition(text) TO ts_audio_reader",
+            )
+            with pytest.raises(
+                DatabaseError, match="unexpected ledger function overload"
+            ):
+                cursor.execute(sql)
+            assert execute(
+                reader, "SELECT public.audio_p1_transition('probe'::text)"
+            ) == [("p1_api",)]
+        finally:
+            execute(
+                attacker, "DROP FUNCTION IF EXISTS public.audio_p1_transition(text)"
+            )
+            cursor.execute("REVOKE CREATE ON SCHEMA public FROM p1_api")

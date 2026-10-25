@@ -161,8 +161,9 @@ later operator decisions.
 Provisioning checks existing group attributes/memberships and unexpected object
 ACLs, including inherited default grants to ordinary roles. It fails rather than
 silently accepting them or changing unrelated default privileges. Only the nine
-explicit new functions and six tables are transferred; no wildcard schema grant
-or ownership transfer is used. Operators must fix a reported ACL conflict before
+exact new function signatures and six tables are transferred; unexpected same-name
+overloads are rejected before ownership changes. No wildcard schema grant or
+ownership transfer is used. Operators must fix a reported ACL/overload conflict before
 retrying. This is setup evidence, never a production readiness switch.
 
 Definer routines use schema-qualified tables and fixed `pg_catalog,pg_temp`
@@ -290,3 +291,9 @@ PostgreSQL legacy/API/media **246 passed** and authority/concurrency **18 passed
 no skips. Frontend and Docker smoke passed. The final source correction is the
 explicit supported consumer Job-purpose binding in the new pure contracts;
 the six-table SQL/role implementation is unchanged from this verified checkpoint.
+
+Final provisioning review added a nineteenth real-role case: an API-owned
+SECURITY DEFINER overload must never be adopted by the operator script. Ownership
+selection now uses exact signatures and fails on unexpected overloads. The
+consumer-purpose checkpoint is `87040be849c23afa52410f389c278476057ba5e4`;
+the next exact-tree CI must verify this final operator-script correction too.
